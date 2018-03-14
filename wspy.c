@@ -152,7 +152,7 @@ int main(int argc,char *const argv[],char *const envp[]){
 	  "\t-F\tturn on kernel scheduler tracing (default = on)\n"
 	  "\t-f\tturn off kernel scheduler tracing (default = on)\n"
 	  "\t-r\tfilter for name of process tree root\n"
-	  "\t-u\trun <cmd> as user <uid>\n");
+	  "\t-u\trun <cmd> as user <uid>\n",argv[0]);
   }
 
   if (missing_command){

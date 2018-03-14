@@ -16,7 +16,7 @@ int n_warning = 0;
 
 void initialize_error_subsystem(char *prog,char *filename){
   FILE *new_stream;
-  prog = program;
+  program = prog;
   initialized = 1;
   if (!strcmp(filename,"-")){
     error_stream = stderr;
