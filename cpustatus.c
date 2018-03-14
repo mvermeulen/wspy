@@ -16,11 +16,11 @@ void init_cpustatus(void){
   cpufile = tmpfile();
 }
 
-void read_cpustatus(struct timeval *time){
+void read_cpustatus(double time){
   FILE *fp = fopen("/proc/stat","r");
   char buffer[1024];
 
-  fprintf(cpufile,"time %ld %ld\n",time->tv_sec,time->tv_usec);
+  fprintf(cpufile,"time %f\n",time);
   while (fgets(buffer,sizeof(buffer),fp) != NULL){
     if (strncmp(buffer,"cpu",3)) break;
     fputs(buffer,cpufile);
@@ -49,8 +49,7 @@ void print_cpustatus(double basetime){
     fprintf(outfile,"CPU %d\t-\tuser\tsystem\tiowait\tirq\tidle\n",i);
     while (fgets(buffer,sizeof(buffer),cpufile) != NULL){
       if (!strncmp(buffer,"time",4)){
-	sscanf(buffer,"time %ld %ld",&time_sec,&time_usec);
-	elapsed = (time_sec + time_usec / 1000000.0) - basetime;
+	sscanf(buffer,"time %lf",&elapsed);
       }
       if (!strncmp(buffer,cpubuf,len)){
 	last_st = curr_st;

@@ -173,16 +173,15 @@ int main(int argc,char *const argv[],char *const envp[]){
     pthread_create(&ktrace_thread,NULL,ktrace_start,&child_pid);
   }
   if (cflag){
+    double start_time = -5.0;
     init_cpustatus();
     // periodic timer
-    pthread_create(&timer_thread,NULL,timer_start,NULL);
+    pthread_create(&timer_thread,NULL,timer_start,&start_time);
   }
 
   // wait 5 seconds to allow subsystems to start
   sleep(5);
   child_procinfo = lookup_process_info(child_pid,1);
-  read_uptime(&child_procinfo->time_fork);
-  basetime = child_procinfo->time_fork.tv_sec + child_procinfo->time_fork.tv_usec / 1000000.0; 
   
   // let the child proceed
   write(child_pipe[1],"start\n",6);
@@ -198,7 +197,15 @@ int main(int argc,char *const argv[],char *const envp[]){
   }
 
   // wait 5 seconds to allow subsystems to start
-  sleep(5);  
+  sleep(5);
+
+  if ((child_procinfo->time_fork.tv_sec == 0) &&
+      (child_procinfo->time_fork.tv_usec == 0)){
+    // never set, use exec instead
+    child_procinfo->time_fork.tv_sec = child_procinfo->time_exec.tv_sec;
+    child_procinfo->time_fork.tv_usec = child_procinfo->time_exec.tv_usec;
+  }
+  basetime = child_procinfo->time_fork.tv_sec + child_procinfo->time_fork.tv_usec / 1000000.0;
 
   if (fflag){
     write(ktrace_cmd_pipe[1],"quit\n",5);
@@ -219,15 +226,4 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (cflag)
     print_cpustatus(basetime);
   return 0;
-}
-
-void read_uptime(struct timeval *tm){
-  double uptime;
-  FILE *fp = fopen("/proc/uptime","r");
-  if (fp){
-    fscanf(fp,"%lf",&uptime);
-    tm->tv_sec = trunc(uptime);
-    tm->tv_usec = (uptime - tm->tv_sec)*1000000;
-    fclose(fp);
-  }
 }

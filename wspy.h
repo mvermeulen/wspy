@@ -3,7 +3,6 @@
 
 /* wspy.c */
 FILE *outfile;
-void read_uptime(struct timeval *tm);
 
 /* procinfo.c */
 struct process_info {
@@ -39,5 +38,5 @@ void *timer_start(void *arg);
 
 /* cpustatus.c */
 void init_cpustatus(void);
-void read_cpustatus(struct timeval *time);
+void read_cpustatus(double time);
 void print_cpustatus(double basetime);

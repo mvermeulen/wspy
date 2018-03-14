@@ -11,6 +11,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <string.h>
+#include <math.h>
 #include <sys/timerfd.h>
 #include <sys/time.h>
 #include "wspy.h"
@@ -18,12 +19,17 @@
 
 int timer_fd;
 FILE *cpuinfo = NULL;
+double now = 0;
 
 static void timer_loop(void);
 
 void *timer_start(void *arg){
   int status;
   struct itimerspec itval;
+
+  if (arg){
+    now = ((double *) arg)[0];
+  }
 
   pipe(timer_cmd_pipe);
 
@@ -45,7 +51,7 @@ void *timer_start(void *arg){
 
 static void timer_loop(void){
   fd_set rdfd_list;
-  struct timeval tv,now;
+  struct timeval tv;
   FILE *cmd_file,*timer_file;
   int maxfd = timer_cmd_pipe[0];
   int status;
@@ -77,9 +83,20 @@ static void timer_loop(void){
       }
       if (FD_ISSET(timer_fd,&rdfd_list)){
 	read(timer_fd,&expirations,sizeof(expirations));
-	read_uptime(&now);
-	read_cpustatus(&now);
+	now = now + 1;
+	read_cpustatus(now);
       }
     }
+  }
+}
+
+void read_uptime(struct timeval *tm){
+  double uptime;
+  FILE *fp = fopen("/proc/uptime","r");
+  if (fp){
+    fscanf(fp,"%lf",&uptime);
+    tm->tv_sec = trunc(uptime);
+    tm->tv_usec = (uptime - tm->tv_sec)*1000000;
+    fclose(fp);
   }
 }
