@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <sys/wait.h>
 #include <sys/time.h>
+#include <libgen.h>
 #include <pwd.h>
 #include "wspy.h"
 #include "error.h"
@@ -26,9 +27,12 @@ int fflag = 1;
 int rflag = 0;
 int uflag = 0;
 int uvalue = 0;
+int zflag = 0;
 char *rvalue = NULL;
+char *zvalue = NULL;
 int missing_command = 0;
 char *default_command[] = { "sleep", "30", NULL };
+char original_dir[1024];
 
 int parse_options(int argc,char *const argv[],int *program_idx){
   int opt;
@@ -36,7 +40,7 @@ int parse_options(int argc,char *const argv[],int *program_idx){
   FILE *fp;
   struct passwd *pwd;
   outfile = stdout;
-  while ((opt = getopt(argc,argv,"+CcFfo:r:u:?")) != -1){
+  while ((opt = getopt(argc,argv,"+CcFfo:r:u:z:?")) != -1){
     switch (opt){
     case 'c':
       cflag = 0;
@@ -78,6 +82,10 @@ int parse_options(int argc,char *const argv[],int *program_idx){
 	  uvalue = pwd->pw_uid;
 	}
       }
+      break;
+    case 'z':
+      zflag = 1;
+      zvalue = strdup(optarg);
       break;
     case '?':
       return 1;
@@ -143,16 +151,21 @@ int main(int argc,char *const argv[],char *const envp[]){
   double basetime = 0;
   pid_t child;
   sigset_t signal_mask;
+
+  getcwd(original_dir,sizeof(original_dir));
+  
   initialize_error_subsystem(argv[0],"-");
 
   if (parse_options(argc,argv,&command_idx)){
-    fatal("usage: %s [CcFf][-r name][-u uid] <cmd><args>...\n"
+    fatal("usage: %s [CcFf][-r name][-u uid][-z archive] <cmd><args>...\n"
 	  "\t-C\tturn on CPU usage tracing (default = on)\n"
 	  "\t-c\tturn off CPU usage tracing (default = on)\n"	  
 	  "\t-F\tturn on kernel scheduler tracing (default = on)\n"
 	  "\t-f\tturn off kernel scheduler tracing (default = on)\n"
 	  "\t-r\tfilter for name of process tree root\n"
-	  "\t-u\trun <cmd> as user <uid>\n",argv[0]);
+	  "\t-u\trun <cmd> as user <uid>\n",
+	  "\t-z\tcreate zipped <archive> of results\n",
+	  argv[0]);
   }
 
   if (missing_command){
@@ -221,9 +234,34 @@ int main(int argc,char *const argv[],char *const envp[]){
 
   finalize_process_tree();
   if (rflag) basetime = find_first_process_time(rvalue);
-  if (fflag)
-    print_all_process_trees(basetime,rvalue);
-  if (cflag)
-    print_cpustatus(basetime);
+  if (fflag && !zflag)
+    print_all_process_trees(outfile,basetime,rvalue);
+
+  if (cflag && !zflag)
+    print_cpustatus();
+
+  if (zflag){
+    FILE *fp;
+    char buffer[1024],cmd[1024];
+    char basezvalue[1024];
+    char tmpdir[] = "/tmp/wspy.XXXXXX";
+    char *newdir = mkdtemp(tmpdir);
+    char *basez;
+    status = chdir(newdir);
+    fp = fopen("processtree.txt","w");
+    if (fp) print_all_process_trees(fp,basetime,rvalue);
+    fclose(fp);
+    print_cpustatus_files();
+
+    strcpy(basezvalue,zvalue);
+    basez = basename(basezvalue);
+    
+    snprintf(cmd,sizeof(cmd),"zip -m %s *",basez);
+    system(cmd);
+    chdir(original_dir);
+    snprintf(cmd,sizeof(cmd),"mv %s/%s* %s",tmpdir,basez,zvalue);
+    system(cmd);    
+    rmdir(tmpdir);
+  }
   return 0;
 }

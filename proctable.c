@@ -62,36 +62,36 @@ procinfo *reverse_siblings(procinfo *p){
   return new_p;
 }
 
-void print_process_tree(procinfo *pinfo,int level,double basetime){
+void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
   int i;
   double elapsed = elapsed_time(pinfo);
   procinfo *child;
   if (pinfo == NULL) return;
   for (i=0;i<level;i++){
-    fprintf(outfile,"  ");
+    fprintf(output,"  ");
   }
-  fprintf(outfile,"[%d] cpu=%d elapsed=%5.2f",pinfo->pid,pinfo->cpu,elapsed);
+  fprintf(output,"[%d] cpu=%d elapsed=%5.2f",pinfo->pid,pinfo->cpu,elapsed);
   if ((pinfo->time_fork.tv_sec + pinfo->time_fork.tv_usec) &&
       (pinfo->time_exit.tv_sec + pinfo->time_exit.tv_usec)){
-    fprintf(outfile," start=%5.2f finish=%5.2f",
+    fprintf(output," start=%5.2f finish=%5.2f",
 	    (pinfo->time_fork.tv_sec + pinfo->time_fork.tv_usec / 1000000.0)-basetime,
 	    (pinfo->time_exit.tv_sec + pinfo->time_exit.tv_usec / 1000000.0)-basetime);
   }
   if (pinfo->filename)
-    fprintf(outfile," %s",pinfo->filename);
+    fprintf(output," %s",pinfo->filename);
   else
-    fprintf(outfile," %s",pinfo->comm);
-  fprintf(outfile,"\n");
+    fprintf(output," %s",pinfo->comm);
+  fprintf(output,"\n");
   pinfo->printed = 1;
   for (child = pinfo->child;child;child = child->sibling){
-    print_process_tree(child,level+1,basetime);
+    print_process_tree(output,child,level+1,basetime);
   }
 }
 
 // print all the rooted trees
 //    if "name" != NULL, then print roots starting at name
 //    otherwise print general roots
-void print_all_process_trees(double basetime,char *name){
+void print_all_process_trees(FILE *output,double basetime,char *name){
   int i;
   struct proctable_hash_entry *hash;
   for (i=0;i<HASHBUCKETS;i++){
@@ -102,20 +102,20 @@ void print_all_process_trees(double basetime,char *name){
 	if (hash->pinfo->filename){
 	  if (!strcmp(hash->pinfo->filename,name) &&
 	      !hash->pinfo->printed){
-	    print_process_tree(hash->pinfo,0,basetime);
+	    print_process_tree(output,hash->pinfo,0,basetime);
 	  }
 	} else if (hash->pinfo->comm){
 	  if (!strcmp(hash->pinfo->comm,name) &&
 	      ((hash->pinfo->parent == NULL) ||
 	       (hash->pinfo->parent->comm == NULL) ||
 	       (strcmp(hash->pinfo->parent->comm,name) != 0))){
-	    print_process_tree(hash->pinfo,0,basetime);	    
+	    print_process_tree(output,hash->pinfo,0,basetime);	    
 	  }
 	}
       } else {
 	// only print top level trees
 	if (hash->pinfo->parent) continue;
-	print_process_tree(hash->pinfo,0,basetime);
+	print_process_tree(output,hash->pinfo,0,basetime);
       }
     }
   }

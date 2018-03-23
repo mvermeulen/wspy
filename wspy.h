@@ -23,8 +23,8 @@ struct process_info {
 };
 typedef struct process_info procinfo;
 procinfo *lookup_process_info(pid_t pid,int insert);
-void print_process_tree(procinfo *pinfo,int level,double basetime);
-void print_all_process_trees(double basetime,char *name);
+void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime);
+void print_all_process_trees(FILE *output,double basetime,char *name);
 void finalize_process_tree(void);
 double find_first_process_time(char *name);
 
@@ -39,4 +39,5 @@ void *timer_start(void *arg);
 /* cpustatus.c */
 void init_cpustatus(void);
 void read_cpustatus(double time);
-void print_cpustatus(double basetime);
+void print_cpustatus(void);
+void print_cpustatus_files(void);
