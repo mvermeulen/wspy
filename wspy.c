@@ -22,6 +22,7 @@ pid_t child_pid = 0;
 procinfo *child_procinfo = NULL;
 pthread_t ktrace_thread;
 pthread_t timer_thread;
+int dflag = 0;
 int cflag = 1;
 int fflag = 1;
 int rflag = 0;
@@ -40,13 +41,18 @@ int parse_options(int argc,char *const argv[],int *program_idx){
   FILE *fp;
   struct passwd *pwd;
   outfile = stdout;
-  while ((opt = getopt(argc,argv,"+CcFfo:r:u:z:?")) != -1){
+  while ((opt = getopt(argc,argv,"+CcdFfo:r:u:z:?")) != -1){
     switch (opt){
     case 'c':
       cflag = 0;
       break;
     case 'C':
       cflag = 1;
+      break;
+    case 'd':
+      dflag++;
+      if (dflag>1) set_error_level(ERROR_LEVEL_DEBUG2);
+      else set_error_level(ERROR_LEVEL_DEBUG);
       break;
     case 'f':
       fflag = 0;
@@ -157,9 +163,10 @@ int main(int argc,char *const argv[],char *const envp[]){
   initialize_error_subsystem(argv[0],"-");
 
   if (parse_options(argc,argv,&command_idx)){
-    fatal("usage: %s [CcFf][-r name][-u uid][-z archive] <cmd><args>...\n"
+    fatal("usage: %s [CcdFf][-r name][-u uid][-z archive] <cmd><args>...\n"
 	  "\t-C\tturn on CPU usage tracing (default = on)\n"
-	  "\t-c\tturn off CPU usage tracing (default = on)\n"	  
+	  "\t-c\tturn off CPU usage tracing (default = on)\n"
+	  "\t-d\tinternal debugging flag\n"
 	  "\t-F\tturn on kernel scheduler tracing (default = on)\n"
 	  "\t-f\tturn off kernel scheduler tracing (default = on)\n"
 	  "\t-r\tfilter for name of process tree root\n"

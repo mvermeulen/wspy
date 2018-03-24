@@ -17,6 +17,8 @@ procinfo *lookup_process_info(pid_t pid,int insert){
   struct proctable_hash_entry *hentry;
   procinfo *pinfo,*ppinfo,*pinfo_sibling;
   for (hentry = process_table[pid%HASHBUCKETS];hentry != NULL;hentry = hentry->next){
+    // pid's can wrap around, so skip processes if they've exited
+    if (hentry->pinfo->exited) continue;
     if (hentry->pinfo->pid == pid) return hentry->pinfo;
   }
   // not found
@@ -67,6 +69,7 @@ void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
   double elapsed = elapsed_time(pinfo);
   procinfo *child;
   if (pinfo == NULL) return;
+  if (level > 100) return;
   for (i=0;i<level;i++){
     fprintf(output,"  ");
   }
@@ -81,6 +84,7 @@ void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
     fprintf(output," %s",pinfo->filename);
   else
     fprintf(output," %s",pinfo->comm);
+  fprintf(output," pcount=%d",pinfo->pcount);
   fprintf(output,"\n");
   pinfo->printed = 1;
   for (child = pinfo->child;child;child = child->sibling){
@@ -121,13 +125,17 @@ void print_all_process_trees(FILE *output,double basetime,char *name){
   }
 }
 
+int count_processes(procinfo *pinfo);
 // make remaining tweaks before printing, e.g. reverse sibling order
 void finalize_process_tree(void){
-  // fix the sibling orders
   int i;
   struct proctable_hash_entry *hash;
+
+  // fix the sibling orders
   for (i=0;i<HASHBUCKETS;i++){
     for (hash = process_table[i];hash;hash = hash->next){
+      // update the counts
+      count_processes(hash->pinfo);
       // fix up any children
       if (hash->pinfo->child && !hash->pinfo->sibling_order){
 	hash->pinfo->child = reverse_siblings(hash->pinfo->child);
@@ -135,6 +143,20 @@ void finalize_process_tree(void){
       }
     }
   }
+}
+
+// count # of children of a process (including self)
+int count_processes(procinfo *pinfo){
+  int count;
+  procinfo *child;
+  if (pinfo->pcount == 0){
+    count = 1;
+    for (child = pinfo->child;child;child = child->sibling){
+      count += count_processes(child);
+    }
+    pinfo->pcount = count;
+  }
+  return pinfo->pcount;
 }
 
 // find and return the start time of first process that matches name

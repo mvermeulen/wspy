@@ -65,8 +65,6 @@ static void ktrace_enable_tracing(void){
   ktrace_set_variable("events/sched/sched_process_exec/enable","1\n");
   ktrace_set_variable("events/sched/sched_process_exit/enable","1\n");
   ktrace_set_variable("events/sched/sched_process_fork/enable","1\n");
-  //  ktrace_set_variable("events/power/cpu_frequency/enable","1\n");
-  //  ktrace_set_variable("events/thermal/thermal_temperature/enable","1\n");
   ktrace_set_variable("tracing_on","1\n");  
 }
 
@@ -75,8 +73,6 @@ static void ktrace_disable_tracing(void){
   chdir(TRACEFS);
   ktrace_set_variable("tracing_on","0\n");
   ktrace_set_variable("events/sched/enable","0\n");
-  //  ktrace_set_variable("events/power/enable","0\n");
-  //  ktrace_set_variable("events/thermal/enable","0\n");
 }
 
 static void ktrace_parse_line(char *line){
@@ -94,6 +90,7 @@ static void ktrace_parse_line(char *line){
   static int position_rbracket = 0;
   static int position_timestamp = 0;
   static int position_function = 0;
+  debug2("line: %s",line);
   // not clear if this happens in the pipe, but just in case
   if (line[0] == '#') return;
   // verify that there is still a ":" at the function line
@@ -141,10 +138,8 @@ static void ktrace_parse_line(char *line){
     child_pinfo->sibling = pinfo->child;
     pinfo->child = child_pinfo;
 
-#if DEBUG
-    fprintf(outfile,"fork(pid=%d,cpu=%d,time=%d\056%d,child_pid=%d)\n",
-	    npid,num_cpu,num_secs,num_usecs,child_pid);
-#endif
+    debug("fork(pid=%d,cpu=%d,time=%d\056%d,child_pid=%d)\n",
+	  npid,num_cpu,num_secs,num_usecs,child_pid);
   } else if (!strncmp(function,"sched_process_exec",18)){
     char *filename = "";
     p = strstr(&function[20],"filename=");
@@ -158,20 +153,16 @@ static void ktrace_parse_line(char *line){
     pinfo->time_exec.tv_usec = num_usecs;
     pinfo->filename = strndup(filename,len);
 
-#if DEBUG
-    fprintf(outfile,"exec(pid=%d,cpu=%d,time=%d\056%d,filename=%.*s)\n",
-	    npid,num_cpu,num_secs,num_usecs,len,filename);
-#endif
+    debug("exec(pid=%d,cpu=%d,time=%d\056%d,filename=%.*s)\n",
+	  npid,num_cpu,num_secs,num_usecs,len,filename);
   } else if (!strncmp(function,"sched_process_exit",18)){
     pinfo->cpu = num_cpu;
     pinfo->time_exit.tv_sec = num_secs;
     pinfo->time_exit.tv_usec = num_usecs;
     pinfo->exited = 1;
 
-#if DEBUG
-    fprintf(outfile,"exit(pid=%d,cpu=%d,time=%d\056%d)\n",
-	   npid,num_cpu,num_secs,num_usecs);
-#endif
+    debug("exit(pid=%d,cpu=%d,time=%d\056%d)\n",
+	  npid,num_cpu,num_secs,num_usecs);
   } else {
     warning("unknown trace line\n");
     fputs(line,stderr);

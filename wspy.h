@@ -14,6 +14,7 @@ struct process_info {
   unsigned int sibling_order : 1;
   char *comm;
   char *filename;
+  int pcount;
   struct timeval time_fork;
   struct timeval time_exec;
   struct timeval time_exit;  
