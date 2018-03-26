@@ -1,29 +1,27 @@
 CC=gcc
 CFLAGS=-g
+PROG = wspy
+SRCS = wspy.c ktrace.c proctable.c timer.c cpustatus.c error.c
+OBJS = wspy.o ktrace.o proctable.o timer.o cpustatus.o error.o
+LIBS = -lpthread -lm
 
-wspy:	wspy.o ktrace.o proctable.o timer.o cpustatus.o error.o
-	$(CC) -o wspy $(CFLAGS) wspy.o ktrace.o proctable.o timer.o cpustatus.o error.o -lpthread -lm
+wspy:	$(OBJS)
+	$(CC) -o $(PROG) $(CFLAGS) wspy.o $(OBJS) $(LIBS)
 
-wspy.o:	wspy.c wspy.h
-	$(CC) -c $(CFLAGS) wspy.c
-
-cpustatus.o:	cpustatus.c wspy.h error.h
-	$(CC) -c $(CFLAGS) cpustatus.c
-
-error.o:	error.c error.h
-	$(CC) -c $(CFLAGS) error.c
-
-proctable.o:	proctable.c wspy.h error.h
-	$(CC) -c $(CFLAGS) proctable.c
-
-ktrace.o:	ktrace.c wspy.h error.h
-	$(CC) -c $(CFLAGS) ktrace.c
-
-timer.o:	timer.c wspy.h error.h
-	$(CC) -c $(CFLAGS) timer.c
+depend:
+	-makedepend -Y -- $(CFLAGS) -- $(SRCS)
 
 clean:
-	-rm *~ *.o
+	-rm *~ *.o *.bak
 
 clobber:	clean
 	-rm wspy
+
+# DO NOT DELETE
+
+wspy.o: wspy.h error.h
+ktrace.o: wspy.h error.h
+proctable.o: wspy.h error.h
+timer.o: wspy.h error.h
+cpustatus.o: wspy.h error.h
+error.o: error.h
