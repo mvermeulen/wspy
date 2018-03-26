@@ -25,6 +25,7 @@ pthread_t timer_thread;
 int dflag = 0;
 int cflag = 1;
 int fflag = 1;
+int pflag = 1;
 int rflag = 0;
 int uflag = 0;
 int uvalue = 0;
@@ -41,7 +42,7 @@ int parse_options(int argc,char *const argv[],int *program_idx){
   FILE *fp;
   struct passwd *pwd;
   outfile = stdout;
-  while ((opt = getopt(argc,argv,"+CcdFfo:r:u:z:?")) != -1){
+  while ((opt = getopt(argc,argv,"+CcdFfo:Ppr:u:z:?")) != -1){
     switch (opt){
     case 'c':
       cflag = 0;
@@ -66,6 +67,12 @@ int parse_options(int argc,char *const argv[],int *program_idx){
       } else {
 	outfile = fp;
       }
+      break;
+    case 'p':
+      pflag = 0;
+      break;
+    case 'P':
+      pflag = 1;
       break;
     case 'r':
       rflag = 1;
@@ -169,6 +176,8 @@ int main(int argc,char *const argv[],char *const envp[]){
 	  "\t-d\tinternal debugging flag\n"
 	  "\t-F\tturn on kernel scheduler tracing (default = on)\n"
 	  "\t-f\tturn off kernel scheduler tracing (default = on)\n"
+	  "\t-P\tturn on performance counters (default = on)\n"
+	  "\t-p\tturn off performance counters (default = on)\n"	  
 	  "\t-r\tfilter for name of process tree root\n"
 	  "\t-u\trun <cmd> as user <uid>\n",
 	  "\t-z\tcreate zipped <archive> of results\n",
@@ -192,9 +201,16 @@ int main(int argc,char *const argv[],char *const envp[]){
     // kernel tracing
     pthread_create(&ktrace_thread,NULL,ktrace_start,&child_pid);
   }
+
   if (cflag){
-    double start_time = -5.0;
     init_cpustatus();
+  }
+  if (pflag){
+    init_perf_counters();
+  }
+  
+  if (cflag || pflag){
+    double start_time = -5.0;
     // periodic timer
     pthread_create(&timer_thread,NULL,timer_start,&start_time);
   }

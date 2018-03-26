@@ -3,6 +3,9 @@
 
 /* wspy.c */
 FILE *outfile;
+int pflag;
+int cflag;
+int fflag;
 
 /* procinfo.c */
 struct process_info {
@@ -42,3 +45,7 @@ void init_cpustatus(void);
 void read_cpustatus(double time);
 void print_cpustatus(void);
 void print_cpustatus_files(void);
+
+/* pcounter.c */
+void init_perf_counters(void);
+void read_perf_counters(double time);
