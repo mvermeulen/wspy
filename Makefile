@@ -6,7 +6,7 @@ OBJS = wspy.o ktrace.o proctable.o timer.o cpustatus.o error.o
 LIBS = -lpthread -lm
 
 wspy:	$(OBJS)
-	$(CC) -o $(PROG) $(CFLAGS) wspy.o $(OBJS) $(LIBS)
+	$(CC) -o $(PROG) $(CFLAGS) $(OBJS) $(LIBS)
 
 depend:
 	-makedepend -Y -- $(CFLAGS) -- $(SRCS)
