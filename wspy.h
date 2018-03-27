@@ -49,3 +49,5 @@ void print_cpustatus_files(void);
 /* pcounter.c */
 void init_perf_counters(void);
 void read_perf_counters(double time);
+void print_perf_counters(void);
+void print_perf_counter_files(void);

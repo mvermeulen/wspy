@@ -93,7 +93,7 @@ void init_perf_counters(){
       pe.disabled = 1;
       pe.exclude_kernel = 0;
       pe.exclude_hv = 0;
-      pe.exclude_idle = 1;
+      pe.exclude_idle = 0;
       pi = calloc(1,sizeof(struct perfctr_info));
       pi->corenum = i;
       pi->pconfig = default_config[confignum].counter[j];
@@ -136,7 +136,92 @@ void read_perf_counters(double time){
   fprintf(perfctrfile,"time %f\n",time);
   for (pi = performance_counters;pi;pi = pi->next){
     status = read(pi->fd,&pi->value,sizeof(pi->value));
-    fprintf(perfctrfile,"%s_%d %ld\n",pi->pconfig.label,pi->corenum,pi->value);
-    debug("%s_%d %ld\n",pi->pconfig.label,pi->corenum,pi->value);
+    fprintf(perfctrfile,"%d_%s %ld\n",pi->corenum,pi->pconfig.label,pi->value);
+    debug("%d_%s %ld\n",pi->corenum,pi->pconfig.label,pi->value);
+  }
+}
+
+void print_counter_info(int num,char *name,char *delim,FILE *output){
+  int i;
+  char *p;
+  struct perfctr_info *pi;
+  struct counter_values { long value[MAX_COUNTERS_PER_CORE]; } prev, current;
+  int timeseen = 0;
+  int len = strlen(name);
+  char buffer[1024];
+  double elapsed;
+  int colnum;
+
+  // print header row
+  fprintf(outfile,"core%d",num);
+  for (pi = performance_counters;pi;pi = pi->next){
+    if (pi->corenum != num) continue;
+    fprintf(outfile,"%s%s",delim,pi->pconfig.label);
+  }
+  fprintf(outfile,"\n");
+
+  // print values
+  rewind(perfctrfile);
+  colnum = 0;
+  while (fgets(buffer,sizeof(buffer),perfctrfile) != NULL){
+    if (!strncmp(buffer,"time",4)){
+      timeseen++;
+      if (timeseen > 2){
+	// When we've seen "time" twice, we've seen all our first counters
+	// dump the previous values
+	fprintf(outfile,"%-10.2f",elapsed);
+	for (i=0;i<colnum;i++){
+	  fprintf(outfile,"%s%ld",delim,(current.value[i]-prev.value[i]));
+	}
+	fprintf(outfile,"\n");
+      }
+      // update to start collecting the next
+      sscanf(buffer,"time %lf",&elapsed);
+      colnum = 0;
+      prev = current;
+    }
+    if (!strncmp(buffer,name,len)){
+      debug("buffer: %s",buffer);
+      p = strchr(buffer,' ');
+      if (p){
+	sscanf(p+1,"%ld",&current.value[colnum]);
+      } else {
+	current.value[colnum] = 0;
+      }
+      colnum++;
+    }
+  }
+  // dump the last row
+  fprintf(outfile,"%-10.2f",elapsed);
+  for (i=0;i<colnum;i++){
+    fprintf(outfile,"%s%ld",delim,(current.value[i]-prev.value[i]));
+  }
+  fprintf(outfile,"\n");  
+}
+
+void print_perf_counters(void){
+  int i;
+  char perfbuf[16];
+
+  for (i=0;i<num_procs;i++){
+    sprintf(perfbuf,"%d_",i);
+    print_counter_info(i,perfbuf,"\t",outfile);
+  }
+}
+
+void print_perf_counter_files(void){
+  int i;
+  char perfbuf[16];
+  char perffile[32];
+  FILE *fp;
+
+  for (i=0;i<num_procs;i++){
+    sprintf(perfbuf,"%d_",i);
+    sprintf(perffile,"perf%d.csv",i);
+    fp = fopen(perffile,"w");
+    if (fp){
+      print_counter_info(i,perfbuf,",",fp);
+    }
+    fclose(fp);
   }
 }

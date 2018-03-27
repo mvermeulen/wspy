@@ -232,9 +232,6 @@ int main(int argc,char *const argv[],char *const envp[]){
     notice("child signaled %d\n",WTERMSIG(status));
   }
 
-  // wait 5 seconds to allow subsystems to start
-  sleep(5);
-
   if ((child_procinfo->time_fork.tv_sec == 0) &&
       (child_procinfo->time_fork.tv_usec == 0)){
     // never set, use exec instead
@@ -248,11 +245,12 @@ int main(int argc,char *const argv[],char *const envp[]){
     pthread_join(ktrace_thread,NULL);
   }
 
-  if (cflag){
+  if (cflag || pflag){
     write(timer_cmd_pipe[1],"quit\n",5);
     pthread_join(timer_thread,NULL);
   }
 
+  // run 5 seconds to let things stop
   sleep(5);
 
   finalize_process_tree();
@@ -262,6 +260,9 @@ int main(int argc,char *const argv[],char *const envp[]){
 
   if (cflag && !zflag)
     print_cpustatus();
+
+  if (pflag && !zflag)
+    print_perf_counters();
 
   if (zflag){
     FILE *fp;
@@ -274,7 +275,8 @@ int main(int argc,char *const argv[],char *const envp[]){
     fp = fopen("processtree.txt","w");
     if (fp) print_all_process_trees(fp,basetime,rvalue);
     fclose(fp);
-    print_cpustatus_files();
+    if (cflag) print_cpustatus_files();
+    if (pflag) print_perf_counter_files();
 
     strcpy(basezvalue,zvalue);
     basez = basename(basezvalue);
