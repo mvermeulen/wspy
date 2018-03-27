@@ -42,8 +42,12 @@ struct core_perf_config {
   { 2, 4,
     {{ "inst", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS },
      { "cycle", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES },
-     { "stallfe", PERF_TYPE_HARDWARE, PERF_COUNT_HW_STALLED_CYCLES_FRONTEND },
-     { "stallbe", PERF_TYPE_HARDWARE, PERF_COUNT_HW_STALLED_CYCLES_BACKEND }}},
+     { "dtlbmiss", PERF_TYPE_HW_CACHE,
+       (PERF_COUNT_HW_CACHE_DTLB)|(PERF_COUNT_HW_CACHE_OP_READ<<8)|
+       (PERF_COUNT_HW_CACHE_RESULT_MISS<<16) },
+     { "itlbmiss", PERF_TYPE_HW_CACHE,
+       (PERF_COUNT_HW_CACHE_ITLB)|(PERF_COUNT_HW_CACHE_OP_READ<<8)|
+       (PERF_COUNT_HW_CACHE_RESULT_MISS<<16) }}},     
   { 3, 4,
     {{ "inst", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS },
      { "cycle", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES },
@@ -93,7 +97,7 @@ void init_perf_counters(){
       pe.disabled = 1;
       pe.exclude_kernel = 0;
       pe.exclude_hv = 0;
-      pe.exclude_idle = 0;
+      pe.exclude_idle = 1;
       pi = calloc(1,sizeof(struct perfctr_info));
       pi->corenum = i;
       pi->pconfig = default_config[confignum].counter[j];
@@ -153,12 +157,12 @@ void print_counter_info(int num,char *name,char *delim,FILE *output){
   int colnum;
 
   // print header row
-  fprintf(outfile,"core%d",num);
+  fprintf(output,"core%d",num);
   for (pi = performance_counters;pi;pi = pi->next){
     if (pi->corenum != num) continue;
-    fprintf(outfile,"%s%s",delim,pi->pconfig.label);
+    fprintf(output,"%s%s",delim,pi->pconfig.label);
   }
-  fprintf(outfile,"\n");
+  fprintf(output,"\n");
 
   // print values
   rewind(perfctrfile);
@@ -169,11 +173,11 @@ void print_counter_info(int num,char *name,char *delim,FILE *output){
       if (timeseen > 2){
 	// When we've seen "time" twice, we've seen all our first counters
 	// dump the previous values
-	fprintf(outfile,"%-10.2f",elapsed);
+	fprintf(output,"%-10.2f",elapsed);
 	for (i=0;i<colnum;i++){
-	  fprintf(outfile,"%s%ld",delim,(current.value[i]-prev.value[i]));
+	  fprintf(output,"%s%ld",delim,(current.value[i]-prev.value[i]));
 	}
-	fprintf(outfile,"\n");
+	fprintf(output,"\n");
       }
       // update to start collecting the next
       sscanf(buffer,"time %lf",&elapsed);
@@ -192,11 +196,11 @@ void print_counter_info(int num,char *name,char *delim,FILE *output){
     }
   }
   // dump the last row
-  fprintf(outfile,"%-10.2f",elapsed);
+  fprintf(output,"%-10.2f",elapsed);
   for (i=0;i<colnum;i++){
-    fprintf(outfile,"%s%ld",delim,(current.value[i]-prev.value[i]));
+    fprintf(output,"%s%ld",delim,(current.value[i]-prev.value[i]));
   }
-  fprintf(outfile,"\n");  
+  fprintf(output,"\n");  
 }
 
 void print_perf_counters(void){
