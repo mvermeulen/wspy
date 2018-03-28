@@ -32,16 +32,18 @@ int uvalue = 0;
 int zflag = 0;
 char *rvalue = NULL;
 char *zvalue = NULL;
-int missing_command = 0;
+int command_line_argc = 0;
+char **command_line_argv = NULL;
 char *default_command[] = { "sleep", "30", NULL };
 char original_dir[1024];
 
-int parse_options(int argc,char *const argv[],int *program_idx){
+int parse_options(int argc,char *const argv[]){
   int opt;
   int i;
   FILE *fp;
   struct passwd *pwd;
   outfile = stdout;
+  optind = 1; // reset optind so this function can be called more than once
   while ((opt = getopt(argc,argv,"+CcdFfo:Ppr:u:z:?")) != -1){
     switch (opt){
     case 'c':
@@ -107,15 +109,25 @@ int parse_options(int argc,char *const argv[],int *program_idx){
       break;
     }
   }
-  if (optind >= argc){
-    warning("missing command, assuming");
-    for (i=0;i<sizeof(default_command)/sizeof(default_command[0])-1;i++){
-      notice(" %s",default_command[i]);
+  if (argc > optind){
+    if (command_line_argc != 0){
+      warning("command line given twice\n");
+      notice_noprogram("\toriginal:");
+      for (i=0;i<command_line_argc;i++){
+	notice_noprogram(" %s",command_line_argv[i]);
+      }
+      notice_noprogram("\n");
+      notice_noprogram("\tnew     :");
+      for (i=optind;i<argc;i++){
+	notice_noprogram(" %s",argv[i]);
+      }
+      notice_noprogram("\n");      
     }
-    notice("\n");
-    missing_command = 1;
-  } else {
-    *program_idx = optind;
+    command_line_argv = calloc(argc-optind+1,sizeof(char *));
+    command_line_argc = argc - optind;
+    for (i=0;i<command_line_argc;i++){
+      command_line_argv[i] = argv[i+optind];
+    }
   }
 
   return 0;
@@ -123,7 +135,7 @@ int parse_options(int argc,char *const argv[],int *program_idx){
 
 #define PATHLEN 1024
 int child_pipe[2];
-int setup_child_process(int argc,char *const argv[],char *const envp[]){
+int setup_child_process(int argc,char **argv,char *const envp[]){
   pid_t child;
   char pathbuf[PATHLEN];
   char *path,*p;
@@ -159,8 +171,8 @@ int setup_child_process(int argc,char *const argv[],char *const envp[]){
 }
 
 int main(int argc,char *const argv[],char *const envp[]){
-  int command_idx = 0;
   int status;
+  int i;
   double basetime = 0;
   pid_t child;
   sigset_t signal_mask;
@@ -169,7 +181,9 @@ int main(int argc,char *const argv[],char *const envp[]){
   
   initialize_error_subsystem(argv[0],"-");
 
-  if (parse_options(argc,argv,&command_idx)){
+  read_config_file();
+
+  if (parse_options(argc,argv)){
     fatal("usage: %s [CcdFf][-r name][-u uid][-z archive] <cmd><args>...\n"
 	  "\t-C\tturn on CPU usage tracing (default = on)\n"
 	  "\t-c\tturn off CPU usage tracing (default = on)\n"
@@ -184,14 +198,19 @@ int main(int argc,char *const argv[],char *const envp[]){
 	  argv[0]);
   }
 
-  if (missing_command){
-    if (setup_child_process(2,default_command,envp)){
-      fatal("unable to launch %s\n",default_command[0]);
-    }    
-  } else {
-    if (setup_child_process(argc-command_idx,&argv[command_idx],envp)){
-      fatal("unable to launch %s\n",argv[command_idx]);
+  if (command_line_argv == NULL){
+    command_line_argv = default_command;
+    command_line_argc = sizeof(default_command)/sizeof(default_command[0]) - 1;
+    warning("missing command line\n");
+    notice_noprogram("\tdefault:");
+    for (i=0;i<command_line_argc;i++){
+      notice_noprogram(" %s",command_line_argv[i]);
     }
+    notice_noprogram("\n");
+  }
+
+  if (setup_child_process(command_line_argc,command_line_argv,envp)){
+    fatal("unable to launch %s\n",command_line_argv[0]);
   }
 
   // let ^C go to children
@@ -222,7 +241,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   // let the child proceed
   write(child_pipe[1],"start\n",6);
 
-  notice("running until %s completes\n",argv[command_idx]);
+  notice("running until %s completes\n",command_line_argv[0]);
   child = waitpid(child_pid,&status,0);
   if (WIFEXITED(status)){
     if (WEXITSTATUS(status) != 0){

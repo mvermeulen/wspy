@@ -6,6 +6,7 @@ FILE *outfile;
 int pflag;
 int cflag;
 int fflag;
+int parse_options(int argc,char *const argv[]);
 
 /* procinfo.c */
 struct process_info {
@@ -51,3 +52,6 @@ void init_perf_counters(void);
 void read_perf_counters(double time);
 void print_perf_counters(void);
 void print_perf_counter_files(void);
+
+/* config.c */
+void read_config_file(void);

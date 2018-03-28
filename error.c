@@ -81,6 +81,16 @@ void notice(char *message,...){
   }
 }
 
+void notice_noprogram(char *message,...){
+  va_list ap;
+  if (elevel >= ERROR_LEVEL_NOTICE){
+    if (!initialized) initialize_error_subsystem(NULL,"-");
+    va_start(ap,message);
+    //    if (program != NULL) fprintf(error_stream,"%s: ",program);
+    vfprintf(error_stream,message,ap);
+    va_end(ap);
+  }
+}
 
 void debug(char *message,...){
   va_list ap;
