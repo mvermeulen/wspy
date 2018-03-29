@@ -85,6 +85,7 @@ static void timer_loop(void){
 	read(timer_fd,&expirations,sizeof(expirations));
 	now = now + 1;
 	if (flag_cpustats) read_cpustats(now);
+	if (flag_diskstats) read_diskstats(now);
 	if (flag_perfctr) read_perf_counters(now);
       }
     }

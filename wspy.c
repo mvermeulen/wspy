@@ -169,6 +169,9 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (flag_cpustats && !flag_zip)
     print_cpustats();
 
+  if (flag_diskstats && !flag_zip)
+    print_diskstats();
+
   if (flag_perfctr && !flag_zip)
     print_perf_counters();
 
@@ -184,6 +187,7 @@ int main(int argc,char *const argv[],char *const envp[]){
     if (fp) print_all_process_trees(fp,basetime,command_name);
     fclose(fp);
     if (flag_cpustats) print_cpustats_files();
+    if (flag_diskstats) print_diskstats_files();
     if (flag_perfctr) print_perf_counter_files();
 
     strcpy(basezvalue,zip_archive_name);

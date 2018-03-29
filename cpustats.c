@@ -48,6 +48,7 @@ void print_cpuinfo(char *name,char *delim,FILE *output){
   while (fgets(buffer,sizeof(buffer),cpufile) != NULL){
     if (!strncmp(buffer,"time",4)){
       sscanf(buffer,"time %lf",&elapsed);
+      continue;
     }
     if (!strncmp(buffer,name,len)){
       last_st = curr_st;
@@ -111,8 +112,8 @@ void print_cpustats_files(void){
     fp = fopen(cpufile,"w");
     if (fp){
       print_cpuinfo(cpuname,",",fp);
+      fclose(fp);
     }
-    fclose(fp);
   }
   print_cpustats_gnuplot_file();
 }

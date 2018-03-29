@@ -45,6 +45,9 @@ void print_cpustats_files(void);
 
 /* diskstats.c */
 void init_diskstats(void);
+void read_diskstats(double time);
+void print_diskstats(void);
+void print_diskstats_files(void);
 
 /* memstats.c */
 void init_memstats(void);
