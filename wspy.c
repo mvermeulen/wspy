@@ -81,6 +81,7 @@ int main(int argc,char *const argv[],char *const envp[]){
 	  "\t--memstats, --no-memstats      \tMemory usage tracing from /proc/meminfo\n"
 	  "\t--netstats, --no-netstats      \tNetwork usage tracing from /proc/net/dev\n"
 	  "\t--processtree, --no-processtree\tGenerate process tree from ftrace\n"
+	  "\t--perfcounters, --no-perfcounters\tCollect basic performance counters\n"
 	  "\t--debug, -d                    \tinternal debugging flag\n"
 	  "\t--uid <uid>, -u <uid>          \trun as user\n"
 	  "\t--zip <archive-name>           \tcreate zip archive of results\n"
