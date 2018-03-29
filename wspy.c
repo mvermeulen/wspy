@@ -8,14 +8,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <getopt.h>
 #include <pthread.h>
 #include <math.h>
 #include <errno.h>
 #include <sys/wait.h>
 #include <sys/time.h>
 #include <libgen.h>
-#include <pwd.h>
 #include "wspy.h"
 #include "error.h"
 
@@ -23,128 +21,8 @@ pid_t child_pid = 0;
 procinfo *child_procinfo = NULL;
 pthread_t ktrace_thread;
 pthread_t timer_thread;
-int dflag = 0;
-int cflag = 1;
-int fflag = 1;
-int pflag = 1;
-int rflag = 0;
-int uflag = 0;
-int uvalue = 0;
-int zflag = 0;
-char *rvalue = NULL;
-char *zvalue = NULL;
-int command_line_argc = 0;
-char **command_line_argv = NULL;
 char *default_command[] = { "sleep", "30", NULL };
 char original_dir[1024];
-
-// options processing
-// long options
-int parse_options(int argc,char *const argv[]){
-  int opt;
-  int i;
-  int longidx;
-  FILE *fp;
-  static struct option long_options[] = {
-    { "cpustats",        no_argument, 0, 'C' },
-    { "no-cpustats",     no_argument, 0, 'c' },
-    { "perfcounters",    no_argument, 0, 'P' },
-    { "no-perfcounters", no_argument, 0, 'p' },
-    { "processtree",     no_argument, 0, 'F' },
-    { "no-processtree",  no_argument, 0, 'f' },
-    { 0,                 0,           0, 0   },
-  };  
-  struct passwd *pwd;
-  outfile = stdout;
-  optind = 1; // reset optind so this function can be called more than once
-  while ((opt = getopt_long(argc,argv,"+CcdFfo:Ppr:u:z:?",long_options,NULL)) != -1){
-    switch (opt){
-    case 'c':
-      cflag = 0;
-      break;
-    case 'C':
-      cflag = 1;
-      break;
-    case 'd':
-      dflag++;
-      if (dflag>1) set_error_level(ERROR_LEVEL_DEBUG2);
-      else set_error_level(ERROR_LEVEL_DEBUG);
-      break;
-    case 'f':
-      fflag = 0;
-      break;
-    case 'F':
-      fflag = 1;
-      break;
-    case 'o':
-      if ((fp = fopen(optarg,"a")) == NULL){
-	warning("can not open output file: %s\n",optarg);
-      } else {
-	outfile = fp;
-      }
-      break;
-    case 'p':
-      pflag = 0;
-      break;
-    case 'P':
-      pflag = 1;
-      break;
-    case 'r':
-      rflag = 1;
-      rvalue = strdup(optarg);
-      break;
-    case 'u':
-      uflag = 1;
-      if (strspn(optarg,"0123456789") == strlen(optarg)){
-	uvalue = atoi(optarg);
-	if (uvalue < 0){
-	  error("-u %d is less than 0, ignored\n");
-	  uflag = 0;
-	}
-      } else {
-	pwd = getpwnam(optarg);
-	if (pwd == NULL){
-	  error("-u %s user not found, ignored\n",optarg);
-	  uflag = 0;
-	} else {
-	  uvalue = pwd->pw_uid;
-	}
-      }
-      break;
-    case 'z':
-      zflag = 1;
-      zvalue = strdup(optarg);
-      break;
-    case '?':
-      return 1;
-    default:
-      warning("unknown option: '%c'\n",opt);
-      break;
-    }
-  }
-  if (argc > optind){
-    if (command_line_argc != 0){
-      warning("command line given twice\n");
-      notice_noprogram("\toriginal:");
-      for (i=0;i<command_line_argc;i++){
-	notice_noprogram(" %s",command_line_argv[i]);
-      }
-      notice_noprogram("\n");
-      notice_noprogram("\tnew     :");
-      for (i=optind;i<argc;i++){
-	notice_noprogram(" %s",argv[i]);
-      }
-      notice_noprogram("\n");      
-    }
-    command_line_argv = calloc(argc-optind+1,sizeof(char *));
-    command_line_argc = argc - optind;
-    for (i=0;i<command_line_argc;i++){
-      command_line_argv[i] = argv[i+optind];
-    }
-  }
-
-  return 0;
-}
 
 #define PATHLEN 1024
 int child_pipe[2];
@@ -156,7 +34,7 @@ int setup_child_process(int argc,char **argv,char *const envp[]){
   if (pipe(child_pipe) == -1) fatal("pipe creation failed\n");
   switch(child = fork()){
   case 0:
-    if (uflag) setuid(uvalue);
+    if (flag_set_uid) setuid(uid_value);
     close(child_pipe[1]); // close writing end
     read(child_pipe[0],pathbuf,PATHLEN); // wait until parent has written
     execve(argv[0],argv,envp);
@@ -229,19 +107,19 @@ int main(int argc,char *const argv[],char *const envp[]){
   // let ^C go to children
   signal(SIGINT,SIG_IGN);
 
-  if (fflag){
+  if (flag_require_ftrace){
     // kernel tracing
     pthread_create(&ktrace_thread,NULL,ktrace_start,&child_pid);
   }
 
-  if (cflag){
+  if (flag_cpustats){
     init_cpustatus();
   }
-  if (pflag){
+  if (flag_perfctr){
     init_perf_counters();
   }
   
-  if (cflag || pflag){
+  if (flag_require_timer){
     double start_time = -5.0;
     // periodic timer
     pthread_create(&timer_thread,NULL,timer_start,&start_time);
@@ -272,12 +150,12 @@ int main(int argc,char *const argv[],char *const envp[]){
   }
   basetime = child_procinfo->time_fork.tv_sec + child_procinfo->time_fork.tv_usec / 1000000.0;
 
-  if (fflag){
+  if (flag_require_ftrace){
     write(ktrace_cmd_pipe[1],"quit\n",5);
     pthread_join(ktrace_thread,NULL);
   }
 
-  if (cflag || pflag){
+  if (flag_require_timer){
     write(timer_cmd_pipe[1],"quit\n",5);
     pthread_join(timer_thread,NULL);
   }
@@ -286,17 +164,17 @@ int main(int argc,char *const argv[],char *const envp[]){
   sleep(5);
 
   finalize_process_tree();
-  if (rflag) basetime = find_first_process_time(rvalue);
-  if (fflag && !zflag)
-    print_all_process_trees(outfile,basetime,rvalue);
+  if (flag_cmd) basetime = find_first_process_time(command_name);
+  if (flag_proctree && !flag_zip)
+    print_all_process_trees(outfile,basetime,command_name);
 
-  if (cflag && !zflag)
+  if (flag_cpustats && !flag_zip)
     print_cpustatus();
 
-  if (pflag && !zflag)
+  if (flag_perfctr && !flag_zip)
     print_perf_counters();
 
-  if (zflag){
+  if (flag_zip){
     FILE *fp;
     char buffer[1024],cmd[1024];
     char basezvalue[1024];
@@ -305,18 +183,18 @@ int main(int argc,char *const argv[],char *const envp[]){
     char *basez;
     status = chdir(newdir);
     fp = fopen("processtree.txt","w");
-    if (fp) print_all_process_trees(fp,basetime,rvalue);
+    if (fp) print_all_process_trees(fp,basetime,command_name);
     fclose(fp);
-    if (cflag) print_cpustatus_files();
-    if (pflag) print_perf_counter_files();
+    if (flag_cpustats) print_cpustatus_files();
+    if (flag_perfctr) print_perf_counter_files();
 
-    strcpy(basezvalue,zvalue);
+    strcpy(basezvalue,zip_archive_name);
     basez = basename(basezvalue);
     
     snprintf(cmd,sizeof(cmd),"zip -m %s *",basez);
     system(cmd);
     chdir(original_dir);
-    snprintf(cmd,sizeof(cmd),"mv %s/%s* %s",tmpdir,basez,zvalue);
+    snprintf(cmd,sizeof(cmd),"mv %s/%s* %s",tmpdir,basez,zip_archive_name);
     system(cmd);    
     rmdir(tmpdir);
   }

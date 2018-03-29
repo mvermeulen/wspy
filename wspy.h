@@ -3,10 +3,6 @@
 
 /* wspy.c */
 FILE *outfile;
-int pflag;
-int cflag;
-int fflag;
-int parse_options(int argc,char *const argv[]);
 
 /* procinfo.c */
 struct process_info {
@@ -54,4 +50,19 @@ void print_perf_counters(void);
 void print_perf_counter_files(void);
 
 /* config.c */
+int command_line_argc;
+char **command_line_argv;
+int flag_cmd;
+int flag_cpustats;
+int flag_debug;
+int flag_perfctr;
+int flag_proctree;
+int flag_require_ftrace;
+int flag_require_timer;
+int flag_set_uid;
+int flag_zip;
+int uid_value;
+char *zip_archive_name;
+char *command_name;
 void read_config_file(void);
+int parse_options(int argc,char *const argv[]);
