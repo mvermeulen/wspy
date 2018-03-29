@@ -8,6 +8,7 @@
  *
  * If the first is found, don't look at the second.
  */
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +18,7 @@
 #include "wspy.h"
 #include "error.h"
 
+static int parse_cpumask(char *arg);
 int command_line_argc = 0;
 char **command_line_argv = NULL;
 int flag_set_uid = 0;
@@ -29,6 +31,7 @@ int flag_debug = 0;
 int flag_perfctr = 0;
 int flag_require_ftrace = 0;
 int flag_require_timer = 0;
+int flag_set_cpumask = 0;
 int flag_zip = 0;
 int uid_value;
 char *zip_archive_name = NULL;
@@ -119,6 +122,7 @@ int parse_options(int argc,char *const argv[]){
     { "no-perfcounters", no_argument, 0,       19 },
     { "processtree",     no_argument, 0,       20 },
     { "no-processtree",  no_argument, 0,       21 },
+    { "set-cpumask",     required_argument, 0, 22 },
     { "debug",           no_argument, 0,       'd' },
     { "root",            required_argument, 0, 'r' },
     { "zip",             required_argument, 0, 'z' },
@@ -141,6 +145,12 @@ int parse_options(int argc,char *const argv[]){
     case 19: flag_perfctr = 0;   break;
     case 20: flag_proctree = 1;  break;
     case 21: flag_proctree = 0;  break;
+    case 22: flag_setcpumask = 1;
+      if (parse_cpumask(optarg)){
+	warning("invalid argument to --set-cpumask, ignored\n");
+	flag_setcpumask = 0;
+      }
+      break;
     case 'd':
       flag_debug++;
       if (flag_debug>1) set_error_level(ERROR_LEVEL_DEBUG2);
@@ -216,3 +226,45 @@ int parse_options(int argc,char *const argv[]){
   return 0;
 }
 
+static int parse_cpumask(char *arg){
+  int i;
+  char *buffer = strdup(arg);
+  int start,stop;
+  char *p,*p2;
+  int anyset;
+  cpu_set_t new_mask;
+  CPU_ZERO(&new_mask);
+  p = strtok(buffer,",\n");
+  while (p){
+    if (sscanf(p,"%d",&start) == 1){
+      if ((p2 = strchr(p,'-')) &&
+	  (sscanf(p2+1,"%d",&stop) == 1)){
+	// range
+	for (i=start;i<=stop;i++){
+	  CPU_SET(i,&new_mask);
+	}
+      } else if ((start >= 0) && (start < num_procs)){
+	CPU_SET(start,&new_mask);
+      } else {
+	return 1;
+      }
+    } else {
+      return 1;
+    }
+    p = strtok(NULL,",\n");
+  }
+  free(buffer);
+  anyset = 0;
+  notice("affinity_mask:");
+  for (i=0;i<num_procs;i++){
+    if (CPU_ISSET(i,&new_mask)){
+      notice_noprogram(" %d",i);
+      anyset = 1;
+    }
+  }
+  notice_noprogram("\n");
+  if (anyset){
+    cpumask = new_mask;
+  }
+  else return 1;
+}

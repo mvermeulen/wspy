@@ -6,7 +6,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
-#include <sys/sysinfo.h>
 #include <sys/stat.h>
 #include <libgen.h>
 #include "wspy.h"
@@ -89,7 +88,7 @@ void print_cpustats(void){
   char cpubuf[16];
 
   print_cpuinfo("cpu ","\t",outfile);
-  for (i=0;i<get_nprocs();i++){
+  for (i=0;i<num_procs;i++){
     sprintf(cpubuf,"cpu%d",i);
     print_cpuinfo(cpubuf,"\t",outfile);
   }
@@ -106,7 +105,7 @@ void print_cpustats_files(void){
   }
   fclose(fp);
   
-  for (i=0;i<get_nprocs();i++){
+  for (i=0;i<num_procs;i++){
     sprintf(cpuname,"cpu%d",i);
     sprintf(cpufile,"cpu%d.csv",i);
     fp = fopen(cpufile,"w");
@@ -138,14 +137,14 @@ void print_cpustats_gnuplot_file(void){
     fprintf(fp,"set title 'All CPUs'\n");
     fprintf(fp,"set datafile separator \",\"\n");        
     fprintf(fp,"plot");
-    for (i=0;i<get_nprocs();i++){
+    for (i=0;i<num_procs;i++){
       if (i != 0) fprintf(fp,",");
       fprintf(fp," 'cpu%d.csv' using 1:2 with lines title 'CPU %d'",i,i);
     }
     fprintf(fp,"\n");
     fprintf(fp,"PLOTCMD\n\n");
     
-    for (i=0;i<get_nprocs();i++){
+    for (i=0;i<num_procs;i++){
       fprintf(fp,"gnuplot <<PLOTCMD\n");
       fprintf(fp,"set terminal png\n");
       fprintf(fp,"set output 'cpu%d.png'\n",i);

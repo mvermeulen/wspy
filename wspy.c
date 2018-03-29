@@ -4,6 +4,7 @@
  * This file is the main driver for wspy program, responsible for parsing
  * arguments, starting processes and overall control.
  */
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +14,7 @@
 #include <errno.h>
 #include <sys/wait.h>
 #include <sys/time.h>
+#include <sys/sysinfo.h>
 #include <libgen.h>
 #include "wspy.h"
 #include "error.h"
@@ -23,6 +25,7 @@ pthread_t ktrace_thread;
 pthread_t timer_thread;
 char *default_command[] = { "sleep", "30", NULL };
 char original_dir[1024];
+int num_procs = 0;
 
 #define PATHLEN 1024
 int child_pipe[2];
@@ -35,6 +38,7 @@ int setup_child_process(int argc,char **argv,char *const envp[]){
   switch(child = fork()){
   case 0:
     if (flag_set_uid) setuid(uid_value);
+    if (flag_setcpumask) sched_setaffinity(0,sizeof(cpu_set_t),&cpumask);
     close(child_pipe[1]); // close writing end
     read(child_pipe[0],pathbuf,PATHLEN); // wait until parent has written
     execve(argv[0],argv,envp);
@@ -69,6 +73,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   sigset_t signal_mask;
 
   getcwd(original_dir,sizeof(original_dir));
+  num_procs = get_nprocs();
   
   initialize_error_subsystem(argv[0],"-");
 
@@ -81,9 +86,10 @@ int main(int argc,char *const argv[],char *const envp[]){
 	  "\t--memstats, --no-memstats      \tMemory usage tracing from /proc/meminfo\n"
 	  "\t--netstats, --no-netstats      \tNetwork usage tracing from /proc/net/dev\n"
 	  "\t--processtree, --no-processtree\tGenerate process tree from ftrace\n"
-	  "\t--perfcounters, --no-perfcounters\tCollect basic performance counters\n"
+	  "\t--perfcounters, --no-perfcounters\tCollect basic perf counters\n"
 	  "\t--debug, -d                    \tinternal debugging flag\n"
 	  "\t--uid <uid>, -u <uid>          \trun as user\n"
+	  "\t--set-cpumask <cpulist>        \tbind child to list of cores\n"
 	  "\t--zip <archive-name>           \tcreate zip archive of results\n"
 	  "\t--root <proc>, -r <proc>       \tset name for process tree root\n",
 	  argv[0]);

@@ -1,8 +1,10 @@
 /* wspy.h - header definitions for wspy program */
 #include <sys/types.h>
+#include <sched.h>
 
 /* wspy.c */
 FILE *outfile;
+int num_procs;
 
 /* procinfo.c */
 struct process_info {
@@ -74,9 +76,11 @@ int flag_perfctr;
 int flag_proctree;
 int flag_require_ftrace;
 int flag_require_timer;
+int flag_setcpumask;
 int flag_set_uid;
 int flag_zip;
 int uid_value;
+cpu_set_t cpumask;
 char *zip_archive_name;
 char *command_name;
 void read_config_file(void);
