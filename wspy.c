@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <getopt.h>
 #include <pthread.h>
 #include <math.h>
 #include <errno.h>
@@ -37,14 +38,26 @@ char **command_line_argv = NULL;
 char *default_command[] = { "sleep", "30", NULL };
 char original_dir[1024];
 
+// options processing
+// long options
 int parse_options(int argc,char *const argv[]){
   int opt;
   int i;
+  int longidx;
   FILE *fp;
+  static struct option long_options[] = {
+    { "cpustats",        no_argument, 0, 'C' },
+    { "no-cpustats",     no_argument, 0, 'c' },
+    { "perfcounters",    no_argument, 0, 'P' },
+    { "no-perfcounters", no_argument, 0, 'p' },
+    { "processtree",     no_argument, 0, 'F' },
+    { "no-processtree",  no_argument, 0, 'f' },
+    { 0,                 0,           0, 0   },
+  };  
   struct passwd *pwd;
   outfile = stdout;
   optind = 1; // reset optind so this function can be called more than once
-  while ((opt = getopt(argc,argv,"+CcdFfo:Ppr:u:z:?")) != -1){
+  while ((opt = getopt_long(argc,argv,"+CcdFfo:Ppr:u:z:?",long_options,NULL)) != -1){
     switch (opt){
     case 'c':
       cflag = 0;

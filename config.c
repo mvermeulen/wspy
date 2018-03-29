@@ -45,6 +45,8 @@ FILE *open_config_file(void){
   return NULL;
 }
 
+
+// reads config file and processes commands
 #define MAXARGS 256 // maximum # of saved command line args
 void read_config_file(void){
   char buffer[1024];
