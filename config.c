@@ -22,6 +22,9 @@ char **command_line_argv = NULL;
 int flag_set_uid = 0;
 int flag_cmd = 0;
 int flag_cpustats = 0;
+int flag_diskstats = 0;
+int flag_memstats = 0;
+int flag_netstats = 0;
 int flag_debug = 0;
 int flag_perfctr = 0;
 int flag_require_ftrace = 0;
@@ -104,12 +107,18 @@ int parse_options(int argc,char *const argv[]){
   int longidx;
   FILE *fp;
   static struct option long_options[] = {
-    { "cpustats",        no_argument, 0,       'C' },
-    { "no-cpustats",     no_argument, 0,       'c' },
-    { "perfcounters",    no_argument, 0,       'P' },
-    { "no-perfcounters", no_argument, 0,       'p' },
-    { "processtree",     no_argument, 0,       'F' },
-    { "no-processtree",  no_argument, 0,       'f' },
+    { "cpustats",        no_argument, 0,       10 },
+    { "no-cpustats",     no_argument, 0,       11 },
+    { "diskstats",       no_argument, 0,       12 },
+    { "no-diskstats",    no_argument, 0,       13 },
+    { "memstats",        no_argument, 0,       14 },
+    { "no-memstats",     no_argument, 0,       15 },
+    { "netstats",        no_argument, 0,       16 },
+    { "no-netstats",     no_argument, 0,       17 },    
+    { "perfcounters",    no_argument, 0,       18 },
+    { "no-perfcounters", no_argument, 0,       19 },
+    { "processtree",     no_argument, 0,       20 },
+    { "no-processtree",  no_argument, 0,       21 },
     { "debug",           no_argument, 0,       'd' },
     { "root",            required_argument, 0, 'r' },
     { "zip",             required_argument, 0, 'z' },
@@ -118,24 +127,24 @@ int parse_options(int argc,char *const argv[]){
   struct passwd *pwd;
   outfile = stdout;
   optind = 1; // reset optind so this function can be called more than once
-  while ((opt = getopt_long(argc,argv,"+CcdFfo:Ppr:u:z:?",long_options,NULL)) != -1){
+  while ((opt = getopt_long(argc,argv,"+do:r:u:z:?",long_options,NULL)) != -1){
     switch (opt){
-    case 'c':
-      flag_cpustats = 0;
-      break;
-    case 'C':
-      flag_cpustats = 1;
-      break;
+    case 10: flag_cpustats = 1;  break;
+    case 11: flag_cpustats = 0;  break;
+    case 12: flag_diskstats = 1; break;
+    case 13: flag_diskstats = 0; break;
+    case 14: flag_memstats = 1;  break;
+    case 15: flag_memstats = 0;  break;
+    case 16: flag_netstats = 1;  break;
+    case 17: flag_netstats = 0;  break;
+    case 18: flag_perfctr = 1;   break;
+    case 19: flag_perfctr = 0;   break;
+    case 20: flag_proctree = 1;  break;
+    case 21: flag_proctree = 0;  break;
     case 'd':
       flag_debug++;
       if (flag_debug>1) set_error_level(ERROR_LEVEL_DEBUG2);
       else set_error_level(ERROR_LEVEL_DEBUG);
-      break;
-    case 'f':
-      flag_proctree = 0;
-      break;
-    case 'F':
-      flag_proctree = 1;
       break;
     case 'o':
       if ((fp = fopen(optarg,"a")) == NULL){
@@ -143,12 +152,6 @@ int parse_options(int argc,char *const argv[]){
       } else {
 	outfile = fp;
       }
-      break;
-    case 'p':
-      flag_perfctr = 0;
-      break;
-    case 'P':
-      flag_perfctr = 1;
       break;
     case 'r':
       flag_cmd = 1;

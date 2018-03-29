@@ -75,17 +75,16 @@ int main(int argc,char *const argv[],char *const envp[]){
   read_config_file();
 
   if (parse_options(argc,argv)){
-    fatal("usage: %s [CcdFf][-r name][-u uid][-z archive] <cmd><args>...\n"
-	  "\t-C\tturn on CPU usage tracing (default = on)\n"
-	  "\t-c\tturn off CPU usage tracing (default = on)\n"
-	  "\t-d\tinternal debugging flag\n"
-	  "\t-F\tturn on kernel scheduler tracing (default = on)\n"
-	  "\t-f\tturn off kernel scheduler tracing (default = on)\n"
-	  "\t-P\tturn on performance counters (default = on)\n"
-	  "\t-p\tturn off performance counters (default = on)\n"	  
-	  "\t-r\tfilter for name of process tree root\n"
-	  "\t-u\trun <cmd> as user <uid>\n",
-	  "\t-z\tcreate zipped <archive> of results\n",
+    fatal("usage: %s [options] <cmd><args>...\n"
+	  "\t--cpustats, --no-cpustats      \tCPU usage tracing from /proc/stat\n"
+	  "\t--diskstats,--no-diskstats     \tDisk usage tracing from /proc/diskstats\n"
+	  "\t--memstats, --no-memstats      \tMemory usage tracing from /proc/meminfo\n"
+	  "\t--netstats, --no-netstats      \tNetwork usage tracing from /proc/net/dev\n"
+	  "\t--processtree, --no-processtree\tGenerate process tree from ftrace\n"
+	  "\t--debug, -d                    \tinternal debugging flag\n"
+	  "\t--uid <uid>, -u <uid>          \trun as user\n"
+	  "\t--zip <archive-name>           \tcreate zip archive of results\n"
+	  "\t--root <proc>, -r <proc>       \tset name for process tree root\n",
 	  argv[0]);
   }
 
@@ -112,12 +111,11 @@ int main(int argc,char *const argv[],char *const envp[]){
     pthread_create(&ktrace_thread,NULL,ktrace_start,&child_pid);
   }
 
-  if (flag_cpustats){
-    init_cpustatus();
-  }
-  if (flag_perfctr){
-    init_perf_counters();
-  }
+  if (flag_cpustats){ init_cpustats(); }
+  if (flag_diskstats){ init_diskstats(); }
+  if (flag_memstats){ init_memstats(); }
+  if (flag_netstats){ init_netstats(); }
+  if (flag_perfctr){ init_perf_counters(); }
   
   if (flag_require_timer){
     double start_time = -5.0;
@@ -169,7 +167,7 @@ int main(int argc,char *const argv[],char *const envp[]){
     print_all_process_trees(outfile,basetime,command_name);
 
   if (flag_cpustats && !flag_zip)
-    print_cpustatus();
+    print_cpustats();
 
   if (flag_perfctr && !flag_zip)
     print_perf_counters();
@@ -185,7 +183,7 @@ int main(int argc,char *const argv[],char *const envp[]){
     fp = fopen("processtree.txt","w");
     if (fp) print_all_process_trees(fp,basetime,command_name);
     fclose(fp);
-    if (flag_cpustats) print_cpustatus_files();
+    if (flag_cpustats) print_cpustats_files();
     if (flag_perfctr) print_perf_counter_files();
 
     strcpy(basezvalue,zip_archive_name);

@@ -38,10 +38,19 @@ int timer_cmd_pipe[2]; // command pipe
 void *timer_start(void *arg);
 
 /* cpustatus.c */
-void init_cpustatus(void);
-void read_cpustatus(double time);
-void print_cpustatus(void);
-void print_cpustatus_files(void);
+void init_cpustats(void);
+void read_cpustats(double time);
+void print_cpustats(void);
+void print_cpustats_files(void);
+
+/* diskstats.c */
+void init_diskstats(void);
+
+/* memstats.c */
+void init_memstats(void);
+
+/* netstats.c */
+void init_netstats(void);
 
 /* pcounter.c */
 void init_perf_counters(void);
@@ -55,6 +64,9 @@ char **command_line_argv;
 int flag_cmd;
 int flag_cpustats;
 int flag_debug;
+int flag_diskstats;
+int flag_memstats;
+int flag_netstats;
 int flag_perfctr;
 int flag_proctree;
 int flag_require_ftrace;

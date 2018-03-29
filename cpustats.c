@@ -14,13 +14,13 @@
 
 FILE *cpufile = NULL;
 
-void print_cpustatus_gnuplot_file(void);
+void print_cpustats_gnuplot_file(void);
 
-void init_cpustatus(void){
+void init_cpustats(void){
   cpufile = tmpfile();
 }
 
-void read_cpustatus(double time){
+void read_cpustats(double time){
   FILE *fp = fopen("/proc/stat","r");
   char buffer[1024];
 
@@ -83,7 +83,7 @@ void print_cpuinfo(char *name,char *delim,FILE *output){
   }
 }
 
-void print_cpustatus(void){
+void print_cpustats(void){
   int i;
   char cpubuf[16];
 
@@ -94,7 +94,7 @@ void print_cpustatus(void){
   }
 }
 
-void print_cpustatus_files(void){
+void print_cpustats_files(void){
   char cpuname[16];
   char cpufile[32];
   int i;
@@ -114,10 +114,10 @@ void print_cpustatus_files(void){
     }
     fclose(fp);
   }
-  print_cpustatus_gnuplot_file();
+  print_cpustats_gnuplot_file();
 }
 
-void print_cpustatus_gnuplot_file(void){
+void print_cpustats_gnuplot_file(void){
   int i;
   FILE *fp = fopen("cpu-gnuplot.sh","w");
 

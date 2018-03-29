@@ -1,8 +1,8 @@
 CC=gcc
 CFLAGS=-g
 PROG = wspy
-SRCS = wspy.c ktrace.c proctable.c timer.c cpustatus.c pcounter.c config.c error.c
-OBJS = wspy.o ktrace.o proctable.o timer.o cpustatus.o pcounter.o config.c error.o
+SRCS = wspy.c ktrace.c proctable.c timer.c cpustats.c diskstats.c memstats.c netstats.c pcounter.c config.c error.c
+OBJS = wspy.o ktrace.o proctable.o timer.o cpustats.o diskstats.o memstats.o netstats.o pcounter.o config.c error.o
 LIBS = -lpthread -lm
 
 wspy:	$(OBJS)
@@ -23,7 +23,10 @@ wspy.o: wspy.h error.h
 ktrace.o: wspy.h error.h
 proctable.o: wspy.h error.h
 timer.o: wspy.h error.h
-cpustatus.o: wspy.h error.h
+cpustats.o: wspy.h error.h
+diskstats.o: wspy.h error.h
+memstats.o: wspy.h error.h
+netstats.o: wspy.h error.h
 pcounter.o: wspy.h error.h
 config.o: wspy.h error.h
 error.o: error.h
