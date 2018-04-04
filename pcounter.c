@@ -12,11 +12,14 @@
 #include <sys/ioctl.h>
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
+#include <sys/stat.h>
 #include <linux/perf_event.h>
 #include "wspy.h"
 #include "error.h"
 
 FILE *perfctrfile = NULL;
+
+void print_perf_counter_gnuplot_file(void);
 
 #define MAX_COUNTERS_PER_CORE 4
 struct perf_config {
@@ -226,6 +229,80 @@ void print_perf_counter_files(void){
     if (fp){
       print_counter_info(i,perfbuf,",",fp);
     }
+    fclose(fp);
+  }
+  print_perf_counter_gnuplot_file();
+}
+
+void print_perf_counter_gnuplot_file(void){
+  int i;
+  FILE *fp = fopen("perf-gnuplot.sh","w");
+  if (fp){
+    fprintf(fp,"#!/bin/bash\n");
+    fprintf(fp,"gnuplot <<PLOTCMD\n");
+    fprintf(fp,"set terminal png\n");
+    fprintf(fp,"set output 'ipcall.png'\n");
+    fprintf(fp,"set title 'ALL CPU IPC'\n");
+    fprintf(fp,"set datafile separator \",\"\n");
+    fprintf(fp,"plot");
+    for (i=0;i<num_procs;i++){
+      if (i != 0) fprintf(fp,",");
+      fprintf(fp," 'perf%d.csv' using 1:(\\$2/\\$3) title 'CPU %d' with linespoints",i,i);
+    }
+    fprintf(fp,"\n");
+    fprintf(fp,"PLOTCMD\n\n");
+
+    for (i=0;i<num_procs;i++){
+      fprintf(fp,"gnuplot <<PLOTCMD\n");
+      fprintf(fp,"set terminal png\n");
+      fprintf(fp,"set output 'ipc%d.png'\n",i);
+      fprintf(fp,"set title 'CPU %d IPC'\n",i);
+      fprintf(fp,"set datafile separator \",\"\n");
+      fprintf(fp,"plot 'perf%d.csv' using 1:(\\$2/\\$3) title 'IPC' with linespoints\n",i);
+      fprintf(fp,"PLOTCMD\n");
+      if (i%4 == 0){
+	fprintf(fp,"gnuplot <<PLOTCMD\n");
+	fprintf(fp,"set terminal png\n");
+	fprintf(fp,"set output 'cache%d.png'\n",i);
+	fprintf(fp,"set title 'CPU %d Cache Ratio'\n",i);
+	fprintf(fp,"set datafile separator \",\"\n");
+	fprintf(fp,"plot 'perf%d.csv' using 1:(\\$5/\\$4) title 'Miss Ratio' with linespoints\n",i);
+	fprintf(fp,"PLOTCMD\n");
+      } else if (i%4 == 1){
+	fprintf(fp,"gnuplot <<PLOTCMD\n");
+	fprintf(fp,"set terminal png\n");
+	fprintf(fp,"set output 'branch%d.png'\n",i);
+	fprintf(fp,"set title 'CPU %d Branch Ratio'\n",i);
+	fprintf(fp,"set datafile separator \",\"\n");
+	fprintf(fp,"plot 'perf%d.csv' using 1:(\\$5/\\$4) title 'Miss Ratio' with linespoints\n",i);
+	fprintf(fp,"PLOTCMD\n");
+
+	fprintf(fp,"gnuplot <<PLOTCMD\n");
+	fprintf(fp,"set terminal png\n");
+	fprintf(fp,"set output 'brancha%d.png'\n",i);
+	fprintf(fp,"set title 'CPU %d Branch Activity'\n",i);
+	fprintf(fp,"set datafile separator \",\"\n");
+	fprintf(fp,"plot 'perf%d.csv' using 1:(\\$4/\\$2) title 'Branches' with linespoints, 'perf%d.csv' using 1:(\\$5/\\$2) title 'Misses' with linespoints\n",i,i);
+	fprintf(fp,"PLOTCMD\n");		
+      } else if (i%4 == 3){
+	fprintf(fp,"gnuplot <<PLOTCMD\n");
+	fprintf(fp,"set terminal png\n");
+	fprintf(fp,"set output 'cacheL1D%d.png'\n",i);
+	fprintf(fp,"set title 'CPU %d Cache Ratio'\n",i);
+	fprintf(fp,"set datafile separator \",\"\n");
+	fprintf(fp,"plot 'perf%d.csv' using 1:(\\$5/\\$4) title 'Miss Ratio' with linespoints\n",i);
+	fprintf(fp,"PLOTCMD\n");
+
+	fprintf(fp,"gnuplot <<PLOTCMD\n");
+	fprintf(fp,"set terminal png\n");
+	fprintf(fp,"set output 'cacheL1Da%d.png'\n",i);
+	fprintf(fp,"set title 'CPU %d L1D Activity'\n",i);
+	fprintf(fp,"set datafile separator \",\"\n");
+	fprintf(fp,"plot 'perf%d.csv' using 1:(\\$4/\\$2) title 'Accesses' with linespoints, 'perf%d.csv' using 1:(\\$5/\\$2) title 'Misses' with linespoints\n",i,i);
+	fprintf(fp,"PLOTCMD\n");			
+      }
+    }
+    fchmod(fileno(fp),0755);
     fclose(fp);
   }
 }
