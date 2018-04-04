@@ -14,6 +14,7 @@ void fatal(char *message,...);
 void error(char *message,...);
 void warning(char *message,...);
 void notice(char *message,...);
+void notice_noprogram(char *message,...);
 void debug(char *message,...);
 void debug2(char *message,...);
 extern int n_error;

@@ -72,7 +72,6 @@ struct perfctr_info {
 };
 
 static struct perfctr_info *performance_counters = NULL;
-static int num_procs = 0;
 
 // syscall wrapper since not part of glibc
 int perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
@@ -89,7 +88,6 @@ void init_perf_counters(){
   struct perfctr_info *pi;
   struct perfctr_info *last_pi = NULL, *first_pi = NULL;
   perfctrfile = tmpfile();
-  num_procs = get_nprocs();
   for (i=0;i<num_procs;i++){
     confignum = i % (sizeof(default_config)/sizeof(default_config[0]));
     for (j=0;j < default_config[confignum].ncount;j++){

@@ -84,8 +84,9 @@ static void timer_loop(void){
       if (FD_ISSET(timer_fd,&rdfd_list)){
 	read(timer_fd,&expirations,sizeof(expirations));
 	now = now + 1;
-	if (cflag) read_cpustatus(now);
-	if (pflag) read_perf_counters(now);
+	if (flag_cpustats) read_cpustats(now);
+	if (flag_diskstats) read_diskstats(now);
+	if (flag_perfctr) read_perf_counters(now);
       }
     }
   }

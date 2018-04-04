@@ -13,6 +13,7 @@
 #include <sys/time.h>
 #include <sys/select.h>
 #include <unistd.h>
+#include <errno.h>
 #include "wspy.h"
 #include "error.h"
 
@@ -53,11 +54,11 @@ static void ktrace_enable_tracing(void){
   char buffer[16];
   struct stat statbuf;
   if ((stat(TRACEFS,&statbuf) != 0) || ! S_ISDIR(statbuf.st_mode)){
-    if (getuid() == 0){
+    if ((errno == EACCES) && (getuid() != 0)){
+      error("permission denied for kernel tracing at %s\n",TRACEFS);
+    } else {      
       error("unable to find kernel tracing at %s\n",TRACEFS);
-    } else {
-      error("unable to find kernel tracing at %s\n\ttry running as root\n",TRACEFS);
-    }
+    } 
     pthread_exit(NULL);
   }
   chdir(TRACEFS);
