@@ -14,6 +14,8 @@
 #include "wspy.h"
 #include "error.h"
 
+void print_diskstats_gnuplot_file(void);
+
 FILE *diskfile = NULL;
 struct monitor {
   char *name;
@@ -152,5 +154,28 @@ void print_diskstats_files(void){
       print_diskinfo(mon,",",fp);
       fclose(fp);
     }
+  }
+  print_diskstats_gnuplot_file();  
+}
+
+void print_diskstats_gnuplot_file(void){
+  FILE *fp = fopen("disk-gnuplot.sh","w");  
+  struct monitor *mon;
+  if (fp){
+    fprintf(fp,"#!/bin/bash\n");
+    fprintf(fp,"gnuplot <<PLOTCMD\n");
+    fprintf(fp,"set terminal png\n");
+    fprintf(fp,"set output 'diskall.png'\n");
+    fprintf(fp,"set title 'ALL DISK'\n");
+    fprintf(fp,"set datafile separator \",\"\n");
+    fprintf(fp,"plot");
+    for (mon = monitor_list;mon;mon = mon->next){
+      if (mon != monitor_list) fprintf(fp,",");
+      fprintf(fp," 'disk-%s.csv' using 1:((\\$3+\\$6)/2) title '%s' with linespoints",mon->name,mon->name);
+    }
+    fprintf(fp,"\n");
+    fprintf(fp,"PLOTCMD\n");
+    fchmod(fileno(fp),0755);
+    fclose(fp);
   }
 }
