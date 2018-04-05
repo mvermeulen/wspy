@@ -87,11 +87,13 @@ int main(int argc,char *const argv[],char *const envp[]){
 	  "\t--netstats, --no-netstats      \tNetwork usage tracing from /proc/net/dev\n"
 	  "\t--processtree, --no-processtree\tGenerate process tree from ftrace\n"
 	  "\t--perfcounters, --no-perfcounters\tCollect basic perf counters\n"
-	  "\t--debug, -d                    \tinternal debugging flag\n"
 	  "\t--uid <uid>, -u <uid>          \trun as user\n"
 	  "\t--set-cpumask <cpulist>        \tbind child to list of cores\n"
 	  "\t--zip <archive-name>           \tcreate zip archive of results\n"
-	  "\t--root <proc>, -r <proc>       \tset name for process tree root\n",
+	  "\t--root <proc>, -r <proc>       \tset name for process tree root\n"
+	  "\t--output <file>                \tredirect output to <file>\n"
+	  "\t--error-output <file>          \tredirect errors and debug to <file>\n"
+	  "\t--debug, -d                    \tinternal debugging flag\n",
 	  argv[0]);
   }
 

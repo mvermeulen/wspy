@@ -17,6 +17,7 @@ void notice(char *message,...);
 void notice_noprogram(char *message,...);
 void debug(char *message,...);
 void debug2(char *message,...);
+void set_error_stream(FILE *fp);
 extern int n_error;
 extern int n_warning;
 

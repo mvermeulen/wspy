@@ -117,6 +117,10 @@ void debug2(char *message,...){
   }
 }
 
+void set_error_stream(FILE *fp){
+  error_stream = fp;
+}
+
 void set_error_level(enum error_level level){
   elevel = level;
 }

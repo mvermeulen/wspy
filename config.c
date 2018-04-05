@@ -126,6 +126,8 @@ int parse_options(int argc,char *const argv[]){
     { "debug",           no_argument, 0,       'd' },
     { "root",            required_argument, 0, 'r' },
     { "zip",             required_argument, 0, 'z' },
+    { "output",          required_argument, 0, 'o' },
+    { "error-output",    required_argument, 0,  9 },
     { 0, 0, 0, 0 },
   };  
   struct passwd *pwd;
@@ -156,11 +158,18 @@ int parse_options(int argc,char *const argv[]){
       if (flag_debug>1) set_error_level(ERROR_LEVEL_DEBUG2);
       else set_error_level(ERROR_LEVEL_DEBUG);
       break;
+    case 9:
+      if ((fp = fopen(optarg,"a")) == NULL){
+	warning("can not open error output file: %s\n",optarg);	
+      } else {
+	
+      }
+      break;
     case 'o':
       if ((fp = fopen(optarg,"a")) == NULL){
 	warning("can not open output file: %s\n",optarg);
       } else {
-	outfile = fp;
+	set_error_stream(fp);
       }
       break;
     case 'r':
