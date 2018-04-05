@@ -28,21 +28,20 @@ struct perf_config {
   uint64_t config;
 };
 struct core_perf_config {
-  int corenum;
   int ncount;
   struct perf_config counter[MAX_COUNTERS_PER_CORE];
 } default_config[] = {
-  { 0, 4,
+  { 4,
     {{ "inst", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS },
      { "cycle", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES },
      { "cacheref", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_REFERENCES },
      { "cachemiss", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_MISSES }}},
-  { 1, 4,
+  { 4,
     {{ "inst", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS },
      { "cycle", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES },
      { "branch", PERF_TYPE_HARDWARE, PERF_COUNT_HW_BRANCH_INSTRUCTIONS },
      { "branchmiss", PERF_TYPE_HARDWARE, PERF_COUNT_HW_BRANCH_MISSES }}},
-  { 2, 4,
+  { 4,
     {{ "inst", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS },
      { "cycle", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES },
      { "dtlbmiss", PERF_TYPE_HW_CACHE,
@@ -51,7 +50,7 @@ struct core_perf_config {
      { "itlbmiss", PERF_TYPE_HW_CACHE,
        (PERF_COUNT_HW_CACHE_ITLB)|(PERF_COUNT_HW_CACHE_OP_READ<<8)|
        (PERF_COUNT_HW_CACHE_RESULT_MISS<<16) }}},     
-  { 3, 4,
+  { 4,
     {{ "inst", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS },
      { "cycle", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES },
      { "l1dref", PERF_TYPE_HW_CACHE,
