@@ -172,6 +172,10 @@ int main(int argc,char *const argv[],char *const envp[]){
   // run 5 seconds to let things stop
   sleep(5);
 
+  if (flag_showcounters){
+    print_counters(outfile);
+  }
+
   finalize_process_tree();
   if (flag_cmd) basetime = find_first_process_time(command_name);
   if (flag_proctree && !flag_zip)

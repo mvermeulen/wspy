@@ -328,7 +328,15 @@ struct counterinfo *counterinfo_lookup(char *name,char *group,int insert){
 	  continue;
 	}
       } else {
-	return &countertable[i];
+	// not multiple (yet), but check if this situation applies
+	if (group && countertable[i].group &&
+	    (strcmp(group,countertable[i].group) != 0)){
+	  // found a multiple, so mark it...
+	  countertable[i].is_multiple = 1;
+	  multiple = 1;
+	} else {
+	  return &countertable[i];
+	}
       }
     }
   }
@@ -341,8 +349,8 @@ struct counterinfo *counterinfo_lookup(char *name,char *group,int insert){
   } else if (num_countertable >= num_countertable_allocated){
     num_countertable_allocated += COUNTERTABLE_ALLOC_CHUNK;
     // NOTE: Use of realloc() means the address of counter objects can change!
-    // OK for now since the building phase happens distinctly from the using phase,
-    // but latent bug if this changes.
+    // OK for now since the building phase happens distinctly from the using
+    // phase, but latent bug if this changes.
     countertable = realloc(countertable,sizeof(struct counterinfo));
     memset(&countertable[num_countertable],'\0',sizeof(struct counterinfo)*COUNTERTABLE_ALLOC_CHUNK);
   }
@@ -353,13 +361,22 @@ struct counterinfo *counterinfo_lookup(char *name,char *group,int insert){
 
 void display_counter(struct counterinfo *ci,FILE *fp){
   if (ci->is_multiple){
-    fprintf(fp,"%s.%s",ci->group,ci->name);
+    fprintf(fp,"%16s.%-13s",ci->group,ci->name);
   } else {
-    fprintf(fp,"%s",ci->name);
+    fprintf(fp,"%30s",ci->name);
   }
-  fprintf(fp," type=%d",ci->type);
+  fprintf(fp," type=%-2d",ci->type);
   fprintf(fp," config=0x%.8lx",ci->config);
+  if (ci->config1)
+    fprintf(fp," config1=0x%.8lx",ci->config1);  
   fprintf(fp,"\n");
+}
+
+void print_counters(FILE *fp){
+  int i;
+  for (i=0;i<num_countertable;i++){
+    display_counter(&countertable[i],fp);
+  }
 }
 
 void add_counterinfo(char *dir,char *name,char *group,int type){
@@ -424,7 +441,6 @@ void add_counterinfo(char *dir,char *name,char *group,int type){
 	  warning("unimplemented field: %s\n",field);
 	}
       }
-      display_counter(ci,outfile);
     }
     fclose(fp);
   }

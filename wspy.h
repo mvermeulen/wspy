@@ -66,9 +66,9 @@ struct counterinfo {
   uint64_t config;
   uint64_t config1;
   char *directory;
-  int has_scale : 1;
-  int has_unit  : 1;
-  int is_multiple : 1;
+  unsigned int has_scale : 1;
+  unsigned int has_unit  : 1;
+  unsigned int is_multiple : 1;
 };
 struct counterinfo *countertable;
 int num_countertable;
@@ -77,6 +77,7 @@ void read_perf_counters(double time);
 void print_perf_counters(void);
 void print_perf_counter_files(void);
 void inventory_counters(void);
+void print_counters(FILE *fp);
 
 /* config.c */
 int command_line_argc;
