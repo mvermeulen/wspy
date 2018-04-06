@@ -372,6 +372,24 @@ void display_counter(struct counterinfo *ci,FILE *fp){
   fprintf(fp,"\n");
 }
 
+int compare_counters(const void *c1,const void *c2){
+  const struct counterinfo *c_one = c1,*c_two = c2;
+  int result;
+  if ((result = strcmp(c_one->group,c_two->group)) < 0){
+    return -1;
+  } else if (result > 0){
+    return 1;
+  } else if ((result = strcmp(c_one->name,c_two->name)) < 0){
+    return -1;
+  } else if (result > 0){
+    return 1;
+  } else return 0;
+}
+
+void sort_counters(void){
+  qsort(countertable,num_countertable,sizeof(struct counterinfo),compare_counters);
+}
+
 void print_counters(FILE *fp){
   int i;
   for (i=0;i<num_countertable;i++){

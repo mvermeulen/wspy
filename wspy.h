@@ -78,6 +78,7 @@ void print_perf_counters(void);
 void print_perf_counter_files(void);
 void inventory_counters(char *directory);
 void print_counters(FILE *fp);
+void sort_counters(void);
 
 /* config.c */
 int command_line_argc;

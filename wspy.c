@@ -111,6 +111,8 @@ int main(int argc,char *const argv[],char *const envp[]){
     notice_noprogram("\n");
   }
 
+  sort_counters();
+  
   if (setup_child_process(command_line_argc,command_line_argv,envp)){
     fatal("unable to launch %s\n",command_line_argv[0]);
   }
