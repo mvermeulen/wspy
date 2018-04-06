@@ -379,9 +379,10 @@ void add_counterinfo(char *dir,char *name,char *group,int type){
       ci->group = strdup(group);
       ci->directory = strdup(dir);
       for (field = strtok(line,",\n");field;field = strtok(NULL,",\n")){
-	// NOTE: Field placements are "hardwired" rather than parsing the "format" directories.
-	// Needs to be fixed for more general solution, but for now made to work with specific
-	// counters on my test machines
+	// NOTE: Field placements are "hardwired" rather than parsing the
+	// "format" directories. I've checked that this doesn't cause issues
+	// for my supported platforms noted below, but this needs to be fixed
+	// for a more general solution.
 	if (!strncmp(field,"event=",6)){
 	  if (sscanf(&field[6],"%lx",&value) == 1){
 	    ci->config |= value;
@@ -413,6 +414,8 @@ void add_counterinfo(char *dir,char *name,char *group,int type){
 	    ci->config1 |= value;
 	  }	  
 	} else {
+	  // So far only implemented:
+	  //   i7-4770
 	  warning("unimplemented field: %s\n",field);
 	}
       }
