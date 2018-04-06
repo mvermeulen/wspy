@@ -419,8 +419,8 @@ void add_counterinfo(char *dir,char *name,char *group,int type){
 	  }	  
 	} else {
 	  // So far only implemented:
-	  //   i7-4770
-	  //   A10-7850
+	  //   Intel: i7-4770 and C2750
+	  //   AMD:   A10-7850 and A4-5000
 	  warning("unimplemented field: %s\n",field);
 	}
       }
