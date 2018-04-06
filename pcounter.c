@@ -451,7 +451,7 @@ void add_counterinfo(char *dir,char *name,char *group,int type){
 }
 
 void inventory_counters(char *directory){
-  DIR *counterdir = opendir(directory==NULL?COUNTER_DEFINITION_DIRECTORY:directory);
+  DIR *counterdir;
   DIR *eventdir;
   FILE *fp;
   int lasttype = -1;
@@ -461,11 +461,13 @@ void inventory_counters(char *directory){
   char *p;
   int status;
   struct stat statbuf;
+  if (directory == NULL) directory = COUNTER_DEFINITION_DIRECTORY;
+  counterdir = opendir(directory);
   if (counterdir){
     while (dec = readdir(counterdir)){
       if (!strcmp(dec->d_name,".") || !strcmp(dec->d_name,"..")) continue;
       // look for a "type" file
-      snprintf(buffer,sizeof(buffer),"%s/%s/type",COUNTER_DEFINITION_DIRECTORY,dec->d_name);
+      snprintf(buffer,sizeof(buffer),"%s/%s/type",directory,dec->d_name);
       status = stat(buffer,&statbuf);
       if ((status == -1) || !S_ISREG(statbuf.st_mode)){ continue; }
       fp = fopen(buffer,"r");
@@ -478,7 +480,7 @@ void inventory_counters(char *directory){
 	continue;
       }
       // verify an "events" directory
-      snprintf(buffer,sizeof(buffer),"%s/%s/events",COUNTER_DEFINITION_DIRECTORY,dec->d_name);
+      snprintf(buffer,sizeof(buffer),"%s/%s/events",directory,dec->d_name);
       status = stat(buffer,&statbuf);
       if ((status == -1) || !S_ISDIR(statbuf.st_mode)){	continue; }
 
