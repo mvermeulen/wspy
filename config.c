@@ -18,7 +18,7 @@
 #include "wspy.h"
 #include "error.h"
 
-static int parse_cpumask(char *arg);
+static int parse_cpumask(char *arg,cpu_set_t *mask);
 int command_line_argc = 0;
 char **command_line_argv = NULL;
 int flag_set_uid = 0;
@@ -108,6 +108,8 @@ int parse_options(int argc,char *const argv[]){
   int opt;
   int i;
   int longidx;
+  cpu_set_t mask;
+  char *p,*arg;
   FILE *fp;
   static struct option long_options[] = {
     { "cpustats",        no_argument, 0,       10 },
@@ -125,6 +127,7 @@ int parse_options(int argc,char *const argv[]){
     { "set-cpumask",     required_argument, 0, 22 },
     { "show-counters",   no_argument, 0,       23 },
     { "no-show-counters",no_argument, 0,       24 },
+    { "set-counters",    required_argument, 0, 25 },
     { "debug",           no_argument, 0,       'd' },
     { "root",            required_argument, 0, 'r' },
     { "zip",             required_argument, 0, 'z' },
@@ -150,13 +153,30 @@ int parse_options(int argc,char *const argv[]){
     case 20: flag_proctree = 1;  break;
     case 21: flag_proctree = 0;  break;
     case 22: flag_setcpumask = 1;
-      if (parse_cpumask(optarg)){
+      if (parse_cpumask(optarg,&mask)){
 	warning("invalid argument to --set-cpumask, ignored\n");
 	flag_setcpumask = 0;
+      } else {
+	cpumask = mask;
       }
       break;
     case 23: flag_showcounters = 1; break;
     case 24: flag_showcounters = 0; break;
+    case 25:
+      if (p = strchr(optarg,':')){
+	// cpulist
+	*p = 0;
+	arg = p+1;
+	parse_cpumask(optarg,&mask);
+      } else {
+	arg = optarg;
+      }
+      p = strtok(arg,", \t\n");
+      while (p){
+	printf("counter = %s\n",p);
+	p = strtok(NULL," ,\t\n");
+      }
+      break;
     case 'd':
       flag_debug++;
       if (flag_debug>1) set_error_level(ERROR_LEVEL_DEBUG2);
@@ -244,7 +264,7 @@ int parse_options(int argc,char *const argv[]){
   return 0;
 }
 
-static int parse_cpumask(char *arg){
+static int parse_cpumask(char *arg,cpu_set_t *mask){
   int i;
   char *buffer = strdup(arg);
   int start,stop;
@@ -273,16 +293,16 @@ static int parse_cpumask(char *arg){
   }
   free(buffer);
   anyset = 0;
-  notice("affinity_mask:");
+  debug("affinity_mask:\n");
   for (i=0;i<num_procs;i++){
     if (CPU_ISSET(i,&new_mask)){
-      notice_noprogram(" %d",i);
+      debug("\t%d\n",i);
       anyset = 1;
     }
   }
-  notice_noprogram("\n");
   if (anyset){
-    cpumask = new_mask;
+    *mask = new_mask;
   }
   else return 1;
+  return 0;
 }
