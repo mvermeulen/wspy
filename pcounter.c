@@ -412,10 +412,15 @@ void add_counterinfo(char *dir,char *name,char *group,int type){
 	} else if (!strncmp(field,"ldlat=",6)){
 	  if (sscanf(&field[6],"%lx",&value) == 1){
 	    ci->config1 |= value;
+	  }
+	} else if (!strncmp(field,"csource=",8)){
+	  if (sscanf(&field[8],"%lx",&value) == 1){
+	    ci->config |= value;
 	  }	  
 	} else {
 	  // So far only implemented:
 	  //   i7-4770
+	  //   A10-7850
 	  warning("unimplemented field: %s\n",field);
 	}
       }
