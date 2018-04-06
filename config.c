@@ -123,6 +123,8 @@ int parse_options(int argc,char *const argv[]){
     { "processtree",     no_argument, 0,       20 },
     { "no-processtree",  no_argument, 0,       21 },
     { "set-cpumask",     required_argument, 0, 22 },
+    { "show-counters",   no_argument, 0,       23 },
+    { "no-show-counters",no_argument, 0,       24 },
     { "debug",           no_argument, 0,       'd' },
     { "root",            required_argument, 0, 'r' },
     { "zip",             required_argument, 0, 'z' },
@@ -153,6 +155,8 @@ int parse_options(int argc,char *const argv[]){
 	flag_setcpumask = 0;
       }
       break;
+    case 23: flag_showcounters = 1; break;
+    case 24: flag_showcounters = 0; break;
     case 'd':
       flag_debug++;
       if (flag_debug>1) set_error_level(ERROR_LEVEL_DEBUG2);
@@ -209,6 +213,11 @@ int parse_options(int argc,char *const argv[]){
     flag_require_timer = 1;
   } else {
     flag_require_timer = 0;    
+  }
+  if (flag_showcounters || flag_perfctr){
+    flag_require_counters = 1;
+  } else {
+    flag_require_counters = 0;
   }
   flag_require_ftrace = flag_proctree;
   if (argc > optind){

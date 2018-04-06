@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <errno.h>
+#include <dirent.h>
 #include <sys/ioctl.h>
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
@@ -16,6 +17,12 @@
 #include <linux/perf_event.h>
 #include "wspy.h"
 #include "error.h"
+
+#define COUNTER_DEFINITION_DIRECTORY	"/sys/devices"
+struct counterinfo *countertable = 0;
+#define COUNTERTABLE_ALLOC_CHUNK 1024
+int num_countertable = 0;
+int num_countertable_allocated = 0;
 
 FILE *perfctrfile = NULL;
 
@@ -301,5 +308,163 @@ void print_perf_counter_gnuplot_file(void){
     }
     fchmod(fileno(fp),0755);
     fclose(fp);
+  }
+}
+
+struct counterinfo *counterinfo_lookup(char *name,char *group,int insert){
+  int i;
+  int multiple = 0;
+  for (i=0;i<num_countertable;i++){
+    if (countertable[i].name && !strcmp(name,countertable[i].name)){
+      // multiples match if the groups match or are null
+      if (countertable[i].is_multiple){
+	if ((group == NULL)||(countertable[i].group == NULL)||
+	    !strcmp(group,countertable[i].group)){
+	  return &countertable[i];
+	} else {
+	  // mark the multiple field on the original, and for later insertion
+	  countertable[i].is_multiple = 1;
+	  multiple = 1;
+	  continue;
+	}
+      } else {
+	return &countertable[i];
+      }
+    }
+  }
+  if (insert == 0) return NULL;
+  if (num_countertable_allocated == 0){
+    num_countertable_allocated = COUNTERTABLE_ALLOC_CHUNK;
+    countertable = calloc(num_countertable_allocated,sizeof(struct counterinfo));
+    num_countertable = 1;
+    return &countertable[0];
+  } else if (num_countertable >= num_countertable_allocated){
+    num_countertable_allocated += COUNTERTABLE_ALLOC_CHUNK;
+    // NOTE: Use of realloc() means the address of counter objects can change!
+    // OK for now since the building phase happens distinctly from the using phase,
+    // but latent bug if this changes.
+    countertable = realloc(countertable,sizeof(struct counterinfo));
+    memset(&countertable[num_countertable],'\0',sizeof(struct counterinfo)*COUNTERTABLE_ALLOC_CHUNK);
+  }
+  num_countertable++;
+  countertable[num_countertable-1].is_multiple = multiple;
+  return &countertable[num_countertable-1];
+}
+
+void display_counter(struct counterinfo *ci,FILE *fp){
+  if (ci->is_multiple){
+    fprintf(fp,"%s.%s",ci->group,ci->name);
+  } else {
+    fprintf(fp,"%s",ci->name);
+  }
+  fprintf(fp," type=%d",ci->type);
+  fprintf(fp," config=0x%.8lx",ci->config);
+  fprintf(fp,"\n");
+}
+
+void add_counterinfo(char *dir,char *name,char *group,int type){
+  FILE *fp;
+  char filename[1024];
+  char line[1024];
+  char *field;
+  uint64_t value;
+  struct counterinfo *ci;
+  debug("add counter (%d): %s/%s\n",type,dir,name);
+  snprintf(filename,sizeof(filename),"%s/%s",dir,name);
+  if (fp = fopen(filename,"r")){
+    if (fgets(line,sizeof(line),fp) != NULL){
+      ci = counterinfo_lookup(name,group,1);
+      ci->type = type;
+      ci->name = strdup(name);
+      ci->group = strdup(group);
+      ci->directory = strdup(dir);
+      for (field = strtok(line,",\n");field;field = strtok(NULL,",\n")){
+	// NOTE: Field placements are "hardwired" rather than parsing the "format" directories.
+	// Needs to be fixed for more general solution, but for now made to work with specific
+	// counters on my test machines
+	if (!strncmp(field,"event=",6)){
+	  if (sscanf(&field[6],"%lx",&value) == 1){
+	    ci->config |= value;
+	    continue;
+	  }
+	} else if (!strncmp(field,"umask=",6)){
+	  if (sscanf(&field[6],"%lx",&value) == 1){
+	    ci->config |= (value << 8);
+	    continue;
+	  }
+	} else if (!strncmp(field,"cmask=",6)){
+	  if (sscanf(&field[6],"%lx",&value) == 1){
+	    ci->config |= (value << 24);
+	  }
+	} else if (!strncmp(field,"any=",4)){
+	  if (sscanf(&field[4],"%lx",&value) == 1){
+	    ci->config |= (value << 21);
+	  }
+	} else if (!strncmp(field,"in_tx=",6)){
+	  if (sscanf(&field[6],"%lx",&value) == 1){
+	    ci->config |= (value << 32);
+	  }
+	} else if (!strncmp(field,"in_tx_cp=",9)){
+	  if (sscanf(&field[9],"%lx",&value) == 1){
+	    ci->config |= (value << 33);
+	  }	  
+	} else if (!strncmp(field,"ldlat=",6)){
+	  if (sscanf(&field[6],"%lx",&value) == 1){
+	    ci->config1 |= value;
+	  }	  
+	} else {
+	  warning("unimplemented field: %s\n",field);
+	}
+      }
+      display_counter(ci,outfile);
+    }
+    fclose(fp);
+  }
+}
+
+void inventory_counters(){
+  DIR *counterdir = opendir(COUNTER_DEFINITION_DIRECTORY);
+  DIR *eventdir;
+  FILE *fp;
+  int lasttype = -1;
+  struct dirent *dec,*dee;
+  char buffer[1024];
+  char buffer_counter[1024];
+  char *p;
+  int status;
+  struct stat statbuf;
+  if (counterdir){
+    while (dec = readdir(counterdir)){
+      if (!strcmp(dec->d_name,".") || !strcmp(dec->d_name,"..")) continue;
+      // look for a "type" file
+      snprintf(buffer,sizeof(buffer),"%s/%s/type",COUNTER_DEFINITION_DIRECTORY,dec->d_name);
+      status = stat(buffer,&statbuf);
+      if ((status == -1) || !S_ISREG(statbuf.st_mode)){ continue; }
+      fp = fopen(buffer,"r");
+      if (fp){
+	if (fscanf(fp,"%d",&lasttype) != 1){
+	  fclose(fp);
+	  continue;
+	}
+      } else {
+	continue;
+      }
+      // verify an "events" directory
+      snprintf(buffer,sizeof(buffer),"%s/%s/events",COUNTER_DEFINITION_DIRECTORY,dec->d_name);
+      status = stat(buffer,&statbuf);
+      if ((status == -1) || !S_ISDIR(statbuf.st_mode)){	continue; }
+
+      // read contents of the events directory
+      eventdir = opendir(buffer);
+      while (dee = readdir(eventdir)){
+	if (!strcmp(dee->d_name,".") || !strcmp(dee->d_name,"..")) continue;
+	// ignore the scale and unit files for now
+	if (p = strstr(dee->d_name,".scale")) continue;
+	if (p = strstr(dee->d_name,".unit")) continue;
+	add_counterinfo(buffer,dee->d_name,dec->d_name,lasttype);
+      }
+      closedir(eventdir);
+    }
+    closedir(counterdir);
   }
 }

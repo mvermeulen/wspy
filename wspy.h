@@ -1,5 +1,6 @@
 /* wspy.h - header definitions for wspy program */
 #include <sys/types.h>
+#include <inttypes.h>
 #include <sched.h>
 
 /* wspy.c */
@@ -58,10 +59,24 @@ void init_memstats(void);
 void init_netstats(void);
 
 /* pcounter.c */
+struct counterinfo {
+  char *name;
+  char *group;
+  uint32_t type;
+  uint64_t config;
+  uint64_t config1;
+  char *directory;
+  int has_scale : 1;
+  int has_unit  : 1;
+  int is_multiple : 1;
+};
+struct counterinfo *countertable;
+int num_countertable;
 void init_perf_counters(void);
 void read_perf_counters(double time);
 void print_perf_counters(void);
 void print_perf_counter_files(void);
+void inventory_counters(void);
 
 /* config.c */
 int command_line_argc;
@@ -74,8 +89,10 @@ int flag_memstats;
 int flag_netstats;
 int flag_perfctr;
 int flag_proctree;
+int flag_showcounters;
 int flag_require_ftrace;
 int flag_require_timer;
+int flag_require_counters;
 int flag_setcpumask;
 int flag_set_uid;
 int flag_zip;

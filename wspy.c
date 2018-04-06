@@ -87,6 +87,7 @@ int main(int argc,char *const argv[],char *const envp[]){
 	  "\t--netstats, --no-netstats      \tNetwork usage tracing from /proc/net/dev\n"
 	  "\t--processtree, --no-processtree\tGenerate process tree from ftrace\n"
 	  "\t--perfcounters, --no-perfcounters\tCollect basic perf counters\n"
+	  "\t--show-counters                \tShow available counters\n"
 	  "\t--uid <uid>, -u <uid>          \trun as user\n"
 	  "\t--set-cpumask <cpulist>        \tbind child to list of cores\n"
 	  "\t--zip <archive-name>           \tcreate zip archive of results\n"
@@ -115,16 +116,17 @@ int main(int argc,char *const argv[],char *const envp[]){
   // let ^C go to children
   signal(SIGINT,SIG_IGN);
 
-  if (flag_require_ftrace){
-    // kernel tracing
-    pthread_create(&ktrace_thread,NULL,ktrace_start,&child_pid);
-  }
-
+  if (flag_require_counters){ inventory_counters(); }
   if (flag_cpustats){ init_cpustats(); }
   if (flag_diskstats){ init_diskstats(); }
   if (flag_memstats){ init_memstats(); }
   if (flag_netstats){ init_netstats(); }
   if (flag_perfctr){ init_perf_counters(); }
+
+  if (flag_require_ftrace){
+    // kernel tracing
+    pthread_create(&ktrace_thread,NULL,ktrace_start,&child_pid);
+  }
   
   if (flag_require_timer){
     double start_time = -5.0;
