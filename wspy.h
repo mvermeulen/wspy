@@ -76,7 +76,7 @@ void init_perf_counters(void);
 void read_perf_counters(double time);
 void print_perf_counters(void);
 void print_perf_counter_files(void);
-void inventory_counters(void);
+void inventory_counters(char *directory);
 void print_counters(FILE *fp);
 
 /* config.c */

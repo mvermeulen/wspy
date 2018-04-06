@@ -128,6 +128,7 @@ int parse_options(int argc,char *const argv[]){
     { "show-counters",   no_argument, 0,       23 },
     { "no-show-counters",no_argument, 0,       24 },
     { "set-counters",    required_argument, 0, 25 },
+    { "counterinfo",     required_argument, 0, 26 },
     { "debug",           no_argument, 0,       'd' },
     { "root",            required_argument, 0, 'r' },
     { "zip",             required_argument, 0, 'z' },
@@ -176,6 +177,9 @@ int parse_options(int argc,char *const argv[]){
 	printf("counter = %s\n",p);
 	p = strtok(NULL," ,\t\n");
       }
+      break;
+    case 26:
+      inventory_counters(optarg);
       break;
     case 'd':
       flag_debug++;

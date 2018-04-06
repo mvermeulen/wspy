@@ -87,6 +87,7 @@ int main(int argc,char *const argv[],char *const envp[]){
 	  "\t--netstats, --no-netstats      \tNetwork usage tracing from /proc/net/dev\n"
 	  "\t--processtree, --no-processtree\tGenerate process tree from ftrace\n"
 	  "\t--perfcounters, --no-perfcounters\tCollect basic perf counters\n"
+	  "\t--counterinfo                  \tRead directory of counter definitions\n"
 	  "\t--show-counters,--no-show-counters\tShow available counters\n"
 	  "\t--set-counters <cpulist>:<counterlist>\tSet list of counters to measure\n"
 	  "\t--uid <uid>, -u <uid>          \trun as user\n"
@@ -117,7 +118,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   // let ^C go to children
   signal(SIGINT,SIG_IGN);
 
-  if (flag_require_counters){ inventory_counters(); }
+  if (flag_require_counters){ inventory_counters(0); }
   if (flag_cpustats){ init_cpustats(); }
   if (flag_diskstats){ init_diskstats(); }
   if (flag_memstats){ init_memstats(); }

@@ -450,8 +450,8 @@ void add_counterinfo(char *dir,char *name,char *group,int type){
   }
 }
 
-void inventory_counters(){
-  DIR *counterdir = opendir(COUNTER_DEFINITION_DIRECTORY);
+void inventory_counters(char *directory){
+  DIR *counterdir = opendir(directory==NULL?COUNTER_DEFINITION_DIRECTORY:directory);
   DIR *eventdir;
   FILE *fp;
   int lasttype = -1;
