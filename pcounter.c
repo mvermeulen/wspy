@@ -454,7 +454,7 @@ void add_counterinfo(char *dir,char *name,char *group,int type){
 	    ci->config |= value;
 	  }
 	} else if (!strncmp(field,"result=",7)){
-	  if (sscanf(&field[8],"%lx",&value) == 1){
+	  if (sscanf(&field[7],"%lx",&value) == 1){
 	    ci->config |= (value << 16);	  
 	}
 	} else {
