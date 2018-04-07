@@ -31,6 +31,7 @@ int flag_debug = 0;
 int flag_perfctr = 0;
 int flag_require_ftrace = 0;
 int flag_require_timer = 0;
+int flag_require_counters = 0;
 int flag_set_cpumask = 0;
 int flag_zip = 0;
 int uid_value;
@@ -111,6 +112,7 @@ int parse_options(int argc,char *const argv[]){
   cpu_set_t mask;
   char *p,*arg;
   FILE *fp;
+  struct counterinfo *ci;
   static struct option long_options[] = {
     { "cpustats",        no_argument, 0,       10 },
     { "no-cpustats",     no_argument, 0,       11 },
@@ -164,6 +166,11 @@ int parse_options(int argc,char *const argv[]){
     case 23: flag_showcounters = 1; break;
     case 24: flag_showcounters = 0; break;
     case 25:
+      // just in time, read the built-in counters
+      if (flag_require_counters == 0){
+	  inventory_counters(0);
+	  flag_require_counters = 1;
+      }
       if (p = strchr(optarg,':')){
 	// cpulist
 	*p = 0;
@@ -171,10 +178,31 @@ int parse_options(int argc,char *const argv[]){
 	parse_cpumask(optarg,&mask);
       } else {
 	arg = optarg;
+	for (i=0;i<num_procs;i++){
+	  CPU_SET(i,&mask);
+	}
       }
+      // delete the old counter lists (for now set to zero, slight memory leak)
+      for (i=0;i<num_procs;i++){
+	if (CPU_ISSET(i,&mask))
+	  perf_counters_by_cpu[i] = 0;
+      }
+      
       p = strtok(arg,", \t\n");
       while (p){
-	printf("counter = %s\n",p);
+	if ((ci = counterinfo_lookup(p,0,0)) == NULL){
+	  warning("unknown performance counter, ignored: %s\n",p);
+	} else {
+	  for (i=0;i<num_procs;i++){
+	    if (CPU_ISSET(i,&mask)){
+	      // build up lists in reverse order
+	      struct counterlist *cl = calloc(1,sizeof(struct counterlist));
+	      cl->name = strdup(p);
+	      cl->next = perf_counters_by_cpu[i];
+	      perf_counters_by_cpu[i] = cl;
+	    }
+	  }
+	}
 	p = strtok(NULL," ,\t\n");
       }
       break;
@@ -237,11 +265,6 @@ int parse_options(int argc,char *const argv[]){
     flag_require_timer = 1;
   } else {
     flag_require_timer = 0;    
-  }
-  if (flag_showcounters || flag_perfctr){
-    flag_require_counters = 1;
-  } else {
-    flag_require_counters = 0;
   }
   flag_require_ftrace = flag_proctree;
   if (argc > optind){

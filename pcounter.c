@@ -18,6 +18,7 @@
 #include "wspy.h"
 #include "error.h"
 
+struct counterlist *perf_counters_by_cpu[MAXCPU] = { 0 };
 #define COUNTER_DEFINITION_DIRECTORY	"/sys/devices"
 struct counterinfo *countertable = 0;
 #define COUNTERTABLE_ALLOC_CHUNK 1024
@@ -77,7 +78,7 @@ struct perfctr_info {
   struct perfctr_info *next;  
 };
 
-static struct perfctr_info *performance_counters = NULL;
+//static struct perfctr_info *performance_counters = NULL;
 
 // syscall wrapper since not part of glibc
 int perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
@@ -93,62 +94,62 @@ void init_perf_counters(){
   struct perf_event_attr pe;
   struct perfctr_info *pi;
   struct perfctr_info *last_pi = NULL, *first_pi = NULL;
+  struct counterlist *cl;
   perfctrfile = tmpfile();
+
   for (i=0;i<num_procs;i++){
-    confignum = i % (sizeof(default_config)/sizeof(default_config[0]));
-    for (j=0;j < default_config[confignum].ncount;j++){
+    for (cl = perf_counters_by_cpu[i];cl;cl = cl->next){
+      cl->ci = counterinfo_lookup(cl->name,0,0);
+      if (cl->ci == NULL){
+	// shouldn't fail since we already looked it up once in parsing the args...
+	error("unknown performance counter, ignored: %s\n",cl->name);
+      }
+      cl->value = 0;
       memset(&pe,0,sizeof(pe));
-      pe.type = default_config[confignum].counter[j].type;
-      pe.config = default_config[confignum].counter[j].config;
+      pe.type = cl->ci->type;
+      pe.config = cl->ci->config;
+      pe.config1 = cl->ci->config1;
       pe.size = sizeof(struct perf_event_attr);
       pe.disabled = 1;
       pe.exclude_kernel = 0;
       pe.exclude_hv = 0;
       pe.exclude_idle = 1;
-      pi = calloc(1,sizeof(struct perfctr_info));
-      pi->corenum = i;
-      pi->pconfig = default_config[confignum].counter[j];
-      pi->value = 0;
-      status = perf_event_open(&pe,-1,i,-1,0);
+      if (pe.type > 6){
+	pe.exclude_idle = 0;
+      }
+      status = perf_event_open(&pe,-1,0,-1,0);	
       if (status == -1){
 	error("unable to open performance counter pid=%d cpu=%d type=%d config=%d errno=%d %s\n",
 	      -1,i,pe.type,pe.config,errno,strerror(errno));
-	free(pi);
       } else {
-	pi->fd = status;
-	if (first_pi == NULL) first_pi = pi;
-	if (last_pi != NULL){
-	  pi->prev = last_pi;
-	  last_pi->next = pi;
-	}
-	last_pi = pi;
+	cl->fd = status;
       }
     }
   }
-  performance_counters = first_pi;
-  // walking through and start all the counters
-  for (pi = performance_counters;pi;pi = pi->next){
-    status = ioctl(pi->fd,PERF_EVENT_IOC_RESET,0);
-    if (status == -1){
-      error("reset of %s_%d returns -1, errno = %d %s\n",
-	    pi->pconfig.label,
-	    pi->corenum,
-	    errno,
-	    strerror(errno));
+
+  // walk through to start all the counters
+  for (i=0;i<num_procs;i++){
+    for (cl = perf_counters_by_cpu[i];cl;cl = cl->next){
+      status = ioctl(cl->fd,PERF_EVENT_IOC_RESET,0);
+      if (status == -1){
+	error("reset of %s_%d returns -1, errno = %d %s\n",
+	      cl->name,i,errno,strerror(errno));
+      }
+      status = ioctl(cl->fd,PERF_EVENT_IOC_ENABLE,0);
     }
-    status = ioctl(pi->fd,PERF_EVENT_IOC_ENABLE,0);
   }
 }
 
 void read_perf_counters(double time){
-  struct perfctr_info *pi;
-  int status;
-  
+  int status,i;
+  struct counterlist *cl;
   fprintf(perfctrfile,"time %f\n",time);
-  for (pi = performance_counters;pi;pi = pi->next){
-    status = read(pi->fd,&pi->value,sizeof(pi->value));
-    fprintf(perfctrfile,"%d_%s %ld\n",pi->corenum,pi->pconfig.label,pi->value);
-    debug("%d_%s %ld\n",pi->corenum,pi->pconfig.label,pi->value);
+  for (i=0;i<num_procs;i++){
+    for (cl = perf_counters_by_cpu[i];cl;cl = cl->next){
+      status = read(cl->fd,&cl->value,sizeof(cl->value));
+      fprintf(perfctrfile,"%d_%s %ld\n",i,cl->name,cl->value);
+      debug("%d_%s %ld\n",i,cl->name,cl->value);
+    }
   }
 }
 
@@ -162,12 +163,12 @@ void print_counter_info(int num,char *name,char *delim,FILE *output){
   char buffer[1024];
   double elapsed;
   int colnum;
+  struct counterlist *cl;
 
   // print header row
   fprintf(output,"core%d",num);
-  for (pi = performance_counters;pi;pi = pi->next){
-    if (pi->corenum != num) continue;
-    fprintf(output,"%s%s",delim,pi->pconfig.label);
+  for (cl = perf_counters_by_cpu[num];cl;cl = cl->next){
+    fprintf(output,"%s%s",delim,cl->name);
   }
   fprintf(output,"\n");
 
@@ -235,7 +236,7 @@ void print_perf_counter_files(void){
     }
     fclose(fp);
   }
-  print_perf_counter_gnuplot_file();
+  //  print_perf_counter_gnuplot_file();
 }
 
 void print_perf_counter_gnuplot_file(void){

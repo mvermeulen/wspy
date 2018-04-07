@@ -120,7 +120,6 @@ int main(int argc,char *const argv[],char *const envp[]){
   // let ^C go to children
   signal(SIGINT,SIG_IGN);
 
-  if (flag_require_counters){ inventory_counters(0); }
   if (flag_cpustats){ init_cpustats(); }
   if (flag_diskstats){ init_diskstats(); }
   if (flag_memstats){ init_memstats(); }

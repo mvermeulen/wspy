@@ -76,9 +76,20 @@ void init_perf_counters(void);
 void read_perf_counters(double time);
 void print_perf_counters(void);
 void print_perf_counter_files(void);
+struct counterinfo *counterinfo_lookup(char *name,char *group,int insert);
 void inventory_counters(char *directory);
 void print_counters(FILE *fp);
 void sort_counters(void);
+
+struct counterlist {
+  char *name;
+  long value;
+  int fd;
+  struct counterinfo *ci;
+  struct counterlist *next;
+};
+#define MAXCPU 16
+struct counterlist *perf_counters_by_cpu[MAXCPU];
 
 /* config.c */
 int command_line_argc;
