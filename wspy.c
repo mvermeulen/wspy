@@ -202,9 +202,11 @@ int main(int argc,char *const argv[],char *const envp[]){
     char *newdir = mkdtemp(tmpdir);
     char *basez;
     status = chdir(newdir);
-    fp = fopen("processtree.txt","w");
-    if (fp) print_all_process_trees(fp,basetime,command_name);
-    fclose(fp);
+    if (flag_proctree){
+      fp = fopen("processtree.txt","w");
+      if (fp) print_all_process_trees(fp,basetime,command_name);
+      fclose(fp);
+    }
     if (flag_cpustats) print_cpustats_files();
     if (flag_diskstats) print_diskstats_files();
     if (flag_perfctr) print_perf_counter_files();

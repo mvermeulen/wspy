@@ -270,7 +270,7 @@ int parse_options(int argc,char *const argv[]){
       break;
     }
   }
-  if (flag_cpustats || flag_perfctr){
+  if (flag_cpustats || flag_diskstats || flag_perfctr){
     flag_require_timer = 1;
   } else {
     flag_require_timer = 0;    
