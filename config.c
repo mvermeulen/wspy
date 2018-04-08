@@ -108,6 +108,7 @@ void read_config_file(void){
 int parse_options(int argc,char *const argv[]){
   int opt;
   int i;
+  int value;
   int longidx;
   cpu_set_t mask;
   char *p,*arg;
@@ -131,6 +132,7 @@ int parse_options(int argc,char *const argv[]){
     { "no-show-counters",no_argument, 0,       24 },
     { "set-counters",    required_argument, 0, 25 },
     { "counterinfo",     required_argument, 0, 26 },
+    { "interval",        required_argument, 0, 27 },
     { "debug",           no_argument, 0,       'd' },
     { "root",            required_argument, 0, 'r' },
     { "zip",             required_argument, 0, 'z' },
@@ -208,6 +210,13 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 26:
       inventory_counters(optarg);
+      break;
+    case 27:
+      if ((sscanf(optarg,"%d",&value) != 1)||(value < 1)){
+	warning("invalid interval, ignored: %s\n",optarg);
+      } else {
+	timer_interval = value;
+      }
       break;
     case 'd':
       flag_debug++;

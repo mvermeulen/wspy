@@ -18,6 +18,7 @@
 #include "error.h"
 
 int timer_fd;
+int timer_interval = 1000;
 FILE *cpuinfo = NULL;
 double now = 0;
 
@@ -37,10 +38,10 @@ void *timer_start(void *arg){
 
   // set the timer for once per second
   timer_fd = timerfd_create(CLOCK_MONOTONIC,0);
-  itval.it_interval.tv_sec = 1;
-  itval.it_interval.tv_nsec = 0;
-  itval.it_value.tv_sec = 1;
-  itval.it_value.tv_nsec = 0;
+  itval.it_interval.tv_sec = timer_interval/1000;
+  itval.it_interval.tv_nsec = (timer_interval%1000)*1000000;
+  itval.it_value.tv_sec = timer_interval/1000;
+  itval.it_value.tv_nsec = (timer_interval%1000)*1000000;
   timerfd_settime(timer_fd,0,&itval,NULL);
 
   // timer_loop()
@@ -69,8 +70,8 @@ static void timer_loop(void){
     FD_SET(timer_fd,&rdfd_list);
 
     // once a second
-    tv.tv_sec = 1;
-    tv.tv_usec = 0;
+    tv.tv_sec = timer_interval/1000;
+    tv.tv_usec = (timer_interval%1000)*1000000;
 
     status = select(maxfd+1,&rdfd_list,NULL,NULL,&tv);
 
@@ -83,7 +84,7 @@ static void timer_loop(void){
       }
       if (FD_ISSET(timer_fd,&rdfd_list)){
 	read(timer_fd,&expirations,sizeof(expirations));
-	now = now + 1;
+	now = now + ((double) timer_interval)/1000;
 	if (flag_cpustats) read_cpustats(now);
 	if (flag_diskstats) read_diskstats(now);
 	if (flag_perfctr) read_perf_counters(now);

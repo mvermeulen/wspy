@@ -37,6 +37,7 @@ int ktrace_cmd_pipe[2]; // command pipe
 void *ktrace_start(void *arg);
 
 /* timer.c */
+int timer_interval;
 int timer_cmd_pipe[2]; // command pipe
 void *timer_start(void *arg);
 

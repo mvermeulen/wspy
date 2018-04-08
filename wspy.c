@@ -92,12 +92,13 @@ int main(int argc,char *const argv[],char *const envp[]){
 	  "\t--set-counters <cpulist>:<counterlist>\tSet list of counters to measure\n"
 	  "\t--uid <uid>, -u <uid>          \trun as user\n"
 	  "\t--set-cpumask <cpulist>        \tbind child to list of cores\n"
+	  "\t--interval <value>             \tset timer in ms (default %d)\n"
 	  "\t--zip <archive-name>           \tcreate zip archive of results\n"
 	  "\t--root <proc>, -r <proc>       \tset name for process tree root\n"
 	  "\t--output <file>                \tredirect output to <file>\n"
 	  "\t--error-output <file>          \tredirect errors and debug to <file>\n"
 	  "\t--debug, -d                    \tinternal debugging flag\n",
-	  argv[0]);
+	  argv[0],timer_interval);
   }
 
   if (command_line_argv == NULL){
