@@ -29,7 +29,10 @@ int flag_memstats = 0;
 int flag_netstats = 0;
 int flag_debug = 0;
 int flag_perfctr = 0;
+int flag_proctree = 0;
+enum proctree_engine proctree_engine = PT_DEFAULT;
 int flag_require_ftrace = 0;
+int flag_require_ptrace = 0;
 int flag_require_timer = 0;
 int flag_require_counters = 0;
 int flag_set_cpumask = 0;
@@ -133,6 +136,7 @@ int parse_options(int argc,char *const argv[]){
     { "set-counters",    required_argument, 0, 25 },
     { "counterinfo",     required_argument, 0, 26 },
     { "interval",        required_argument, 0, 27 },
+    { "processtree-engine", required_argument,0,28 },
     { "debug",           no_argument, 0,       'd' },
     { "root",            required_argument, 0, 'r' },
     { "zip",             required_argument, 0, 'z' },
@@ -218,6 +222,17 @@ int parse_options(int argc,char *const argv[]){
 	timer_interval = value;
       }
       break;
+    case 28:
+      if (!strncmp(optarg,"ftrace",6)){
+	proctree_engine = PT_FTRACE;
+      } else if (!strncmp(optarg,"ptrace",6)){
+	proctree_engine = PT_PTRACE;
+      } else {
+	warning("invalid argument to --processtree-engine, ignored: %s\n"
+		"\texpecting either ftrace or ptrace\n"
+		,optarg);
+      }
+      break;
     case 'd':
       flag_debug++;
       if (flag_debug>1) set_error_level(ERROR_LEVEL_DEBUG2);
@@ -275,7 +290,19 @@ int parse_options(int argc,char *const argv[]){
   } else {
     flag_require_timer = 0;    
   }
-  flag_require_ftrace = flag_proctree;
+  if (flag_proctree){
+    switch(proctree_engine){
+    case PT_DEFAULT:
+    case PT_FTRACE:
+      flag_require_ftrace = 1;
+      flag_require_ptrace = 0;
+      break;
+    case PT_PTRACE:
+      flag_require_ftrace = 0;
+      flag_require_ptrace = 1;
+      break;
+    }
+  }
   if (argc > optind){
     if (command_line_argc != 0){
       warning("command line given twice\n");
