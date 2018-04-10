@@ -73,7 +73,14 @@ void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
   for (i=0;i<level;i++){
     fprintf(output,"  ");
   }
-  fprintf(output,"[%d] cpu=%d elapsed=%5.2f",pinfo->pid,pinfo->cpu,elapsed);
+  fprintf(output,"[%d] cpu=%d",pinfo->pid,pinfo->cpu);
+  if (flag_require_ftrace){
+    fprintf(output," elapsed=%5.2f",elapsed);
+  }
+  if (flag_require_ptrace){
+    fprintf(output," user=%4.2f system=%4.2f",pinfo->user,pinfo->system);
+    fprintf(output," vsize=%4.0fk",pinfo->vsize/1024.0);
+  }
   if ((pinfo->time_fork.tv_sec + pinfo->time_fork.tv_usec) &&
       (pinfo->time_exit.tv_sec + pinfo->time_exit.tv_usec)){
     fprintf(output," start=%5.2f finish=%5.2f",

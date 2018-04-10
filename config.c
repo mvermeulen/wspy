@@ -227,6 +227,8 @@ int parse_options(int argc,char *const argv[]){
 	proctree_engine = PT_FTRACE;
       } else if (!strncmp(optarg,"ptrace",6)){
 	proctree_engine = PT_PTRACE;
+      } else if (!strncmp(optarg,"all",3)){
+	proctree_engine = PT_ALL;
       } else {
 	warning("invalid argument to --processtree-engine, ignored: %s\n"
 		"\texpecting either ftrace or ptrace\n"
@@ -293,6 +295,10 @@ int parse_options(int argc,char *const argv[]){
   if (flag_proctree){
     switch(proctree_engine){
     case PT_DEFAULT:
+    case PT_ALL:
+      flag_require_ftrace = 1;
+      flag_require_ptrace = 1;
+      break;
     case PT_FTRACE:
       flag_require_ftrace = 1;
       flag_require_ptrace = 0;
