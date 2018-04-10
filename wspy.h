@@ -32,9 +32,13 @@ void print_all_process_trees(FILE *output,double basetime,char *name);
 void finalize_process_tree(void);
 double find_first_process_time(char *name);
 
-/* ktrace.c */
-int ktrace_cmd_pipe[2]; // command pipe
-void *ktrace_start(void *arg);
+/* ftrace.c */
+int ftrace_cmd_pipe[2]; // command pipe
+void *ftrace_start(void *arg);
+
+/* ptrace.c */
+void ptrace_setup(pid_t child);
+void ptrace_loop(void);
 
 /* timer.c */
 int timer_interval;

@@ -13,6 +13,7 @@
 #include <math.h>
 #include <errno.h>
 #include <sys/wait.h>
+#include <sys/ptrace.h>
 #include <sys/time.h>
 #include <sys/sysinfo.h>
 #include <libgen.h>
@@ -21,7 +22,8 @@
 
 pid_t child_pid = 0;
 procinfo *child_procinfo = NULL;
-pthread_t ktrace_thread;
+pthread_t ftrace_thread;
+pthread_t ptrace_thread;
 pthread_t timer_thread;
 char *default_command[] = { "sleep", "30", NULL };
 char original_dir[1024];
@@ -39,6 +41,10 @@ int setup_child_process(int argc,char **argv,char *const envp[]){
   case 0:
     if (flag_set_uid) setuid(uid_value);
     if (flag_setcpumask) sched_setaffinity(0,sizeof(cpu_set_t),&cpumask);
+    if (flag_require_ptrace){
+      debug("ptrace(PTRACE_TRACEME,0)\n");
+      ptrace(PTRACE_TRACEME,0,NULL,NULL);
+    } 
     close(child_pipe[1]); // close writing end
     read(child_pipe[0],pathbuf,PATHLEN); // wait until parent has written
     execve(argv[0],argv,envp);
@@ -70,7 +76,6 @@ int main(int argc,char *const argv[],char *const envp[]){
   int i;
   double basetime = 0;
   pid_t child;
-  sigset_t signal_mask;
 
   getcwd(original_dir,sizeof(original_dir));
   num_procs = get_nprocs();
@@ -114,7 +119,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   }
 
   sort_counters();
-  
+
   if (setup_child_process(command_line_argc,command_line_argv,envp)){
     fatal("unable to launch %s\n",command_line_argv[0]);
   }
@@ -129,10 +134,9 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (flag_perfctr){ init_perf_counters(); }
 
   if (flag_require_ftrace){
-    // kernel tracing
-    pthread_create(&ktrace_thread,NULL,ktrace_start,&child_pid);
+    pthread_create(&ftrace_thread,NULL,ftrace_start,&child_pid);
   }
-  
+
   if (flag_require_timer){
     double start_time = -5.0;
     // periodic timer
@@ -145,15 +149,24 @@ int main(int argc,char *const argv[],char *const envp[]){
   
   // let the child proceed
   write(child_pipe[1],"start\n",6);
+  
+  if (flag_require_ptrace){
+    ptrace_setup(child_pid);
+  }
 
   notice("running until %s completes\n",command_line_argv[0]);
-  child = waitpid(child_pid,&status,0);
-  if (WIFEXITED(status)){
-    if (WEXITSTATUS(status) != 0){
-      notice("child exited with status %d\n",WEXITSTATUS(status));
+  if (flag_require_ptrace){
+    ptrace_loop();
+  } else {
+    // without ptrace, this process waits for the child to complete
+    child = waitpid(child_pid,&status,0);
+    if (WIFEXITED(status)){
+      if (WEXITSTATUS(status) != 0){
+	notice("child exited with status %d\n",WEXITSTATUS(status));
+      }
+    } else if (WIFSIGNALED(status)){
+      notice("child signaled %d\n",WTERMSIG(status));
     }
-  } else if (WIFSIGNALED(status)){
-    notice("child signaled %d\n",WTERMSIG(status));
   }
 
   if ((child_procinfo->time_fork.tv_sec == 0) &&
@@ -165,8 +178,8 @@ int main(int argc,char *const argv[],char *const envp[]){
   basetime = child_procinfo->time_fork.tv_sec + child_procinfo->time_fork.tv_usec / 1000000.0;
 
   if (flag_require_ftrace){
-    write(ktrace_cmd_pipe[1],"quit\n",5);
-    pthread_join(ktrace_thread,NULL);
+    write(ftrace_cmd_pipe[1],"quit\n",5);
+    pthread_join(ftrace_thread,NULL);
   }
 
   if (flag_require_timer){

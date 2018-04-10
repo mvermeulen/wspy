@@ -1,5 +1,5 @@
 /*
- * ktrace.c - kernel tracing subsystem
+ * ftrace.c - kernel tracing subsystem
  *
  * Implementation of a thread to monitor kernel "ftrace" tracing capability.
  * Initial implementation views kernel sched scheduling.
@@ -18,28 +18,28 @@
 #include "error.h"
 
 #define TRACEFS "/sys/kernel/debug/tracing"
-int ktrace_cmd_pipe[2]; // command pipe
+int ftrace_cmd_pipe[2]; // command pipe
 int timer_cmd_pipe[2];  // command pipe
-static void ktrace_enable_tracing(void);
-static void ktrace_disable_tracing(void);
-static void ktrace_loop(void);
+static void ftrace_enable_tracing(void);
+static void ftrace_disable_tracing(void);
+static void ftrace_loop(void);
 static pid_t trace_pid = 0;
 
 
-void *ktrace_start(void *arg){
-  pipe(ktrace_cmd_pipe);
+void *ftrace_start(void *arg){
+  pipe(ftrace_cmd_pipe);
 
   trace_pid = ((pid_t *) arg)[0];
 
-  ktrace_enable_tracing();
+  ftrace_enable_tracing();
 
-  ktrace_loop();
+  ftrace_loop();
   
-  ktrace_disable_tracing();
+  ftrace_disable_tracing();
   return NULL;
 }
 
-static void ktrace_set_variable(char *filename,char *value){
+static void ftrace_set_variable(char *filename,char *value){
   FILE *fp = fopen(filename,"w+");
   if (fp){
     fputs(value,fp);
@@ -50,7 +50,7 @@ static void ktrace_set_variable(char *filename,char *value){
 }
 
 // turn on tracing
-static void ktrace_enable_tracing(void){
+static void ftrace_enable_tracing(void){
   char buffer[16];
   struct stat statbuf;
   if ((stat(TRACEFS,&statbuf) != 0) || ! S_ISDIR(statbuf.st_mode)){
@@ -63,20 +63,20 @@ static void ktrace_enable_tracing(void){
   }
   chdir(TRACEFS);
 
-  ktrace_set_variable("events/sched/sched_process_exec/enable","1\n");
-  ktrace_set_variable("events/sched/sched_process_exit/enable","1\n");
-  ktrace_set_variable("events/sched/sched_process_fork/enable","1\n");
-  ktrace_set_variable("tracing_on","1\n");  
+  ftrace_set_variable("events/sched/sched_process_exec/enable","1\n");
+  ftrace_set_variable("events/sched/sched_process_exit/enable","1\n");
+  ftrace_set_variable("events/sched/sched_process_fork/enable","1\n");
+  ftrace_set_variable("tracing_on","1\n");  
 }
 
 // turn off tracing
-static void ktrace_disable_tracing(void){
+static void ftrace_disable_tracing(void){
   chdir(TRACEFS);
-  ktrace_set_variable("tracing_on","0\n");
-  ktrace_set_variable("events/sched/enable","0\n");
+  ftrace_set_variable("tracing_on","0\n");
+  ftrace_set_variable("events/sched/enable","0\n");
 }
 
-static void ktrace_parse_line(char *line){
+static void ftrace_parse_line(char *line){
   char *p,*p2;
   int num_cpu = 0;
   int num_secs = 0;
@@ -170,31 +170,31 @@ static void ktrace_parse_line(char *line){
   }
 }
 
-static void ktrace_loop(void){
+static void ftrace_loop(void){
   fd_set rdfd_list;
   struct timeval tv;
   FILE *cmd_file,*trace_file;
   char buffer[1024],*p,*ptr;
   int status;
-  int ktrace_fd;
-  int maxfd = ktrace_cmd_pipe[0];
+  int ftrace_fd;
+  int maxfd = ftrace_cmd_pipe[0];
 
   // open the trace file system pipe
   chdir(TRACEFS);
-  if ((ktrace_fd = open("trace_pipe",O_RDONLY)) == -1){
+  if ((ftrace_fd = open("trace_pipe",O_RDONLY)) == -1){
     error("unable to open trace_pipe\n");
     pthread_exit(NULL);
   }
-  if (ktrace_fd > maxfd) maxfd = ktrace_fd;
-  trace_file = fdopen(ktrace_fd,"r");
+  if (ftrace_fd > maxfd) maxfd = ftrace_fd;
+  trace_file = fdopen(ftrace_fd,"r");
   
-  cmd_file = fdopen(ktrace_cmd_pipe[0],"r");
+  cmd_file = fdopen(ftrace_cmd_pipe[0],"r");
 
   // loop until a "quit" command is received
   while (1){
     FD_ZERO(&rdfd_list);
-    FD_SET(ktrace_cmd_pipe[0],&rdfd_list);
-    FD_SET(ktrace_fd,&rdfd_list);
+    FD_SET(ftrace_cmd_pipe[0],&rdfd_list);
+    FD_SET(ftrace_fd,&rdfd_list);
 
     // check once a second
     tv.tv_sec = 1;
@@ -202,15 +202,15 @@ static void ktrace_loop(void){
     status = select(maxfd+1,&rdfd_list,NULL,NULL,&tv);
 
     if (status){
-      if (FD_ISSET(ktrace_cmd_pipe[0],&rdfd_list)){
+      if (FD_ISSET(ftrace_cmd_pipe[0],&rdfd_list)){
 	fgets(buffer,sizeof(buffer),cmd_file);
 	if (!strncmp(buffer,"quit",4)){
 	  return;
 	}
       }
-      if (FD_ISSET(ktrace_fd,&rdfd_list)){
+      if (FD_ISSET(ftrace_fd,&rdfd_list)){
 	fgets(buffer,sizeof(buffer),trace_file);
-	ktrace_parse_line(buffer);
+	ftrace_parse_line(buffer);
       }
     }
   }
