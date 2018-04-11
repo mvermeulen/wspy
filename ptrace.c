@@ -156,7 +156,6 @@ void ptrace_loop(void){
   char *cmdline;
   char *statline;
   procinfo *pinfo,*child_pinfo;
-  int clocks_per_second = sysconf(_SC_CLK_TCK);
   struct procstat_info procstat_info;
   while (1){
     pid = wait(&status);
@@ -194,6 +193,10 @@ void ptrace_loop(void){
 	      child_pinfo->sibling = pinfo->child;
 	      pinfo->child = child_pinfo;
 	    }
+	    if (!flag_require_ftrace){
+	      // read the time if the ftrace isn't going to give it
+	      read_uptime(&child_pinfo->time_fork);
+	    }
 	  }
 	  break;
 	case PTRACE_EVENT_VFORK_DONE:
@@ -202,6 +205,9 @@ void ptrace_loop(void){
 	case PTRACE_EVENT_EXEC:
 	  cmdline = lookup_process_comm(pid);
 	  if (cmdline) pinfo->filename = strdup(cmdline);
+	  if (!flag_require_ftrace){
+	    read_uptime(&pinfo->time_exec);	    
+	  }
 	  break;
 	case PTRACE_EVENT_EXIT:
 	  if (pinfo->filename == NULL){
@@ -218,10 +224,13 @@ void ptrace_loop(void){
 	  }
 	  if (parse_process_stat(statline,&procstat_info)){
 	    pinfo->cpu = procstat_info.processor;
-	    pinfo->user = (double) procstat_info.utime / clocks_per_second;
-	    pinfo->system = (double) procstat_info.stime / clocks_per_second;
+	    pinfo->utime = procstat_info.utime;
+	    pinfo->stime = procstat_info.stime;
 	    pinfo->vsize = procstat_info.vsize;
 	  }
+	  if (!flag_require_ftrace){
+	    read_uptime(&pinfo->time_exit);	    
+	  }	  
 	  pinfo->p_exited = 1;
 	  break;
 	default:

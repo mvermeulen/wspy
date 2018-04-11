@@ -25,8 +25,7 @@ struct process_info {
   struct timeval time_fork;
   struct timeval time_exec;
   struct timeval time_exit;
-  double user,system;
-  unsigned long vsize;
+  unsigned long utime,stime,total_utime,total_stime,vsize;
   struct process_info *parent;
   struct process_info *sibling;
   struct process_info *child;
@@ -50,6 +49,7 @@ void ptrace_loop(void);
 int timer_interval;
 int timer_cmd_pipe[2]; // command pipe
 void *timer_start(void *arg);
+void read_uptime(struct timeval *tm);
 
 /* cpustatus.c */
 void init_cpustats(void);

@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/types.h>
 #include "wspy.h"
 #include "error.h"
@@ -70,18 +71,23 @@ procinfo *reverse_siblings(procinfo *p){
   return new_p;
 }
 
+static int clocks_per_second = 0;
 void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
   int i;
   double elapsed = elapsed_time(pinfo);
   procinfo *child;
+  double on_cpu,on_core;
+  unsigned long total_time;
   if (pinfo == NULL) return;
   if (level > 100) return;
+  if (clocks_per_second == 0) clocks_per_second = sysconf(_SC_CLK_TCK);
+
   for (i=0;i<level;i++){
     fprintf(output,"  ");
   }
   fprintf(output,"[%d] cpu=%d",pinfo->pid,pinfo->cpu);
+  fprintf(output," elapsed=%5.2f",elapsed);
   if (pinfo->f_exited){
-    fprintf(output," elapsed=%5.2f",elapsed);
     if ((pinfo->time_fork.tv_sec + pinfo->time_fork.tv_usec) &&
 	(pinfo->time_exit.tv_sec + pinfo->time_exit.tv_usec)){
       fprintf(output," start=%5.2f finish=%5.2f",
@@ -90,7 +96,15 @@ void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
     }
   }
   if (pinfo->p_exited){
-    fprintf(output," user=%4.2f system=%4.2f",pinfo->user,pinfo->system);
+    total_time = pinfo->total_utime + pinfo->total_stime;
+    if (total_time){
+      on_core = (double) total_time/clocks_per_second/elapsed;
+      on_cpu = on_core / num_procs;
+      fprintf(output," on_cpu=%3.2f on_core=%3.2f",on_cpu,on_core);
+    }
+    fprintf(output," user=%4.2f system=%4.2f",
+	    pinfo->utime / (double) clocks_per_second,
+	    pinfo->stime / (double) clocks_per_second);
     fprintf(output," vsize=%4.0fk",pinfo->vsize/1024.0);
   }
   if (pinfo->filename)
@@ -138,7 +152,7 @@ void print_all_process_trees(FILE *output,double basetime,char *name){
   }
 }
 
-int count_processes(procinfo *pinfo);
+void sum_counts_processes(procinfo *pinfo);
 // make remaining tweaks before printing, e.g. reverse sibling order
 void finalize_process_tree(void){
   int i;
@@ -148,7 +162,7 @@ void finalize_process_tree(void){
   for (i=0;i<HASHBUCKETS;i++){
     for (hash = process_table[i];hash;hash = hash->next){
       // update the counts
-      count_processes(hash->pinfo);
+      sum_counts_processes(hash->pinfo);
       // fix up any children
       if (hash->pinfo->child && !hash->pinfo->sibling_order){
 	hash->pinfo->child = reverse_siblings(hash->pinfo->child);
@@ -159,17 +173,28 @@ void finalize_process_tree(void){
 }
 
 // count # of children of a process (including self)
-int count_processes(procinfo *pinfo){
-  int count;
+// total the utime and stime
+void sum_counts_processes(procinfo *pinfo){
+  int pcount;
+  unsigned long total_utime;
+  unsigned long total_stime;
   procinfo *child;
   if (pinfo->pcount == 0){
-    count = 1;
+    // not yet counted
+    pcount = 1;
+    total_utime = pinfo->utime;
+    total_stime = pinfo->stime;
+      
     for (child = pinfo->child;child;child = child->sibling){
-      count += count_processes(child);
+      sum_counts_processes(child);
+      pcount      += child->pcount;
+      total_utime += child->total_utime;
+      total_stime += child->total_stime;
     }
-    pinfo->pcount = count;
+    pinfo->pcount = pcount;
+    pinfo->total_utime = total_utime;
+    pinfo->total_stime = total_stime;
   }
-  return pinfo->pcount;
 }
 
 // find and return the start time of first process that matches name

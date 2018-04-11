@@ -155,6 +155,7 @@ int main(int argc,char *const argv[],char *const envp[]){
     ptrace_setup(child_pid);
   }
 
+  read_uptime(&child_procinfo->time_fork);
   notice("running until %s completes\n",command_line_argv[0]);
   if (flag_require_ptrace){
     ptrace_loop();
@@ -196,9 +197,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   }
 
   pthread_mutex_lock(&event_lock);
-  printf("<lock>wspy\n");
   finalize_process_tree();
-  printf("<unlock>wspy\n");  
   pthread_mutex_unlock(&event_lock);
   if (flag_cmd) basetime = find_first_process_time(command_name);
   if (flag_proctree && !flag_zip)
