@@ -162,7 +162,6 @@ static void ftrace_parse_line(char *line){
     pinfo->cpu = num_cpu;
     pinfo->time_exit.tv_sec = num_secs;
     pinfo->time_exit.tv_usec = num_usecs;
-    pinfo->exited = 1;
     pinfo->f_exited = 1;
 
     debug("exit(pid=%d,cpu=%d,time=%d\056%d)\n",

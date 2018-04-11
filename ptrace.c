@@ -84,6 +84,22 @@ char *lookup_process_stat(pid_t pid){
   return NULL;
 }
 
+// get static buffer for /proc/[pid]/task/[pid]/stat
+char *lookup_process_task_stat(pid_t pid){
+  int fd;
+  char procfile[32];
+  int len;
+  static char buffer[1024];
+  snprintf(procfile,sizeof(procfile),"/proc/%d/task/%d/stat",pid,pid);
+  if ((fd = open(procfile,O_RDONLY)) > -1){
+    len = read(fd,buffer,sizeof(buffer));
+    close(fd);
+    if (len <= 0) return NULL;
+    return buffer;
+  }
+  return NULL;
+}
+
 
 /* Turn the stat information into a structure */
 int parse_process_stat(char *line,struct procstat_info *pi){
@@ -136,7 +152,9 @@ void ptrace_loop(void){
   pid_t pid;
   int status;
   long data;
+  int cloned;
   char *cmdline;
+  char *statline;
   procinfo *pinfo,*child_pinfo;
   int clocks_per_second = sysconf(_SC_CLK_TCK);
   struct procstat_info procstat_info;
@@ -157,14 +175,18 @@ void ptrace_loop(void){
       if (WSTOPSIG(status) == SIGTRAP){
 	if (flag_require_ftrace) pthread_mutex_lock(&event_lock);
 	pinfo = lookup_process_info(pid,1);
+	cloned = 0;
 	switch(status>>16){
+	case PTRACE_EVENT_CLONE:
+	  cloned = 1; // fall thru
 	case PTRACE_EVENT_FORK:
 	case PTRACE_EVENT_VFORK:
-	case PTRACE_EVENT_CLONE:
+	  pinfo->cloned = cloned;
 	  // This process had a fork/vfork/clone, get the child process
 	  if (ptrace(PTRACE_GETEVENTMSG,pid,NULL,&data) != -1){
 	    debug2("pid %d forked to create new pid %ld\n",pid,data);
 	    child_pinfo = lookup_process_info(data,1);
+	    child_pinfo->cloned = 1;
 	    child_pinfo->ppid = pid;
 	    // only create parent/sibling links if not already done e.g. by ftrace
 	    if (child_pinfo->parent == NULL){
@@ -187,13 +209,19 @@ void ptrace_loop(void){
 	    cmdline = lookup_process_comm(pid);
 	    if (cmdline) pinfo->filename = strdup(cmdline);	    
 	  }
-	  if (parse_process_stat(lookup_process_stat(pid),&procstat_info)){
+	  if (pinfo->cloned){
+	    if ((statline = lookup_process_task_stat(pid)) == NULL){
+	      statline = lookup_process_stat(pid);
+	    }
+	  } else {
+	    statline = lookup_process_stat(pid);	    
+	  }
+	  if (parse_process_stat(statline,&procstat_info)){
 	    pinfo->cpu = procstat_info.processor;
 	    pinfo->user = (double) procstat_info.utime / clocks_per_second;
 	    pinfo->system = (double) procstat_info.stime / clocks_per_second;
 	    pinfo->vsize = procstat_info.vsize;
 	  }
-	  pinfo->exited = 1;
 	  pinfo->p_exited = 1;
 	  break;
 	default:

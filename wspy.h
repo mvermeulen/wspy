@@ -14,10 +14,10 @@ struct process_info {
   pid_t pid;
   pid_t ppid;
   int cpu;
-  unsigned int exited  : 1;
   unsigned int f_exited : 1; // ftrace
   unsigned int p_exited : 1; // ptrace
   unsigned int printed : 1;
+  unsigned int cloned : 1;
   unsigned int sibling_order : 1;
   char *comm;
   char *filename;
