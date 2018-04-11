@@ -6,7 +6,6 @@
  */
 
 #include <stdio.h>
-#include <pthread.h>
 #include <string.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -135,9 +134,12 @@ static void ftrace_parse_line(char *line){
     child_pinfo->ppid = npid;
     child_pinfo->time_fork.tv_sec = num_secs;
     child_pinfo->time_fork.tv_usec = num_usecs;
-    child_pinfo->parent = pinfo;
-    child_pinfo->sibling = pinfo->child;
-    pinfo->child = child_pinfo;
+    // only create parent/sibling links if not already done e.g. by ptrace
+    if (child_pinfo->parent == NULL){
+      child_pinfo->parent = pinfo;
+      child_pinfo->sibling = pinfo->child;
+      pinfo->child = child_pinfo;
+    }
 
     debug("fork(pid=%d,cpu=%d,time=%d\056%d,child_pid=%d)\n",
 	  npid,num_cpu,num_secs,num_usecs,child_pid);
@@ -161,6 +163,7 @@ static void ftrace_parse_line(char *line){
     pinfo->time_exit.tv_sec = num_secs;
     pinfo->time_exit.tv_usec = num_usecs;
     pinfo->exited = 1;
+    pinfo->f_exited = 1;
 
     debug("exit(pid=%d,cpu=%d,time=%d\056%d)\n",
 	  npid,num_cpu,num_secs,num_usecs);
@@ -210,7 +213,9 @@ static void ftrace_loop(void){
       }
       if (FD_ISSET(ftrace_fd,&rdfd_list)){
 	fgets(buffer,sizeof(buffer),trace_file);
+	if (flag_require_ptrace) pthread_mutex_lock(&event_lock);
 	ftrace_parse_line(buffer);
+	if (flag_require_ptrace) pthread_mutex_unlock(&event_lock);
       }
     }
   }

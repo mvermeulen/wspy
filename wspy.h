@@ -1,11 +1,13 @@
 /* wspy.h - header definitions for wspy program */
 #include <sys/types.h>
 #include <inttypes.h>
+#include <pthread.h>
 #include <sched.h>
 
 /* wspy.c */
 FILE *outfile;
 int num_procs;
+pthread_mutex_t event_lock;
 
 /* procinfo.c */
 struct process_info {
@@ -13,6 +15,8 @@ struct process_info {
   pid_t ppid;
   int cpu;
   unsigned int exited  : 1;
+  unsigned int f_exited : 1; // ftrace
+  unsigned int p_exited : 1; // ptrace
   unsigned int printed : 1;
   unsigned int sibling_order : 1;
   char *comm;

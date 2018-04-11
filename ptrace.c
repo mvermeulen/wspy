@@ -155,6 +155,7 @@ void ptrace_loop(void){
       debug2("pid %d signaled\n",pid);
     } else if (WIFSTOPPED(status)){
       if (WSTOPSIG(status) == SIGTRAP){
+	if (flag_require_ftrace) pthread_mutex_lock(&event_lock);
 	pinfo = lookup_process_info(pid,1);
 	switch(status>>16){
 	case PTRACE_EVENT_FORK:
@@ -165,9 +166,12 @@ void ptrace_loop(void){
 	    debug2("pid %d forked to create new pid %ld\n",pid,data);
 	    child_pinfo = lookup_process_info(data,1);
 	    child_pinfo->ppid = pid;
-	    child_pinfo->parent = pinfo;
-	    child_pinfo->sibling = pinfo->child;
-	    pinfo->child = child_pinfo;
+	    // only create parent/sibling links if not already done e.g. by ftrace
+	    if (child_pinfo->parent == NULL){
+	      child_pinfo->parent = pinfo;
+	      child_pinfo->sibling = pinfo->child;
+	      pinfo->child = child_pinfo;
+	    }
 	  }
 	  break;
 	case PTRACE_EVENT_VFORK_DONE:
@@ -190,11 +194,13 @@ void ptrace_loop(void){
 	    pinfo->vsize = procstat_info.vsize;
 	  }
 	  pinfo->exited = 1;
+	  pinfo->p_exited = 1;
 	  break;
 	default:
 	  debug("pid %d stopped with event %d\n",pid,status>>16);
 	  break;
 	}
+	if (flag_require_ftrace) pthread_mutex_unlock(&event_lock);	
       } else if (WSTOPSIG(status) == SIGSTOP){
 	// SIGSTOP is given as status for newly created processes after fork/vfork/clone
 	// it can't be delivered to the child

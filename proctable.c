@@ -18,11 +18,17 @@ procinfo *lookup_process_info(pid_t pid,int insert){
   procinfo *pinfo,*ppinfo,*pinfo_sibling;
   for (hentry = process_table[pid%HASHBUCKETS];hentry != NULL;hentry = hentry->next){
     // pid's can wrap around, so skip processes if they've exited
-    if (hentry->pinfo->exited) continue;
-    if (hentry->pinfo->pid == pid) return hentry->pinfo;
+    if ((!flag_require_ptrace || hentry->pinfo->p_exited) &&
+	(!flag_require_ftrace || hentry->pinfo->f_exited)) continue;
+    //    if (hentry->pinfo->exited) continue;
+    if (hentry->pinfo->pid == pid){
+      return hentry->pinfo;
+    }
   }
   // not found
-  if (insert == 0) return NULL;
+  if (insert == 0){
+    return NULL;
+  }
 
   // splice in a new entry
   pinfo = calloc(1,sizeof(procinfo));

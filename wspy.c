@@ -9,7 +9,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <pthread.h>
 #include <math.h>
 #include <errno.h>
 #include <sys/wait.h>
@@ -79,6 +78,8 @@ int main(int argc,char *const argv[],char *const envp[]){
 
   getcwd(original_dir,sizeof(original_dir));
   num_procs = get_nprocs();
+  if (pthread_mutex_init(&event_lock,NULL) != 0)
+    error("mutex lock creation failed\n");
   
   initialize_error_subsystem(argv[0],"-");
 
@@ -194,7 +195,11 @@ int main(int argc,char *const argv[],char *const envp[]){
     print_counters(outfile);
   }
 
+  pthread_mutex_lock(&event_lock);
+  printf("<lock>wspy\n");
   finalize_process_tree();
+  printf("<unlock>wspy\n");  
+  pthread_mutex_unlock(&event_lock);
   if (flag_cmd) basetime = find_first_process_time(command_name);
   if (flag_proctree && !flag_zip)
     print_all_process_trees(outfile,basetime,command_name);
