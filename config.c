@@ -31,10 +31,13 @@ int flag_debug = 0;
 int flag_perfctr = 0;
 int flag_proctree = 0;
 enum proctree_engine proctree_engine = PT_DEFAULT;
+enum perfcounter_model perfcounter_model = PM_DEFAULT;
 int flag_require_ftrace = 0;
 int flag_require_ptrace = 0;
 int flag_require_timer = 0;
 int flag_require_counters = 0;
+int flag_require_perftree = 0;
+int flag_require_perftimer = 0;
 int flag_set_cpumask = 0;
 int flag_zip = 0;
 int uid_value;
@@ -137,6 +140,7 @@ int parse_options(int argc,char *const argv[]){
     { "counterinfo",     required_argument, 0, 26 },
     { "interval",        required_argument, 0, 27 },
     { "processtree-engine", required_argument,0,28 },
+    { "perfcounter-model", required_argument,0,29 },
     { "debug",           no_argument, 0,       'd' },
     { "root",            required_argument, 0, 'r' },
     { "zip",             required_argument, 0, 'z' },
@@ -235,6 +239,17 @@ int parse_options(int argc,char *const argv[]){
 		,optarg);
       }
       break;
+    case 29:
+      if (!strncmp(optarg,"core",4)){
+	perfcounter_model = PM_CORE;
+      } else if (!strncmp(optarg,"process",7)){
+	perfcounter_model = PM_PROCESS;
+      } else {
+	warning("invalid argument to --perfcounter-model, ignored: %s\n"
+		"\texpecting either core or process\n",
+		optarg);
+      }
+      break;
     case 'd':
       flag_debug++;
       if (flag_debug>1) set_error_level(ERROR_LEVEL_DEBUG2);
@@ -287,11 +302,6 @@ int parse_options(int argc,char *const argv[]){
       break;
     }
   }
-  if (flag_cpustats || flag_diskstats || flag_perfctr){
-    flag_require_timer = 1;
-  } else {
-    flag_require_timer = 0;    
-  }
   if (flag_proctree){
     switch(proctree_engine){
     case PT_DEFAULT:
@@ -308,6 +318,27 @@ int parse_options(int argc,char *const argv[]){
       flag_require_ptrace = 1;
       break;
     }
+  }
+  if (flag_perfctr){
+    switch(perfcounter_model){
+    case PM_DEFAULT:
+    case PM_CORE:
+      flag_require_perftimer = 1;
+      flag_require_perftree = 0;
+      break;
+    case PM_PROCESS:
+      flag_require_perftimer = 0;
+      flag_require_perftree = 1;
+      break;
+    }
+  } else {
+    flag_require_perftimer = 0;
+    flag_require_perftree = 0;
+  }
+  if (flag_cpustats || flag_diskstats || flag_require_perftimer){
+    flag_require_timer = 1;
+  } else {
+    flag_require_timer = 0;    
   }
   if (argc > optind){
     if (command_line_argc != 0){

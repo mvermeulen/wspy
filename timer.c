@@ -86,7 +86,7 @@ static void timer_loop(void){
 	now = now + ((double) timer_interval)/1000;
 	if (flag_cpustats) read_cpustats(now);
 	if (flag_diskstats) read_diskstats(now);
-	if (flag_perfctr) read_perf_counters(now);
+	if (flag_require_perftimer) read_perf_counters(now);
       }
     }
   }

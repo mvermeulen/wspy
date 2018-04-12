@@ -94,6 +94,7 @@ int main(int argc,char *const argv[],char *const envp[]){
 	  "\t--processtree, --no-processtree\tGenerate process tree\n"
 	  "\t--processtree-engine <engine>  \tSet engine to either ftrace or ptrace\n"
 	  "\t--perfcounters, --no-perfcounters\tCollect basic perf counters\n"
+	  "\t--perfcounter-model            \tSet perfcounters to either core or process\n"
 	  "\t--counterinfo                  \tRead directory of counter definitions\n"
 	  "\t--show-counters,--no-show-counters\tShow available counters\n"
 	  "\t--set-counters <cpulist>:<counterlist>\tSet list of counters to measure\n"
@@ -132,7 +133,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (flag_diskstats){ init_diskstats(); }
   if (flag_memstats){ init_memstats(); }
   if (flag_netstats){ init_netstats(); }
-  if (flag_perfctr){ init_perf_counters(); }
+  if (flag_require_perftimer){ init_perf_counters(); }
 
   if (flag_require_ftrace){
     pthread_create(&ftrace_thread,NULL,ftrace_start,&child_pid);
@@ -209,7 +210,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (flag_diskstats && !flag_zip)
     print_diskstats();
 
-  if (flag_perfctr && !flag_zip)
+  if (flag_require_perftimer && !flag_zip)
     print_perf_counters();
 
   if (flag_zip){
@@ -227,7 +228,7 @@ int main(int argc,char *const argv[],char *const envp[]){
     }
     if (flag_cpustats) print_cpustats_files();
     if (flag_diskstats) print_diskstats_files();
-    if (flag_perfctr) print_perf_counter_files();
+    if (flag_require_perftimer) print_perf_counter_files();
 
     strcpy(basezvalue,zip_archive_name);
     basez = basename(basezvalue);
