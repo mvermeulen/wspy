@@ -88,7 +88,7 @@ int perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
   return ret;
 }
 
-void init_perf_counters(){
+void init_global_perf_counters(){
   int i,j,confignum;
   int status;
   struct perf_event_attr pe;
@@ -140,7 +140,33 @@ void init_perf_counters(){
   }
 }
 
-void read_perf_counters(double time){
+// for now just measure IPC
+int default_process_counters[] = {
+  PERF_COUNT_HW_INSTRUCTIONS,
+  PERF_COUNT_HW_CPU_CYCLES,
+};
+
+void start_process_perf_counters(procinfo *pinfo){
+  int i;
+  struct perf_event_attr pe[NUM_COUNTERS];
+  if (pinfo){
+    memset(pe,'\0',sizeof(pe));
+    for (i=0;i<NUM_COUNTERS;i++){
+      pe[i].type = PERF_TYPE_HARDWARE; // generalized counters
+      pe[i].config = default_process_counters[i];
+      pe[i].size = sizeof(struct perf_event_attr);
+      pe[i].disabled = 1;
+      pinfo->perf_fd[i] = perf_event_open(&pe[i],pinfo->pid,-1,-1,0);
+      if (pinfo->perf_fd[i] != -1){
+	ioctl(pinfo->perf_fd[i],PERF_EVENT_IOC_RESET,0);
+	ioctl(pinfo->perf_fd[i],PERF_EVENT_IOC_ENABLE,0);
+      }
+      debug("start counter %d for pid %d (fd=%d)\n",i,pinfo->pid,pinfo->perf_fd[i]);
+    }
+  }
+}
+
+void read_global_perf_counters(double time){
   int status,i;
   struct counterlist *cl;
   fprintf(perfctrfile,"time %f\n",time);
@@ -149,6 +175,21 @@ void read_perf_counters(double time){
       status = read(cl->fd,&cl->value,sizeof(cl->value));
       fprintf(perfctrfile,"%d_%s %ld\n",i,cl->name,cl->value);
       debug("%d_%s %ld\n",i,cl->name,cl->value);
+    }
+  }
+}
+
+void stop_process_perf_counters(procinfo *pinfo){
+  int status;
+  int i;
+  if (pinfo){
+    for (i=0;i<NUM_COUNTERS;i++){
+      if (pinfo->perf_fd[i] > 0){
+	status = read(pinfo->perf_fd[i],&pinfo->perf_counter[i],
+		      sizeof(pinfo->perf_counter[i]));
+	close(pinfo->perf_fd[i]);
+	debug("stop counter %d for pid %d\n",i,pinfo->pid);	
+      }
     }
   }
 }
@@ -211,7 +252,7 @@ void print_counter_info(int num,char *name,char *delim,FILE *output){
   fprintf(output,"\n");  
 }
 
-void print_perf_counters(void){
+void print_global_perf_counters(void){
   int i;
   char perfbuf[16];
 
@@ -221,7 +262,7 @@ void print_perf_counters(void){
   }
 }
 
-void print_perf_counter_files(void){
+void print_global_perf_counter_files(void){
   int i;
   char perfbuf[16];
   char perffile[32];

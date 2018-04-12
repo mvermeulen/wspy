@@ -85,8 +85,27 @@ void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
   for (i=0;i<level;i++){
     fprintf(output,"  ");
   }
-  fprintf(output,"[%d] cpu=%d",pinfo->pid,pinfo->cpu);
+  if (pinfo->cloned)
+    fprintf(output,"(%d)",pinfo->pid);
+  else
+    fprintf(output,"[%d]",pinfo->pid);
+  if (pinfo->filename)
+    fprintf(output," %-12s",pinfo->filename);
+  else
+    fprintf(output," %-12s",pinfo->comm);
+  fprintf(output," cpu=%d",pinfo->cpu);
+  if (flag_require_perftree && flag_require_ptrace){
+    fprintf(output," ipc=%4.2f",
+	    (double) pinfo->total_counter[0] / pinfo->total_counter[1]);
+    total_time = pinfo->total_utime + pinfo->total_stime;
+    if (total_time){
+      on_core = (double) total_time/clocks_per_second/elapsed;
+      on_cpu = on_core / num_procs;
+      fprintf(output," on_cpu=%3.2f on_core=%3.2f",on_cpu,on_core);
+    }
+  }
   fprintf(output," elapsed=%5.2f",elapsed);
+
   if (pinfo->f_exited){
     if ((pinfo->time_fork.tv_sec + pinfo->time_fork.tv_usec) &&
 	(pinfo->time_exit.tv_sec + pinfo->time_exit.tv_usec)){
@@ -94,23 +113,11 @@ void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
 	      (pinfo->time_fork.tv_sec + pinfo->time_fork.tv_usec / 1000000.0)-basetime,
 	      (pinfo->time_exit.tv_sec + pinfo->time_exit.tv_usec / 1000000.0)-basetime);
     }
-  }
-  if (pinfo->p_exited){
-    total_time = pinfo->total_utime + pinfo->total_stime;
-    if (total_time){
-      on_core = (double) total_time/clocks_per_second/elapsed;
-      on_cpu = on_core / num_procs;
-      fprintf(output," on_cpu=%3.2f on_core=%3.2f",on_cpu,on_core);
-    }
+  } else if (pinfo->p_exited){
     fprintf(output," user=%4.2f system=%4.2f",
 	    pinfo->utime / (double) clocks_per_second,
 	    pinfo->stime / (double) clocks_per_second);
-    fprintf(output," vsize=%4.0fk",pinfo->vsize/1024.0);
   }
-  if (pinfo->filename)
-    fprintf(output," %s",pinfo->filename);
-  else
-    fprintf(output," %s",pinfo->comm);
   fprintf(output," pcount=%d",pinfo->pcount);
   fprintf(output,"\n");
   pinfo->printed = 1;
@@ -174,26 +181,35 @@ void finalize_process_tree(void){
 
 // count # of children of a process (including self)
 // total the utime and stime
+// total the performance counter times
 void sum_counts_processes(procinfo *pinfo){
+  int i;
   int pcount;
   unsigned long total_utime;
   unsigned long total_stime;
+  unsigned long total_counter[NUM_COUNTERS];
   procinfo *child;
   if (pinfo->pcount == 0){
     // not yet counted
     pcount = 1;
     total_utime = pinfo->utime;
     total_stime = pinfo->stime;
+    for (i=0;i<NUM_COUNTERS;i++)
+      total_counter[i] = pinfo->perf_counter[i];
       
     for (child = pinfo->child;child;child = child->sibling){
       sum_counts_processes(child);
       pcount      += child->pcount;
       total_utime += child->total_utime;
       total_stime += child->total_stime;
+      for (i=0;i<NUM_COUNTERS;i++)
+	total_counter[i] += child->total_counter[i];
     }
     pinfo->pcount = pcount;
     pinfo->total_utime = total_utime;
     pinfo->total_stime = total_stime;
+    for (i=0;i<NUM_COUNTERS;i++)
+      pinfo->total_counter[i] = total_counter[i];
   }
 }
 

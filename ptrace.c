@@ -198,6 +198,9 @@ void ptrace_loop(void){
 	      read_uptime(&child_pinfo->time_fork);
 	    }
 	  }
+	  if (flag_require_perftree){
+	    start_process_perf_counters(child_pinfo);
+	  }
 	  break;
 	case PTRACE_EVENT_VFORK_DONE:
 	  // At this point nothing unique to do
@@ -230,7 +233,10 @@ void ptrace_loop(void){
 	  }
 	  if (!flag_require_ftrace){
 	    read_uptime(&pinfo->time_exit);	    
-	  }	  
+	  }
+	  if (flag_require_perftree){
+	    stop_process_perf_counters(pinfo);
+	  }
 	  pinfo->p_exited = 1;
 	  break;
 	default:

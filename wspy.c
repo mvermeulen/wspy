@@ -133,7 +133,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (flag_diskstats){ init_diskstats(); }
   if (flag_memstats){ init_memstats(); }
   if (flag_netstats){ init_netstats(); }
-  if (flag_require_perftimer){ init_perf_counters(); }
+  if (flag_require_perftimer){ init_global_perf_counters(); }
 
   if (flag_require_ftrace){
     pthread_create(&ftrace_thread,NULL,ftrace_start,&child_pid);
@@ -148,6 +148,8 @@ int main(int argc,char *const argv[],char *const envp[]){
   // wait 5 seconds to allow subsystems to start
   sleep(5);
   child_procinfo = lookup_process_info(child_pid,1);
+  if (flag_require_ptrace && flag_require_perftree)
+    start_process_perf_counters(child_procinfo);
   
   // let the child proceed
   write(child_pipe[1],"start\n",6);
@@ -211,7 +213,7 @@ int main(int argc,char *const argv[],char *const envp[]){
     print_diskstats();
 
   if (flag_require_perftimer && !flag_zip)
-    print_perf_counters();
+    print_global_perf_counters();
 
   if (flag_zip){
     FILE *fp;
@@ -228,7 +230,7 @@ int main(int argc,char *const argv[],char *const envp[]){
     }
     if (flag_cpustats) print_cpustats_files();
     if (flag_diskstats) print_diskstats_files();
-    if (flag_require_perftimer) print_perf_counter_files();
+    if (flag_require_perftimer) print_global_perf_counter_files();
 
     strcpy(basezvalue,zip_archive_name);
     basez = basename(basezvalue);
