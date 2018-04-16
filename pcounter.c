@@ -29,7 +29,7 @@ FILE *perfctrfile = NULL;
 
 void print_perf_counter_gnuplot_file(void);
 
-#define MAX_COUNTERS_PER_CORE 4
+#define MAX_COUNTERS_PER_CORE 6
 struct perf_config {
   char *label;
   uint32_t type;

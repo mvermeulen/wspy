@@ -10,7 +10,7 @@ int num_procs;
 pthread_mutex_t event_lock;
 
 /* procinfo.c */
-#define NUM_COUNTERS 2 // for now just instructions & cycles
+#define NUM_COUNTERS 6 // for now just instructions & cycles
 struct process_info {
   pid_t pid;
   pid_t ppid;
