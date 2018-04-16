@@ -124,3 +124,7 @@ void set_error_stream(FILE *fp){
 void set_error_level(enum error_level level){
   elevel = level;
 }
+
+enum error_level get_error_level(void){
+  return elevel;
+}

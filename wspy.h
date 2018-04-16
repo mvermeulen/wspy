@@ -26,10 +26,12 @@ struct process_info {
   int perf_fd[NUM_COUNTERS];
   unsigned long perf_counter[NUM_COUNTERS];
   unsigned long total_counter[NUM_COUNTERS];
+  unsigned long long starttime;
+  unsigned long minflt,majflt;
   struct timeval time_fork;
   struct timeval time_exec;
   struct timeval time_exit;
-  unsigned long utime,stime,total_utime,total_stime,vsize;
+  unsigned long utime,stime,total_utime,total_stime,vsize,rss;
   struct process_info *parent;
   struct process_info *sibling;
   struct process_info *child;
@@ -38,6 +40,7 @@ typedef struct process_info procinfo;
 procinfo *lookup_process_info(pid_t pid,int insert);
 void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime);
 void print_all_process_trees(FILE *output,double basetime,char *name);
+int print_all_processes_csv(FILE *output);
 void finalize_process_tree(void);
 double find_first_process_time(char *name);
 

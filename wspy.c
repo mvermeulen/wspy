@@ -222,11 +222,24 @@ int main(int argc,char *const argv[],char *const envp[]){
     char tmpdir[] = "/tmp/wspy.XXXXXX";
     char *newdir = mkdtemp(tmpdir);
     char *basez;
+    int count = 0;
     status = chdir(newdir);
     if (flag_proctree){
       fp = fopen("processtree.txt","w");
-      if (fp) print_all_process_trees(fp,basetime,command_name);
-      fclose(fp);
+      if (fp){
+	print_all_process_trees(fp,basetime,command_name);
+	fclose(fp);
+      }
+      fp = fopen("processtree.csv","w");
+      if (fp){
+	count = print_all_processes_csv(fp);
+	fclose(fp);
+      }
+      fp = fopen("processtree.num","w");
+      if (fp){
+	fprintf(fp,"%d\n",count);
+	fclose(fp);
+      }
     }
     if (flag_cpustats) print_cpustats_files();
     if (flag_diskstats) print_diskstats_files();

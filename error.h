@@ -18,6 +18,7 @@ void notice_noprogram(char *message,...);
 void debug(char *message,...);
 void debug2(char *message,...);
 void set_error_stream(FILE *fp);
+enum error_level get_error_level(void);
 extern int n_error;
 extern int n_warning;
 

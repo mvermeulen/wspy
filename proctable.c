@@ -97,6 +97,10 @@ void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
   if (flag_require_perftree && flag_require_ptrace){
     fprintf(output," ipc=%4.2f",
 	    (double) pinfo->total_counter[0] / pinfo->total_counter[1]);
+    if (get_error_level() >= ERROR_LEVEL_DEBUG){
+      fprintf(output," inst=%lu cycles=%lu",
+	      pinfo->total_counter[0],pinfo->total_counter[1]);
+    }
     total_time = pinfo->total_utime + pinfo->total_stime;
     if (total_time){
       on_core = (double) total_time/clocks_per_second/elapsed;
@@ -157,6 +161,40 @@ void print_all_process_trees(FILE *output,double basetime,char *name){
       }
     }
   }
+}
+
+// dump process csv
+// - dump all process info; return count of # of records
+int print_all_processes_csv(FILE *output){
+  int count = 0;
+  int i,j;
+  procinfo *pinfo;
+  struct proctable_hash_entry *hash;
+  fprintf(output,"#pid,ppid,filename,starttime,cpu,utime,stime,vsize,rss,minflt,majflt,num_counters,");
+  for (j=0;j<NUM_COUNTERS;j++){
+    fprintf(output,"counter%d,",j);
+  }
+  fprintf(output,"\n");
+  for (i=0;i<HASHBUCKETS;i++){
+    for (hash = process_table[i];hash;hash = hash->next){
+      pinfo = hash->pinfo;
+      fprintf(output,"%d,%d,",pinfo->pid,pinfo->ppid);
+      if (pinfo->filename) fprintf(output,"%s,",pinfo->filename);
+      else fprintf(output,",");
+      fprintf(output,"%llu,",pinfo->starttime);
+      fprintf(output,"%d,",pinfo->cpu);
+      fprintf(output,"%lu,%lu,",pinfo->utime,pinfo->stime);
+      fprintf(output,"%lu,%lu,",pinfo->vsize,pinfo->rss);
+      fprintf(output,"%lu,%lu,",pinfo->minflt,pinfo->majflt);
+      fprintf(output,"%d,",NUM_COUNTERS);
+      for (j=0;j<NUM_COUNTERS;j++){
+	fprintf(output,"%lu,",pinfo->perf_counter[j]);
+      }
+      fprintf(output,"\n");
+      count++;
+    }
+  }
+  return count;
 }
 
 void sum_counts_processes(procinfo *pinfo);

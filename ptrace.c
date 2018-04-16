@@ -205,6 +205,7 @@ void ptrace_loop(void){
 	case PTRACE_EVENT_VFORK_DONE:
 	  // At this point nothing unique to do
 	  break;
+#if 0
 	case PTRACE_EVENT_EXEC:
 	  cmdline = lookup_process_comm(pid);
 	  if (cmdline) pinfo->filename = strdup(cmdline);
@@ -212,6 +213,7 @@ void ptrace_loop(void){
 	    read_uptime(&pinfo->time_exec);	    
 	  }
 	  break;
+#endif
 	case PTRACE_EVENT_EXIT:
 	  if (pinfo->filename == NULL){
 	    // typically happens for first process which we get only after exec
@@ -226,10 +228,15 @@ void ptrace_loop(void){
 	    statline = lookup_process_stat(pid);	    
 	  }
 	  if (parse_process_stat(statline,&procstat_info)){
-	    pinfo->cpu = procstat_info.processor;
+	    pinfo->ppid = procstat_info.ppid;
+	    pinfo->minflt = procstat_info.minflt;
+	    pinfo->majflt = procstat_info.majflt;
 	    pinfo->utime = procstat_info.utime;
 	    pinfo->stime = procstat_info.stime;
+	    pinfo->starttime = procstat_info.starttime;
 	    pinfo->vsize = procstat_info.vsize;
+	    pinfo->rss = procstat_info.rss;
+	    pinfo->cpu = procstat_info.processor;
 	  }
 	  if (!flag_require_ftrace){
 	    read_uptime(&pinfo->time_exit);	    
