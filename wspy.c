@@ -158,7 +158,7 @@ int main(int argc,char *const argv[],char *const envp[]){
     ptrace_setup(child_pid);
   }
 
-  read_uptime(&child_procinfo->time_fork);
+  read_uptime(&child_procinfo->time_fork,&child_procinfo->time_start);
   notice("running until %s completes\n",command_line_argv[0]);
   if (flag_require_ptrace){
     ptrace_loop();

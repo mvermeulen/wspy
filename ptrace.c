@@ -195,7 +195,7 @@ void ptrace_loop(void){
 	    }
 	    if (!flag_require_ftrace){
 	      // read the time if the ftrace isn't going to give it
-	      read_uptime(&child_pinfo->time_fork);
+	      read_uptime(&child_pinfo->time_fork,&child_pinfo->time_start);
 	    }
 	  }
 	  if (flag_require_perftree){
@@ -205,15 +205,13 @@ void ptrace_loop(void){
 	case PTRACE_EVENT_VFORK_DONE:
 	  // At this point nothing unique to do
 	  break;
-#if 0
 	case PTRACE_EVENT_EXEC:
 	  cmdline = lookup_process_comm(pid);
 	  if (cmdline) pinfo->filename = strdup(cmdline);
 	  if (!flag_require_ftrace){
-	    read_uptime(&pinfo->time_exec);	    
+	    read_uptime(&pinfo->time_exec,NULL);	    
 	  }
 	  break;
-#endif
 	case PTRACE_EVENT_EXIT:
 	  if (pinfo->filename == NULL){
 	    // typically happens for first process which we get only after exec
@@ -239,7 +237,7 @@ void ptrace_loop(void){
 	    pinfo->cpu = procstat_info.processor;
 	  }
 	  if (!flag_require_ftrace){
-	    read_uptime(&pinfo->time_exit);	    
+	    read_uptime(&pinfo->time_exit,&pinfo->time_finish);	    
 	  }
 	  if (flag_require_perftree){
 	    stop_process_perf_counters(pinfo);
