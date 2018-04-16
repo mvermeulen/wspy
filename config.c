@@ -18,6 +18,9 @@
 #include "wspy.h"
 #include "error.h"
 
+static int config_level = 0; // nested configuration file level
+#define MAX_CONFIG_LEVEL 10
+
 static int parse_cpumask(char *arg,cpu_set_t *mask);
 int command_line_argc = 0;
 char **command_line_argv = NULL;
@@ -45,7 +48,7 @@ char *zip_archive_name = NULL;
 char *command_name = NULL;
 
 /* Opens config file, if present and returns file pointer, NULL if not found */
-FILE *open_config_file(void){
+FILE *open_config_file(char *name){
   FILE *fp;
   char *p;
   char buffer[1024];
@@ -53,15 +56,33 @@ FILE *open_config_file(void){
   int status;
   struct stat statbuf;
 
+  // try opening the file directly
+  if (name != NULL){
+    fp = fopen(name,"r");
+    if (fp != NULL){
+      debug("found config file %s\n",name);      
+      return fp;
+    }
+  }
+
+  // if not, look in $HOME
   if (p = getenv("HOME")){
     strncpy(buffer,p,1024);
     len -= strlen(p);
   } else {
     buffer[0] = '\0';
   }
-  strncat(buffer,"/.wspy/config",len);
+
+  if (name == NULL){
+    strncat(buffer,"/.wspy/config",len);
+  } else {
+    strncat(buffer,"/.wspy/",len);
+    len -= 7;
+    strncat(buffer,name,len);
+  }
+
   if (stat(buffer,&statbuf) != -1){
-    debug("found config file %s",buffer);
+    debug("found config file %s\n",buffer);
     fp = fopen(buffer,"r");
     return fp;
   }
@@ -77,13 +98,13 @@ FILE *open_config_file(void){
 
 // reads config file and processes commands
 #define MAXARGS 256 // maximum # of saved command line args
-void read_config_file(void){
+void read_config_file(char *name){
   char buffer[1024];
   int len;
   int cmdargcnt = 0;
   char *cmdarg[MAXARGS]; // use stack space for fixed # of args
   
-  FILE *fp = open_config_file();
+  FILE *fp = open_config_file(name);
   char *p;
   if (fp){
     while (fgets(buffer,sizeof(buffer),fp) != NULL){
@@ -118,9 +139,11 @@ int parse_options(int argc,char *const argv[]){
   int longidx;
   cpu_set_t mask;
   char *p,*arg;
+  char *configfile = NULL;
   FILE *fp;
   struct counterinfo *ci;
   static struct option long_options[] = {
+    { "config",          required_argument, 0, 9  },
     { "cpustats",        no_argument, 0,       10 },
     { "no-cpustats",     no_argument, 0,       11 },
     { "diskstats",       no_argument, 0,       12 },
@@ -141,18 +164,18 @@ int parse_options(int argc,char *const argv[]){
     { "interval",        required_argument, 0, 27 },
     { "processtree-engine", required_argument,0,28 },
     { "perfcounter-model", required_argument,0,29 },
+    { "error-output",    required_argument, 0, 30 },
+    { "output",          required_argument, 0, 31 },
     { "debug",           no_argument, 0,       'd' },
     { "root",            required_argument, 0, 'r' },
     { "zip",             required_argument, 0, 'z' },
-    { "output",          required_argument, 0, 'o' },
-    { "error-output",    required_argument, 0,  9 },
     { 0, 0, 0, 0 },
   };  
   struct passwd *pwd;
-  outfile = stdout;
   optind = 1; // reset optind so this function can be called more than once
   while ((opt = getopt_long(argc,argv,"+do:r:u:z:?",long_options,NULL)) != -1){
     switch (opt){
+    case 9:  configfile = strdup(optarg); break;
     case 10: flag_cpustats = 1;  break;
     case 11: flag_cpustats = 0;  break;
     case 12: flag_diskstats = 1; break;
@@ -255,18 +278,18 @@ int parse_options(int argc,char *const argv[]){
       if (flag_debug>1) set_error_level(ERROR_LEVEL_DEBUG2);
       else set_error_level(ERROR_LEVEL_DEBUG);
       break;
-    case 9:
+    case 30:
       if ((fp = fopen(optarg,"a")) == NULL){
 	warning("can not open error output file: %s\n",optarg);	
       } else {
-	
+	set_error_stream(fp);	
       }
       break;
-    case 'o':
+    case 31:
       if ((fp = fopen(optarg,"a")) == NULL){
 	warning("can not open output file: %s\n",optarg);
       } else {
-	set_error_stream(fp);
+	outfile = fp;
       }
       break;
     case 'r':
@@ -359,6 +382,17 @@ int parse_options(int argc,char *const argv[]){
     for (i=0;i<command_line_argc;i++){
       command_line_argv[i] = argv[i+optind];
     }
+  }
+  // tail recursion possible
+  if (configfile){
+    config_level++;
+    if (config_level >= MAX_CONFIG_LEVEL){
+      // check to make sure we don't accidentally have a recursion
+      error("maximum configuration file nesting is %d deep\n",MAX_CONFIG_LEVEL);
+    } else {
+      read_config_file(configfile);
+    }
+    config_level--;
   }
 
   return 0;

@@ -80,10 +80,11 @@ int main(int argc,char *const argv[],char *const envp[]){
   num_procs = get_nprocs();
   if (pthread_mutex_init(&event_lock,NULL) != 0)
     error("mutex lock creation failed\n");
-  
+
+  outfile = stdout;
   initialize_error_subsystem(argv[0],"-");
 
-  read_config_file();
+  read_config_file(NULL);
 
   if (parse_options(argc,argv)){
     fatal("usage: %s [options] <cmd><args>...\n"
@@ -103,6 +104,7 @@ int main(int argc,char *const argv[],char *const envp[]){
 	  "\t--interval <value>             \tset timer in ms (default %d)\n"
 	  "\t--zip <archive-name>           \tcreate zip archive of results\n"
 	  "\t--root <proc>, -r <proc>       \tset name for process tree root\n"
+	  "\t--config <file>                \tread configuration file\n"
 	  "\t--output <file>                \tredirect output to <file>\n"
 	  "\t--error-output <file>          \tredirect errors and debug to <file>\n"
 	  "\t--debug, -d                    \tinternal debugging flag\n",
