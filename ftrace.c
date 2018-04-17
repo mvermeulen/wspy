@@ -19,6 +19,7 @@
 #define TRACEFS "/sys/kernel/debug/tracing"
 int ftrace_cmd_pipe[2]; // command pipe
 int timer_cmd_pipe[2];  // command pipe
+double first_ftrace_time = 0;
 static void ftrace_enable_tracing(void);
 static void ftrace_disable_tracing(void);
 static void ftrace_loop(void);
@@ -80,6 +81,7 @@ static void ftrace_parse_line(char *line){
   int num_cpu = 0;
   int num_secs = 0;
   int num_usecs = 0;
+  double event_time = 0;
   int len = 0;
   pid_t npid = 0;
   char *function = NULL;
@@ -107,6 +109,9 @@ static void ftrace_parse_line(char *line){
   }
   sscanf(&line[position_lbracket+1],"%d",&num_cpu);
   sscanf(&line[position_timestamp],"%d\056%d",&num_secs,&num_usecs);
+  event_time = num_secs + (num_usecs / 1000000.0);
+  if (first_ftrace_time == 0)
+    first_ftrace_time = event_time;
   function = &line[position_function];
   p = strstr(&function[20],"pid=");
   if (p){
@@ -132,8 +137,9 @@ static void ftrace_parse_line(char *line){
     pinfo->cpu = num_cpu;
     
     child_pinfo->ppid = npid;
-    child_pinfo->time_fork.tv_sec = num_secs;
-    child_pinfo->time_fork.tv_usec = num_usecs;
+    if (!flag_require_ptrace)
+      child_pinfo->time_start = event_time;
+      
     // only create parent/sibling links if not already done e.g. by ptrace
     if (child_pinfo->parent == NULL){
       child_pinfo->parent = pinfo;
@@ -152,16 +158,16 @@ static void ftrace_parse_line(char *line){
     }
 
     pinfo->cpu = num_cpu;
-    pinfo->time_exec.tv_sec = num_secs;
-    pinfo->time_exec.tv_usec = num_usecs;
+    if (!flag_require_ptrace && (pinfo->time_start == 0))
+      pinfo->time_start = event_time;    
     pinfo->filename = strndup(filename,len);
 
     debug("exec(pid=%d,cpu=%d,time=%d\056%d,filename=%.*s)\n",
 	  npid,num_cpu,num_secs,num_usecs,len,filename);
   } else if (!strncmp(function,"sched_process_exit",18)){
     pinfo->cpu = num_cpu;
-    pinfo->time_exit.tv_sec = num_secs;
-    pinfo->time_exit.tv_usec = num_usecs;
+    if (!flag_require_ptrace)
+      pinfo->time_finish = event_time;    
     pinfo->f_exited = 1;
 
     debug("exit(pid=%d,cpu=%d,time=%d\056%d)\n",

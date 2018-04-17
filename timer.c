@@ -92,15 +92,11 @@ static void timer_loop(void){
   }
 }
 
-void read_uptime(struct timeval *tm,double *td){
+void read_uptime(double *td){
   double uptime;
   FILE *fp = fopen("/proc/uptime","r");
   if (fp){
     fscanf(fp,"%lf",&uptime);
-    if (tm){
-      tm->tv_sec = trunc(uptime);
-      tm->tv_usec = (uptime - tm->tv_sec)*1000000;
-    }
     if (td){
       *td = uptime;
     }

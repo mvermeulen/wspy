@@ -189,7 +189,7 @@ void read_global_perf_counters(double time){
       if (cl_same) cl_same->value += cl->value;
       fprintf(perfctrfile,"%d_%s %lu\n",i,cl->name,cl->value);
       debug("%d_%s %lu (%lu * %lu / %lu)\n",i,cl->name,cl->value,rf.value,rf.time_enabled,rf.time_running);
-      cl_same = cl_same->next;
+      if (cl_same) cl_same = cl_same->next;
     }
   }
   for (cl_same = perf_counters_same;cl_same;cl_same=cl_same->next){

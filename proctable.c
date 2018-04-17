@@ -42,23 +42,6 @@ procinfo *lookup_process_info(pid_t pid,int insert){
   return pinfo;
 }
 
-double elapsed_time(procinfo *pinfo){
-  struct timeval *start;
-  struct timeval *finish;
-  double elapsed;
-  if (pinfo->time_fork.tv_sec || pinfo->time_fork.tv_usec)
-    start = &pinfo->time_fork;
-  else
-    start = &pinfo->time_exec;
-  if (pinfo->time_exit.tv_sec || pinfo->time_exit.tv_usec)
-    finish = &pinfo->time_exit;
-  else
-    finish = &pinfo->time_exec;
-
-  elapsed = (finish->tv_sec - start->tv_sec)+(finish->tv_usec - start->tv_usec)/1000000.0;
-  return elapsed;
-}
-
 procinfo *reverse_siblings(procinfo *p){
   procinfo *new_p = NULL;
   procinfo *next;
@@ -74,7 +57,7 @@ procinfo *reverse_siblings(procinfo *p){
 static int clocks_per_second = 0;
 void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
   int i;
-  double elapsed = elapsed_time(pinfo);
+  double elapsed = pinfo->time_finish - pinfo->time_start;
   procinfo *child;
   double on_cpu,on_core;
   unsigned long total_time;
@@ -111,12 +94,7 @@ void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
   fprintf(output," elapsed=%5.2f",elapsed);
 
   if (pinfo->f_exited){
-    if ((pinfo->time_fork.tv_sec + pinfo->time_fork.tv_usec) &&
-	(pinfo->time_exit.tv_sec + pinfo->time_exit.tv_usec)){
-      fprintf(output," start=%5.2f finish=%5.2f",
-	      (pinfo->time_fork.tv_sec + pinfo->time_fork.tv_usec / 1000000.0)-basetime,
-	      (pinfo->time_exit.tv_sec + pinfo->time_exit.tv_usec / 1000000.0)-basetime);
-    }
+    fprintf(output," start=%5.2f finish=%5.2f",pinfo->time_start-basetime,pinfo->time_finish-basetime);    
   } else if (pinfo->p_exited){
     fprintf(output," user=%4.2f system=%4.2f",
 	    pinfo->utime / (double) clocks_per_second,
@@ -249,34 +227,4 @@ void sum_counts_processes(procinfo *pinfo){
     for (i=0;i<NUM_COUNTERS;i++)
       pinfo->total_counter[i] = total_counter[i];
   }
-}
-
-// find and return the start time of first process that matches name
-double find_first_process_time(char *name){
-  int found = 0;
-  double first_time,start_time;
-  int i;
-  struct proctable_hash_entry *hash;
-  printf("find_first_process_time(%s)\n",name);
-  if (name == NULL) return 0.0;
-  for (i=0;i<HASHBUCKETS;i++){
-    for (hash = process_table[i];hash;hash = hash->next){
-      if (!hash->pinfo->filename && !hash->pinfo->comm) continue;
-      if (!strcmp(name,hash->pinfo->filename?
-		  hash->pinfo->filename:hash->pinfo->comm)){
-	start_time = hash->pinfo->time_fork.tv_sec +
-	  hash->pinfo->time_fork.tv_usec / 1000000.0;
-	if (!found){
-	  first_time = start_time;
-	  found = 1;
-	} else if (start_time < first_time){
-	  first_time = start_time;
-	}
-      }
-    }
-  }
-  if (found)
-    return first_time;
-  else
-    return 0.0;
 }

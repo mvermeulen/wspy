@@ -73,7 +73,6 @@ int setup_child_process(int argc,char **argv,char *const envp[]){
 int main(int argc,char *const argv[],char *const envp[]){
   int status;
   int i;
-  double basetime = 0;
   pid_t child;
 
   getcwd(original_dir,sizeof(original_dir));
@@ -158,9 +157,9 @@ int main(int argc,char *const argv[],char *const envp[]){
   
   if (flag_require_ptrace){
     ptrace_setup(child_pid);
+    read_uptime(&child_procinfo->time_start);
   }
 
-  read_uptime(&child_procinfo->time_fork,&child_procinfo->time_start);
   notice("running until %s completes\n",command_line_argv[0]);
   if (flag_require_ptrace){
     ptrace_loop();
@@ -175,14 +174,6 @@ int main(int argc,char *const argv[],char *const envp[]){
       notice("child signaled %d\n",WTERMSIG(status));
     }
   }
-
-  if ((child_procinfo->time_fork.tv_sec == 0) &&
-      (child_procinfo->time_fork.tv_usec == 0)){
-    // never set, use exec instead
-    child_procinfo->time_fork.tv_sec = child_procinfo->time_exec.tv_sec;
-    child_procinfo->time_fork.tv_usec = child_procinfo->time_exec.tv_usec;
-  }
-  basetime = child_procinfo->time_fork.tv_sec + child_procinfo->time_fork.tv_usec / 1000000.0;
 
   if (flag_require_ftrace){
     write(ftrace_cmd_pipe[1],"quit\n",5);
@@ -204,9 +195,10 @@ int main(int argc,char *const argv[],char *const envp[]){
   pthread_mutex_lock(&event_lock);
   finalize_process_tree();
   pthread_mutex_unlock(&event_lock);
-  if (flag_cmd) basetime = find_first_process_time(command_name);
   if (flag_proctree && !flag_zip)
-    print_all_process_trees(outfile,basetime,command_name);
+    print_all_process_trees(outfile,
+			    flag_require_ptrace?child_procinfo->time_start:first_ftrace_time,
+			    command_name);
 
   if (flag_cpustats && !flag_zip)
     print_cpustats();
@@ -229,7 +221,7 @@ int main(int argc,char *const argv[],char *const envp[]){
     if (flag_proctree){
       fp = fopen("processtree.txt","w");
       if (fp){
-	print_all_process_trees(fp,basetime,command_name);
+	print_all_process_trees(fp,child_procinfo->time_start,command_name);
 	fclose(fp);
       }
       fp = fopen("processtree.csv","w");

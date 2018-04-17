@@ -193,9 +193,8 @@ void ptrace_loop(void){
 	      child_pinfo->sibling = pinfo->child;
 	      pinfo->child = child_pinfo;
 	    }
-	    if (!flag_require_ftrace){
-	      // read the time if the ftrace isn't going to give it
-	      read_uptime(&child_pinfo->time_fork,&child_pinfo->time_start);
+	    if (child_pinfo->time_start == 0){
+	      read_uptime(&child_pinfo->time_start);
 	    }
 	  }
 	  if (flag_require_perftree){
@@ -208,9 +207,9 @@ void ptrace_loop(void){
 	case PTRACE_EVENT_EXEC:
 	  cmdline = lookup_process_comm(pid);
 	  if (cmdline) pinfo->filename = strdup(cmdline);
-	  if (!flag_require_ftrace){
-	    read_uptime(&pinfo->time_exec,NULL);	    
-	  }
+	  if (pinfo->time_start == 0){
+	    read_uptime(&pinfo->time_start);	    
+	  }	  
 	  break;
 	case PTRACE_EVENT_EXIT:
 	  if (pinfo->filename == NULL){
@@ -236,8 +235,8 @@ void ptrace_loop(void){
 	    pinfo->rss = procstat_info.rss;
 	    pinfo->cpu = procstat_info.processor;
 	  }
-	  if (!flag_require_ftrace){
-	    read_uptime(&pinfo->time_exit,&pinfo->time_finish);	    
+	  if (pinfo->time_finish == 0){
+	    read_uptime(&pinfo->time_finish);	    
 	  }
 	  if (flag_require_perftree){
 	    stop_process_perf_counters(pinfo);

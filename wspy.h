@@ -28,9 +28,9 @@ struct process_info {
   unsigned long total_counter[NUM_COUNTERS];
   unsigned long long starttime;
   unsigned long minflt,majflt;
-  struct timeval time_fork;
-  struct timeval time_exec;
-  struct timeval time_exit;
+  //  struct timeval time_fork;
+  //  struct timeval time_exec;
+  //  struct timeval time_exit;
   double time_start,time_finish;
   unsigned long utime,stime,total_utime,total_stime,vsize,rss;
   struct process_info *parent;
@@ -43,9 +43,9 @@ void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime);
 void print_all_process_trees(FILE *output,double basetime,char *name);
 int print_all_processes_csv(FILE *output);
 void finalize_process_tree(void);
-double find_first_process_time(char *name);
 
 /* ftrace.c */
+double first_ftrace_time;
 int ftrace_cmd_pipe[2]; // command pipe
 void *ftrace_start(void *arg);
 
@@ -57,7 +57,7 @@ void ptrace_loop(void);
 int timer_interval;
 int timer_cmd_pipe[2]; // command pipe
 void *timer_start(void *arg);
-void read_uptime(struct timeval *tm,double *td);
+void read_uptime(double *td);
 
 /* cpustatus.c */
 void init_cpustats(void);
