@@ -104,7 +104,7 @@ void stop_process_perf_counters(procinfo *pinfo);
 
 struct counterlist {
   char *name;
-  long value;
+  unsigned long value;
   int fd;
   struct counterinfo *ci;
   struct counterlist *next;

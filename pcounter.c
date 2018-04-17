@@ -109,11 +109,14 @@ void init_global_perf_counters(){
       pe.type = cl->ci->type;
       pe.config = cl->ci->config;
       pe.config1 = cl->ci->config1;
+      pe.inherit = 1;
+      pe.sample_type = PERF_SAMPLE_IDENTIFIER;
+      pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED|PERF_FORMAT_TOTAL_TIME_RUNNING;
       pe.size = sizeof(struct perf_event_attr);
       pe.disabled = 1;
       pe.exclude_kernel = 0;
       pe.exclude_hv = 0;
-      pe.exclude_idle = 1;
+      pe.exclude_idle = 0;
       if (pe.type > 6){
 	pe.exclude_idle = 0;
       }
@@ -169,12 +172,14 @@ void start_process_perf_counters(procinfo *pinfo){
 void read_global_perf_counters(double time){
   int status,i;
   struct counterlist *cl;
+  struct read_format { uint64_t value, time_enabled,time_running,id; } rf;
   fprintf(perfctrfile,"time %f\n",time);
   for (i=0;i<num_procs;i++){
     for (cl = perf_counters_by_cpu[i];cl;cl = cl->next){
-      status = read(cl->fd,&cl->value,sizeof(cl->value));
-      fprintf(perfctrfile,"%d_%s %ld\n",i,cl->name,cl->value);
-      debug("%d_%s %ld\n",i,cl->name,cl->value);
+      status = read(cl->fd,&rf,sizeof(rf));
+      cl->value = rf.value * (( double) rf.time_enabled / rf.time_running);
+      fprintf(perfctrfile,"%d_%s %lu\n",i,cl->name,cl->value);
+      debug("%d_%s %lu (%lu * %lu / %lu)\n",i,cl->name,cl->value,rf.value,rf.time_enabled,rf.time_running);
     }
   }
 }
@@ -198,7 +203,7 @@ void print_counter_info(int num,char *name,char *delim,FILE *output){
   int i;
   char *p;
   struct perfctr_info *pi;
-  struct counter_values { long value[MAX_COUNTERS_PER_CORE]; } prev, current;
+  struct counter_values { unsigned long value[MAX_COUNTERS_PER_CORE]; } prev, current;
   int timeseen = 0;
   int len = strlen(name);
   char buffer[1024];
@@ -224,7 +229,7 @@ void print_counter_info(int num,char *name,char *delim,FILE *output){
 	// dump the previous values
 	fprintf(output,"%-10.2f",elapsed);
 	for (i=0;i<colnum;i++){
-	  fprintf(output,"%s%ld",delim,(current.value[i]-prev.value[i]));
+	  fprintf(output,"%s%lu",delim,(current.value[i]-prev.value[i]));
 	}
 	fprintf(output,"\n");
       }
@@ -237,7 +242,7 @@ void print_counter_info(int num,char *name,char *delim,FILE *output){
       debug("buffer: %s",buffer);
       p = strchr(buffer,' ');
       if (p){
-	sscanf(p+1,"%ld",&current.value[colnum]);
+	sscanf(p+1,"%lu",&current.value[colnum]);
       } else {
 	current.value[colnum] = 0;
       }
@@ -249,7 +254,14 @@ void print_counter_info(int num,char *name,char *delim,FILE *output){
   for (i=0;i<colnum;i++){
     fprintf(output,"%s%ld",delim,(current.value[i]-prev.value[i]));
   }
-  fprintf(output,"\n");  
+  fprintf(output,"\n");
+
+  // dump the totals
+  fprintf(output,"#totals");
+  for (i=0;i<colnum;i++){
+    fprintf(output,"%s%lu",delim,current.value[i]);
+  }
+  fprintf(outfile,"\n");
 }
 
 void print_global_perf_counters(void){
