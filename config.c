@@ -209,11 +209,13 @@ int parse_options(int argc,char *const argv[]){
 	*p = 0;
 	arg = p+1;
 	parse_cpumask(optarg,&mask);
+	all_counters_same = 0;
       } else {
 	arg = optarg;
 	for (i=0;i<num_procs;i++){
 	  CPU_SET(i,&mask);
 	}
+	all_counters_same = 1;
       }
       // delete the old counter lists (for now set to zero, slight memory leak)
       for (i=0;i<num_procs;i++){
@@ -234,6 +236,12 @@ int parse_options(int argc,char *const argv[]){
 	      cl->next = perf_counters_by_cpu[i];
 	      perf_counters_by_cpu[i] = cl;
 	    }
+	  }
+	  if (all_counters_same){
+	    struct counterlist *cl = calloc(1,sizeof(struct counterlist));
+	    cl->name = strdup(p);
+	    cl->next = perf_counters_same;
+	    perf_counters_same = cl;
 	  }
 	}
 	p = strtok(NULL," ,\t\n");

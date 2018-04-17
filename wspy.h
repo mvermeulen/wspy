@@ -111,7 +111,9 @@ struct counterlist {
   struct counterlist *next;
 };
 #define MAXCPU 16
+int all_counters_same;
 struct counterlist *perf_counters_by_cpu[MAXCPU];
+struct counterlist *perf_counters_same;
 
 /* config.c */
 int command_line_argc;

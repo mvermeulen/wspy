@@ -414,3 +414,67 @@ set yrange [0:1]
 set datafile separator ","
 plot 'perf7.csv' using 1:(\$4/\$3) title 'front end' with linespoints,'perf7.csv' using 1:(\$7/\$3) title 'retiring' with linespoints,'perf7.csv' using 1:((\$6 - \$7 + \$5)/\$3) title 'speculation' with linespoints,'perf7.csv' using 1:(1 -((\$4 +\$6 +\$5)/\$3)) title 'back end' with linespoints
 PLOTCMD
+if [ -f perftotal.csv ];
+then
+gnuplot <<PLOTCMD
+set terminal png
+set output 'topdownall.png'
+set title 'All CPUs'
+set yrange [0:1]
+set datafile separator ","
+plot 'perftotal.csv' using 1:(\$4/\$3) title 'front end' with linespoints,'perftotal.csv' using 1:(\$7/\$3) title 'retiring' with linespoints,'perftotal.csv' using 1:((\$6 - \$7 + \$5)/\$3) title 'speculation' with linespoints,'perftotal.csv' using 1:(1 -((\$4 +\$6 +\$5)/\$3)) title 'back end' with linespoints
+PLOTCMD
+fi
+cat perf0.csv | while read line
+do
+    echo $line ,
+done > perf0comma.csv
+cat perf1.csv | while read line
+do
+    echo $line ,
+done > perf1comma.csv
+cat perf2.csv | while read line
+do
+    echo $line ,
+done > perf2comma.csv
+cat perf3.csv | while read line
+do
+    echo $line ,
+done > perf3comma.csv
+paste perf0comma.csv perf4.csv > perf04.csv
+paste perf1comma.csv perf5.csv > perf15.csv
+paste perf2comma.csv perf6.csv > perf26.csv
+paste perf3comma.csv perf7.csv > perf37.csv
+rm perf0comma.csv perf1comma.csv perf2comma.csv perf3comma.csv
+gnuplot <<PLOTCMD
+set terminal png
+set output 'topdown04.png'
+set title 'CPU0 + CPU4'
+set yrange [0:1]
+set datafile separator ","
+plot 'perf04.csv' using 1:((\$4+\$11)/(\$3+\$10)) title 'front end' with linespoints,'perf04.csv' using 1:((\$7+\$14)/(\$3+\$10)) title 'retiring' with linespoints,'perf04.csv' using 1:(((\$6+\$13) - (\$7+\$14) + (\$5+\$12))/(\$3+\$10)) title 'speculation' with linespoints,'perf04.csv' using 1:(1 -(((\$4+\$11) +(\$6+\$13) +(\$5+\$12))/(\$3+\$10))) title 'back end' with linespoints
+PLOTCMD
+gnuplot <<PLOTCMD
+set terminal png
+set output 'topdown15.png'
+set title 'CPU1 + CPU5'
+set yrange [0:1]
+set datafile separator ","
+plot 'perf15.csv' using 1:((\$4+\$11)/(\$3+\$10)) title 'front end' with linespoints,'perf15.csv' using 1:((\$7+\$14)/(\$3+\$10)) title 'retiring' with linespoints,'perf15.csv' using 1:(((\$6+\$13) - (\$7+\$14) + (\$5+\$12))/(\$3+\$10)) title 'speculation' with linespoints,'perf15.csv' using 1:(1 -(((\$4+\$11) +(\$6+\$13) +(\$5+\$12))/(\$3+\$10))) title 'back end' with linespoints
+PLOTCMD
+gnuplot <<PLOTCMD
+set terminal png
+set output 'topdown26.png'
+set title 'CPU2 + CPU6'
+set yrange [0:1]
+set datafile separator ","
+plot 'perf26.csv' using 1:((\$4+\$11)/(\$3+\$10)) title 'front end' with linespoints,'perf26.csv' using 1:((\$7+\$14)/(\$3+\$10)) title 'retiring' with linespoints,'perf26.csv' using 1:(((\$6+\$13) - (\$7+\$14) + (\$5+\$12))/(\$3+\$10)) title 'speculation' with linespoints,'perf26.csv' using 1:(1 -(((\$4+\$11) +(\$6+\$13) +(\$5+\$12))/(\$3+\$10))) title 'back end' with linespoints
+PLOTCMD
+gnuplot <<PLOTCMD
+set terminal png
+set output 'topdown37.png'
+set title 'CPU3 + CPU7'
+set yrange [0:1]
+set datafile separator ","
+plot 'perf37.csv' using 1:((\$4+\$11)/(\$3+\$10)) title 'front end' with linespoints,'perf37.csv' using 1:((\$7+\$14)/(\$3+\$10)) title 'retiring' with linespoints,'perf37.csv' using 1:(((\$6+\$13) - (\$7+\$14) + (\$5+\$12))/(\$3+\$10)) title 'speculation' with linespoints,'perf37.csv' using 1:(1 -(((\$4+\$11) +(\$6+\$13) +(\$5+\$12))/(\$3+\$10))) title 'back end' with linespoints
+PLOTCMD

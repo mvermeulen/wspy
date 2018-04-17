@@ -19,6 +19,8 @@
 #include "error.h"
 
 struct counterlist *perf_counters_by_cpu[MAXCPU] = { 0 };
+int all_counters_same = 0;
+struct counterlist *perf_counters_same = NULL;
 #define COUNTER_DEFINITION_DIRECTORY	"/sys/devices"
 struct counterinfo *countertable = 0;
 #define COUNTERTABLE_ALLOC_CHUNK 1024
@@ -171,16 +173,28 @@ void start_process_perf_counters(procinfo *pinfo){
 
 void read_global_perf_counters(double time){
   int status,i;
-  struct counterlist *cl;
+  struct counterlist *cl,*cl_same;
   struct read_format { uint64_t value, time_enabled,time_running,id; } rf;
   fprintf(perfctrfile,"time %f\n",time);
+  if (all_counters_same){
+    for (cl_same = perf_counters_same;cl_same;cl_same = cl_same->next){
+      cl_same->value = 0;
+    }
+  }
   for (i=0;i<num_procs;i++){
+    cl_same = perf_counters_same;
     for (cl = perf_counters_by_cpu[i];cl;cl = cl->next){
       status = read(cl->fd,&rf,sizeof(rf));
       cl->value = rf.value * (( double) rf.time_enabled / rf.time_running);
+      if (cl_same) cl_same->value += cl->value;
       fprintf(perfctrfile,"%d_%s %lu\n",i,cl->name,cl->value);
       debug("%d_%s %lu (%lu * %lu / %lu)\n",i,cl->name,cl->value,rf.value,rf.time_enabled,rf.time_running);
+      cl_same = cl_same->next;
     }
+  }
+  for (cl_same = perf_counters_same;cl_same;cl_same=cl_same->next){
+    fprintf(perfctrfile,"total_%s %lu\n",cl_same->name,cl_same->value);
+    debug("total_%s %lu\n",cl_same->name,cl_same->value);        
   }
 }
 
@@ -302,7 +316,10 @@ void print_global_perf_counter_files(void){
     }
     fclose(fp);
   }
-  //  print_perf_counter_gnuplot_file();
+  if (all_counters_same){
+    fp = fopen("perftotal.csv","w");
+    if (fp) print_counter_info(0,"total_",",",fp);
+  }
 }
 
 void print_perf_counter_gnuplot_file(void){
