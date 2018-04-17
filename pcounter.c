@@ -120,7 +120,7 @@ void init_global_perf_counters(){
       if (pe.type > 6){
 	pe.exclude_idle = 0;
       }
-      status = perf_event_open(&pe,-1,0,-1,0);	
+      status = perf_event_open(&pe,-1,i,-1,0);	
       if (status == -1){
 	error("unable to open performance counter pid=%d cpu=%d type=%d config=%d errno=%d %s\n",
 	      -1,i,pe.type,pe.config,errno,strerror(errno));
@@ -209,12 +209,16 @@ void print_counter_info(int num,char *name,char *delim,FILE *output){
   char buffer[1024];
   double elapsed;
   int colnum;
+  int column_scale[MAX_COUNTERS_PER_CORE];
   struct counterlist *cl;
 
   // print header row
   fprintf(output,"core%d",num);
+  colnum = 0;
   for (cl = perf_counters_by_cpu[num];cl;cl = cl->next){
     fprintf(output,"%s%s",delim,cl->name);
+    column_scale[colnum] = cl->ci->scale;
+    colnum++;
   }
   fprintf(output,"\n");
 
@@ -229,7 +233,12 @@ void print_counter_info(int num,char *name,char *delim,FILE *output){
 	// dump the previous values
 	fprintf(output,"%-10.2f",elapsed);
 	for (i=0;i<colnum;i++){
-	  fprintf(output,"%s%lu",delim,(current.value[i]-prev.value[i]));
+	  if (column_scale[i]){
+	    fprintf(output,"%s%lu",delim,
+		    column_scale[i]*(current.value[i]-prev.value[i]));
+	  } else {
+	    fprintf(output,"%s%lu",delim,(current.value[i]-prev.value[i]));
+	  }
 	}
 	fprintf(output,"\n");
       }
@@ -252,7 +261,11 @@ void print_counter_info(int num,char *name,char *delim,FILE *output){
   // dump the last row
   fprintf(output,"%-10.2f",elapsed);
   for (i=0;i<colnum;i++){
-    fprintf(output,"%s%ld",delim,(current.value[i]-prev.value[i]));
+    if (column_scale[i]){
+      fprintf(output,"%s%ld",delim,column_scale[i]*(current.value[i]-prev.value[i]));      
+    } else {
+      fprintf(output,"%s%ld",delim,(current.value[i]-prev.value[i]));
+    }
   }
   fprintf(output,"\n");
 
@@ -518,6 +531,13 @@ void add_counterinfo(char *dir,char *name,char *group,int type){
 	}
       }
     }
+    fclose(fp);
+  }
+  snprintf(filename,sizeof(filename),"%s/%s.scale",dir,name);
+  if (fp = fopen(filename,"r")){
+    int scale = 0;
+    fscanf(fp,"%u",&scale);
+    ci->scale = scale;
     fclose(fp);
   }
 }

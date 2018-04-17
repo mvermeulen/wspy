@@ -88,6 +88,7 @@ struct counterinfo {
   unsigned int has_scale : 1;
   unsigned int has_unit  : 1;
   unsigned int is_multiple : 1;
+  unsigned int scale;
 };
 struct counterinfo *countertable;
 int num_countertable;
