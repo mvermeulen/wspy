@@ -176,8 +176,9 @@ int print_all_processes_csv(FILE *output){
       pinfo = hash->pinfo;
       fprintf(output,"%d,%d,",pinfo->pid,pinfo->ppid);
       if (pinfo->filename) fprintf(output,"%s,",pinfo->filename);
-      else fprintf(output,",");
-      fprintf(output,"%llu,%.5f,%.5f",pinfo->starttime,pinfo->time_start,pinfo->time_finish);
+      else if (pinfo->comm) fprintf(output,"%s",pinfo->comm);
+      else fprintf(output,"?,");
+      fprintf(output,"%llu,%6.5f,%6.5f,",pinfo->starttime,pinfo->time_start,pinfo->time_finish);
       fprintf(output,"%d,",pinfo->cpu);
       fprintf(output,"%lu,%lu,",pinfo->utime,pinfo->stime);
       fprintf(output,"%lu,%lu,",pinfo->vsize,pinfo->rss);
