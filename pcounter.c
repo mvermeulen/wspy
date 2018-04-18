@@ -136,7 +136,11 @@ void init_process_counterinfo(void){
     cl = calloc(1,sizeof(struct counterlist));
     cl->name = def_process_counters[i];
     cl->ci = counterinfo_lookup(cl->name,0,0);
-    perf_counters_by_process[i] = cl;
+    if (cl->ci == NULL){
+      error("unknown performance counter, ignored: %s\n",cl->name);
+    } else {
+      perf_counters_by_process[i] = cl;
+    }
   }
 }
 
@@ -146,6 +150,7 @@ void start_process_perf_counters(procinfo *pinfo){
   if (pinfo){
     memset(pe,'\0',sizeof(pe));
     for (i=0;i<NUM_COUNTERS_PER_PROCESS;i++){
+      if (perf_counters_by_process[i] == 0) continue;
       pe[i].type = perf_counters_by_process[i]->ci->type;
       pe[i].config = perf_counters_by_process[i]->ci->config;
       pe[i].config1 = perf_counters_by_process[i]->ci->config1;
