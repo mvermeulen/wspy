@@ -6,22 +6,36 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/sysinfo.h>
 #include "error.h"
 
 #define NUM_COUNTERS_PER_PROCESS 6 // hard coded format for now
 
 char *input_filename = "processtree.csv";
 char *format_specifier = 0;
+int mflag = 0;
+int pid_root = -1;
+static int clocks_per_second = 0;
+static int num_procs = 0;
 
 int parse_options(int argc,char *const argv[]){
   int opt;
-  while ((opt = getopt(argc,argv,"f:F:")) != -1){
+  while ((opt = getopt(argc,argv,"f:F:mp:")) != -1){
     switch(opt){
     case 'f':
       input_filename = strdup(optarg);
       break;
     case 'F':
       format_specifier = strdup(optarg);
+      break;
+    case 'm':
+      mflag = 1;
+      break;
+    case 'p':
+      if (sscanf(optarg,"%d",&pid_root) != 1){
+	error("bad argument to -p: %s\n",optarg);
+	return 1;
+      }
       break;
     default:
       warning("unknown option: %d\n",opt);
@@ -45,6 +59,9 @@ struct process_info {
   unsigned long counter[NUM_COUNTERS_PER_PROCESS];
   // derived information
   int level;
+  int nproc;
+  unsigned long total_utime,total_stime,total_minflt,total_majflt;
+  unsigned long total_counter[NUM_COUNTERS_PER_PROCESS];
 };
 
 struct process_info *process_table;
@@ -223,18 +240,43 @@ void add_tree_links(void){
 }
 
 void create_tree_totals(struct process_info *pi,int level){
+  int i;
   struct process_info *child;
+  int nproc;
+  unsigned long total_utime,total_stime,total_minflt,total_majflt;
+  unsigned long total_counter[NUM_COUNTERS_PER_PROCESS];
+  nproc = 1;
+  total_utime = pi->utime;
+  total_stime = pi->stime;
+  total_minflt = pi->minflt;
+  total_majflt = pi->majflt;
+  for (i=0;i<NUM_COUNTERS_PER_PROCESS;i++) total_counter[i] = pi->counter[i];
   pi->level = level;
   for (child=pi->child1;child;child=child->sibling){
     create_tree_totals(child,level+1);
+    nproc += child->nproc;
+    total_utime += child->total_utime;
+    total_stime += child->total_stime;
+    total_minflt += child->total_minflt;
+    total_majflt += child->total_majflt;
+    for (i=0;i<NUM_COUNTERS_PER_PROCESS;i++)
+      total_counter[i] += child->total_counter[i];    
   }
+  pi->nproc = nproc;
+  pi->total_utime = total_utime;
+  pi->total_stime = total_stime;
+  pi->total_minflt = total_minflt;
+  pi->total_majflt = total_majflt;
+  for (i=0;i<NUM_COUNTERS_PER_PROCESS;i++)
+    pi->total_counter[i] = total_counter[i];
 }
 
 void print_procinfo(struct process_info *pi,int print_children,int indent,double basetime){
-  static int clocks_per_second = 0;
   struct process_info *child;
   int i;
   char *p;
+  double on_core;
+  double on_cpu;
   if (indent){
     for (i=0;i<pi->level;i++) printf("  ");
   }
@@ -250,20 +292,27 @@ void print_procinfo(struct process_info *pi,int print_children,int indent,double
 	printf(" cpu=%d",pi->cpu);
 	break;
       case 'f':
-	// TODO make this cummulative
-	printf(" minflt=%lu majflt=%lu",pi->minflt,pi->majflt);
+	printf(" minflt=%lu majflt=%lu",pi->total_minflt,pi->total_majflt);
 	break;
       case 'i':
 	printf(" ipc=%3.2f",(double) pi->counter[0] / pi->counter[1] * 2);
 	break;
       case 'I':
-	// TODO print cummulative IPC
+	printf(" tipc=%3.2f",(double) pi->total_counter[0] / pi->total_counter[1] * 2);	
 	break;
       case 'm':
-	// TODO print On_CPU and On_Core metrics
+	if (clocks_per_second == 0)
+	  clocks_per_second = sysconf(_SC_CLK_TCK);
+	if (num_procs == 0)
+	  num_procs = get_nprocs();
+	on_core = (double)(pi->total_utime + pi->total_stime) /
+	  clocks_per_second /
+	  (pi->finish-pi->start);
+	on_cpu = on_core / num_procs;
+	printf(" on_cpu=%4.3f on_core=%4.3f",on_cpu,on_core);
 	break;
       case 'n':
-	// TODO print number of processes in tree
+	printf(" pcount=%d",pi->nproc);
 	break;
       case 'p':
 	printf(" ctr0=%lu ctr1=%lu ctr2=%lu ctr3=%lu ctr4=%lu ctr5=%lu",
@@ -271,8 +320,10 @@ void print_procinfo(struct process_info *pi,int print_children,int indent,double
 	       pi->counter[3],pi->counter[4],pi->counter[5]);
 	break;
       case 'P':
-	// TODO print cummulative counters
-	break;
+	printf(" tctr0=%lu tctr1=%lu tctr2=%lu tctr3=%lu tctr4=%lu tctr5=%lu",
+	       pi->total_counter[0],pi->total_counter[1],pi->total_counter[2],
+	       pi->total_counter[3],pi->total_counter[4],pi->total_counter[5]);
+	break;	
       case 't':
 	printf(" elapsed=%3.2f start=%3.2f finish=%3.2f",pi->finish-pi->start,pi->start-basetime,pi->finish-basetime);
 	break;
@@ -282,6 +333,7 @@ void print_procinfo(struct process_info *pi,int print_children,int indent,double
 	printf(" user=%3.2f sys=%3.2f",
 	       (double)pi->utime / clocks_per_second,
 	       (double)pi->stime / clocks_per_second);
+	break;
       case 'v':
 	printf(" vsize=%luK", pi->vsize/1024);
 	break;
@@ -297,10 +349,39 @@ void print_procinfo(struct process_info *pi,int print_children,int indent,double
   }
 }
 
+void print_metrics(struct process_info *pi){
+  double on_cpu,on_core;
+  if (clocks_per_second == 0)
+    clocks_per_second = sysconf(_SC_CLK_TCK);
+  if (num_procs == 0)
+    num_procs = get_nprocs();
+  on_core = (double)(pi->total_utime + pi->total_stime) /
+    clocks_per_second /
+    (pi->finish-pi->start);
+  on_cpu = on_core / num_procs;  
+  printf("%s - pid %d\n",pi->filename,pi->pid);
+  printf("\tOn_CPU   %4.3f\n",on_cpu);
+  printf("\tOn_Core  %4.3f\n",on_core);
+  printf("\tIPC      %4.3f\n",(double) pi->total_counter[0] / pi->total_counter[1] * 2);
+  printf("\tElapsed  %5.2f\n",pi->finish-pi->start);
+  printf("\tProcs    %d\n",pi->nproc);
+  printf("\tMinflt   %lu\n",pi->total_minflt);
+  printf("\tMajflt   %lu\n",pi->total_majflt);
+  printf("\tUtime    %-8.2f\t(%3.1f%%)\n",
+	 (double) pi->total_utime / clocks_per_second,
+	 (double) pi->total_utime * 100.0 / (pi->total_utime + pi->total_stime));
+  printf("\tStime    %-8.2f\t(%3.1f%%)\n",
+	 (double) pi->total_stime / clocks_per_second,
+	 (double) pi->total_stime * 100.0 / (pi->total_utime + pi->total_stime));
+  printf("\tStart    %4.2f\n",pi->start);
+  printf("\tFinish   %4.2f\n",pi->finish);
+}
+
 int main(int argc,char *const argv[],char *const envp[]){
   int i;
   if (parse_options(argc,argv)){
-    fatal("usage: %s [-f filename][-F format]\n"
+    fatal("usage: %s [-m][-f filename][-F format][-p pid]\n"
+	  "\t-f sets input filename (default processtree.csv)\n"
 	  "\t-F is a string of format specifiers:\n"
 	  "\t   c - core last run\n"
 	  "\t   f - minor and major faults\n"
@@ -313,6 +394,8 @@ int main(int argc,char *const argv[],char *const envp[]){
 	  "\t   t - time: elapsed, start and finish\n"
 	  "\t   u - user and system times\n"
 	  "\t   v - virtual memory sizes\n"
+	  "\t-m provides summary metrics\n"
+	  "\t-p selects pid to print\n"
 	  ,argv[0]);
   }
   if (read_input_file()){
@@ -331,10 +414,30 @@ int main(int argc,char *const argv[],char *const envp[]){
     }
   }
 
-  for (i=0;i<process_table_size;i++){
-    if (process_table[i].parent == NULL){
-      // print entire trees
-      print_procinfo(&process_table[i],1,1,process_table[i].start);
+  if (pid_root >= 0){
+    int found = 0;
+    for (i=0;i<process_table_size;i++){
+      if (process_table[i].pid == pid_root){
+	if (mflag){
+	  print_metrics(&process_table[i]);
+	} else {
+	  print_procinfo(&process_table[i],1,1,process_table[i].start);
+	}
+	found = 1;
+	break;
+      }
+    }
+    if (!found) warning("pid %d not found\n",pid_root);
+  } else {
+    for (i=0;i<process_table_size;i++){
+      if (process_table[i].parent == NULL){
+	// print entire trees
+	if (mflag){
+	  print_metrics(&process_table[i]);	  
+	} else {
+	  print_procinfo(&process_table[i],1,1,process_table[i].start);
+	}
+      }
     }
   }
   return 0;
