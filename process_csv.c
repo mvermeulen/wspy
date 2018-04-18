@@ -11,13 +11,17 @@
 #define NUM_COUNTERS_PER_PROCESS 6 // hard coded format for now
 
 char *input_filename = "processtree.csv";
+char *format_specifier = 0;
 
 int parse_options(int argc,char *const argv[]){
   int opt;
-  while ((opt = getopt(argc,argv,"f:")) != -1){
+  while ((opt = getopt(argc,argv,"f:F:")) != -1){
     switch(opt){
     case 'f':
       input_filename = strdup(optarg);
+      break;
+    case 'F':
+      format_specifier = strdup(optarg);
       break;
     default:
       warning("unknown option: %d\n",opt);
@@ -226,9 +230,11 @@ void create_tree_totals(struct process_info *pi,int level){
   }
 }
 
-void print_procinfo(struct process_info *pi,int print_children,int indent){
+void print_procinfo(struct process_info *pi,int print_children,int indent,double basetime){
+  static int clocks_per_second = 0;
   struct process_info *child;
   int i;
+  char *p;
   if (indent){
     for (i=0;i<pi->level;i++) printf("  ");
   }
@@ -237,10 +243,56 @@ void print_procinfo(struct process_info *pi,int print_children,int indent){
     printf(" %s",pi->filename);
   else
     printf(" <none>");
+  if (format_specifier){
+    for (p=format_specifier;*p;p++){
+      switch(*p){
+      case 'c':
+	printf(" cpu=%d",pi->cpu);
+	break;
+      case 'f':
+	// TODO make this cummulative
+	printf(" minflt=%lu majflt=%lu",pi->minflt,pi->majflt);
+	break;
+      case 'i':
+	printf(" ipc=%3.2f",(double) pi->counter[0] / pi->counter[1] * 2);
+	break;
+      case 'I':
+	// TODO print cummulative IPC
+	break;
+      case 'm':
+	// TODO print On_CPU and On_Core metrics
+	break;
+      case 'n':
+	// TODO print number of processes in tree
+	break;
+      case 'p':
+	printf(" ctr0=%lu ctr1=%lu ctr2=%lu ctr3=%lu ctr4=%lu ctr5=%lu",
+	       pi->counter[0],pi->counter[1],pi->counter[2],
+	       pi->counter[3],pi->counter[4],pi->counter[5]);
+	break;
+      case 'P':
+	// TODO print cummulative counters
+	break;
+      case 't':
+	printf(" elapsed=%3.2f start=%3.2f finish=%3.2f",pi->finish-pi->start,pi->start-basetime,pi->finish-basetime);
+	break;
+      case 'u':
+	if (clocks_per_second == 0)
+	  clocks_per_second = sysconf(_SC_CLK_TCK);
+	printf(" user=%3.2f sys=%3.2f",
+	       (double)pi->utime / clocks_per_second,
+	       (double)pi->stime / clocks_per_second);
+      case 'v':
+	printf(" vsize=%luK", pi->vsize/1024);
+	break;
+      }
+    }
+  }
+  
   printf("\n");
   if (print_children){
     for (child = pi->child1;child;child=child->sibling){
-      print_procinfo(child,print_children,indent);
+      print_procinfo(child,print_children,indent,basetime);
     }
   }
 }
@@ -248,7 +300,20 @@ void print_procinfo(struct process_info *pi,int print_children,int indent){
 int main(int argc,char *const argv[],char *const envp[]){
   int i;
   if (parse_options(argc,argv)){
-    fatal("usage: %s [-f filename]\n",argv[0]);
+    fatal("usage: %s [-f filename][-F format]\n"
+	  "\t-F is a string of format specifiers:\n"
+	  "\t   c - core last run\n"
+	  "\t   f - minor and major faults\n"
+	  "\t   i - ipc of this process\n"
+	  "\t   I - cummulative IPC for process tree\n"
+	  "\t   m - On_CPU and On_Core metrics\n"
+	  "\t   n - number of processes in tree\n"
+	  "\t   p - counters for this process\n"
+	  "\t   P - counters for the tree\n"
+	  "\t   t - time: elapsed, start and finish\n"
+	  "\t   u - user and system times\n"
+	  "\t   v - virtual memory sizes\n"
+	  ,argv[0]);
   }
   if (read_input_file()){
     fatal("unable to read input file: %s\n",input_filename);
@@ -269,7 +334,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   for (i=0;i<process_table_size;i++){
     if (process_table[i].parent == NULL){
       // print entire trees
-      print_procinfo(&process_table[i],1,1);
+      print_procinfo(&process_table[i],1,1,process_table[i].start);
     }
   }
   return 0;
