@@ -135,6 +135,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (flag_memstats){ init_memstats(); }
   if (flag_netstats){ init_netstats(); }
   if (flag_require_perftimer){ init_global_perf_counters(); }
+  if (flag_require_ptrace){ init_process_counterinfo(); }
 
   if (flag_require_ftrace){
     pthread_create(&ftrace_thread,NULL,ftrace_start,&child_pid);

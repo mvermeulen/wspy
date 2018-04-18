@@ -10,7 +10,7 @@ int num_procs;
 pthread_mutex_t event_lock;
 
 /* procinfo.c */
-#define NUM_COUNTERS 6 // for now just instructions & cycles
+#define NUM_COUNTERS_PER_PROCESS 6 // for now just instructions & cycles
 struct process_info {
   pid_t pid;
   pid_t ppid;
@@ -23,9 +23,9 @@ struct process_info {
   char *comm;
   char *filename;
   int pcount;
-  int perf_fd[NUM_COUNTERS];
-  unsigned long perf_counter[NUM_COUNTERS];
-  unsigned long total_counter[NUM_COUNTERS];
+  int perf_fd[NUM_COUNTERS_PER_PROCESS];
+  unsigned long perf_counter[NUM_COUNTERS_PER_PROCESS];
+  unsigned long total_counter[NUM_COUNTERS_PER_PROCESS];
   unsigned long long starttime;
   unsigned long minflt,majflt;
   //  struct timeval time_fork;
@@ -96,6 +96,7 @@ void init_global_perf_counters(void);
 void read_global_perf_counters(double time);
 void print_global_perf_counters(void);
 void print_global_perf_counter_files(void);
+void init_process_counterinfo(void);
 struct counterinfo *counterinfo_lookup(char *name,char *group,int insert);
 void inventory_counters(char *directory);
 void print_counters(FILE *fp);
@@ -114,6 +115,7 @@ struct counterlist {
 int all_counters_same;
 struct counterlist *perf_counters_by_cpu[MAXCPU];
 struct counterlist *perf_counters_same;
+struct counterlist *perf_counters_by_process[NUM_COUNTERS_PER_PROCESS];
 
 /* config.c */
 int command_line_argc;

@@ -21,6 +21,7 @@
 struct counterlist *perf_counters_by_cpu[MAXCPU] = { 0 };
 int all_counters_same = 0;
 struct counterlist *perf_counters_same = NULL;
+struct counterlist *perf_counters_by_process[NUM_COUNTERS_PER_PROCESS] = { 0 };
 #define COUNTER_DEFINITION_DIRECTORY	"/sys/devices"
 struct counterinfo *countertable = 0;
 #define COUNTERTABLE_ALLOC_CHUNK 1024
@@ -32,43 +33,11 @@ FILE *perfctrfile = NULL;
 void print_perf_counter_gnuplot_file(void);
 
 #define MAX_COUNTERS_PER_CORE 6
+
 struct perf_config {
   char *label;
   uint32_t type;
   uint64_t config;
-};
-struct core_perf_config {
-  int ncount;
-  struct perf_config counter[MAX_COUNTERS_PER_CORE];
-} default_config[] = {
-  { 4,
-    {{ "inst", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS },
-     { "cycle", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES },
-     { "cacheref", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_REFERENCES },
-     { "cachemiss", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_MISSES }}},
-  { 4,
-    {{ "inst", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS },
-     { "cycle", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES },
-     { "branch", PERF_TYPE_HARDWARE, PERF_COUNT_HW_BRANCH_INSTRUCTIONS },
-     { "branchmiss", PERF_TYPE_HARDWARE, PERF_COUNT_HW_BRANCH_MISSES }}},
-  { 4,
-    {{ "inst", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS },
-     { "cycle", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES },
-     { "dtlbmiss", PERF_TYPE_HW_CACHE,
-       (PERF_COUNT_HW_CACHE_DTLB)|(PERF_COUNT_HW_CACHE_OP_READ<<8)|
-       (PERF_COUNT_HW_CACHE_RESULT_MISS<<16) },
-     { "itlbmiss", PERF_TYPE_HW_CACHE,
-       (PERF_COUNT_HW_CACHE_ITLB)|(PERF_COUNT_HW_CACHE_OP_READ<<8)|
-       (PERF_COUNT_HW_CACHE_RESULT_MISS<<16) }}},     
-  { 4,
-    {{ "inst", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS },
-     { "cycle", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES },
-     { "l1dref", PERF_TYPE_HW_CACHE,
-       (PERF_COUNT_HW_CACHE_L1D)|(PERF_COUNT_HW_CACHE_OP_READ<<8)|
-       (PERF_COUNT_HW_CACHE_RESULT_ACCESS<<16) },
-     { "l1dmiss", PERF_TYPE_HW_CACHE,
-       (PERF_COUNT_HW_CACHE_L1D)|(PERF_COUNT_HW_CACHE_OP_READ<<8)|
-       (PERF_COUNT_HW_CACHE_RESULT_MISS<<16) }}}
 };
 
 struct perfctr_info {
@@ -151,16 +120,36 @@ int default_process_counters[] = {
   PERF_COUNT_HW_CPU_CYCLES,
 };
 
+char *def_process_counters[NUM_COUNTERS_PER_PROCESS] = {
+  "instructions",
+  "topdown-total-slots",
+  "topdown-fetch-bubbles",
+  "topdown-recovery-bubbles",
+  "topdown-slots-issued",
+  "topdown-slots-retired"
+};
+
+void init_process_counterinfo(void){
+  int i;
+  struct counterlist *cl;
+  for (i=0;i<NUM_COUNTERS_PER_PROCESS;i++){
+    cl = calloc(1,sizeof(struct counterlist));
+    cl->name = def_process_counters[i];
+    cl->ci = counterinfo_lookup(cl->name,0,0);
+    perf_counters_by_process[i] = cl;
+  }
+}
+
 void start_process_perf_counters(procinfo *pinfo){
   int i;
-  struct perf_event_attr pe[NUM_COUNTERS];
+  struct perf_event_attr pe[NUM_COUNTERS_PER_PROCESS];
   if (pinfo){
     memset(pe,'\0',sizeof(pe));
-    for (i=0;i<NUM_COUNTERS;i++){
-      pe[i].type = PERF_TYPE_HARDWARE; // generalized counters
-      pe[i].config = default_process_counters[i];
+    for (i=0;i<NUM_COUNTERS_PER_PROCESS;i++){
+      pe[i].type = perf_counters_by_process[i]->ci->type;
+      pe[i].config = perf_counters_by_process[i]->ci->config;
+      pe[i].config1 = perf_counters_by_process[i]->ci->config1;
       pe[i].size = sizeof(struct perf_event_attr);
-      pe[i].disabled = 1;
       pinfo->perf_fd[i] = perf_event_open(&pe[i],pinfo->pid,-1,-1,0);
       if (pinfo->perf_fd[i] != -1){
 	ioctl(pinfo->perf_fd[i],PERF_EVENT_IOC_RESET,0);
@@ -202,7 +191,7 @@ void stop_process_perf_counters(procinfo *pinfo){
   int status;
   int i;
   if (pinfo){
-    for (i=0;i<NUM_COUNTERS;i++){
+    for (i=0;i<NUM_COUNTERS_PER_PROCESS;i++){
       if (pinfo->perf_fd[i] > 0){
 	status = read(pinfo->perf_fd[i],&pinfo->perf_counter[i],
 		      sizeof(pinfo->perf_counter[i]));

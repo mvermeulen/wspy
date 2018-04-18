@@ -61,6 +61,8 @@ void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
   procinfo *child;
   double on_cpu,on_core;
   unsigned long total_time;
+  unsigned long fetch_bubbles,total_slots,slots_issued,slots_retired,recovery_bubbles;
+  double frontend_bound,retiring,speculation,backend_bound;
   if (pinfo == NULL) return;
   if (level > 100) return;
   if (clocks_per_second == 0) clocks_per_second = sysconf(_SC_CLK_TCK);
@@ -80,15 +82,30 @@ void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
   if (flag_require_perftree && flag_require_ptrace){
     fprintf(output," ipc=%4.2f",
 	    (double) pinfo->total_counter[0] / pinfo->total_counter[1]);
-    if (get_error_level() >= ERROR_LEVEL_DEBUG){
-      fprintf(output," inst=%lu cycles=%lu",
-	      pinfo->total_counter[0],pinfo->total_counter[1]);
-    }
     total_time = pinfo->total_utime + pinfo->total_stime;
     if (total_time){
       on_core = (double) total_time/clocks_per_second/elapsed;
       on_cpu = on_core / num_procs;
       fprintf(output," on_cpu=%3.2f on_core=%3.2f",on_cpu,on_core);
+    }
+    // topdown metrics, note scaling wasn't done yet so do it here
+    total_slots = pinfo->total_counter[1]*2;
+    fetch_bubbles = pinfo->total_counter[2];
+    recovery_bubbles = pinfo->total_counter[3]*2;
+    slots_issued = pinfo->total_counter[4];
+    slots_retired = pinfo->total_counter[5];
+    frontend_bound = (double) fetch_bubbles / total_slots;
+    retiring = (double) slots_retired / total_slots;
+    speculation = (double) (slots_issued - slots_retired + recovery_bubbles) / total_slots;
+    backend_bound = 1 - (frontend_bound + retiring + speculation);
+    fprintf(output," retire=%4.3f",retiring);
+    fprintf(output," frontend=%4.3f",frontend_bound);
+    fprintf(output," spec=%4.3f",speculation);
+    fprintf(output," backend=%4.3f",backend_bound);
+    
+    if (get_error_level() >= ERROR_LEVEL_DEBUG){
+      fprintf(output," inst=%lu cycles=%lu",
+	      pinfo->total_counter[0],pinfo->total_counter[1]);
     }
   }
   fprintf(output," elapsed=%5.2f",elapsed);
@@ -147,9 +164,10 @@ int print_all_processes_csv(FILE *output){
   int count = 0;
   int i,j;
   procinfo *pinfo;
+  struct counterlist *cl;
   struct proctable_hash_entry *hash;
   fprintf(output,"#pid,ppid,filename,starttime,start,finish,cpu,utime,stime,vsize,rss,minflt,majflt,num_counters,");
-  for (j=0;j<NUM_COUNTERS;j++){
+  for (j=0;j<NUM_COUNTERS_PER_PROCESS;j++){
     fprintf(output,"counter%d,",j);
   }
   fprintf(output,"\n");
@@ -164,9 +182,13 @@ int print_all_processes_csv(FILE *output){
       fprintf(output,"%lu,%lu,",pinfo->utime,pinfo->stime);
       fprintf(output,"%lu,%lu,",pinfo->vsize,pinfo->rss);
       fprintf(output,"%lu,%lu,",pinfo->minflt,pinfo->majflt);
-      fprintf(output,"%d,",NUM_COUNTERS);
-      for (j=0;j<NUM_COUNTERS;j++){
-	fprintf(output,"%lu,",pinfo->perf_counter[j]);
+      fprintf(output,"%d,",NUM_COUNTERS_PER_PROCESS);
+      for (j=0;j<NUM_COUNTERS_PER_PROCESS;j++){
+	if ((cl = perf_counters_by_process[j]) && cl->ci->scale){
+	  fprintf(output,"%lu,",pinfo->perf_counter[j]*cl->ci->scale);	  
+	} else {
+	  fprintf(output,"%lu,",pinfo->perf_counter[j]);
+	}
       }
       fprintf(output,"\n");
       count++;
@@ -203,14 +225,14 @@ void sum_counts_processes(procinfo *pinfo){
   int pcount;
   unsigned long total_utime;
   unsigned long total_stime;
-  unsigned long total_counter[NUM_COUNTERS];
+  unsigned long total_counter[NUM_COUNTERS_PER_PROCESS];
   procinfo *child;
   if (pinfo->pcount == 0){
     // not yet counted
     pcount = 1;
     total_utime = pinfo->utime;
     total_stime = pinfo->stime;
-    for (i=0;i<NUM_COUNTERS;i++)
+    for (i=0;i<NUM_COUNTERS_PER_PROCESS;i++)
       total_counter[i] = pinfo->perf_counter[i];
       
     for (child = pinfo->child;child;child = child->sibling){
@@ -218,13 +240,13 @@ void sum_counts_processes(procinfo *pinfo){
       pcount      += child->pcount;
       total_utime += child->total_utime;
       total_stime += child->total_stime;
-      for (i=0;i<NUM_COUNTERS;i++)
+      for (i=0;i<NUM_COUNTERS_PER_PROCESS;i++)
 	total_counter[i] += child->total_counter[i];
     }
     pinfo->pcount = pcount;
     pinfo->total_utime = total_utime;
     pinfo->total_stime = total_stime;
-    for (i=0;i<NUM_COUNTERS;i++)
+    for (i=0;i<NUM_COUNTERS_PER_PROCESS;i++)
       pinfo->total_counter[i] = total_counter[i];
   }
 }
