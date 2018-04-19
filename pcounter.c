@@ -546,10 +546,21 @@ void add_counterinfo(char *dir,char *name,char *group,int type){
   }
   snprintf(filename,sizeof(filename),"%s/%s.scale",dir,name);
   if (fp = fopen(filename,"r")){
+    int c;
     int scale = 0;
-    fscanf(fp,"%u",&scale);
-    ci->scale = scale;
-    fclose(fp);
+    int len,digits;
+    if (fgets(line,sizeof(line),fp)){ // only deal with integers for now
+      len = strlen(line);
+      digits = strspn(line,"0123456789\n");
+      if (len == digits){
+	sscanf(line,"%d",&scale);
+	if (scale){
+	  ci->scale = scale;
+	}
+      }
+      fclose(fp);
+      ci->scale = scale;
+    }
   }
 }
 

@@ -71,7 +71,7 @@ plot 'perf1.csv' using 1:(\$4/\$2) title 'Branches' with linespoints, 'perf1.csv
 PLOTCMD
 gnuplot <<PLOTCMD
 set terminal png
-set output 'memory2.png'
+set output 'memory.png'
 set datafile separator ","
 set title 'Memory'
 plot 'perf2.csv' using 1:(\$2*64) title 'reads' with linespoints, 'perf2.csv' using 1:(\$3*64) title 'writes' with linespoints

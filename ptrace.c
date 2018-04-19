@@ -172,7 +172,7 @@ void ptrace_loop(void){
       debug2("pid %d signaled\n",pid);
     } else if (WIFSTOPPED(status)){
       if (WSTOPSIG(status) == SIGTRAP){
-	notice("pid %d SIGTRAP\n",pid);
+	//	notice("pid %d SIGTRAP\n",pid);
 	if (flag_require_ftrace) pthread_mutex_lock(&event_lock);
 	pinfo = lookup_process_info(pid,1);
 	cloned = 0;
@@ -181,11 +181,11 @@ void ptrace_loop(void){
 	  cloned = 1; // fall thru
 	case PTRACE_EVENT_FORK:
 	case PTRACE_EVENT_VFORK:
-	  notice("    fork(%d)\n",pid);
+	  //	  notice("    fork(%d)\n",pid);
 	  pinfo->cloned = cloned;
 	  // This process had a fork/vfork/clone, get the child process
 	  if (ptrace(PTRACE_GETEVENTMSG,pid,NULL,&data) != -1){
-	    notice("        child %d\n",data);
+	    //	    notice("        child %d\n",data);
 	    child_pinfo = lookup_process_info(data,1);
 	    child_pinfo->cloned = 1;
 	    child_pinfo->ppid = pid;
@@ -204,11 +204,11 @@ void ptrace_loop(void){
 	  }
 	  break;
 	case PTRACE_EVENT_VFORK_DONE:
-	  notice("    forkdone(%d)\n",pid);	  
+	  //	  notice("    forkdone(%d)\n",pid);	  
 	  // At this point nothing unique to do
 	  break;
 	case PTRACE_EVENT_EXEC:
-	  notice("    exec(%d)\n",pid);	  	  
+	  //	  notice("    exec(%d)\n",pid);	  	  
 	  cmdline = lookup_process_comm(pid);
 	  if (cmdline) pinfo->filename = strdup(cmdline);
 	  if (pinfo->time_start == 0){
@@ -216,7 +216,7 @@ void ptrace_loop(void){
 	  }	  
 	  break;
 	case PTRACE_EVENT_EXIT:
-	  notice("    exit(%d)\n",pid);	  	  	  
+	  //	  notice("    exit(%d)\n",pid);	  	  	  
 	  if (pinfo->filename == NULL){
 	    // typically happens for first process which we get only after exec
 	    cmdline = lookup_process_comm(pid);
@@ -249,7 +249,7 @@ void ptrace_loop(void){
 	  pinfo->p_exited = 1;
 	  break;
 	default:
-	  notice("    unknown event %d (%d)\n",status>>16,pid);	  	  	  
+	  //	  notice("    unknown event %d (%d)\n",status>>16,pid);	  	  	  
 	  debug("pid %d stopped with event %d\n",pid,status>>16);
 	  break;
 	}

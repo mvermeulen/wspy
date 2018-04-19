@@ -38,7 +38,6 @@ int parse_options(int argc,char *const argv[]){
       }
       break;
     default:
-      warning("unknown option: %d\n",opt);
       return 1;
       break;
     }
@@ -351,6 +350,7 @@ void print_procinfo(struct process_info *pi,int print_children,int indent,double
 
 void print_metrics(struct process_info *pi){
   double on_cpu,on_core;
+  double td_retire,td_spec,td_frontend,td_backend;
   if (clocks_per_second == 0)
     clocks_per_second = sysconf(_SC_CLK_TCK);
   if (num_procs == 0)
@@ -358,11 +358,19 @@ void print_metrics(struct process_info *pi){
   on_core = (double)(pi->total_utime + pi->total_stime) /
     clocks_per_second /
     (pi->finish-pi->start);
-  on_cpu = on_core / num_procs;  
+  on_cpu = on_core / num_procs;
+  td_retire = (double) pi->total_counter[5]/pi->total_counter[1];
+  td_spec = (double) (pi->total_counter[4] - pi->total_counter[5] + pi->total_counter[3])/pi->total_counter[1];
+  td_frontend = (double) pi->total_counter[2] / pi->total_counter[1];
+  td_backend = 1 - (td_retire + td_spec + td_frontend);
   printf("%s - pid %d\n",pi->filename,pi->pid);
   printf("\tOn_CPU   %4.3f\n",on_cpu);
   printf("\tOn_Core  %4.3f\n",on_core);
   printf("\tIPC      %4.3f\n",(double) pi->total_counter[0] / pi->total_counter[1] * 2);
+  printf("\tRetire   %4.3f\t(%3.1f%%)\n",td_retire,td_retire*100);
+  printf("\tFrontEnd %4.3f\t(%3.1f%%)\n",td_frontend,td_frontend*100);
+  printf("\tSpec     %4.3f\t(%3.1f%%)\n",td_spec,td_spec*100);
+  printf("\tBackend  %4.3f\t(%3.1f%%)\n",td_backend,td_backend*100);
   printf("\tElapsed  %5.2f\n",pi->finish-pi->start);
   printf("\tProcs    %d\n",pi->nproc);
   printf("\tMinflt   %lu\n",pi->total_minflt);
