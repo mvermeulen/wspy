@@ -1,0 +1,9 @@
+# default configuration file
+command --no-cpustats
+command --no-diskstats
+command --no-perfcounters
+command --no-processtree
+command --perfcounter-model core
+command --processtree-engine ftrace
+command --set-counters cpu-cycles,instructions
+
