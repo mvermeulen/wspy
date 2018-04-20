@@ -330,7 +330,7 @@ void print_procinfo(struct process_info *pi,int print_children,int indent,double
 	  // slots rather than CPU cycles so multiply by 2
 	  printf(" ipc=%3.2f",(double) pi->counter[0] / pi->counter[1] * 2);
 	} else if (proctype == PROCESSOR_AMD){
-	  printf(" ipc=%3.2f",(double) pi->counter[0] / pi->counter[1]);	  
+	  printf(" ipc=%3.2f",(double) pi->counter[0] / pi->counter[1]);
 	}
 	break;
       case 'I':
@@ -408,7 +408,11 @@ void print_metrics(struct process_info *pi){
   printf("%s - pid %d\n",pi->filename,pi->pid);
   printf("\tOn_CPU   %4.3f\n",on_cpu);
   printf("\tOn_Core  %4.3f\n",on_core);
-  printf("\tIPC      %4.3f\n",(double) pi->total_counter[0] / pi->total_counter[1] * 2);
+  if (proctype == PROCESSOR_INTEL){
+    printf("\tIPC      %4.3f\n",(double) pi->total_counter[0] / pi->total_counter[1] * 2);
+  } else {
+    printf("\tIPC      %4.3f\n",(double) pi->total_counter[0] / pi->total_counter[1]);    
+  }
   if (proctype == PROCESSOR_INTEL){
     printf("\tRetire   %4.3f\t(%3.1f%%)\n",td_retire,td_retire*100);
     printf("\tFrontEnd %4.3f\t(%3.1f%%)\n",td_frontend,td_frontend*100);
