@@ -270,6 +270,38 @@ void create_tree_totals(struct process_info *pi,int level){
     pi->total_counter[i] = total_counter[i];
 }
 
+// look up vendor from /proc/cpuinfo
+static char *vendor_id = NULL;
+enum processor_type { PROCESSOR_UNKNOWN, PROCESSOR_INTEL, PROCESSOR_AMD } proctype = PROCESSOR_UNKNOWN;
+char *lookup_vendor(void){
+  FILE *fp;
+  char line[1024];
+  char *p,*token;
+  if (vendor_id == NULL){
+    if (fp = fopen("/proc/cpuinfo","r")){
+      while (fgets(line,sizeof(line),fp)){
+	if (!strncmp(line,"vendor_id",9)){
+	  p = strchr(line,':');
+	  if ((p = strchr(line,':')) &&
+	      (token = strtok(p+1," \t\n"))){
+	    vendor_id = strdup(token);
+	    if (!strcmp(vendor_id,"GenuineIntel")){
+	      proctype = PROCESSOR_INTEL;
+	    } else if (!strcmp(vendor_id,"AuthenticAMD")){
+	      proctype = PROCESSOR_AMD;
+	    }
+	  }
+	  fclose(fp);
+	  return vendor_id;
+	}
+      }
+      fclose(fp);
+    }
+  }
+  return vendor_id;
+}
+
+
 void print_procinfo(struct process_info *pi,int print_children,int indent,double basetime){
   struct process_info *child;
   int i;
@@ -294,7 +326,12 @@ void print_procinfo(struct process_info *pi,int print_children,int indent,double
 	printf(" minflt=%lu majflt=%lu",pi->total_minflt,pi->total_majflt);
 	break;
       case 'i':
-	printf(" ipc=%3.2f",(double) pi->counter[0] / pi->counter[1] * 2);
+	if (proctype == PROCESSOR_INTEL){
+	  // slots rather than CPU cycles so multiply by 2
+	  printf(" ipc=%3.2f",(double) pi->counter[0] / pi->counter[1] * 2);
+	} else if (proctype == PROCESSOR_AMD){
+	  printf(" ipc=%3.2f",(double) pi->counter[0] / pi->counter[1]);	  
+	}
 	break;
       case 'I':
 	printf(" tipc=%3.2f",(double) pi->total_counter[0] / pi->total_counter[1] * 2);	
@@ -359,18 +396,28 @@ void print_metrics(struct process_info *pi){
     clocks_per_second /
     (pi->finish-pi->start);
   on_cpu = on_core / num_procs;
-  td_retire = (double) pi->total_counter[5]/pi->total_counter[1];
-  td_spec = (double) (pi->total_counter[4] - pi->total_counter[5] + pi->total_counter[3])/pi->total_counter[1];
-  td_frontend = (double) pi->total_counter[2] / pi->total_counter[1];
-  td_backend = 1 - (td_retire + td_spec + td_frontend);
+  if (proctype == PROCESSOR_INTEL){
+    td_retire = (double) pi->total_counter[5]/pi->total_counter[1];
+    td_spec = (double) (pi->total_counter[4] - pi->total_counter[5] + pi->total_counter[3])/pi->total_counter[1];
+    td_frontend = (double) pi->total_counter[2] / pi->total_counter[1];
+    td_backend = 1 - (td_retire + td_spec + td_frontend);
+  } else if (proctype == PROCESSOR_AMD){
+    td_frontend = (double) pi->total_counter[2] / pi->total_counter[1];
+    td_backend = (double) pi->total_counter[3] / pi->total_counter[1];
+  }
   printf("%s - pid %d\n",pi->filename,pi->pid);
   printf("\tOn_CPU   %4.3f\n",on_cpu);
   printf("\tOn_Core  %4.3f\n",on_core);
   printf("\tIPC      %4.3f\n",(double) pi->total_counter[0] / pi->total_counter[1] * 2);
-  printf("\tRetire   %4.3f\t(%3.1f%%)\n",td_retire,td_retire*100);
-  printf("\tFrontEnd %4.3f\t(%3.1f%%)\n",td_frontend,td_frontend*100);
-  printf("\tSpec     %4.3f\t(%3.1f%%)\n",td_spec,td_spec*100);
-  printf("\tBackend  %4.3f\t(%3.1f%%)\n",td_backend,td_backend*100);
+  if (proctype == PROCESSOR_INTEL){
+    printf("\tRetire   %4.3f\t(%3.1f%%)\n",td_retire,td_retire*100);
+    printf("\tFrontEnd %4.3f\t(%3.1f%%)\n",td_frontend,td_frontend*100);
+    printf("\tSpec     %4.3f\t(%3.1f%%)\n",td_spec,td_spec*100);
+    printf("\tBackend  %4.3f\t(%3.1f%%)\n",td_backend,td_backend*100);
+  } else if (proctype == PROCESSOR_AMD){
+    printf("\tFrontEnd %4.3f\t(%3.1f%%)\n",td_frontend,td_frontend*100);
+    printf("\tBackend  %4.3f\t(%3.1f%%)\n",td_backend,td_backend*100);    
+  }
   printf("\tElapsed  %5.2f\n",pi->finish-pi->start);
   printf("\tProcs    %d\n",pi->nproc);
   printf("\tMinflt   %lu\n",pi->total_minflt);
@@ -408,6 +455,9 @@ int main(int argc,char *const argv[],char *const envp[]){
   }
   if (read_input_file()){
     fatal("unable to read input file: %s\n",input_filename);
+  }
+  if (lookup_vendor() == NULL){
+    fatal("unable to read vendor information\n");
   }
   qsort(process_table,process_table_size,sizeof(struct process_info),compare_start);
 

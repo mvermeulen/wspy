@@ -62,6 +62,7 @@ void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
   double on_cpu,on_core;
   unsigned long total_time;
   unsigned long fetch_bubbles,total_slots,slots_issued,slots_retired,recovery_bubbles;
+  unsigned long cpu_cycles;
   double frontend_bound,retiring,speculation,backend_bound;
   char *vendor;
   vendor = lookup_vendor();
@@ -105,6 +106,12 @@ void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
       fprintf(output," frontend=%4.3f",frontend_bound);
       fprintf(output," spec=%4.3f",speculation);
       fprintf(output," backend=%4.3f",backend_bound);
+    } else if (vendor && !strcmp(vendor,"AuthenticAMD")){
+      cpu_cycles = pinfo->total_counter[1];
+      frontend_bound = pinfo->total_counter[2];
+      backend_bound  = pinfo->total_counter[3];
+      fprintf(output," frontend=%4.3f",frontend_bound / cpu_cycles);
+      fprintf(output," backend=%4.3f",backend_bound / cpu_cycles);      
     }
     
     if (get_error_level() >= ERROR_LEVEL_DEBUG){

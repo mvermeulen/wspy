@@ -120,7 +120,7 @@ int default_process_counters[] = {
   PERF_COUNT_HW_CPU_CYCLES,
 };
 
-char *def_process_counters_intel[NUM_COUNTERS_PER_PROCESS] = {
+char *def_process_counters_intel[] = {
   "instructions",
   "topdown-total-slots",
   "topdown-fetch-bubbles",
@@ -128,9 +128,11 @@ char *def_process_counters_intel[NUM_COUNTERS_PER_PROCESS] = {
   "topdown-slots-issued",
   "topdown-slots-retired"
 };
-char *def_process_counters_amd[NUM_COUNTERS_PER_PROCESS] = {
+char *def_process_counters_amd[] = {
   "instructions",
-  "cpu-cycles"
+  "cpu-cycles",
+  "stalled-cycles-frontend",
+  "stalled-cycles-backend",
 };
 
 void init_process_counterinfo(void){
@@ -138,14 +140,19 @@ void init_process_counterinfo(void){
   char *vendor;
   struct counterlist *cl;
   char **default_counters;
+  int num_counters;
   vendor = lookup_vendor();
-  if (vendor && !strcmp(vendor,"GenuineIntel"))
+  if (vendor && !strcmp(vendor,"GenuineIntel")){
     default_counters = def_process_counters_intel;
-  else if (vendor && !strcmp(vendor,"AuthenticAMD"))
+    num_counters = sizeof(def_process_counters_intel)/sizeof(def_process_counters_intel[0]);
+  } else if (vendor && !strcmp(vendor,"AuthenticAMD")){
     default_counters = def_process_counters_amd;
-  else
+    num_counters = sizeof(def_process_counters_amd)/sizeof(def_process_counters_amd[0]);
+  }
+  else {
     return;
-  for (i=0;i<NUM_COUNTERS_PER_PROCESS;i++){
+  }
+  for (i=0;i<num_counters;i++){
     cl = calloc(1,sizeof(struct counterlist));
     cl->name = default_counters[i];
     cl->ci = counterinfo_lookup(cl->name,0,0);
