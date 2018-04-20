@@ -415,8 +415,8 @@ void print_metrics(struct process_info *pi){
     printf("\tSpec     %4.3f\t(%3.1f%%)\n",td_spec,td_spec*100);
     printf("\tBackend  %4.3f\t(%3.1f%%)\n",td_backend,td_backend*100);
   } else if (proctype == PROCESSOR_AMD){
-    printf("\tFrontEnd %4.3f\t(%3.1f%%)\n",td_frontend,td_frontend*100);
-    printf("\tBackend  %4.3f\t(%3.1f%%)\n",td_backend,td_backend*100);    
+    printf("\tFrontCyc %4.3f\t(%3.1f%%)\n",td_frontend,td_frontend*100);
+    printf("\tBackCyc  %4.3f\t(%3.1f%%)\n",td_backend,td_backend*100);    
   }
   printf("\tElapsed  %5.2f\n",pi->finish-pi->start);
   printf("\tProcs    %d\n",pi->nproc);
