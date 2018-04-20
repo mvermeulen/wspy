@@ -24,6 +24,7 @@ procinfo *child_procinfo = NULL;
 pthread_t ftrace_thread;
 pthread_t ptrace_thread;
 pthread_t timer_thread;
+pthread_t tracecmd_thread;
 char *default_command[] = { "sleep", "30", NULL };
 char original_dir[1024];
 int num_procs = 0;
@@ -140,8 +141,11 @@ int main(int argc,char *const argv[],char *const envp[]){
     init_process_counterinfo();
   }
 
+  // These two are mutually exclusive since both use kernel tracing facility
   if (flag_require_ftrace){
     pthread_create(&ftrace_thread,NULL,ftrace_start,&child_pid);
+  } else if (flag_require_tracecmd){
+    pthread_create(&tracecmd_thread,NULL,tracecmd_start,(void *) envp);
   }
 
   if (flag_require_timer){
@@ -182,6 +186,10 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (flag_require_ftrace){
     write(ftrace_cmd_pipe[1],"quit\n",5);
     pthread_join(ftrace_thread,NULL);
+  } else if (flag_require_tracecmd){
+    if (tracecmd_pid != 0){
+      kill(tracecmd_pid,SIGINT);
+    }      
   }
 
   if (flag_require_timer){
@@ -242,6 +250,10 @@ int main(int argc,char *const argv[],char *const envp[]){
     if (flag_cpustats) print_cpustats_files();
     if (flag_diskstats) print_diskstats_files();
     if (flag_require_perftimer) print_global_perf_counter_files();
+    if (flag_require_tracecmd){
+      snprintf(cmd,sizeof(cmd),"cp %s/processtree.dat .",original_dir);
+      system(cmd);
+    }
 
     strcpy(basezvalue,zip_archive_name);
     basez = basename(basezvalue);

@@ -49,6 +49,10 @@ double first_ftrace_time;
 int ftrace_cmd_pipe[2]; // command pipe
 void *ftrace_start(void *arg);
 
+/* tracecmd.c */
+pid_t tracecmd_pid;
+void *tracecmd_start(void *arg);
+
 /* ptrace.c */
 void ptrace_setup(pid_t child);
 void ptrace_loop(void);
@@ -128,11 +132,19 @@ int flag_memstats;
 int flag_netstats;
 int flag_perfctr;
 int flag_proctree;
-enum proctree_engine { PT_DEFAULT=0, PT_FTRACE=1, PT_PTRACE=2, PT_ALL=3 } proctree_engine;
 enum perfcounter_model { PM_DEFAULT=0, PM_CORE=1, PM_PROCESS } perfcounter_model;
 int flag_showcounters;
+// four possible types of processtree engines
+int mask_processtree_engine_selected;
+#define PROCESSTREE_FTRACE   0x1   // parse results of ftrace into in memory tree
+#define PROCESSTREE_TRACECMD 0x2   // external invoke trace-cmd to create *.dat file
+#define PROCESSTREE_PTRACE1  0x4   // get ptrace events into in memory tree
+#define PROCESSTREE_PTRACE2  0x8   // get ptrace events into dump of processtree.csv file
 int flag_require_ftrace;
 int flag_require_ptrace;
+int flag_require_ptrace2;
+int flag_require_tracecmd;
+
 int flag_require_timer;
 int flag_require_counters;
 int flag_require_perftimer;

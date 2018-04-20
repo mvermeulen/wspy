@@ -33,10 +33,13 @@ int flag_netstats = 0;
 int flag_debug = 0;
 int flag_perfctr = 0;
 int flag_proctree = 0;
-enum proctree_engine proctree_engine = PT_DEFAULT;
-enum perfcounter_model perfcounter_model = PM_DEFAULT;
+// possible values for --processtree-engine, one for each
+int mask_processtree_engine_selected = 0;
 int flag_require_ftrace = 0;
 int flag_require_ptrace = 0;
+int flag_require_ptrace2 = 0;
+int flag_require_tracecmd = 0;
+
 int flag_require_timer = 0;
 int flag_require_counters = 0;
 int flag_require_perftree = 0;
@@ -262,14 +265,22 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 28:
       if (!strncmp(optarg,"ftrace",6)){
-	proctree_engine = PT_FTRACE;
+	mask_processtree_engine_selected |= PROCESSTREE_FTRACE;
+	mask_processtree_engine_selected &= ~PROCESSTREE_TRACECMD;
       } else if (!strncmp(optarg,"ptrace",6)){
-	proctree_engine = PT_PTRACE;
-      } else if (!strncmp(optarg,"all",3)){
-	proctree_engine = PT_ALL;
+	mask_processtree_engine_selected |= PROCESSTREE_PTRACE1;
+	mask_processtree_engine_selected &= PROCESSTREE_PTRACE2;
+      } else if (!strncmp(optarg,"ptrace2",7)){
+	mask_processtree_engine_selected |= PROCESSTREE_PTRACE2;
+	mask_processtree_engine_selected &= PROCESSTREE_PTRACE1;
+      } else if (!strncmp(optarg,"tracecmd",8)){
+	mask_processtree_engine_selected |= PROCESSTREE_TRACECMD;
+	mask_processtree_engine_selected &= ~PROCESSTREE_FTRACE;
+      } else if (!strncmp(optarg,"none",4)){
+	mask_processtree_engine_selected = 0;
       } else {
 	warning("invalid argument to --processtree-engine, ignored: %s\n"
-		"\texpecting either ftrace or ptrace\n"
+		"\texpecting: ftrace, ptrace, ptrace2, tracecmd or none\n"
 		,optarg);
       }
       break;
@@ -337,20 +348,25 @@ int parse_options(int argc,char *const argv[]){
     }
   }
   if (flag_proctree){
-    switch(proctree_engine){
-    case PT_DEFAULT:
-    case PT_ALL:
+    if (mask_processtree_engine_selected & PROCESSTREE_FTRACE){
       flag_require_ftrace = 1;
-      flag_require_ptrace = 1;
-      break;
-    case PT_FTRACE:
-      flag_require_ftrace = 1;
-      flag_require_ptrace = 0;
-      break;
-    case PT_PTRACE:
+      flag_require_tracecmd = 0;
+    } else if (mask_processtree_engine_selected & PROCESSTREE_TRACECMD){
       flag_require_ftrace = 0;
+      flag_require_tracecmd = 1;      
+    } else {
+      flag_require_ftrace = 0;
+      flag_require_tracecmd = 0;      
+    }
+    if (mask_processtree_engine_selected & PROCESSTREE_PTRACE1){
       flag_require_ptrace = 1;
-      break;
+      flag_require_ptrace2 = 0;
+    } else if (mask_processtree_engine_selected & PROCESSTREE_PTRACE2){
+      flag_require_ptrace = 0;
+      flag_require_ptrace2 = 1;      
+    } else {
+      flag_require_ptrace = 0;
+      flag_require_ptrace2 = 0;      
     }
   }
   if (flag_perfctr){
