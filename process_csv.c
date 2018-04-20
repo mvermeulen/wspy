@@ -308,6 +308,7 @@ void print_procinfo(struct process_info *pi,int print_children,int indent,double
   char *p;
   double on_core;
   double on_cpu;
+  double td_retire,td_spec,td_frontend,td_backend;
   if (indent){
     for (i=0;i<pi->level;i++) printf("  ");
   }
@@ -346,6 +347,13 @@ void print_procinfo(struct process_info *pi,int print_children,int indent,double
 	  (pi->finish-pi->start);
 	on_cpu = on_core / num_procs;
 	printf(" on_cpu=%4.3f on_core=%4.3f",on_cpu,on_core);
+	if (proctype == PROCESSOR_INTEL){
+	  td_retire = (double) pi->total_counter[5]/pi->total_counter[1];
+	  td_spec = (double) (pi->total_counter[4] - pi->total_counter[5] + pi->total_counter[3])/pi->total_counter[1];
+	  td_frontend = (double) pi->total_counter[2] / pi->total_counter[1];
+	  td_backend = 1 - (td_retire + td_spec + td_frontend);
+	  printf(" td_ret=%4.3f td_fe=%4.3f td_spec=%4.3f td_be=%4.3f",td_retire,td_frontend,td_spec,td_backend);
+	}
 	break;
       case 'n':
 	printf(" pcount=%d",pi->nproc);
