@@ -121,6 +121,11 @@ int main(int argc,char *const argv[],char *const envp[]){
     }
     notice_noprogram("\n");
   }
+  // check to see if we've selected --perfcounters without an engine
+  if (flag_perfctr && (mask_processtree_engine_selected == 0)){
+    // default to ptrace
+    flag_require_ptrace = 1;
+  }
 
   sort_counters();
 

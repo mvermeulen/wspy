@@ -4,5 +4,5 @@ command --no-diskstats
 command --no-perfcounters
 command --no-processtree
 command --perfcounter-model core
-command --processtree-engine ftrace
+command --processtree-engine none
 command --set-counters cpu-cycles,instructions
