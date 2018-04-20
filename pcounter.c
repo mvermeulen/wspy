@@ -120,7 +120,7 @@ int default_process_counters[] = {
   PERF_COUNT_HW_CPU_CYCLES,
 };
 
-char *def_process_counters[NUM_COUNTERS_PER_PROCESS] = {
+char *def_process_counters_intel[NUM_COUNTERS_PER_PROCESS] = {
   "instructions",
   "topdown-total-slots",
   "topdown-fetch-bubbles",
@@ -128,13 +128,26 @@ char *def_process_counters[NUM_COUNTERS_PER_PROCESS] = {
   "topdown-slots-issued",
   "topdown-slots-retired"
 };
+char *def_process_counters_amd[NUM_COUNTERS_PER_PROCESS] = {
+  "instructions",
+  "cpu-cycles"
+};
 
 void init_process_counterinfo(void){
   int i;
+  char *vendor;
   struct counterlist *cl;
+  char **default_counters;
+  vendor = lookup_vendor();
+  if (vendor && !strcmp(vendor,"GenuineIntel"))
+    default_counters = def_process_counters_intel;
+  else if (vendor && !strcmp(vendor,"AuthenticAMD"))
+    default_counters = def_process_counters_amd;
+  else
+    return;
   for (i=0;i<NUM_COUNTERS_PER_PROCESS;i++){
     cl = calloc(1,sizeof(struct counterlist));
-    cl->name = def_process_counters[i];
+    cl->name = default_counters[i];
     cl->ci = counterinfo_lookup(cl->name,0,0);
     if (cl->ci == NULL){
       error("unknown performance counter, ignored: %s\n",cl->name);

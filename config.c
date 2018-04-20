@@ -46,6 +46,7 @@ int flag_zip = 0;
 int uid_value;
 char *zip_archive_name = NULL;
 char *command_name = NULL;
+char *vendor = NULL;
 
 /* Opens config file, if present and returns file pointer, NULL if not found */
 FILE *open_config_file(char *name){
@@ -449,4 +450,29 @@ static int parse_cpumask(char *arg,cpu_set_t *mask){
   }
   else return 1;
   return 0;
+}
+
+// look up vendor from /proc/cpuinfo
+static char *vendor_id = NULL;
+char *lookup_vendor(void){
+  FILE *fp;
+  char line[1024];
+  char *p,*token;
+  if (vendor_id == NULL){
+    if (fp = fopen("/proc/cpuinfo","r")){
+      while (fgets(line,sizeof(line),fp)){
+	if (!strncmp(line,"vendor_id",9)){
+	  p = strchr(line,':');
+	  if ((p = strchr(line,':')) &&
+	      (token = strtok(p+1," \t\n"))){
+	    vendor_id = strdup(token);
+	  }
+	  fclose(fp);
+	  return vendor_id;
+	}
+      }
+      fclose(fp);
+    }
+  }
+  return vendor_id;
 }

@@ -63,6 +63,8 @@ void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
   unsigned long total_time;
   unsigned long fetch_bubbles,total_slots,slots_issued,slots_retired,recovery_bubbles;
   double frontend_bound,retiring,speculation,backend_bound;
+  char *vendor;
+  vendor = lookup_vendor();
   if (pinfo == NULL) return;
   if (level > 100) return;
   if (clocks_per_second == 0) clocks_per_second = sysconf(_SC_CLK_TCK);
@@ -88,20 +90,22 @@ void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
       on_cpu = on_core / num_procs;
       fprintf(output," on_cpu=%3.2f on_core=%3.2f",on_cpu,on_core);
     }
-    // topdown metrics, note scaling wasn't done yet so do it here
-    total_slots = pinfo->total_counter[1]*2;
-    fetch_bubbles = pinfo->total_counter[2];
-    recovery_bubbles = pinfo->total_counter[3]*2;
-    slots_issued = pinfo->total_counter[4];
-    slots_retired = pinfo->total_counter[5];
-    frontend_bound = (double) fetch_bubbles / total_slots;
-    retiring = (double) slots_retired / total_slots;
-    speculation = (double) (slots_issued - slots_retired + recovery_bubbles) / total_slots;
-    backend_bound = 1 - (frontend_bound + retiring + speculation);
-    fprintf(output," retire=%4.3f",retiring);
-    fprintf(output," frontend=%4.3f",frontend_bound);
-    fprintf(output," spec=%4.3f",speculation);
-    fprintf(output," backend=%4.3f",backend_bound);
+    // Intel topdown metrics, note scaling wasn't done yet so do it here
+    if (vendor && !strcmp(vendor,"GenuineIntel")){
+      total_slots = pinfo->total_counter[1]*2;
+      fetch_bubbles = pinfo->total_counter[2];
+      recovery_bubbles = pinfo->total_counter[3]*2;
+      slots_issued = pinfo->total_counter[4];
+      slots_retired = pinfo->total_counter[5];
+      frontend_bound = (double) fetch_bubbles / total_slots;
+      retiring = (double) slots_retired / total_slots;
+      speculation = (double) (slots_issued - slots_retired + recovery_bubbles) / total_slots;
+      backend_bound = 1 - (frontend_bound + retiring + speculation);
+      fprintf(output," retire=%4.3f",retiring);
+      fprintf(output," frontend=%4.3f",frontend_bound);
+      fprintf(output," spec=%4.3f",speculation);
+      fprintf(output," backend=%4.3f",backend_bound);
+    }
     
     if (get_error_level() >= ERROR_LEVEL_DEBUG){
       fprintf(output," inst=%lu cycles=%lu",
