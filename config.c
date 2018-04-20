@@ -143,6 +143,7 @@ int parse_options(int argc,char *const argv[]){
   FILE *fp;
   struct counterinfo *ci;
   static struct option long_options[] = {
+    { "sum-counters",    no_argument, 0,       8  },
     { "config",          required_argument, 0, 9  },
     { "cpustats",        no_argument, 0,       10 },
     { "no-cpustats",     no_argument, 0,       11 },
@@ -175,6 +176,7 @@ int parse_options(int argc,char *const argv[]){
   optind = 1; // reset optind so this function can be called more than once
   while ((opt = getopt_long(argc,argv,"+do:r:u:z:?",long_options,NULL)) != -1){
     switch (opt){
+    case 8:  all_counters_same = 1; break;
     case 9:  configfile = strdup(optarg); break;
     case 10: flag_cpustats = 1;  break;
     case 11: flag_cpustats = 0;  break;
