@@ -51,23 +51,6 @@ char *lookup_process_comm(pid_t pid){
   }
 }
 
-// fields from /proc/stat
-struct procstat_info {
-  /*  1- 5 */ int pid; char comm[32]; char state; int ppid, pgrp;
-  /*  6-10 */ int session, tty_nr, tpgid; unsigned int flags; unsigned long minflt;
-  /* 11-15 */ unsigned long cminflt, majflt, cmajflt, utime, stime;
-  /* 16-20 */ long cutime, cstime, priority, nice, num_threads;
-  /* 21-25 */ long itrealvalue; unsigned long long starttime; unsigned long vsize;
-              long rss; unsigned long rsslim;
-  /* 26-30 */ unsigned long startcode, endcode, startstack, kstkesp, kstkeip;
-  /* 31-35 */ unsigned long signal, blocked, sigignore, sigcatch, wchan;
-  /* 36-40 */ unsigned long nswap, cnswap; int exit_signal, processor; unsigned rt_priority;
-  /* 41-45 */ unsigned policy; unsigned long long delayacct_blkio_ticks;
-              unsigned long guest_time, cguest_time, start_data;
-  /* 46-50 */ unsigned long end_data, start_brk, arg_start, arg_end, end_start;
-  /* 51-52 */ unsigned long env_end; int exit_code;
-};
-
 // get static buffer for /proc/[pid]/stat
 char *lookup_process_stat(pid_t pid){
   int fd;
@@ -104,14 +87,20 @@ char *lookup_process_task_stat(pid_t pid){
 /* Turn the stat information into a structure */
 int parse_process_stat(char *line,struct procstat_info *pi){
   int count;
+  char *lparen,*rparen;
   if (line == NULL) return 0;
-  count = sscanf(line,"%d %32s %c %d %d %d %d %d %u %lu"
+  if (sscanf(line,"%d",&pi->pid) != 1) return 0;
+  lparen = strchr(line,'(');
+  rparen = strchr(lparen,')');
+  strncpy(pi->comm,lparen+1,rparen-lparen);
+  
+  count = sscanf(rparen+2,"%c %d %d %d %d %d %u %lu"
 		 "%lu %lu %lu %lu %lu %ld %ld %ld %ld %ld"
 		 "%ld %llu %lu %ld %lu %lu %lu %lu %lu %lu"
 		 "%lu %lu %lu %lu %lu %lu %lu %d %d %u"
 		 "%u %llu %lu %ld %lu %lu %lu %lu %lu %lu"
 		 "%lu %d",
-		 &pi->pid,pi->comm,&pi->state,&pi->ppid,&pi->pgrp,
+		 &pi->state,&pi->ppid,&pi->pgrp,
 		 &pi->session,&pi->tty_nr,&pi->tpgid,&pi->flags,&pi->minflt,
 		 &pi->cminflt,&pi->majflt,&pi->cmajflt,&pi->utime,&pi->stime,
 		 &pi->cutime,&pi->cstime,&pi->priority,&pi->nice,&pi->num_threads,
@@ -122,7 +111,7 @@ int parse_process_stat(char *line,struct procstat_info *pi){
 		 &pi->policy,&pi->delayacct_blkio_ticks,&pi->guest_time,&pi->cguest_time,&pi->start_data,
 		 &pi->end_data,&pi->start_brk,&pi->arg_start,&pi->arg_end,&pi->end_start,
 		 &pi->env_end,&pi->exit_code);
-  return count;
+  return count+2;
 }
 
 void ptrace_setup(pid_t child){
@@ -200,7 +189,7 @@ void ptrace_loop(void){
 	    }
 	  }
 	  if (flag_require_perftree){
-	    start_process_perf_counters(child_pinfo);
+	    start_process_perf_counters(child_pinfo->pid,&child_pinfo->pci);
 	  }
 	  break;
 	case PTRACE_EVENT_VFORK_DONE:
@@ -244,7 +233,7 @@ void ptrace_loop(void){
 	    read_uptime(&pinfo->time_finish);	    
 	  }
 	  if (flag_require_perftree){
-	    stop_process_perf_counters(pinfo);
+	    stop_process_perf_counters(pinfo->pid,&pinfo->pci);
 	  }
 	  pinfo->p_exited = 1;
 	  break;

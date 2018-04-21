@@ -11,6 +11,12 @@ pthread_mutex_t event_lock;
 
 /* procinfo.c */
 #define NUM_COUNTERS_PER_PROCESS 6 // for now just instructions & cycles
+
+struct process_counter_info {
+  int perf_fd[NUM_COUNTERS_PER_PROCESS];
+  unsigned long perf_counter[NUM_COUNTERS_PER_PROCESS];
+};
+
 struct process_info {
   pid_t pid;
   pid_t ppid;
@@ -23,8 +29,9 @@ struct process_info {
   char *comm;
   char *filename;
   int pcount;
-  int perf_fd[NUM_COUNTERS_PER_PROCESS];
-  unsigned long perf_counter[NUM_COUNTERS_PER_PROCESS];
+  struct process_counter_info pci;
+  //  int perf_fd[NUM_COUNTERS_PER_PROCESS];
+  //  unsigned long perf_counter[NUM_COUNTERS_PER_PROCESS];
   unsigned long total_counter[NUM_COUNTERS_PER_PROCESS];
   unsigned long long starttime;
   unsigned long minflt,majflt;
@@ -56,6 +63,30 @@ void *tracecmd_start(void *arg);
 /* ptrace.c */
 void ptrace_setup(pid_t child);
 void ptrace_loop(void);
+// fields from /proc/stat
+struct procstat_info {
+  /*  1- 5 */ int pid; char comm[32]; char state; int ppid, pgrp;
+  /*  6-10 */ int session, tty_nr, tpgid; unsigned int flags; unsigned long minflt;
+  /* 11-15 */ unsigned long cminflt, majflt, cmajflt, utime, stime;
+  /* 16-20 */ long cutime, cstime, priority, nice, num_threads;
+  /* 21-25 */ long itrealvalue; unsigned long long starttime; unsigned long vsize;
+              long rss; unsigned long rsslim;
+  /* 26-30 */ unsigned long startcode, endcode, startstack, kstkesp, kstkeip;
+  /* 31-35 */ unsigned long signal, blocked, sigignore, sigcatch, wchan;
+  /* 36-40 */ unsigned long nswap, cnswap; int exit_signal, processor; unsigned rt_priority;
+  /* 41-45 */ unsigned policy; unsigned long long delayacct_blkio_ticks;
+              unsigned long guest_time, cguest_time, start_data;
+  /* 46-50 */ unsigned long end_data, start_brk, arg_start, arg_end, end_start;
+  /* 51-52 */ unsigned long env_end; int exit_code;
+};
+char *lookup_process_stat(pid_t pid);
+char *lookup_process_task_stat(pid_t pid);
+int parse_process_stat(char *line,struct procstat_info *pi);
+
+/* ptrace2.c */
+void ptrace2_setup(pid_t child);
+void ptrace2_loop(void);
+void ptrace2_finish(void);
 
 /* timer.c */
 int timer_interval;
@@ -105,8 +136,8 @@ struct counterinfo *counterinfo_lookup(char *name,char *group,int insert);
 void inventory_counters(char *directory);
 void print_counters(FILE *fp);
 void sort_counters(void);
-void start_process_perf_counters(procinfo *pinfo);
-void stop_process_perf_counters(procinfo *pinfo);
+void start_process_perf_counters(pid_t pid,struct process_counter_info *pci);
+void stop_process_perf_counters(pid_t pid,struct process_counter_info *pci);
 
 struct counterlist {
   char *name;

@@ -41,7 +41,7 @@ int setup_child_process(int argc,char **argv,char *const envp[]){
   case 0:
     if (flag_set_uid) setuid(uid_value);
     if (flag_setcpumask) sched_setaffinity(0,sizeof(cpu_set_t),&cpumask);
-    if (flag_require_ptrace){
+    if (flag_require_ptrace||flag_require_ptrace2){
       debug("ptrace(PTRACE_TRACEME,0)\n");
       ptrace(PTRACE_TRACEME,0,NULL,NULL);
     } 
@@ -122,7 +122,7 @@ int main(int argc,char *const argv[],char *const envp[]){
     notice_noprogram("\n");
   }
   // check to see if we've selected --perfcounters without an engine
-  if (flag_perfctr && (mask_processtree_engine_selected == 0)){
+  if (flag_require_perftree && (mask_processtree_engine_selected == 0)){
     // default to ptrace
     flag_require_ptrace = 1;
   }
@@ -141,7 +141,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (flag_memstats){ init_memstats(); }
   if (flag_netstats){ init_netstats(); }
   if (flag_require_perftimer){ init_global_perf_counters(); }
-  if (flag_require_ptrace && flag_require_counters){
+  if ((flag_require_ptrace || flag_require_ptrace2) && flag_require_counters){
     inventory_counters(0);
     init_process_counterinfo();
   }
@@ -163,7 +163,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   sleep(5);
   child_procinfo = lookup_process_info(child_pid,1);
   if (flag_require_ptrace && flag_require_perftree)
-    start_process_perf_counters(child_procinfo);
+    start_process_perf_counters(child_pid,&child_procinfo->pci);
   
   // let the child proceed
   write(child_pipe[1],"start\n",6);
@@ -171,11 +171,15 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (flag_require_ptrace){
     ptrace_setup(child_pid);
     read_uptime(&child_procinfo->time_start);
+  } else if (flag_require_ptrace2){
+    ptrace2_setup(child_pid);    
   }
 
   notice("running until %s completes\n",command_line_argv[0]);
   if (flag_require_ptrace){
     ptrace_loop();
+  } else if (flag_require_ptrace2){
+    ptrace2_loop();    
   } else {
     // without ptrace, this process waits for the child to complete
     child = waitpid(child_pid,&status,0);
@@ -208,11 +212,14 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (flag_showcounters){
     print_counters(outfile);
   }
+  if (flag_require_ptrace2){
+    ptrace2_finish();
+  }
 
   pthread_mutex_lock(&event_lock);
   finalize_process_tree();
   pthread_mutex_unlock(&event_lock);
-  if (flag_proctree && !flag_zip)
+  if (flag_require_ptrace && !flag_zip)
     print_all_process_trees(outfile,
 			    flag_require_ptrace?child_procinfo->time_start:first_ftrace_time,
 			    command_name);
@@ -235,7 +242,10 @@ int main(int argc,char *const argv[],char *const envp[]){
     char *basez;
     int count = 0;
     status = chdir(newdir);
-    if (flag_proctree){
+    if (flag_require_ptrace2){
+      snprintf(cmd,sizeof(cmd),"cp %s/processtree2.csv .",original_dir);
+      system(cmd);
+    } else if (flag_proctree && (flag_require_ptrace || flag_require_ftrace)){
       fp = fopen("processtree.txt","w");
       if (fp){
 	print_all_process_trees(fp,child_procinfo->time_start,command_name);

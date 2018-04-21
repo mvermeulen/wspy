@@ -1,8 +1,8 @@
 CC=gcc
 CFLAGS=-g
 PROG = wspy
-SRCS = wspy.c ftrace.c ptrace.c tracecmd.c proctable.c timer.c cpustats.c diskstats.c memstats.c netstats.c pcounter.c config.c error.c
-OBJS = wspy.o ftrace.o ptrace.o tracecmd.o proctable.o timer.o cpustats.o diskstats.o memstats.o netstats.o pcounter.o config.c error.o
+SRCS = wspy.c ftrace.c ptrace.c ptrace2.c tracecmd.c proctable.c timer.c cpustats.c diskstats.c memstats.c netstats.c pcounter.c config.c error.c
+OBJS = wspy.o ftrace.o ptrace.o ptrace2.o tracecmd.o proctable.o timer.o cpustats.o diskstats.o memstats.o netstats.o pcounter.o config.c error.o
 LIBS = -lpthread -lm
 
 all:	wspy process-csv

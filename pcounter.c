@@ -164,10 +164,10 @@ void init_process_counterinfo(void){
   }
 }
 
-void start_process_perf_counters(procinfo *pinfo){
+void start_process_perf_counters(pid_t pid,struct process_counter_info *pci){
   int i;
   struct perf_event_attr pe[NUM_COUNTERS_PER_PROCESS];
-  if (pinfo){
+  if (pci){
     memset(pe,'\0',sizeof(pe));
     for (i=0;i<NUM_COUNTERS_PER_PROCESS;i++){
       if (perf_counters_by_process[i] == 0) continue;
@@ -175,12 +175,12 @@ void start_process_perf_counters(procinfo *pinfo){
       pe[i].config = perf_counters_by_process[i]->ci->config;
       pe[i].config1 = perf_counters_by_process[i]->ci->config1;
       pe[i].size = sizeof(struct perf_event_attr);
-      pinfo->perf_fd[i] = perf_event_open(&pe[i],pinfo->pid,-1,-1,0);
-      if (pinfo->perf_fd[i] != -1){
-	ioctl(pinfo->perf_fd[i],PERF_EVENT_IOC_RESET,0);
-	ioctl(pinfo->perf_fd[i],PERF_EVENT_IOC_ENABLE,0);
+      pci->perf_fd[i] = perf_event_open(&pe[i],pid,-1,-1,0);
+      if (pci->perf_fd[i] != -1){
+	ioctl(pci->perf_fd[i],PERF_EVENT_IOC_RESET,0);
+	ioctl(pci->perf_fd[i],PERF_EVENT_IOC_ENABLE,0);
       }
-      debug("start counter %d for pid %d (fd=%d)\n",i,pinfo->pid,pinfo->perf_fd[i]);
+      debug("start counter %d for pid %d (fd=%d)\n",i,pid,pci->perf_fd[i]);
     }
   }
 }
@@ -212,16 +212,16 @@ void read_global_perf_counters(double time){
   }
 }
 
-void stop_process_perf_counters(procinfo *pinfo){
+void stop_process_perf_counters(pid_t pid,struct process_counter_info *pci){
   int status;
   int i;
-  if (pinfo){
+  if (pci){
     for (i=0;i<NUM_COUNTERS_PER_PROCESS;i++){
-      if (pinfo->perf_fd[i] > 0){
-	status = read(pinfo->perf_fd[i],&pinfo->perf_counter[i],
-		      sizeof(pinfo->perf_counter[i]));
-	close(pinfo->perf_fd[i]);
-	debug("stop counter %d for pid %d\n",i,pinfo->pid);	
+      if (pci->perf_fd[i] > 0){
+	status = read(pci->perf_fd[i],&pci->perf_counter[i],
+		      sizeof(pci->perf_counter[i]));
+	close(pci->perf_fd[i]);
+	debug("stop counter %d for pid %d\n",i,pid);	
       }
     }
   }
@@ -610,6 +610,7 @@ void inventory_counters(char *directory){
 	  fclose(fp);
 	  continue;
 	}
+	fclose(fp);
       } else {
 	continue;
       }

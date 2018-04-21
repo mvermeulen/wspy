@@ -89,7 +89,7 @@ void add_process_info(struct process_info *pi){
 
 int read_input_file(void){
   FILE *fp;
-  char line[1024],filename[64];
+  char line[1024];
   int lineno = 0;
   char *token;
   struct process_info pi;
@@ -116,8 +116,7 @@ int read_input_file(void){
 	}
 	token = strtok(NULL,",\n"); // filename
 	if (token){
-	  sscanf(token,"%63s",filename);
-	  pi.filename = strdup(filename);
+	  pi.filename = strdup(token);
 	}
 	token = strtok(NULL,",\n"); // starttime
 	if (token){

@@ -264,19 +264,19 @@ int parse_options(int argc,char *const argv[]){
       }
       break;
     case 28:
-      if (!strncmp(optarg,"ftrace",6)){
+      if (!strcmp(optarg,"ftrace")){
 	mask_processtree_engine_selected |= PROCESSTREE_FTRACE;
 	mask_processtree_engine_selected &= ~PROCESSTREE_TRACECMD;
-      } else if (!strncmp(optarg,"ptrace",6)){
+      } else if (!strcmp(optarg,"ptrace")){
 	mask_processtree_engine_selected |= PROCESSTREE_PTRACE1;
-	mask_processtree_engine_selected &= PROCESSTREE_PTRACE2;
-      } else if (!strncmp(optarg,"ptrace2",7)){
+	mask_processtree_engine_selected &= ~PROCESSTREE_PTRACE2;
+      } else if (!strcmp(optarg,"ptrace2")){
 	mask_processtree_engine_selected |= PROCESSTREE_PTRACE2;
-	mask_processtree_engine_selected &= PROCESSTREE_PTRACE1;
-      } else if (!strncmp(optarg,"tracecmd",8)){
+	mask_processtree_engine_selected &= ~PROCESSTREE_PTRACE1;
+      } else if (!strcmp(optarg,"tracecmd")){
 	mask_processtree_engine_selected |= PROCESSTREE_TRACECMD;
 	mask_processtree_engine_selected &= ~PROCESSTREE_FTRACE;
-      } else if (!strncmp(optarg,"none",4)){
+      } else if (!strcmp(optarg,"none")){
 	mask_processtree_engine_selected = 0;
       } else {
 	warning("invalid argument to --processtree-engine, ignored: %s\n"

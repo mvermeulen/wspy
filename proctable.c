@@ -187,7 +187,7 @@ int print_all_processes_csv(FILE *output){
       pinfo = hash->pinfo;
       fprintf(output,"%d,%d,",pinfo->pid,pinfo->ppid);
       if (pinfo->filename) fprintf(output,"%s,",pinfo->filename);
-      else if (pinfo->comm) fprintf(output,"%s",pinfo->comm);
+      else if (pinfo->comm) fprintf(output,"%s,",pinfo->comm);
       else fprintf(output,"?,");
       fprintf(output,"%llu,%6.5f,%6.5f,",pinfo->starttime,pinfo->time_start,pinfo->time_finish);
       fprintf(output,"%d,",pinfo->cpu);
@@ -197,9 +197,9 @@ int print_all_processes_csv(FILE *output){
       fprintf(output,"%d,",NUM_COUNTERS_PER_PROCESS);
       for (j=0;j<NUM_COUNTERS_PER_PROCESS;j++){
 	if ((cl = perf_counters_by_process[j]) && cl->ci->scale){
-	  fprintf(output,"%lu,",pinfo->perf_counter[j]*cl->ci->scale);	  
+	  fprintf(output,"%lu,",pinfo->pci.perf_counter[j]*cl->ci->scale);	  
 	} else {
-	  fprintf(output,"%lu,",pinfo->perf_counter[j]);
+	  fprintf(output,"%lu,",pinfo->pci.perf_counter[j]);
 	}
       }
       fprintf(output,"\n");
@@ -245,7 +245,7 @@ void sum_counts_processes(procinfo *pinfo){
     total_utime = pinfo->utime;
     total_stime = pinfo->stime;
     for (i=0;i<NUM_COUNTERS_PER_PROCESS;i++)
-      total_counter[i] = pinfo->perf_counter[i];
+      total_counter[i] = pinfo->pci.perf_counter[i];
       
     for (child = pinfo->child;child;child = child->sibling){
       sum_counts_processes(child);
