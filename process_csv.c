@@ -45,14 +45,14 @@ int parse_options(int argc,char *const argv[]){
   return 0;
 }
 
-char *signature = "#pid,ppid,filename,starttime,start,finish,cpu,utime,stime,vsize,rss,minflt,majflt,num_counters";
+char *signature = "#pid,ppid,filename,starttime,start,finish,cpu,utime,stime,cutime,cstime,vsize,rss,minflt,majflt,num_counters";
 
 struct process_info {
   struct process_info *parent,*sibling,*child1,*childn;
   pid_t pid,ppid;
   int cpu,num_counters;
   char *filename;
-  unsigned long utime,stime,vsize,rss,minflt,majflt;
+  unsigned long utime,stime,cutime,cstime,vsize,rss,minflt,majflt;
   unsigned long long starttime;
   double start,finish;
   unsigned long counter[NUM_COUNTERS_PER_PROCESS];
@@ -141,6 +141,14 @@ int read_input_file(void){
 	token = strtok(NULL,",\n"); // stime
 	if (token){
 	  sscanf(token,"%lu",&pi.stime);	  
+	}
+	token = strtok(NULL,",\n"); // cutime
+	if (token){
+	  sscanf(token,"%lu",&pi.cutime);	  
+	}
+	token = strtok(NULL,",\n"); // cstime
+	if (token){
+	  sscanf(token,"%lu",&pi.cstime);	  
 	}	
 	token = strtok(NULL,",\n"); // vsize
 	if (token){
@@ -377,6 +385,13 @@ void print_procinfo(struct process_info *pi,int print_children,int indent,double
 	       (double)pi->utime / clocks_per_second,
 	       (double)pi->stime / clocks_per_second);
 	break;
+      case 'U':
+	if (clocks_per_second == 0)
+	  clocks_per_second = sysconf(_SC_CLK_TCK);
+	printf(" tuser=%3.2f tsys=%3.2f",
+	       (double)pi->total_utime / clocks_per_second,
+	       (double)pi->total_stime / clocks_per_second);
+	break;	
       case 'v':
 	printf(" vsize=%luK", pi->vsize/1024);
 	break;
@@ -459,6 +474,7 @@ int main(int argc,char *const argv[],char *const envp[]){
 	  "\t   P - counters for the tree\n"
 	  "\t   t - time: elapsed, start and finish\n"
 	  "\t   u - user and system times\n"
+	  "\t   U - total user and system times\n"
 	  "\t   v - virtual memory sizes\n"
 	  "\t-m provides summary metrics\n"
 	  "\t-p selects pid to print\n"

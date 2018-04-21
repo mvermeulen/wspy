@@ -69,7 +69,7 @@ void ptrace2_setup(pid_t child){
   }
 
   // header row, must match against "process-csv" program
-  fprintf(process_csvfile,"#pid,ppid,filename,starttime,start,finish,cpu,utime,stime,vsize,rss,minflt,majflt,num_counters,");
+  fprintf(process_csvfile,"#pid,ppid,filename,starttime,start,finish,cpu,utime,stime,cutime,cstime,vsize,rss,minflt,majflt,num_counters,");
   fprintf(process_csvfile,"#pid,ppid\n");
 
   child_pid = child;
@@ -221,12 +221,12 @@ static void stop_pid(pid_t pid){
   if (proc_table[pid].ppid == 0)
     proc_table[pid].ppid = pi.ppid;
 
-  fprintf(process_csvfile,"%d,%d,%s,%llu,%6.5f,%6.5f,%d,%lu,%lu,%lu,%lu,%lu,%lu,%d,",
+  fprintf(process_csvfile,"%d,%d,%s,%llu,%6.5f,%6.5f,%d,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%d,",
 	  proc_table[pid].pid,
 	  proc_table[pid].ppid,
 	  pi.comm,pi.starttime,
 	  proc_table[pid].start,finish,pi.processor,
-	  pi.utime,pi.stime,pi.vsize,pi.rss,pi.minflt,pi.majflt,
+	  pi.utime,pi.stime,pi.cutime,pi.cstime,pi.vsize,pi.rss,pi.minflt,pi.majflt,
 	  NUM_COUNTERS_PER_PROCESS
 	  );
   for (i=0;i<NUM_COUNTERS_PER_PROCESS;i++){

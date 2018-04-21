@@ -177,7 +177,7 @@ int print_all_processes_csv(FILE *output){
   procinfo *pinfo;
   struct counterlist *cl;
   struct proctable_hash_entry *hash;
-  fprintf(output,"#pid,ppid,filename,starttime,start,finish,cpu,utime,stime,vsize,rss,minflt,majflt,num_counters,");
+  fprintf(output,"#pid,ppid,filename,starttime,start,finish,cpu,utime,stime,cutime,cstime,vsize,rss,minflt,majflt,num_counters,");
   for (j=0;j<NUM_COUNTERS_PER_PROCESS;j++){
     fprintf(output,"counter%d,",j);
   }
@@ -191,7 +191,7 @@ int print_all_processes_csv(FILE *output){
       else fprintf(output,"?,");
       fprintf(output,"%llu,%6.5f,%6.5f,",pinfo->starttime,pinfo->time_start,pinfo->time_finish);
       fprintf(output,"%d,",pinfo->cpu);
-      fprintf(output,"%lu,%lu,",pinfo->utime,pinfo->stime);
+      fprintf(output,"%lu,%lu,%lu,%lu,",pinfo->utime,pinfo->stime,pinfo->cutime,pinfo->cstime);
       fprintf(output,"%lu,%lu,",pinfo->vsize,pinfo->rss);
       fprintf(output,"%lu,%lu,",pinfo->minflt,pinfo->majflt);
       fprintf(output,"%d,",NUM_COUNTERS_PER_PROCESS);

@@ -40,6 +40,7 @@ struct process_info {
   //  struct timeval time_exit;
   double time_start,time_finish;
   unsigned long utime,stime,total_utime,total_stime,vsize,rss;
+  unsigned long cutime,cstime;
   struct process_info *parent;
   struct process_info *sibling;
   struct process_info *child;

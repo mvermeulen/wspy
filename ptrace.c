@@ -224,6 +224,8 @@ void ptrace_loop(void){
 	    pinfo->majflt = procstat_info.majflt;
 	    pinfo->utime = procstat_info.utime;
 	    pinfo->stime = procstat_info.stime;
+	    pinfo->cutime = procstat_info.cutime;
+	    pinfo->cstime = procstat_info.cstime;
 	    pinfo->starttime = procstat_info.starttime;
 	    pinfo->vsize = procstat_info.vsize;
 	    pinfo->rss = procstat_info.rss;
