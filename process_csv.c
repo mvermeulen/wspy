@@ -391,6 +391,13 @@ void print_procinfo(struct process_info *pi,int print_children,int indent,double
 	printf(" tuser=%3.2f tsys=%3.2f",
 	       (double)pi->total_utime / clocks_per_second,
 	       (double)pi->total_stime / clocks_per_second);
+	break;
+      case 'W':
+	if (clocks_per_second == 0)
+	  clocks_per_second = sysconf(_SC_CLK_TCK);
+	printf(" tutime=%3.2f tstime=%3.2f",
+	       (double)pi->cutime / clocks_per_second,
+	       (double)pi->cstime / clocks_per_second);
 	break;	
       case 'v':
 	printf(" vsize=%luK", pi->vsize/1024);

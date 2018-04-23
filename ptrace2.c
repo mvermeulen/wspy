@@ -30,6 +30,8 @@ struct processinfo {
   unsigned int fork_event     : 1;
   unsigned int sigstop_event  : 1;
   double start;
+  double finish;
+  struct rusage rusage;  
   struct process_counter_info pci;
 };
 
@@ -113,13 +115,19 @@ void ptrace2_loop(void){
       }
     }
     if (WIFEXITED(status)){
+      proc_table[pid].rusage = rusage;      
       if (proc_table[pid].pid){
 	stop_pid(pid);
       }
       debug2("   WIFEXITED(%d)\n",pid);
       // ignore exit operations as far as processing the table goes
       if (pid == child_pid) break;
+      
     } else if (WIFSIGNALED(status)){
+      proc_table[pid].rusage = rusage;
+      if (proc_table[pid].pid){
+	stop_pid(pid);
+      }
       debug2("   WIFSIGNALED(%d)\n",pid);      
       // ignore exit operations since handled when we get an event
     } else if (WIFSTOPPED(status)){
@@ -203,6 +211,7 @@ static void stop_pid(pid_t pid){
   debug("stop %d\n",pid);
 
   read_uptime(&finish);
+  proc_table[pid].finish = finish;
   stop_process_perf_counters(pid,&proc_table[pid].pci);
 
   // get info from /proc/[pid]/stat
@@ -226,7 +235,7 @@ static void stop_pid(pid_t pid){
 	  proc_table[pid].pid,
 	  proc_table[pid].ppid,
 	  pi.comm,pi.starttime,
-	  proc_table[pid].start,finish,pi.processor,
+	  proc_table[pid].start,proc_table[pid].finish,pi.processor,
 	  pi.utime,pi.stime,pi.cutime,pi.cstime,pi.vsize,pi.rss,pi.minflt,pi.majflt,
 	  NUM_COUNTERS_PER_PROCESS
 	  );
