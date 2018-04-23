@@ -45,6 +45,7 @@ int flag_require_counters = 0;
 int flag_require_perftree = 0;
 int flag_require_perftimer = 0;
 int flag_set_cpumask = 0;
+int flag_rusage = 0;
 int flag_zip = 0;
 int uid_value;
 char *zip_archive_name = NULL;
@@ -147,6 +148,7 @@ int parse_options(int argc,char *const argv[]){
   FILE *fp;
   struct counterinfo *ci;
   static struct option long_options[] = {
+    { "show-rusage",     no_argument, 0,       7  },
     { "sum-counters",    no_argument, 0,       8  },
     { "config",          required_argument, 0, 9  },
     { "cpustats",        no_argument, 0,       10 },
@@ -180,6 +182,7 @@ int parse_options(int argc,char *const argv[]){
   optind = 1; // reset optind so this function can be called more than once
   while ((opt = getopt_long(argc,argv,"+do:r:u:z:?",long_options,NULL)) != -1){
     switch (opt){
+    case 7:  flag_rusage = 1; break;
     case 8:  all_counters_same = 1; break;
     case 9:  configfile = strdup(optarg); break;
     case 10: flag_cpustats = 1;  break;

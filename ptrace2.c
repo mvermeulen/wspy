@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/ptrace.h>
+#include <sys/resource.h>
 #include <errno.h>
 #include "wspy.h"
 #include "error.h"
@@ -99,10 +100,10 @@ void ptrace2_loop(void){
   int status;
   long data;
   int cloned;
-  
+  struct rusage rusage;
 
   while (1){
-    pid = wait(&status);
+    pid = wait4(-1,&status,0,&rusage);
     debug("event: pid=%d\n",pid);
     if (pid == -1){
       if (errno == ECHILD){

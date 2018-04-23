@@ -164,6 +164,7 @@ int flag_memstats;
 int flag_netstats;
 int flag_perfctr;
 int flag_proctree;
+int flag_rusage;
 enum perfcounter_model { PM_DEFAULT=0, PM_CORE=1, PM_PROCESS } perfcounter_model;
 int flag_showcounters;
 // four possible types of processtree engines

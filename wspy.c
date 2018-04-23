@@ -15,6 +15,8 @@
 #include <sys/ptrace.h>
 #include <sys/time.h>
 #include <sys/sysinfo.h>
+#include <sys/time.h>
+#include <sys/resource.h>
 #include <libgen.h>
 #include "wspy.h"
 #include "error.h"
@@ -71,6 +73,26 @@ int setup_child_process(int argc,char **argv,char *const envp[]){
   return 0;
 }
 
+// dump rusage information
+void print_rusage(FILE *outfile){
+  int status;
+  struct rusage usage;
+  status = getrusage(RUSAGE_CHILDREN,&usage);
+  fprintf(outfile,"utime:    %ld.%6.6ld\n",usage.ru_utime.tv_sec,usage.ru_utime.tv_usec);
+  fprintf(outfile,"stime:    %ld.%6.6ld\n",usage.ru_stime.tv_sec,usage.ru_stime.tv_usec);
+  fprintf(outfile,"maxrss:   %luK\n",usage.ru_maxrss/1024);
+  fprintf(outfile,"minflt:   %lu\n",usage.ru_minflt);
+  fprintf(outfile,"majflt:   %lu\n",usage.ru_majflt);
+  fprintf(outfile,"nswap:    %lu\n",usage.ru_nswap);
+  fprintf(outfile,"inblock:  %lu\n",usage.ru_inblock);
+  fprintf(outfile,"oublock:  %lu\n",usage.ru_oublock);
+  fprintf(outfile,"msgsnd:   %lu\n",usage.ru_msgsnd);
+  fprintf(outfile,"msgrcv:   %lu\n",usage.ru_msgrcv);
+  fprintf(outfile,"nsignals: %lu\n",usage.ru_nsignals);
+  fprintf(outfile,"nvcsw:    %lu\n",usage.ru_nvcsw);
+  fprintf(outfile,"nivcsw:   %lu\n",usage.ru_nivcsw);
+}
+
 int main(int argc,char *const argv[],char *const envp[]){
   int status;
   int i;
@@ -101,6 +123,7 @@ int main(int argc,char *const argv[],char *const envp[]){
 	  "\t--set-counters <cpulist>:<counterlist>\tSet list of counters to measure\n"
 	  "\t--uid <uid>, -u <uid>          \trun as user\n"
 	  "\t--set-cpumask <cpulist>        \tbind child to list of cores\n"
+	  "\t--show-rusage                  \tdump output of get_rusage(2)\n"
 	  "\t--interval <value>             \tset timer in ms (default %d)\n"
 	  "\t--zip <archive-name>           \tcreate zip archive of results\n"
 	  "\t--root <proc>, -r <proc>       \tset name for process tree root\n"
@@ -233,6 +256,9 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (flag_require_perftimer && !flag_zip)
     print_global_perf_counters();
 
+  if (flag_rusage && !flag_zip)
+    print_rusage(stdout);
+
   if (flag_zip){
     FILE *fp;
     char buffer[1024],cmd[1024];
@@ -265,6 +291,13 @@ int main(int argc,char *const argv[],char *const envp[]){
     if (flag_cpustats) print_cpustats_files();
     if (flag_diskstats) print_diskstats_files();
     if (flag_require_perftimer) print_global_perf_counter_files();
+    if (flag_rusage){
+      fp = fopen("resource.txt","w");
+      if (fp){
+	print_rusage(fp);
+	fclose(fp);
+      }
+    }
     if (flag_require_tracecmd){
       snprintf(cmd,sizeof(cmd),"cp %s/processtree.dat .",original_dir);
       system(cmd);
