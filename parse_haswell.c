@@ -85,7 +85,7 @@ int main(void){
 	    printf("umask? %s\n",p);
 	  }	  
 	} else if (colnum == col_cmask){
-	  if (sscanf(p,"%lx",&cmask) != 1){
+	  if (sscanf(p,"%d",&cmask) != 1){
 	    printf("cmask? %s\n",p);
 	  }	  	  
 	} else if (colnum == col_name){
