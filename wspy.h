@@ -156,9 +156,11 @@ struct counterlist *perf_counters_by_process[NUM_COUNTERS_PER_PROCESS];
 /* config.c */
 int command_line_argc;
 char **command_line_argv;
+int version;
 int flag_cmd;
 int flag_cpustats;
 int flag_debug;
+int flag_version;
 int flag_diskstats;
 int flag_memstats;
 int flag_netstats;

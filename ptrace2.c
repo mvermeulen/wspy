@@ -72,8 +72,8 @@ void ptrace2_setup(pid_t child){
   }
 
   // header row, must match against "process-csv" program
-  fprintf(process_csvfile,"#pid,ppid,filename,starttime,start,finish,cpu,utime,stime,cutime,cstime,vsize,rss,minflt,majflt,num_counters,");
-  fprintf(process_csvfile,"#pid,ppid\n");
+  fprintf(process_csvfile,"#version %d\n",version);
+  fprintf(process_csvfile,"#pid,ppid,filename,starttime,start,finish,cpu,utime,stime,cutime,cstime,vsize,rss,minflt,majflt,num_counters\n");
 
   child_pid = child;
   debug("ptrace_setup\n");

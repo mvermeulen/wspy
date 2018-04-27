@@ -144,6 +144,10 @@ int main(int argc,char *const argv[],char *const envp[]){
     }
     notice_noprogram("\n");
   }
+  if (flag_version){
+    notice("wspy version %2.1f\n",version/10.0);
+  }
+  
   // check to see if we've selected --perfcounters without an engine
   if (flag_require_perftree && (mask_processtree_engine_selected == 0)){
     // default to ptrace

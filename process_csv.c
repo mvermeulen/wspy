@@ -49,7 +49,7 @@ int parse_options(int argc,char *const argv[]){
   return 0;
 }
 
-char *signature = "#pid,ppid,filename,starttime,start,finish,cpu,utime,stime,cutime,cstime,vsize,rss,minflt,majflt,num_counters";
+char *signatures[] = { "#pid,ppid,filename,starttime,start,finish,cpu,utime,stime,cutime,cstime,vsize,rss,minflt,majflt,num_counters", 0 };
 
 struct process_info {
   struct process_info *parent,*sibling,*child1,*childn;
@@ -95,16 +95,21 @@ int read_input_file(void){
   FILE *fp;
   char line[1024];
   int lineno = 0;
+  int vers = 0;
   char *token;
+  char *signature = signatures[0];
   struct process_info pi;
   if (fp = fopen(input_filename,"r")){
     while (fgets(line,sizeof(line),fp) != NULL){
       lineno++;
       if (line[0] == '#'){
-	if (strncmp(line,signature,strlen(signature)) != 0){
+	if (!strncmp(line,"#version",8)){
+	  sscanf(&line[8],"%d",&vers);
+	  notice("reading version %d\n",vers);
+	} else if (strncmp(line,signature,strlen(signature)) != 0){
 	  // either because it isn't a csv file or the format has changed
 	  // format has to match so hard coded sequence below works
-	  error("file does not match signature\n");
+	  error("file does not match signature\n<%s>\n<%s>\n",line,signature);
 	  return 1;
 	}
       } else {
