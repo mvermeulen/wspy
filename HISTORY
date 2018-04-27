@@ -1,0 +1,13 @@
+wspy - Version History
+
+The wspy --version option provides a version history. Version information
+is also added to the processtree.csv files to their formats to change
+and process-csv program to read more than one format.
+
+Here is a list of features introduced by versions:
+
+1.0: 
+     4/27/2018 - Added the --version flag.
+
+2.0:
+     4/27/2018 - Branched to add version 2.0 to allow changes to file formats.
