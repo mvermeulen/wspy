@@ -292,6 +292,8 @@ int parse_options(int argc,char *const argv[]){
 	perfcounter_model = PM_CORE;
       } else if (!strncmp(optarg,"process",7)){
 	perfcounter_model = PM_PROCESS;
+      } else if (!strncmp(optarg,"app",3)){
+	perfcounter_model = PM_APPLICATION;
       } else {
 	warning("invalid argument to --perfcounter-model, ignored: %s\n"
 		"\texpecting either core or process\n",
@@ -378,10 +380,17 @@ int parse_options(int argc,char *const argv[]){
     case PM_CORE:
       flag_require_perftimer = 1;
       flag_require_perftree = 0;
+      flag_require_perfapp = 0;            
       break;
     case PM_PROCESS:
       flag_require_perftimer = 0;
       flag_require_perftree = 1;
+      flag_require_perfapp = 0;      
+      break;
+    case PM_APPLICATION:
+      flag_require_perftimer = 0;
+      flag_require_perftree = 0;
+      flag_require_perfapp = 1;
       break;
     }
   } else {

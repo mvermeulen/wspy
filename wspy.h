@@ -165,7 +165,8 @@ int flag_netstats;
 int flag_perfctr;
 int flag_proctree;
 int flag_rusage;
-enum perfcounter_model { PM_DEFAULT=0, PM_CORE=1, PM_PROCESS } perfcounter_model;
+enum perfcounter_model { PM_DEFAULT=0, PM_CORE=1,
+			 PM_PROCESS=2, PM_APPLICATION=3, } perfcounter_model;
 int flag_showcounters;
 // four possible types of processtree engines
 int mask_processtree_engine_selected;
@@ -182,6 +183,7 @@ int flag_require_timer;
 int flag_require_counters;
 int flag_require_perftimer;
 int flag_require_perftree;
+int flag_require_perfapp;
 int flag_setcpumask;
 int flag_set_uid;
 int flag_zip;

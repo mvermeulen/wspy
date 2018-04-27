@@ -14,13 +14,14 @@
 char *input_filename = "processtree.csv";
 char *format_specifier = 0;
 int mflag = 0;
+int sflag = 0;
 int pid_root = -1;
 static int clocks_per_second = 0;
 static int num_procs = 0;
 
 int parse_options(int argc,char *const argv[]){
   int opt;
-  while ((opt = getopt(argc,argv,"f:F:mp:")) != -1){
+  while ((opt = getopt(argc,argv,"f:F:mp:s")) != -1){
     switch(opt){
     case 'f':
       input_filename = strdup(optarg);
@@ -36,6 +37,9 @@ int parse_options(int argc,char *const argv[]){
 	error("bad argument to -p: %s\n",optarg);
 	return 1;
       }
+      break;
+    case 's':
+      sflag = 1;
       break;
     default:
       return 1;
@@ -316,6 +320,7 @@ void print_procinfo(struct process_info *pi,int print_children,int indent,double
   double on_core;
   double on_cpu;
   double td_retire,td_spec,td_frontend,td_backend;
+  int single_threaded;
   if (indent){
     for (i=0;i<pi->level;i++) printf("  ");
   }
@@ -355,9 +360,13 @@ void print_procinfo(struct process_info *pi,int print_children,int indent,double
 	on_cpu = on_core / num_procs;
 	printf(" on_cpu=%4.3f on_core=%4.3f",on_cpu,on_core);
 	if (proctype == PROCESSOR_INTEL){
-	  td_retire = (double) pi->total_counter[5]/pi->total_counter[1];
-	  td_spec = (double) (pi->total_counter[4] - pi->total_counter[5] + pi->total_counter[3])/pi->total_counter[1];
-	  td_frontend = (double) pi->total_counter[2] / pi->total_counter[1];
+	  single_threaded = (sflag)?2:1;
+	  td_retire = (double) pi->total_counter[5]/
+	    (pi->total_counter[1]*single_threaded);
+	  td_spec = (double) (pi->total_counter[4] - pi->total_counter[5] + pi->total_counter[3])/
+	    (pi->total_counter[1]*single_threaded);
+	  td_frontend = (double) pi->total_counter[2] /
+	    (pi->total_counter[1]*single_threaded);
 	  td_backend = 1 - (td_retire + td_spec + td_frontend);
 	  printf(" td_ret=%4.3f td_fe=%4.3f td_spec=%4.3f td_be=%4.3f",td_retire,td_frontend,td_spec,td_backend);
 	}
@@ -485,6 +494,7 @@ int main(int argc,char *const argv[],char *const envp[]){
 	  "\t   v - virtual memory sizes\n"
 	  "\t-m provides summary metrics\n"
 	  "\t-p selects pid to print\n"
+	  "\t-s adjust for single-threaded workloads\n"
 	  ,argv[0]);
   }
   if (read_input_file()){
