@@ -49,7 +49,11 @@ int parse_options(int argc,char *const argv[]){
   return 0;
 }
 
-char *signatures[] = { "#pid,ppid,filename,starttime,start,finish,cpu,utime,stime,cutime,cstime,vsize,rss,minflt,majflt,num_counters", 0 };
+char *signatures[] = {
+  "#pid,ppid,filename,starttime,start,finish,cpu,utime,stime,cutime,cstime,vsize,rss,minflt,majflt,num_counters",
+  "#pid,ppid,filename,starttime,start,finish,utime,stime,cutime,cstime,vsize,rss,minflt,majflt,num_counters",
+  0
+};
 
 struct process_info {
   struct process_info *parent,*sibling,*child1,*childn;
@@ -106,6 +110,7 @@ int read_input_file(void){
 	if (!strncmp(line,"#version",8)){
 	  sscanf(&line[8],"%d",&vers);
 	  notice("reading version %d\n",vers);
+	  if (vers >= 20) signature = signatures[1];
 	} else if (strncmp(line,signature,strlen(signature)) != 0){
 	  // either because it isn't a csv file or the format has changed
 	  // format has to match so hard coded sequence below works
@@ -139,9 +144,12 @@ int read_input_file(void){
 	if (token){
 	  sscanf(token,"%lf",&pi.finish);	  
 	}
-	token = strtok(NULL,",\n"); // cpu
-	if (token){
-	  sscanf(token,"%d",&pi.cpu);
+	if (vers < 20){
+	  // removed in version 2.0 since not in rusage information
+	  token = strtok(NULL,",\n"); // cpu
+	  if (token){
+	    sscanf(token,"%d",&pi.cpu);
+	  }
 	}
 	token = strtok(NULL,",\n"); // utime
 	if (token){

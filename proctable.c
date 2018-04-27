@@ -177,6 +177,7 @@ int print_all_processes_csv(FILE *output){
   procinfo *pinfo;
   struct counterlist *cl;
   struct proctable_hash_entry *hash;
+  fprintf(output,"#version 10\n");
   fprintf(output,"#pid,ppid,filename,starttime,start,finish,cpu,utime,stime,cutime,cstime,vsize,rss,minflt,majflt,num_counters,");
   for (j=0;j<NUM_COUNTERS_PER_PROCESS;j++){
     fprintf(output,"counter%d,",j);
