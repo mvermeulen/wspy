@@ -543,9 +543,13 @@ void print_metrics(struct process_info *pi){
     (pi->finish-pi->start);
   on_cpu = on_core / num_procs;
   if (proctype == PROCESSOR_INTEL){
-    td_retire = (double) pi->total_counter[5]/pi->total_counter[1];
-    td_spec = (double) (pi->total_counter[4] - pi->total_counter[5] + pi->total_counter[3])/pi->total_counter[1];
-    td_frontend = (double) pi->total_counter[2] / pi->total_counter[1];
+    int single_threaded = (sflag)?2:1;
+    td_retire = (double) pi->total_counter[5]/
+      (pi->total_counter[1]*single_threaded);
+    td_spec = (double) (pi->total_counter[4] - pi->total_counter[5] + pi->total_counter[3])/
+      (pi->total_counter[1]*single_threaded);
+    td_frontend = (double) pi->total_counter[2]/
+      (pi->total_counter[1]*single_threaded);
     td_backend = 1 - (td_retire + td_spec + td_frontend);
   } else if (proctype == PROCESSOR_AMD){
     td_frontend = (double) pi->total_counter[2] / pi->total_counter[1];
