@@ -31,6 +31,7 @@ struct processinfo {
   unsigned int sigstop_event  : 1;
   double start;
   double finish;
+  char *comm;
   struct rusage rusage;  
   struct process_counter_info pci;
 };
@@ -73,7 +74,7 @@ void ptrace2_setup(pid_t child){
 
   // header row, must match against "process-csv" program
   fprintf(process_csvfile,"#version %d\n",version);
-  fprintf(process_csvfile,"#pid,ppid,filename,starttime,start,finish,cpu,utime,stime,cutime,cstime,vsize,rss,minflt,majflt,num_counters\n");
+  fprintf(process_csvfile,"#pid,ppid,filename,start,finish,utime_sec,utime_usec,stime_sec,stime_usec,maxrss,minflt,majflt,inblock,oublock,msgsnd,msgrcv,nsignals,nvcsw,nivcsw,num_counters\n");
 
   child_pid = child;
   debug("ptrace_setup\n");
@@ -89,8 +90,8 @@ void ptrace2_setup(pid_t child){
 		  PTRACE_O_EXITKILL  |   // kill child if I exit
 		  // various forms of clone
 		  PTRACE_O_TRACECLONE|PTRACE_O_TRACEFORK|PTRACE_O_TRACEVFORK|
-		  //		  PTRACE_O_TRACEEXEC |   // exec(2)
-		  PTRACE_O_TRACEEXIT);   // exit(2)
+		  PTRACE_O_TRACEEXIT // exit(0)
+		  );
   
   ptrace(PTRACE_CONT,child_pid,NULL,NULL);
   start_pid(child_pid,getpid());
@@ -120,7 +121,6 @@ void ptrace2_loop(void){
 	stop_pid(pid);
       }
       debug2("   WIFEXITED(%d)\n",pid);
-      // ignore exit operations as far as processing the table goes
       if (pid == child_pid) break;
       
     } else if (WIFSIGNALED(status)){
@@ -129,17 +129,17 @@ void ptrace2_loop(void){
 	stop_pid(pid);
       }
       debug2("   WIFSIGNALED(%d)\n",pid);      
-      // ignore exit operations since handled when we get an event
     } else if (WIFSTOPPED(status)){
       if (WSTOPSIG(status) == SIGTRAP){
 	cloned = 0;
 	// we have an event!
 	switch(status>>16){
 	case PTRACE_EVENT_CLONE:
-	  cloned = 1;
+	  //	  cloned = 1;
 	  // fall through
 	case PTRACE_EVENT_FORK:
 	case PTRACE_EVENT_VFORK:
+#if 0
 	  if (ptrace(PTRACE_GETEVENTMSG,pid,NULL,&data) != -1){
 	    child = data;
 	    debug2("   fork(%d)\n\tstart %d\n",pid,child);
@@ -150,12 +150,15 @@ void ptrace2_loop(void){
 	    proc_table[child].cloned = cloned;
 	    proc_table[child].fork_event = 1;
 	  }
+#endif
 	  break;
 	case PTRACE_EVENT_EXIT:
-	  if (proc_table[pid].pid){
-	    stop_pid(pid);
+	  if (!proc_table[pid].comm){
+	    char *comm = lookup_process_comm(pid);
+	    if (comm){
+	      proc_table[pid].comm = strdup(comm);
+	    }
 	  }
-	  debug2("   exit(%d)\n\tstop %d\n",pid,pid);
 	  break;
 	default:
 	  debug2("   unknown event %d (%d)\n",status>>16,pid);
@@ -196,47 +199,47 @@ static void start_pid(pid_t pid,pid_t parent){
   debug("start %d\n",pid);
   cleanup_process_table_entry(pid);
   proc_table[pid].pid = pid;
-  proc_table[pid].ppid = parent;
+  if (parent){
+    proc_table[pid].ppid = parent;
+  } else {
+    proc_table[pid].ppid = lookup_process_ppid(pid);
+  }
   read_uptime(&proc_table[pid].start);
   start_process_perf_counters(pid,&proc_table[pid].pci);
 }
 
 static void stop_pid(pid_t pid){
-  char *statline;
-  struct procstat_info pi;
-  double finish;
-  char *p;
   int i;
   struct counterlist *cl;
   debug("stop %d\n",pid);
 
-  read_uptime(&finish);
-  proc_table[pid].finish = finish;
+  read_uptime(&proc_table[pid].finish);
   stop_process_perf_counters(pid,&proc_table[pid].pci);
 
-  // get info from /proc/[pid]/stat
-  if (proc_table[pid].cloned){
-    if ((statline = lookup_process_task_stat(pid)) == NULL){
-      statline = lookup_process_stat(pid);
-    }
-  } else {
-    statline = lookup_process_stat(pid);
+  if (!proc_table[pid].comm){
+    char *comm = lookup_process_comm(pid);
+    if (comm) proc_table[pid].comm = strdup(comm);
   }
-  //  printf("{%s}\n",statline);
-  
-  parse_process_stat(statline,&pi);
-  if (p = strchr(pi.comm,')')){ *p = '\0'; }
 
-  // this happens if the fork event couldn't read the child
-  if (proc_table[pid].ppid == 0)
-    proc_table[pid].ppid = pi.ppid;
-
-  fprintf(process_csvfile,"%d,%d,%s,%llu,%6.5f,%6.5f,%d,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%d,",
+  fprintf(process_csvfile,"%d,%d,%s,%6.5f,%6.5f,%lu,%lu,%lu,%lu,"
+	  "%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,"
+	  "%d,",
 	  proc_table[pid].pid,
 	  proc_table[pid].ppid,
-	  pi.comm,pi.starttime,
-	  proc_table[pid].start,proc_table[pid].finish,pi.processor,
-	  pi.utime,pi.stime,pi.cutime,pi.cstime,pi.vsize,pi.rss,pi.minflt,pi.majflt,
+	  proc_table[pid].comm?proc_table[pid].comm:"?",
+	  proc_table[pid].start,proc_table[pid].finish,
+	  proc_table[pid].rusage.ru_utime.tv_sec,proc_table[pid].rusage.ru_utime.tv_usec,
+	  proc_table[pid].rusage.ru_stime.tv_sec,proc_table[pid].rusage.ru_stime.tv_usec,
+	  proc_table[pid].rusage.ru_maxrss,
+	  proc_table[pid].rusage.ru_minflt,
+	  proc_table[pid].rusage.ru_majflt,
+	  proc_table[pid].rusage.ru_inblock,
+	  proc_table[pid].rusage.ru_oublock,
+	  proc_table[pid].rusage.ru_msgsnd,
+	  proc_table[pid].rusage.ru_msgrcv,
+	  proc_table[pid].rusage.ru_nsignals,	  
+	  proc_table[pid].rusage.ru_nvcsw,	  
+	  proc_table[pid].rusage.ru_nivcsw,
 	  NUM_COUNTERS_PER_PROCESS
 	  );
   for (i=0;i<NUM_COUNTERS_PER_PROCESS;i++){
@@ -249,6 +252,7 @@ static void stop_pid(pid_t pid){
   }
   
   fprintf(process_csvfile,"\n");
+  if (proc_table[pid].comm) free(proc_table[pid].comm);
   memset(&proc_table[pid],0,sizeof(struct processinfo));
   process_csvfile_num++;
 }

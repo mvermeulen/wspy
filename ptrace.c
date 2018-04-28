@@ -51,6 +51,31 @@ char *lookup_process_comm(pid_t pid){
   }
 }
 
+// look up ppid from /proc/[pid]/stat
+pid_t lookup_process_ppid(pid_t pid){
+  char procfile[32];
+  int fd;
+  int len;
+  char buffer[1024];
+  char *p;
+  pid_t ppid;
+  char state;
+  snprintf(procfile,sizeof(procfile),"/proc/%d/stat",pid);
+  if ((fd = open(procfile,O_RDONLY)) > -1){
+    len = read(fd,buffer,sizeof(buffer));
+    p = strchr(buffer,')');
+    if (p){
+      sscanf(p+2,"%c %d",&state,&ppid);
+      if (ppid){
+	close(fd);
+	return ppid;
+      }
+    }
+    close(fd);
+  }
+  return 0;
+}
+
 // get static buffer for /proc/[pid]/stat
 char *lookup_process_stat(pid_t pid){
   int fd;

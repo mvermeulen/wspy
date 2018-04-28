@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/sysinfo.h>
+#include <sys/resource.h>
 #include "error.h"
 
 #define NUM_COUNTERS_PER_PROCESS 6 // hard coded format for now
@@ -18,6 +19,7 @@ int sflag = 0;
 int pid_root = -1;
 static int clocks_per_second = 0;
 static int num_procs = 0;
+static int version = 0;
 
 int parse_options(int argc,char *const argv[]){
   int opt;
@@ -51,18 +53,20 @@ int parse_options(int argc,char *const argv[]){
 
 char *signatures[] = {
   "#pid,ppid,filename,starttime,start,finish,cpu,utime,stime,cutime,cstime,vsize,rss,minflt,majflt,num_counters",
-  "#pid,ppid,filename,starttime,start,finish,utime,stime,cutime,cstime,vsize,rss,minflt,majflt,num_counters",
+  "#pid,ppid,filename,start,finish,utime_sec,utime_usec,stime_sec,stime_usec,maxrss,minflt,majflt,inblock,oublock,msgsnd,msgrcv,nsignals,nvcsw,nivcsw,num_counters",
   0
 };
 
 struct process_info {
   struct process_info *parent,*sibling,*child1,*childn;
   pid_t pid,ppid;
-  int cpu,num_counters;
-  char *filename;
-  unsigned long utime,stime,cutime,cstime,vsize,rss,minflt,majflt;
-  unsigned long long starttime;
   double start,finish;
+  char *filename;
+  unsigned long long starttime;   // version <20
+  int cpu;                        // version <20
+  unsigned long utime,stime,cutime,cstime,vsize,rss,minflt,majflt;  // version <20
+  struct rusage rusage;
+  int num_counters;
   unsigned long counter[NUM_COUNTERS_PER_PROCESS];
   // derived information
   int level;
@@ -99,7 +103,6 @@ int read_input_file(void){
   FILE *fp;
   char line[1024];
   int lineno = 0;
-  int vers = 0;
   char *token;
   char *signature = signatures[0];
   struct process_info pi;
@@ -108,9 +111,9 @@ int read_input_file(void){
       lineno++;
       if (line[0] == '#'){
 	if (!strncmp(line,"#version",8)){
-	  sscanf(&line[8],"%d",&vers);
-	  notice("reading version %d\n",vers);
-	  if (vers >= 20) signature = signatures[1];
+	  sscanf(&line[8],"%d",&version);
+	  notice("reading version %d\n",version);
+	  if (version >= 20) signature = signatures[1];
 	} else if (strncmp(line,signature,strlen(signature)) != 0){
 	  // either because it isn't a csv file or the format has changed
 	  // format has to match so hard coded sequence below works
@@ -132,9 +135,12 @@ int read_input_file(void){
 	if (token){
 	  pi.filename = strdup(token);
 	}
-	token = strtok(NULL,",\n"); // starttime
-	if (token){
-	  sscanf(token,"%llu",&pi.starttime);
+	if (version < 20){
+	  // removed in version 2.0 since not in rusage information
+	  token = strtok(NULL,",\n"); // starttime
+	  if (token){
+	    sscanf(token,"%llu",&pi.starttime);
+	  }
 	}
 	token = strtok(NULL,",\n"); // start
 	if (token){
@@ -144,45 +150,103 @@ int read_input_file(void){
 	if (token){
 	  sscanf(token,"%lf",&pi.finish);	  
 	}
-	if (vers < 20){
+	if (version < 20){
 	  // removed in version 2.0 since not in rusage information
 	  token = strtok(NULL,",\n"); // cpu
 	  if (token){
 	    sscanf(token,"%d",&pi.cpu);
 	  }
+	  token = strtok(NULL,",\n"); // utime
+	  if (token){
+	    sscanf(token,"%lu",&pi.utime);	  
+	  }
+	  token = strtok(NULL,",\n"); // stime
+	  if (token){
+	    sscanf(token,"%lu",&pi.stime);	  
+	  }
+	  token = strtok(NULL,",\n"); // cutime
+	  if (token){
+	    sscanf(token,"%lu",&pi.cutime);	  
+	  }
+	  token = strtok(NULL,",\n"); // cstime
+	  if (token){
+	    sscanf(token,"%lu",&pi.cstime);	  
+	  }	
+	  token = strtok(NULL,",\n"); // vsize
+	  if (token){
+	    sscanf(token,"%lu",&pi.vsize);	  
+	  }		
+	  token = strtok(NULL,",\n"); // rss
+	  if (token){
+	    sscanf(token,"%lu",&pi.rss);	  
+	  }			
+	  token = strtok(NULL,",\n"); // minflt
+	  if (token){
+	    sscanf(token,"%lu",&pi.minflt);	  
+	  }				
+	  token = strtok(NULL,",\n"); // majflt
+	  if (token){
+	    sscanf(token,"%lu",&pi.majflt);	  
+	  }
+	} else {
+	  // version >=20, parse rusage
+	  token = strtok(NULL,",\n"); // utime
+	  if (token){
+	    sscanf(token,"%lu",&pi.rusage.ru_utime.tv_sec);
+	  }
+	  token = strtok(NULL,",\n"); // utime 
+	  if (token){
+	    sscanf(token,"%lu",&pi.rusage.ru_utime.tv_usec);
+	  }
+	  token = strtok(NULL,",\n"); // stime
+	  if (token){
+	    sscanf(token,"%lu",&pi.rusage.ru_stime.tv_sec);
+	  }
+	  token = strtok(NULL,",\n"); // stime
+	  if (token){
+	    sscanf(token,"%lu",&pi.rusage.ru_stime.tv_usec);
+	  }
+	  token = strtok(NULL,",\n"); // maxrss
+	  if (token){
+	    sscanf(token,"%lu",&pi.rusage.ru_maxrss);
+	  }	  
+	  token = strtok(NULL,",\n"); // minflt
+	  if (token){
+	    sscanf(token,"%lu",&pi.rusage.ru_minflt);
+	  }	  
+	  token = strtok(NULL,",\n"); // majflt
+	  if (token){
+	    sscanf(token,"%lu",&pi.rusage.ru_majflt);
+	  }	  
+	  token = strtok(NULL,",\n"); // inblock
+	  if (token){
+	    sscanf(token,"%lu",&pi.rusage.ru_inblock);
+	  }	  
+	  token = strtok(NULL,",\n"); // oublock
+	  if (token){
+	    sscanf(token,"%lu",&pi.rusage.ru_oublock);
+	  }	  
+	  token = strtok(NULL,",\n"); // msgsnd
+	  if (token){
+	    sscanf(token,"%lu",&pi.rusage.ru_msgsnd);
+	  }	  
+	  token = strtok(NULL,",\n"); // msgrcv
+	  if (token){
+	    sscanf(token,"%lu",&pi.rusage.ru_msgrcv);
+	  }	  
+	  token = strtok(NULL,",\n"); // nsignals
+	  if (token){
+	    sscanf(token,"%lu",&pi.rusage.ru_nsignals);
+	  }	  
+	  token = strtok(NULL,",\n"); // nvcsw
+	  if (token){
+	    sscanf(token,"%lu",&pi.rusage.ru_nvcsw);
+	  }	  
+	  token = strtok(NULL,",\n"); // nivcsw
+	  if (token){
+	    sscanf(token,"%lu",&pi.rusage.ru_nivcsw);
+	  }	  
 	}
-	token = strtok(NULL,",\n"); // utime
-	if (token){
-	  sscanf(token,"%lu",&pi.utime);	  
-	}
-	token = strtok(NULL,",\n"); // stime
-	if (token){
-	  sscanf(token,"%lu",&pi.stime);	  
-	}
-	token = strtok(NULL,",\n"); // cutime
-	if (token){
-	  sscanf(token,"%lu",&pi.cutime);	  
-	}
-	token = strtok(NULL,",\n"); // cstime
-	if (token){
-	  sscanf(token,"%lu",&pi.cstime);	  
-	}	
-	token = strtok(NULL,",\n"); // vsize
-	if (token){
-	  sscanf(token,"%lu",&pi.vsize);	  
-	}		
-	token = strtok(NULL,",\n"); // rss
-	if (token){
-	  sscanf(token,"%lu",&pi.rss);	  
-	}			
-	token = strtok(NULL,",\n"); // minflt
-	if (token){
-	  sscanf(token,"%lu",&pi.minflt);	  
-	}				
-	token = strtok(NULL,",\n"); // majflt
-	if (token){
-	  sscanf(token,"%lu",&pi.majflt);	  
-	}					
 	token = strtok(NULL,",\n"); // num_counters
 	if (token){
 	  sscanf(token,"%d",&pi.num_counters);	  
@@ -226,12 +290,27 @@ int read_input_file(void){
   return 0;
 }
 
-int compare_start(const void *pi1,const void *pi2){
+int compare_starttime(const void *pi1,const void *pi2){
   const struct process_info *pi_one = pi1;
   const struct process_info *pi_two = pi2;
   if (pi_one->starttime < pi_two->starttime)
     return -1;
   else if (pi_one->starttime > pi_two->starttime)
+    return 1;
+  else if (pi_one->pid < pi_two->pid)
+    return -1;
+  else if (pi_one->pid > pi_two->pid)
+    return 1;
+  else
+    return 0;
+}
+
+int compare_start(const void *pi1,const void *pi2){
+  const struct process_info *pi_one = pi1;
+  const struct process_info *pi_two = pi2;
+  if (pi_one->start < pi_two->start)
+    return -1;
+  else if (pi_one->start > pi_two->start)
     return 1;
   else if (pi_one->pid < pi_two->pid)
     return -1;
@@ -346,10 +425,14 @@ void print_procinfo(struct process_info *pi,int print_children,int indent,double
     for (p=format_specifier;*p;p++){
       switch(*p){
       case 'c':
-	printf(" cpu=%d",pi->cpu);
+	if (version < 20)
+	  printf(" cpu=%d",pi->cpu);
 	break;
       case 'f':
-	printf(" minflt=%lu majflt=%lu",pi->total_minflt,pi->total_majflt);
+	if (version < 20)
+	  printf(" minflt=%lu majflt=%lu",pi->total_minflt,pi->total_majflt);
+	else
+	  printf(" minflt=%lu majflt=%lu",pi->rusage.ru_minflt,pi->rusage.ru_majflt);	  
 	break;
       case 'i':
 	if (proctype == PROCESSOR_INTEL){
@@ -401,28 +484,40 @@ void print_procinfo(struct process_info *pi,int print_children,int indent,double
 	printf(" elapsed=%3.2f start=%3.2f finish=%3.2f",pi->finish-pi->start,pi->start-basetime,pi->finish-basetime);
 	break;
       case 'u':
-	if (clocks_per_second == 0)
-	  clocks_per_second = sysconf(_SC_CLK_TCK);
-	printf(" user=%3.2f sys=%3.2f",
-	       (double)pi->utime / clocks_per_second,
-	       (double)pi->stime / clocks_per_second);
+	if (version < 20){
+	  if (clocks_per_second == 0)
+	    clocks_per_second = sysconf(_SC_CLK_TCK);
+	  printf(" user=%3.2f sys=%3.2f",
+		 (double)pi->utime / clocks_per_second,
+		 (double)pi->stime / clocks_per_second);
+	} else {
+	  printf(" user=%lu.%6.6lu sys=%lu.%6.6lu",
+		 pi->rusage.ru_utime.tv_sec,pi->rusage.ru_utime.tv_usec,
+		 pi->rusage.ru_stime.tv_sec,pi->rusage.ru_stime.tv_usec);
+	}
 	break;
       case 'U':
-	if (clocks_per_second == 0)
-	  clocks_per_second = sysconf(_SC_CLK_TCK);
-	printf(" tuser=%3.2f tsys=%3.2f",
-	       (double)pi->total_utime / clocks_per_second,
-	       (double)pi->total_stime / clocks_per_second);
+	if (version < 20){
+	  if (clocks_per_second == 0)
+	    clocks_per_second = sysconf(_SC_CLK_TCK);
+	  printf(" tuser=%3.2f tsys=%3.2f",
+		 (double)pi->total_utime / clocks_per_second,
+		 (double)pi->total_stime / clocks_per_second);
+	}
 	break;
       case 'W':
-	if (clocks_per_second == 0)
-	  clocks_per_second = sysconf(_SC_CLK_TCK);
-	printf(" tutime=%3.2f tstime=%3.2f",
-	       (double)pi->cutime / clocks_per_second,
-	       (double)pi->cstime / clocks_per_second);
+	if (version < 20){
+	  if (clocks_per_second == 0)
+	    clocks_per_second = sysconf(_SC_CLK_TCK);
+	  printf(" tutime=%3.2f tstime=%3.2f",
+		 (double)pi->cutime / clocks_per_second,
+		 (double)pi->cstime / clocks_per_second);
+	}
 	break;	
       case 'v':
-	printf(" vsize=%luK", pi->vsize/1024);
+	if (version < 20){
+	  printf(" vsize=%luK", pi->vsize/1024);
+	}
 	break;
       }
     }
@@ -516,7 +611,11 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (lookup_vendor() == NULL){
     fatal("unable to read vendor information\n");
   }
-  qsort(process_table,process_table_size,sizeof(struct process_info),compare_start);
+  if (version < 20){
+    qsort(process_table,process_table_size,sizeof(struct process_info),compare_starttime);
+  } else {
+    qsort(process_table,process_table_size,sizeof(struct process_info),compare_start);
+  }
 
   // add parent relationships
   add_tree_links();

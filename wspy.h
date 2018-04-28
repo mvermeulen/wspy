@@ -64,6 +64,8 @@ void *tracecmd_start(void *arg);
 /* ptrace.c */
 void ptrace_setup(pid_t child);
 void ptrace_loop(void);
+char *lookup_process_comm(pid_t pid);
+pid_t lookup_process_ppid(pid_t pid);
 // fields from /proc/stat
 struct procstat_info {
   /*  1- 5 */ int pid; char comm[32]; char state; int ppid, pgrp;

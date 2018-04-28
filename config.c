@@ -34,7 +34,7 @@ int flag_debug = 0;
 int flag_perfctr = 0;
 int flag_proctree = 0;
 int flag_version = 0;
-int version = 10;
+int version = 20;
 // possible values for --processtree-engine, one for each
 int mask_processtree_engine_selected = 0;
 int flag_require_ftrace = 0;
