@@ -16,6 +16,7 @@ char *input_filename = "processtree.csv";
 char *format_specifier = 0;
 int mflag = 0;
 int sflag = 0;
+int bflag = 0;
 int pid_root = -1;
 static int clocks_per_second = 0;
 static int num_procs = 0;
@@ -23,8 +24,11 @@ static int version = 0;
 
 int parse_options(int argc,char *const argv[]){
   int opt;
-  while ((opt = getopt(argc,argv,"f:F:mp:s")) != -1){
+  while ((opt = getopt(argc,argv,"bf:F:mp:s")) != -1){
     switch(opt){
+    case 'b':
+      bflag = 1;
+      break;
     case 'f':
       input_filename = strdup(optarg);
       break;
@@ -614,10 +618,31 @@ void print_metrics(struct process_info *pi){
   printf("\tFinish   %4.2f\n",pi->finish);
 }
 
+void print_bmetrics(struct process_info *pi){
+  unsigned long cpu_cycles    = pi->total_counter[0];
+  unsigned long no_execute    = pi->total_counter[1];
+  unsigned long read_stall    = pi->total_counter[2];
+  unsigned long read_stall_bw = pi->total_counter[3] + pi->total_counter[4];
+  unsigned long store_stall   = pi->total_counter[5];
+  unsigned long max_memstall  = (read_stall > store_stall) ? read_stall : store_stall;
+  unsigned long productive    = cpu_cycles - no_execute;
+  unsigned long read_stall_lat= read_stall - read_stall_bw;
+  unsigned long other_stall   = no_execute - max_memstall;
+  printf("%s - pid %d\n",pi->filename,pi->pid);  
+  printf("\tcycles              (100.0%%)\t%lu\n",cpu_cycles);
+  printf("\t  productive        (%5.1f%%)\t%lu\n",(double) productive / cpu_cycles * 100.0,productive);
+  printf("\t  stalls            (%5.1f%%)\t%lu\n",(double) no_execute / cpu_cycles * 100.0,no_execute);
+  printf("\t    other stall     (%5.1f%%)\t%lu\n",(double) other_stall / cpu_cycles * 100.0,other_stall);  
+  printf("\t    memory          (%5.1f%%)\t%lu\n",(double) max_memstall / cpu_cycles * 100.0,max_memstall);
+  printf("\t      read_bw       (%5.1f%%)\t%lu\n",(double) read_stall_bw / cpu_cycles * 100.0,read_stall_bw);
+  printf("\t      read_lat      (%5.1f%%)\t%lu\n",(double) read_stall_lat / cpu_cycles * 100.0,read_stall_lat);
+  printf("\t      write         (%5.1f%%)\t%lu\n",(double) store_stall / cpu_cycles * 100.0,store_stall);      
+}
+
 int main(int argc,char *const argv[],char *const envp[]){
   int i;
   if (parse_options(argc,argv)){
-    fatal("usage: %s [-m][-f filename][-F format][-p pid]\n"
+    fatal("usage: %s [-bm][-f filename][-F format][-p pid]\n"
 	  "\t-f sets input filename (default processtree.csv)\n"
 	  "\t-F is a string of format specifiers:\n"
 	  "\t   c - core last run\n"
@@ -633,6 +658,7 @@ int main(int argc,char *const argv[],char *const envp[]){
 	  "\t   U - total user and system times\n"
 	  "\t   v - virtual memory sizes\n"
 	  "\t-m provides summary metrics\n"
+	  "\t-b provides backend metrics\n"	  
 	  "\t-p selects pid to print\n"
 	  "\t-s adjust for single-threaded workloads\n"
 	  ,argv[0]);
@@ -666,6 +692,8 @@ int main(int argc,char *const argv[],char *const envp[]){
       if (process_table[i].pid == pid_root){
 	if (mflag){
 	  print_metrics(&process_table[i]);
+	} else if (bflag){
+	  print_bmetrics(&process_table[i]);	  
 	} else {
 	  print_procinfo(&process_table[i],1,1,process_table[i].start);
 	}
@@ -679,7 +707,9 @@ int main(int argc,char *const argv[],char *const envp[]){
       if (process_table[i].parent == NULL){
 	// print entire trees
 	if (mflag){
-	  print_metrics(&process_table[i]);	  
+	  print_metrics(&process_table[i]);
+	} else if (bflag){
+	  print_bmetrics(&process_table[i]);
 	} else {
 	  print_procinfo(&process_table[i],1,1,process_table[i].start);
 	}
