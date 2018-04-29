@@ -621,22 +621,24 @@ void print_metrics(struct process_info *pi){
 void print_bmetrics(struct process_info *pi){
   unsigned long cpu_cycles    = pi->total_counter[0];
   unsigned long no_execute    = pi->total_counter[1];
-  unsigned long read_stall    = pi->total_counter[2];
-  unsigned long read_stall_bw = pi->total_counter[3] + pi->total_counter[4];
+  unsigned long mem_stall     = pi->total_counter[2];
+  unsigned long L2_stall      = pi->total_counter[3];
+  unsigned long L1d_stall     = pi->total_counter[4];
   unsigned long store_stall   = pi->total_counter[5];
-  unsigned long max_memstall  = (read_stall > store_stall) ? read_stall : store_stall;
+  unsigned long other_stall   = no_execute - mem_stall;
   unsigned long productive    = cpu_cycles - no_execute;
-  unsigned long read_stall_lat= read_stall - read_stall_bw;
-  unsigned long other_stall   = no_execute - max_memstall;
+  unsigned long L1_activity   = L1d_stall - L2_stall;
+  unsigned long L2_activity   = mem_stall - L2_stall;
+
   printf("%s - pid %d\n",pi->filename,pi->pid);  
   printf("\tcycles              (100.0%%)\t%lu\n",cpu_cycles);
   printf("\t  productive        (%5.1f%%)\t%lu\n",(double) productive / cpu_cycles * 100.0,productive);
   printf("\t  stalls            (%5.1f%%)\t%lu\n",(double) no_execute / cpu_cycles * 100.0,no_execute);
+  printf("\t    memory          (%5.1f%%)\t%lu\n",(double) mem_stall / cpu_cycles * 100.0,mem_stall);
+  printf("\t       L1           (%5.1f%%)\t%lu\n",(double) L1_activity / cpu_cycles * 100.0,L1_activity);
+  printf("\t       L2           (%5.1f%%)\t%lu\n",(double) L2_activity / cpu_cycles * 100.0,L2_activity);
+  printf("\t       L3+mem       (%5.1f%%)\t%lu\n",(double) L1d_stall / cpu_cycles * 100.0,L1d_stall);
   printf("\t    other stall     (%5.1f%%)\t%lu\n",(double) other_stall / cpu_cycles * 100.0,other_stall);  
-  printf("\t    memory          (%5.1f%%)\t%lu\n",(double) max_memstall / cpu_cycles * 100.0,max_memstall);
-  printf("\t      read_bw       (%5.1f%%)\t%lu\n",(double) read_stall_bw / cpu_cycles * 100.0,read_stall_bw);
-  printf("\t      read_lat      (%5.1f%%)\t%lu\n",(double) read_stall_lat / cpu_cycles * 100.0,read_stall_lat);
-  printf("\t      write         (%5.1f%%)\t%lu\n",(double) store_stall / cpu_cycles * 100.0,store_stall);      
 }
 
 int main(int argc,char *const argv[],char *const envp[]){
