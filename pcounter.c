@@ -66,6 +66,7 @@ void init_global_perf_counters(){
   struct perfctr_info *pi;
   struct perfctr_info *last_pi = NULL, *first_pi = NULL;
   struct counterlist *cl;
+
   perfctrfile = tmpfile();
 
   for (i=0;i<num_procs;i++){
@@ -141,25 +142,44 @@ void init_process_counterinfo(void){
   struct counterlist *cl;
   char **default_counters;
   int num_counters;
-  vendor = lookup_vendor();
-  if (vendor && !strcmp(vendor,"GenuineIntel")){
-    default_counters = def_process_counters_intel;
-    num_counters = sizeof(def_process_counters_intel)/sizeof(def_process_counters_intel[0]);
-  } else if (vendor && !strcmp(vendor,"AuthenticAMD")){
-    default_counters = def_process_counters_amd;
-    num_counters = sizeof(def_process_counters_amd)/sizeof(def_process_counters_amd[0]);
-  }
-  else {
-    return;
-  }
-  for (i=0;i<num_counters;i++){
-    cl = calloc(1,sizeof(struct counterlist));
-    cl->name = default_counters[i];
-    cl->ci = counterinfo_lookup(cl->name,0,0);
-    if (cl->ci == NULL){
-      error("unknown performance counter, ignored: %s\n",cl->name);
-    } else {
-      perf_counters_by_process[i] = cl;
+
+  if (perf_counters_same){
+    // --set-counters option given
+    i = 0;
+    for (cl = perf_counters_same;cl;cl = cl->next){
+      cl->ci = counterinfo_lookup(cl->name,0,0);
+      if (cl->ci == NULL){
+	error("unknown performance counter, ignored: %s\n",cl->name);
+	continue;
+      }
+      if (i >= NUM_COUNTERS_PER_PROCESS){
+	warning("maximum %d counters, ignored: %s\n",NUM_COUNTERS_PER_PROCESS,cl->name);
+      } else {
+	perf_counters_by_process[i] = cl;
+	i++;
+      }
+    }
+  } else {
+    vendor = lookup_vendor();
+    if (vendor && !strcmp(vendor,"GenuineIntel")){
+      default_counters = def_process_counters_intel;
+      num_counters = sizeof(def_process_counters_intel)/sizeof(def_process_counters_intel[0]);
+    } else if (vendor && !strcmp(vendor,"AuthenticAMD")){
+      default_counters = def_process_counters_amd;
+      num_counters = sizeof(def_process_counters_amd)/sizeof(def_process_counters_amd[0]);
+    }
+    else {
+      return;
+    }
+    for (i=0;i<num_counters;i++){
+      cl = calloc(1,sizeof(struct counterlist));
+      cl->name = default_counters[i];
+      cl->ci = counterinfo_lookup(cl->name,0,0);
+      if (cl->ci == NULL){
+	error("unknown performance counter, ignored: %s\n",cl->name);
+      } else {
+	perf_counters_by_process[i] = cl;
+      }
     }
   }
 }

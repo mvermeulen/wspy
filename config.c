@@ -228,6 +228,8 @@ int parse_options(int argc,char *const argv[]){
 	for (i=0;i<num_procs;i++){
 	  CPU_SET(i,&mask);
 	}
+	// delete the old list rather than append to it (set to zero, slight memory leak)
+	perf_counters_same = NULL;
 	all_counters_same = 1;
       }
       // delete the old counter lists (for now set to zero, slight memory leak)

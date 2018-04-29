@@ -82,51 +82,59 @@ void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
   else
     fprintf(output," %-12s",pinfo->comm);
   fprintf(output," cpu=%d",pinfo->cpu);
-  if (flag_require_perftree && flag_require_ptrace){
-    if (pinfo->total_counter[1]){
-      fprintf(output," ipc=%4.2f",
-	      (double) pinfo->total_counter[0] / pinfo->total_counter[1]);
-    }
-    total_time = pinfo->total_utime + pinfo->total_stime;
-    if (total_time){
-      on_core = (double) total_time/clocks_per_second/elapsed;
-      on_cpu = on_core / num_procs;
-      fprintf(output," on_cpu=%3.2f on_core=%3.2f",on_cpu,on_core);
-    }
-    // Intel topdown metrics, note scaling wasn't done yet so do it here
-    if (vendor && !strcmp(vendor,"GenuineIntel")){
-      total_slots = pinfo->total_counter[1]*2;
-      fetch_bubbles = pinfo->total_counter[2];
-      recovery_bubbles = pinfo->total_counter[3]*2;
-      slots_issued = pinfo->total_counter[4];
-      slots_retired = pinfo->total_counter[5];
-      frontend_bound = (double) fetch_bubbles / total_slots;
-      retiring = (double) slots_retired / total_slots;
-      speculation = (double) (slots_issued - slots_retired + recovery_bubbles) / total_slots;
-      backend_bound = 1 - (frontend_bound + retiring + speculation);
-      if (total_slots){
-	fprintf(output," retire=%4.3f",retiring);
-	fprintf(output," frontend=%4.3f",frontend_bound);
-	fprintf(output," spec=%4.3f",speculation);
-	fprintf(output," backend=%4.3f",backend_bound);
+  if (perf_counters_same == NULL){
+    // counters were not reset, so we can print the defaults
+    if (flag_require_perftree && flag_require_ptrace){
+      if (pinfo->total_counter[1]){
+	fprintf(output," ipc=%4.2f",
+		(double) pinfo->total_counter[0] / pinfo->total_counter[1]);
       }
-    } else if (vendor && !strcmp(vendor,"AuthenticAMD")){
-      cpu_cycles = pinfo->total_counter[1];
-      frontend_bound = pinfo->total_counter[2];
-      backend_bound  = pinfo->total_counter[3];
-      if (cpu_cycles){
-	fprintf(output," frontend=%4.3f",frontend_bound / cpu_cycles);
-	fprintf(output," backend=%4.3f",backend_bound / cpu_cycles);
+      total_time = pinfo->total_utime + pinfo->total_stime;
+      if (total_time){
+	on_core = (double) total_time/clocks_per_second/elapsed;
+	on_cpu = on_core / num_procs;
+	fprintf(output," on_cpu=%3.2f on_core=%3.2f",on_cpu,on_core);
+      }
+      // Intel topdown metrics, note scaling wasn't done yet so do it here
+      if (vendor && !strcmp(vendor,"GenuineIntel")){
+	total_slots = pinfo->total_counter[1]*2;
+	fetch_bubbles = pinfo->total_counter[2];
+	recovery_bubbles = pinfo->total_counter[3]*2;
+	slots_issued = pinfo->total_counter[4];
+	slots_retired = pinfo->total_counter[5];
+	frontend_bound = (double) fetch_bubbles / total_slots;
+	retiring = (double) slots_retired / total_slots;
+	speculation = (double) (slots_issued - slots_retired + recovery_bubbles) / total_slots;
+	backend_bound = 1 - (frontend_bound + retiring + speculation);
+	if (total_slots){
+	  fprintf(output," retire=%4.3f",retiring);
+	  fprintf(output," frontend=%4.3f",frontend_bound);
+	  fprintf(output," spec=%4.3f",speculation);
+	  fprintf(output," backend=%4.3f",backend_bound);
+	}
+      } else if (vendor && !strcmp(vendor,"AuthenticAMD")){
+	cpu_cycles = pinfo->total_counter[1];
+	frontend_bound = pinfo->total_counter[2];
+	backend_bound  = pinfo->total_counter[3];
+	if (cpu_cycles){
+	  fprintf(output," frontend=%4.3f",frontend_bound / cpu_cycles);
+	  fprintf(output," backend=%4.3f",backend_bound / cpu_cycles);
+	}
       }
     }
-    
     if (get_error_level() >= ERROR_LEVEL_DEBUG){
       fprintf(output," inst=%lu cycles=%lu",
 	      pinfo->total_counter[0],pinfo->total_counter[1]);
     }
+    fprintf(output," elapsed=%5.2f",elapsed);
+  } else {
+    for (i=0;i<NUM_COUNTERS_PER_PROCESS;i++){
+      if (perf_counters_by_process[i]){
+	fprintf(output," %s=%lu",perf_counters_by_process[i]->name,pinfo->pci.perf_counter[i]);
+      }
+    }
   }
-  fprintf(output," elapsed=%5.2f",elapsed);
-
+    
   if (pinfo->f_exited){
     fprintf(output," start=%5.2f finish=%5.2f",pinfo->time_start-basetime,pinfo->time_finish-basetime);    
   } else if (pinfo->p_exited){
