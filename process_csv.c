@@ -450,9 +450,15 @@ void print_procinfo(struct process_info *pi,int print_children,int indent,double
 	  clocks_per_second = sysconf(_SC_CLK_TCK);
 	if (num_procs == 0)
 	  num_procs = get_nprocs();
-	on_core = (double)(pi->total_utime + pi->total_stime) /
-	  clocks_per_second /
-	  (pi->finish-pi->start);
+	if (version < 20){
+	  on_core = (double)(pi->total_utime + pi->total_stime) /
+	    clocks_per_second /
+	    (pi->finish-pi->start);
+	} else {
+	  on_core = (pi->rusage.ru_utime.tv_sec + pi->rusage.ru_utime.tv_usec / 1000000.0 +
+		     pi->rusage.ru_stime.tv_sec + pi->rusage.ru_stime.tv_usec / 1000000.0)/
+	    (pi->finish-pi->start);
+	}
 	on_cpu = on_core / num_procs;
 	printf(" on_cpu=%4.3f on_core=%4.3f",on_cpu,on_core);
 	if (proctype == PROCESSOR_INTEL){
@@ -538,9 +544,15 @@ void print_metrics(struct process_info *pi){
     clocks_per_second = sysconf(_SC_CLK_TCK);
   if (num_procs == 0)
     num_procs = get_nprocs();
-  on_core = (double)(pi->total_utime + pi->total_stime) /
-    clocks_per_second /
-    (pi->finish-pi->start);
+  if (version < 20){
+    on_core = (double)(pi->total_utime + pi->total_stime) /
+      clocks_per_second /
+      (pi->finish-pi->start);
+  } else {
+    on_core = (pi->rusage.ru_utime.tv_sec + pi->rusage.ru_utime.tv_usec / 1000000.0 +
+	       pi->rusage.ru_stime.tv_sec + pi->rusage.ru_stime.tv_usec / 1000000.0)/
+      (pi->finish-pi->start);    
+  }
   on_cpu = on_core / num_procs;
   if (proctype == PROCESSOR_INTEL){
     int single_threaded = (sflag)?2:1;
@@ -574,14 +586,30 @@ void print_metrics(struct process_info *pi){
   }
   printf("\tElapsed  %5.2f\n",pi->finish-pi->start);
   printf("\tProcs    %d\n",pi->nproc);
-  printf("\tMinflt   %lu\n",pi->total_minflt);
-  printf("\tMajflt   %lu\n",pi->total_majflt);
-  printf("\tUtime    %-8.2f\t(%3.1f%%)\n",
-	 (double) pi->total_utime / clocks_per_second,
-	 (double) pi->total_utime * 100.0 / (pi->total_utime + pi->total_stime));
-  printf("\tStime    %-8.2f\t(%3.1f%%)\n",
-	 (double) pi->total_stime / clocks_per_second,
-	 (double) pi->total_stime * 100.0 / (pi->total_utime + pi->total_stime));
+  if (version < 20){
+    printf("\tMinflt   %lu\n",pi->total_minflt);
+    printf("\tMajflt   %lu\n",pi->total_majflt);
+    printf("\tUtime    %-8.2f\t(%3.1f%%)\n",
+	   (double) pi->total_utime / clocks_per_second,
+	   (double) pi->total_utime * 100.0 / (pi->total_utime + pi->total_stime));
+    printf("\tStime    %-8.2f\t(%3.1f%%)\n",
+	   (double) pi->total_stime / clocks_per_second,
+	   (double) pi->total_stime * 100.0 / (pi->total_utime + pi->total_stime));
+  } else {
+    printf("\tMaxrss   %luK\n",pi->rusage.ru_maxrss/1024);
+    printf("\tMinflt   %lu\n", pi->rusage.ru_minflt);
+    printf("\tMajflt   %lu\n", pi->rusage.ru_majflt);
+    printf("\tInblock  %lu\n", pi->rusage.ru_inblock);
+    printf("\tOublock  %lu\n", pi->rusage.ru_oublock);
+    printf("\tMsgsnd   %lu\n", pi->rusage.ru_msgsnd);
+    printf("\tMsgrcv   %lu\n", pi->rusage.ru_msgrcv);
+    printf("\tNsignals %lu\n", pi->rusage.ru_nsignals);
+    printf("\tNvcsw    %lu\t(%3.1f%%)\n", pi->rusage.ru_nvcsw,
+	   (double) pi->rusage.ru_nvcsw / (pi->rusage.ru_nvcsw + pi->rusage.ru_nivcsw) * 100.0);
+    printf("\tNivcsw   %lu\n", pi->rusage.ru_nivcsw);
+    printf("\tUtime    %lu.%6.6lu\n",pi->rusage.ru_utime.tv_sec,pi->rusage.ru_utime.tv_usec);
+    printf("\tStime    %lu.%6.6lu\n",pi->rusage.ru_stime.tv_sec,pi->rusage.ru_stime.tv_usec);    
+  }
   printf("\tStart    %4.2f\n",pi->start);
   printf("\tFinish   %4.2f\n",pi->finish);
 }
