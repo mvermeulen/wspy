@@ -83,8 +83,10 @@ void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
     fprintf(output," %-12s",pinfo->comm);
   fprintf(output," cpu=%d",pinfo->cpu);
   if (flag_require_perftree && flag_require_ptrace){
-    fprintf(output," ipc=%4.2f",
-	    (double) pinfo->total_counter[0] / pinfo->total_counter[1]);
+    if (pinfo->total_counter[1]){
+      fprintf(output," ipc=%4.2f",
+	      (double) pinfo->total_counter[0] / pinfo->total_counter[1]);
+    }
     total_time = pinfo->total_utime + pinfo->total_stime;
     if (total_time){
       on_core = (double) total_time/clocks_per_second/elapsed;
@@ -102,16 +104,20 @@ void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
       retiring = (double) slots_retired / total_slots;
       speculation = (double) (slots_issued - slots_retired + recovery_bubbles) / total_slots;
       backend_bound = 1 - (frontend_bound + retiring + speculation);
-      fprintf(output," retire=%4.3f",retiring);
-      fprintf(output," frontend=%4.3f",frontend_bound);
-      fprintf(output," spec=%4.3f",speculation);
-      fprintf(output," backend=%4.3f",backend_bound);
+      if (total_slots){
+	fprintf(output," retire=%4.3f",retiring);
+	fprintf(output," frontend=%4.3f",frontend_bound);
+	fprintf(output," spec=%4.3f",speculation);
+	fprintf(output," backend=%4.3f",backend_bound);
+      }
     } else if (vendor && !strcmp(vendor,"AuthenticAMD")){
       cpu_cycles = pinfo->total_counter[1];
       frontend_bound = pinfo->total_counter[2];
       backend_bound  = pinfo->total_counter[3];
-      fprintf(output," frontend=%4.3f",frontend_bound / cpu_cycles);
-      fprintf(output," backend=%4.3f",backend_bound / cpu_cycles);      
+      if (cpu_cycles){
+	fprintf(output," frontend=%4.3f",frontend_bound / cpu_cycles);
+	fprintf(output," backend=%4.3f",backend_bound / cpu_cycles);
+      }
     }
     
     if (get_error_level() >= ERROR_LEVEL_DEBUG){

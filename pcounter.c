@@ -164,9 +164,10 @@ void init_process_counterinfo(void){
   }
 }
 
-void start_process_perf_counters(pid_t pid,struct process_counter_info *pci){
+void start_process_perf_counters(pid_t pid,struct process_counter_info *pci,int root){
   int i;
   struct perf_event_attr pe[NUM_COUNTERS_PER_PROCESS];
+  
   if (pci){
     memset(pe,'\0',sizeof(pe));
     for (i=0;i<NUM_COUNTERS_PER_PROCESS;i++){
@@ -175,6 +176,10 @@ void start_process_perf_counters(pid_t pid,struct process_counter_info *pci){
       pe[i].config = perf_counters_by_process[i]->ci->config;
       pe[i].config1 = perf_counters_by_process[i]->ci->config1;
       pe[i].size = sizeof(struct perf_event_attr);
+      if (perfcounter_model == PM_APPLICATION){
+	if (root) pe[i].inherit = 1;
+	else break;
+      }
       pci->perf_fd[i] = perf_event_open(&pe[i],pid,-1,-1,0);
       if (pci->perf_fd[i] != -1){
 	ioctl(pci->perf_fd[i],PERF_EVENT_IOC_RESET,0);

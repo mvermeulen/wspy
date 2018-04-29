@@ -189,8 +189,10 @@ int main(int argc,char *const argv[],char *const envp[]){
   // wait 5 seconds to allow subsystems to start
   sleep(5);
   child_procinfo = lookup_process_info(child_pid,1);
-  if (flag_require_ptrace && flag_require_perftree)
-    start_process_perf_counters(child_pid,&child_procinfo->pci);
+  if (flag_require_ptrace){
+    start_process_perf_counters(child_pid,&child_procinfo->pci,1);
+    child_procinfo->counters_started = 1;
+  }
   
   // let the child proceed
   write(child_pipe[1],"start\n",6);

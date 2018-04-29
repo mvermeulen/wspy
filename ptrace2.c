@@ -26,9 +26,10 @@
 
 struct processinfo {
   pid_t pid,ppid;
-  unsigned int cloned         : 1;
-  unsigned int fork_event     : 1;
-  unsigned int sigstop_event  : 1;
+  unsigned int cloned           : 1;
+  unsigned int fork_event       : 1;
+  unsigned int sigstop_event    : 1;
+  unsigned int counters_started : 1;
   double start;
   double finish;
   char *comm;
@@ -36,7 +37,7 @@ struct processinfo {
   struct process_counter_info pci;
 };
 
-static void start_pid(pid_t pid,pid_t parent);
+static void start_pid(pid_t pid,pid_t parent,int root);
 static void stop_pid(pid_t pid);
 
 static pid_t child_pid = 0;
@@ -69,7 +70,7 @@ void ptrace2_setup(pid_t child){
     fatal("unable to read /proc/sys/kernel/pid_max\n");    
   }
   if ((process_csvfile = fopen("processtree2.csv","w")) == NULL){
-    fatal("unable to open processtree2.csv");
+    fatal("unable to open processtree2.csv\n");
   }
 
   // header row, must match against "process-csv" program
@@ -94,7 +95,7 @@ void ptrace2_setup(pid_t child){
 		  );
   
   ptrace(PTRACE_CONT,child_pid,NULL,NULL);
-  start_pid(child_pid,getpid());
+  start_pid(child_pid,getpid(),1);
 }
 
 // loop through and handle ptrace(2) events
@@ -139,18 +140,6 @@ void ptrace2_loop(void){
 	  // fall through
 	case PTRACE_EVENT_FORK:
 	case PTRACE_EVENT_VFORK:
-#if 0
-	  if (ptrace(PTRACE_GETEVENTMSG,pid,NULL,&data) != -1){
-	    child = data;
-	    debug2("   fork(%d)\n\tstart %d\n",pid,child);
-	    if (proc_table[child].pid == 0){
-	      // not yet recieved SIGSTOP
-	      start_pid(child,pid);
-	    }
-	    proc_table[child].cloned = cloned;
-	    proc_table[child].fork_event = 1;
-	  }
-#endif
 	  break;
 	case PTRACE_EVENT_EXIT:
 	  if (!proc_table[pid].comm){
@@ -169,8 +158,8 @@ void ptrace2_loop(void){
 	// continue without passing along this signal
 	proc_table[pid].sigstop_event = 1;
 	if (proc_table[pid].pid == 0){
-	  // missed the fork event - seems to occasionally occur; fill in ppid from exit
-	  start_pid(pid,0);
+	  // start recording information
+	  start_pid(pid,0,0);
 	}
 	ptrace(PTRACE_CONT,pid,NULL,NULL);
 	continue;
@@ -195,7 +184,7 @@ void cleanup_process_table_entry(pid_t pid){
   // clear out the old data if it exists
 }
 
-static void start_pid(pid_t pid,pid_t parent){
+static void start_pid(pid_t pid,pid_t parent,int root){
   debug("start %d\n",pid);
   cleanup_process_table_entry(pid);
   proc_table[pid].pid = pid;
@@ -205,7 +194,15 @@ static void start_pid(pid_t pid,pid_t parent){
     proc_table[pid].ppid = lookup_process_ppid(pid);
   }
   read_uptime(&proc_table[pid].start);
-  start_process_perf_counters(pid,&proc_table[pid].pci);
+  if (perfcounter_model == PM_APPLICATION){
+    if (root){
+      start_process_perf_counters(pid,&proc_table[pid].pci,root);
+      proc_table[pid].counters_started = 1;
+    }
+  } else if (perfcounter_model == PM_PROCESS){
+    start_process_perf_counters(pid,&proc_table[pid].pci,root);
+    proc_table[pid].counters_started = 1;
+  }
 }
 
 static void stop_pid(pid_t pid){
@@ -214,7 +211,9 @@ static void stop_pid(pid_t pid){
   debug("stop %d\n",pid);
 
   read_uptime(&proc_table[pid].finish);
-  stop_process_perf_counters(pid,&proc_table[pid].pci);
+  if (proc_table[pid].counters_started){
+    stop_process_perf_counters(pid,&proc_table[pid].pci);
+  }
 
   if (!proc_table[pid].comm){
     char *comm = lookup_process_comm(pid);

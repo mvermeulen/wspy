@@ -26,6 +26,7 @@ struct process_info {
   unsigned int printed : 1;
   unsigned int cloned : 1;
   unsigned int sibling_order : 1;
+  unsigned int counters_started : 1;
   char *comm;
   char *filename;
   int pcount;
@@ -139,7 +140,7 @@ struct counterinfo *counterinfo_lookup(char *name,char *group,int insert);
 void inventory_counters(char *directory);
 void print_counters(FILE *fp);
 void sort_counters(void);
-void start_process_perf_counters(pid_t pid,struct process_counter_info *pci);
+void start_process_perf_counters(pid_t pid,struct process_counter_info *pci,int root);
 void stop_process_perf_counters(pid_t pid,struct process_counter_info *pci);
 
 struct counterlist {

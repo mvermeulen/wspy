@@ -214,7 +214,8 @@ void ptrace_loop(void){
 	    }
 	  }
 	  if (flag_require_perftree){
-	    start_process_perf_counters(child_pinfo->pid,&child_pinfo->pci);
+	    start_process_perf_counters(child_pinfo->pid,&child_pinfo->pci,0);
+	    child_pinfo->counters_started = 1;
 	  }
 	  break;
 	case PTRACE_EVENT_VFORK_DONE:
@@ -259,9 +260,8 @@ void ptrace_loop(void){
 	  if (pinfo->time_finish == 0){
 	    read_uptime(&pinfo->time_finish);	    
 	  }
-	  if (flag_require_perftree){
+	  if (pinfo->counters_started)
 	    stop_process_perf_counters(pinfo->pid,&pinfo->pci);
-	  }
 	  pinfo->p_exited = 1;
 	  break;
 	default:
