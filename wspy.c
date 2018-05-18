@@ -168,7 +168,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (flag_memstats){ init_memstats(); }
   if (flag_netstats){ init_netstats(); }
   if (flag_require_perftimer){ init_global_perf_counters(); }
-  if ((flag_require_ptrace || flag_require_ptrace2) && flag_require_counters){
+  if ((flag_require_ptrace || flag_require_ptrace2) && flag_require_perftree){
     inventory_counters(0);
     init_process_counterinfo();
   }
