@@ -5,7 +5,7 @@ SRCS = wspy.c ftrace.c ptrace.c ptrace2.c tracecmd.c proctable.c timer.c cpustat
 OBJS = wspy.o ftrace.o ptrace.o ptrace2.o tracecmd.o proctable.o timer.o cpustats.o diskstats.o memstats.o netstats.o pcounter.o config.c error.o
 LIBS = -lpthread -lm
 
-all:	wspy process-csv
+all:	wspy process-csv topdown
 
 wspy:	$(OBJS)
 	$(CC) -o $(PROG) $(CFLAGS) $(OBJS) $(LIBS)
