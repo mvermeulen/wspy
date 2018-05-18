@@ -13,8 +13,14 @@ wspy:	$(OBJS)
 process-csv:	process_csv.o error.o
 	$(CC) -o process-csv $(CFLAGS) process_csv.o error.o
 
+topdown:	topdown.o error.o
+	$(CC) -o topdown $(CFLAGS) topdown.o error.o
+
 process-csv.o:	process_csv.c
 	$(CC) -c $(CFLAGS) process_csv.c
+
+topdown.o:	topdown.c
+	$(CC) -c $(CFLAGS) topdown.c
 
 depend:
 	-makedepend -Y -- $(CFLAGS) -- $(SRCS)
@@ -23,7 +29,7 @@ clean:
 	-rm *~ *.o *.bak
 
 clobber:	clean
-	-rm wspy process-csv
+	-rm wspy process-csv topdown
 
 # DO NOT DELETE
 
