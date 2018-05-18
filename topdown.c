@@ -8,13 +8,62 @@
 #include <sys/wait.h>
 #include "error.h"
 
-int aflag = 0;
-int bflag = 0;
 int cflag = 0;
-int fflag = 0;
 int oflag = 0;
-int rflag = 0;
-int sflag = 0;
+enum areamode {
+  AREA_ALL,
+  AREA_BACKEND,
+  AREA_FRONTEND,
+  AREA_RETIRE,
+  AREA_SPEC,
+  AREA_IPC
+} area = AREA_ALL;
+
+#define USE_IPC   0x1
+#define USE_L1    0x2
+#define USE_L2b   0x4
+#define USE_L2f   0x8
+#define USE_L2r   0x10
+#define USE_L2s   0x20
+struct counterdef {
+  char *name;
+  unsigned int event;
+  unsigned int umask;
+  unsigned int use;
+};
+struct counterdef counters[] = {
+  // name                       event umask  use
+  { "instructions",             0xc0, 0,     USE_IPC },
+  { "cpu-cycles",               0x76, 0,     USE_IPC },
+  { "topdown-total-slots",      0,    0,     USE_L1  },
+  { "topdown-fetch-bubbles",    0,    0,     USE_L1  },
+  { "topdown-recovery-bubbles", 0,    0,     USE_L1  },
+  { "topdown-slots-issued",     0,    0,     USE_L1  },
+  { "topdown-slots-retired",    0,    0,     USE_L1  },
+};
+struct countergroup {
+  char *label;
+  int num_counters;
+  char *names[6];
+  unsigned int use;
+};
+struct countergroup groups[] = {
+  { "ipc",
+    2,
+    { "instructions",
+      "cpu-cycles" },
+    USE_IPC },
+  { "level1",
+    5,
+    { "topdown-total-slots",
+      "topdown-fetch-bubbles",
+      "topdown-recovery-bubbles",
+      "topdown-slots-issued",
+      "topdown-slots-retired" },
+    USE_L1,
+  },
+};
+  
 int command_line_argc;
 char **command_line_argv;
 pid_t child_pid = 0;
@@ -27,19 +76,22 @@ int parse_options(int argc,char *const argv[]){
   int opt;
   int i;
   unsigned int lev;
-  while ((opt = getopt(argc,argv,"abcfl:o:rs")) != -1){
+  while ((opt = getopt(argc,argv,"abcfil:o:rs")) != -1){
     switch (opt){
     case 'a':
-      aflag = 1;
+      area = AREA_ALL;
       break;
     case 'b':
-      bflag = 1;
+      area = AREA_BACKEND;
       break;
     case 'c':
       cflag = 1;
       break;
     case 'f':
-      fflag = 1;
+      area = AREA_FRONTEND;
+      break;
+    case 'i':
+      area = AREA_IPC;
       break;
     case 'l':
       if (sscanf(optarg,"%u",&lev) == 1){
@@ -62,10 +114,10 @@ int parse_options(int argc,char *const argv[]){
       }
       break;
     case 'r':
-      rflag = 1;
+      area = AREA_RETIRE;
       break;
     case 's':
-      sflag = 1;
+      area = AREA_SPEC;
       break;
     default:
       warning("unknown option: %d\n",opt);
