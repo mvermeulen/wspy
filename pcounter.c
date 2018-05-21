@@ -327,7 +327,7 @@ void print_counter_info(int num,char *name,char *delim,FILE *output){
   for (i=0;i<colnum;i++){
     fprintf(output,"%s%lu",delim,current.value[i]);
   }
-  fprintf(outfile,"\n");
+  fprintf(output,"\n");
 }
 
 void print_global_perf_counters(void){
@@ -358,6 +358,7 @@ void print_global_perf_counter_files(void){
   if (all_counters_same){
     fp = fopen("perftotal.csv","w");
     if (fp) print_counter_info(0,"total_",",",fp);
+    fclose(fp);
   }
 }
 
