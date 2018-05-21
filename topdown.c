@@ -336,7 +336,14 @@ void print_ipc(void){
       total_cpu_cycles += app_counters[i].value;
     }
   }
-  printf("IPC\t%5.3f\n",(double) total_instructions / total_cpu_cycles);
+  fprintf(outfile,"IPC\t%4.3f\n",
+	  (double) total_instructions / total_cpu_cycles);
+  if (cflag){
+    for (i=0;i<4;i++){
+      fprintf(outfile,"%d.IPC\t%4.3f\n",i,
+	      (double) instructions[i] / cpu_cycles[i]);
+    }
+  }
 }
 
 void print_topdown1(void){
@@ -379,10 +386,22 @@ void print_topdown1(void){
   retiring = (double) total_topdown_slots_retired / total_topdown_total_slots;
   speculation = (double) (total_topdown_slots_issued - total_topdown_slots_retired + total_topdown_recovery_bubbles)/ total_topdown_total_slots;
   backend_bound = 1 - (frontend_bound + retiring + speculation);
-  printf("retire       %4.3f\n",retiring);
-  printf("speculation  %4.3f\n",speculation);
-  printf("front end    %4.3f\n",frontend_bound);
-  printf("back end     %4.3f\n",backend_bound);
+  fprintf(outfile,"retire         %4.3f\n",retiring);
+  fprintf(outfile,"speculation    %4.3f\n",speculation);
+  fprintf(outfile,"frontend       %4.3f\n",frontend_bound);
+  fprintf(outfile,"backend        %4.3f\n",backend_bound);
+  if (cflag){
+    for (i=0;i<4;i++){
+      frontend_bound = (double) topdown_fetch_bubbles[i] / topdown_total_slots[i];
+      retiring = (double) topdown_slots_retired[i] / topdown_total_slots[i];
+      speculation = (double) (topdown_slots_issued[i] - topdown_slots_retired[i] + topdown_recovery_bubbles[i])/ topdown_total_slots[i];
+      backend_bound = 1 - (frontend_bound + retiring + speculation);
+      fprintf(outfile,"%d.retire       %4.3f\n",i,retiring);
+      fprintf(outfile,"%d.speculation  %4.3f\n",i,speculation);
+      fprintf(outfile,"%d.frontend     %4.3f\n",i,frontend_bound);
+      fprintf(outfile,"%d.backend      %4.3f\n",i,backend_bound);      
+    }
+  }
 }
 
 int main(int argc,char *const argv[],char *const envp[]){
