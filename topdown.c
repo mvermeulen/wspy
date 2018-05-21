@@ -44,14 +44,23 @@ struct counterdef {
   unsigned int use;
 };
 struct counterdef counters[] = {
-  // name                       event umask cmask any scale use
-  { "instructions",             0xc0, 0,    0,    0,  0,    USE_IPC },
-  { "cpu-cycles",               0x3c, 0,    0,    0,  0,    USE_IPC },
-  { "topdown-total-slots",      0x3c, 0x0,  0,    1,  2,    USE_L1  },
-  { "topdown-fetch-bubbles",    0x9c, 0x1,  0,    0,  0,    USE_L1  },
-  { "topdown-recovery-bubbles", 0xd,  0x3,  0x1,  1,  2,    USE_L1  },
-  { "topdown-slots-issued",     0xe,  0x1,  0,    0,  0,    USE_L1  },
-  { "topdown-slots-retired",    0xc2, 0x2,  0,    0,  0,    USE_L1  },
+  // name                                event umask cmask any scale use
+  { "instructions",                      0xc0, 0,    0,    0,  0,    USE_IPC },
+  { "cpu-cycles",                        0x3c, 0,    0,    0,  0,    USE_IPC },
+  { "topdown-total-slots",               0x3c, 0x0,  0,    1,  2,    USE_L1  },
+  { "topdown-fetch-bubbles",             0x9c, 0x1,  0,    0,  0,    USE_L1  },
+  { "topdown-recovery-bubbles",          0xd,  0x3,  0x1,  1,  2,    USE_L1  },
+  { "topdown-slots-issued",              0xe,  0x1,  0,    0,  0,    USE_L1  },
+  { "topdown-slots-retired",             0xc2, 0x2,  0,    0,  0,    USE_L1  },
+  { "resource-stalls.sb",                0xa2, 0x8,  0,    0,  0,    USE_L2b },
+  { "cycle-activity.stalls-ldm-pending", 0xa3, 0x6,  0x6,  0,  0,    USE_L2b },
+  { "idq_uops_not_delivered.0_uops",     0x9c, 0x1,  0x4,  0,  0,    USE_L2f },
+  { "idq_uops_not_delivered.1_uops",     0x9c, 0x1,  0x3,  0,  0,    USE_L2f },
+  { "idq_uops_not_delivered.2_uops",     0x9c, 0x1,  0x2,  0,  0,    USE_L2f },
+  { "idq_uops_not_delivered.3_uops",     0x9c, 0x1,  0x1,  0,  0,    USE_L2f },
+  { "branch-misses",                     0xc5, 0x1,  0,    0,  0,    USE_L2s },
+  { "machine_clears.count",              0xc3, 0x1,  0x1,  0,  0,    USE_L2s },
+  { "idq.ms_uops",                       0x79, 0x30, 0,    0,  0,    USE_L2r },
 };
 struct countergroup {
   char *label;
@@ -141,7 +150,7 @@ int parse_options(int argc,char *const argv[]){
       area = AREA_SPEC;
       break;
     default:
-      warning("unknown option: %d\n",opt);
+      warning("unknown option: %c\n",opt);
       return 1;
     }
   }
@@ -231,7 +240,7 @@ void setup_counters(void){
   case AREA_BACKEND:
     mask = USE_L1;
     if (level > 1)
-      mask = mask | USE_L2r;
+      mask = mask | USE_L2b;
     break;
   case AREA_IPC:
     mask = USE_IPC;
@@ -353,8 +362,15 @@ void print_topdown1(void){
   unsigned long int topdown_recovery_bubbles[4];
   unsigned long int topdown_slots_issued[4];
   unsigned long int topdown_slots_retired[4];
+  unsigned long int resource_stalls_sb[4];
+  unsigned long int stalls_ldm_pending[4];
+  unsigned long int uops0_delivered[4],uops1_delivered[4],uops2_delivered[4],uops3_delivered[4];
+  unsigned long int branch_misses[4],machine_clears[4],ms_uops[4];
   unsigned long int total_topdown_total_slots=0,total_topdown_fetch_bubbles=0,
-    total_topdown_recovery_bubbles=0,total_topdown_slots_issued=0,total_topdown_slots_retired=0;
+    total_topdown_recovery_bubbles=0,total_topdown_slots_issued=0,total_topdown_slots_retired=0,
+    total_resource_stalls_sb=0,total_stalls_ldm_pending=0,
+    total_uops0_delivered=0,total_uops1_delivered=0,total_uops2_delivered=0,total_uops3_delivered=0,
+    total_branch_misses=0,total_machine_clears=0,total_ms_uops=0;
   double frontend_bound,retiring,speculation,backend_bound;
   for (i=0;i<4;i++){
     topdown_total_slots[i] = 0;
@@ -362,6 +378,11 @@ void print_topdown1(void){
     topdown_recovery_bubbles[i] = 0;
     topdown_slots_issued[i] = 0;
     topdown_slots_retired[i] = 0;
+    resource_stalls_sb[i] = 0;
+    stalls_ldm_pending[i] = 0;
+    uops0_delivered[i] = 0;
+    branch_misses[i] = 0;
+    machine_clears[i] = 0;
   }
   
   for (i=0;i<num_total_counters;i++){
@@ -380,16 +401,68 @@ void print_topdown1(void){
     } else if (!strcmp(app_counters[i].definition->name,"topdown-slots-retired")){
       topdown_slots_retired[app_counters[i].corenum % 4] += app_counters[i].value;
       total_topdown_slots_retired += app_counters[i].value;                        
-    }
-  }
+    } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"resource-stalls.sb")){
+      resource_stalls_sb[app_counters[i].corenum % 4] += app_counters[i].value;
+      total_resource_stalls_sb += app_counters[i].value;
+    } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"cycle-activity.stalls-ldm-pending")){
+      stalls_ldm_pending[app_counters[i].corenum % 4] += app_counters[i].value;
+      total_stalls_ldm_pending += app_counters[i].value;
+    } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"idq_uops_not_delivered.0_uops")){
+      uops0_delivered[app_counters[i].corenum % 4] += app_counters[i].value;
+      total_uops0_delivered += app_counters[i].value;
+    } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"idq_uops_not_delivered.1_uops")){
+      uops1_delivered[app_counters[i].corenum % 4] += app_counters[i].value;
+      total_uops1_delivered += app_counters[i].value;
+    } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"idq_uops_not_delivered.2_uops")){
+      uops2_delivered[app_counters[i].corenum % 4] += app_counters[i].value;
+      total_uops2_delivered += app_counters[i].value;
+    } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"idq_uops_not_delivered.3_uops")){
+      uops3_delivered[app_counters[i].corenum % 4] += app_counters[i].value;
+      total_uops3_delivered += app_counters[i].value;
+    } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"branch-misses")){
+      branch_misses[app_counters[i].corenum % 4] += app_counters[i].value;
+      total_branch_misses += app_counters[i].value;
+    } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"machine_clears.count")){
+      machine_clears[app_counters[i].corenum % 4] += app_counters[i].value;
+      total_machine_clears += app_counters[i].value;
+    } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"idq.ms_uops")){
+      ms_uops[app_counters[i].corenum % 4] += app_counters[i].value;
+      total_ms_uops += app_counters[i].value;
+    }    
+  } 
   frontend_bound = (double) total_topdown_fetch_bubbles / total_topdown_total_slots;
   retiring = (double) total_topdown_slots_retired / total_topdown_total_slots;
   speculation = (double) (total_topdown_slots_issued - total_topdown_slots_retired + total_topdown_recovery_bubbles)/ total_topdown_total_slots;
   backend_bound = 1 - (frontend_bound + retiring + speculation);
   fprintf(outfile,"retire         %4.3f\n",retiring);
+  if ((level > 1) && total_ms_uops){
+    fprintf(outfile,"ms_uops                %4.3f\n",(double) total_ms_uops / total_topdown_total_slots);
+  }
   fprintf(outfile,"speculation    %4.3f\n",speculation);
+  if ((level > 1) && (total_machine_clears + total_branch_misses)){
+    fprintf(outfile,"branch_misses          %2.2f%%\n",(double) total_branch_misses / (total_machine_clears + total_branch_misses)*100);
+    fprintf(outfile,"machine_clears         %2.2f%%\n",(double) total_machine_clears / (total_machine_clears + total_branch_misses)*100);    
+  }
   fprintf(outfile,"frontend       %4.3f\n",frontend_bound);
+  if ((level > 1) && total_uops0_delivered){
+    fprintf(outfile,"idq_uops_delivered_0   %4.3f\n",(double) total_uops0_delivered * 2 / total_topdown_total_slots);
+  }
+  if ((level > 1) && total_uops1_delivered){
+    fprintf(outfile,"idq_uops_delivered_1   %4.3f\n",(double) total_uops1_delivered * 2 / total_topdown_total_slots);
+  }
+  if ((level > 1) && total_uops2_delivered){
+    fprintf(outfile,"idq_uops_delivered_2   %4.3f\n",(double) total_uops2_delivered * 2 / total_topdown_total_slots);
+  }
+  if ((level > 1) && total_uops3_delivered){
+    fprintf(outfile,"idq_uops_delivered_3   %4.3f\n",(double) total_uops3_delivered * 2 / total_topdown_total_slots);
+  }      
   fprintf(outfile,"backend        %4.3f\n",backend_bound);
+  if ((level > 1) && total_resource_stalls_sb){
+    fprintf(outfile,"resource_stalls.sb     %4.3f\n",(double) total_resource_stalls_sb * 2 / total_topdown_total_slots);
+  }
+  if ((level > 1) && total_stalls_ldm_pending){
+    fprintf(outfile,"stalls_ldm_pending     %4.3f\n",(double) total_stalls_ldm_pending * 2 / total_topdown_total_slots);    
+  }
   if (cflag){
     for (i=0;i<4;i++){
       frontend_bound = (double) topdown_fetch_bubbles[i] / topdown_total_slots[i];
@@ -397,9 +470,43 @@ void print_topdown1(void){
       speculation = (double) (topdown_slots_issued[i] - topdown_slots_retired[i] + topdown_recovery_bubbles[i])/ topdown_total_slots[i];
       backend_bound = 1 - (frontend_bound + retiring + speculation);
       fprintf(outfile,"%d.retire       %4.3f\n",i,retiring);
+      if ((level > 1) && ms_uops[i]){
+	fprintf(outfile,"%d.ms_uops                %4.3f\n",i,
+		(double) ms_uops[i] / topdown_total_slots[i]);
+      }      
       fprintf(outfile,"%d.speculation  %4.3f\n",i,speculation);
+      if ((level > 1) && (machine_clears[i] + branch_misses[i])){
+	fprintf(outfile,"%d.branch_misses          %2.2f%%\n",i,
+		(double) branch_misses[i] / (machine_clears[i] + branch_misses[i])*100);
+	fprintf(outfile,"%d.machine_clears         %2.2f%%\n",i,
+		(double) machine_clears[i] / (machine_clears[i] + branch_misses[i])*100);    
+      }      
       fprintf(outfile,"%d.frontend     %4.3f\n",i,frontend_bound);
-      fprintf(outfile,"%d.backend      %4.3f\n",i,backend_bound);      
+      if ((level > 1) && uops0_delivered[i]){
+	fprintf(outfile,"%d.idq_uops_delivered_0   %4.3f\n",i,
+		(double) uops0_delivered[i] * 2 / topdown_total_slots[i]);
+      }      
+      if ((level > 1) && uops1_delivered[i]){
+	fprintf(outfile,"%d.idq_uops_delivered_1   %4.3f\n",i,
+		(double) uops1_delivered[i] * 2 / topdown_total_slots[i]);
+      }      
+      if ((level > 1) && uops2_delivered[i]){
+	fprintf(outfile,"%d.idq_uops_delivered_2   %4.3f\n",i,
+		(double) uops2_delivered[i] * 2 / topdown_total_slots[i]);
+      }      
+      if ((level > 1) && uops3_delivered[i]){
+	fprintf(outfile,"%d.idq_uops_delivered_3   %4.3f\n",i,
+		(double) uops3_delivered[i] * 2 / topdown_total_slots[i]);
+      }      
+      fprintf(outfile,"%d.backend      %4.3f\n",i,backend_bound);
+      if ((level > 1) && resource_stalls_sb[i]){
+	fprintf(outfile,"%d.resource_stalls.sb     %4.3f\n",i,
+		(double) resource_stalls_sb[i] * 2 / topdown_total_slots[i]);
+      }
+      if ((level > 1) && stalls_ldm_pending[i]){
+	fprintf(outfile,"%d.stalls_ldm_pending     %4.3f\n",i,
+		(double) stalls_ldm_pending[i] * 2 / topdown_total_slots[i]);    
+  }      
     }
   }
 }
