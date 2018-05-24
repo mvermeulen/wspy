@@ -32,6 +32,7 @@ enum areamode {
 #define USE_L2s   0x20
 #define USE_L2f   0x40
 #define USE_L2b   0x80
+#define USE_L3f   0x400
 
 
 struct counterdef {
@@ -61,6 +62,9 @@ struct counterdef counters[] = {
   { "branch-misses",                     0xc5, 0x1,  0,    0,  0,    USE_L2s },
   { "machine_clears.count",              0xc3, 0x1,  0x1,  0,  0,    USE_L2s },
   { "idq.ms_uops",                       0x79, 0x30, 0,    0,  0,    USE_L2r },
+  { "icache.ifdata_stall",               0x80, 0x4,  0,    0,  0,    USE_L3f },
+  { "itlb_misses.stlb_hit",              0x85, 0x60, 0,    0,  0,    USE_L3f },
+  { "itlb_misses.walk_duration",         0x85, 0x10, 0,    0,  0,    USE_L3f },
 };
 struct countergroup {
   char *label;
@@ -221,6 +225,8 @@ void setup_counters(void){
     mask = USE_L1;
     if (level > 1)
       mask = mask | USE_L2r | USE_L2s | USE_L2f | USE_L2b;
+    if (level > 2)
+      mask = mask | USE_L3f;
     break;
   case AREA_RETIRE:
     mask = USE_L1;
@@ -236,6 +242,8 @@ void setup_counters(void){
     mask = USE_L1;
     if (level > 1)
       mask = mask | USE_L2f;
+    if (level > 2)
+      mask = mask | USE_L3f;
     break;
   case AREA_BACKEND:
     mask = USE_L1;
@@ -366,11 +374,13 @@ void print_topdown1(void){
   unsigned long int stalls_ldm_pending[4];
   unsigned long int uops0_delivered[4],uops1_delivered[4],uops2_delivered[4],uops3_delivered[4];
   unsigned long int branch_misses[4],machine_clears[4],ms_uops[4];
+  unsigned long int icache_stall[4],itlb_stlb_hit[4],itlb_walk_duration[4];
   unsigned long int total_topdown_total_slots=0,total_topdown_fetch_bubbles=0,
     total_topdown_recovery_bubbles=0,total_topdown_slots_issued=0,total_topdown_slots_retired=0,
     total_resource_stalls_sb=0,total_stalls_ldm_pending=0,
     total_uops0_delivered=0,total_uops1_delivered=0,total_uops2_delivered=0,total_uops3_delivered=0,
-    total_branch_misses=0,total_machine_clears=0,total_ms_uops=0;
+    total_branch_misses=0,total_machine_clears=0,total_ms_uops=0,
+    total_icache_stall=0,total_itlb_stlb_hit=0,total_itlb_walk_duration=0;
   double frontend_bound,retiring,speculation,backend_bound;
   for (i=0;i<4;i++){
     topdown_total_slots[i] = 0;
@@ -383,6 +393,9 @@ void print_topdown1(void){
     uops0_delivered[i] = 0;
     branch_misses[i] = 0;
     machine_clears[i] = 0;
+    icache_stall[i] = 0;
+    itlb_stlb_hit[i] = 0;
+    itlb_walk_duration[i] = 0;
   }
   
   for (i=0;i<num_total_counters;i++){
@@ -428,7 +441,16 @@ void print_topdown1(void){
     } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"idq.ms_uops")){
       ms_uops[app_counters[i].corenum % 4] += app_counters[i].value;
       total_ms_uops += app_counters[i].value;
-    }    
+    } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"icache.ifdata_stall")){
+      icache_stall[app_counters[i].corenum % 4] += app_counters[i].value;
+      total_icache_stall += app_counters[i].value;
+    } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"itlb_misses.stlb_hit")){
+      itlb_stlb_hit[app_counters[i].corenum % 4] += app_counters[i].value;
+      total_itlb_stlb_hit += app_counters[i].value;
+    } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"itlb_misses.walk_duration")){
+      itlb_walk_duration[app_counters[i].corenum % 4] += app_counters[i].value;
+      total_itlb_walk_duration += app_counters[i].value;
+    }
   } 
   frontend_bound = (double) total_topdown_fetch_bubbles / total_topdown_total_slots;
   retiring = (double) total_topdown_slots_retired / total_topdown_total_slots;
@@ -446,6 +468,13 @@ void print_topdown1(void){
   fprintf(outfile,"frontend       %4.3f\n",frontend_bound);
   if ((level > 1) && total_uops0_delivered){
     fprintf(outfile,"idq_uops_delivered_0   %4.3f\n",(double) total_uops0_delivered * 2 / total_topdown_total_slots);
+  }
+  if ((level > 2) && total_icache_stall){
+    fprintf(outfile,"icache_stall               %4.3f\n",(double) total_icache_stall * 2 / total_topdown_total_slots);    
+  }
+  if ((level > 2) && (total_itlb_stlb_hit+total_itlb_walk_duration)){
+    fprintf(outfile,"itlb_misses                %4.3f\n",
+	    (double) (total_itlb_stlb_hit * 14 + total_itlb_walk_duration) * 2 / total_topdown_total_slots);    
   }
   if ((level > 1) && total_uops1_delivered){
     fprintf(outfile,"idq_uops_delivered_1   %4.3f\n",(double) total_uops1_delivered * 2 / total_topdown_total_slots);
@@ -485,7 +514,15 @@ void print_topdown1(void){
       if ((level > 1) && uops0_delivered[i]){
 	fprintf(outfile,"%d.idq_uops_delivered_0   %4.3f\n",i,
 		(double) uops0_delivered[i] * 2 / topdown_total_slots[i]);
-      }      
+      }
+      if ((level > 2) && icache_stall[i]){
+	fprintf(outfile,"%d.icache_stall               %4.3f\n",i,
+		(double) icache_stall[i] * 2 / topdown_total_slots[i]);	
+      }
+      if ((level > 2) && (itlb_stlb_hit[i] + itlb_walk_duration[i])){
+	fprintf(outfile,"%d.itlb_miss                  %4.3f\n",i,
+		(double) (itlb_stlb_hit[i]*14 + itlb_walk_duration[i]) * 2 / topdown_total_slots[i]);		
+      }
       if ((level > 1) && uops1_delivered[i]){
 	fprintf(outfile,"%d.idq_uops_delivered_1   %4.3f\n",i,
 		(double) uops1_delivered[i] * 2 / topdown_total_slots[i]);
