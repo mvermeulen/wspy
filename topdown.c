@@ -65,6 +65,7 @@ struct counterdef counters[] = {
   { "icache.ifdata_stall",               0x80, 0x4,  0,    0,  0,    USE_L3f },
   { "itlb_misses.stlb_hit",              0x85, 0x60, 0,    0,  0,    USE_L3f },
   { "itlb_misses.walk_duration",         0x85, 0x10, 0,    0,  0,    USE_L3f },
+  { "idq.dsb_uops",                      0x79, 0x8,  0,    0,  0,    USE_L3f },
 };
 struct countergroup {
   char *label;
@@ -374,13 +375,13 @@ void print_topdown1(void){
   unsigned long int stalls_ldm_pending[4];
   unsigned long int uops0_delivered[4],uops1_delivered[4],uops2_delivered[4],uops3_delivered[4];
   unsigned long int branch_misses[4],machine_clears[4],ms_uops[4];
-  unsigned long int icache_stall[4],itlb_stlb_hit[4],itlb_walk_duration[4];
+  unsigned long int icache_stall[4],itlb_stlb_hit[4],itlb_walk_duration[4],dsb_uops[4];
   unsigned long int total_topdown_total_slots=0,total_topdown_fetch_bubbles=0,
     total_topdown_recovery_bubbles=0,total_topdown_slots_issued=0,total_topdown_slots_retired=0,
     total_resource_stalls_sb=0,total_stalls_ldm_pending=0,
     total_uops0_delivered=0,total_uops1_delivered=0,total_uops2_delivered=0,total_uops3_delivered=0,
     total_branch_misses=0,total_machine_clears=0,total_ms_uops=0,
-    total_icache_stall=0,total_itlb_stlb_hit=0,total_itlb_walk_duration=0;
+    total_icache_stall=0,total_itlb_stlb_hit=0,total_itlb_walk_duration=0,total_dsb_uops = 0;
   double frontend_bound,retiring,speculation,backend_bound;
   for (i=0;i<4;i++){
     topdown_total_slots[i] = 0;
@@ -396,6 +397,7 @@ void print_topdown1(void){
     icache_stall[i] = 0;
     itlb_stlb_hit[i] = 0;
     itlb_walk_duration[i] = 0;
+    dsb_uops[i] = 0;
   }
   
   for (i=0;i<num_total_counters;i++){
@@ -450,6 +452,9 @@ void print_topdown1(void){
     } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"itlb_misses.walk_duration")){
       itlb_walk_duration[app_counters[i].corenum % 4] += app_counters[i].value;
       total_itlb_walk_duration += app_counters[i].value;
+    } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"idq.dsb_uops")){
+      dsb_uops[app_counters[i].corenum % 4] += app_counters[i].value;
+      total_dsb_uops += app_counters[i].value;
     }
   } 
   frontend_bound = (double) total_topdown_fetch_bubbles / total_topdown_total_slots;
@@ -484,7 +489,11 @@ void print_topdown1(void){
   }
   if ((level > 1) && total_uops3_delivered){
     fprintf(outfile,"idq_uops_delivered_3   %4.3f\n",(double) total_uops3_delivered * 2 / total_topdown_total_slots);
-  }      
+  }
+  if ((level > 2) && total_dsb_uops){
+    fprintf(outfile,"dsb_ops                    %2.2f%%\n",
+	    (double) total_dsb_uops / total_topdown_slots_issued * 100.0);
+  }
   fprintf(outfile,"backend        %4.3f\n",backend_bound);
   if ((level > 1) && total_resource_stalls_sb){
     fprintf(outfile,"resource_stalls.sb     %4.3f\n",(double) total_resource_stalls_sb * 2 / total_topdown_total_slots);
@@ -534,7 +543,11 @@ void print_topdown1(void){
       if ((level > 1) && uops3_delivered[i]){
 	fprintf(outfile,"%d.idq_uops_delivered_3   %4.3f\n",i,
 		(double) uops3_delivered[i] * 2 / topdown_total_slots[i]);
-      }      
+      }
+      if ((level > 2) && dsb_uops[i]){
+	fprintf(outfile,"%d.dsb_uops                   %2.2f%%\n",i,
+		(double) dsb_uops[i] / topdown_slots_issued[i] * 100.0);
+      }
       fprintf(outfile,"%d.backend      %4.3f\n",i,backend_bound);
       if ((level > 1) && resource_stalls_sb[i]){
 	fprintf(outfile,"%d.resource_stalls.sb     %4.3f\n",i,
