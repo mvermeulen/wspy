@@ -6,10 +6,12 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <time.h>
 #include <sys/wait.h>
 #include <sys/sysinfo.h>
 #include <sys/syscall.h>
 #include <sys/ioctl.h>
+#include <sys/resource.h>
 #include <linux/perf_event.h>
 #include <errno.h>
 #include "error.h"
@@ -17,6 +19,8 @@
 int num_procs;
 int cflag = 0;
 int oflag = 0;
+int xflag = 0;
+struct timespec start_time,finish_time;
 enum areamode {
   AREA_ALL,
   AREA_RETIRE,
@@ -33,6 +37,7 @@ enum areamode {
 #define USE_L2f   0x40
 #define USE_L2b   0x80
 #define USE_L3f   0x400
+#define USE_L3b   0x800
 
 
 struct counterdef {
@@ -66,7 +71,12 @@ struct counterdef counters[] = {
   { "itlb_misses.stlb_hit",              0x85, 0x60, 0,    0,  0,    USE_L3f },
   { "itlb_misses.walk_duration",         0x85, 0x10, 0,    0,  0,    USE_L3f },
   { "idq.dsb_uops",                      0x79, 0x8,  0,    0,  0,    USE_L3f },
+  { "l2_rqsts.reference" ,               0x24, 0xff, 0,    0,  0,    USE_L3b },
+  { "l2_rqsts.miss",                     0x24, 0x3f, 0,    0,  0,    USE_L3b },
+  { "longest_lat_cache.reference",       0x2e, 0x4f, 0,    0,  0,    USE_L3b },
+  { "longest_lat_cache.miss",            0x2e, 0x41, 0,    0,  0,    USE_L3b },
 };
+
 struct countergroup {
   char *label;
   int num_counters;
@@ -111,7 +121,7 @@ int parse_options(int argc,char *const argv[]){
   int opt;
   int i;
   unsigned int lev;
-  while ((opt = getopt(argc,argv,"abcfil:o:rs")) != -1){
+  while ((opt = getopt(argc,argv,"abcfil:o:rsx")) != -1){
     switch (opt){
     case 'a':
       area = AREA_ALL;
@@ -153,6 +163,9 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 's':
       area = AREA_SPEC;
+      break;
+    case 'x':
+      xflag = 1;
       break;
     default:
       warning("unknown option: %c\n",opt);
@@ -227,7 +240,7 @@ void setup_counters(void){
     if (level > 1)
       mask = mask | USE_L2r | USE_L2s | USE_L2f | USE_L2b;
     if (level > 2)
-      mask = mask | USE_L3f;
+      mask = mask | USE_L3f | USE_L3b;
     break;
   case AREA_RETIRE:
     mask = USE_L1;
@@ -250,6 +263,8 @@ void setup_counters(void){
     mask = USE_L1;
     if (level > 1)
       mask = mask | USE_L2b;
+    if (level > 2)
+      mask = mask | USE_L3b;
     break;
   case AREA_IPC:
     mask = USE_IPC;
@@ -335,6 +350,29 @@ void dump_counters(void){
   }
 }
 
+void print_usage(struct rusage *rusage){
+  double elapsed;
+  elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
+    start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
+  fprintf(outfile,"on_cpu         %4.3f\n",
+	  (rusage->ru_utime.tv_sec+rusage->ru_utime.tv_usec/1000000.0+
+	   rusage->ru_stime.tv_sec+rusage->ru_stime.tv_usec/1000000.0)/
+	  elapsed / num_procs);
+  fprintf(outfile,"elapsed        %4.3f\n",elapsed);
+  fprintf(outfile,"utime          %4.3f\n",
+	  (double) rusage->ru_utime.tv_sec +
+	  rusage->ru_utime.tv_usec / 1000000.0);
+  fprintf(outfile,"stime          %4.3f\n",
+	  (double) rusage->ru_utime.tv_sec +
+	  rusage->ru_utime.tv_usec / 1000000.0);
+  fprintf(outfile,"nvcsw          %lu (%4.2f%%)\n",
+	  rusage->ru_nvcsw,(double) rusage->ru_nvcsw / (rusage->ru_nvcsw + rusage->ru_nivcsw) * 100.0);
+  fprintf(outfile,"nivcsw         %lu (%4.2f%%)\n",
+	  rusage->ru_nivcsw,(double) rusage->ru_nivcsw / (rusage->ru_nvcsw + rusage->ru_nivcsw) * 100.0);
+  fprintf(outfile,"inblock        %lu\n",rusage->ru_inblock);
+  fprintf(outfile,"onblock        %lu\n",rusage->ru_oublock);  
+}
+
 void print_ipc(void){
   int i;
   unsigned long int instructions[4];
@@ -376,12 +414,14 @@ void print_topdown1(void){
   unsigned long int uops0_delivered[4],uops1_delivered[4],uops2_delivered[4],uops3_delivered[4];
   unsigned long int branch_misses[4],machine_clears[4],ms_uops[4];
   unsigned long int icache_stall[4],itlb_stlb_hit[4],itlb_walk_duration[4],dsb_uops[4];
+  unsigned long int l2_refs[4],l2_misses[4],l3_refs[4],l3_misses[4];
   unsigned long int total_topdown_total_slots=0,total_topdown_fetch_bubbles=0,
     total_topdown_recovery_bubbles=0,total_topdown_slots_issued=0,total_topdown_slots_retired=0,
     total_resource_stalls_sb=0,total_stalls_ldm_pending=0,
     total_uops0_delivered=0,total_uops1_delivered=0,total_uops2_delivered=0,total_uops3_delivered=0,
     total_branch_misses=0,total_machine_clears=0,total_ms_uops=0,
-    total_icache_stall=0,total_itlb_stlb_hit=0,total_itlb_walk_duration=0,total_dsb_uops = 0;
+    total_icache_stall=0,total_itlb_stlb_hit=0,total_itlb_walk_duration=0,total_dsb_uops = 0,
+    total_l2_refs=0,total_l2_misses=0,total_l3_refs=0,total_l3_misses=0;
   double frontend_bound,retiring,speculation,backend_bound;
   for (i=0;i<4;i++){
     topdown_total_slots[i] = 0;
@@ -398,6 +438,10 @@ void print_topdown1(void){
     itlb_stlb_hit[i] = 0;
     itlb_walk_duration[i] = 0;
     dsb_uops[i] = 0;
+    l2_refs[i] = 0;
+    l2_misses[i] = 0;
+    l3_refs[i] = 0;
+    l3_misses[i] = 0;
   }
   
   for (i=0;i<num_total_counters;i++){
@@ -455,6 +499,18 @@ void print_topdown1(void){
     } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"idq.dsb_uops")){
       dsb_uops[app_counters[i].corenum % 4] += app_counters[i].value;
       total_dsb_uops += app_counters[i].value;
+    } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"l2_rqsts.reference")){
+      l2_refs[app_counters[i].corenum % 4] += app_counters[i].value;
+      total_l2_refs += app_counters[i].value;
+    } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"l2_rqsts.miss")){
+      l2_misses[app_counters[i].corenum % 4] += app_counters[i].value;
+      total_l2_misses += app_counters[i].value;
+    } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"longest_lat_cache.reference")){
+      l3_refs[app_counters[i].corenum % 4] += app_counters[i].value;
+      total_l3_refs += app_counters[i].value;
+    } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"longest_lat_cache.miss")){
+      l3_misses[app_counters[i].corenum % 4] += app_counters[i].value;
+      total_l3_misses += app_counters[i].value;
     }
   } 
   frontend_bound = (double) total_topdown_fetch_bubbles / total_topdown_total_slots;
@@ -501,6 +557,28 @@ void print_topdown1(void){
   if ((level > 1) && total_stalls_ldm_pending){
     fprintf(outfile,"stalls_ldm_pending     %4.3f\n",(double) total_stalls_ldm_pending * 2 / total_topdown_total_slots);    
   }
+  if ((level > 2) && total_l2_refs){
+    fprintf(outfile,"l2_refs                    %4.3f\n",
+	    (double) total_l2_refs * 2 / total_topdown_total_slots);
+  }
+  if ((level > 2) && total_l2_misses){
+    fprintf(outfile,"l2_misses                  %4.3f\n",
+	    (double) total_l2_misses * 2 / total_topdown_total_slots);
+    if (total_l2_refs)
+      fprintf(outfile,"l2_miss_ratio              %2.2f%%\n",
+	      (double) total_l2_misses / total_l2_refs * 100.0);            
+  }
+  if ((level > 2) && total_l3_refs){
+    fprintf(outfile,"l3_refs                    %4.3f\n",
+	    (double) total_l3_refs * 2 / total_topdown_total_slots);
+  }
+  if ((level > 2) && total_l3_misses){
+    fprintf(outfile,"l3_misses                  %4.3f\n",
+	    (double) total_l3_misses * 2 / total_topdown_total_slots);
+    if (total_l3_refs)
+      fprintf(outfile,"l3_miss_ratio              %2.2f%%\n",
+	      (double) total_l3_misses / total_l3_refs * 100.0);      
+  }  
   if (cflag){
     for (i=0;i<4;i++){
       frontend_bound = (double) topdown_fetch_bubbles[i] / topdown_total_slots[i];
@@ -563,6 +641,7 @@ void print_topdown1(void){
 
 int main(int argc,char *const argv[],char *const envp[]){
   int status;
+  struct rusage rusage;
   outfile = stdout;
   num_procs = get_nprocs();
   if (parse_options(argc,argv)){
@@ -582,12 +661,18 @@ int main(int argc,char *const argv[],char *const envp[]){
 
   start_counters();
 
+  clock_gettime(CLOCK_REALTIME,&start_time);
   if (launch_child(command_line_argc,command_line_argv,envp)){
     fatal("unable to launch %s\n",command_line_argv[0]);
   }
-  waitpid(child_pid,&status,0);
+  wait4(child_pid,&status,0,&rusage);
 
   stop_counters();
+  clock_gettime(CLOCK_REALTIME,&finish_time);  
+
+  if (xflag){
+    print_usage(&rusage);
+  }
 
   //  dump_counters();
 
