@@ -363,8 +363,8 @@ void print_usage(struct rusage *rusage){
 	  (double) rusage->ru_utime.tv_sec +
 	  rusage->ru_utime.tv_usec / 1000000.0);
   fprintf(outfile,"stime          %4.3f\n",
-	  (double) rusage->ru_utime.tv_sec +
-	  rusage->ru_utime.tv_usec / 1000000.0);
+	  (double) rusage->ru_stime.tv_sec +
+	  rusage->ru_stime.tv_usec / 1000000.0);
   fprintf(outfile,"nvcsw          %lu (%4.2f%%)\n",
 	  rusage->ru_nvcsw,(double) rusage->ru_nvcsw / (rusage->ru_nvcsw + rusage->ru_nivcsw) * 100.0);
   fprintf(outfile,"nivcsw         %lu (%4.2f%%)\n",
