@@ -13,10 +13,12 @@
 #define NUM_COUNTERS_PER_PROCESS 6 // hard coded format for now
 
 char *input_filename = "processtree.csv";
+char *input_filename2 = "processtree2.csv";
 char *format_specifier = 0;
 int mflag = 0;
 int sflag = 0;
 int bflag = 0;
+int fflag = 0;
 int pid_root = -1;
 static int clocks_per_second = 0;
 static int num_procs = 0;
@@ -30,6 +32,7 @@ int parse_options(int argc,char *const argv[]){
       bflag = 1;
       break;
     case 'f':
+      fflag = 1;
       input_filename = strdup(optarg);
       break;
     case 'F':
@@ -110,7 +113,11 @@ int read_input_file(void){
   char *token;
   char *signature = signatures[0];
   struct process_info pi;
-  if (fp = fopen(input_filename,"r")){
+  fp = fopen(input_filename,"r");
+  if ((fp == NULL) && !fflag){
+    fp = fopen(input_filename2,"r");
+  }
+  if (fp){
     while (fgets(line,sizeof(line),fp) != NULL){
       lineno++;
       if (line[0] == '#'){
