@@ -74,11 +74,11 @@ void print_meminfo(char *delim,FILE *output){
       if (first){
 	first = 0;
       } else {
-	fprintf(outfile,"%-10.2f",elapsed);
+	fprintf(output,"%-10.2f",elapsed);
 	for (i=0;i<sizeof(labels)/sizeof(labels[0]);i++){
-	  fprintf(outfile,"%s%lu",delim,values[i]);
+	  fprintf(output,"%s%lu",delim,values[i]);
 	}
-	fprintf(outfile,"\n");
+	fprintf(output,"\n");
       }
       sscanf(buffer,"time %lf",&elapsed);
       continue;
@@ -99,11 +99,11 @@ void print_meminfo(char *delim,FILE *output){
       debug2("unexpected memstat line: %s",buffer);
     }
   }
-  fprintf(outfile,"%-10.2f",elapsed);
+  fprintf(output,"%-10.2f",elapsed);
   for (i=0;i<sizeof(labels)/sizeof(labels[0]);i++){
-    fprintf(outfile,"%s%lu",delim,values[i]);
+    fprintf(output,"%s%lu",delim,values[i]);
   }
-  fprintf(outfile,"\n");  
+  fprintf(output,"\n");  
 }
 
 void print_memstats(void){
