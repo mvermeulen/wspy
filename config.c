@@ -403,7 +403,7 @@ int parse_options(int argc,char *const argv[]){
     flag_require_perftimer = 0;
     flag_require_perftree = 0;
   }
-  if (flag_cpustats || flag_diskstats || flag_require_perftimer){
+  if (flag_cpustats || flag_diskstats || flag_memstats || flag_require_perftimer){
     flag_require_timer = 1;
   } else {
     flag_require_timer = 0;    

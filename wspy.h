@@ -112,6 +112,9 @@ void print_diskstats_files(void);
 
 /* memstats.c */
 void init_memstats(void);
+void read_memstats(double time);
+void print_memstats(void);
+void print_memstats_files(void);
 
 /* netstats.c */
 void init_netstats(void);

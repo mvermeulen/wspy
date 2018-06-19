@@ -121,7 +121,7 @@ int parse_options(int argc,char *const argv[]){
   int opt;
   int i;
   unsigned int lev;
-  while ((opt = getopt(argc,argv,"abcfil:o:rsx")) != -1){
+  while ((opt = getopt(argc,argv,"+abcfil:o:rsx")) != -1){
     switch (opt){
     case 'a':
       area = AREA_ALL;

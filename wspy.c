@@ -256,6 +256,9 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (flag_cpustats && !flag_zip)
     print_cpustats();
 
+  if (flag_memstats && !flag_zip)
+    print_memstats();
+
   if (flag_diskstats && !flag_zip)
     print_diskstats();
 
@@ -295,6 +298,7 @@ int main(int argc,char *const argv[],char *const envp[]){
       }
     }
     if (flag_cpustats) print_cpustats_files();
+    if (flag_memstats) print_memstats_files();
     if (flag_diskstats) print_diskstats_files();
     if (flag_require_perftimer) print_global_perf_counter_files();
     if (flag_rusage){
