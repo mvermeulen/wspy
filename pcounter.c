@@ -92,7 +92,9 @@ void init_global_perf_counters(){
       if (pe.type > 6){
 	pe.exclude_idle = 0;
       }
-      status = perf_event_open(&pe,-1,i,-1,0);	
+      notice("perf_event_open(event=%s,cpu=%d) %x\n",cl->name,i,pe.config);
+      status = perf_event_open(&pe,-1,i,-1,0);
+      notice("   status=%x\n",status);
       if (status == -1){
 	error("unable to open performance counter pid=%d cpu=%d type=%d config=%d errno=%d %s\n",
 	      -1,i,pe.type,pe.config,errno,strerror(errno));
