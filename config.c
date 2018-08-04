@@ -110,6 +110,7 @@ void read_config_file(char *name){
   int len;
   int cmdargcnt = 0;
   char *cmdarg[MAXARGS]; // use stack space for fixed # of args
+  char *strtokptr = NULL;
   
   FILE *fp = open_config_file(name);
   char *p;
@@ -121,15 +122,16 @@ void read_config_file(char *name){
 	cmdarg[0] = "wspy";
 	cmdargcnt++;
 	len = strlen(&buffer[7]);
-	p = strtok(&buffer[7]," \t\n");
+	p = strtok_r(&buffer[7]," \t\n",&strtokptr);
 	while (p){
 	  // check just in case, but don't expect this to happen
 	  if (cmdargcnt>=MAXARGS)
 	    fatal("exceeded argument count for 'command' in config file\n");
 	  cmdarg[cmdargcnt] = strdup(p);
 	  cmdargcnt++;
-	  p = strtok(NULL," \t\n");
+	  p = strtok_r(NULL," \t\n",&strtokptr);
 	}
+	cmdarg[cmdargcnt] = NULL;
 	parse_options(cmdargcnt,cmdarg);
       }
     }
@@ -147,6 +149,7 @@ int parse_options(int argc,char *const argv[]){
   cpu_set_t mask;
   char *p,*arg;
   char *configfile = NULL;
+  char *strtokptr = NULL;
   FILE *fp;
   struct counterinfo *ci;
   static struct option long_options[] = {
@@ -238,7 +241,7 @@ int parse_options(int argc,char *const argv[]){
 	  perf_counters_by_cpu[i] = 0;
       }
       
-      p = strtok(arg,", \t\n");
+      p = strtok_r(arg,", \t\n",&strtokptr);
       while (p){
 	if ((ci = counterinfo_lookup(p,0,0)) == NULL){
 	  warning("unknown performance counter, ignored: %s\n",p);
@@ -259,7 +262,7 @@ int parse_options(int argc,char *const argv[]){
 	    perf_counters_same = cl;
 	  }
 	}
-	p = strtok(NULL," ,\t\n");
+	p = strtok_r(NULL," ,\t\n",&strtokptr);
       }
       break;
     case 26:
@@ -450,8 +453,9 @@ static int parse_cpumask(char *arg,cpu_set_t *mask){
   char *p,*p2;
   int anyset;
   cpu_set_t new_mask;
+  char *strtokptr = NULL;
   CPU_ZERO(&new_mask);
-  p = strtok(buffer,",\n");
+  p = strtok_r(buffer,",\n",&strtokptr);
   while (p){
     if (sscanf(p,"%d",&start) == 1){
       if ((p2 = strchr(p,'-')) &&
@@ -468,7 +472,7 @@ static int parse_cpumask(char *arg,cpu_set_t *mask){
     } else {
       return 1;
     }
-    p = strtok(NULL,",\n");
+    p = strtok_r(NULL,",\n",&strtokptr);
   }
   free(buffer);
   anyset = 0;
@@ -492,13 +496,14 @@ char *lookup_vendor(void){
   FILE *fp;
   char line[1024];
   char *p,*token;
+  char *strtokptr = NULL;
   if (vendor_id == NULL){
     if (fp = fopen("/proc/cpuinfo","r")){
       while (fgets(line,sizeof(line),fp)){
 	if (!strncmp(line,"vendor_id",9)){
 	  p = strchr(line,':');
 	  if ((p = strchr(line,':')) &&
-	      (token = strtok(p+1," \t\n"))){
+	      (token = strtok_r(p+1," \t\n",&strtokptr))){
 	    vendor_id = strdup(token);
 	  }
 	  fclose(fp);
