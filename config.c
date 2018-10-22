@@ -179,6 +179,7 @@ int parse_options(int argc,char *const argv[]){
     { "perfcounter-model", required_argument,0,29 },
     { "error-output",    required_argument, 0, 30 },
     { "output",          required_argument, 0, 31 },
+    { "pid-max",         required_argument, 0, 32 },
     { "debug",           no_argument, 0,       'd' },
     { "root",            required_argument, 0, 'r' },
     { "zip",             required_argument, 0, 'z' },
@@ -328,6 +329,13 @@ int parse_options(int argc,char *const argv[]){
 	outfile = fp;
       }
       break;
+    case 32:
+      if ((sscanf(optarg,"%d",&value) != 1)||(value < 1)){
+	warning("invalid pid_max, ignored: %s\n",optarg);
+      } else {
+	pid_max = value;
+      }
+      break;      
     case 'r':
       flag_cmd = 1;
       command_name = strdup(optarg);

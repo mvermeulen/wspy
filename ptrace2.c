@@ -45,7 +45,7 @@ static pid_t child_pid = 0;
 // This allows for direct quick lookup w/o searching.  Normally this
 // value seems to be 32768 but it can be configured, hence check for
 // a builtin maximum to taking too much memory.
-#define MAX_EXPECTED_PID 100000
+int pid_max = 100000;
 int max_pid = 0;
 static struct processinfo *proc_table = NULL;
 
@@ -57,9 +57,9 @@ void ptrace2_setup(pid_t child){
   int status;
   if (fp = fopen("/proc/sys/kernel/pid_max","r")){
     if (fscanf(fp,"%d\n",&max_pid) == 1){
-      if (max_pid > MAX_EXPECTED_PID){
+      if (max_pid > pid_max){
 	fatal("--processtree-engine ptrace2 expects /proc/sys/kernel/pid_max to be < %d\n"
-	      "\tuse --processtree-engine ptrace instead\n",MAX_EXPECTED_PID);
+	      "\tset --pid-max option or use --processtree-engine ptrace instead\n",pid_max);
       }
     } else {
       fatal("unable to read /proc/sys/kernel/pid_max\n");

@@ -91,6 +91,7 @@ int parse_process_stat(char *line,struct procstat_info *pi);
 void ptrace2_setup(pid_t child);
 void ptrace2_loop(void);
 void ptrace2_finish(void);
+int pid_max;
 
 /* timer.c */
 int timer_interval;
