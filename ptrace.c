@@ -144,13 +144,26 @@ int parse_process_stat(char *line,struct procstat_info *pi){
 // returns pointer to static location
 char *ptrace_read_null_terminated_string(pid_t pid,long addr){
   static char buffer[4096];
-  long bytes;
-  while (1){
-    bytes = ptrace(PTRACE_PEEKDATA,pid,(void *) addr, NULL);
-    notice("bytes read = %x %c%c%c%c\n",bytes,((bytes>>48)&0xff),((bytes>>32)&0xff),((bytes>>16)&0xff),(bytes&0xff));
-    break;
-  }
-  return buffer;
+  char *bufptr = buffer;
+  int i;
+  int len = 0;
+  long int result;
+  do {
+    result = ptrace(PTRACE_PEEKDATA,pid,addr,0);
+    if ((result == -1) && (errno != 0)){
+      return NULL;
+    } else {
+      ((unsigned int *) &bufptr[len])[0] = result;
+    }
+    if (bufptr[len] == '\0' ||
+	bufptr[len+1] == '\0' ||
+	bufptr[len+2] == '\0' ||
+	bufptr[len+3] == '\0')
+      break;
+    len += sizeof(int);
+    addr += sizeof(int);
+  } while (len < 4096);
+  return bufptr;
 }
 
 void ptrace_setup(pid_t child){
@@ -173,7 +186,7 @@ void ptrace_setup(pid_t child){
 		  PTRACE_O_TRACEEXEC |   // exec(2)
 		  PTRACE_O_TRACEEXIT);   // exit(2)
   
-  ptrace(PTRACE_CONT,child_pid,NULL,NULL);
+  ptrace(flag_syscall?PTRACE_SYSCALL:PTRACE_CONT,child_pid,NULL,NULL);
 }
 
 void ptrace_loop(void){
@@ -304,11 +317,18 @@ void ptrace_loop(void){
 	  syscall_entry = (1-syscall_entry);
 	}
 	last_syscall = regs.orig_rax;
+	// Note: Not sure why, but comparing with strace, I notice SYS_open results are off by 1
+	//    Negative values -2 rather than -1 and positive values +1 compared to original.
+	// Use this hack to correct and it now matches strace(1) output.
+	if (regs.orig_rax == SYS_open){
+	  if ((long) regs.rax < 0) regs.rax += 1;
+	  else regs.rax -= 1;
+	}
 	if (syscall_entry){
 	  switch(regs.orig_rax){
 	  case SYS_open:
 	    open_filename = ptrace_read_null_terminated_string(pid,regs.rdi);
-	    debug2("pid %d entry to open syscall (%x)\n",pid,regs.rdx);
+	    debug2("pid %d entry to open syscall (\"%s\")\n",pid,open_filename);
 	    break;
 	  default:
 	    debug2("pid %d entry to syscall %d\n",pid,regs.orig_rax);
@@ -317,7 +337,8 @@ void ptrace_loop(void){
 	} else {
 	  switch(regs.orig_rax){
 	  case SYS_open:
-	    debug2("pid %d exit from open syscall = %ld\n",pid,(long) regs.rax);
+	    open_filename = ptrace_read_null_terminated_string(pid,regs.rdi);	    
+	    debug2("pid %d exit from open syscall (\"%s\") = %ld\n",pid,open_filename,(long) regs.rax);
 	    break;
 	  default:
 	    debug2("pid %d exit from syscall %d = %ld\n",pid,regs.orig_rax,regs.rax);	    
