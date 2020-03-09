@@ -141,6 +141,18 @@ int parse_process_stat(char *line,struct procstat_info *pi){
   return count+2;
 }
 
+// returns pointer to static location
+char *ptrace_read_null_terminated_string(pid_t pid,long addr){
+  static char buffer[4096];
+  long bytes;
+  while (1){
+    bytes = ptrace(PTRACE_PEEKDATA,pid,(void *) addr, NULL);
+    notice("bytes read = %x %c%c%c%c\n",bytes,((bytes>>48)&0xff),((bytes>>32)&0xff),((bytes>>16)&0xff),(bytes&0xff));
+    break;
+  }
+  return buffer;
+}
+
 void ptrace_setup(pid_t child){
   int status;
   
@@ -172,6 +184,7 @@ void ptrace_loop(void){
   char *cmdline;
   char *statline;
   procinfo *pinfo,*child_pinfo;
+  char *open_filename;
   struct user_regs_struct regs;
   struct procstat_info procstat_info;
   static int last_syscall = 0;
@@ -294,7 +307,8 @@ void ptrace_loop(void){
 	if (syscall_entry){
 	  switch(regs.orig_rax){
 	  case SYS_open:
-	    debug2("pid %d entry to open syscall\n",pid);
+	    open_filename = ptrace_read_null_terminated_string(pid,regs.rdi);
+	    debug2("pid %d entry to open syscall (%x)\n",pid,regs.rdx);
 	    break;
 	  default:
 	    debug2("pid %d entry to syscall %d\n",pid,regs.orig_rax);
@@ -306,7 +320,7 @@ void ptrace_loop(void){
 	    debug2("pid %d exit from open syscall = %ld\n",pid,(long) regs.rax);
 	    break;
 	  default:
-	    debug2("pid %d exit from syscall %d\n",pid,regs.orig_rax);	    
+	    debug2("pid %d exit from syscall %d = %ld\n",pid,regs.orig_rax,regs.rax);	    
 	    break;  
 	  }
 	}
