@@ -173,6 +173,7 @@ void ptrace_loop(void){
   struct procstat_info procstat_info;
   while (1){
     pid = wait(&status);
+    debug("event: pid=%d\n",pid);
     if (pid == -1){
       if (errno == ECHILD) break; // no more children to wait
       error("wait returns -1 with errno %d: %s\n",errno,strerror(errno));
@@ -285,6 +286,6 @@ void ptrace_loop(void){
     } else if (WIFCONTINUED(status)){
       debug("pid %d continued\n",pid);      
     }
-    ptrace(PTRACE_CONT,pid,NULL,NULL);
+    ptrace(flag_syscall?PTRACE_SYSCALL:PTRACE_CONT,pid,NULL,NULL);
   }
 }

@@ -34,6 +34,7 @@ int flag_debug = 0;
 int flag_perfctr = 0;
 int flag_proctree = 0;
 int flag_version = 0;
+int flag_syscall = 0;
 int version = 20;
 // possible values for --processtree-engine, one for each
 int mask_processtree_engine_selected = 0;
@@ -153,6 +154,8 @@ int parse_options(int argc,char *const argv[]){
   FILE *fp;
   struct counterinfo *ci;
   static struct option long_options[] = {
+    { "syscall",         no_argument, 0,       4  },
+    { "no-syscall",      no_argument, 0,       5  },    
     { "version",         no_argument, 0,       6  },
     { "show-rusage",     no_argument, 0,       7  },
     { "sum-counters",    no_argument, 0,       8  },
@@ -189,6 +192,8 @@ int parse_options(int argc,char *const argv[]){
   optind = 1; // reset optind so this function can be called more than once
   while ((opt = getopt_long(argc,argv,"+do:r:u:z:?",long_options,NULL)) != -1){
     switch (opt){
+    case 4:  flag_syscall = 1; break;
+    case 5:  flag_syscall = 0; break;
     case 6:  flag_version = 1; break;
     case 7:  flag_rusage = 1; break;
     case 8:  all_counters_same = 1; break;

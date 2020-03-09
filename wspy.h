@@ -173,6 +173,7 @@ int flag_memstats;
 int flag_netstats;
 int flag_perfctr;
 int flag_proctree;
+int flag_syscall;
 int flag_rusage;
 enum perfcounter_model { PM_DEFAULT=0, PM_CORE=1,
 			 PM_PROCESS=2, PM_APPLICATION=3, } perfcounter_model;
