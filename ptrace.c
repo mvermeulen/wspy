@@ -10,6 +10,8 @@
 #include <sys/ptrace.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <sys/user.h>
+#include <sys/syscall.h>
 #include <errno.h>
 #include "wspy.h"
 #include "error.h"
@@ -170,10 +172,13 @@ void ptrace_loop(void){
   char *cmdline;
   char *statline;
   procinfo *pinfo,*child_pinfo;
+  struct user_regs_struct regs;
   struct procstat_info procstat_info;
+  static int last_syscall = 0;
+  static int syscall_entry = 0;
   while (1){
     pid = wait(&status);
-    debug("event: pid=%d\n",pid);
+    debug2("event: pid=%d\n",pid);
     if (pid == -1){
       if (errno == ECHILD) break; // no more children to wait
       error("wait returns -1 with errno %d: %s\n",errno,strerror(errno));
@@ -276,6 +281,36 @@ void ptrace_loop(void){
 	// it can't be delivered to the child
 	debug2("pid %d stopped with signal SIGSTOP\n",pid,WSTOPSIG(status));	
 	ptrace(PTRACE_CONT,pid,NULL,NULL);
+	continue;
+      } else if (WSTOPSIG(status) == (SIGTRAP | 0x80)){
+	// Stopped because of a system call
+	ptrace(PTRACE_GETREGS,pid,0,&regs);
+	if (last_syscall != regs.orig_rax){
+	  syscall_entry = 1;
+	} else {
+	  syscall_entry = (1-syscall_entry);
+	}
+	last_syscall = regs.orig_rax;
+	if (syscall_entry){
+	  switch(regs.orig_rax){
+	  case SYS_open:
+	    debug2("pid %d entry to open syscall\n",pid);
+	    break;
+	  default:
+	    debug2("pid %d entry to syscall %d\n",pid,regs.orig_rax);
+	    break;
+	  }
+	} else {
+	  switch(regs.orig_rax){
+	  case SYS_open:
+	    debug2("pid %d exit from open syscall = %ld\n",pid,(long) regs.rax);
+	    break;
+	  default:
+	    debug2("pid %d exit from syscall %d\n",pid,regs.orig_rax);	    
+	    break;  
+	  }
+	}
+	ptrace(PTRACE_SYSCALL,pid,NULL,NULL,NULL);
 	continue;
       } else {
 	// Other signals should be passed along to the child
