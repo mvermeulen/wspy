@@ -6,6 +6,8 @@
 #include "wspy.h"
 #include "error.h"
 
+void finalize_syscall_open(procinfo *pinfo);
+
 #define HASHBUCKETS 127
 struct proctable_hash_entry {
   procinfo *pinfo;
@@ -54,6 +56,14 @@ procinfo *reverse_siblings(procinfo *p){
   return new_p;
 }
 
+void print_open_info(FILE *output,struct open_file_info *oinfo,int level){
+  int i;
+  for (i=0;i<level;i++){
+    fprintf(output,"  ");
+  }
+  fprintf(output,"        >open: %3d %s\n",oinfo->result,oinfo->filename);
+}
+
 static int clocks_per_second = 0;
 void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
   int i;
@@ -65,6 +75,7 @@ void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
   unsigned long cpu_cycles;
   double frontend_bound,retiring,speculation,backend_bound;
   char *vendor;
+  struct open_file_info *oinfo;
   vendor = lookup_vendor();
   if (pinfo == NULL) return;
   if (level > 100) return;
@@ -145,6 +156,9 @@ void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime){
   fprintf(output," pcount=%d",pinfo->pcount);
   fprintf(output,"\n");
   pinfo->printed = 1;
+  for (oinfo = pinfo->syscall_open;oinfo;oinfo = oinfo->next){
+    print_open_info(output,oinfo,level);
+  }
   for (child = pinfo->child;child;child = child->sibling){
     print_process_tree(output,child,level+1,basetime);
   }
@@ -230,6 +244,8 @@ void finalize_process_tree(void){
   int i;
   struct proctable_hash_entry *hash;
 
+
+
   // fix the sibling orders
   for (i=0;i<HASHBUCKETS;i++){
     for (hash = process_table[i];hash;hash = hash->next){
@@ -240,6 +256,8 @@ void finalize_process_tree(void){
 	hash->pinfo->child = reverse_siblings(hash->pinfo->child);
 	hash->pinfo->sibling_order = 1;
       }
+      // fix up open counts
+      finalize_syscall_open(hash->pinfo);
     }
   }
 }
@@ -276,4 +294,25 @@ void sum_counts_processes(procinfo *pinfo){
     for (i=0;i<NUM_COUNTERS_PER_PROCESS;i++)
       pinfo->total_counter[i] = total_counter[i];
   }
+}
+
+// builds a linked list where "syscall_open" always points to the last
+void add_process_syscall_open(procinfo *pinfo,char *filename,int result){
+  struct open_file_info *fi = calloc(1,sizeof(struct open_file_info));
+  fi->filename = strdup(filename);
+  fi->result = result;
+  fi->prev = pinfo->syscall_open;
+  if (pinfo->syscall_open){
+    pinfo->syscall_open->next = fi;
+  }
+  pinfo->syscall_open = fi;
+}
+
+// update the linked list so "syscall_open" now points to the first
+void finalize_syscall_open(procinfo *pinfo){
+  struct open_file_info *fi = pinfo->syscall_open;
+  if (fi == NULL) return;
+  // run until we have no previous entries
+  while (fi->prev) fi = fi->prev;
+  pinfo->syscall_open = fi;
 }

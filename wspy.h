@@ -17,6 +17,13 @@ struct process_counter_info {
   unsigned long perf_counter[NUM_COUNTERS_PER_PROCESS];
 };
 
+struct open_file_info {
+  int result;
+  char *filename;
+  struct open_file_info *next;
+  struct open_file_info *prev;
+};
+
 struct process_info {
   pid_t pid;
   pid_t ppid;
@@ -42,12 +49,14 @@ struct process_info {
   double time_start,time_finish;
   unsigned long utime,stime,total_utime,total_stime,vsize,rss;
   unsigned long cutime,cstime;
+  struct open_file_info *syscall_open;
   struct process_info *parent;
   struct process_info *sibling;
   struct process_info *child;
 };
 typedef struct process_info procinfo;
 procinfo *lookup_process_info(pid_t pid,int insert);
+void add_process_syscall_open(procinfo *pinfo,char *filename,int result);
 void print_process_tree(FILE *output,procinfo *pinfo,int level,double basetime);
 void print_all_process_trees(FILE *output,double basetime,char *name);
 int print_all_processes_csv(FILE *output);

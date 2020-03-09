@@ -154,8 +154,8 @@ int parse_options(int argc,char *const argv[]){
   FILE *fp;
   struct counterinfo *ci;
   static struct option long_options[] = {
-    { "syscall",         no_argument, 0,       4  },
-    { "no-syscall",      no_argument, 0,       5  },    
+    { "open",         no_argument, 0,       4  },
+    { "no-open",      no_argument, 0,       5  },    
     { "version",         no_argument, 0,       6  },
     { "show-rusage",     no_argument, 0,       7  },
     { "sum-counters",    no_argument, 0,       8  },

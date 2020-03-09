@@ -337,7 +337,9 @@ void ptrace_loop(void){
 	} else {
 	  switch(regs.orig_rax){
 	  case SYS_open:
-	    open_filename = ptrace_read_null_terminated_string(pid,regs.rdi);	    
+	    open_filename = ptrace_read_null_terminated_string(pid,regs.rdi);
+	    pinfo = lookup_process_info(pid,1);
+	    add_process_syscall_open(pinfo,open_filename,regs.rax);
 	    debug2("pid %d exit from open syscall (\"%s\") = %ld\n",pid,open_filename,(long) regs.rax);
 	    break;
 	  default:
