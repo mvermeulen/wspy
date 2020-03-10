@@ -696,7 +696,7 @@ void print_bmetrics(struct process_info *pi){
 int main(int argc,char *const argv[],char *const envp[]){
   int i;
   if (parse_options(argc,argv)){
-    fatal("usage: %s [-bm][-f filename][-F format][-p pid]\n"
+    fatal("usage: %s [-bmo][-f filename][-F format][-p pid]\n"
 	  "\t-f sets input filename (default processtree.csv)\n"
 	  "\t-F is a string of format specifiers:\n"
 	  "\t   c - core last run\n"
@@ -705,7 +705,6 @@ int main(int argc,char *const argv[],char *const envp[]){
 	  "\t   I - cummulative IPC for process tree\n"
 	  "\t   m - On_CPU and On_Core metrics\n"
 	  "\t   n - number of processes in tree\n"
-	  "\t   o - open file table\n"
 	  "\t   p - counters for this process\n"
 	  "\t   P - counters for the tree\n"
 	  "\t   t - time: elapsed, start and finish\n"
@@ -713,7 +712,8 @@ int main(int argc,char *const argv[],char *const envp[]){
 	  "\t   U - total user and system times\n"
 	  "\t   v - virtual memory sizes\n"
 	  "\t-m provides summary metrics\n"
-	  "\t-b provides backend metrics\n"	  
+	  "\t-b provides backend metrics\n"
+	  "\t-o prints table of open(2) calls\n"
 	  "\t-p selects pid to print\n"
 	  "\t-s adjust for single-threaded workloads\n"
 	  ,argv[0]);
