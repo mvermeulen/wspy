@@ -317,13 +317,6 @@ void ptrace_loop(void){
 	  syscall_entry = (1-syscall_entry);
 	}
 	last_syscall = regs.orig_rax;
-	// Note: Not sure why, but comparing with strace, I notice SYS_open results are off by 1
-	//    Negative values -2 rather than -1 and positive values +1 compared to original.
-	// Use this hack to correct and it now matches strace(1) output.
-	if (regs.orig_rax == SYS_open){
-	  if ((long) regs.rax < 0) regs.rax += 1;
-	  else regs.rax -= 1;
-	}
 	if (syscall_entry){
 	  switch(regs.orig_rax){
 	  case SYS_open:

@@ -20,6 +20,8 @@
 #include <sys/wait.h>
 #include <sys/ptrace.h>
 #include <sys/resource.h>
+#include <sys/user.h>
+#include <sys/syscall.h>
 #include <errno.h>
 #include "wspy.h"
 #include "error.h"
@@ -39,6 +41,7 @@ struct processinfo {
 
 static void start_pid(pid_t pid,pid_t parent,int root);
 static void stop_pid(pid_t pid);
+char *ptrace2_read_null_terminated_string(pid_t pid,long addr);
 
 static pid_t child_pid = 0;
 // Size of the table is same as the maximum number of processes.
@@ -50,6 +53,7 @@ int max_pid = 0;
 static struct processinfo *proc_table = NULL;
 
 FILE *process_csvfile = NULL;
+FILE *open_csvfile = NULL;
 int process_csvfile_num = 0;
 
 void ptrace2_setup(pid_t child){
@@ -76,6 +80,13 @@ void ptrace2_setup(pid_t child){
   // header row, must match against "process-csv" program
   fprintf(process_csvfile,"#version %d\n",version);
   fprintf(process_csvfile,"#pid,ppid,filename,start,finish,utime_sec,utime_usec,stime_sec,stime_usec,maxrss,minflt,majflt,inblock,oublock,msgsnd,msgrcv,nsignals,nvcsw,nivcsw,num_counters\n");
+  if (flag_syscall){
+    if ((open_csvfile = fopen("openfile.csv","w")) == NULL){
+      fatal("unable to open openfile.csv\n");      
+    }
+    fprintf(open_csvfile,"#pid,time,status,filename\n");
+  }
+  
 
   child_pid = child;
   debug("ptrace_setup\n");
@@ -94,7 +105,7 @@ void ptrace2_setup(pid_t child){
 		  PTRACE_O_TRACEEXIT // exit(0)
 		  );
   
-  ptrace(PTRACE_CONT,child_pid,NULL,NULL);
+  ptrace(flag_syscall?PTRACE_SYSCALL:PTRACE_CONT,child_pid,NULL,NULL);
   start_pid(child_pid,getpid(),1);
 }
 
@@ -105,6 +116,11 @@ void ptrace2_loop(void){
   long data;
   int cloned;
   struct rusage rusage;
+  char *open_filename;
+  double now;
+  struct user_regs_struct regs;
+  static int last_syscall = 0;
+  static int syscall_entry = 0;
 
   while (1){
     pid = wait4(-1,&status,0,&rusage);
@@ -163,6 +179,21 @@ void ptrace2_loop(void){
 	}
 	ptrace(PTRACE_CONT,pid,NULL,NULL);
 	continue;
+      } else if (WSTOPSIG(status) == (SIGTRAP | 0x80)){
+	// stopped because of a system call
+	ptrace(PTRACE_GETREGS,pid,0,&regs);
+	if (last_syscall != regs.orig_rax){
+	  syscall_entry = 1;
+	} else {
+	  syscall_entry = (1-syscall_entry);
+	}
+	last_syscall = regs.orig_rax;
+	if ((syscall_entry == 0) && (last_syscall == SYS_open) && (open_csvfile != NULL)){
+	  read_uptime(&now);
+	  open_filename = ptrace2_read_null_terminated_string(pid,regs.rdi);
+	  fprintf(open_csvfile,"%d,%6.5f,%lld,%s\n",pid,now,regs.rax,open_filename);
+	}
+	ptrace(PTRACE_SYSCALL,pid,NULL,NULL,NULL);
       } else {
 	// pass other signals to the child
 	ptrace(PTRACE_CONT,pid,NULL,WSTOPSIG(status));
@@ -171,13 +202,15 @@ void ptrace2_loop(void){
       // nothing here
     }
     // let the child go and get the next event
-    ptrace(PTRACE_CONT,pid,NULL,NULL);
+    ptrace(flag_syscall?PTRACE_SYSCALL:PTRACE_CONT,pid,NULL,NULL);
   }
 }
 
 void ptrace2_finish(void){
   FILE *fp;
   fclose(process_csvfile);
+  if (open_csvfile != NULL)
+    fclose(open_csvfile);
 }
 
 void cleanup_process_table_entry(pid_t pid){
@@ -254,4 +287,29 @@ static void stop_pid(pid_t pid){
   if (proc_table[pid].comm) free(proc_table[pid].comm);
   memset(&proc_table[pid],0,sizeof(struct processinfo));
   process_csvfile_num++;
+}
+
+// returns pointer to static location
+char *ptrace2_read_null_terminated_string(pid_t pid,long addr){
+  static char buffer[4096];
+  char *bufptr = buffer;
+  int i;
+  int len = 0;
+  long int result;
+  do {
+    result = ptrace(PTRACE_PEEKDATA,pid,addr,0);
+    if ((result == -1) && (errno != 0)){
+      return NULL;
+    } else {
+      ((unsigned int *) &bufptr[len])[0] = result;
+    }
+    if (bufptr[len] == '\0' ||
+	bufptr[len+1] == '\0' ||
+	bufptr[len+2] == '\0' ||
+	bufptr[len+3] == '\0')
+      break;
+    len += sizeof(int);
+    addr += sizeof(int);
+  } while (len < 4096);
+  return bufptr;
 }
