@@ -14,11 +14,13 @@
 
 char *input_filename = "processtree.csv";
 char *input_filename2 = "processtree2.csv";
+char *open_filename = "openfile.csv";
 char *format_specifier = 0;
 int mflag = 0;
 int sflag = 0;
 int bflag = 0;
 int fflag = 0;
+int oflag = 0;
 int pid_root = -1;
 static int clocks_per_second = 0;
 static int num_procs = 0;
@@ -26,7 +28,7 @@ static int version = 0;
 
 int parse_options(int argc,char *const argv[]){
   int opt;
-  while ((opt = getopt(argc,argv,"bf:F:mp:s")) != -1){
+  while ((opt = getopt(argc,argv,"bf:F:mop:s")) != -1){
     switch(opt){
     case 'b':
       bflag = 1;
@@ -40,6 +42,9 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 'm':
       mflag = 1;
+      break;
+    case 'o':
+      oflag = 1;
       break;
     case 'p':
       if (sscanf(optarg,"%d",&pid_root) != 1){
@@ -415,6 +420,46 @@ char *lookup_vendor(void){
   return vendor_id;
 }
 
+void print_openinfo(double basetime){
+  FILE *fp;
+  char line[1024];
+  char filename[1024];
+  int lineno = 0;
+  int pid,status;
+  double start;
+  char *token;
+  fp = fopen(open_filename,"r");
+  if (fp == NULL) return;
+  while (fgets(line,sizeof(line),fp) != NULL){
+    lineno++;
+    if (line[0] == '#'){
+      printf("\nopen(2) calls\n");
+      continue;
+    }
+    token = strtok(line,",\n"); // pid
+    if (token){
+      sscanf(token,"%d",&pid);
+      printf("%d",pid);
+    }
+    token = strtok(NULL,",\n"); // time
+    if (token){
+      sscanf(token,"%lf",&start);
+      printf("\t%5.2f",start-basetime);
+    }
+    token = strtok(NULL,",\n"); // status
+    if (token){
+      sscanf(token,"%d",&status);
+      printf("\t%d",status);
+    }
+    token = strtok(NULL,"\n"); // filename
+    if (token){
+      sscanf(token,"%s",filename);
+      printf(" %s",filename);
+    }
+    printf("\n");
+  }
+}
+
 
 void print_procinfo(struct process_info *pi,int print_children,int indent,double basetime){
   struct process_info *child;
@@ -660,6 +705,7 @@ int main(int argc,char *const argv[],char *const envp[]){
 	  "\t   I - cummulative IPC for process tree\n"
 	  "\t   m - On_CPU and On_Core metrics\n"
 	  "\t   n - number of processes in tree\n"
+	  "\t   o - open file table\n"
 	  "\t   p - counters for this process\n"
 	  "\t   P - counters for the tree\n"
 	  "\t   t - time: elapsed, start and finish\n"
@@ -724,6 +770,10 @@ int main(int argc,char *const argv[],char *const envp[]){
 	}
       }
     }
+  }
+
+  if (oflag){
+    print_openinfo(process_table[0].start);
   }
   return 0;
 }
