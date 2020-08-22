@@ -270,7 +270,7 @@ int main(int argc,char *const argv[],char *const envp[]){
 
   if (flag_zip){
     FILE *fp;
-    char buffer[1024],cmd[1024];
+    char buffer[1024],cmd[1024+128];
     char basezvalue[1024];
     char tmpdir[] = "/tmp/wspy.XXXXXX";
     char *newdir = mkdtemp(tmpdir);
