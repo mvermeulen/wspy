@@ -26,6 +26,8 @@
 #include "wspy.h"
 #include "error.h"
 
+extern int pid_max;
+
 struct processinfo {
   pid_t pid,ppid;
   unsigned int cloned           : 1;

@@ -8,6 +8,9 @@
 #include <errno.h>
 #include "wspy.h"
 #include "error.h"
+
+extern pid_t tracecmd_pid;
+
 char *tracecmdline[] = {
   "trace-cmd",
   "record",

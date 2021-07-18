@@ -18,6 +18,7 @@
 
 int timer_fd;
 int timer_interval = 1000;
+int time_cmd_pipe[2];
 FILE *cpuinfo = NULL;
 double now = 0;
 

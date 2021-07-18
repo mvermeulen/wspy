@@ -21,6 +21,10 @@
 #include "wspy.h"
 #include "error.h"
 
+FILE *outfile;
+int num_procs;
+pthread_mutex_t event_lock;
+
 pid_t child_pid = 0;
 procinfo *child_procinfo = NULL;
 pthread_t ftrace_thread;

@@ -5,9 +5,9 @@
 #include <sched.h>
 
 /* wspy.c */
-FILE *outfile;
-int num_procs;
-pthread_mutex_t event_lock;
+extern FILE *outfile;
+extern int num_procs;
+extern pthread_mutex_t event_lock;
 
 /* procinfo.c */
 #define NUM_COUNTERS_PER_PROCESS 6 // for now just instructions & cycles
@@ -63,12 +63,12 @@ int print_all_processes_csv(FILE *output);
 void finalize_process_tree(void);
 
 /* ftrace.c */
-double first_ftrace_time;
-int ftrace_cmd_pipe[2]; // command pipe
+extern double first_ftrace_time;
+extern int ftrace_cmd_pipe[2]; // command pipe
 void *ftrace_start(void *arg);
 
 /* tracecmd.c */
-pid_t tracecmd_pid;
+extern pid_t tracecmd_pid;
 void *tracecmd_start(void *arg);
 
 /* ptrace.c */
@@ -100,11 +100,11 @@ int parse_process_stat(char *line,struct procstat_info *pi);
 void ptrace2_setup(pid_t child);
 void ptrace2_loop(void);
 void ptrace2_finish(void);
-int pid_max;
+extern int pid_max;
 
 /* timer.c */
-int timer_interval;
-int timer_cmd_pipe[2]; // command pipe
+extern int timer_interval;
+extern int timer_cmd_pipe[2]; // command pipe
 void *timer_start(void *arg);
 void read_uptime(double *td);
 
@@ -142,8 +142,8 @@ struct counterinfo {
   unsigned int is_multiple : 1;
   unsigned int scale;
 };
-struct counterinfo *countertable;
-int num_countertable;
+extern struct counterinfo *countertable;
+extern int num_countertable;
 void init_global_perf_counters(void);
 void read_global_perf_counters(double time);
 void print_global_perf_counters(void);
@@ -164,52 +164,53 @@ struct counterlist {
   struct counterlist *next;
 };
 #define MAXCPU 16
-int all_counters_same;
-struct counterlist *perf_counters_by_cpu[MAXCPU];
-struct counterlist *perf_counters_same;
-struct counterlist *perf_counters_by_process[NUM_COUNTERS_PER_PROCESS];
+extern int all_counters_same;
+extern struct counterlist *perf_counters_by_cpu[MAXCPU];
+extern struct counterlist *perf_counters_same;
+extern struct counterlist *perf_counters_by_process[NUM_COUNTERS_PER_PROCESS];
 
 /* config.c */
-int command_line_argc;
-char **command_line_argv;
-int version;
-int flag_cmd;
-int flag_cpustats;
-int flag_debug;
-int flag_version;
-int flag_diskstats;
-int flag_memstats;
-int flag_netstats;
-int flag_perfctr;
-int flag_proctree;
-int flag_syscall;
-int flag_rusage;
+extern int command_line_argc;
+extern char **command_line_argv;
+extern int version;
+extern int flag_cmd;
+extern int flag_cpustats;
+extern int flag_debug;
+extern int flag_version;
+extern int flag_diskstats;
+extern int flag_memstats;
+extern int flag_netstats;
+extern int flag_perfctr;
+extern int flag_proctree;
+extern int flag_syscall;
+extern int flag_rusage;
 enum perfcounter_model { PM_DEFAULT=0, PM_CORE=1,
-			 PM_PROCESS=2, PM_APPLICATION=3, } perfcounter_model;
-int flag_showcounters;
+  PM_PROCESS=2, PM_APPLICATION=3, };
+extern enum perfcounter_model perfcounter_model;
+extern int flag_showcounters;
 // four possible types of processtree engines
-int mask_processtree_engine_selected;
+extern int mask_processtree_engine_selected;
 #define PROCESSTREE_FTRACE   0x1   // parse results of ftrace into in memory tree
 #define PROCESSTREE_TRACECMD 0x2   // external invoke trace-cmd to create *.dat file
 #define PROCESSTREE_PTRACE1  0x4   // get ptrace events into in memory tree
 #define PROCESSTREE_PTRACE2  0x8   // get ptrace events into dump of processtree.csv file
-int flag_require_ftrace;
-int flag_require_ptrace;
-int flag_require_ptrace2;
-int flag_require_tracecmd;
+extern int flag_require_ftrace;
+extern int flag_require_ptrace;
+extern int flag_require_ptrace2;
+extern int flag_require_tracecmd;
 
-int flag_require_timer;
-int flag_require_counters;
-int flag_require_perftimer;
-int flag_require_perftree;
-int flag_require_perfapp;
-int flag_setcpumask;
-int flag_set_uid;
-int flag_zip;
-int uid_value;
-cpu_set_t cpumask;
-char *zip_archive_name;
-char *command_name;
+extern int flag_require_timer;
+extern int flag_require_counters;
+extern int flag_require_perftimer;
+extern int flag_require_perftree;
+extern int flag_require_perfapp;
+extern int flag_setcpumask;
+extern int flag_set_uid;
+extern int flag_zip;
+extern int uid_value;
+extern cpu_set_t cpumask;
+extern char *zip_archive_name;
+extern char *command_name;
 void read_config_file(char *name);
 int parse_options(int argc,char *const argv[]);
 char *lookup_vendor(void);

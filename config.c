@@ -46,14 +46,19 @@ int flag_require_tracecmd = 0;
 int flag_require_timer = 0;
 int flag_require_counters = 0;
 int flag_require_perftree = 0;
+int flag_require_perfapp = 0;
 int flag_require_perftimer = 0;
 int flag_set_cpumask = 0;
 int flag_rusage = 0;
 int flag_zip = 0;
 int uid_value;
+int flag_showcounters = 0;
 char *zip_archive_name = NULL;
 char *command_name = NULL;
 char *vendor = NULL;
+enum perfcounter_model perfcounter_model;
+int flag_setcpumask = 0;
+cpu_set_t cpumask;
 
 /* Opens config file, if present and returns file pointer, NULL if not found */
 FILE *open_config_file(char *name){

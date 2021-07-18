@@ -16,6 +16,9 @@
 #include "wspy.h"
 #include "error.h"
 
+double first_ftrace_time;
+int ftrade_cmd_pipe[2];
+
 #define TRACEFS "/sys/kernel/debug/tracing"
 int ftrace_cmd_pipe[2]; // command pipe
 int timer_cmd_pipe[2];  // command pipe
