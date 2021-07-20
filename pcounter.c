@@ -586,7 +586,7 @@ void add_counterinfo(char *dir,char *name,char *group,int type){
 	  // So far only implemented:
 	  //   Intel: i7-4770 and C2750
 	  //   AMD:   A10-7850 and A4-5000
-	  warning("unimplemented field: %s\n",field);
+	  warning("unimplemented field: %s for %s/%s\n",field,dir,name);
 	}
       }
     }
