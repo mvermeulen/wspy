@@ -163,7 +163,7 @@ struct counterlist {
   struct counterinfo *ci;
   struct counterlist *next;
 };
-#define MAXCPU 16
+#define MAXCPU 32
 extern int all_counters_same;
 extern struct counterlist *perf_counters_by_cpu[MAXCPU];
 extern struct counterlist *perf_counters_same;
