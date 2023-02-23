@@ -104,6 +104,10 @@ int main(int argc,char *const argv[],char *const envp[]){
 
   getcwd(original_dir,sizeof(original_dir));
   num_procs = get_nprocs();
+  if (num_procs > MAXCPU){
+    fatal("wspy build for %d cores, but system has %d\n",MAXCPU,num_procs);
+  }
+  
   if (pthread_mutex_init(&event_lock,NULL) != 0)
     error("mutex lock creation failed\n");
 
