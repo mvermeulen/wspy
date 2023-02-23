@@ -16,6 +16,7 @@
 #include <errno.h>
 #include "error.h"
 
+extern char *lookup_vendor();
 int num_procs;
 int cflag = 0;
 int oflag = 0;
@@ -49,7 +50,16 @@ struct counterdef {
   unsigned int scale;
   unsigned int use;
 };
-struct counterdef counters[] = {
+struct counterdef *counters;
+int num_counters = 0;
+
+struct counterdef amd_counters[] = {
+  // name                                event umask cmask any scale use
+  { "instructions",                      0xc0, 0,    0,    0,  0,    USE_IPC },
+  { "cpu-cycles",                        0x76, 0,    0,    0,  0,    USE_IPC },				    
+};
+
+struct counterdef intel_counters[] = {
   // name                                event umask cmask any scale use
   { "instructions",                      0xc0, 0,    0,    0,  0,    USE_IPC },
   { "cpu-cycles",                        0x3c, 0,    0,    0,  0,    USE_IPC },
@@ -232,6 +242,7 @@ void setup_counters(void){
   unsigned int mask = 0;
   int i,j,index,count,count2;
   int status;
+  char *vendor;
   struct perf_event_attr pe;
   // set the mask
   switch(area){
@@ -270,9 +281,19 @@ void setup_counters(void){
     mask = USE_IPC;
     break;
   }
+  //
+  vendor = lookup_vendor();
+  if (vendor && !strcmp(vendor,"GenuineIntel")){
+    counters = intel_counters;
+    num_counters = sizeof(intel_counters)/sizeof(intel_counters[0]);
+  } else if (vendor && !strcmp(vendor,"AuthenticAMD")){
+    counters = amd_counters;
+    num_counters = sizeof(amd_counters)/sizeof(amd_counters[0]);    
+  }
+  
   // count the # of performance counters
   count = 0;
-  for (i=0;i<sizeof(counters)/sizeof(counters[0]);i++){
+  for (i=0;i<num_counters;i++){
     if (mask & counters[i].use) count++;
   }
   // allocate space for the counters
@@ -282,7 +303,7 @@ void setup_counters(void){
 
   // collect together the counter definitions for each core
   count2 = 0;
-  for (i=0;i<sizeof(counters)/sizeof(counters[0]);i++){
+  for (i=0;i<num_counters;i++){
     if (mask & counters[i].use){
       for (j=0;j<num_procs;j++){
 	index = j*count + count2;

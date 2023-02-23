@@ -1,8 +1,8 @@
 CC=gcc
 CFLAGS=-g
 PROG = wspy
-SRCS = wspy.c ftrace.c ptrace.c ptrace2.c tracecmd.c proctable.c timer.c cpustats.c diskstats.c memstats.c netstats.c pcounter.c config.c error.c
-OBJS = wspy.o ftrace.o ptrace.o ptrace2.o tracecmd.o proctable.o timer.o cpustats.o diskstats.o memstats.o netstats.o pcounter.o config.c error.o
+SRCS = wspy.c ftrace.c ptrace.c ptrace2.c tracecmd.c proctable.c timer.c cpustats.c diskstats.c memstats.c netstats.c pcounter.c config.c error.c vendor.c
+OBJS = wspy.o ftrace.o ptrace.o ptrace2.o tracecmd.o proctable.o timer.o cpustats.o diskstats.o memstats.o netstats.o pcounter.o config.c error.o vendor.o
 LIBS = -lpthread -lm
 
 all:	wspy process-csv topdown
@@ -13,8 +13,8 @@ wspy:	$(OBJS)
 process-csv:	process_csv.o error.o
 	$(CC) -o process-csv $(CFLAGS) process_csv.o error.o
 
-topdown:	topdown.o error.o
-	$(CC) -o topdown $(CFLAGS) topdown.o error.o
+topdown:	topdown.o error.o vendor.o
+	$(CC) -o topdown $(CFLAGS) topdown.o vendor.o error.o
 
 process-csv.o:	process_csv.c
 	$(CC) -c $(CFLAGS) process_csv.c

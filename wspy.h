@@ -214,3 +214,6 @@ extern char *command_name;
 void read_config_file(char *name);
 int parse_options(int argc,char *const argv[]);
 char *lookup_vendor(void);
+
+/* vendor.c */
+char *lookup_vendor(void);
