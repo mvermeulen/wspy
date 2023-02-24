@@ -56,7 +56,7 @@ int num_counters = 0;
 struct counterdef amd_counters[] = {
   // name                                event umask cmask any scale use
   { "instructions",                      0xc0, 0,    0,    0,  0,    USE_IPC },
-  { "cpu-cycles",                        0x76, 0,    0,    0,  0,    USE_IPC },				    
+  { "cpu-cycles",                        0x76, 0,    0,    0,  0,    USE_IPC },
 };
 
 struct counterdef intel_counters[] = {
@@ -238,11 +238,10 @@ int perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
   return ret;
 }
 
-void setup_counters(void){
+void setup_counters(char *vendor){
   unsigned int mask = 0;
   int i,j,index,count,count2;
   int status;
-  char *vendor;
   struct perf_event_attr pe;
   // set the mask
   switch(area){
@@ -282,7 +281,6 @@ void setup_counters(void){
     break;
   }
   //
-  vendor = lookup_vendor();
   if (vendor && !strcmp(vendor,"GenuineIntel")){
     counters = intel_counters;
     num_counters = sizeof(intel_counters)/sizeof(intel_counters[0]);
@@ -394,36 +392,40 @@ void print_usage(struct rusage *rusage){
   fprintf(outfile,"onblock        %lu\n",rusage->ru_oublock);  
 }
 
-void print_ipc(void){
+void print_ipc(int ncpu){
   int i;
-  unsigned long int instructions[4];
-  unsigned long int cpu_cycles[4];
+  unsigned long int instructions[ncpu/2];
+  unsigned long int cpu_cycles[ncpu/2];
   unsigned long int total_instructions = 0;
   unsigned long int total_cpu_cycles = 0;
-  for (i=0;i<4;i++){
+  // Note: Assumes two hyperthreads per core with numbering of core 0 first and core 1 second
+  for (i=0;i<ncpu/2;i++){
     instructions[i] = 0;
     cpu_cycles[i] = 0;
   }
   for (i=0;i<num_total_counters;i++){
     if (!strcmp(app_counters[i].definition->name,"instructions")){
-      instructions[app_counters[i].corenum % 4] += app_counters[i].value;
+      instructions[app_counters[i].corenum % 2] += app_counters[i].value;
       total_instructions += app_counters[i].value;
     } else if (!strcmp(app_counters[i].definition->name,"cpu-cycles")){
-      cpu_cycles[app_counters[i].corenum % 4] += app_counters[i].value;
+      cpu_cycles[app_counters[i].corenum % 2] += app_counters[i].value;
       total_cpu_cycles += app_counters[i].value;
     }
   }
   fprintf(outfile,"IPC\t%4.3f\n",
 	  (double) total_instructions / total_cpu_cycles);
   if (cflag){
-    for (i=0;i<4;i++){
+    for (i=0;i<ncpu%2;i++){
       fprintf(outfile,"%d.IPC\t%4.3f\n",i,
 	      (double) instructions[i] / cpu_cycles[i]);
     }
   }
 }
 
-void print_topdown1(void){
+void print_amd_topdown(void){
+}
+
+void print_intel_topdown(void){
   int i;
   unsigned long int topdown_total_slots[4];
   unsigned long int topdown_fetch_bubbles[4];
@@ -678,7 +680,9 @@ int main(int argc,char *const argv[],char *const envp[]){
 	    ,argv[0]);
   }
 
-  setup_counters();
+  char *vendor = lookup_vendor();
+
+  setup_counters(vendor);
 
   start_counters();
 
@@ -698,9 +702,13 @@ int main(int argc,char *const argv[],char *const envp[]){
   //  dump_counters();
 
   if (area == AREA_IPC){
-    print_ipc();
+    print_ipc(num_procs);
   } else {
-    print_topdown1();
+    if (vendor && !strcmp(vendor("GenuineIntel"))){
+      print_intel_topdown();
+    } else if (vendor && !strcmp(vendor("AuthenticAMD"))){
+      print_amd_topdown();
+    }
   }
   
   if (oflag) fclose(outfile);

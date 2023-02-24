@@ -46,3 +46,4 @@ netstats.o: wspy.h error.h
 pcounter.o: wspy.h error.h
 config.o: wspy.h error.h
 error.o: error.h
+vendor.o: wspy.h
