@@ -405,17 +405,17 @@ void print_ipc(int ncpu){
   }
   for (i=0;i<num_total_counters;i++){
     if (!strcmp(app_counters[i].definition->name,"instructions")){
-      instructions[app_counters[i].corenum % 2] += app_counters[i].value;
+      instructions[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_instructions += app_counters[i].value;
     } else if (!strcmp(app_counters[i].definition->name,"cpu-cycles")){
-      cpu_cycles[app_counters[i].corenum % 2] += app_counters[i].value;
+      cpu_cycles[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_cpu_cycles += app_counters[i].value;
     }
   }
   fprintf(outfile,"IPC\t%4.3f\n",
 	  (double) total_instructions / total_cpu_cycles);
   if (cflag){
-    for (i=0;i<ncpu%2;i++){
+    for (i=0;i<ncpu/2;i++){
       fprintf(outfile,"%d.IPC\t%4.3f\n",i,
 	      (double) instructions[i] / cpu_cycles[i]);
     }
@@ -425,19 +425,20 @@ void print_ipc(int ncpu){
 void print_amd_topdown(void){
 }
 
-void print_intel_topdown(void){
-  int i;
-  unsigned long int topdown_total_slots[4];
-  unsigned long int topdown_fetch_bubbles[4];
-  unsigned long int topdown_recovery_bubbles[4];
-  unsigned long int topdown_slots_issued[4];
-  unsigned long int topdown_slots_retired[4];
-  unsigned long int resource_stalls_sb[4];
-  unsigned long int stalls_ldm_pending[4];
-  unsigned long int uops0_delivered[4],uops1_delivered[4],uops2_delivered[4],uops3_delivered[4];
-  unsigned long int branch_misses[4],machine_clears[4],ms_uops[4];
-  unsigned long int icache_stall[4],itlb_stlb_hit[4],itlb_walk_duration[4],dsb_uops[4];
-  unsigned long int l2_refs[4],l2_misses[4],l3_refs[4],l3_misses[4];
+void print_intel_topdown(int ncpu){
+  // Note: Assumes two hyperthreads per core with numbering of core 0 first and core 1 second  
+  int i;  
+  unsigned long int topdown_total_slots[ncpu/2];
+  unsigned long int topdown_fetch_bubbles[ncpu/2];
+  unsigned long int topdown_recovery_bubbles[ncpu/2];
+  unsigned long int topdown_slots_issued[ncpu/2];
+  unsigned long int topdown_slots_retired[ncpu/2];
+  unsigned long int resource_stalls_sb[ncpu/2];
+  unsigned long int stalls_ldm_pending[ncpu/2];
+  unsigned long int uops0_delivered[ncpu/2],uops1_delivered[ncpu/2],uops2_delivered[ncpu/2],uops3_delivered[ncpu/2];
+  unsigned long int branch_misses[ncpu/2],machine_clears[ncpu/2],ms_uops[ncpu/2];
+  unsigned long int icache_stall[ncpu/2],itlb_stlb_hit[ncpu/2],itlb_walk_duration[ncpu/2],dsb_uops[ncpu/2];
+  unsigned long int l2_refs[ncpu/2],l2_misses[ncpu/2],l3_refs[ncpu/2],l3_misses[ncpu/2];
   unsigned long int total_topdown_total_slots=0,total_topdown_fetch_bubbles=0,
     total_topdown_recovery_bubbles=0,total_topdown_slots_issued=0,total_topdown_slots_retired=0,
     total_resource_stalls_sb=0,total_stalls_ldm_pending=0,
@@ -446,7 +447,7 @@ void print_intel_topdown(void){
     total_icache_stall=0,total_itlb_stlb_hit=0,total_itlb_walk_duration=0,total_dsb_uops = 0,
     total_l2_refs=0,total_l2_misses=0,total_l3_refs=0,total_l3_misses=0;
   double frontend_bound,retiring,speculation,backend_bound;
-  for (i=0;i<4;i++){
+  for (i=0;i<ncpu/2;i++){
     topdown_total_slots[i] = 0;
     topdown_fetch_bubbles[i] = 0;
     topdown_recovery_bubbles[i] = 0;
@@ -469,70 +470,70 @@ void print_intel_topdown(void){
   
   for (i=0;i<num_total_counters;i++){
     if (!strcmp(app_counters[i].definition->name,"topdown-total-slots")){
-      topdown_total_slots[app_counters[i].corenum % 4] += app_counters[i].value;
+      topdown_total_slots[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_topdown_total_slots += app_counters[i].value;
     } else if (!strcmp(app_counters[i].definition->name,"topdown-fetch-bubbles")){
-      topdown_fetch_bubbles[app_counters[i].corenum % 4] += app_counters[i].value;
+      topdown_fetch_bubbles[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_topdown_fetch_bubbles += app_counters[i].value;      
     } else if (!strcmp(app_counters[i].definition->name,"topdown-recovery-bubbles")){
-      topdown_recovery_bubbles[app_counters[i].corenum % 4] += app_counters[i].value;
+      topdown_recovery_bubbles[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_topdown_recovery_bubbles += app_counters[i].value;            
     } else if (!strcmp(app_counters[i].definition->name,"topdown-slots-issued")){
-      topdown_slots_issued[app_counters[i].corenum % 4] += app_counters[i].value;
+      topdown_slots_issued[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_topdown_slots_issued += app_counters[i].value;                  
     } else if (!strcmp(app_counters[i].definition->name,"topdown-slots-retired")){
-      topdown_slots_retired[app_counters[i].corenum % 4] += app_counters[i].value;
+      topdown_slots_retired[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_topdown_slots_retired += app_counters[i].value;                        
     } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"resource-stalls.sb")){
-      resource_stalls_sb[app_counters[i].corenum % 4] += app_counters[i].value;
+      resource_stalls_sb[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_resource_stalls_sb += app_counters[i].value;
     } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"cycle-activity.stalls-ldm-pending")){
-      stalls_ldm_pending[app_counters[i].corenum % 4] += app_counters[i].value;
+      stalls_ldm_pending[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_stalls_ldm_pending += app_counters[i].value;
     } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"idq_uops_not_delivered.0_uops")){
-      uops0_delivered[app_counters[i].corenum % 4] += app_counters[i].value;
+      uops0_delivered[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_uops0_delivered += app_counters[i].value;
     } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"idq_uops_not_delivered.1_uops")){
-      uops1_delivered[app_counters[i].corenum % 4] += app_counters[i].value;
+      uops1_delivered[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_uops1_delivered += app_counters[i].value;
     } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"idq_uops_not_delivered.2_uops")){
-      uops2_delivered[app_counters[i].corenum % 4] += app_counters[i].value;
+      uops2_delivered[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_uops2_delivered += app_counters[i].value;
     } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"idq_uops_not_delivered.3_uops")){
-      uops3_delivered[app_counters[i].corenum % 4] += app_counters[i].value;
+      uops3_delivered[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_uops3_delivered += app_counters[i].value;
     } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"branch-misses")){
-      branch_misses[app_counters[i].corenum % 4] += app_counters[i].value;
+      branch_misses[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_branch_misses += app_counters[i].value;
     } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"machine_clears.count")){
-      machine_clears[app_counters[i].corenum % 4] += app_counters[i].value;
+      machine_clears[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_machine_clears += app_counters[i].value;
     } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"idq.ms_uops")){
-      ms_uops[app_counters[i].corenum % 4] += app_counters[i].value;
+      ms_uops[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_ms_uops += app_counters[i].value;
     } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"icache.ifdata_stall")){
-      icache_stall[app_counters[i].corenum % 4] += app_counters[i].value;
+      icache_stall[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_icache_stall += app_counters[i].value;
     } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"itlb_misses.stlb_hit")){
-      itlb_stlb_hit[app_counters[i].corenum % 4] += app_counters[i].value;
+      itlb_stlb_hit[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_itlb_stlb_hit += app_counters[i].value;
     } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"itlb_misses.walk_duration")){
-      itlb_walk_duration[app_counters[i].corenum % 4] += app_counters[i].value;
+      itlb_walk_duration[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_itlb_walk_duration += app_counters[i].value;
     } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"idq.dsb_uops")){
-      dsb_uops[app_counters[i].corenum % 4] += app_counters[i].value;
+      dsb_uops[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_dsb_uops += app_counters[i].value;
     } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"l2_rqsts.reference")){
-      l2_refs[app_counters[i].corenum % 4] += app_counters[i].value;
+      l2_refs[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_l2_refs += app_counters[i].value;
     } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"l2_rqsts.miss")){
-      l2_misses[app_counters[i].corenum % 4] += app_counters[i].value;
+      l2_misses[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_l2_misses += app_counters[i].value;
     } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"longest_lat_cache.reference")){
-      l3_refs[app_counters[i].corenum % 4] += app_counters[i].value;
+      l3_refs[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_l3_refs += app_counters[i].value;
     } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"longest_lat_cache.miss")){
-      l3_misses[app_counters[i].corenum % 4] += app_counters[i].value;
+      l3_misses[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
       total_l3_misses += app_counters[i].value;
     }
   } 
@@ -603,7 +604,7 @@ void print_intel_topdown(void){
 	      (double) total_l3_misses / total_l3_refs * 100.0);      
   }  
   if (cflag){
-    for (i=0;i<4;i++){
+    for (i=0;i<ncpu/2;i++){
       frontend_bound = (double) topdown_fetch_bubbles[i] / topdown_total_slots[i];
       retiring = (double) topdown_slots_retired[i] / topdown_total_slots[i];
       speculation = (double) (topdown_slots_issued[i] - topdown_slots_retired[i] + topdown_recovery_bubbles[i])/ topdown_total_slots[i];
@@ -704,9 +705,9 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (area == AREA_IPC){
     print_ipc(num_procs);
   } else {
-    if (vendor && !strcmp(vendor("GenuineIntel"))){
-      print_intel_topdown();
-    } else if (vendor && !strcmp(vendor("AuthenticAMD"))){
+    if (vendor && !strcmp(vendor,"GenuineIntel")){
+      print_intel_topdown(num_procs);
+    } else if (vendor && !strcmp(vendor,"AuthenticAMD")){
       print_amd_topdown();
     }
   }
