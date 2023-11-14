@@ -580,8 +580,16 @@ void add_counterinfo(char *dir,char *name,char *group,int type){
 	  }
 	} else if (!strncmp(field,"result=",7)){
 	  if (sscanf(&field[7],"%lx",&value) == 1){
-	    ci->config |= (value << 16);	  
-	}
+	    ci->config |= (value << 16);
+	  }
+        } else if (!strncmp(field,"instance=",9)){
+	  if (sscanf(&field[9],"%lx",&value) == 1){
+	    ci->config |= (value << 8);
+	  }
+        } else if (!strncmp(field,"type=",5)){
+	  if (sscanf(&field[9],"%lx",&value) == 1){
+	    ci->config |= (value << 56);
+	  }
 	} else {
 	  // So far only implemented:
 	  //   Intel: i7-4770 and C2750
