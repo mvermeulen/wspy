@@ -678,6 +678,7 @@ int main(int argc,char *const argv[],char *const envp[]){
 	    "\t-f         - expand frontend stalls area\n"
 	    "\t-r         - expand retiring area\n"
 	    "\t-s         - expand speculation area\n"
+	    "\t-i         - print IPC\n"
 	    ,argv[0]);
   }
 
