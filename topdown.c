@@ -242,6 +242,7 @@ void setup_counters(char *vendor){
   unsigned int mask = 0;
   int i,j,index,count,count2;
   int status;
+  int nerror = 0;
   struct perf_event_attr pe;
   // set the mask
   switch(area){
@@ -328,11 +329,13 @@ void setup_counters(char *vendor){
     if (status == -1){
       error("unable to open performance counter cpu=%d, name=%s, errno=%d\n",
 	    app_counters[i].corenum,app_counters[i].definition->name,errno);
+      nerror++;
     } else {
       app_counters[i].fd = status;
       ioctl(app_counters[i].fd,PERF_EVENT_IOC_RESET,0);
     }
   }
+  if (nerror) fatal("unable to open performance counters\n");
 }
 
 void start_counters(void){
