@@ -669,7 +669,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   outfile = stdout;
   num_procs = get_nprocs();
   if (parse_options(argc,argv)){
-      fatal("usage: %s -[abcfrs][-l <1|2|3|4>][-o <file>] <cmd><args>...\n"
+      fatal("usage: %s -[abcfrsx][-l <1|2|3|4>][-o <file>] <cmd><args>...\n"
 	    "\t-l <level> - expand out <level> levels (default 1)\n"
 	    "\t-c         - show cores as separate\n"
 	    "\t-o <file>  - send output to <file>\n"
@@ -679,6 +679,7 @@ int main(int argc,char *const argv[],char *const envp[]){
 	    "\t-r         - expand retiring area\n"
 	    "\t-s         - expand speculation area\n"
 	    "\t-i         - print IPC\n"
+	    "\t-x	  - print system info\n"
 	    ,argv[0]);
   }
 
