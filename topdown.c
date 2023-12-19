@@ -327,7 +327,7 @@ void setup_counters(char *vendor){
     status = perf_event_open(&pe,-1,app_counters[i].corenum,-1,0);
     if (status == -1){
       error("unable to open performance counter cpu=%d, name=%s, errno=%d\n",
-	    app_counters[i],app_counters[i].definition->name,errno);
+	    app_counters[i].corenum,app_counters[i].definition->name,errno);
     } else {
       app_counters[i].fd = status;
       ioctl(app_counters[i].fd,PERF_EVENT_IOC_RESET,0);
