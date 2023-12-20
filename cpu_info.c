@@ -1,13 +1,13 @@
 /*
  * Code to inventory and manage CPU capabilities
  */
-#define TEST 1
 #include <stdio.h>
 #include <cpuid.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sched.h>
 #include <sys/sysinfo.h>
+#include <sys/stat.h>
 #include "cpu_info.h"
 #include "error.h"
 
@@ -16,6 +16,8 @@ struct cpu_info *cpu_info = NULL;
 int inventory_cpu(void){
   unsigned int eax,ebx,ecx,edx;
   int i;
+  struct stat statbuf;
+  FILE *fp;
 
   cpu_info = calloc(1,sizeof(struct cpu_info));
 
@@ -56,9 +58,9 @@ int inventory_cpu(void){
   cpu_info->family = (cpuid_1.family==0xf)?
     cpuid_1.family+cpuid_1.efamily:
     cpuid_1.family;
-  cpu_info->model = cpuid_1.model;
-  printf("family = %x, model = %x\n",
-	 cpu_info->family, cpu_info->model);
+  cpu_info->model = ((cpuid_1.family==0x6)||(cpuid_1.family==0xf))?
+    (cpuid_1.emodel<<4) + cpuid_1.model:
+    cpuid_1.model;
 
   // number of cores
   cpu_info->num_cores = get_nprocs();
@@ -80,11 +82,79 @@ int inventory_cpu(void){
     cpu_info->coreinfo->is_available = 0;
     cpu_info->coreinfo->is_counter_started = 0;
   }
+  // fix up hybrid cores for Raptor Lake
+  if (cpu_info->vendor == VENDOR_INTEL &&
+      cpu_info->family == 6 &&
+      cpu_info->model == 0xba){
+    if (stat("/sys/devices/cpu_atom/cpus",&statbuf) != -1){
+      if (fp = fopen("/sys/devices/cpu_atom/cpus","r")){
+	int low,high;
+	if (fscanf(fp,"%d-%d",&low,&high) == 2){
+	  for (i=low;i<=high;i++){
+	    cpu_info->coreinfo[i].vendor = CORE_INTEL_ATOM;
+	  }
+	}
+	fclose(fp);
+      }
+    }
+    if (stat("/sys/devices/cpu_core/cpus",&statbuf) != -1){
+      if (fp = fopen("/sys/devices/cpu_core/cpus","r")){
+	int low,high;
+	if (fscanf(fp,"%d-%d",&low,&high) == 2){
+	  for (i=low;i<=high;i++){
+	    cpu_info->coreinfo[i].vendor = CORE_INTEL_CORE;
+	  }
+	}
+	fclose(fp);
+      }
+    }    
+  }
+  
   return 0;
 }
 
-#if TEST
+#if TEST_CPU_INFO
 int main(void){
+  int i;
   inventory_cpu();
+
+  printf("CPU information:\n");
+  switch(cpu_info->vendor){
+  case VENDOR_AMD:
+    printf("\tAMD family %x model %x\n",cpu_info->family,cpu_info->model);
+    break;
+  case VENDOR_INTEL:
+    printf("\tIntel family %x model %x\n",cpu_info->family,cpu_info->model);
+    break;
+  default:
+    printf("Unknown CPU\n");
+    return 0;
+  }
+
+  for (i=0;i<cpu_info->num_cores;i++){
+    printf("\t   ");
+    printf("%c %d ",(cpu_info->coreinfo[i].is_available)?'*':' ',i);
+    switch(cpu_info->coreinfo[i].vendor){
+    case CORE_AMD_ZEN:
+      printf("Zen");
+      break;
+    case CORE_INTEL_ATOM:
+      printf("Atom");
+      break;
+    case CORE_INTEL_CORE:
+      printf("Core");
+      break;
+    case CORE_AMD_UNKNOWN:
+      printf("AMD?");
+      break;
+    case CORE_INTEL_UNKNOWN:
+      printf("Intel?");
+      break;
+    default:
+      printf("??");
+      break;
+    }
+    printf("\n");
+  }
 }
 #endif

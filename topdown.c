@@ -15,6 +15,7 @@
 #include <linux/perf_event.h>
 #include <errno.h>
 #include "error.h"
+#include "cpu_info.h"
 
 extern char *lookup_vendor();
 int num_procs;
@@ -684,6 +685,10 @@ int main(int argc,char *const argv[],char *const envp[]){
 	    "\t-i         - print IPC\n"
 	    "\t-x	  - print system info\n"
 	    ,argv[0]);
+  }
+
+  if (inventory_cpu() != 0){
+    fatal("unable to query CPU information\n");
   }
 
   char *vendor = lookup_vendor();
