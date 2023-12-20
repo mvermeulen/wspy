@@ -1,12 +1,12 @@
 // definition of counter parameters
 struct counterdef {
   char *name;
-  unsigned int event;
-  unsigned int umask;
-  unsigned int cmask;
-  unsigned int any;
-  unsigned int scale;
-  unsigned int use;
+  unsigned int long event;
+  unsigned int long umask;
+  unsigned int long cmask;
+  unsigned int long any;
+  unsigned int long scale;
+  unsigned int long use;
 };
 
 // in memory information kept with each counter

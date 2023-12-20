@@ -272,10 +272,12 @@ int launch_child(int argc,char *const argv[],char *const envp[]){
 int perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
 		    int cpu, int group_fd, unsigned long flags){
   int ret;
-  debug2("perf_event_open(event=<type=%d, config=%x, format=%x, size=%d, disabled=%d>, pid=%d, cpu=%d, group_fd=%d, flags=%x)\n",
-	hw_event->type,hw_event->config, hw_event->read_format, hw_event->size, hw_event->disabled,
-	pid,cpu,group_fd,flags);
   ret = syscall(__NR_perf_event_open, hw_event, pid, cpu, group_fd, flags);
+  
+  debug2("perf_event_open(event=<type=%d, config=%lx, format=%x, size=%d, disabled=%d>, pid=%d, cpu=%d, group_fd=%d, flags=%x) = %d\n",
+	hw_event->type,hw_event->config, hw_event->read_format, hw_event->size, hw_event->disabled,
+	 pid,cpu,group_fd,flags,ret);
+
   return ret;
 }
 
@@ -436,6 +438,8 @@ void stop_counters(void){
 	  cinfo->value *= cinfo->cdef->scale;
 	}
 	status = ioctl(cinfo->fd,PERF_EVENT_IOC_DISABLE,0);
+	debug2("counter: fd=%d, name=%s, value=%lu\n",cinfo->fd,cinfo->cdef->name,cinfo->value);
+	    
       }
     }
   }
