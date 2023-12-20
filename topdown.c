@@ -153,28 +153,6 @@ struct counterdef intel_unknown_counters[] = {
   { "longest_lat_cache.miss",            0x2e, 0x41, 0,    0,  0,    USE_L3b },
 };
 
-struct countergroup {
-  char *label;
-  int num_counters;
-  char *names[6];
-  unsigned int use;
-};
-struct countergroup groups[] = {
-  { "ipc",
-    2,
-    { "instructions",
-      "cpu-cycles" },
-    USE_IPC },
-  { "level1",
-    5,
-    { "topdown-total-slots",
-      "topdown-fetch-bubbles",
-      "topdown-recovery-bubbles",
-      "topdown-slots-issued",
-      "topdown-slots-retired" },
-    USE_L1,
-  },
-};
 struct counterdata {
   unsigned long int value;
   int fd;
@@ -507,8 +485,33 @@ void print_usage(struct rusage *rusage){
   fprintf(outfile,"onblock        %lu\n",rusage->ru_oublock);  
 }
 
+unsigned long int sum_counters(char *cname){
+  int i,j;
+  int found=0;
+  unsigned long int total = 0;
+  for (i=0;i<cpu_info->num_cores;i++){
+    if (cpu_info->coreinfo[i].ncounters == 0) continue;
+    for (j=0;j<cpu_info->coreinfo[i].ncounters;j++){
+      if (!strcmp(cname,cpu_info->coreinfo[i].counters[j].cdef->name)){
+	// assumes it was aleady read by stop_counters
+	total += cpu_info->coreinfo[i].counters[j].value;
+	found = 1;
+      }
+    }
+  }
+  if (!found)
+    warning("no counters named %s found\n",cname);
+  return total;
+}
+
 void print_ipc(int ncpu){
-  int i;
+  unsigned long int total_instructions = sum_counters("instructions");
+  unsigned long int total_cpu_cycles = sum_counters("cpu-cycles");
+  fprintf(outfile,"IPC\t%4.3f\n",
+	  (double) total_instructions / total_cpu_cycles);
+}
+
+#if 0  
   unsigned long int instructions[ncpu/2];
   unsigned long int cpu_cycles[ncpu/2];
   unsigned long int total_instructions = 0;
@@ -535,7 +538,8 @@ void print_ipc(int ncpu){
 	      (double) instructions[i] / cpu_cycles[i]);
     }
   }
-}
+#endif
+
 
 void print_amd_topdown(void){
 }
