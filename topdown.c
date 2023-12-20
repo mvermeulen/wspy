@@ -513,6 +513,22 @@ void print_topdown(){
   case VENDOR_AMD:
     if (cpu_info->family == 0x17 || cpu_info->family == 0x19){
       // Zen
+      unsigned long int slots = sum_counters("cpu-cycles") * 6;
+      unsigned long int retiring = sum_counters("ex_ret_ops");
+      unsigned long int fe_bound = sum_counters("de_no_dispatch_per_slot.no_ops_from_frontend");
+      unsigned long int be_bound = sum_counters("de_no_dispatch_per_slot.backend_stalls");
+      unsigned long int bad_spec = sum_counters("de_src_op_disp.all") - retiring;
+      unsigned long int smt_cont = sum_counters("de_no_dispatch_per_slot.smt_contention");
+      fprintf(outfile,"retire         %4.3f\n",
+	      (double) retiring / slots);
+      fprintf(outfile,"speculation    %4.3f\n",
+	      (double) bad_spec / slots);
+      fprintf(outfile,"frontend       %4.3f\n",
+	      (double) fe_bound / slots);
+      fprintf(outfile,"backend        %4.3f\n",
+	      (double) be_bound / slots);
+      fprintf(outfile,"smt contend    %4.3f\n",
+	      (double) smt_cont / slots);
     }
     break;
   }
