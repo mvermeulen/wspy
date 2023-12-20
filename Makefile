@@ -13,20 +13,17 @@ wspy:	$(OBJS)
 process-csv:	process_csv.o error.o
 	$(CC) -o process-csv $(CFLAGS) process_csv.o error.o
 
-topdown:	topdown.o error.o vendor.o cpu_info.c
+topdown:	topdown.o error.o vendor.o cpu_info.c cpu_info.h
 	$(CC) -o topdown $(CFLAGS) topdown.o vendor.o cpu_info.c error.o
 
-cpu_info:	cpu_info.c
-	$(CC) -o cpu_info -DTEST_CPU_INFO cpu_info.c
+cpu_info:	cpu_info.c error.o cpu_info.h
+	$(CC) -o cpu_info -DTEST_CPU_INFO cpu_info.c error.o
 
 process-csv.o:	process_csv.c
 	$(CC) -c $(CFLAGS) process_csv.c
 
 topdown.o:	topdown.c
 	$(CC) -c $(CFLAGS) topdown.c
-
-cpu_info.o:	cpu_info.c cpu_info.h
-	$(CC) -c $(CFLAGS) cpu_info.c
 
 depend:
 	-makedepend -Y -- $(CFLAGS) -- $(SRCS)

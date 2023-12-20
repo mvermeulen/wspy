@@ -1,11 +1,13 @@
 /*
  * Code to inventory and manage CPU capabilities
  */
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <cpuid.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sched.h>
+#include <unistd.h>
 #include <sys/sysinfo.h>
 #include <sys/stat.h>
 #include "cpu_info.h"
@@ -16,6 +18,7 @@ struct cpu_info *cpu_info = NULL;
 int inventory_cpu(void){
   unsigned int eax,ebx,ecx,edx;
   int i;
+  int nwarn = 0;
   struct stat statbuf;
   FILE *fp;
 
@@ -35,8 +38,10 @@ int inventory_cpu(void){
     cpu_info->vendor = VENDOR_AMD;
   else if (!strncmp(cpuid_0.vendor,"GenuineIntel",12))
     cpu_info->vendor = VENDOR_INTEL;
-  else
+  else {
     cpu_info->vendor = VENDOR_UNKNOWN;
+    warning("unknown cpu %16s\n",cpuid_0.vendor);
+  }
   
   // model and family
   union cpuid1_modelinfo {
@@ -70,14 +75,27 @@ int inventory_cpu(void){
   // specify the core type
   for (i=0;i<cpu_info->num_cores;i++){
     if (cpu_info->vendor == VENDOR_AMD){
-      if (cpu_info->model == 0x17 || cpu_info->model == 0x19){
+      if ((cpu_info->family == 0x17) || (cpu_info->family == 0x19)){
 	// Zen
 	cpu_info->coreinfo[i].vendor = CORE_AMD_ZEN;
       } else {
 	cpu_info->coreinfo[i].vendor = CORE_AMD_UNKNOWN;
+	if (nwarn == 0){
+	  warning("unimplemented AMD CPU, family %x, model %x\n",
+		  cpu_info->family,cpu_info->model);
+	  nwarn++;
+	}
       }
     } else if (cpu_info->vendor == VENDOR_INTEL){
-      cpu_info->coreinfo[i].vendor = CORE_INTEL_UNKNOWN;
+      if ((cpu_info->family == 6) && (cpu_info->model == 0xba)){
+      } else {
+	cpu_info->coreinfo[i].vendor = CORE_INTEL_UNKNOWN;
+	if (nwarn == 0){
+	  warning("unimplemented Intel CPU, family %x, model %x\n",
+		  cpu_info->family,cpu_info->model);
+	}
+	nwarn++;
+      }
     }
     cpu_info->coreinfo->is_available = 0;
     cpu_info->coreinfo->is_counter_started = 0;
@@ -108,6 +126,19 @@ int inventory_cpu(void){
 	fclose(fp);
       }
     }    
+  }
+  // check affinity mask for available CPUs
+  cpu_set_t set;
+  cpu_info->num_cores_available;
+  CPU_ZERO(&set);
+  if (sched_getaffinity(getpid(),sizeof(set),&set) == -1){
+    fatal("unable to get CPU affinity\n");
+  }
+  for (i=0;i<cpu_info->num_cores;i++){
+    if (CPU_ISSET(i,&set)){
+      cpu_info->coreinfo[i].is_available = 1;
+      cpu_info->num_cores_available++;
+    }
   }
   
   return 0;

@@ -42,25 +42,81 @@ enum areamode {
 #define USE_L3b   0x800
 
 
-struct counterdef {
-  char *name;
-  unsigned int event;
-  unsigned int umask;
-  unsigned int cmask;
-  unsigned int any;
-  unsigned int scale;
-  unsigned int use;
-};
+// Counter definitions for supported cores
 struct counterdef *counters;
-int num_counters = 0;
+/*                                                                              
+ * Zen4                                                                         
+ *                                                                              
+ * instructions = <cpu/instructions>                                            
+ *                                                                              
+ * cycles = <cpu/cpu-cycles>                                                    
+ * slots = 6 * cycles                                                           
+ * retire = <ex_ret_ops> / slots                                                
+ * frontend = <de_no_dispatch_per_slot.no_ops_from_frontend> / slots            
+ * backend = <de_no_dispatch_per_slot.backend_stalls / slots                    
+ * speculation = (<de_src_op_disp.all> - <ex_ret_ops>) / slots                  
+ * smt = <de_no_dispatch_per_slot.smt_contention> / slots                       
+ */
+struct counterdef amd_zen_counters[] = {
+  // name                                event umask cmask any scale use
+  { "instructions",                      0xc0, 0,    0,    0,  0,    USE_IPC },
+  { "cpu-cycles",                        0x76, 0,    0,    0,  0,    USE_IPC|USE_L1 },
+  { "ex_ret_ops",                        0xc1, 0,    0,    0,  0,    USE_L1  },
+  { "de_no_dispatch_per_slot.no_ops_from_frontend",
+                                         0x1a0,1,    0,    0,  0,    USE_L1  },
+  { "de_no_dispatch_per_slot.backend_stalls",
+                                         0x1a0,0x1e, 0,    0,  0,    USE_L1  },
+  { "de_src_op_disp.all",                0xaa, 0x7,  0,    0,  0,    USE_L1  },
+  { "de_no_dispatch_per_slot.smt_contention",
+                                         0x1a0,0x60, 0,    0,  0,    USE_L1  },
+};
 
-struct counterdef amd_counters[] = {
+struct counterdef amd_unknown_counters[] = {
   // name                                event umask cmask any scale use
   { "instructions",                      0xc0, 0,    0,    0,  0,    USE_IPC },
   { "cpu-cycles",                        0x76, 0,    0,    0,  0,    USE_IPC },
+  { "ex_ret_ops",                        0xc1, 0,    0,    0,  0,    USE_L1  },
 };
 
-struct counterdef intel_counters[] = {
+/*
+ *  Atom                                                                         
+ * instructions = <cpu_atom/instructions>                                       
+ * slots = retire+frontend+backend+speculation                                  
+ * retire = <cpu_atom/topdown-retiring>                                         
+ * frontend = <cpu_atom/topdown-fe-bound>                                       
+ * backend = <cpu_atom/topdown-be-bound>                                        
+ * speculation = <cpu_atom/topdown-bad-spec>                                    
+ */
+struct counterdef intel_atom_counters[] = {
+  // name                                event umask cmask any scale use
+  { "instructions",                      0xc0, 0,    0,    0,  0,    USE_IPC },
+  { "cpu-cycles",                        0x3c, 0,    0,    0,  0,    USE_IPC },  
+  { "topdown-retiring",                  0xc2, 0,    0,    0,  0,    USE_L1  },
+  { "topdown-fe-bound",                  0x71, 0,    0,    0,  0,    USE_L1  },
+  { "topdown-be-bound",                  0x74, 0,    0,    0,  0,    USE_L1  },
+  { "topdown-bad-spec",                  0x73, 0,    0,    0,  0,    USE_L1  },
+};
+
+/*
+ * Core                                                                         
+ * instructions = <cpu_core/instructions>                                       
+ * slots = <cpu_core/slots>                                                     
+ * retire = <cpu_core/topdown-retiring>                                         
+ * frontend = <cpu_core/topdown-fe-bound>                                       
+ * backend = <cpu_core/topdown-be-bound>                                        
+ * speculation = <cpu_core/topdown-bad-spec>
+ */
+struct counterdef intel_core_counters[] = {
+  // name                                event umask cmask any scale use
+  { "instructions",                      0xc0, 0,    0,    0,  0,    USE_IPC },
+  { "cpu-cycles",                        0x3c, 0,    0,    0,  0,    USE_IPC },  
+  { "topdown-retiring",                  0x00, 0x80, 0,    0,  0,    USE_L1  },
+  { "topdown-fe-bound",                  0x00, 0x82, 0,    0,  0,    USE_L1  },
+  { "topdown-be-bound",                  0x00, 0x83, 0,    0,  0,    USE_L1  },
+  { "topdown-bad-spec",                  0x00, 0x81, 0,    0,  0,    USE_L1  },
+};
+
+struct counterdef intel_unknown_counters[] = {
   // name                                event umask cmask any scale use
   { "instructions",                      0xc0, 0,    0,    0,  0,    USE_IPC },
   { "cpu-cycles",                        0x3c, 0,    0,    0,  0,    USE_IPC },
@@ -241,9 +297,10 @@ int perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
 
 void setup_counters(char *vendor){
   unsigned int mask = 0;
-  int i,j,index,count,count2;
-  int status;
+  int i,j,k;
+  int count;
   int nerror = 0;
+  int status;
   struct perf_event_attr pe;
   // set the mask
   switch(area){
@@ -282,58 +339,73 @@ void setup_counters(char *vendor){
     mask = USE_IPC;
     break;
   }
-  //
-  if (vendor && !strcmp(vendor,"GenuineIntel")){
-    counters = intel_counters;
-    num_counters = sizeof(intel_counters)/sizeof(intel_counters[0]);
-  } else if (vendor && !strcmp(vendor,"AuthenticAMD")){
-    counters = amd_counters;
-    num_counters = sizeof(amd_counters)/sizeof(amd_counters[0]);    
-  }
-  
-  // count the # of performance counters
-  count = 0;
-  for (i=0;i<num_counters;i++){
-    if (mask & counters[i].use) count++;
-  }
-  // allocate space for the counters
-  num_core_counters = count;
-  num_total_counters = count * num_procs;
-  app_counters = calloc(sizeof(struct counterdata),num_total_counters);
 
-  // collect together the counter definitions for each core
-  count2 = 0;
-  for (i=0;i<num_counters;i++){
-    if (mask & counters[i].use){
-      for (j=0;j<num_procs;j++){
-	index = j*count + count2;
-	app_counters[index].corenum = j;
-	app_counters[index].definition = &counters[i];
-      }
-      count2++;
+  struct cpu_core_info *coreinfo;
+  struct counterdef *counterdef;
+  int ncounters;
+  if (!cpu_info) inventory_cpu();
+  
+  for (i=0;i< cpu_info->num_cores;i++){
+    coreinfo = &cpu_info->coreinfo[i];
+    if (!coreinfo->is_available){
+      coreinfo->ncounters = 0;
+      continue;
     }
-  }
-  // set up the counters and leave them disabled
-  for (i=0;i<num_total_counters;i++){
-    debug("core=%d, counter=%s\n",app_counters[i].corenum,app_counters[i].definition->name);
-    memset(&pe,0,sizeof(pe));
-    pe.type = PERF_TYPE_RAW;
-    pe.config = app_counters[i].definition->event |
-      (app_counters[i].definition->umask<<8) |
-      (app_counters[i].definition->any<<21) |
-      (app_counters[i].definition->cmask<<24);
-    pe.sample_type = PERF_SAMPLE_IDENTIFIER;
-    pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED|PERF_FORMAT_TOTAL_TIME_RUNNING;
-    pe.size = sizeof(struct perf_event_attr);
-    pe.disabled = 1;
-    status = perf_event_open(&pe,-1,app_counters[i].corenum,-1,0);
-    if (status == -1){
-      error("unable to open performance counter cpu=%d, name=%s, errno=%d\n",
-	    app_counters[i].corenum,app_counters[i].definition->name,errno);
-      nerror++;
-    } else {
-      app_counters[i].fd = status;
-      ioctl(app_counters[i].fd,PERF_EVENT_IOC_RESET,0);
+    // pick the list of counters
+    switch(coreinfo->vendor){
+    case CORE_AMD_ZEN:
+      counterdef = amd_zen_counters;
+      ncounters = sizeof(amd_zen_counters)/sizeof(amd_zen_counters[0]);
+      break;
+    case CORE_INTEL_ATOM:
+      counterdef = intel_atom_counters;
+      ncounters = sizeof(amd_zen_counters)/sizeof(amd_zen_counters[0]);
+      break;
+    case CORE_INTEL_CORE:
+      counterdef = intel_core_counters;
+      ncounters = sizeof(amd_zen_counters)/sizeof(amd_zen_counters[0]);
+      break;
+    default:
+      continue;
+    }
+    // count the # of performance counters
+    count = 0;
+    for (j=0;j<ncounters;j++){
+      if (mask & counterdef[j].use) count++;
+    }
+    coreinfo->ncounters = count;
+    // allocate space
+    coreinfo->counters = calloc(count,sizeof(struct counter_info));
+
+    // set up counter
+    count = 0;
+    for (j=0;j<ncounters;j++){
+      if (mask & counterdef[j].use){
+	coreinfo->counters[count].corenum = i;
+	coreinfo->counters[count].cdef = counterdef;
+	// set up the counter and leave it disabled
+	notice("core %d creating counter %s\n",i,counterdef[j].name);
+	memset(&pe,0,sizeof(pe));
+	pe.type = PERF_TYPE_RAW;
+	pe.config = (counterdef[j].event&0xff) |
+	  (counterdef[j].umask<<8) |
+	  (counterdef[j].any<<21) |
+	  (counterdef[j].cmask<<24) |
+	  (counterdef[j].event&0xf00)<<24;
+	pe.sample_type = PERF_SAMPLE_IDENTIFIER;
+	pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED|PERF_FORMAT_TOTAL_TIME_RUNNING;
+	pe.size = sizeof(struct perf_event_attr);
+	pe.disabled = 1;
+	status = perf_event_open(&pe,-1,i,-1,0);
+	if (status == -1){
+	  error("unable to open performance counter cpu=%d, name=%s, errno=%d\n",i, counterdef[j].name, errno);
+	  nerror++;
+	} else {
+	  coreinfo->counters[count].fd = status;
+	  ioctl(coreinfo->counters[count].fd,PERF_EVENT_IOC_ENABLE,0);
+	}
+	count++;
+      }
     }
   }
   if (nerror) fatal("unable to open performance counters\n");
