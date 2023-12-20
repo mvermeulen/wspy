@@ -305,7 +305,7 @@ int launch_child(int argc,char *const argv[],char *const envp[]){
 int perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
 		    int cpu, int group_fd, unsigned long flags){
   int ret;
-  debug("perf_event_open(event=<type=%d, config=%x, format=%x, size=%d, disabled=%d>, pid=%d, cpu=%d, group_fd=%d, flags=%x)\n",
+  debug2("perf_event_open(event=<type=%d, config=%x, format=%x, size=%d, disabled=%d>, pid=%d, cpu=%d, group_fd=%d, flags=%x)\n",
 	hw_event->type,hw_event->config, hw_event->read_format, hw_event->size, hw_event->disabled,
 	pid,cpu,group_fd,flags);
   ret = syscall(__NR_perf_event_open, hw_event, pid, cpu, group_fd, flags);
@@ -404,7 +404,7 @@ void setup_counters(char *vendor){
 	coreinfo->counters[count].corenum = i;
 	coreinfo->counters[count].cdef = counterdef;
 	// set up the counter and leave it disabled
-	notice("core %d creating counter %s\n",i,counterdef[j].name);
+	debug("core %d creating counter %s\n",i,counterdef[j].name);
 	memset(&pe,0,sizeof(pe));
 	pe.type = PERF_TYPE_RAW;
 	pe.config = (counterdef[j].event&0xff) |
