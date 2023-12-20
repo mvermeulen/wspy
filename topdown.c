@@ -22,6 +22,7 @@ int num_procs;
 int cflag = 0;
 int oflag = 0;
 int xflag = 0;
+int vflag = 0;
 struct timespec start_time,finish_time;
 enum areamode {
   AREA_ALL,
@@ -80,12 +81,19 @@ struct counterdef amd_unknown_counters[] = {
 
 /*
  *  Atom                                                                         
+ *
+ * Note: While there are /sys/devices/cpu_atom entries for ATOM values below,
+ *       not able to open counters for Atom cores and perf(1) also says this
+ *       isn't allowed, so ignore these on a per-core basis.  Can later try
+ *       on a cpu-wide basis...
+ * 
  * instructions = <cpu_atom/instructions>                                       
  * slots = retire+frontend+backend+speculation                                  
  * retire = <cpu_atom/topdown-retiring>                                         
  * frontend = <cpu_atom/topdown-fe-bound>                                       
  * backend = <cpu_atom/topdown-be-bound>                                        
- * speculation = <cpu_atom/topdown-bad-spec>                                    
+ * speculation = <cpu_atom/topdown-bad-spec>
+ *
  */
 struct counterdef intel_atom_counters[] = {
   // name                                event umask cmask any scale use
@@ -109,7 +117,8 @@ struct counterdef intel_atom_counters[] = {
 struct counterdef intel_core_counters[] = {
   // name                                event umask cmask any scale use
   { "instructions",                      0xc0, 0,    0,    0,  0,    USE_IPC },
-  { "cpu-cycles",                        0x3c, 0,    0,    0,  0,    USE_IPC },  
+  { "cpu-cycles",                        0x3c, 0,    0,    0,  0,    USE_IPC },
+  { "slots",                             0x00, 4,    0,    0,  0,    USE_L1  },
   { "topdown-retiring",                  0x00, 0x80, 0,    0,  0,    USE_L1  },
   { "topdown-fe-bound",                  0x00, 0x82, 0,    0,  0,    USE_L1  },
   { "topdown-be-bound",                  0x00, 0x83, 0,    0,  0,    USE_L1  },
@@ -188,7 +197,7 @@ int parse_options(int argc,char *const argv[]){
   int opt;
   int i;
   unsigned int lev;
-  while ((opt = getopt(argc,argv,"+abcfil:o:rsx")) != -1){
+  while ((opt = getopt(argc,argv,"+abcfil:o:rsvx")) != -1){
     switch (opt){
     case 'a':
       area = AREA_ALL;
@@ -230,6 +239,11 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 's':
       area = AREA_SPEC;
+      break;
+    case 'v':
+      vflag++;
+      if (vflag>1) set_error_level(ERROR_LEVEL_DEBUG2);
+      else set_error_level(ERROR_LEVEL_DEBUG);
       break;
     case 'x':
       xflag = 1;
@@ -291,6 +305,9 @@ int launch_child(int argc,char *const argv[],char *const envp[]){
 int perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
 		    int cpu, int group_fd, unsigned long flags){
   int ret;
+  debug("perf_event_open(event=<type=%d, config=%x, format=%x, size=%d, disabled=%d>, pid=%d, cpu=%d, group_fd=%d, flags=%x)\n",
+	hw_event->type,hw_event->config, hw_event->read_format, hw_event->size, hw_event->disabled,
+	pid,cpu,group_fd,flags);
   ret = syscall(__NR_perf_event_open, hw_event, pid, cpu, group_fd, flags);
   return ret;
 }
@@ -301,6 +318,7 @@ void setup_counters(char *vendor){
   int count;
   int nerror = 0;
   int status;
+  int groupid;
   struct perf_event_attr pe;
   // set the mask
   switch(area){
@@ -358,9 +376,10 @@ void setup_counters(char *vendor){
       ncounters = sizeof(amd_zen_counters)/sizeof(amd_zen_counters[0]);
       break;
     case CORE_INTEL_ATOM:
-      counterdef = intel_atom_counters;
-      ncounters = sizeof(amd_zen_counters)/sizeof(amd_zen_counters[0]);
-      break;
+      // Ignore Atom cores since perf_event_open(2) doesn't seem to allow this
+      //      counterdef = intel_atom_counters;
+      //      ncounters = sizeof(amd_zen_counters)/sizeof(amd_zen_counters[0]);
+      continue;
     case CORE_INTEL_CORE:
       counterdef = intel_core_counters;
       ncounters = sizeof(amd_zen_counters)/sizeof(amd_zen_counters[0]);
@@ -370,6 +389,7 @@ void setup_counters(char *vendor){
     }
     // count the # of performance counters
     count = 0;
+    groupid = -1;
     for (j=0;j<ncounters;j++){
       if (mask & counterdef[j].use) count++;
     }
@@ -393,14 +413,18 @@ void setup_counters(char *vendor){
 	  (counterdef[j].cmask<<24) |
 	  (counterdef[j].event&0xf00)<<24;
 	pe.sample_type = PERF_SAMPLE_IDENTIFIER;
-	pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED|PERF_FORMAT_TOTAL_TIME_RUNNING;
+	pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED|PERF_FORMAT_TOTAL_TIME_RUNNING|PERF_FORMAT_ID|PERF_FORMAT_GROUP;
 	pe.size = sizeof(struct perf_event_attr);
-	pe.disabled = 1;
-	status = perf_event_open(&pe,-1,i,-1,0);
+	pe.inherit=1;
+	pe.precise_ip=0;
+	pe.exclude_guest=1;
+	//	pe.disabled = 1;
+	status = perf_event_open(&pe,-1,i,groupid,PERF_FLAG_FD_CLOEXEC);
 	if (status == -1){
 	  error("unable to open performance counter cpu=%d, name=%s, errno=%d - %s\n",i, counterdef[j].name, errno,strerror(errno));
 	  nerror++;
 	} else {
+	  if (groupid==-1) groupid = status;
 	  coreinfo->counters[count].fd = status;
 	  ioctl(coreinfo->counters[count].fd,PERF_EVENT_IOC_ENABLE,0);
 	}
@@ -756,6 +780,7 @@ int main(int argc,char *const argv[],char *const envp[]){
 	    "\t-s         - expand speculation area\n"
 	    "\t-i         - print IPC\n"
 	    "\t-x	  - print system info\n"
+	    "\t-v         - print verbose information\n"
 	    ,argv[0]);
   }
 
