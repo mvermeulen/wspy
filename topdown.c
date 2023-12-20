@@ -398,7 +398,7 @@ void setup_counters(char *vendor){
 	pe.disabled = 1;
 	status = perf_event_open(&pe,-1,i,-1,0);
 	if (status == -1){
-	  error("unable to open performance counter cpu=%d, name=%s, errno=%d\n",i, counterdef[j].name, errno);
+	  error("unable to open performance counter cpu=%d, name=%s, errno=%d - %s\n",i, counterdef[j].name, errno,strerror(errno));
 	  nerror++;
 	} else {
 	  coreinfo->counters[count].fd = status;
