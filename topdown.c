@@ -519,6 +519,12 @@ void print_topdown(){
       unsigned long int be_bound = sum_counters("de_no_dispatch_per_slot.backend_stalls");
       unsigned long int bad_spec = sum_counters("de_src_op_disp.all") - retiring;
       unsigned long int smt_cont = sum_counters("de_no_dispatch_per_slot.smt_contention");
+      debug("-> slots     %llu\n", slots);
+      debug("-> retire    %llu\n", retiring);
+      debug("-> frontend  %llu\n", fe_bound);
+      debug("-> backend   %llu\n", be_bound);
+      debug("-> speculate %llu\n", bad_spec);
+      debug("-> smt       %llu\n", smt_cont);
       fprintf(outfile,"retire         %4.3f\n",
 	      (double) retiring / slots);
       fprintf(outfile,"speculation    %4.3f\n",
