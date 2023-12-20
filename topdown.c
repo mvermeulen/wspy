@@ -17,7 +17,6 @@
 #include "error.h"
 #include "cpu_info.h"
 
-extern char *lookup_vendor();
 int num_procs;
 int cflag = 0;
 int oflag = 0;
@@ -153,16 +152,6 @@ struct counterdef intel_unknown_counters[] = {
   { "longest_lat_cache.miss",            0x2e, 0x41, 0,    0,  0,    USE_L3b },
 };
 
-struct counterdata {
-  unsigned long int value;
-  int fd;
-  int corenum;
-  struct counterdef *definition;
-};
-struct counterdata *app_counters = NULL;
-int num_core_counters = 0;
-int num_total_counters = 0;
-  
 int command_line_argc;
 char **command_line_argv;
 pid_t child_pid = 0;
@@ -290,7 +279,7 @@ int perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
   return ret;
 }
 
-void setup_counters(char *vendor){
+void setup_counters(void){
   unsigned int mask = 0;
   int i,j,k;
   int count;
@@ -452,15 +441,6 @@ void stop_counters(void){
   }
 }
 
-void dump_counters(void){
-  int i;
-  for (i=0;i<num_total_counters;i++){
-    notice("core=%d, counter=%s: \t%lu\n",
-	   app_counters[i].corenum,app_counters[i].definition->name,
-	   app_counters[i].value);
-  }
-}
-
 void print_usage(struct rusage *rusage){
   double elapsed;
   elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
@@ -538,247 +518,6 @@ void print_topdown(){
   }
 }
 
-void print_amd_topdown(void){
-}
-
-void print_intel_topdown(int ncpu){
-  // Note: Assumes two hyperthreads per core with numbering of core 0 first and core 1 second  
-  int i;  
-  unsigned long int topdown_total_slots[ncpu/2];
-  unsigned long int topdown_fetch_bubbles[ncpu/2];
-  unsigned long int topdown_recovery_bubbles[ncpu/2];
-  unsigned long int topdown_slots_issued[ncpu/2];
-  unsigned long int topdown_slots_retired[ncpu/2];
-  unsigned long int resource_stalls_sb[ncpu/2];
-  unsigned long int stalls_ldm_pending[ncpu/2];
-  unsigned long int uops0_delivered[ncpu/2],uops1_delivered[ncpu/2],uops2_delivered[ncpu/2],uops3_delivered[ncpu/2];
-  unsigned long int branch_misses[ncpu/2],machine_clears[ncpu/2],ms_uops[ncpu/2];
-  unsigned long int icache_stall[ncpu/2],itlb_stlb_hit[ncpu/2],itlb_walk_duration[ncpu/2],dsb_uops[ncpu/2];
-  unsigned long int l2_refs[ncpu/2],l2_misses[ncpu/2],l3_refs[ncpu/2],l3_misses[ncpu/2];
-  unsigned long int total_topdown_total_slots=0,total_topdown_fetch_bubbles=0,
-    total_topdown_recovery_bubbles=0,total_topdown_slots_issued=0,total_topdown_slots_retired=0,
-    total_resource_stalls_sb=0,total_stalls_ldm_pending=0,
-    total_uops0_delivered=0,total_uops1_delivered=0,total_uops2_delivered=0,total_uops3_delivered=0,
-    total_branch_misses=0,total_machine_clears=0,total_ms_uops=0,
-    total_icache_stall=0,total_itlb_stlb_hit=0,total_itlb_walk_duration=0,total_dsb_uops = 0,
-    total_l2_refs=0,total_l2_misses=0,total_l3_refs=0,total_l3_misses=0;
-  double frontend_bound,retiring,speculation,backend_bound;
-  for (i=0;i<ncpu/2;i++){
-    topdown_total_slots[i] = 0;
-    topdown_fetch_bubbles[i] = 0;
-    topdown_recovery_bubbles[i] = 0;
-    topdown_slots_issued[i] = 0;
-    topdown_slots_retired[i] = 0;
-    resource_stalls_sb[i] = 0;
-    stalls_ldm_pending[i] = 0;
-    uops0_delivered[i] = 0;
-    branch_misses[i] = 0;
-    machine_clears[i] = 0;
-    icache_stall[i] = 0;
-    itlb_stlb_hit[i] = 0;
-    itlb_walk_duration[i] = 0;
-    dsb_uops[i] = 0;
-    l2_refs[i] = 0;
-    l2_misses[i] = 0;
-    l3_refs[i] = 0;
-    l3_misses[i] = 0;
-  }
-  
-  for (i=0;i<num_total_counters;i++){
-    if (!strcmp(app_counters[i].definition->name,"topdown-total-slots")){
-      topdown_total_slots[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_topdown_total_slots += app_counters[i].value;
-    } else if (!strcmp(app_counters[i].definition->name,"topdown-fetch-bubbles")){
-      topdown_fetch_bubbles[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_topdown_fetch_bubbles += app_counters[i].value;      
-    } else if (!strcmp(app_counters[i].definition->name,"topdown-recovery-bubbles")){
-      topdown_recovery_bubbles[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_topdown_recovery_bubbles += app_counters[i].value;            
-    } else if (!strcmp(app_counters[i].definition->name,"topdown-slots-issued")){
-      topdown_slots_issued[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_topdown_slots_issued += app_counters[i].value;                  
-    } else if (!strcmp(app_counters[i].definition->name,"topdown-slots-retired")){
-      topdown_slots_retired[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_topdown_slots_retired += app_counters[i].value;                        
-    } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"resource-stalls.sb")){
-      resource_stalls_sb[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_resource_stalls_sb += app_counters[i].value;
-    } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"cycle-activity.stalls-ldm-pending")){
-      stalls_ldm_pending[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_stalls_ldm_pending += app_counters[i].value;
-    } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"idq_uops_not_delivered.0_uops")){
-      uops0_delivered[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_uops0_delivered += app_counters[i].value;
-    } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"idq_uops_not_delivered.1_uops")){
-      uops1_delivered[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_uops1_delivered += app_counters[i].value;
-    } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"idq_uops_not_delivered.2_uops")){
-      uops2_delivered[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_uops2_delivered += app_counters[i].value;
-    } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"idq_uops_not_delivered.3_uops")){
-      uops3_delivered[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_uops3_delivered += app_counters[i].value;
-    } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"branch-misses")){
-      branch_misses[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_branch_misses += app_counters[i].value;
-    } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"machine_clears.count")){
-      machine_clears[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_machine_clears += app_counters[i].value;
-    } else if ((level > 1) && !strcmp(app_counters[i].definition->name,"idq.ms_uops")){
-      ms_uops[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_ms_uops += app_counters[i].value;
-    } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"icache.ifdata_stall")){
-      icache_stall[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_icache_stall += app_counters[i].value;
-    } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"itlb_misses.stlb_hit")){
-      itlb_stlb_hit[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_itlb_stlb_hit += app_counters[i].value;
-    } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"itlb_misses.walk_duration")){
-      itlb_walk_duration[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_itlb_walk_duration += app_counters[i].value;
-    } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"idq.dsb_uops")){
-      dsb_uops[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_dsb_uops += app_counters[i].value;
-    } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"l2_rqsts.reference")){
-      l2_refs[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_l2_refs += app_counters[i].value;
-    } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"l2_rqsts.miss")){
-      l2_misses[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_l2_misses += app_counters[i].value;
-    } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"longest_lat_cache.reference")){
-      l3_refs[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_l3_refs += app_counters[i].value;
-    } else if ((level > 2) && !strcmp(app_counters[i].definition->name,"longest_lat_cache.miss")){
-      l3_misses[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_l3_misses += app_counters[i].value;
-    }
-  } 
-  frontend_bound = (double) total_topdown_fetch_bubbles / total_topdown_total_slots;
-  retiring = (double) total_topdown_slots_retired / total_topdown_total_slots;
-  speculation = (double) (total_topdown_slots_issued - total_topdown_slots_retired + total_topdown_recovery_bubbles)/ total_topdown_total_slots;
-  backend_bound = 1 - (frontend_bound + retiring + speculation);
-  fprintf(outfile,"retire         %4.3f\n",retiring);
-  if ((level > 1) && total_ms_uops){
-    fprintf(outfile,"ms_uops                %4.3f\n",(double) total_ms_uops / total_topdown_total_slots);
-  }
-  fprintf(outfile,"speculation    %4.3f\n",speculation);
-  if ((level > 1) && (total_machine_clears + total_branch_misses)){
-    fprintf(outfile,"branch_misses          %2.2f%%\n",(double) total_branch_misses / (total_machine_clears + total_branch_misses)*100);
-    fprintf(outfile,"machine_clears         %2.2f%%\n",(double) total_machine_clears / (total_machine_clears + total_branch_misses)*100);    
-  }
-  fprintf(outfile,"frontend       %4.3f\n",frontend_bound);
-  if ((level > 1) && total_uops0_delivered){
-    fprintf(outfile,"idq_uops_delivered_0   %4.3f\n",(double) total_uops0_delivered * 2 / total_topdown_total_slots);
-  }
-  if ((level > 2) && total_icache_stall){
-    fprintf(outfile,"icache_stall               %4.3f\n",(double) total_icache_stall * 2 / total_topdown_total_slots);    
-  }
-  if ((level > 2) && (total_itlb_stlb_hit+total_itlb_walk_duration)){
-    fprintf(outfile,"itlb_misses                %4.3f\n",
-	    (double) (total_itlb_stlb_hit * 14 + total_itlb_walk_duration) * 2 / total_topdown_total_slots);    
-  }
-  if ((level > 1) && total_uops1_delivered){
-    fprintf(outfile,"idq_uops_delivered_1   %4.3f\n",(double) total_uops1_delivered * 2 / total_topdown_total_slots);
-  }
-  if ((level > 1) && total_uops2_delivered){
-    fprintf(outfile,"idq_uops_delivered_2   %4.3f\n",(double) total_uops2_delivered * 2 / total_topdown_total_slots);
-  }
-  if ((level > 1) && total_uops3_delivered){
-    fprintf(outfile,"idq_uops_delivered_3   %4.3f\n",(double) total_uops3_delivered * 2 / total_topdown_total_slots);
-  }
-  if ((level > 2) && total_dsb_uops){
-    fprintf(outfile,"dsb_ops                    %2.2f%%\n",
-	    (double) total_dsb_uops / total_topdown_slots_issued * 100.0);
-  }
-  fprintf(outfile,"backend        %4.3f\n",backend_bound);
-  if ((level > 1) && total_resource_stalls_sb){
-    fprintf(outfile,"resource_stalls.sb     %4.3f\n",(double) total_resource_stalls_sb * 2 / total_topdown_total_slots);
-  }
-  if ((level > 1) && total_stalls_ldm_pending){
-    fprintf(outfile,"stalls_ldm_pending     %4.3f\n",(double) total_stalls_ldm_pending * 2 / total_topdown_total_slots);    
-  }
-  if ((level > 2) && total_l2_refs){
-    fprintf(outfile,"l2_refs                    %4.3f\n",
-	    (double) total_l2_refs * 2 / total_topdown_total_slots);
-  }
-  if ((level > 2) && total_l2_misses){
-    fprintf(outfile,"l2_misses                  %4.3f\n",
-	    (double) total_l2_misses * 2 / total_topdown_total_slots);
-    if (total_l2_refs)
-      fprintf(outfile,"l2_miss_ratio              %2.2f%%\n",
-	      (double) total_l2_misses / total_l2_refs * 100.0);            
-  }
-  if ((level > 2) && total_l3_refs){
-    fprintf(outfile,"l3_refs                    %4.3f\n",
-	    (double) total_l3_refs * 2 / total_topdown_total_slots);
-  }
-  if ((level > 2) && total_l3_misses){
-    fprintf(outfile,"l3_misses                  %4.3f\n",
-	    (double) total_l3_misses * 2 / total_topdown_total_slots);
-    if (total_l3_refs)
-      fprintf(outfile,"l3_miss_ratio              %2.2f%%\n",
-	      (double) total_l3_misses / total_l3_refs * 100.0);      
-  }  
-  if (cflag){
-    for (i=0;i<ncpu/2;i++){
-      frontend_bound = (double) topdown_fetch_bubbles[i] / topdown_total_slots[i];
-      retiring = (double) topdown_slots_retired[i] / topdown_total_slots[i];
-      speculation = (double) (topdown_slots_issued[i] - topdown_slots_retired[i] + topdown_recovery_bubbles[i])/ topdown_total_slots[i];
-      backend_bound = 1 - (frontend_bound + retiring + speculation);
-      fprintf(outfile,"%d.retire       %4.3f\n",i,retiring);
-      if ((level > 1) && ms_uops[i]){
-	fprintf(outfile,"%d.ms_uops                %4.3f\n",i,
-		(double) ms_uops[i] / topdown_total_slots[i]);
-      }      
-      fprintf(outfile,"%d.speculation  %4.3f\n",i,speculation);
-      if ((level > 1) && (machine_clears[i] + branch_misses[i])){
-	fprintf(outfile,"%d.branch_misses          %2.2f%%\n",i,
-		(double) branch_misses[i] / (machine_clears[i] + branch_misses[i])*100);
-	fprintf(outfile,"%d.machine_clears         %2.2f%%\n",i,
-		(double) machine_clears[i] / (machine_clears[i] + branch_misses[i])*100);    
-      }      
-      fprintf(outfile,"%d.frontend     %4.3f\n",i,frontend_bound);
-      if ((level > 1) && uops0_delivered[i]){
-	fprintf(outfile,"%d.idq_uops_delivered_0   %4.3f\n",i,
-		(double) uops0_delivered[i] * 2 / topdown_total_slots[i]);
-      }
-      if ((level > 2) && icache_stall[i]){
-	fprintf(outfile,"%d.icache_stall               %4.3f\n",i,
-		(double) icache_stall[i] * 2 / topdown_total_slots[i]);	
-      }
-      if ((level > 2) && (itlb_stlb_hit[i] + itlb_walk_duration[i])){
-	fprintf(outfile,"%d.itlb_miss                  %4.3f\n",i,
-		(double) (itlb_stlb_hit[i]*14 + itlb_walk_duration[i]) * 2 / topdown_total_slots[i]);		
-      }
-      if ((level > 1) && uops1_delivered[i]){
-	fprintf(outfile,"%d.idq_uops_delivered_1   %4.3f\n",i,
-		(double) uops1_delivered[i] * 2 / topdown_total_slots[i]);
-      }      
-      if ((level > 1) && uops2_delivered[i]){
-	fprintf(outfile,"%d.idq_uops_delivered_2   %4.3f\n",i,
-		(double) uops2_delivered[i] * 2 / topdown_total_slots[i]);
-      }      
-      if ((level > 1) && uops3_delivered[i]){
-	fprintf(outfile,"%d.idq_uops_delivered_3   %4.3f\n",i,
-		(double) uops3_delivered[i] * 2 / topdown_total_slots[i]);
-      }
-      if ((level > 2) && dsb_uops[i]){
-	fprintf(outfile,"%d.dsb_uops                   %2.2f%%\n",i,
-		(double) dsb_uops[i] / topdown_slots_issued[i] * 100.0);
-      }
-      fprintf(outfile,"%d.backend      %4.3f\n",i,backend_bound);
-      if ((level > 1) && resource_stalls_sb[i]){
-	fprintf(outfile,"%d.resource_stalls.sb     %4.3f\n",i,
-		(double) resource_stalls_sb[i] * 2 / topdown_total_slots[i]);
-      }
-      if ((level > 1) && stalls_ldm_pending[i]){
-	fprintf(outfile,"%d.stalls_ldm_pending     %4.3f\n",i,
-		(double) stalls_ldm_pending[i] * 2 / topdown_total_slots[i]);    
-  }      
-    }
-  }
-}
-
 int main(int argc,char *const argv[],char *const envp[]){
   int status;
   struct rusage rusage;
@@ -804,9 +543,7 @@ int main(int argc,char *const argv[],char *const envp[]){
     fatal("unable to query CPU information\n");
   }
 
-  char *vendor = lookup_vendor();
-
-  setup_counters(vendor);
+  setup_counters();
 
   start_counters();
 
@@ -829,13 +566,6 @@ int main(int argc,char *const argv[],char *const envp[]){
     print_ipc(num_procs);
   } else {
     print_topdown();
-#if 0
-    if (vendor && !strcmp(vendor,"GenuineIntel")){
-      print_intel_topdown(num_procs);
-    } else if (vendor && !strcmp(vendor,"AuthenticAMD")){
-      print_amd_topdown();
-    }
-#endif
   }
   
   if (oflag) fclose(outfile);
