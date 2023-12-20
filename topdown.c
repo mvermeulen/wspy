@@ -500,13 +500,13 @@ void print_topdown(){
       unsigned long int fe_bound = sum_counters("topdown-fe-bound");
       unsigned long int be_bound = sum_counters("topdown-be-bound");
       unsigned long int bad_spec = sum_counters("topdown-bad-spec");
-      fprintf(outfile,"retire       %4.3f\n",
+      fprintf(outfile,"retire         %4.3f\n",
 	      (double) retiring / slots);
-      fprintf(outfile,"speculation  %4.3f\n",
+      fprintf(outfile,"speculation    %4.3f\n",
 	      (double) bad_spec / slots);
-      fprintf(outfile,"frontend     %4.3f\n",
+      fprintf(outfile,"frontend       %4.3f\n",
 	      (double) fe_bound / slots);
-      fprintf(outfile,"backend      %4.3f\n",
+      fprintf(outfile,"backend        %4.3f\n",
 	      (double) be_bound / slots);
     }
     break;
