@@ -402,7 +402,7 @@ void setup_counters(char *vendor){
     for (j=0;j<ncounters;j++){
       if (mask & counterdef[j].use){
 	coreinfo->counters[count].corenum = i;
-	coreinfo->counters[count].cdef = counterdef;
+	coreinfo->counters[count].cdef = &counterdef[j];
 	// set up the counter and leave it disabled
 	debug("core %d creating counter %s\n",i,counterdef[j].name);
 	memset(&pe,0,sizeof(pe));
@@ -413,12 +413,10 @@ void setup_counters(char *vendor){
 	  (counterdef[j].cmask<<24) |
 	  (counterdef[j].event&0xf00)<<24;
 	pe.sample_type = PERF_SAMPLE_IDENTIFIER;
-	pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED|PERF_FORMAT_TOTAL_TIME_RUNNING|PERF_FORMAT_ID|PERF_FORMAT_GROUP;
+	pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED|PERF_FORMAT_TOTAL_TIME_RUNNING;
 	pe.size = sizeof(struct perf_event_attr);
-	pe.inherit=1;
-	pe.precise_ip=0;
 	pe.exclude_guest=1;
-	//	pe.disabled = 1;
+	pe.disabled = 1;
 	status = perf_event_open(&pe,-1,i,groupid,PERF_FLAG_FD_CLOEXEC);
 	if (status == -1){
 	  error("unable to open performance counter cpu=%d, name=%s, errno=%d - %s\n",i, counterdef[j].name, errno,strerror(errno));
@@ -436,25 +434,42 @@ void setup_counters(char *vendor){
 }
 
 void start_counters(void){
-  int i;
-  for (i=0;i<num_total_counters;i++){
-    ioctl(app_counters[i].fd,PERF_EVENT_IOC_ENABLE,0);
+  int i,j;
+  int status;
+  struct counter_info *cinfo;
+  for (i=0;i<cpu_info->num_cores;i++){
+    if (cpu_info->coreinfo[i].ncounters == 0) continue;
+    for (j=0;j<cpu_info->coreinfo[i].ncounters;j++){
+      cinfo = &cpu_info->coreinfo[i].counters[j];
+      status = ioctl(cinfo->fd,PERF_EVENT_IOC_ENABLE,0);
+      if (status != 0)
+	error("unable to start counter %s on core %d\n",cinfo->cdef->name,cinfo->corenum);
+    }
   }
 }
 
 void stop_counters(void){
-  int i;
+  int i,j;
   int status;
   struct read_format { uint64_t value, time_enabled, time_running,id; } rf;
-  for (i=0;i<num_total_counters;i++){
-    status = read(app_counters[i].fd,&rf,sizeof(rf));
-    if (status == -1){
-      error("unable to read performance counter cpu=%d, name=%s, errno=%d\n",
-	    app_counters[i],app_counters[i].definition->name,errno);
-    } else {
-      app_counters[i].value = rf.value * ((double) rf.time_enabled / rf.time_running);
-      if (app_counters[i].definition->scale){
-	app_counters[i].value *= app_counters[i].definition->scale;
+  
+  struct counter_info *cinfo;
+  for (i=0;i<cpu_info->num_cores;i++){
+    if (cpu_info->coreinfo[i].ncounters == 0) continue;
+    for (j=0;j<cpu_info->coreinfo[i].ncounters;j++){
+      cinfo = &cpu_info->coreinfo[i].counters[j];
+      status = read(cinfo->fd,&rf,sizeof(rf));
+      printf("value = %lu\n",rf.value);
+      
+      if (status == -1){
+	error("unable to read counter %s on core %d, fd=%d errno=%d - %s\n",cinfo->cdef->name,cinfo->corenum,
+	      cinfo->fd, errno, strerror(errno));	
+      } else {
+	cinfo->value = rf.value * ((double) rf.time_enabled / rf.time_running);
+	if (cinfo->cdef->scale){
+	  cinfo->value *= cinfo->cdef->scale;
+	}
+	status = ioctl(cinfo->fd,PERF_EVENT_IOC_DISABLE,0);
       }
     }
   }
