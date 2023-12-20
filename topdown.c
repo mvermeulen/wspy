@@ -437,7 +437,6 @@ void stop_counters(void){
     for (j=0;j<cpu_info->coreinfo[i].ncounters;j++){
       cinfo = &cpu_info->coreinfo[i].counters[j];
       status = read(cinfo->fd,&rf,sizeof(rf));
-      printf("value = %lu\n",rf.value);
       
       if (status == -1){
 	error("unable to read counter %s on core %d, fd=%d errno=%d - %s\n",cinfo->cdef->name,cinfo->corenum,
@@ -504,42 +503,40 @@ unsigned long int sum_counters(char *cname){
   return total;
 }
 
-void print_ipc(int ncpu){
+void print_ipc(){
   unsigned long int total_instructions = sum_counters("instructions");
   unsigned long int total_cpu_cycles = sum_counters("cpu-cycles");
   fprintf(outfile,"IPC\t%4.3f\n",
 	  (double) total_instructions / total_cpu_cycles);
 }
 
-#if 0  
-  unsigned long int instructions[ncpu/2];
-  unsigned long int cpu_cycles[ncpu/2];
-  unsigned long int total_instructions = 0;
-  unsigned long int total_cpu_cycles = 0;
-  // Note: Assumes two hyperthreads per core with numbering of core 0 first and core 1 second
-  for (i=0;i<ncpu/2;i++){
-    instructions[i] = 0;
-    cpu_cycles[i] = 0;
-  }
-  for (i=0;i<num_total_counters;i++){
-    if (!strcmp(app_counters[i].definition->name,"instructions")){
-      instructions[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_instructions += app_counters[i].value;
-    } else if (!strcmp(app_counters[i].definition->name,"cpu-cycles")){
-      cpu_cycles[app_counters[i].corenum % (ncpu/2)] += app_counters[i].value;
-      total_cpu_cycles += app_counters[i].value;
+void print_topdown(){
+  switch (cpu_info->vendor){
+  case VENDOR_INTEL:
+    if (cpu_info->family == 6 && cpu_info->model == 0xba){
+      // Raptor Lake
+      unsigned long int slots = sum_counters("slots");
+      unsigned long int retiring = sum_counters("topdown-retiring");
+      unsigned long int fe_bound = sum_counters("topdown-fe-bound");
+      unsigned long int be_bound = sum_counters("topdown-be-bound");
+      unsigned long int bad_spec = sum_counters("topdown-bad-spec");
+      fprintf(outfile,"retire       %4.3f\n",
+	      (double) retiring / slots);
+      fprintf(outfile,"speculation  %4.3f\n",
+	      (double) bad_spec / slots);
+      fprintf(outfile,"frontend     %4.3f\n",
+	      (double) fe_bound / slots);
+      fprintf(outfile,"backend      %4.3f\n",
+	      (double) be_bound / slots);
     }
-  }
-  fprintf(outfile,"IPC\t%4.3f\n",
-	  (double) total_instructions / total_cpu_cycles);
-  if (cflag){
-    for (i=0;i<ncpu/2;i++){
-      fprintf(outfile,"%d.IPC\t%4.3f\n",i,
-	      (double) instructions[i] / cpu_cycles[i]);
+    break;
+  case VENDOR_AMD:
+    if (cpu_info->family == 0x17 || cpu_info->family == 0x19){
+      // Zen
     }
+    break;
   }
-#endif
-
+}
 
 void print_amd_topdown(void){
 }
@@ -831,11 +828,14 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (area == AREA_IPC){
     print_ipc(num_procs);
   } else {
+    print_topdown();
+#if 0
     if (vendor && !strcmp(vendor,"GenuineIntel")){
       print_intel_topdown(num_procs);
     } else if (vendor && !strcmp(vendor,"AuthenticAMD")){
       print_amd_topdown();
     }
+#endif
   }
   
   if (oflag) fclose(outfile);
