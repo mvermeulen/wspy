@@ -538,7 +538,7 @@ void stop_counters(struct counter_group *system_wide,struct counter_group *per_c
 		cgroup->label,cgroup->cinfo[i].label,errno,strerror(errno));
 	} else {
 	  // TODO: how to adjust for running time - commented out in favor of actual time?	  
-	  // cgroup->cinfo[i].value = rf.value * ((double) rf.time_enables / rf.time_running);
+	  // cgroup->cinfo[i].value = rf.value * ((double) rf.time_running / rf.time_enabled);
 	  
 	  cgroup->cinfo[i].value = rf.value;
 	  // TODO: add scaling for performance counters...
@@ -549,8 +549,9 @@ void stop_counters(struct counter_group *system_wide,struct counter_group *per_c
 	    error("unable to stop %s counter %s, errno=%d,%s\n",
 		  cgroup->label,cgroup->cinfo[i].label,errno,strerror(errno));
 	  } else {
-	    debug("   stopped %s counter, name=%s, value=%lu\n",
-		  cgroup->label,cgroup->cinfo[i].label,cgroup->cinfo[i].value);
+	    debug("   stopped %s counter, name=%s, value=%lu enabled=%lu running=%lu\n",
+		  cgroup->label,cgroup->cinfo[i].label,cgroup->cinfo[i].value,
+		  rf.time_enabled,rf.time_running);
 	  }
 	}
       }
