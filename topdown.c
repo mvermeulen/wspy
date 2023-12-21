@@ -59,8 +59,6 @@ struct counterdef *counters;
  */
 struct counterdef amd_zen_counters[] = {
   // name                                event umask cmask any scale use
-  { "instructions",                      0xc0, 0,    0,    0,  0,    USE_IPC },
-  { "cpu-cycles",                        0x76, 0,    0,    0,  0,    USE_IPC|USE_L1 },
   { "ex_ret_ops",                        0xc1, 0,    0,    0,  0,    USE_L1  },
   { "de_no_dispatch_per_slot.no_ops_from_frontend",
                                          0x1a0,1,    0,    0,  0,    USE_L1  },
@@ -69,6 +67,9 @@ struct counterdef amd_zen_counters[] = {
   { "de_src_op_disp.all",                0xaa, 0x7,  0,    0,  0,    USE_L1  },
   { "de_no_dispatch_per_slot.smt_contention",
                                          0x1a0,0x60, 0,    0,  0,    USE_L1  },
+  { "cpu-cycles",                        0x76, 0,    0,    0,  0,    USE_IPC|USE_L1 },
+  { "instructions",                      0xc0, 0,    0,    0,  0,    USE_IPC },
+  
 };
 
 struct counterdef amd_unknown_counters[] = {
@@ -443,6 +444,7 @@ void stop_counters(void){
       }
     }
   }
+  dump_cpu_info();
 }
 
 void print_usage(struct rusage *rusage){

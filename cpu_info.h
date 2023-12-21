@@ -52,3 +52,4 @@ struct cpu_info {
 
 extern struct cpu_info *cpu_info;
 extern int inventory_cpu(void);
+extern void dump_cpu_info(void);

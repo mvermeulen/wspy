@@ -144,6 +144,22 @@ int inventory_cpu(void){
   return 0;
 }
 
+void dump_cpu_info(void){
+  int i,j;
+  printf("CPU family=%d model=%d\n",cpu_info->family,cpu_info->model);
+  for (i=0;i<cpu_info->num_cores;i++){
+    if (cpu_info->coreinfo[i].is_available){
+      printf("\tcore %d",i);
+      printf(" counters=%d\n",cpu_info->coreinfo[i].ncounters);
+      for (j=0;j<cpu_info->coreinfo[i].ncounters;j++){
+	printf("\t\t%s %lx\n",
+	       cpu_info->coreinfo[i].counters[j].cdef->name,
+	       cpu_info->coreinfo[i].counters[j].value);
+      }
+    }
+  }
+}  
+
 #if TEST_CPU_INFO
 int main(void){
   int i;
