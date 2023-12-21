@@ -18,32 +18,20 @@
 #include "cpu_info.h"
 
 int num_procs;
-int cflag = 0;
+int aflag = 0;
 int oflag = 0;
 int xflag = 0;
 int vflag = 0;
+
+unsigned int counter_mask = 0;
+#define COUNTER_IPC         0x1
+#define COUNTER_TOPDOWN     0x2
+#define COUNTER_SOFTWARE    0x10
+
 struct timespec start_time,finish_time;
-enum areamode {
-  AREA_ALL,
-  AREA_RETIRE,
-  AREA_SPEC,
-  AREA_FRONTEND,
-  AREA_BACKEND,
-  AREA_IPC
-} area = AREA_ALL;
-
-#define USE_IPC   0x1
-#define USE_L1    0x2
-#define USE_L2r   0x10
-#define USE_L2s   0x20
-#define USE_L2f   0x40
-#define USE_L2b   0x80
-#define USE_L3f   0x400
-#define USE_L3b   0x800
-
 
 // Counter definitions for supported cores
-struct counterdef *counters;
+struct counter_def *counters;
 /*                                                                              
  * Zen4                                                                         
  *                                                                              
@@ -56,23 +44,24 @@ struct counterdef *counters;
  * backend = <de_no_dispatch_per_slot.backend_stalls / slots                    
  * speculation = (<de_src_op_disp.all> - <ex_ret_ops>) / slots                  
  */
-struct counterdef amd_zen_counters[] = {
-  // name                                event umask cmask any scale use
-  { "cpu-cycles",                        0x76, 0,    0,    0,  0,    USE_IPC|USE_L1 },
-  { "instructions",                      0xc0, 0,    0,    0,  0,    USE_IPC },
-  { "ex_ret_ops",                        0xc1, 0,    0,    0,  0,    USE_L1  },
+struct counter_def amd_zen_counters[] = {
+  // name                                event umask cmask any scale mask
+  { "cpu-cycles",                        0x76, 0,    0,    0,  0,    COUNTER_IPC | COUNTER_TOPDOWN },
+  { "instructions",                      0xc0, 0,    0,    0,  0,    COUNTER_IPC },
+  { "ex_ret_ops",                        0xc1, 0,    0,    0,  0,    COUNTER_IPC  },
+  { "branch-instructions",               0xc2, 0,    0,    0,  0,    COUNTER_IPC },
   { "de_no_dispatch_per_slot.no_ops_from_frontend",
-                                         0x1a0,1,    0,    0,  0,    USE_L1  },
+                                         0x1a0,1,    0,    0,  0,    COUNTER_TOPDOWN  },
   { "de_no_dispatch_per_slot.backend_stalls",
-                                         0x1a0,0x1e, 0,    0,  0,    USE_L1  },
-  { "de_src_op_disp.all",                0xaa, 0x7,  0,    0,  0,    USE_L1  },
+                                         0x1a0,0x1e, 0,    0,  0,    COUNTER_TOPDOWN  },
+  { "de_src_op_disp.all",                0xaa, 0x7,  0,    0,  0,    COUNTER_TOPDOWN  },
 };
 
-struct counterdef amd_unknown_counters[] = {
+struct counter_def amd_unknown_counters[] = {
   // name                                event umask cmask any scale use
-  { "instructions",                      0xc0, 0,    0,    0,  0,    USE_IPC },
-  { "cpu-cycles",                        0x76, 0,    0,    0,  0,    USE_IPC },
-  { "ex_ret_ops",                        0xc1, 0,    0,    0,  0,    USE_L1  },
+  { "cpu-cycles",                        0x76, 0,    0,    0,  0,    COUNTER_IPC | COUNTER_IPC },
+  { "instructions",                      0xc0, 0,    0,    0,  0,    COUNTER_IPC },
+  { "ex_ret_ops",                        0xc1, 0,    0,    0,  0,    COUNTER_IPC  },
 };
 
 /*
@@ -91,14 +80,14 @@ struct counterdef amd_unknown_counters[] = {
  * speculation = <cpu_atom/topdown-bad-spec>
  *
  */
-struct counterdef intel_atom_counters[] = {
+struct counter_def intel_atom_counters[] = {
   // name                                event umask cmask any scale use
-  { "instructions",                      0xc0, 0,    0,    0,  0,    USE_IPC },
-  { "cpu-cycles",                        0x3c, 0,    0,    0,  0,    USE_IPC },  
-  { "topdown-retiring",                  0xc2, 0,    0,    0,  0,    USE_L1  },
-  { "topdown-fe-bound",                  0x71, 0,    0,    0,  0,    USE_L1  },
-  { "topdown-be-bound",                  0x74, 0,    0,    0,  0,    USE_L1  },
-  { "topdown-bad-spec",                  0x73, 0,    0,    0,  0,    USE_L1  },
+  { "instructions",                      0xc0, 0,    0,    0,  0,    COUNTER_IPC },
+  { "cpu-cycles",                        0x3c, 0,    0,    0,  0,    COUNTER_IPC|COUNTER_TOPDOWN },  
+  { "topdown-retiring",                  0xc2, 0,    0,    0,  0,    COUNTER_TOPDOWN  },
+  { "topdown-fe-bound",                  0x71, 0,    0,    0,  0,    COUNTER_TOPDOWN  },
+  { "topdown-be-bound",                  0x74, 0,    0,    0,  0,    COUNTER_TOPDOWN  },
+  { "topdown-bad-spec",                  0x73, 0,    0,    0,  0,    COUNTER_TOPDOWN  },
 };
 
 /*
@@ -110,18 +99,19 @@ struct counterdef intel_atom_counters[] = {
  * backend = <cpu_core/topdown-be-bound>                                        
  * speculation = <cpu_core/topdown-bad-spec>
  */
-struct counterdef intel_core_counters[] = {
+struct counter_def intel_core_counters[] = {
   // name                                event umask cmask any scale use
-  { "instructions",                      0xc0, 0,    0,    0,  0,    USE_IPC },
-  { "cpu-cycles",                        0x3c, 0,    0,    0,  0,    USE_IPC },
-  { "slots",                             0x00, 4,    0,    0,  0,    USE_L1  },
-  { "topdown-retiring",                  0x00, 0x80, 0,    0,  0,    USE_L1  },
-  { "topdown-fe-bound",                  0x00, 0x82, 0,    0,  0,    USE_L1  },
-  { "topdown-be-bound",                  0x00, 0x83, 0,    0,  0,    USE_L1  },
-  { "topdown-bad-spec",                  0x00, 0x81, 0,    0,  0,    USE_L1  },
+  { "instructions",                      0xc0, 0,    0,    0,  0,    COUNTER_IPC },
+  { "cpu-cycles",                        0x3c, 0,    0,    0,  0,    COUNTER_IPC },
+  { "slots",                             0x00, 4,    0,    0,  0,    COUNTER_TOPDOWN  },
+  { "topdown-retiring",                  0x00, 0x80, 0,    0,  0,    COUNTER_TOPDOWN  },
+  { "topdown-fe-bound",                  0x00, 0x82, 0,    0,  0,    COUNTER_TOPDOWN  },
+  { "topdown-be-bound",                  0x00, 0x83, 0,    0,  0,    COUNTER_TOPDOWN  },
+  { "topdown-bad-spec",                  0x00, 0x81, 0,    0,  0,    COUNTER_TOPDOWN  },
 };
 
-struct counterdef intel_unknown_counters[] = {
+#if 0
+struct counter_def intel_unknown_counters[] = {
   // name                                event umask cmask any scale use
   { "instructions",                      0xc0, 0,    0,    0,  0,    USE_IPC },
   { "cpu-cycles",                        0x3c, 0,    0,    0,  0,    USE_IPC },
@@ -148,12 +138,12 @@ struct counterdef intel_unknown_counters[] = {
   { "longest_lat_cache.reference",       0x2e, 0x4f, 0,    0,  0,    USE_L3b },
   { "longest_lat_cache.miss",            0x2e, 0x41, 0,    0,  0,    USE_L3b },
 };
+#endif
 
 int command_line_argc;
 char **command_line_argv;
 pid_t child_pid = 0;
 
-int level = 1;
 FILE *outfile;
 
 int parse_options(int argc,char *const argv[]){
@@ -161,33 +151,16 @@ int parse_options(int argc,char *const argv[]){
   int opt;
   int i;
   unsigned int lev;
-  while ((opt = getopt(argc,argv,"+abcfil:o:rsvx")) != -1){
+  while ((opt = getopt(argc,argv,"+aAio:stvx")) != -1){
     switch (opt){
     case 'a':
-      area = AREA_ALL;
+      aflag = 0;
       break;
-    case 'b':
-      area = AREA_BACKEND;
-      break;
-    case 'c':
-      cflag = 1;
-      break;
-    case 'f':
-      area = AREA_FRONTEND;
+    case 'A':
+      aflag = 1;
       break;
     case 'i':
-      area = AREA_IPC;
-      break;
-    case 'l':
-      if (sscanf(optarg,"%u",&lev) == 1){
-	if (lev >= 1 && lev <= 4){
-	  level = lev;
-	} else {
-	  error("incorrect option to -l: %u, ignored\n",lev);
-	}
-      } else {
-	error("incorrect option to -l: %s, ignored\n",optarg);	
-      }
+      counter_mask |= COUNTER_IPC;
       break;
     case 'o':
       fp = fopen(optarg,"w");
@@ -198,11 +171,8 @@ int parse_options(int argc,char *const argv[]){
 	oflag = 1;
       }
       break;
-    case 'r':
-      area = AREA_RETIRE;
-      break;
     case 's':
-      area = AREA_SPEC;
+      counter_mask |= COUNTER_SOFTWARE;
       break;
     case 'v':
       vflag++;
@@ -278,57 +248,174 @@ int perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
   return ret;
 }
 
-void setup_counters(void){
+// creates and allocates a hardware counter group
+struct counter_group *hardware_counter_group(char *name,unsigned int mask){
+  int count,i;
+  struct counter_group *cgroup = NULL;
+  struct counter_def *hw_counter_table = NULL;
+  int num_hw_counters = 0;
+  
+  if (!cpu_info) inventory_cpu();
+  
+  // set up counter groups
+  switch(cpu_info->vendor){
+  case VENDOR_AMD:
+    if (cpu_info->family == 0x17 || cpu_info->family == 0x19){
+      // zen core
+      hw_counter_table = amd_zen_counters;
+      num_hw_counters = sizeof(amd_zen_counters)/sizeof(amd_zen_counters[0]);
+    } else {
+      return NULL;
+    }
+    break;
+  case VENDOR_INTEL:
+    if (cpu_info->family == 0x6 && cpu_info-> model == 0xba){
+      // raptor lake
+      hw_counter_table = intel_core_counters;
+      num_hw_counters = sizeof(intel_core_counters)/sizeof(intel_core_counters[0]);
+    } else {
+      return NULL;
+    }
+    break;
+  }
+
+  // find counters that match
+  if ((counter_mask & mask) && num_hw_counters){
+    count = 0;
+    for (i=0;i<num_hw_counters;i++){
+      if (hw_counter_table[i].use & mask) count++;
+    }
+    cgroup = calloc(1,sizeof(struct counter_group));
+    cgroup->label = strdup(name);
+    cgroup->type_id = PERF_TYPE_RAW;
+    cgroup->mask = mask;
+    cgroup->ncounters = count;
+    cgroup->counter = calloc(count,sizeof(struct counter_def *));
+    count = 0;
+    for (i=0;i<num_hw_counters;i++){
+      if (hw_counter_table[i].use & mask){
+	cgroup->counter[count] = &hw_counter_table[i];
+	count++;
+      }
+    }
+  }
+  
+  return cgroup;
+}
+
+// creates and allocates a group for software performance counters
+struct counter_group *software_counter_group(char *name){
+  int i;
+  
+  struct software_counters {
+    char *label;
+    unsigned int config;
+  } sw_counters[] = {
+    { "cpu-clock", PERF_COUNT_SW_CPU_CLOCK },
+    { "task-clock", PERF_COUNT_SW_TASK_CLOCK },    
+    { "page faults", PERF_COUNT_SW_PAGE_FAULTS },
+    { "context switches", PERF_COUNT_SW_CONTEXT_SWITCHES },
+    { "cpu migrations", PERF_COUNT_SW_CPU_MIGRATIONS },
+    { "major page faults", PERF_COUNT_SW_PAGE_FAULTS_MAJ },
+    { "minor page faults", PERF_COUNT_SW_PAGE_FAULTS_MIN },
+    { "alignment faults", PERF_COUNT_SW_ALIGNMENT_FAULTS },
+    { "emulation faults", PERF_COUNT_SW_EMULATION_FAULTS },
+  };
+  
+  struct counter_group *cgroup = calloc(1,sizeof(struct counter_group));
+  cgroup->label = strdup(name);
+  cgroup->type_id = PERF_TYPE_SOFTWARE;
+  cgroup->ncounters = sizeof(sw_counters)/sizeof(sw_counters[0]);
+  cgroup->cinfo = calloc(cgroup->ncounters,sizeof(struct counter_info));
+  for (i=0;i<cgroup->ncounters;i++){
+    cgroup->cinfo[i].label = strdup(sw_counters[i].label);
+    cgroup->cinfo[i].config = sw_counters[i].config;
+  }
+  return cgroup;
+}
+
+
+void setup_counter_groups(struct counter_group **systemwide_counters,
+			  struct counter_group **per_core_counters){
+
+  int i,count;
+  struct counter_group *cgroup;
+
+  if (counter_mask & COUNTER_IPC){
+    if (cgroup = hardware_counter_group("ipc",COUNTER_IPC)){
+      if (aflag){
+	cgroup->next = *per_core_counters;
+	*per_core_counters = cgroup;
+      } else {
+	cgroup->next = *systemwide_counters;
+	*systemwide_counters = cgroup;
+      }
+    }
+  }
+  if (counter_mask & COUNTER_TOPDOWN){
+    if (cgroup = hardware_counter_group("topdown",COUNTER_TOPDOWN)){
+      if (aflag){
+	cgroup->next = *per_core_counters;
+	*per_core_counters = cgroup;
+      } else {
+	cgroup->next = *systemwide_counters;
+	*systemwide_counters = cgroup;
+      }
+    }
+  }  
+
+  if (counter_mask & COUNTER_SOFTWARE){
+    if (cgroup = software_counter_group("software")){
+      cgroup->next = *systemwide_counters;
+      *systemwide_counters = cgroup;
+    }
+  }
+}
+
+void setup_counters(struct counter_group *system_wide,struct counter_group *per_core){
   unsigned int mask = 0;
   int i,j,k;
   int count;
   int nerror = 0;
   int status;
   int groupid;
+  struct counter_group *cgroup;
   struct perf_event_attr pe;
-  // set the mask
-  switch(area){
-  case AREA_ALL:
-    mask = USE_L1;
-    if (level > 1)
-      mask = mask | USE_L2r | USE_L2s | USE_L2f | USE_L2b;
-    if (level > 2)
-      mask = mask | USE_L3f | USE_L3b;
-    break;
-  case AREA_RETIRE:
-    mask = USE_L1;
-    if (level > 1)
-      mask = mask | USE_L2r;
-    break;
-  case AREA_SPEC:
-    mask = USE_L1;
-    if (level > 1)
-      mask = mask | USE_L2s;
-    break;
-  case AREA_FRONTEND:
-    mask = USE_L1;
-    if (level > 1)
-      mask = mask | USE_L2f;
-    if (level > 2)
-      mask = mask | USE_L3f;
-    break;
-  case AREA_BACKEND:
-    mask = USE_L1;
-    if (level > 1)
-      mask = mask | USE_L2b;
-    if (level > 2)
-      mask = mask | USE_L3b;
-    break;
-  case AREA_IPC:
-    mask = USE_IPC;
-    break;
-  }
 
   struct cpu_core_info *coreinfo;
-  struct counterdef *counterdef;
+  struct counter_def *counter_def;
   int ncounters;
-  if (!cpu_info) inventory_cpu();
-  
+
+  // create system-wide counters
+  for (cgroup = system_wide;cgroup;cgroup = cgroup->next){
+    debug("Setting up %s counters\n",cgroup->label);
+    groupid = -1;
+    for (i=0;i<cgroup->ncounters;i++){
+      memset(&pe,0,sizeof(pe));
+      pe.type = cgroup->type_id;
+      pe.config = cgroup->cinfo[i].config;
+      pe.sample_type = PERF_SAMPLE_IDENTIFIER; // is this needed?
+      pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED|PERF_FORMAT_TOTAL_TIME_RUNNING;
+      pe.size = sizeof(struct perf_event_attr);
+      pe.exclude_guest = 1; // is this needed
+      pe.disabled = 1;
+
+      status = perf_event_open(&pe,0,-1,groupid,PERF_FLAG_FD_CLOEXEC);
+      if (status == -1){
+	error("unable to create %s performance counter, name=%d, errno=%d - %s\n",
+	      cgroup->label,cgroup->cinfo[i].label,errno,strerror(errno));
+	cgroup->cinfo[i].fd = -1;
+	nerror;
+      } else {
+	cgroup->cinfo[i].fd = status;
+	ioctl(cgroup->cinfo[i].fd,PERF_EVENT_IOC_ENABLE,0);
+	debug("   create %s performance counter, name=%s\n",cgroup->label,cgroup->cinfo[i].label);
+	if (groupid == -1) groupid = cgroup->cinfo[i].fd;
+      }
+    }
+  }
+
+  // create per-core counters
   for (i=0;i< cpu_info->num_cores;i++){
     coreinfo = &cpu_info->coreinfo[i];
     if (!coreinfo->is_available){
@@ -338,16 +425,16 @@ void setup_counters(void){
     // pick the list of counters
     switch(coreinfo->vendor){
     case CORE_AMD_ZEN:
-      counterdef = amd_zen_counters;
+      counter_def = amd_zen_counters;
       ncounters = sizeof(amd_zen_counters)/sizeof(amd_zen_counters[0]);
       break;
     case CORE_INTEL_ATOM:
       // Ignore Atom cores since perf_event_open(2) doesn't seem to allow this
-      //      counterdef = intel_atom_counters;
+      //      counter_def = intel_atom_counters;
       //      ncounters = sizeof(amd_zen_counters)/sizeof(amd_zen_counters[0]);
       continue;
     case CORE_INTEL_CORE:
-      counterdef = intel_core_counters;
+      counter_def = intel_core_counters;
       ncounters = sizeof(amd_zen_counters)/sizeof(amd_zen_counters[0]);
       break;
     default:
@@ -357,7 +444,7 @@ void setup_counters(void){
     count = 0;
     groupid = -1;
     for (j=0;j<ncounters;j++){
-      if (mask & counterdef[j].use) count++;
+      if (mask & counter_def[j].use) count++;
     }
     coreinfo->ncounters = count;
     // allocate space
@@ -366,18 +453,18 @@ void setup_counters(void){
     // set up counter
     count = 0;
     for (j=0;j<ncounters;j++){
-      if (mask & counterdef[j].use){
+      if (mask & counter_def[j].use){
 	coreinfo->counters[count].corenum = i;
-	coreinfo->counters[count].cdef = &counterdef[j];
+	coreinfo->counters[count].cdef = &counter_def[j];
 	// set up the counter and leave it disabled
-	debug("core %d creating counter %s\n",i,counterdef[j].name);
+	debug("core %d creating counter %s\n",i,counter_def[j].name);
 	memset(&pe,0,sizeof(pe));
 	pe.type = PERF_TYPE_RAW;
-	pe.config = (counterdef[j].event&0xff) |
-	  (counterdef[j].umask<<8) |
-	  (counterdef[j].any<<21) |
-	  (counterdef[j].cmask<<24) |
-	  (counterdef[j].event&0xf00)<<24;
+	pe.config = (counter_def[j].event&0xff) |
+	  (counter_def[j].umask<<8) |
+	  (counter_def[j].any<<21) |
+	  (counter_def[j].cmask<<24) |
+	  (counter_def[j].event&0xf00)<<24;
 	pe.sample_type = PERF_SAMPLE_IDENTIFIER;
 	pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED|PERF_FORMAT_TOTAL_TIME_RUNNING;
 	pe.size = sizeof(struct perf_event_attr);
@@ -385,7 +472,7 @@ void setup_counters(void){
 	pe.disabled = 1;
 	status = perf_event_open(&pe,-1,i,groupid,PERF_FLAG_FD_CLOEXEC);
 	if (status == -1){
-	  error("unable to open performance counter cpu=%d, name=%s, errno=%d - %s\n",i, counterdef[j].name, errno,strerror(errno));
+	  error("unable to open performance counter cpu=%d, name=%s, errno=%d - %s\n",i, counter_def[j].name, errno,strerror(errno));
 	  nerror++;
 	} else {
 	  if (groupid==-1) groupid = status;
@@ -399,9 +486,28 @@ void setup_counters(void){
   if (nerror) fatal("unable to open performance counters\n");
 }
 
-void start_counters(void){
+void start_counters(struct counter_group *system_wide,struct counter_group *per_core){
   int i,j;
   int status;
+  struct counter_group *cgroup;
+
+  // start system-wide counters
+  for (cgroup = system_wide;cgroup;cgroup=cgroup->next){
+    debug("Starting %s counters\n",cgroup->label);  
+    for (i=0;i<cgroup->ncounters;i++){
+      if (cgroup->cinfo[i].fd != -1){
+	status = ioctl(cgroup->cinfo[i].fd,PERF_EVENT_IOC_ENABLE,0);
+	if (status != 0){
+	  error("unable to start %s counter %s, errno=%d,%s\n",
+		cgroup->label,cgroup->cinfo[i].label,errno,strerror(errno));
+	} else {
+	  debug("   started %s counter, name=%s\n",cgroup->label,cgroup->cinfo[i].label);
+	}
+      }
+    }
+  }
+
+  
   struct counter_info *cinfo;
   for (i=0;i<cpu_info->num_cores;i++){
     if (cpu_info->coreinfo[i].ncounters == 0) continue;
@@ -414,10 +520,42 @@ void start_counters(void){
   }
 }
 
-void stop_counters(void){
+void stop_counters(struct counter_group *system_wide,struct counter_group *per_core){
   int i,j;
   int status;
+  struct counter_group *cgroup;
+  
   struct read_format { uint64_t value, time_enabled, time_running,id; } rf;
+
+  // stop system-wide counters
+  for (cgroup = system_wide;cgroup;cgroup = cgroup->next){
+    debug("Stopping %s counters\n",cgroup->label);
+    for (i=0;i<cgroup->ncounters;i++){
+      if (cgroup->cinfo[i].fd != -1){
+	status = read(cgroup->cinfo[i].fd,&rf,sizeof(rf));
+	if (status == -1){
+	  error("unable to read %s counter %s, errno=%d - %s\n",
+		cgroup->label,cgroup->cinfo[i].label,errno,strerror(errno));
+	} else {
+	  // TODO: how to adjust for running time - commented out in favor of actual time?	  
+	  // cgroup->cinfo[i].value = rf.value * ((double) rf.time_enables / rf.time_running);
+	  
+	  cgroup->cinfo[i].value = rf.value;
+	  // TODO: add scaling for performance counters...
+	  
+	  status = ioctl(cgroup->cinfo[i].fd,PERF_EVENT_IOC_DISABLE,0);
+	  
+	  if (status != 0){
+	    error("unable to stop %s counter %s, errno=%d,%s\n",
+		  cgroup->label,cgroup->cinfo[i].label,errno,strerror(errno));
+	  } else {
+	    debug("   stopped %s counter, name=%s, value=%lu\n",
+		  cgroup->label,cgroup->cinfo[i].label,cgroup->cinfo[i].value);
+	  }
+	}
+      }
+    }
+  }
   
   struct counter_info *cinfo;
   for (i=0;i<cpu_info->num_cores;i++){
@@ -539,24 +677,31 @@ void print_topdown(){
   }
 }
 
+void print_metrics(){
+    if (counter_mask & COUNTER_IPC){
+    print_ipc(num_procs);
+  }
+  if (counter_mask & COUNTER_TOPDOWN){
+    print_topdown();
+  }
+}
+
 int main(int argc,char *const argv[],char *const envp[]){
   int status;
   struct rusage rusage;
   outfile = stdout;
   num_procs = get_nprocs();
   if (parse_options(argc,argv)){
-      fatal("usage: %s -[abcfrsx][-l <1|2|3|4>][-o <file>] <cmd><args>...\n"
-	    "\t-l <level> - expand out <level> levels (default 1)\n"
-	    "\t-c         - show cores as separate\n"
+      fatal("usage: %s -[Aaivx][-o <file>] <cmd><args>...\n"
+	    "\t-A         - create per-cpu counters\n"
+	    "\t-a         - create overall counters\n"
+	    "\t-i         - print IPC metric\n"	    
 	    "\t-o <file>  - send output to <file>\n"
-	    "\t-a         - expand all areas\n"
-	    "\t-b         - expand backend stalls area\n"
-	    "\t-f         - expand frontend stalls area\n"
-	    "\t-r         - expand retiring area\n"
-	    "\t-s         - expand speculation area\n"
-	    "\t-i         - print IPC\n"
-	    "\t-x	  - print system info\n"
+	    "\t-s         - print software metrics\n"
+	    "\t-t         - print topdown metrics\n"
 	    "\t-v         - print verbose information\n"
+	    "\t-x	  - print system info\n"
+
 	    ,argv[0]);
   }
 
@@ -564,9 +709,13 @@ int main(int argc,char *const argv[],char *const envp[]){
     fatal("unable to query CPU information\n");
   }
 
-  setup_counters();
+  struct counter_group *systemwide_counters = NULL;
+  struct counter_group *per_core_counters = NULL;
+  setup_counter_groups(&systemwide_counters,&per_core_counters);
 
-  start_counters();
+  setup_counters(systemwide_counters,per_core_counters);
+
+  start_counters(systemwide_counters,per_core_counters);
 
   clock_gettime(CLOCK_REALTIME,&start_time);
   if (launch_child(command_line_argc,command_line_argv,envp)){
@@ -574,7 +723,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   }
   wait4(child_pid,&status,0,&rusage);
 
-  stop_counters();
+  stop_counters(systemwide_counters,per_core_counters);
   clock_gettime(CLOCK_REALTIME,&finish_time);  
 
   if (xflag){
@@ -583,12 +732,8 @@ int main(int argc,char *const argv[],char *const envp[]){
 
   //  dump_counters();
 
-  if (area == AREA_IPC){
-    print_ipc(num_procs);
-  } else {
-    print_topdown();
-  }
-  
+  print_metrics();
+
   if (oflag) fclose(outfile);
   return 0;
 }

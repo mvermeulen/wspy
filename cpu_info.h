@@ -1,22 +1,37 @@
+#include <linux/perf_event.h>
 // definition of counter parameters
-struct counterdef {
+struct counter_def {
   char *name;
   unsigned int long event;
   unsigned int long umask;
   unsigned int long cmask;
   unsigned int long any;
   unsigned int long scale;
-  unsigned int long use;
+  unsigned int use;
 };
 
 // in memory information kept with each counter
 struct counter_info {
-  int corenum;
-  struct counterdef *cdef;
+  char *label;
+  int corenum; // for hw counters
+  unsigned long int config;
+  struct counter_def *cdef;
   int fd;
   unsigned long int value;
 };
-  
+
+// groups of counters launched together
+struct counter_group {
+  char *label;
+  enum perf_type_id type_id;
+  int ncounters;
+  unsigned int mask;
+  struct counter_def **counter;
+  struct counter_info *cinfo;
+  struct counter_group *next;
+};
+
+// cpu core information
 enum cpu_core_type {
   CORE_UNKNOWN,
   CORE_AMD_UNKNOWN, CORE_AMD_ZEN,
