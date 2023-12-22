@@ -412,6 +412,7 @@ void setup_counters(struct counter_group *per_core){
       pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED|PERF_FORMAT_TOTAL_TIME_RUNNING;
       pe.size = sizeof(struct perf_event_attr);
       pe.exclude_guest = 1; // is this needed
+      pe.inherit = 1;
       pe.disabled = 1;
 
       status = perf_event_open(&pe,0,-1,groupid,PERF_FLAG_FD_CLOEXEC);
@@ -703,17 +704,17 @@ struct counter_info *find_ci_label(struct counter_group *cgroup,char *label){
 
 void print_software(struct counter_group *cgroup){
   int i;
-  double elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
-    start_time.tv_sec - start_time.tv_nsec / 1000000000;
+  struct counter_info *task_info = find_ci_label(cgroup,"task-clock");
+  double task_time = (double) task_info->value / 1000000000.0;
   struct counter_info *cinfo;
   for (i=0;i<cgroup->ncounters;i++){
-    printf("%-20s %lu",cgroup->cinfo[i].label,cgroup->cinfo[i].value);
+    printf("%-20s %-12lu",cgroup->cinfo[i].label,cgroup->cinfo[i].value);
     if (!strcmp(cgroup->cinfo[i].label,"task-clock") ||
 	!strcmp(cgroup->cinfo[i].label,"cpu-clock")){
       printf("   # %4.3f seconds",
 	     (double) cgroup->cinfo[i].value / 1000000000.0);
     } else {
-      printf("   # %4.3f/sec",cgroup->cinfo[i].value / elapsed);
+      printf("   # %4.3f/sec",cgroup->cinfo[i].value / task_time);
 	     
     }
     printf("\n");
