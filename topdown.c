@@ -20,13 +20,13 @@
 int num_procs;
 int aflag = 0;
 int oflag = 0;
-int xflag = 0;
+int xflag = 1;
 int vflag = 0;
 
-unsigned int counter_mask = 0;
 #define COUNTER_IPC         0x1
 #define COUNTER_TOPDOWN     0x2
 #define COUNTER_SOFTWARE    0x10
+unsigned int counter_mask = COUNTER_SOFTWARE;
 
 struct timespec start_time,finish_time;
 
@@ -151,7 +151,7 @@ int parse_options(int argc,char *const argv[]){
   int opt;
   int i;
   unsigned int lev;
-  while ((opt = getopt(argc,argv,"+aAio:stvx")) != -1){
+  while ((opt = getopt(argc,argv,"+AaIio:SsTtvXx")) != -1){
     switch (opt){
     case 'a':
       aflag = 0;
@@ -159,8 +159,11 @@ int parse_options(int argc,char *const argv[]){
     case 'A':
       aflag = 1;
       break;
-    case 'i':
+    case 'I':
       counter_mask |= COUNTER_IPC;
+      break;
+    case 'i':
+      counter_mask &= (~COUNTER_IPC);
       break;
     case 'o':
       fp = fopen(optarg,"w");
@@ -171,16 +174,28 @@ int parse_options(int argc,char *const argv[]){
 	oflag = 1;
       }
       break;
-    case 's':
+    case 'S':
       counter_mask |= COUNTER_SOFTWARE;
+      break;      
+    case 's':
+      counter_mask &= (~COUNTER_SOFTWARE);
+      break;
+    case 'T':
+      counter_mask |= COUNTER_TOPDOWN;
+      break;
+    case 't':
+      counter_mask &= (~COUNTER_TOPDOWN);
       break;
     case 'v':
       vflag++;
       if (vflag>1) set_error_level(ERROR_LEVEL_DEBUG2);
       else set_error_level(ERROR_LEVEL_DEBUG);
       break;
-    case 'x':
+    case 'X':
       xflag = 1;
+      break;
+    case 'x':
+      xflag = 0;
       break;
     default:
       warning("unknown option: %c\n",opt);
@@ -335,8 +350,7 @@ struct counter_group *software_counter_group(char *name){
 }
 
 
-void setup_counter_groups(struct counter_group **systemwide_counters,
-			  struct counter_group **per_core_counters){
+void setup_counter_groups(struct counter_group **per_core_counters){
 
   int i,count;
   struct counter_group *cgroup;
@@ -347,8 +361,8 @@ void setup_counter_groups(struct counter_group **systemwide_counters,
 	cgroup->next = *per_core_counters;
 	*per_core_counters = cgroup;
       } else {
-	cgroup->next = *systemwide_counters;
-	*systemwide_counters = cgroup;
+	cgroup->next = cpu_info->systemwide_counters;
+	cpu_info->systemwide_counters = cgroup;
       }
     }
   }
@@ -358,21 +372,21 @@ void setup_counter_groups(struct counter_group **systemwide_counters,
 	cgroup->next = *per_core_counters;
 	*per_core_counters = cgroup;
       } else {
-	cgroup->next = *systemwide_counters;
-	*systemwide_counters = cgroup;
+	cgroup->next = cpu_info->systemwide_counters;
+	cpu_info->systemwide_counters = cgroup;	
       }
     }
   }  
 
   if (counter_mask & COUNTER_SOFTWARE){
     if (cgroup = software_counter_group("software")){
-      cgroup->next = *systemwide_counters;
-      *systemwide_counters = cgroup;
+      cgroup->next = cpu_info->systemwide_counters;
+      cpu_info->systemwide_counters = cgroup;	      
     }
   }
 }
 
-void setup_counters(struct counter_group *system_wide,struct counter_group *per_core){
+void setup_counters(struct counter_group *per_core){
   unsigned int mask = 0;
   int i,j,k;
   int count;
@@ -387,7 +401,7 @@ void setup_counters(struct counter_group *system_wide,struct counter_group *per_
   int ncounters;
 
   // create system-wide counters
-  for (cgroup = system_wide;cgroup;cgroup = cgroup->next){
+  for (cgroup = cpu_info->systemwide_counters;cgroup;cgroup = cgroup->next){
     debug("Setting up %s counters\n",cgroup->label);
     groupid = -1;
     for (i=0;i<cgroup->ncounters;i++){
@@ -486,13 +500,13 @@ void setup_counters(struct counter_group *system_wide,struct counter_group *per_
   if (nerror) fatal("unable to open performance counters\n");
 }
 
-void start_counters(struct counter_group *system_wide,struct counter_group *per_core){
+void start_counters(struct counter_group *per_core){
   int i,j;
   int status;
   struct counter_group *cgroup;
 
   // start system-wide counters
-  for (cgroup = system_wide;cgroup;cgroup=cgroup->next){
+  for (cgroup = cpu_info->systemwide_counters;cgroup;cgroup=cgroup->next){
     debug("Starting %s counters\n",cgroup->label);  
     for (i=0;i<cgroup->ncounters;i++){
       if (cgroup->cinfo[i].fd != -1){
@@ -520,7 +534,7 @@ void start_counters(struct counter_group *system_wide,struct counter_group *per_
   }
 }
 
-void stop_counters(struct counter_group *system_wide,struct counter_group *per_core){
+void stop_counters(struct counter_group *per_core){
   int i,j;
   int status;
   struct counter_group *cgroup;
@@ -528,7 +542,7 @@ void stop_counters(struct counter_group *system_wide,struct counter_group *per_c
   struct read_format { uint64_t value, time_enabled, time_running,id; } rf;
 
   // stop system-wide counters
-  for (cgroup = system_wide;cgroup;cgroup = cgroup->next){
+  for (cgroup = cpu_info->systemwide_counters;cgroup;cgroup = cgroup->next){
     debug("Stopping %s counters\n",cgroup->label);
     for (i=0;i<cgroup->ncounters;i++){
       if (cgroup->cinfo[i].fd != -1){
@@ -537,10 +551,9 @@ void stop_counters(struct counter_group *system_wide,struct counter_group *per_c
 	  error("unable to read %s counter %s, errno=%d - %s\n",
 		cgroup->label,cgroup->cinfo[i].label,errno,strerror(errno));
 	} else {
-	  // TODO: how to adjust for running time - commented out in favor of actual time?	  
-	  // cgroup->cinfo[i].value = rf.value * ((double) rf.time_running / rf.time_enabled);
-	  
 	  cgroup->cinfo[i].value = rf.value;
+	  cgroup->cinfo[i].time_running = rf.time_running;
+	  cgroup->cinfo[i].time_enabled = rf.time_enabled;
 	  // TODO: add scaling for performance counters...
 	  
 	  status = ioctl(cgroup->cinfo[i].fd,PERF_EVENT_IOC_DISABLE,0);
@@ -586,23 +599,23 @@ void print_usage(struct rusage *rusage){
   double elapsed;
   elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
     start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
-  fprintf(outfile,"on_cpu         %4.3f\n",
+  fprintf(outfile,"elapsed              %4.3f\n",elapsed);
+  fprintf(outfile,"on_cpu               %4.3f\n",
 	  (rusage->ru_utime.tv_sec+rusage->ru_utime.tv_usec/1000000.0+
 	   rusage->ru_stime.tv_sec+rusage->ru_stime.tv_usec/1000000.0)/
 	  elapsed / num_procs);
-  fprintf(outfile,"elapsed        %4.3f\n",elapsed);
-  fprintf(outfile,"utime          %4.3f\n",
+  fprintf(outfile,"utime                %4.3f\n",
 	  (double) rusage->ru_utime.tv_sec +
 	  rusage->ru_utime.tv_usec / 1000000.0);
-  fprintf(outfile,"stime          %4.3f\n",
+  fprintf(outfile,"stime                %4.3f\n",
 	  (double) rusage->ru_stime.tv_sec +
 	  rusage->ru_stime.tv_usec / 1000000.0);
-  fprintf(outfile,"nvcsw          %lu (%4.2f%%)\n",
+  fprintf(outfile,"nvcsw                %lu (%4.2f%%)\n",
 	  rusage->ru_nvcsw,(double) rusage->ru_nvcsw / (rusage->ru_nvcsw + rusage->ru_nivcsw) * 100.0);
-  fprintf(outfile,"nivcsw         %lu (%4.2f%%)\n",
+  fprintf(outfile,"nivcsw               %lu (%4.2f%%)\n",
 	  rusage->ru_nivcsw,(double) rusage->ru_nivcsw / (rusage->ru_nvcsw + rusage->ru_nivcsw) * 100.0);
-  fprintf(outfile,"inblock        %lu\n",rusage->ru_inblock);
-  fprintf(outfile,"onblock        %lu\n",rusage->ru_oublock);  
+  fprintf(outfile,"inblock              %lu\n",rusage->ru_inblock);
+  fprintf(outfile,"onblock              %lu\n",rusage->ru_oublock);  
 }
 
 unsigned long int sum_counters(char *cname){
@@ -678,8 +691,44 @@ void print_topdown(){
   }
 }
 
+struct counter_info *find_ci_label(struct counter_group *cgroup,char *label){
+  int i;
+  for (i=0;i<cgroup->ncounters;i++){
+    if (!strcmp(cgroup->cinfo[i].label,label)){
+      return &cgroup->cinfo[i];
+    }
+  }
+  return NULL;
+}
+
+void print_software(struct counter_group *cgroup){
+  int i;
+  double elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
+    start_time.tv_sec - start_time.tv_nsec / 1000000000;
+  struct counter_info *cinfo;
+  for (i=0;i<cgroup->ncounters;i++){
+    printf("%-20s %lu",cgroup->cinfo[i].label,cgroup->cinfo[i].value);
+    if (!strcmp(cgroup->cinfo[i].label,"task-clock") ||
+	!strcmp(cgroup->cinfo[i].label,"cpu-clock")){
+      printf("   # %4.3f seconds",
+	     (double) cgroup->cinfo[i].value / 1000000000.0);
+    } else {
+      printf("   # %4.3f/sec",cgroup->cinfo[i].value / elapsed);
+	     
+    }
+    printf("\n");
+  }
+}
+
 void print_metrics(){
-    if (counter_mask & COUNTER_IPC){
+  struct counter_group *cgroup;
+  for (cgroup = cpu_info->systemwide_counters;cgroup;cgroup = cgroup->next){
+    if (!strcmp(cgroup->label,"software")){
+      print_software(cgroup);
+    }
+  }
+  
+  if (counter_mask & COUNTER_IPC){
     print_ipc(num_procs);
   }
   if (counter_mask & COUNTER_TOPDOWN){
@@ -696,12 +745,16 @@ int main(int argc,char *const argv[],char *const envp[]){
       fatal("usage: %s -[Aaivx][-o <file>] <cmd><args>...\n"
 	    "\t-A         - create per-cpu counters\n"
 	    "\t-a         - create overall counters\n"
-	    "\t-i         - print IPC metric\n"	    
+	    "\t-I         - turn on IPC metrics\n"
+	    "\t-i         - turn off IPC metrics\n"
 	    "\t-o <file>  - send output to <file>\n"
-	    "\t-s         - print software metrics\n"
-	    "\t-t         - print topdown metrics\n"
+	    "\t-S         - turn on software metrics\n"
+	    "\t-s         - turn off software metrics\n"
+	    "\t-T         - turn on topdown metrics\n"
+	    "\t-t         - turn off topdown metrics\n"
 	    "\t-v         - print verbose information\n"
-	    "\t-x	  - print system info\n"
+	    "\t-X	  - turn on system rusage info\n"
+	    "\t-x         - turn off system rusage info\n"
 
 	    ,argv[0]);
   }
@@ -710,13 +763,12 @@ int main(int argc,char *const argv[],char *const envp[]){
     fatal("unable to query CPU information\n");
   }
 
-  struct counter_group *systemwide_counters = NULL;
   struct counter_group *per_core_counters = NULL;
-  setup_counter_groups(&systemwide_counters,&per_core_counters);
+  setup_counter_groups(&per_core_counters);
 
-  setup_counters(systemwide_counters,per_core_counters);
+  setup_counters(per_core_counters);
 
-  start_counters(systemwide_counters,per_core_counters);
+  start_counters(per_core_counters);
 
   clock_gettime(CLOCK_REALTIME,&start_time);
   if (launch_child(command_line_argc,command_line_argv,envp)){
@@ -724,7 +776,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   }
   wait4(child_pid,&status,0,&rusage);
 
-  stop_counters(systemwide_counters,per_core_counters);
+  stop_counters(per_core_counters);
   clock_gettime(CLOCK_REALTIME,&finish_time);  
 
   if (xflag){

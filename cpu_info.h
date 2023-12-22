@@ -18,6 +18,8 @@ struct counter_info {
   struct counter_def *cdef;
   int fd;
   unsigned long int value;
+  unsigned long int time_running;
+  unsigned long int time_enabled;
 };
 
 // groups of counters launched together
@@ -62,6 +64,7 @@ struct cpu_info {
   unsigned int model;
   unsigned int num_cores;
   unsigned int num_cores_available;
+  struct counter_group *systemwide_counters;
   struct cpu_core_info *coreinfo;
 };
 
