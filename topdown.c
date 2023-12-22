@@ -360,7 +360,9 @@ struct counter_group *generic_hardware_counter_group(char *name){
     unsigned int config;
   } hw_counters[] = {
     { "cpu-cycles", PERF_COUNT_HW_CPU_CYCLES },
-    { "instructions", PERF_COUNT_HW_INSTRUCTIONS },    
+    { "instructions", PERF_COUNT_HW_INSTRUCTIONS },
+    { "branches", PERF_COUNT_HW_BRANCH_INSTRUCTIONS },
+    { "branch-misses", PERF_COUNT_HW_BRANCH_MISSES },
   };
   
   struct counter_group *cgroup = calloc(1,sizeof(struct counter_group));
@@ -732,11 +734,35 @@ struct counter_info *find_ci_label(struct counter_group *cgroup,char *label){
 }
 
 void print_ipc(struct counter_group *cgroup){
-  struct counter_info *instruction_info = find_ci_label(cgroup,"instructions");
-  struct counter_info *cpu_cycle_info = find_ci_label(cgroup,"cpu-cycles");
-  if (instruction_info && cpu_cycle_info){
-    fprintf(outfile,"IPC                  %4.3f\n",
-	    (double) instruction_info->value / cpu_cycle_info->value);
+  int i;
+  unsigned long cpu_cycles=0,scaled_cpu_cycles=0;
+  unsigned long instructions=0;
+  unsigned long branches=0;
+  unsigned long branch_misses=0;
+  double elapsed;
+  elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
+    start_time.tv_sec - start_time.tv_nsec / 1000000000.0;  
+
+  for (i=0;i<cgroup->ncounters;i++){
+    if (!strcmp(cgroup->cinfo[i].label,"cpu-cycles")){
+      cpu_cycles = (double) cgroup->cinfo[i].value * cgroup->cinfo[i].time_enabled / cgroup->cinfo[i].time_running;
+      scaled_cpu_cycles = (double) cpu_cycles * cgroup->cinfo[i].time_enabled / cgroup->cinfo[i].time_running;
+    } else if (!strcmp(cgroup->cinfo[i].label,"instructions")){
+      instructions = (double) cgroup->cinfo[i].value * cgroup->cinfo[i].time_enabled / cgroup->cinfo[i].time_running;
+    } else if (!strcmp(cgroup->cinfo[i].label,"branches")){
+      branches = (double) cgroup->cinfo[i].value * cgroup->cinfo[i].time_enabled / cgroup->cinfo[i].time_running;
+    } else if (!strcmp(cgroup->cinfo[i].label,"branch-misses")){
+      branch_misses = (double) cgroup->cinfo[i].value * cgroup->cinfo[i].time_enabled / cgroup->cinfo[i].time_running;
+    }
+  }
+
+  if (cpu_cycles){
+    printf("cpu-cycles           %-14lu # %4.2fGHz\n",cpu_cycles,(double) scaled_cpu_cycles / elapsed / 1000000000.0 / cpu_info->num_cores_available);
+    printf("instructions         %-14lu # %4.2f IPC\n",instructions,(double) instructions / cpu_cycles);
+    if (instructions){
+      printf("branches             %-14lu # %4.2f%%\n",branches,(double) branches / instructions * 100.0);
+      printf("branch-misses        %-14lu # %4.2f%%\n",branch_misses,(double) branch_misses / branches * 100.0);
+    }
   }
 }
 
