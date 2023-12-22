@@ -284,8 +284,9 @@ struct counter_group *hardware_counter_group(char *name,unsigned int mask){
     }
     break;
   case VENDOR_INTEL:
-    if (cpu_info->family == 0x6 && cpu_info-> model == 0xba){
-      // raptor lake
+    if (cpu_info->family == 0x6 &&
+	((cpu_info->model == 0xba)||(cpu_info->model == 0xb7)|| // raptor lake
+	 (cpu_info->model == 0x9a)||(cpu_info->model == 0x97))){ // alder lake
       hw_counter_table = intel_core_counters;
       num_hw_counters = sizeof(intel_core_counters)/sizeof(intel_core_counters[0]);
     } else {
@@ -653,8 +654,9 @@ void print_ipc(){
 void print_topdown(){
   switch (cpu_info->vendor){
   case VENDOR_INTEL:
-    if (cpu_info->family == 6 && cpu_info->model == 0xba){
-      // Raptor Lake
+    if (cpu_info->family == 6 &&
+	((cpu_info->model == 0xba)||(cpu_info->model == 0xb7)|| // raptor lake
+	 (cpu_info->model == 0x9a)||(cpu_info->model == 0x97))){ // alder lake
       unsigned long int slots = sum_counters("slots");
       unsigned long int retiring = sum_counters("topdown-retiring");
       unsigned long int fe_bound = sum_counters("topdown-fe-bound");
