@@ -601,19 +601,24 @@ void print_usage(struct rusage *rusage){
   elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
     start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
   fprintf(outfile,"elapsed              %4.3f\n",elapsed);
-  fprintf(outfile,"on_cpu               %4.3f\n",
+  fprintf(outfile,"on_cpu               %4.3f          # %4.2f / %d cores\n",
 	  (rusage->ru_utime.tv_sec+rusage->ru_utime.tv_usec/1000000.0+
 	   rusage->ru_stime.tv_sec+rusage->ru_stime.tv_usec/1000000.0)/
-	  elapsed / num_procs);
+	  elapsed / num_procs,
+	  (rusage->ru_utime.tv_sec+rusage->ru_utime.tv_usec/1000000.0+
+	   rusage->ru_stime.tv_sec+rusage->ru_stime.tv_usec/1000000.0)/
+	  elapsed,
+	  cpu_info->num_cores_available
+	  );
   fprintf(outfile,"utime                %4.3f\n",
 	  (double) rusage->ru_utime.tv_sec +
 	  rusage->ru_utime.tv_usec / 1000000.0);
   fprintf(outfile,"stime                %4.3f\n",
 	  (double) rusage->ru_stime.tv_sec +
 	  rusage->ru_stime.tv_usec / 1000000.0);
-  fprintf(outfile,"nvcsw                %lu (%4.2f%%)\n",
+  fprintf(outfile,"nvcsw                %-15lu# %4.2f%%\n",
 	  rusage->ru_nvcsw,(double) rusage->ru_nvcsw / (rusage->ru_nvcsw + rusage->ru_nivcsw) * 100.0);
-  fprintf(outfile,"nivcsw               %lu (%4.2f%%)\n",
+  fprintf(outfile,"nivcsw               %-15lu# %4.2f%%\n",
 	  rusage->ru_nivcsw,(double) rusage->ru_nivcsw / (rusage->ru_nvcsw + rusage->ru_nivcsw) * 100.0);
   fprintf(outfile,"inblock              %lu\n",rusage->ru_inblock);
   fprintf(outfile,"onblock              %lu\n",rusage->ru_oublock);  
