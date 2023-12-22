@@ -87,7 +87,11 @@ int inventory_cpu(void){
 	}
       }
     } else if (cpu_info->vendor == VENDOR_INTEL){
-      if ((cpu_info->family == 6) && (cpu_info->model == 0xba)){
+      if ((cpu_info->family == 6) &&
+	  ((cpu_info->model == 0xba)||(cpu_info->model == 0xb7)||
+	   (cpu_info->model == 0x9a)||(cpu_info->model == 0x97)||
+	   (cpu_info->model == 0xa7))){
+	cpu_info->coreinfo[i].vendor = CORE_INTEL_CORE;
       } else {
 	cpu_info->coreinfo[i].vendor = CORE_INTEL_UNKNOWN;
 	if (nwarn == 0){
@@ -100,10 +104,11 @@ int inventory_cpu(void){
     cpu_info->coreinfo->is_available = 0;
     cpu_info->coreinfo->is_counter_started = 0;
   }
-  // fix up hybrid cores for Raptor Lake
+  // fix up hybrid cores for Raptor Lake and Alder Lake
   if (cpu_info->vendor == VENDOR_INTEL &&
       cpu_info->family == 6 &&
-      cpu_info->model == 0xba){
+      ((cpu_info->model == 0xba)||(cpu_info->model == 0xb7)||
+       (cpu_info->model == 0x9a)||(cpu_info->model == 0x97))){
     if (stat("/sys/devices/cpu_atom/cpus",&statbuf) != -1){
       if (fp = fopen("/sys/devices/cpu_atom/cpus","r")){
 	int low,high;

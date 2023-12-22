@@ -26,7 +26,7 @@ int vflag = 0;
 #define COUNTER_IPC         0x1
 #define COUNTER_TOPDOWN     0x2
 #define COUNTER_SOFTWARE    0x10
-unsigned int counter_mask = COUNTER_SOFTWARE;
+unsigned int counter_mask = COUNTER_IPC;
 
 struct timespec start_time,finish_time;
 
@@ -351,23 +351,37 @@ struct counter_group *software_counter_group(char *name){
   return cgroup;
 }
 
+// creates and allocates a group for generic hardware performance counters
+struct counter_group *generic_hardware_counter_group(char *name){
+  int i;
+  
+  struct hardware_counters {
+    char *label;
+    unsigned int config;
+  } hw_counters[] = {
+    { "cpu-cycles", PERF_COUNT_HW_CPU_CYCLES },
+    { "instructions", PERF_COUNT_HW_INSTRUCTIONS },    
+  };
+  
+  struct counter_group *cgroup = calloc(1,sizeof(struct counter_group));
+  cgroup->label = strdup(name);
+  cgroup->type_id = PERF_TYPE_HARDWARE;
+  cgroup->ncounters = sizeof(hw_counters)/sizeof(hw_counters[0]);
+  cgroup->cinfo = calloc(cgroup->ncounters,sizeof(struct counter_info));
+  for (i=0;i<cgroup->ncounters;i++){
+    cgroup->cinfo[i].label = strdup(hw_counters[i].label);
+    cgroup->cinfo[i].config = hw_counters[i].config;
+  }
+  return cgroup;
+}
+
 
 void setup_counter_groups(struct counter_group **per_core_counters){
 
   int i,count;
   struct counter_group *cgroup;
 
-  if (counter_mask & COUNTER_IPC){
-    if (cgroup = hardware_counter_group("ipc",COUNTER_IPC)){
-      if (aflag){
-	cgroup->next = *per_core_counters;
-	*per_core_counters = cgroup;
-      } else {
-	cgroup->next = cpu_info->systemwide_counters;
-	cpu_info->systemwide_counters = cgroup;
-      }
-    }
-  }
+  // note: These get pushed onto a linked list, so last listed is first printed
   if (counter_mask & COUNTER_TOPDOWN){
     if (cgroup = hardware_counter_group("topdown",COUNTER_TOPDOWN)){
       if (aflag){
@@ -379,6 +393,19 @@ void setup_counter_groups(struct counter_group **per_core_counters){
       }
     }
   }  
+  
+
+  if (counter_mask & COUNTER_IPC){
+    if (cgroup = generic_hardware_counter_group("generic hardware")){
+      if (aflag){
+	cgroup->next = *per_core_counters;
+	*per_core_counters = cgroup;
+      } else {
+	cgroup->next = cpu_info->systemwide_counters;
+	cpu_info->systemwide_counters = cgroup;
+      }
+    }
+  }
 
   if (counter_mask & COUNTER_SOFTWARE){
     if (cgroup = software_counter_group("software")){
@@ -419,7 +446,7 @@ void setup_counters(struct counter_group *per_core){
 
       status = perf_event_open(&pe,0,-1,groupid,PERF_FLAG_FD_CLOEXEC);
       if (status == -1){
-	error("unable to create %s performance counter, name=%d, errno=%d - %s\n",
+	error("unable to create %s performance counter, name=%s, errno=%d - %s\n",
 	      cgroup->label,cgroup->cinfo[i].label,errno,strerror(errno));
 	cgroup->cinfo[i].fd = -1;
 	nerror;
@@ -645,13 +672,6 @@ unsigned long int sum_counters(char *cname){
   return total;
 }
 
-void print_ipc(){
-  unsigned long int total_instructions = sum_counters("instructions");
-  unsigned long int total_cpu_cycles = sum_counters("cpu-cycles");
-  fprintf(outfile,"IPC\t%4.3f\n",
-	  (double) total_instructions / total_cpu_cycles);
-}
-
 void print_topdown(){
   switch (cpu_info->vendor){
   case VENDOR_INTEL:
@@ -711,22 +731,33 @@ struct counter_info *find_ci_label(struct counter_group *cgroup,char *label){
   return NULL;
 }
 
+void print_ipc(struct counter_group *cgroup){
+  struct counter_info *instruction_info = find_ci_label(cgroup,"instructions");
+  struct counter_info *cpu_cycle_info = find_ci_label(cgroup,"cpu-cycles");
+  if (instruction_info && cpu_cycle_info){
+    fprintf(outfile,"IPC                  %4.3f\n",
+	    (double) instruction_info->value / cpu_cycle_info->value);
+  }
+}
+
+
+
 void print_software(struct counter_group *cgroup){
   int i;
   struct counter_info *task_info = find_ci_label(cgroup,"task-clock");
   double task_time = (double) task_info->value / 1000000000.0;
   struct counter_info *cinfo;
   for (i=0;i<cgroup->ncounters;i++){
-    printf("%-20s %-12lu",cgroup->cinfo[i].label,cgroup->cinfo[i].value);
+    fprintf(outfile,"%-20s %-12lu",cgroup->cinfo[i].label,cgroup->cinfo[i].value);
     if (!strcmp(cgroup->cinfo[i].label,"task-clock") ||
 	!strcmp(cgroup->cinfo[i].label,"cpu-clock")){
-      printf("   # %4.3f seconds",
+      fprintf(outfile,"   # %4.3f seconds",
 	     (double) cgroup->cinfo[i].value / 1000000000.0);
     } else {
-      printf("   # %4.3f/sec",cgroup->cinfo[i].value / task_time);
+      fprintf(outfile,"   # %4.3f/sec",cgroup->cinfo[i].value / task_time);
 	     
     }
-    printf("\n");
+    fprintf(outfile,"\n");
   }
 }
 
@@ -735,12 +766,11 @@ void print_metrics(){
   for (cgroup = cpu_info->systemwide_counters;cgroup;cgroup = cgroup->next){
     if (!strcmp(cgroup->label,"software")){
       print_software(cgroup);
+    } else if (!strcmp(cgroup->label,"generic hardware")){
+      print_ipc(cgroup);      
     }
   }
   
-  if (counter_mask & COUNTER_IPC){
-    print_ipc(num_procs);
-  }
   if (counter_mask & COUNTER_TOPDOWN){
     print_topdown();
   }
