@@ -35,10 +35,6 @@ struct timespec start_time,finish_time;
 struct raw_event intel_raw_events[] = {
   { "instructions","event=0xc0",COUNTER_IPC,0 },
   { "cpu-cycles","event=0x3c",COUNTER_IPC,0 },
-  { "atom.topdown-bad-spec","event=0x73,umask=0x0",COUNTER_TOPDOWN2,0},
-  { "atom.topdown-be-bound","event=0x74,umask=0x0",COUNTER_TOPDOWN2,0 },
-  { "atom.topdown-fe-bound","event=0x71,umask=0x0",COUNTER_TOPDOWN2,0 },
-  { "atom.topdown-retiring","event=0xc2,umask=0x0",COUNTER_TOPDOWN2,0 },
   { "slots","event=0x00,umask=0x4",COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
   { "core.topdown-bad-spec","event=0x00,umask=0x81",COUNTER_TOPDOWN,0 },
   { "core.topdown-be-bound","event=0x00,umask=0x83",COUNTER_TOPDOWN,0 },
@@ -681,23 +677,17 @@ void print_topdown2(struct counter_group *cgroup){
 
   switch(cpu_info->vendor){
   case VENDOR_INTEL:
-    
-    if (cinfo = find_ci_label(cgroup,"slots")) slots = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"atom.topdown-retiring")) retiring = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"atom.topdown-fe-bound")) frontend = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"atom.topdown-be-bound")) backend = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"atom.topdown-bad-spec")) speculation = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"slots")) slots = cinfo->value;    
+    fprintf(outfile,"slots                %-14lu #\n",slots);    
     break;
   case VENDOR_AMD:
     if (cinfo = find_ci_label(cgroup,"cpu-cycles")) slots = cinfo->value * 6;
     if (cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.smt_contention")) smt_contention = cinfo->value;
+    fprintf(outfile,"slots                %-14lu #\n",slots);
+    fprintf(outfile,"smt-contention       %-14lu # %4.1f%%\n",smt_contention,(double) smt_contention/slots*100);
     break;
   default:
     return;
-  }
-  if (slots){
-    fprintf(outfile,"slots                %-14lu #\n",slots);
-    fprintf(outfile,"smt-contention       %-14lu # %4.1f%%\n",smt_contention,(double) smt_contention/slots*100);
   }
 }
 
