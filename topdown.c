@@ -25,7 +25,7 @@ int vflag = 0;
 
 #define COUNTER_IPC         0x1
 #define COUNTER_TOPDOWN     0x2
-#define COUNTER_TOPDOWN_E   0x4
+#define COUNTER_TOPDOWN2    0x4
 #define COUNTER_SOFTWARE    0x10
 unsigned int counter_mask = COUNTER_IPC;
 
@@ -35,11 +35,11 @@ struct timespec start_time,finish_time;
 struct raw_event intel_raw_events[] = {
   { "instructions","event=0xc0",COUNTER_IPC,0 },
   { "cpu-cycles","event=0x3c",COUNTER_IPC,0 },
-  { "atom.topdown-bad-spec","event=0x73,umask=0x0",COUNTER_TOPDOWN_E,0},
-  { "atom.topdown-be-bound","event=0x74,umask=0x0",COUNTER_TOPDOWN_E,0 },
-  { "atom.topdown-fe-bound","event=0x71,umask=0x0",COUNTER_TOPDOWN_E,0 },
-  { "atom.topdown-retiring","event=0xc2,umask=0x0",COUNTER_TOPDOWN_E,0 },
-  { "slots","event=0x00,umask=0x4",COUNTER_TOPDOWN,0 },
+  { "atom.topdown-bad-spec","event=0x73,umask=0x0",COUNTER_TOPDOWN2,0},
+  { "atom.topdown-be-bound","event=0x74,umask=0x0",COUNTER_TOPDOWN2,0 },
+  { "atom.topdown-fe-bound","event=0x71,umask=0x0",COUNTER_TOPDOWN2,0 },
+  { "atom.topdown-retiring","event=0xc2,umask=0x0",COUNTER_TOPDOWN2,0 },
+  { "slots","event=0x00,umask=0x4",COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
   { "core.topdown-bad-spec","event=0x00,umask=0x81",COUNTER_TOPDOWN,0 },
   { "core.topdown-be-bound","event=0x00,umask=0x83",COUNTER_TOPDOWN,0 },
   { "core.topdown-fe-bound","event=0x00,umask=0x82",COUNTER_TOPDOWN,0 },
@@ -48,12 +48,12 @@ struct raw_event intel_raw_events[] = {
 
 struct raw_event amd_raw_events[] = {
   { "instructions","event=0xc0",COUNTER_IPC,0 },
-  { "cpu-cycles","event=0x76",COUNTER_IPC|COUNTER_TOPDOWN,0 },
+  { "cpu-cycles","event=0x76",COUNTER_IPC|COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
   { "ex_ret_ops","event=0xc1",COUNTER_TOPDOWN,0 },
   { "de_no_dispatch_per_slot.no_ops_from_frontend","event=0x1a0,umask=0x1",COUNTER_TOPDOWN,0 },
   { "de_no_dispatch_per_slot.backend_stalls","event=0x1a0,umask=0x1e",COUNTER_TOPDOWN,0 },
   { "de_src_op_disp.all","event=0xaa,umask=0x7",COUNTER_TOPDOWN,0 },
-  { "de_no_dispatch_per_slot.smt_contention","event=0x1a0,umask=0x60",0 /* COUNTER_TOPDOWN*/,0 }, // six counters results in a read of 0? So comment this out of topdown metrics
+  { "de_no_dispatch_per_slot.smt_contention","event=0x1a0,umask=0x60",COUNTER_TOPDOWN2,0 },
 };
 
 unsigned long parse_intel_event(char *description){
@@ -179,9 +179,11 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 'T':
       counter_mask |= COUNTER_TOPDOWN;
+      counter_mask |= COUNTER_TOPDOWN2;
       break;
     case 't':
       counter_mask &= (~COUNTER_TOPDOWN);
+      counter_mask &= (~COUNTER_TOPDOWN2);
       break;
     case 'v':
       vflag++;
@@ -416,6 +418,13 @@ void setup_counter_groups(struct counter_group **counter_group_list){
   struct counter_group *cgroup;
 
   // note: These get pushed onto a linked list, so last listed is first printed
+  if (counter_mask & COUNTER_TOPDOWN){
+    if (cgroup = raw_counter_group("topdown2",COUNTER_TOPDOWN2)){
+      cgroup->next = *counter_group_list;
+      *counter_group_list = cgroup;      
+    }
+  }  
+  
   if (counter_mask & COUNTER_TOPDOWN){
     if (cgroup = raw_counter_group("topdown",COUNTER_TOPDOWN)){
       cgroup->next = *counter_group_list;
@@ -661,6 +670,37 @@ void print_topdown(struct counter_group *cgroup){
   }
 }
 
+void print_topdown2(struct counter_group *cgroup){
+  unsigned long slots=0;
+  unsigned long smt_contention=0;
+  unsigned long retiring=0;
+  unsigned long frontend=0;
+  unsigned long backend=0;
+  unsigned long speculation=0;  
+  struct counter_info *cinfo;
+
+  switch(cpu_info->vendor){
+  case VENDOR_INTEL:
+    
+    if (cinfo = find_ci_label(cgroup,"slots")) slots = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"atom.topdown-retiring")) retiring = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"atom.topdown-fe-bound")) frontend = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"atom.topdown-be-bound")) backend = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"atom.topdown-bad-spec")) speculation = cinfo->value;
+    break;
+  case VENDOR_AMD:
+    if (cinfo = find_ci_label(cgroup,"cpu-cycles")) slots = cinfo->value * 6;
+    if (cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.smt_contention")) smt_contention = cinfo->value;
+    break;
+  default:
+    return;
+  }
+  if (slots){
+    fprintf(outfile,"slots                %-14lu #\n",slots);
+    fprintf(outfile,"smt-contention       %-14lu # %4.1f%%\n",smt_contention,(double) smt_contention/slots*100);
+  }
+}
+
 void print_software(struct counter_group *cgroup){
   int i;
   struct counter_info *task_info = find_ci_label(cgroup,"task-clock");
@@ -687,8 +727,10 @@ void print_metrics(struct counter_group *counter_group_list){
       print_software(cgroup);
     } else if (!strcmp(cgroup->label,"generic hardware")){
       print_ipc(cgroup);      
-    } else if (counter_mask & COUNTER_TOPDOWN){
+    } else if (cgroup->mask & COUNTER_TOPDOWN){
       print_topdown(cgroup);
+    } else if (cgroup->mask & COUNTER_TOPDOWN2){
+      print_topdown2(cgroup);
     }
   }
 }
