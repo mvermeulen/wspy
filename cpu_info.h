@@ -28,7 +28,6 @@ struct counter_group {
   enum perf_type_id type_id;
   int ncounters;
   unsigned int mask;
-  struct counter_def **counter;
   struct counter_info *cinfo;
   struct counter_group *next;
 };

@@ -306,15 +306,6 @@ struct counter_group *hardware_counter_group(char *name,unsigned int mask){
     cgroup->label = strdup(name);
     cgroup->type_id = PERF_TYPE_RAW;
     cgroup->mask = mask;
-    cgroup->ncounters = count;
-    cgroup->counter = calloc(count,sizeof(struct counter_def *));
-    count = 0;
-    for (i=0;i<num_hw_counters;i++){
-      if (hw_counter_table[i].use & mask){
-	cgroup->counter[count] = &hw_counter_table[i];
-	count++;
-      }
-    }
   }
   
   return cgroup;
@@ -502,7 +493,6 @@ void stop_counters(struct counter_group *counter_group_list){
       }
     }
   }
-  //  dump_cpu_info();
 }
 
 void print_usage(struct rusage *rusage){
