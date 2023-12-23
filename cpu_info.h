@@ -1,25 +1,22 @@
 #include <linux/perf_event.h>
-// definition of counter parameters
-struct counter_def {
-  char *name;
-  unsigned int long event;
-  unsigned int long umask;
-  unsigned int long cmask;
-  unsigned int long any;
-  unsigned int long scale;
-  unsigned int use;
-};
 
-// in memory information kept with each counter
-struct counter_info {
-  char *label;
-  int corenum; // for hw counters
-  unsigned long int config;
-  struct counter_def *cdef;
-  int fd;
-  unsigned long int value;
-  unsigned long int time_running;
-  unsigned long int time_enabled;
+// cpu_info holds the root of information kept about a processor
+extern struct cpu_info *cpu_info;
+extern int inventory_cpu(void);
+
+// CPU information including performance counters
+enum cpu_vendor { VENDOR_UNKNOWN=0, VENDOR_AMD=1, VENDOR_INTEL=2 };
+
+// Overall CPU
+struct cpu_info {
+  enum cpu_vendor vendor;
+  unsigned int family;
+  unsigned int model;
+  unsigned int num_cores;
+  unsigned int num_cores_available;
+  unsigned int is_hybrid:1;                  // Intel hybrid CPU with mixed cores
+  struct cpu_core_info *coreinfo;
+  struct counter_group *systemwide_counters; // In memory information for cores
 };
 
 // groups of counters launched together
@@ -32,6 +29,7 @@ struct counter_group {
   struct counter_group *next;
 };
 
+// in memory information kept with each counter
 // cpu core information
 enum cpu_core_type {
   CORE_UNKNOWN,
@@ -39,6 +37,30 @@ enum cpu_core_type {
   CORE_INTEL_UNKNOWN, CORE_INTEL_ATOM, CORE_INTEL_CORE
 };
 
+struct counter_info {
+  char *label;
+  int corenum; // for hw counters
+  unsigned long int config;
+  struct counter_def *cdef;
+  int fd;
+  unsigned long int value;
+  unsigned long int time_running;
+  unsigned long int time_enabled;
+};
+
+// definition of counter parameters
+// TODO: Remove once no longer referenced
+struct counter_def {
+  char *name;
+  unsigned int long event;
+  unsigned int long umask;
+  unsigned int long cmask;
+  unsigned int long any;
+  unsigned int long scale;
+  unsigned int use;
+};
+
+// TODO: Remove once no longer referenced
 struct cpu_core_info {
   enum cpu_core_type vendor;
   unsigned int is_available: 1;
@@ -56,18 +78,3 @@ struct cpu_core_info {
   struct counter_info *counters;
 };
 
-enum cpu_vendor { VENDOR_UNKNOWN=0, VENDOR_AMD=1, VENDOR_INTEL=2 };
-
-struct cpu_info {
-  enum cpu_vendor vendor;
-  unsigned int family;
-  unsigned int model;
-  unsigned int num_cores;
-  unsigned int num_cores_available;
-  struct counter_group *systemwide_counters;
-  struct cpu_core_info *coreinfo;
-};
-
-extern struct cpu_info *cpu_info;
-extern int inventory_cpu(void);
-extern void dump_cpu_info(void);

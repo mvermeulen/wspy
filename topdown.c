@@ -625,7 +625,7 @@ void print_ipc(struct counter_group *cgroup){
   }
 
   if (cpu_cycles){
-    printf("cpu-cycles           %-14lu # %4.2fGHz\n",cpu_cycles,(double) scaled_cpu_cycles / elapsed / 1000000000.0 / cpu_info->num_cores_available / (aflag?cpu_info->num_cores_available:1));
+    printf("cpu-cycles           %-14lu # %4.2f GHz\n",cpu_cycles,(double) scaled_cpu_cycles / elapsed / 1000000000.0 / cpu_info->num_cores_available / (aflag?cpu_info->num_cores_available:1));
     printf("instructions         %-14lu # %4.2f IPC\n",instructions,(double) instructions / cpu_cycles);
     if (instructions){
       printf("branches             %-14lu # %4.2f%%\n",branches,(double) branches / instructions * 100.0);
