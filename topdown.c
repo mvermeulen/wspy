@@ -53,6 +53,7 @@ struct raw_event amd_raw_events[] = {
   { "de_no_dispatch_per_slot.no_ops_from_frontend","event=0x1a0,umask=0x1",COUNTER_TOPDOWN,0 },
   { "de_no_dispatch_per_slot.backend_stalls","event=0x1a0,umask=0x1e",COUNTER_TOPDOWN,0 },
   { "de_src_op_disp.all","event=0xaa,umask=0x7",COUNTER_TOPDOWN,0 },
+  { "de_no_dispatch_per_slot.smt_contention","event=0x1a0,umask=0x60",0 /* COUNTER_TOPDOWN*/,0 }, // six counters results in a read of 0? So comment this out of topdown metrics
 };
 
 unsigned long parse_intel_event(char *description){
@@ -640,6 +641,13 @@ void print_topdown(struct counter_group *cgroup){
     if (cinfo = find_ci_label(cgroup,"core.topdown-fe-bound")) frontend = cinfo->value;
     if (cinfo = find_ci_label(cgroup,"core.topdown-be-bound")) backend = cinfo->value;
     if (cinfo = find_ci_label(cgroup,"core.topdown-bad-spec")) speculation = cinfo->value;
+    break;
+  case VENDOR_AMD:
+    if (cinfo = find_ci_label(cgroup,"cpu-cycles")) slots = cinfo->value * 6;
+    if (cinfo = find_ci_label(cgroup,"ex_ret_ops")) retiring = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.no_ops_from_frontend")) frontend = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.backend_stalls")) backend = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"de_src_op_disp.all")) speculation = cinfo->value - retiring;
     break;
   default:
     return;

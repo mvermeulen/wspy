@@ -81,7 +81,7 @@ union amd_raw_cpu_format {
     unsigned long umask:8;  // 8-15
     unsigned long :2;       // 16-17 pad
     unsigned long edge:1;   // 18
-    unsigned long :3;       // 19-22 pad
+    unsigned long :4;       // 19-22 pad
     unsigned long inv:1;    // 23
     unsigned long cmask:8;  // 24-31
     unsigned long event2:4; // 32-35
