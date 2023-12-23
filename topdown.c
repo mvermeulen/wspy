@@ -378,7 +378,7 @@ struct counter_group *generic_hardware_counter_group(char *name){
 }
 
 
-void setup_counter_groups(struct counter_group **per_core_counters){
+void setup_counter_groups(struct counter_group **counter_group_list){
 
   int i,count;
   struct counter_group *cgroup;
@@ -386,38 +386,21 @@ void setup_counter_groups(struct counter_group **per_core_counters){
   // note: These get pushed onto a linked list, so last listed is first printed
   if (counter_mask & COUNTER_TOPDOWN){
     if (cgroup = hardware_counter_group("topdown",COUNTER_TOPDOWN)){
-      if (aflag){
-	cgroup->next = *per_core_counters;
-	*per_core_counters = cgroup;
-      } else {
-	cgroup->next = cpu_info->systemwide_counters;
-	cpu_info->systemwide_counters = cgroup;	
-      }
+      cgroup->next = *counter_group_list;
+      *counter_group_list = cgroup;      
     }
   }  
-  
 
   if (counter_mask & COUNTER_IPC){
     if (cgroup = generic_hardware_counter_group("generic hardware")){
-      if (aflag){
-	cgroup->next = *per_core_counters;
-	*per_core_counters = cgroup;
-      } else {
-	cgroup->next = cpu_info->systemwide_counters;
-	cpu_info->systemwide_counters = cgroup;
-      }
+      cgroup->next = *counter_group_list;
+      *counter_group_list = cgroup;		
     }
   }
 
-  if (counter_mask & COUNTER_SOFTWARE){
-    if (cgroup = software_counter_group("software")){
-      cgroup->next = cpu_info->systemwide_counters;
-      cpu_info->systemwide_counters = cgroup;	      
-    }
-  }
 }
 
-void setup_counters(struct counter_group *per_core){
+void setup_counters(struct counter_group *counter_group_list){
   unsigned int mask = 0;
   int i,j,k;
   int count;
@@ -432,7 +415,7 @@ void setup_counters(struct counter_group *per_core){
   int ncounters;
 
   // create system-wide counters
-  for (cgroup = cpu_info->systemwide_counters;cgroup;cgroup = cgroup->next){
+  for (cgroup = counter_group_list;cgroup;cgroup = cgroup->next){
     debug("Setting up %s counters\n",cgroup->label);
     groupid = -1;
     for (i=0;i<cgroup->ncounters;i++){
@@ -451,7 +434,7 @@ void setup_counters(struct counter_group *per_core){
 	error("unable to create %s performance counter, name=%s, errno=%d - %s\n",
 	      cgroup->label,cgroup->cinfo[i].label,errno,strerror(errno));
 	cgroup->cinfo[i].fd = -1;
-	nerror;
+	nerror++;
       } else {
 	cgroup->cinfo[i].fd = status;
 	ioctl(cgroup->cinfo[i].fd,PERF_EVENT_IOC_ENABLE,0);
@@ -460,85 +443,15 @@ void setup_counters(struct counter_group *per_core){
       }
     }
   }
-
-  // create per-core counters
-  for (i=0;i< cpu_info->num_cores;i++){
-    coreinfo = &cpu_info->coreinfo[i];
-    if (!coreinfo->is_available){
-      coreinfo->ncounters = 0;
-      continue;
-    }
-    // pick the list of counters
-    switch(coreinfo->vendor){
-    case CORE_AMD_ZEN:
-      counter_def = amd_zen_counters;
-      ncounters = sizeof(amd_zen_counters)/sizeof(amd_zen_counters[0]);
-      break;
-    case CORE_INTEL_ATOM:
-      // Ignore Atom cores since perf_event_open(2) doesn't seem to allow this
-      //      counter_def = intel_atom_counters;
-      //      ncounters = sizeof(amd_zen_counters)/sizeof(amd_zen_counters[0]);
-      continue;
-    case CORE_INTEL_CORE:
-      counter_def = intel_core_counters;
-      ncounters = sizeof(amd_zen_counters)/sizeof(amd_zen_counters[0]);
-      break;
-    default:
-      continue;
-    }
-    // count the # of performance counters
-    count = 0;
-    groupid = -1;
-    for (j=0;j<ncounters;j++){
-      if (mask & counter_def[j].use) count++;
-    }
-    coreinfo->ncounters = count;
-    // allocate space
-    coreinfo->counters = calloc(count,sizeof(struct counter_info));
-
-    // set up counter
-    count = 0;
-    for (j=0;j<ncounters;j++){
-      if (mask & counter_def[j].use){
-	coreinfo->counters[count].corenum = i;
-	coreinfo->counters[count].cdef = &counter_def[j];
-	// set up the counter and leave it disabled
-	debug("core %d creating counter %s\n",i,counter_def[j].name);
-	memset(&pe,0,sizeof(pe));
-	pe.type = PERF_TYPE_RAW;
-	pe.config = (counter_def[j].event&0xff) |
-	  (counter_def[j].umask<<8) |
-	  (counter_def[j].any<<21) |
-	  (counter_def[j].cmask<<24) |
-	  (counter_def[j].event&0xf00)<<24;
-	pe.sample_type = PERF_SAMPLE_IDENTIFIER;
-	pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED|PERF_FORMAT_TOTAL_TIME_RUNNING;
-	pe.size = sizeof(struct perf_event_attr);
-	pe.exclude_guest=1;
-	pe.disabled = 1;
-	status = perf_event_open(&pe,-1,i,groupid,PERF_FLAG_FD_CLOEXEC);
-	if (status == -1){
-	  error("unable to open performance counter cpu=%d, name=%s, errno=%d - %s\n",i, counter_def[j].name, errno,strerror(errno));
-	  nerror++;
-	} else {
-	  if (groupid==-1) groupid = status;
-	  coreinfo->counters[count].fd = status;
-	  ioctl(coreinfo->counters[count].fd,PERF_EVENT_IOC_ENABLE,0);
-	}
-	count++;
-      }
-    }
-  }
   if (nerror) fatal("unable to open performance counters\n");
 }
 
-void start_counters(struct counter_group *per_core){
+void start_counters(struct counter_group *counter_group_list){
   int i,j;
   int status;
   struct counter_group *cgroup;
 
-  // start system-wide counters
-  for (cgroup = cpu_info->systemwide_counters;cgroup;cgroup=cgroup->next){
+  for (cgroup = counter_group_list;cgroup;cgroup=cgroup->next){
     debug("Starting %s counters\n",cgroup->label);  
     for (i=0;i<cgroup->ncounters;i++){
       if (cgroup->cinfo[i].fd != -1){
@@ -552,29 +465,16 @@ void start_counters(struct counter_group *per_core){
       }
     }
   }
-
-  
-  struct counter_info *cinfo;
-  for (i=0;i<cpu_info->num_cores;i++){
-    if (cpu_info->coreinfo[i].ncounters == 0) continue;
-    for (j=0;j<cpu_info->coreinfo[i].ncounters;j++){
-      cinfo = &cpu_info->coreinfo[i].counters[j];
-      status = ioctl(cinfo->fd,PERF_EVENT_IOC_ENABLE,0);
-      if (status != 0)
-	error("unable to start counter %s on core %d\n",cinfo->cdef->name,cinfo->corenum);
-    }
-  }
 }
 
-void stop_counters(struct counter_group *per_core){
+void stop_counters(struct counter_group *counter_group_list){
   int i,j;
   int status;
   struct counter_group *cgroup;
   
   struct read_format { uint64_t value, time_enabled, time_running,id; } rf;
 
-  // stop system-wide counters
-  for (cgroup = cpu_info->systemwide_counters;cgroup;cgroup = cgroup->next){
+  for (cgroup = counter_group_list;cgroup;cgroup = cgroup->next){
     debug("Stopping %s counters\n",cgroup->label);
     for (i=0;i<cgroup->ncounters;i++){
       if (cgroup->cinfo[i].fd != -1){
@@ -599,28 +499,6 @@ void stop_counters(struct counter_group *per_core){
 		  rf.time_enabled,rf.time_running);
 	  }
 	}
-      }
-    }
-  }
-  
-  struct counter_info *cinfo;
-  for (i=0;i<cpu_info->num_cores;i++){
-    if (cpu_info->coreinfo[i].ncounters == 0) continue;
-    for (j=0;j<cpu_info->coreinfo[i].ncounters;j++){
-      cinfo = &cpu_info->coreinfo[i].counters[j];
-      status = read(cinfo->fd,&rf,sizeof(rf));
-      
-      if (status == -1){
-	error("unable to read counter %s on core %d, fd=%d errno=%d - %s\n",cinfo->cdef->name,cinfo->corenum,
-	      cinfo->fd, errno, strerror(errno));	
-      } else {
-	cinfo->value = rf.value * ((double) rf.time_enabled / rf.time_running);
-	if (cinfo->cdef->scale){
-	  cinfo->value *= cinfo->cdef->scale;
-	}
-	status = ioctl(cinfo->fd,PERF_EVENT_IOC_DISABLE,0);
-	debug2("counter: fd=%d, name=%s, value=%lu\n",cinfo->fd,cinfo->cdef->name,cinfo->value);
-	    
       }
     }
   }
@@ -757,7 +635,7 @@ void print_ipc(struct counter_group *cgroup){
   }
 
   if (cpu_cycles){
-    printf("cpu-cycles           %-14lu # %4.2fGHz\n",cpu_cycles,(double) scaled_cpu_cycles / elapsed / 1000000000.0 / cpu_info->num_cores_available);
+    printf("cpu-cycles           %-14lu # %4.2fGHz\n",cpu_cycles,(double) scaled_cpu_cycles / elapsed / 1000000000.0 / cpu_info->num_cores_available / (aflag?cpu_info->num_cores_available:1));
     printf("instructions         %-14lu # %4.2f IPC\n",instructions,(double) instructions / cpu_cycles);
     if (instructions){
       printf("branches             %-14lu # %4.2f%%\n",branches,(double) branches / instructions * 100.0);
@@ -787,9 +665,9 @@ void print_software(struct counter_group *cgroup){
   }
 }
 
-void print_metrics(){
+void print_metrics(struct counter_group *counter_group_list){
   struct counter_group *cgroup;
-  for (cgroup = cpu_info->systemwide_counters;cgroup;cgroup = cgroup->next){
+  for (cgroup = counter_group_list;cgroup;cgroup = cgroup->next){
     if (!strcmp(cgroup->label,"software")){
       print_software(cgroup);
     } else if (!strcmp(cgroup->label,"generic hardware")){
@@ -803,8 +681,10 @@ void print_metrics(){
 }
 
 int main(int argc,char *const argv[],char *const envp[]){
+  int i;
   int status;
   struct rusage rusage;
+  struct counter_group *cgroup;
   outfile = stdout;
   num_procs = get_nprocs();
   if (parse_options(argc,argv)){
@@ -829,12 +709,38 @@ int main(int argc,char *const argv[],char *const envp[]){
     fatal("unable to query CPU information\n");
   }
 
-  struct counter_group *per_core_counters = NULL;
-  setup_counter_groups(&per_core_counters);
+  // set up either system-wide or core-specific counters
+  if (aflag){
+    for (i=0;i<cpu_info->num_cores;i++){
+      if (cpu_info->coreinfo[i].is_available &&
+	  ((cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN)||(cpu_info->coreinfo[i].vendor == CORE_INTEL_CORE))){
+	setup_counter_groups(&cpu_info->coreinfo[i].core_specific_counters);
+      }
+    }
+  } else {
+    setup_counter_groups(&cpu_info->systemwide_counters);
+  }
+  // software counters are only system-wide
+  if (counter_mask & COUNTER_SOFTWARE){
+    if (cgroup = software_counter_group("software")){
+      cgroup->next = cpu_info->systemwide_counters;
+      cpu_info->systemwide_counters = cgroup;
+    }
+  }
 
-  setup_counters(per_core_counters);
+  // set up core-specific and system-wide counters
+  for (i=0;i<cpu_info->num_cores;i++){
+    if (cpu_info->coreinfo[i].core_specific_counters)
+      setup_counters(cpu_info->coreinfo[i].core_specific_counters);
+  }
+  setup_counters(cpu_info->systemwide_counters);
 
-  start_counters(per_core_counters);
+  // start core-specific and system-wide counters
+  for (i=0;i<cpu_info->num_cores;i++){
+    if (cpu_info->coreinfo[i].core_specific_counters)
+      start_counters(cpu_info->coreinfo[i].core_specific_counters);
+  }
+  start_counters(cpu_info->systemwide_counters);  
 
   clock_gettime(CLOCK_REALTIME,&start_time);
   if (launch_child(command_line_argc,command_line_argv,envp)){
@@ -842,7 +748,13 @@ int main(int argc,char *const argv[],char *const envp[]){
   }
   wait4(child_pid,&status,0,&rusage);
 
-  stop_counters(per_core_counters);
+  // start core-specific and system-wide counters
+  for (i=0;i<cpu_info->num_cores;i++){
+    if (cpu_info->coreinfo[i].core_specific_counters)
+      stop_counters(cpu_info->coreinfo[i].core_specific_counters);
+  }
+  stop_counters(cpu_info->systemwide_counters);  
+
   clock_gettime(CLOCK_REALTIME,&finish_time);  
 
   if (xflag){
@@ -851,7 +763,13 @@ int main(int argc,char *const argv[],char *const envp[]){
 
   //  dump_counters();
 
-  print_metrics();
+  print_metrics(cpu_info->systemwide_counters);
+  for (i=0;i<cpu_info->num_cores;i++){
+    if (cpu_info->coreinfo[i].core_specific_counters){
+      fprintf(outfile,"##### core %2d #######################\n",i);
+      print_metrics(cpu_info->coreinfo[i].core_specific_counters);
+    }
+  }
 
   if (oflag) fclose(outfile);
   return 0;

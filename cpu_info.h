@@ -52,6 +52,7 @@ struct cpu_core_info {
   unsigned long int td_backend;
   unsigned long int td_speculation;
   unsigned long int td_smt;
+  struct counter_group *core_specific_counters;
   int ncounters;
   struct counter_info *counters;
 };
