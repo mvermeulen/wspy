@@ -48,6 +48,58 @@ struct counter_info {
   unsigned long int time_enabled;
 };
 
+// CPU counter tables
+// raw_event_info is the descriptive form
+// Format of perf counter events as described in reflects /sys/devices/cpu_core/format
+union intel_raw_cpu_format {
+  struct {
+    unsigned long event:8; // 0-7
+    unsigned long umask:8; // 8-15
+    unsigned long :2;      // 16-17 pad
+    unsigned long edge:1;  // 18
+    unsigned long pc:1;    // 19
+    unsigned long :3;      // 20-22 pad
+    unsigned long inv:1;   // 23
+    unsigned long cmask:8; // 24-31
+    
+  };
+  struct {
+    unsigned int frontend:24; // 0-23
+  };
+  struct {
+    unsigned int ldlat:16; // 0-15
+  };
+  struct {
+    unsigned long offcore_rsp:64; // 0-63
+  };
+  unsigned long config;
+};
+
+union amd_raw_cpu_format {
+  struct {
+    unsigned long event:8;  // 0-7 -- also event2 below for high order bits
+    unsigned long umask:8;  // 8-15
+    unsigned long :2;       // 16-17 pad
+    unsigned long edge:1;   // 18
+    unsigned long :3;       // 19-22 pad
+    unsigned long inv:1;    // 23
+    unsigned long cmask:8;  // 24-31
+    unsigned long event2:4; // 32-35
+  };
+  unsigned long config;
+};
+
+struct raw_event {
+  char *name;
+  char *description;
+  unsigned int use;
+  union {
+    union intel_raw_cpu_format raw_intel;
+    union amd_raw_cpu_format raw_amd;
+    unsigned long config;
+  } raw;
+};
+
 // definition of counter parameters
 // TODO: Remove once no longer referenced
 struct counter_def {

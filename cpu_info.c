@@ -110,6 +110,7 @@ int inventory_cpu(void){
       ((cpu_info->model == 0xba)||(cpu_info->model == 0xb7)||
        (cpu_info->model == 0x9a)||(cpu_info->model == 0x97))){
     if (stat("/sys/devices/cpu_atom/cpus",&statbuf) != -1){
+      cpu_info->is_hybrid = 1;
       if (fp = fopen("/sys/devices/cpu_atom/cpus","r")){
 	int low,high;
 	if (fscanf(fp,"%d-%d",&low,&high) == 2){

@@ -25,120 +25,116 @@ int vflag = 0;
 
 #define COUNTER_IPC         0x1
 #define COUNTER_TOPDOWN     0x2
+#define COUNTER_TOPDOWN_E   0x4
 #define COUNTER_SOFTWARE    0x10
 unsigned int counter_mask = COUNTER_IPC;
 
 struct timespec start_time,finish_time;
 
-// Counter definitions for supported cores
-struct counter_def *counters;
-/*                                                                              
- * Zen4                                                                         
- *                                                                              
- * instructions = <cpu/instructions>                                            
- *                                                                              
- * cycles = <cpu/cpu-cycles>                                                    
- * slots = 6 * cycles                                                           
- * retire = <ex_ret_ops> / slots                                                
- * frontend = <de_no_dispatch_per_slot.no_ops_from_frontend> / slots            
- * backend = <de_no_dispatch_per_slot.backend_stalls / slots                    
- * speculation = (<de_src_op_disp.all> - <ex_ret_ops>) / slots                  
- */
-struct counter_def amd_zen_counters[] = {
-  // name                                event umask cmask any scale mask
-  { "cpu-cycles",                        0x76, 0,    0,    0,  0,    COUNTER_IPC | COUNTER_TOPDOWN },
-  { "instructions",                      0xc0, 0,    0,    0,  0,    COUNTER_IPC },
-  { "ex_ret_ops",                        0xc1, 0,    0,    0,  0,    COUNTER_IPC  },
-  { "branch-instructions",               0xc2, 0,    0,    0,  0,    COUNTER_IPC },
-  { "de_no_dispatch_per_slot.no_ops_from_frontend",
-                                         0x1a0,1,    0,    0,  0,    COUNTER_TOPDOWN  },
-  { "de_no_dispatch_per_slot.backend_stalls",
-                                         0x1a0,0x1e, 0,    0,  0,    COUNTER_TOPDOWN  },
-  { "de_src_op_disp.all",                0xaa, 0x7,  0,    0,  0,    COUNTER_TOPDOWN  },
+// Counter definitions for RAW performance counters
+struct raw_event intel_raw_events[] = {
+  { "instructions","event=0xc0",COUNTER_IPC,0 },
+  { "cpu-cycles","event=0x3c",COUNTER_IPC,0 },
+  { "atom.topdown-bad-spec","event=0x73,umask=0x0",COUNTER_TOPDOWN_E,0},
+  { "atom.topdown-be-bound","event=0x74,umask=0x0",COUNTER_TOPDOWN_E,0 },
+  { "atom.topdown-fe-bound","event=0x71,umask=0x0",COUNTER_TOPDOWN_E,0 },
+  { "atom.topdown-retiring","event=0xc2,umask=0x0",COUNTER_TOPDOWN_E,0 },
+  { "slots","event=0x00,umask=0x4",COUNTER_TOPDOWN,0 },
+  { "core.topdown-bad-spec","event=0x00,umask=0x81",COUNTER_TOPDOWN,0 },
+  { "core.topdown-be-bound","event=0x00,umask=0x83",COUNTER_TOPDOWN,0 },
+  { "core.topdown-fe-bound","event=0x00,umask=0x82",COUNTER_TOPDOWN,0 },
+  { "core.topdown-retiring","event=0x00,umask=0x80",COUNTER_TOPDOWN,0 },        
 };
 
-struct counter_def amd_unknown_counters[] = {
-  // name                                event umask cmask any scale use
-  { "cpu-cycles",                        0x76, 0,    0,    0,  0,    COUNTER_IPC | COUNTER_IPC },
-  { "instructions",                      0xc0, 0,    0,    0,  0,    COUNTER_IPC },
-  { "ex_ret_ops",                        0xc1, 0,    0,    0,  0,    COUNTER_IPC  },
+struct raw_event amd_raw_events[] = {
+  { "instructions","event=0xc0",COUNTER_IPC,0 },
+  { "cpu-cycles","event=0x76",COUNTER_IPC|COUNTER_TOPDOWN,0 },
+  { "ex_ret_ops","event=0xc1",COUNTER_TOPDOWN,0 },
+  { "de_no_dispatch_per_slot.no_ops_from_frontend","event=0x1a0,umask=0x1",COUNTER_TOPDOWN,0 },
+  { "de_no_dispatch_per_slot.backend_stalls","event=0x1a0,umask=0x1e",COUNTER_TOPDOWN,0 },
+  { "de_src_op_disp.all","event=0xaa,umask=0x7",COUNTER_TOPDOWN,0 },
 };
 
-/*
- *  Atom                                                                         
- *
- * Note: While there are /sys/devices/cpu_atom entries for ATOM values below,
- *       not able to open counters for Atom cores and perf(1) also says this
- *       isn't allowed, so ignore these on a per-core basis.  Can later try
- *       on a cpu-wide basis...
- * 
- * instructions = <cpu_atom/instructions>                                       
- * slots = retire+frontend+backend+speculation                                  
- * retire = <cpu_atom/topdown-retiring>                                         
- * frontend = <cpu_atom/topdown-fe-bound>                                       
- * backend = <cpu_atom/topdown-be-bound>                                        
- * speculation = <cpu_atom/topdown-bad-spec>
- *
- */
-struct counter_def intel_atom_counters[] = {
-  // name                                event umask cmask any scale use
-  { "instructions",                      0xc0, 0,    0,    0,  0,    COUNTER_IPC },
-  { "cpu-cycles",                        0x3c, 0,    0,    0,  0,    COUNTER_IPC|COUNTER_TOPDOWN },  
-  { "topdown-retiring",                  0xc2, 0,    0,    0,  0,    COUNTER_TOPDOWN  },
-  { "topdown-fe-bound",                  0x71, 0,    0,    0,  0,    COUNTER_TOPDOWN  },
-  { "topdown-be-bound",                  0x74, 0,    0,    0,  0,    COUNTER_TOPDOWN  },
-  { "topdown-bad-spec",                  0x73, 0,    0,    0,  0,    COUNTER_TOPDOWN  },
+unsigned long parse_intel_event(char *description){
+  char *desc = strdup(description);
+  char *name,*val;
+  unsigned long value;
+  union intel_raw_cpu_format result;
+  result.config = 0;
+  
+  for (name = strtok(desc,",\n");name;name = strtok(NULL,",\n")){
+    if (val = strchr(name,'=')){ // expected format "desc=value"
+      *val = 0; // null terminator for name
+      val++;
+      value = strtol(val,NULL,16);
+      
+      if (!strcmp(name,"event")){
+	result.event = value;
+      } else if (!strcmp(name,"umask")){
+	result.umask = value;
+      } else {
+	fatal("unimplemented %s in parse_intel_event\n",name);
+      }
+    }
+  }
+  debug2("parse_event(\"%s\") = %lx\n",description,result.config);
+  
+  return result.config;
 };
 
-/*
- * Core                                                                         
- * instructions = <cpu_core/instructions>                                       
- * slots = <cpu_core/slots>                                                     
- * retire = <cpu_core/topdown-retiring>                                         
- * frontend = <cpu_core/topdown-fe-bound>                                       
- * backend = <cpu_core/topdown-be-bound>                                        
- * speculation = <cpu_core/topdown-bad-spec>
- */
-struct counter_def intel_core_counters[] = {
-  // name                                event umask cmask any scale use
-  { "instructions",                      0xc0, 0,    0,    0,  0,    COUNTER_IPC },
-  { "cpu-cycles",                        0x3c, 0,    0,    0,  0,    COUNTER_IPC },
-  { "slots",                             0x00, 4,    0,    0,  0,    COUNTER_TOPDOWN  },
-  { "topdown-retiring",                  0x00, 0x80, 0,    0,  0,    COUNTER_TOPDOWN  },
-  { "topdown-fe-bound",                  0x00, 0x82, 0,    0,  0,    COUNTER_TOPDOWN  },
-  { "topdown-be-bound",                  0x00, 0x83, 0,    0,  0,    COUNTER_TOPDOWN  },
-  { "topdown-bad-spec",                  0x00, 0x81, 0,    0,  0,    COUNTER_TOPDOWN  },
+unsigned long parse_amd_event(char *description){
+  char *desc = strdup(description);
+  char *name,*val;
+  unsigned long value;
+  union amd_raw_cpu_format result;
+  result.config = 0;
+  
+  for (name = strtok(desc,",\n");name;name = strtok(NULL,",\n")){
+    if (val = strchr(name,'=')){ // expected format "desc=value"
+      *val = 0; // null terminator for name
+      val++;
+      value = strtol(val,NULL,16);
+      
+      if (!strcmp(name,"event")){
+	result.event = value;
+	result.event2 = value>>8;
+      } else if (!strcmp(name,"umask")){
+	result.umask = value;
+      } else {
+	fatal("unimplemented %s in parse_intel_event\n",name);
+      }
+    }
+  }
+  debug2("parse_event(\"%s\") = %lx\n",description,result.config);
+  
+  return result.config;
 };
 
-#if 0
-struct counter_def intel_unknown_counters[] = {
-  // name                                event umask cmask any scale use
-  { "instructions",                      0xc0, 0,    0,    0,  0,    USE_IPC },
-  { "cpu-cycles",                        0x3c, 0,    0,    0,  0,    USE_IPC },
-  { "topdown-total-slots",               0x3c, 0x0,  0,    1,  2,    USE_L1  },
-  { "topdown-fetch-bubbles",             0x9c, 0x1,  0,    0,  0,    USE_L1  },
-  { "topdown-recovery-bubbles",          0xd,  0x3,  0x1,  1,  2,    USE_L1  },
-  { "topdown-slots-issued",              0xe,  0x1,  0,    0,  0,    USE_L1  },
-  { "topdown-slots-retired",             0xc2, 0x2,  0,    0,  0,    USE_L1  },
-  { "resource-stalls.sb",                0xa2, 0x8,  0,    0,  0,    USE_L2b },
-  { "cycle-activity.stalls-ldm-pending", 0xa3, 0x6,  0x6,  0,  0,    USE_L2b },
-  { "idq_uops_not_delivered.0_uops",     0x9c, 0x1,  0x4,  0,  0,    USE_L2f },
-  { "idq_uops_not_delivered.1_uops",     0x9c, 0x1,  0x3,  0,  0,    USE_L2f },
-  { "idq_uops_not_delivered.2_uops",     0x9c, 0x1,  0x2,  0,  0,    USE_L2f },
-  { "idq_uops_not_delivered.3_uops",     0x9c, 0x1,  0x1,  0,  0,    USE_L2f },
-  { "branch-misses",                     0xc5, 0x1,  0,    0,  0,    USE_L2s },
-  { "machine_clears.count",              0xc3, 0x1,  0x1,  0,  0,    USE_L2s },
-  { "idq.ms_uops",                       0x79, 0x30, 0,    0,  0,    USE_L2r },
-  { "icache.ifdata_stall",               0x80, 0x4,  0,    0,  0,    USE_L3f },
-  { "itlb_misses.stlb_hit",              0x85, 0x60, 0,    0,  0,    USE_L3f },
-  { "itlb_misses.walk_duration",         0x85, 0x10, 0,    0,  0,    USE_L3f },
-  { "idq.dsb_uops",                      0x79, 0x8,  0,    0,  0,    USE_L3f },
-  { "l2_rqsts.reference" ,               0x24, 0xff, 0,    0,  0,    USE_L3b },
-  { "l2_rqsts.miss",                     0x24, 0x3f, 0,    0,  0,    USE_L3b },
-  { "longest_lat_cache.reference",       0x2e, 0x4f, 0,    0,  0,    USE_L3b },
-  { "longest_lat_cache.miss",            0x2e, 0x41, 0,    0,  0,    USE_L3b },
-};
-#endif
+int setup_events(void){
+  int i;
+  struct raw_event *events;
+  unsigned int num_events;
+  switch(cpu_info->vendor){
+  case VENDOR_AMD:
+    events = amd_raw_events;
+    num_events = sizeof(amd_raw_events)/sizeof(amd_raw_events[0]);
+    for (i=0;i<num_events;i++){
+      events[i].raw.config = parse_amd_event(events[i].description);
+    }    
+    break;
+  case VENDOR_INTEL:
+    events = intel_raw_events;
+    num_events = sizeof(intel_raw_events)/sizeof(intel_raw_events[0]);
+    for (i=0;i<num_events;i++){
+      events[i].raw.config = parse_intel_event(events[i].description);
+    }        
+    break;
+  default:
+    warning("Unknown CPU, no events parsed\n");
+    break;
+  }
+}
+
 
 int command_line_argc;
 char **command_line_argv;
@@ -263,13 +259,15 @@ int perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
   return ret;
 }
 
+#if 0  
 // creates and allocates a hardware counter group
 struct counter_group *hardware_counter_group(char *name,unsigned int mask){
   int count,i;
   struct counter_group *cgroup = NULL;
   struct counter_def *hw_counter_table = NULL;
   int num_hw_counters = 0;
-  
+
+
   if (!cpu_info) inventory_cpu();
   
   // set up counter groups
@@ -310,6 +308,7 @@ struct counter_group *hardware_counter_group(char *name,unsigned int mask){
   
   return cgroup;
 }
+#endif
 
 // creates and allocates a group for software performance counters
 struct counter_group *software_counter_group(char *name){
@@ -368,6 +367,47 @@ struct counter_group *generic_hardware_counter_group(char *name){
   return cgroup;
 }
 
+// creates and allocates a group for raw hardware performance counters
+struct counter_group *raw_counter_group(char *name,unsigned int mask){
+  int i;
+  
+  struct raw_event *events;
+  unsigned int num_events;
+  switch(cpu_info->vendor){
+  case VENDOR_AMD:
+    events = amd_raw_events;
+    num_events = sizeof(amd_raw_events)/sizeof(amd_raw_events[0]);
+    break;
+  case VENDOR_INTEL:
+    events = intel_raw_events;
+    num_events = sizeof(intel_raw_events)/sizeof(intel_raw_events[0]);
+    break;
+  default:
+    return NULL;
+  }
+
+  int num_counters = 0;
+  for (i=0;i<num_events;i++){
+    if (events[i].use & mask) num_counters++;
+  }
+  
+  struct counter_group *cgroup = calloc(1,sizeof(struct counter_group));  
+  cgroup->label = strdup(name);
+  cgroup->type_id = PERF_TYPE_RAW;
+  cgroup->ncounters = num_counters;
+  cgroup->cinfo = calloc(cgroup->ncounters,sizeof(struct counter_info));
+  cgroup->mask = mask;
+  int count = 0;
+  for (i=0;i<num_events;i++){
+    if (events[i].use & mask){
+      cgroup->cinfo[count].label = events[i].name;
+      cgroup->cinfo[count].config = events[i].raw.config;
+      count++;
+    }
+  }
+  
+  return cgroup;
+}
 
 void setup_counter_groups(struct counter_group **counter_group_list){
 
@@ -376,7 +416,7 @@ void setup_counter_groups(struct counter_group **counter_group_list){
 
   // note: These get pushed onto a linked list, so last listed is first printed
   if (counter_mask & COUNTER_TOPDOWN){
-    if (cgroup = hardware_counter_group("topdown",COUNTER_TOPDOWN)){
+    if (cgroup = raw_counter_group("topdown",COUNTER_TOPDOWN)){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;      
     }
@@ -542,55 +582,6 @@ unsigned long int sum_counters(char *cname){
   return total;
 }
 
-void print_topdown(){
-  switch (cpu_info->vendor){
-  case VENDOR_INTEL:
-    if (cpu_info->family == 6 &&
-	((cpu_info->model == 0xba)||(cpu_info->model == 0xb7)|| // raptor lake
-	 (cpu_info->model == 0x9a)||(cpu_info->model == 0x97)|| // alder lake
-	 (cpu_info->model == 0xa7))){ // rocket lake
-      unsigned long int slots = sum_counters("slots");
-      unsigned long int retiring = sum_counters("topdown-retiring");
-      unsigned long int fe_bound = sum_counters("topdown-fe-bound");
-      unsigned long int be_bound = sum_counters("topdown-be-bound");
-      unsigned long int bad_spec = sum_counters("topdown-bad-spec");
-      fprintf(outfile,"retire         %4.3f\n",
-	      (double) retiring / slots);
-      fprintf(outfile,"speculation    %4.3f\n",
-	      (double) bad_spec / slots);
-      fprintf(outfile,"frontend       %4.3f\n",
-	      (double) fe_bound / slots);
-      fprintf(outfile,"backend        %4.3f\n",
-	      (double) be_bound / slots);
-    }
-    break;
-  case VENDOR_AMD:
-    if (cpu_info->family == 0x17 || cpu_info->family == 0x19){
-      // Zen
-      unsigned long int slots = sum_counters("cpu-cycles") * 6;
-      unsigned long int retiring = sum_counters("ex_ret_ops");
-      unsigned long int fe_bound = sum_counters("de_no_dispatch_per_slot.no_ops_from_frontend");
-      unsigned long int be_bound = sum_counters("de_no_dispatch_per_slot.backend_stalls");
-      unsigned long int bad_spec = sum_counters("de_src_op_disp.all") - retiring;
-      debug("-> slots     %llu\n", slots);
-      debug("-> retire    %llu\n", retiring);
-      debug("-> frontend  %llu\n", fe_bound);
-      debug("-> backend   %llu\n", be_bound);
-      debug("-> speculate %llu\n", bad_spec);
-      //      debug("-> smt       %llu\n", smt_cont);
-      fprintf(outfile,"retire         %4.3f\n",
-	      (double) retiring / slots);
-      fprintf(outfile,"speculation    %4.3f\n",
-	      (double) bad_spec / slots);
-      fprintf(outfile,"frontend       %4.3f\n",
-	      (double) fe_bound / slots);
-      fprintf(outfile,"backend        %4.3f\n",
-	      (double) be_bound / slots);
-    }
-    break;
-  }
-}
-
 struct counter_info *find_ci_label(struct counter_group *cgroup,char *label){
   int i;
   for (i=0;i<cgroup->ncounters;i++){
@@ -634,7 +625,33 @@ void print_ipc(struct counter_group *cgroup){
   }
 }
 
+void print_topdown(struct counter_group *cgroup){
+  unsigned long slots=0;
+  unsigned long retiring=0;
+  unsigned long frontend=0;
+  unsigned long backend=0;
+  unsigned long speculation=0;
+  struct counter_info *cinfo;
 
+  switch(cpu_info->vendor){
+  case VENDOR_INTEL:
+    if (cinfo = find_ci_label(cgroup,"slots")) slots = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"core.topdown-retiring")) retiring = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"core.topdown-fe-bound")) frontend = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"core.topdown-be-bound")) backend = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"core.topdown-bad-spec")) speculation = cinfo->value;
+    break;
+  default:
+    return;
+  }
+  if (slots){
+    fprintf(outfile,"slots                %-14lu #\n",slots);
+    fprintf(outfile,"retiring             %-14lu # %4.1f%%\n",retiring,(double) retiring/slots*100);
+    fprintf(outfile,"frontend             %-14lu # %4.1f%%\n",frontend,(double) frontend/slots*100);
+    fprintf(outfile,"backend              %-14lu # %4.1f%%\n",backend,(double) backend/slots*100);
+    fprintf(outfile,"speculation          %-14lu # %4.1f%%\n",speculation,(double) speculation/slots*100);
+  }
+}
 
 void print_software(struct counter_group *cgroup){
   int i;
@@ -662,11 +679,9 @@ void print_metrics(struct counter_group *counter_group_list){
       print_software(cgroup);
     } else if (!strcmp(cgroup->label,"generic hardware")){
       print_ipc(cgroup);      
+    } else if (counter_mask & COUNTER_TOPDOWN){
+      print_topdown(cgroup);
     }
-  }
-  
-  if (counter_mask & COUNTER_TOPDOWN){
-    print_topdown();
   }
 }
 
@@ -698,6 +713,9 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (inventory_cpu() != 0){
     fatal("unable to query CPU information\n");
   }
+
+  // parse the event tables
+  setup_events();
 
   // set up either system-wide or core-specific counters
   if (aflag){
