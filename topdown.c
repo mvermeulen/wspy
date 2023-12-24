@@ -591,25 +591,6 @@ void print_usage(struct rusage *rusage,enum output_format oformat){
   }
 }
 
-unsigned long int sum_counters(char *cname){
-  int i,j;
-  int found=0;
-  unsigned long int total = 0;
-  for (i=0;i<cpu_info->num_cores;i++){
-    if (cpu_info->coreinfo[i].ncounters == 0) continue;
-    for (j=0;j<cpu_info->coreinfo[i].ncounters;j++){
-      if (!strcmp(cname,cpu_info->coreinfo[i].counters[j].cdef->name)){
-	// assumes it was aleady read by stop_counters
-	total += cpu_info->coreinfo[i].counters[j].value;
-	found = 1;
-      }
-    }
-  }
-  if (!found)
-    warning("no counters named %s found\n",cname);
-  return total;
-}
-
 struct counter_info *find_ci_label(struct counter_group *cgroup,char *label){
   int i;
   for (i=0;i<cgroup->ncounters;i++){
