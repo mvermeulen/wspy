@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <getopt.h>
 #include <time.h>
 #include <sys/wait.h>
 #include <sys/sysinfo.h>
@@ -22,6 +23,8 @@ int aflag = 0;
 int oflag = 0;
 int xflag = 1;
 int vflag = 0;
+enum output_format { PRINT_NORMAL, PRINT_CSV, PRINT_CSV_HEADER };
+int csvflag = 0;
 
 #define COUNTER_IPC         0x1
 #define COUNTER_TOPDOWN     0x2
@@ -144,8 +147,14 @@ int parse_options(int argc,char *const argv[]){
   int opt;
   int i;
   unsigned int lev;
-  while ((opt = getopt(argc,argv,"+AaIio:SsTtvXx")) != -1){
+  static struct option long_options[] = {
+    { "csv", no_argument, &csvflag, 4 },
+  };
+  while ((opt = getopt_long(argc,argv,"+AaIio:SsTtvXx",long_options,NULL)) != -1){
     switch (opt){
+    case 0: // option already set, ignore
+      // --csv
+      break;
     case 'a':
       aflag = 0;
       break;
@@ -541,32 +550,45 @@ void stop_counters(struct counter_group *counter_group_list){
   }
 }
 
-void print_usage(struct rusage *rusage){
+void print_usage(struct rusage *rusage,enum output_format oformat){
   double elapsed;
+  
   elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
     start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
-  fprintf(outfile,"elapsed              %4.3f\n",elapsed);
-  fprintf(outfile,"on_cpu               %4.3f          # %4.2f / %d cores\n",
-	  (rusage->ru_utime.tv_sec+rusage->ru_utime.tv_usec/1000000.0+
-	   rusage->ru_stime.tv_sec+rusage->ru_stime.tv_usec/1000000.0)/
-	  elapsed / num_procs,
-	  (rusage->ru_utime.tv_sec+rusage->ru_utime.tv_usec/1000000.0+
-	   rusage->ru_stime.tv_sec+rusage->ru_stime.tv_usec/1000000.0)/
-	  elapsed,
-	  cpu_info->num_cores_available
-	  );
-  fprintf(outfile,"utime                %4.3f\n",
-	  (double) rusage->ru_utime.tv_sec +
-	  rusage->ru_utime.tv_usec / 1000000.0);
-  fprintf(outfile,"stime                %4.3f\n",
-	  (double) rusage->ru_stime.tv_sec +
-	  rusage->ru_stime.tv_usec / 1000000.0);
-  fprintf(outfile,"nvcsw                %-15lu# %4.2f%%\n",
-	  rusage->ru_nvcsw,(double) rusage->ru_nvcsw / (rusage->ru_nvcsw + rusage->ru_nivcsw) * 100.0);
-  fprintf(outfile,"nivcsw               %-15lu# %4.2f%%\n",
-	  rusage->ru_nivcsw,(double) rusage->ru_nivcsw / (rusage->ru_nvcsw + rusage->ru_nivcsw) * 100.0);
-  fprintf(outfile,"inblock              %lu\n",rusage->ru_inblock);
-  fprintf(outfile,"onblock              %lu\n",rusage->ru_oublock);  
+  switch(oformat){
+  case PRINT_CSV_HEADER:
+    fprintf(outfile,"elapsed,utime,stime,");
+    break;
+  case PRINT_CSV:
+    fprintf(outfile,"%4.3f,",elapsed);
+    fprintf(outfile,"%4.3f,",(double) rusage->ru_utime.tv_sec + rusage->ru_utime.tv_usec / 1000000.0);
+    fprintf(outfile,"%4.3f,",(double) rusage->ru_stime.tv_sec + rusage->ru_stime.tv_usec / 1000000.0);    
+    break;
+  case PRINT_NORMAL:
+    fprintf(outfile,"elapsed              %4.3f\n",elapsed);
+    fprintf(outfile,"on_cpu               %4.3f          # %4.2f / %d cores\n",
+	    (rusage->ru_utime.tv_sec+rusage->ru_utime.tv_usec/1000000.0+
+	     rusage->ru_stime.tv_sec+rusage->ru_stime.tv_usec/1000000.0)/
+	    elapsed / num_procs,
+	    (rusage->ru_utime.tv_sec+rusage->ru_utime.tv_usec/1000000.0+
+	     rusage->ru_stime.tv_sec+rusage->ru_stime.tv_usec/1000000.0)/
+	    elapsed,
+	    cpu_info->num_cores_available
+	    );
+    fprintf(outfile,"utime                %4.3f\n",
+	    (double) rusage->ru_utime.tv_sec +
+	    rusage->ru_utime.tv_usec / 1000000.0);
+    fprintf(outfile,"stime                %4.3f\n",
+	    (double) rusage->ru_stime.tv_sec +
+	    rusage->ru_stime.tv_usec / 1000000.0);
+    fprintf(outfile,"nvcsw                %-15lu# %4.2f%%\n",
+	    rusage->ru_nvcsw,(double) rusage->ru_nvcsw / (rusage->ru_nvcsw + rusage->ru_nivcsw) * 100.0);
+    fprintf(outfile,"nivcsw               %-15lu# %4.2f%%\n",
+	    rusage->ru_nivcsw,(double) rusage->ru_nivcsw / (rusage->ru_nvcsw + rusage->ru_nivcsw) * 100.0);
+    fprintf(outfile,"inblock              %lu\n",rusage->ru_inblock);
+    fprintf(outfile,"onblock              %lu\n",rusage->ru_oublock);
+    break;
+  }
 }
 
 unsigned long int sum_counters(char *cname){
@@ -598,7 +620,7 @@ struct counter_info *find_ci_label(struct counter_group *cgroup,char *label){
   return NULL;
 }
 
-void print_ipc(struct counter_group *cgroup){
+void print_ipc(struct counter_group *cgroup,enum output_format oformat){
   int i;
   unsigned long cpu_cycles=0,scaled_cpu_cycles=0;
   unsigned long instructions=0;
@@ -606,6 +628,10 @@ void print_ipc(struct counter_group *cgroup){
   unsigned long branch_misses=0;
   double elapsed;
   double scale;
+  if (oformat == PRINT_CSV_HEADER){
+    fprintf(outfile,"ipc,");
+    return;
+  }
   elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
     start_time.tv_sec - start_time.tv_nsec / 1000000000.0;  
 
@@ -622,23 +648,34 @@ void print_ipc(struct counter_group *cgroup){
     }
   }
 
-  if (cpu_cycles){
-    printf("cpu-cycles           %-14lu # %4.2f GHz\n",cpu_cycles,(double) cpu_cycles / elapsed / 1000000000.0 / cpu_info->num_cores_available / (aflag?cpu_info->num_cores_available:1));
-    printf("instructions         %-14lu # %4.2f IPC\n",instructions,(double) instructions / cpu_cycles);
-    if (instructions){
-      printf("branches             %-14lu # %4.2f%%\n",branches,(double) branches / instructions * 100.0);
-      printf("branch-misses        %-14lu # %4.2f%%\n",branch_misses,(double) branch_misses / branches * 100.0);
+  switch(oformat){
+  case PRINT_NORMAL:
+    if (cpu_cycles){
+      printf("cpu-cycles           %-14lu # %4.2f GHz\n",cpu_cycles,(double) cpu_cycles / elapsed / 1000000000.0 / cpu_info->num_cores_available / (aflag?cpu_info->num_cores_available:1));
+      printf("instructions         %-14lu # %4.2f IPC\n",instructions,(double) instructions / cpu_cycles);
+      if (instructions){
+	printf("branches             %-14lu # %4.2f%%\n",branches,(double) branches / instructions * 100.0);
+	printf("branch-misses        %-14lu # %4.2f%%\n",branch_misses,(double) branch_misses / branches * 100.0);
+      }
+      break;
+    case PRINT_CSV:
+      fprintf(outfile,"%4.2f,",(double) instructions / cpu_cycles);
+      break;
     }
   }
 }
 
-void print_topdown(struct counter_group *cgroup){
+void print_topdown(struct counter_group *cgroup,enum output_format oformat){
   unsigned long slots=0;
   unsigned long retiring=0;
   unsigned long frontend=0;
   unsigned long backend=0;
   unsigned long speculation=0;
   struct counter_info *cinfo;
+
+  if (oformat == PRINT_CSV_HEADER){
+    fprintf(outfile,"retire,frontend,backend,speculate,");
+  }
 
   switch(cpu_info->vendor){
   case VENDOR_INTEL:
@@ -658,16 +695,27 @@ void print_topdown(struct counter_group *cgroup){
   default:
     return;
   }
+
   if (slots){
-    fprintf(outfile,"slots                %-14lu #\n",slots);
-    fprintf(outfile,"retiring             %-14lu # %4.1f%%\n",retiring,(double) retiring/slots*100);
-    fprintf(outfile,"frontend             %-14lu # %4.1f%%\n",frontend,(double) frontend/slots*100);
-    fprintf(outfile,"backend              %-14lu # %4.1f%%\n",backend,(double) backend/slots*100);
-    fprintf(outfile,"speculation          %-14lu # %4.1f%%\n",speculation,(double) speculation/slots*100);
+    switch(oformat){
+    case PRINT_CSV:
+      fprintf(outfile,"%4.1f,",(double) retiring/slots*100);
+      fprintf(outfile,"%4.1f,",(double) frontend/slots*100);
+      fprintf(outfile,"%4.1f,",(double) backend/slots*100);
+      fprintf(outfile,"%4.1f,",(double) speculation/slots*100);
+      break;
+    case PRINT_NORMAL:
+      fprintf(outfile,"slots                %-14lu #\n",slots);
+      fprintf(outfile,"retiring             %-14lu # %4.1f%%\n",retiring,(double) retiring/slots*100);
+      fprintf(outfile,"frontend             %-14lu # %4.1f%%\n",frontend,(double) frontend/slots*100);
+      fprintf(outfile,"backend              %-14lu # %4.1f%%\n",backend,(double) backend/slots*100);
+      fprintf(outfile,"speculation          %-14lu # %4.1f%%\n",speculation,(double) speculation/slots*100);
+      break;
+    }
   }
 }
 
-void print_topdown2(struct counter_group *cgroup){
+void print_topdown2(struct counter_group *cgroup,enum output_format oformat){
   unsigned long slots=0;
   unsigned long smt_contention=0;
   unsigned long retiring=0;
@@ -676,27 +724,41 @@ void print_topdown2(struct counter_group *cgroup){
   unsigned long speculation=0;  
   struct counter_info *cinfo;
 
+  if (oformat == PRINT_CSV_HEADER){
+    fprintf(outfile,"smt,");
+    return;
+  }  
+
   switch(cpu_info->vendor){
   case VENDOR_INTEL:
-    if (cinfo = find_ci_label(cgroup,"slots")) slots = cinfo->value;    
-    fprintf(outfile,"slots                %-14lu #\n",slots);    
+    if (cinfo = find_ci_label(cgroup,"slots")) slots = cinfo->value;
+    if (!csvflag){
+      fprintf(outfile,"slots                %-14lu #\n",slots);      
+    }
     break;
   case VENDOR_AMD:
     if (cinfo = find_ci_label(cgroup,"cpu-cycles")) slots = cinfo->value * 6;
     if (cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.smt_contention")) smt_contention = cinfo->value;
-    fprintf(outfile,"slots                %-14lu #\n",slots);
-    fprintf(outfile,"smt-contention       %-14lu # %4.1f%%\n",smt_contention,(double) smt_contention/slots*100);
+    if (csvflag){
+      fprintf(outfile,"%4.1f",(double) smt_contention/slots*100);
+    } else {
+      fprintf(outfile,"slots                %-14lu #\n",slots);
+      fprintf(outfile,"smt-contention       %-14lu # %4.1f%%\n",smt_contention,(double) smt_contention/slots*100);
+    }
     break;
   default:
     return;
   }
 }
 
-void print_software(struct counter_group *cgroup){
+void print_software(struct counter_group *cgroup,enum output_format oformat){
   int i;
   struct counter_info *task_info = find_ci_label(cgroup,"task-clock");
   double task_time = (double) task_info->value / 1000000000.0;
   struct counter_info *cinfo;
+  if (oformat == PRINT_CSV_HEADER){
+    return;
+  }
   for (i=0;i<cgroup->ncounters;i++){
     fprintf(outfile,"%-20s %-12lu",cgroup->cinfo[i].label,cgroup->cinfo[i].value);
     if (!strcmp(cgroup->cinfo[i].label,"task-clock") ||
@@ -711,17 +773,17 @@ void print_software(struct counter_group *cgroup){
   }
 }
 
-void print_metrics(struct counter_group *counter_group_list){
+void print_metrics(struct counter_group *counter_group_list,enum output_format oformat){
   struct counter_group *cgroup;
   for (cgroup = counter_group_list;cgroup;cgroup = cgroup->next){
     if (!strcmp(cgroup->label,"software")){
-      print_software(cgroup);
+      print_software(cgroup,oformat);
     } else if (!strcmp(cgroup->label,"generic hardware")){
-      print_ipc(cgroup);      
+      print_ipc(cgroup,oformat);      
     } else if (cgroup->mask & COUNTER_TOPDOWN){
-      print_topdown(cgroup);
+      print_topdown(cgroup,oformat);
     } else if (cgroup->mask & COUNTER_TOPDOWN2){
-      print_topdown2(cgroup);
+      print_topdown2(cgroup,oformat);
     }
   }
 }
@@ -747,6 +809,7 @@ int main(int argc,char *const argv[],char *const envp[]){
 	    "\t-v         - print verbose information\n"
 	    "\t-X	  - turn on system rusage info\n"
 	    "\t-x         - turn off system rusage info\n"
+	    "\t--csv      - create csv output\n"
 
 	    ,argv[0]);
   }
@@ -804,19 +867,32 @@ int main(int argc,char *const argv[],char *const envp[]){
   }
   stop_counters(cpu_info->systemwide_counters);  
 
-  clock_gettime(CLOCK_REALTIME,&finish_time);  
+  clock_gettime(CLOCK_REALTIME,&finish_time);
+
+  // create CSV headers
+  if (csvflag){
+    print_usage(NULL,PRINT_CSV_HEADER);
+    print_metrics(cpu_info->systemwide_counters,PRINT_CSV_HEADER);
+    fprintf(outfile,"\n");
+  }
 
   if (xflag){
-    print_usage(&rusage);
+    print_usage(&rusage,csvflag?PRINT_CSV:PRINT_NORMAL);
   }
 
   //  dump_counters();
 
-  print_metrics(cpu_info->systemwide_counters);
+  print_metrics(cpu_info->systemwide_counters,csvflag?PRINT_CSV:PRINT_NORMAL);
+  if (csvflag) fprintf(outfile,"\n");
   for (i=0;i<cpu_info->num_cores;i++){
     if (cpu_info->coreinfo[i].core_specific_counters){
-      fprintf(outfile,"##### core %2d #######################\n",i);
-      print_metrics(cpu_info->coreinfo[i].core_specific_counters);
+      if (csvflag){
+	print_usage(&rusage,PRINT_CSV);
+      } else {
+	fprintf(outfile,"##### core %2d #######################\n",i);
+      }
+      print_metrics(cpu_info->coreinfo[i].core_specific_counters,csvflag?PRINT_CSV:PRINT_NORMAL);
+      if (csvflag) fprintf(outfile,"\n");
     }
   }
 
