@@ -25,6 +25,7 @@ int xflag = 1;
 int vflag = 0;
 enum output_format { PRINT_NORMAL, PRINT_CSV, PRINT_CSV_HEADER };
 int csvflag = 0;
+int dummy = 0;
 
 #define COUNTER_IPC         0x1
 #define COUNTER_TOPDOWN     0x2
@@ -148,7 +149,23 @@ int parse_options(int argc,char *const argv[]){
   int i;
   unsigned int lev;
   static struct option long_options[] = {
+    { "branch", no_argument, &dummy, 0 }, // likwid (b)
     { "csv", no_argument, &csvflag, 4 },
+    { "cache2", no_argument, &dummy, 0 }, // likwid (c)
+    { "cache3", no_argument, &dummy, 0 }, // likwid 
+    { "dcache", no_argument, &dummy, 0 }, // likwid (CACHE)
+    { "icache", no_argument, &dummy, 0 }, // likwid
+    { "interval", no_argument, &dummy, 0 },
+    { "ipc", no_argument, &dummy, 0 }, // hook to existing (i)
+    { "no-ipc", no_argument, &dummy, 0 }, // hook to existing
+    { "memory", no_argument, &dummy, 0 }, // likwid, memory bandwidth (m)
+    { "opcache", no_argument, &dummy, 0 }, // ppr
+    { "software", no_argument, &dummy, 0 }, // hook to existing (s)
+    { "no-software", no_argument, &dummy, 0 ), // hook to existing
+    { "tlb", no_argument, &dummy, 0 }, // likwid
+    { "topdown", no_argument, &dummy, 0 }, // (t)
+    { "topdown2", no_argument, &dummy, 0 }, //
+    { "tree", no_argument, &dummy, 0 }, //
   };
   while ((opt = getopt_long(argc,argv,"+AaIio:SsTtvXx",long_options,NULL)) != -1){
     switch (opt){
@@ -266,57 +283,6 @@ int perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
 
   return ret;
 }
-
-#if 0  
-// creates and allocates a hardware counter group
-struct counter_group *hardware_counter_group(char *name,unsigned int mask){
-  int count,i;
-  struct counter_group *cgroup = NULL;
-  struct counter_def *hw_counter_table = NULL;
-  int num_hw_counters = 0;
-
-
-  if (!cpu_info) inventory_cpu();
-  
-  // set up counter groups
-  switch(cpu_info->vendor){
-  case VENDOR_AMD:
-    if (cpu_info->family == 0x17 || cpu_info->family == 0x19){
-      // zen core
-      hw_counter_table = amd_zen_counters;
-      num_hw_counters = sizeof(amd_zen_counters)/sizeof(amd_zen_counters[0]);
-    } else {
-      return NULL;
-    }
-    break;
-  case VENDOR_INTEL:
-    if (cpu_info->family == 0x6 &&
-	((cpu_info->model == 0xba)||(cpu_info->model == 0xb7)|| // raptor lake
-	 (cpu_info->model == 0x9a)||(cpu_info->model == 0x97)|| // alder lake
-	 (cpu_info->model == 0xa7))){ // rocket lake
-      hw_counter_table = intel_core_counters;
-      num_hw_counters = sizeof(intel_core_counters)/sizeof(intel_core_counters[0]);
-    } else {
-      return NULL;
-    }
-    break;
-  }
-
-  // find counters that match
-  if ((counter_mask & mask) && num_hw_counters){
-    count = 0;
-    for (i=0;i<num_hw_counters;i++){
-      if (hw_counter_table[i].use & mask) count++;
-    }
-    cgroup = calloc(1,sizeof(struct counter_group));
-    cgroup->label = strdup(name);
-    cgroup->type_id = PERF_TYPE_RAW;
-    cgroup->mask = mask;
-  }
-  
-  return cgroup;
-}
-#endif
 
 // creates and allocates a group for software performance counters
 struct counter_group *software_counter_group(char *name){
@@ -841,14 +807,15 @@ int main(int argc,char *const argv[],char *const envp[]){
   }
   wait4(child_pid,&status,0,&rusage);
 
-  // start core-specific and system-wide counters
+  clock_gettime(CLOCK_REALTIME,&finish_time);
+
+  // -----  
+  // stop core-specific and system-wide counters
   for (i=0;i<cpu_info->num_cores;i++){
     if (cpu_info->coreinfo[i].core_specific_counters)
       stop_counters(cpu_info->coreinfo[i].core_specific_counters);
   }
   stop_counters(cpu_info->systemwide_counters);  
-
-  clock_gettime(CLOCK_REALTIME,&finish_time);
 
   // create CSV headers
   if (csvflag){
@@ -878,5 +845,6 @@ int main(int argc,char *const argv[],char *const envp[]){
   }
 
   if (oflag) fclose(outfile);
+  // -----
   return 0;
 }
