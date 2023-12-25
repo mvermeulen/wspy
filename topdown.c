@@ -161,7 +161,7 @@ int parse_options(int argc,char *const argv[]){
     { "memory", no_argument, &dummy, 0 }, // likwid, memory bandwidth (m)
     { "opcache", no_argument, &dummy, 0 }, // ppr
     { "software", no_argument, &dummy, 0 }, // hook to existing (s)
-    { "no-software", no_argument, &dummy, 0 ), // hook to existing
+    { "no-software", no_argument, &dummy, 0 }, // hook to existing
     { "tlb", no_argument, &dummy, 0 }, // likwid
     { "topdown", no_argument, &dummy, 0 }, // (t)
     { "topdown2", no_argument, &dummy, 0 }, //
