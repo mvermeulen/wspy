@@ -30,7 +30,17 @@ int dummy = 0;
 #define COUNTER_IPC         0x1
 #define COUNTER_TOPDOWN     0x2
 #define COUNTER_TOPDOWN2    0x4
-#define COUNTER_SOFTWARE    0x10
+#define COUNTER_BRANCH      0x8
+#define COUNTER_DCACHE      0x10
+#define COUNTER_ICACHE      0x20
+#define COUNTER_L2CACHE     0x40
+#define COUNTER_L3CACHE     0x80
+#define COUNTER_MEMORY      0x100
+#define COUNTER_TLB         0x200
+#define COUNTER_OPCACHE     0x400
+#define COUNTER_SOFTWARE    0x800
+
+
 unsigned int counter_mask = COUNTER_IPC;
 
 struct timespec start_time,finish_time;
@@ -150,22 +160,36 @@ int parse_options(int argc,char *const argv[]){
   unsigned int lev;
   static struct option long_options[] = {
     { "branch", no_argument, &dummy, 0 }, // likwid (b)
+    { "no-branch", no_argument, &dummy, 0 },
     { "csv", no_argument, &csvflag, 4 },
     { "cache2", no_argument, &dummy, 0 }, // likwid (c)
-    { "cache3", no_argument, &dummy, 0 }, // likwid 
+    { "no-cache2", no_argument, &dummy, 0 },
+    { "cache3", no_argument, &dummy, 0 }, // likwid
+    { "no-cache3", no_argument, &dummy, 0 },
     { "dcache", no_argument, &dummy, 0 }, // likwid (CACHE)
+    { "no-cache", no_argument, &dummy, 0 },
     { "icache", no_argument, &dummy, 0 }, // likwid
+    { "no-icache", no_argument, &dummy, 0 },
     { "interval", no_argument, &dummy, 0 },
     { "ipc", no_argument, &dummy, 0 }, // hook to existing (i)
     { "no-ipc", no_argument, &dummy, 0 }, // hook to existing
     { "memory", no_argument, &dummy, 0 }, // likwid, memory bandwidth (m)
+    { "no-memory", no_argument, &dummy, 0 },
     { "opcache", no_argument, &dummy, 0 }, // ppr
+    { "no-opcache", no_argument, &dummy, 0 },
+    { "per-core", no_argument, &dummy, 0 },
+    { "rusage", no_argument, &dummy, 0 },
+    { "no-rusage", no_argument, &dummy, 0 },
     { "software", no_argument, &dummy, 0 }, // hook to existing (s)
     { "no-software", no_argument, &dummy, 0 }, // hook to existing
     { "tlb", no_argument, &dummy, 0 }, // likwid
+    { "no-tlb", no_argument, &dummy, 0 },
     { "topdown", no_argument, &dummy, 0 }, // (t)
+    { "no-topdown", no_argument, &dummy, 0 },
     { "topdown2", no_argument, &dummy, 0 }, //
+    { "no-topdown2", no_argument, &dummy, 0 },
     { "tree", no_argument, &dummy, 0 }, //
+    { "verbose", no_argument, &dummy, 0 },
   };
   while ((opt = getopt_long(argc,argv,"+AaIio:SsTtvXx",long_options,NULL)) != -1){
     switch (opt){
@@ -743,21 +767,26 @@ int main(int argc,char *const argv[],char *const envp[]){
   outfile = stdout;
   num_procs = get_nprocs();
   if (parse_options(argc,argv)){
-      fatal("usage: %s -[Aaivx][-o <file>] <cmd><args>...\n"
-	    "\t-A         - create per-cpu counters\n"
-	    "\t-a         - create overall counters\n"
-	    "\t-I         - turn on IPC metrics\n"
-	    "\t-i         - turn off IPC metrics\n"
-	    "\t-o <file>  - send output to <file>\n"
-	    "\t-S         - turn on software metrics\n"
-	    "\t-s         - turn off software metrics\n"
-	    "\t-T         - turn on topdown metrics\n"
-	    "\t-t         - turn off topdown metrics\n"
-	    "\t-v         - print verbose information\n"
-	    "\t-X	  - turn on system rusage info\n"
-	    "\t-x         - turn off system rusage info\n"
-	    "\t--csv      - create csv output\n"
-
+      fatal("usage: %s -[abcistv][-o <file>] <cmd><args>...\n"
+	    "\t--per-core or -a          - metrics per core\n"
+	    "\t--rusage or -r            - show getrusage(2) information\n"
+	    "\t--tree                    - print process tree\n"
+	    "\t-o <file>                 - send output to file\n"
+	    "\t--csv                     - create csv output\n"	    
+	    "\t--verbose or -v           - print verbose information\n"
+	    "\n"
+	    "\t--software or -s          - software counters\n"
+	    "\t--ipc or i                - IPC counters\n"
+	    "\t--branch or -b            - branch counters\n"
+	    "\t--dcache                  - L1 dcache counters\n"
+	    "\t--icache                  - L1 icache counters\n"
+	    "\t--cache2 or -c            - L2 cache counters\n"
+	    "\t--cache3                  - L3 cache counters\n"
+	    "\t--memory                  - memory counters\n"
+	    "\t--opcache                 - opcache counters\n"
+	    "\t--tlb                     - TLB counters\n"
+	    "\t--topdown or -t           - topdown counters, level 1\n"
+	    "\t--topdown2                - topdown counters, level 2\n"
 	    ,argv[0]);
   }
 
