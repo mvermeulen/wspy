@@ -121,7 +121,7 @@ unsigned long parse_amd_event(char *description){
   return result.config;
 };
 
-int setup_events(void){
+int setup_raw_events(void){
   int i;
   struct raw_event *events;
   unsigned int num_events;
@@ -145,7 +145,6 @@ int setup_events(void){
     break;
   }
 }
-
 
 int command_line_argc;
 char **command_line_argv;
@@ -433,6 +432,48 @@ struct counter_group *generic_hardware_counter_group(char *name){
     cgroup->cinfo[i].config = hw_counters[i].config;
   }
   return cgroup;
+}
+
+struct cache_event cache_events[] = {
+  // L1D
+  { PERF_TYPE_HW_CACHE, "l1d-read", PERF_COUNT_HW_CACHE_L1D|(PERF_COUNT_HW_CACHE_OP_READ<<8)|(PERF_COUNT_HW_CACHE_RESULT_ACCESS<<16),
+    PERF_COUNT_HW_CACHE_L1D, COUNTER_DCACHE },
+  { PERF_TYPE_HW_CACHE,"l1d-read-miss", PERF_COUNT_HW_CACHE_L1D|(PERF_COUNT_HW_CACHE_OP_READ<<8)|(PERF_COUNT_HW_CACHE_RESULT_MISS<<16),
+    PERF_COUNT_HW_CACHE_L1D, COUNTER_DCACHE },
+  { PERF_TYPE_HW_CACHE,"l1d-write", PERF_COUNT_HW_CACHE_L1D|(PERF_COUNT_HW_CACHE_OP_WRITE<<8)|(PERF_COUNT_HW_CACHE_RESULT_ACCESS<<16),
+    PERF_COUNT_HW_CACHE_L1D, COUNTER_DCACHE },
+  { PERF_TYPE_HW_CACHE,"l1d-write-miss", PERF_COUNT_HW_CACHE_L1D|(PERF_COUNT_HW_CACHE_OP_WRITE<<8)|(PERF_COUNT_HW_CACHE_RESULT_MISS<<16),
+    PERF_COUNT_HW_CACHE_L1D, COUNTER_DCACHE },
+
+  // L1I
+  { PERF_TYPE_HW_CACHE, "l1i-read", PERF_COUNT_HW_CACHE_L1I|(PERF_COUNT_HW_CACHE_OP_READ<<8)|(PERF_COUNT_HW_CACHE_RESULT_ACCESS<<16),
+    PERF_COUNT_HW_CACHE_L1I, COUNTER_ICACHE },
+  { PERF_TYPE_HW_CACHE,"l1i-read-miss", PERF_COUNT_HW_CACHE_L1I|(PERF_COUNT_HW_CACHE_OP_READ<<8)|(PERF_COUNT_HW_CACHE_RESULT_MISS<<16),
+    PERF_COUNT_HW_CACHE_L1I, COUNTER_ICACHE },
+
+  // LL
+  { PERF_TYPE_HW_CACHE, "ll-read", PERF_COUNT_HW_CACHE_LL|(PERF_COUNT_HW_CACHE_OP_READ<<8)|(PERF_COUNT_HW_CACHE_RESULT_ACCESS<<16),
+    PERF_COUNT_HW_CACHE_LL, COUNTER_L3CACHE },
+  { PERF_TYPE_HW_CACHE,"ll-read-miss", PERF_COUNT_HW_CACHE_LL|(PERF_COUNT_HW_CACHE_OP_READ<<8)|(PERF_COUNT_HW_CACHE_RESULT_MISS<<16),
+    PERF_COUNT_HW_CACHE_LL, COUNTER_L3CACHE },
+  { PERF_TYPE_HW_CACHE,"ll-write", PERF_COUNT_HW_CACHE_LL|(PERF_COUNT_HW_CACHE_OP_WRITE<<8)|(PERF_COUNT_HW_CACHE_RESULT_ACCESS<<16),
+    PERF_COUNT_HW_CACHE_LL, COUNTER_L3CACHE },
+  { PERF_TYPE_HW_CACHE,"ll-write-miss", PERF_COUNT_HW_CACHE_LL|(PERF_COUNT_HW_CACHE_OP_WRITE<<8)|(PERF_COUNT_HW_CACHE_RESULT_MISS<<16),
+    PERF_COUNT_HW_CACHE_LL, COUNTER_L3CACHE },
+
+  // NODE
+  { PERF_TYPE_HW_CACHE, "node-read", PERF_COUNT_HW_CACHE_NODE|(PERF_COUNT_HW_CACHE_OP_READ<<8)|(PERF_COUNT_HW_CACHE_RESULT_ACCESS<<16),
+    PERF_COUNT_HW_CACHE_NODE, COUNTER_MEMORY },
+  { PERF_TYPE_HW_CACHE,"node-read-miss", PERF_COUNT_HW_CACHE_NODE|(PERF_COUNT_HW_CACHE_OP_READ<<8)|(PERF_COUNT_HW_CACHE_RESULT_MISS<<16),
+    PERF_COUNT_HW_CACHE_NODE, COUNTER_MEMORY },
+  { PERF_TYPE_HW_CACHE,"node-write", PERF_COUNT_HW_CACHE_NODE|(PERF_COUNT_HW_CACHE_OP_WRITE<<8)|(PERF_COUNT_HW_CACHE_RESULT_ACCESS<<16),
+    PERF_COUNT_HW_CACHE_NODE, COUNTER_MEMORY },
+  { PERF_TYPE_HW_CACHE,"node-write-miss", PERF_COUNT_HW_CACHE_NODE|(PERF_COUNT_HW_CACHE_OP_WRITE<<8)|(PERF_COUNT_HW_CACHE_RESULT_MISS<<16),
+    PERF_COUNT_HW_CACHE_NODE, COUNTER_MEMORY },  
+};
+// creates and allocates a group for cache performance counters
+struct counter_group *cache_counter_group(char *name,unsigned int mask){
+  
 }
 
 // creates and allocates a group for raw hardware performance counters
@@ -865,7 +906,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   }
 
   // parse the event tables
-  setup_events();
+  setup_raw_events();
 
   // set up either system-wide or core-specific counters
   if (aflag){

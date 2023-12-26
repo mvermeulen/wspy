@@ -100,19 +100,14 @@ struct raw_event {
   } raw;
 };
 
-// definition of counter parameters
-// TODO: Remove once no longer referenced
-struct counter_def {
+struct cache_event {
+  enum perf_type_id type_id; // normally PERF_TYPE_HW_CACHE - but can also put in some PERF_TYPE_RAW events
   char *name;
-  unsigned int long event;
-  unsigned int long umask;
-  unsigned int long cmask;
-  unsigned int long any;
-  unsigned int long scale;
+  unsigned long config;
+  unsigned int group_id;
   unsigned int use;
 };
 
-// TODO: Remove once no longer referenced
 struct cpu_core_info {
   enum cpu_core_type vendor;
   unsigned int is_available: 1;
@@ -129,4 +124,3 @@ struct cpu_core_info {
   int ncounters;
   struct counter_info *counters;
 };
-
