@@ -159,54 +159,105 @@ int parse_options(int argc,char *const argv[]){
   int i;
   unsigned int lev;
   static struct option long_options[] = {
-    { "branch", no_argument, &dummy, 0 }, // likwid (b)
-    { "no-branch", no_argument, &dummy, 0 },
-    { "csv", no_argument, &csvflag, 4 },
-    { "cache2", no_argument, &dummy, 0 }, // likwid (c)
-    { "no-cache2", no_argument, &dummy, 0 },
-    { "cache3", no_argument, &dummy, 0 }, // likwid
-    { "no-cache3", no_argument, &dummy, 0 },
-    { "dcache", no_argument, &dummy, 0 }, // likwid (CACHE)
-    { "no-cache", no_argument, &dummy, 0 },
-    { "icache", no_argument, &dummy, 0 }, // likwid
-    { "no-icache", no_argument, &dummy, 0 },
+    { "branch", no_argument, &dummy, 4 }, // likwid (b)
+    { "no-branch", no_argument, &dummy, 5 },
+    { "csv", no_argument, &csvflag, 0 },
+    { "cache2", no_argument, &dummy, 6 }, // likwid (c)
+    { "no-cache2", no_argument, &dummy, 7 },
+    { "cache3", no_argument, &dummy, 8 }, // likwid
+    { "no-cache3", no_argument, &dummy, 9 },
+    { "dcache", no_argument, &dummy, 10 }, // likwid (CACHE)
+    { "no-cache", no_argument, &dummy, 11 },
+    { "icache", no_argument, &dummy, 12 }, // likwid
+    { "no-icache", no_argument, &dummy, 13 },
     { "interval", no_argument, &dummy, 0 },
-    { "ipc", no_argument, &dummy, 0 }, // hook to existing (i)
-    { "no-ipc", no_argument, &dummy, 0 }, // hook to existing
-    { "memory", no_argument, &dummy, 0 }, // likwid, memory bandwidth (m)
-    { "no-memory", no_argument, &dummy, 0 },
-    { "opcache", no_argument, &dummy, 0 }, // ppr
-    { "no-opcache", no_argument, &dummy, 0 },
-    { "per-core", no_argument, &dummy, 0 },
-    { "rusage", no_argument, &dummy, 0 },
-    { "no-rusage", no_argument, &dummy, 0 },
-    { "software", no_argument, &dummy, 0 }, // hook to existing (s)
-    { "no-software", no_argument, &dummy, 0 }, // hook to existing
-    { "tlb", no_argument, &dummy, 0 }, // likwid
-    { "no-tlb", no_argument, &dummy, 0 },
-    { "topdown", no_argument, &dummy, 0 }, // (t)
-    { "no-topdown", no_argument, &dummy, 0 },
-    { "topdown2", no_argument, &dummy, 0 }, //
-    { "no-topdown2", no_argument, &dummy, 0 },
-    { "tree", no_argument, &dummy, 0 }, //
-    { "verbose", no_argument, &dummy, 0 },
+    { "ipc", no_argument, &dummy, 14 }, // hook to existing (i)
+    { "no-ipc", no_argument, &dummy, 15 }, // hook to existing
+    { "memory", no_argument, &dummy, 16 }, // likwid, memory bandwidth (m)
+    { "no-memory", no_argument, &dummy, 17 },
+    { "opcache", no_argument, &dummy, 18 }, // ppr
+    { "no-opcache", no_argument, &dummy, 19 },
+    { "per-core", no_argument, &dummy, 20 },
+    { "rusage", no_argument, &dummy, 21 },
+    { "no-rusage", no_argument, &dummy, 22 },
+    { "software", no_argument, &dummy, 23 }, // hook to existing (s)
+    { "no-software", no_argument, &dummy, 24 }, // hook to existing
+    { "tlb", no_argument, &dummy, 25 }, // likwid
+    { "no-tlb", no_argument, &dummy, 26 },
+    { "topdown", no_argument, &dummy, 27 }, // (t)
+    { "no-topdown", no_argument, &dummy, 28 },
+    { "topdown2", no_argument, &dummy, 29 }, //
+    { "no-topdown2", no_argument, &dummy, 30 },
+    { "tree", no_argument, &dummy, 31 }, //
+    { "verbose", no_argument, &dummy, 32 },
   };
-  while ((opt = getopt_long(argc,argv,"+AaIio:SsTtvXx",long_options,NULL)) != -1){
+  while ((opt = getopt_long(argc,argv,"+abcio:rstv",long_options,NULL)) != -1){
     switch (opt){
     case 0: // option already set, ignore
       // --csv
       break;
-    case 'a':
-      aflag = 0;
+    case 4: // --branch
+    case 'b':
+      warning("--branch not implemented, ignored\n");
+      counter_mask |= COUNTER_BRANCH;
       break;
-    case 'A':
-      aflag = 1;
+    case 5: // --no-branch
+      counter_mask &= (~COUNTER_BRANCH);
       break;
-    case 'I':
+    case 6: // --cache2
+    case 'c':
+      warning("--cache2 not implemented, ignored\n");
+      counter_mask |= COUNTER_L2CACHE;
+      break;
+    case 7: // --no-cache2
+      counter_mask &= (~COUNTER_L2CACHE);
+      break;
+    case 8: // --cache3
+      warning("--cache3 not implemented, ignored\n");
+      counter_mask |= COUNTER_L3CACHE;
+      break;
+    case 9: // --no-cache3
+      counter_mask &= (~COUNTER_L3CACHE);
+      break;
+    case 10: // --dcache
+      warning("--dcache not implemented, ignored\n");
+      counter_mask |= COUNTER_DCACHE;
+      break;
+    case 11: // --no-dcache
+      counter_mask &= (~COUNTER_DCACHE);
+      break;
+    case 12: // --icache
+      warning("--icache not implemented, ignored\n");
+      counter_mask |= COUNTER_ICACHE;
+      break;
+    case 13: // --no-icache
+      counter_mask &= (~COUNTER_ICACHE);
+      break;
+    case 14: // --ipc
+    case 'i':
       counter_mask |= COUNTER_IPC;
       break;
-    case 'i':
+    case 15: // --no-ipc
       counter_mask &= (~COUNTER_IPC);
+      break;
+    case 16: // --memory
+    case 'm':
+      warning("--memory not implemented, ignored\n");
+      counter_mask |= COUNTER_MEMORY;
+      break;
+    case 17: // --no-memory
+      counter_mask &= (~COUNTER_MEMORY);
+      break;
+    case 18: // --opcache
+      warning("--opcache not implemented, ignored\n");
+      counter_mask |= COUNTER_OPCACHE;
+      break;
+    case 19: // --no-opcache
+      counter_mask &= (~COUNTER_OPCACHE);
+      break;
+    case 20: // --per-core
+    case 'a':
+      aflag = 1;
       break;
     case 'o':
       fp = fopen(optarg,"w");
@@ -217,30 +268,49 @@ int parse_options(int argc,char *const argv[]){
 	oflag = 1;
       }
       break;
+    case 21: // --rusage
+    case 'r':
+      xflag = 1;
+      break;
+    case 22: // --no-rusage
+      xflag = 0;
+      break;
+    case 23: // --software
     case 'S':
       counter_mask |= COUNTER_SOFTWARE;
-      break;      
-    case 's':
+      break;
+    case 24: // --no-software
       counter_mask &= (~COUNTER_SOFTWARE);
       break;
-    case 'T':
+    case 25: // --tlb
+      warning("--tlb not implemented, ignored\n");
+      counter_mask |= COUNTER_TLB;
+      break;
+    case 26: // --no-tlb
+      counter_mask &= (~COUNTER_TLB);
+      break;
+    case 27: // --topdown
+    case 't':
       counter_mask |= COUNTER_TOPDOWN;
+      break;
+    case 28: // --no-topdown
+      counter_mask &= (~COUNTER_TOPDOWN);
+      break;
+    case 29: // --topdown2
+      warning("--topdown2 not implemented, ignored\n");
       counter_mask |= COUNTER_TOPDOWN2;
       break;
-    case 't':
-      counter_mask &= (~COUNTER_TOPDOWN);
+    case 30: // --no-topdown2
       counter_mask &= (~COUNTER_TOPDOWN2);
       break;
+    case 31: // --tree
+      warning("--tree not implemented, ignored\n");
+      break;
+    case 32: // --verbose
     case 'v':
       vflag++;
       if (vflag>1) set_error_level(ERROR_LEVEL_DEBUG2);
       else set_error_level(ERROR_LEVEL_DEBUG);
-      break;
-    case 'X':
-      xflag = 1;
-      break;
-    case 'x':
-      xflag = 0;
       break;
     default:
       warning("unknown option: %c\n",opt);
