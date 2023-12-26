@@ -159,42 +159,43 @@ int parse_options(int argc,char *const argv[]){
   int i;
   unsigned int lev;
   static struct option long_options[] = {
-    { "branch", no_argument, &dummy, 4 }, // likwid (b)
-    { "no-branch", no_argument, &dummy, 5 },
-    { "csv", no_argument, &csvflag, 0 },
-    { "cache2", no_argument, &dummy, 6 }, // likwid (c)
-    { "no-cache2", no_argument, &dummy, 7 },
-    { "cache3", no_argument, &dummy, 8 }, // likwid
-    { "no-cache3", no_argument, &dummy, 9 },
-    { "dcache", no_argument, &dummy, 10 }, // likwid (CACHE)
-    { "no-cache", no_argument, &dummy, 11 },
-    { "icache", no_argument, &dummy, 12 }, // likwid
-    { "no-icache", no_argument, &dummy, 13 },
-    { "interval", no_argument, &dummy, 0 },
-    { "ipc", no_argument, &dummy, 14 }, // hook to existing (i)
-    { "no-ipc", no_argument, &dummy, 15 }, // hook to existing
-    { "memory", no_argument, &dummy, 16 }, // likwid, memory bandwidth (m)
-    { "no-memory", no_argument, &dummy, 17 },
-    { "opcache", no_argument, &dummy, 18 }, // ppr
-    { "no-opcache", no_argument, &dummy, 19 },
-    { "per-core", no_argument, &dummy, 20 },
-    { "rusage", no_argument, &dummy, 21 },
-    { "no-rusage", no_argument, &dummy, 22 },
-    { "software", no_argument, &dummy, 23 }, // hook to existing (s)
-    { "no-software", no_argument, &dummy, 24 }, // hook to existing
-    { "tlb", no_argument, &dummy, 25 }, // likwid
-    { "no-tlb", no_argument, &dummy, 26 },
-    { "topdown", no_argument, &dummy, 27 }, // (t)
-    { "no-topdown", no_argument, &dummy, 28 },
-    { "topdown2", no_argument, &dummy, 29 }, //
-    { "no-topdown2", no_argument, &dummy, 30 },
-    { "tree", no_argument, &dummy, 31 }, //
-    { "verbose", no_argument, &dummy, 32 },
+    { "branch", no_argument, 0, 4 }, // likwid (b)
+    { "no-branch", no_argument, 0, 5 },
+    { "csv", no_argument, 0, 3 },
+    { "cache2", no_argument, 0, 6 }, // likwid (c)
+    { "no-cache2", no_argument, 0, 7 },
+    { "cache3", no_argument, 0, 8 }, // likwid
+    { "no-cache3", no_argument, 0, 9 },
+    { "dcache", no_argument, 0, 10 }, // likwid (CACHE)
+    { "no-cache", no_argument, 0, 11 },
+    { "icache", no_argument, 0, 12 }, // likwid
+    { "no-icache", no_argument, 0, 13 },
+    { "interval", no_argument, 0, 0 },
+    { "ipc", no_argument, 0, 14 }, // hook to existing (i)
+    { "no-ipc", no_argument, 0, 15 }, // hook to existing
+    { "memory", no_argument, 0, 16 }, // likwid, memory bandwidth (m)
+    { "no-memory", no_argument, 0, 17 },
+    { "opcache", no_argument, 0, 18 }, // ppr
+    { "no-opcache", no_argument, 0, 19 },
+    { "per-core", no_argument, 0, 20 },
+    { "rusage", no_argument, 0, 21 },
+    { "no-rusage", no_argument, 0, 22 },
+    { "software", no_argument, 0, 23 }, // hook to existing (s)
+    { "no-software", no_argument, 0, 24 }, // hook to existing
+    { "tlb", no_argument, 0, 25 }, // likwid
+    { "no-tlb", no_argument, 0, 26 },
+    { "topdown", no_argument, 0, 27 }, // (t)
+    { "no-topdown", no_argument, 0, 28 },
+    { "topdown2", no_argument, 0, 29 }, //
+    { "no-topdown2", no_argument, 0, 30 },
+    { "tree", no_argument, 0, 31 }, //
+    { "verbose", no_argument, 0, 32 },
+    { 0,0,0,0 },
   };
   while ((opt = getopt_long(argc,argv,"+abcio:rstv",long_options,NULL)) != -1){
     switch (opt){
-    case 0: // option already set, ignore
-      // --csv
+    case 3: //--csv
+      csvflag = 1;
       break;
     case 4: // --branch
     case 'b':
@@ -313,7 +314,6 @@ int parse_options(int argc,char *const argv[]){
       else set_error_level(ERROR_LEVEL_DEBUG);
       break;
     default:
-      warning("unknown option: %c\n",opt);
       return 1;
     }
   }
