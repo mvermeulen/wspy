@@ -473,7 +473,35 @@ struct cache_event cache_events[] = {
 };
 // creates and allocates a group for cache performance counters
 struct counter_group *cache_counter_group(char *name,unsigned int mask){
+  int i;
+  int ncounters = 0;
+  struct counter_group *cgroup = NULL;
   
+  for (i=0;i<sizeof(cache_events)/sizeof(cache_events[0]);i++){
+    if (mask & cache_events[i].use) ncounters++;
+  }
+  if (ncounters == 0) return NULL;
+  cgroup = calloc(1,sizeof(struct counter_group));
+  cgroup->label = strdup("cache");
+  cgroup->type_id = PERF_TYPE_HW_CACHE;  
+  cgroup->ncounters = ncounters;
+  cgroup->cinfo = calloc(cgroup->ncounters,sizeof(struct counter_info));
+  cgroup->mask = mask;
+
+  int count = 0;
+  unsigned int group_id = -1;
+  for (i=0;i<sizeof(cache_events)/sizeof(cache_events[0]);i++){
+    if (mask & cache_events[i].use){
+      cgroup->cinfo[count].label = cache_events[i].name;
+      cgroup->cinfo[count].config = cache_events[i].config;
+      if (cache_events[i].group_id != group_id){
+	cgroup->cinfo[count].is_group_leader = 1;
+	group_id = cache_events[i].group_id;
+      }
+      count++;
+    }
+  }
+  return cgroup;
 }
 
 // creates and allocates a group for raw hardware performance counters
@@ -524,6 +552,13 @@ void setup_counter_groups(struct counter_group **counter_group_list){
   struct counter_group *cgroup;
 
   // note: These get pushed onto a linked list, so last listed is first printed
+  if (counter_mask & (COUNTER_DCACHE|COUNTER_ICACHE|COUNTER_L3CACHE|COUNTER_MEMORY)){
+    if (cgroup = cache_counter_group("cache",counter_mask)){
+      cgroup->next = *counter_group_list;
+      *counter_group_list = cgroup;
+    }
+  }
+      
   if (counter_mask & COUNTER_TOPDOWN){
     if (cgroup = raw_counter_group("topdown2",COUNTER_TOPDOWN2)){
       cgroup->next = *counter_group_list;
@@ -553,7 +588,7 @@ void setup_counters(struct counter_group *counter_group_list){
   int count;
   int nerror = 0;
   int status;
-  int groupid;
+  int group_id = -1;
   struct counter_group *cgroup;
   struct perf_event_attr pe;
 
@@ -564,8 +599,9 @@ void setup_counters(struct counter_group *counter_group_list){
   // create system-wide counters
   for (cgroup = counter_group_list;cgroup;cgroup = cgroup->next){
     debug("Setting up %s counters\n",cgroup->label);
-    groupid = -1;
     for (i=0;i<cgroup->ncounters;i++){
+      if (cgroup->cinfo[i].is_group_leader == 1)
+	group_id = -1;
       memset(&pe,0,sizeof(pe));
       pe.type = cgroup->type_id;
       pe.config = cgroup->cinfo[i].config;
@@ -576,7 +612,7 @@ void setup_counters(struct counter_group *counter_group_list){
       pe.inherit = 1;
       pe.disabled = 1;
 
-      status = perf_event_open(&pe,0,-1,groupid,PERF_FLAG_FD_CLOEXEC);
+      status = perf_event_open(&pe,0,-1,group_id,PERF_FLAG_FD_CLOEXEC);
       if (status == -1){
 	error("unable to create %s performance counter, name=%s, errno=%d - %s\n",
 	      cgroup->label,cgroup->cinfo[i].label,errno,strerror(errno));
@@ -586,7 +622,9 @@ void setup_counters(struct counter_group *counter_group_list){
 	cgroup->cinfo[i].fd = status;
 	ioctl(cgroup->cinfo[i].fd,PERF_EVENT_IOC_ENABLE,0);
 	debug("   create %s performance counter, name=%s\n",cgroup->label,cgroup->cinfo[i].label);
-	if (groupid == -1) groupid = cgroup->cinfo[i].fd;
+	if (group_id == -1){
+	  group_id = cgroup->cinfo[i].fd;
+	}
       }
     }
   }

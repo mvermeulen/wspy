@@ -40,6 +40,7 @@ enum cpu_core_type {
 struct counter_info {
   char *label;
   int corenum; // for hw counters
+  unsigned int is_group_leader : 1;
   unsigned long int config;
   struct counter_def *cdef;
   int fd;
