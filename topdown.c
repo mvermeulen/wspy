@@ -40,6 +40,7 @@ int dummy = 0;
 #define COUNTER_TLB         0x200
 #define COUNTER_OPCACHE     0x400
 #define COUNTER_SOFTWARE    0x800
+#define COUNTER_FLOPS       0x1000
 
 
 unsigned int counter_mask = COUNTER_IPC;
@@ -59,7 +60,7 @@ struct raw_event intel_raw_events[] = {
 
 struct raw_event amd_raw_events[] = {
   { "instructions","event=0xc0",COUNTER_IPC|COUNTER_BRANCH|COUNTER_OPCACHE,0 },
-  { "cpu-cycles","event=0x76",COUNTER_IPC|COUNTER_BRANCH|COUNTER_TOPDOWN|COUNTER_TOPDOWN2|COUNTER_L2CACHE,0 },
+  { "cpu-cycles","event=0x76",COUNTER_IPC|COUNTER_BRANCH|COUNTER_TOPDOWN|COUNTER_TOPDOWN2|COUNTER_L2CACHE|COUNTER_FLOPS,0 },
   { "ex_ret_ops","event=0xc1",COUNTER_IPC|COUNTER_TOPDOWN,0 },
   { "de_no_dispatch_per_slot.no_ops_from_frontend","event=0x1a0,umask=0x1",COUNTER_TOPDOWN,0 },
   { "de_no_dispatch_per_slot.backend_stalls","event=0x1a0,umask=0x1e",COUNTER_TOPDOWN,0 },
@@ -74,11 +75,11 @@ struct raw_event amd_raw_events[] = {
   { "l2_pf_miss_l2_hit_l3", "event=0x71,umask=0xff",COUNTER_L2CACHE,0 },
   { "l2_pf_miss_l2_l3","event=0x72,umask=0xff",COUNTER_L2CACHE,0 },
   { "l2_cache_req_stat.ic_dc_miss_in_l2","event=0x64,umask=0x9",COUNTER_L2CACHE,0 },
-  { "l1_data_cache_fills_all","event=0x44,umask=0xff",COUNTER_MEMORY,0 },
-  { "l1_data_cache_fills_from_external_ccx_cache","event=0x44,umask=14",COUNTER_MEMORY,0},
-  { "l1_data_cache_fills_from_memory","event=0x44,umask=0x48",COUNTER_MEMORY,0},
-  { "l1_data_cache_fills_from_remote_node","event=0x44,umask=0x50",COUNTER_MEMORY,0},
-  { "l1_data_cache_fills_from_within_same_ccx","event=0x44,umask=0x3",COUNTER_MEMORY,0},
+  { "ls_data_cache_refills.local_all","event=0x43,umask=0xf",COUNTER_MEMORY,0 },
+  { "ls_data_cache_refills.remote_all","event=0x43,umask=0x50",COUNTER_MEMORY,0 },
+  { "ls_hwpref_data_cache_refills.local_all","event=0x50,umask=0xf",COUNTER_MEMORY,0 },
+  { "ls_hwpref_data_cache_refills.remote_all","event=0x50,umask=0x50",COUNTER_MEMORY,0 },
+  { "fp_ret_sse_avx_flops_all","event=0x3,umask=0x4",COUNTER_FLOPS,0},
 };
 
 unsigned long parse_intel_event(char *description){
@@ -182,6 +183,7 @@ int parse_options(int argc,char *const argv[]){
     { "no-cache3", no_argument, 0, 9 },
     { "dcache", no_argument, 0, 10 }, // likwid (CACHE)
     { "no-cache", no_argument, 0, 11 },
+    { "flops",no_argument,0,33 },
     { "icache", no_argument, 0, 12 }, // likwid
     { "no-icache", no_argument, 0, 13 },
     { "interval", no_argument, 0, 0 },
@@ -326,6 +328,9 @@ int parse_options(int argc,char *const argv[]){
       vflag++;
       if (vflag>1) set_error_level(ERROR_LEVEL_DEBUG2);
       else set_error_level(ERROR_LEVEL_DEBUG);
+      break;
+    case 33: // --flops
+      counter_mask |= COUNTER_FLOPS;
       break;
     default:
       return 1;
