@@ -569,6 +569,13 @@ void setup_counter_groups(struct counter_group **counter_group_list){
       *counter_group_list = cgroup;
     }
   }
+
+  if (counter_mask & COUNTER_MEMORY){
+    if (cgroup = raw_counter_group("memory",COUNTER_MEMORY)){
+      cgroup->next = *counter_group_list;
+      *counter_group_list = cgroup;      
+    }
+  }
       
   if (counter_mask & COUNTER_TOPDOWN){
     if (cgroup = raw_counter_group("topdown2",COUNTER_TOPDOWN2)){
@@ -895,6 +902,49 @@ void print_topdown2(struct counter_group *cgroup,enum output_format oformat){
   }
 }
 
+void print_memory(struct counter_group *cgroup,enum output_format oformat){
+  unsigned long data_cache_local=0;
+  unsigned long data_cache_remote=0;
+  unsigned long prefetch_local=0;
+  unsigned long prefetch_remote=0;
+  struct counter_info *cinfo;
+  double elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
+    start_time.tv_sec - start_time.tv_nsec / 1000000000.0;    
+
+  if (oformat == PRINT_CSV_HEADER){
+    fprintf(outfile,"bandwidth,");
+    return;
+  }  
+
+  switch(cpu_info->vendor){
+  case VENDOR_INTEL:
+    break;
+  case VENDOR_AMD:
+    if (cinfo = find_ci_label(cgroup,"ls_data_cache_refills.local_all"))
+      data_cache_local = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"ls_data_cache_refills.remote_all"))
+      data_cache_remote = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"ls_hwpref_data_cache_refills.local_all"))
+      prefetch_local = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"ls_hwpref_data_cache_refills.remote_all"))
+      prefetch_remote = cinfo->value;        
+    break;
+  default:
+    return;
+  }
+
+  if (csvflag){
+    fprintf(outfile,"%4.1f",(double) (data_cache_local+data_cache_remote+prefetch_local+prefetch_remote)*64.0/1024/1024/elapsed);
+  } else {
+    fprintf(outfile,"local bandwidth      %-14lu # %4.1f MB/s\n",
+	    data_cache_local+prefetch_local,
+	    (double)(data_cache_local+prefetch_local)*64.0/1024.0/1024.0/elapsed);
+    fprintf(outfile,"remote bandwidth     %-14lu # %4.1f MB/s\n",
+	    data_cache_remote+prefetch_remote,
+	    (double)(data_cache_remote+prefetch_remote)*64.0/1024.0/1024.0/elapsed);
+  }  
+}
+
 void print_software(struct counter_group *cgroup,enum output_format oformat){
   int i;
   struct counter_info *task_info = find_ci_label(cgroup,"task-clock");
@@ -928,6 +978,8 @@ void print_metrics(struct counter_group *counter_group_list,enum output_format o
       print_topdown(cgroup,oformat);
     } else if (cgroup->mask & COUNTER_TOPDOWN2){
       print_topdown2(cgroup,oformat);
+    } else if (cgroup->mask & COUNTER_MEMORY){
+      print_memory(cgroup,oformat);
     }
   }
 }
