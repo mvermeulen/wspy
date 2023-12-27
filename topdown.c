@@ -23,6 +23,7 @@ int aflag = 0;
 int oflag = 0;
 int xflag = 1;
 int vflag = 0;
+int nmi_running = 0;
 enum output_format { PRINT_NORMAL, PRINT_CSV, PRINT_CSV_HEADER };
 int csvflag = 0;
 int dummy = 0;
@@ -57,13 +58,27 @@ struct raw_event intel_raw_events[] = {
 };
 
 struct raw_event amd_raw_events[] = {
-  { "instructions","event=0xc0",COUNTER_IPC,0 },
-  { "cpu-cycles","event=0x76",COUNTER_IPC|COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
-  { "ex_ret_ops","event=0xc1",COUNTER_TOPDOWN,0 },
+  { "instructions","event=0xc0",COUNTER_IPC|COUNTER_BRANCH|COUNTER_OPCACHE,0 },
+  { "cpu-cycles","event=0x76",COUNTER_IPC|COUNTER_BRANCH|COUNTER_TOPDOWN|COUNTER_TOPDOWN2|COUNTER_L2CACHE,0 },
+  { "ex_ret_ops","event=0xc1",COUNTER_IPC|COUNTER_TOPDOWN,0 },
   { "de_no_dispatch_per_slot.no_ops_from_frontend","event=0x1a0,umask=0x1",COUNTER_TOPDOWN,0 },
   { "de_no_dispatch_per_slot.backend_stalls","event=0x1a0,umask=0x1e",COUNTER_TOPDOWN,0 },
   { "de_src_op_disp.all","event=0xaa,umask=0x7",COUNTER_TOPDOWN,0 },
-  { "de_no_dispatch_per_slot.smt_contention","event=0x1a0,umask=0x60",COUNTER_TOPDOWN2,0 },
+  { "de_no_dispatch_per_slot.smt_contention","event=0x1a0,umask=0x60",COUNTER_TOPDOWN,0 },
+  { "branch-instructions","event=0xc2",COUNTER_BRANCH,0 },
+  { "branch-misses","event=0xc3",COUNTER_BRANCH,0 },
+  { "op_cache_hit_miss.all_op_cache_accesses","event=0x28f,umask=0x7",COUNTER_OPCACHE,0 },
+  { "op_cache_hit_miss.op_cache_miss","event=0x28f,umask=0x4",COUNTER_OPCACHE,0 },
+  { "l2_request_g1.all_no_prefetch","event=0x60,umask=0xf9",COUNTER_L2CACHE,0 },
+  { "l2_pf_hit_l2","event=0x70,umask=0xff",COUNTER_L2CACHE,0 },
+  { "l2_pf_miss_l2_hit_l3", "event=0x71,umask=0xff",COUNTER_L2CACHE,0 },
+  { "l2_pf_miss_l2_l3","event=0x72,umask=0xff",COUNTER_L2CACHE,0 },
+  { "l2_cache_req_stat.ic_dc_miss_in_l2","event=0x64,umask=0x9",COUNTER_L2CACHE,0 },
+  { "l1_data_cache_fills_all","event=0x44,umask=0xff",COUNTER_MEMORY,0 },
+  { "l1_data_cache_fills_from_external_ccx_cache","event=0x44,umask=14",COUNTER_MEMORY,0},
+  { "l1_data_cache_fills_from_memory","event=0x44,umask=0x48",COUNTER_MEMORY,0},
+  { "l1_data_cache_fills_from_remote_node","event=0x44,umask=0x50",COUNTER_MEMORY,0},
+  { "l1_data_cache_fills_from_within_same_ccx","event=0x44,umask=0x3",COUNTER_MEMORY,0},
 };
 
 unsigned long parse_intel_event(char *description){
@@ -440,13 +455,6 @@ struct cache_event cache_events[] = {
     PERF_COUNT_HW_CACHE_L1D, COUNTER_DCACHE },
   { PERF_TYPE_HW_CACHE,"l1d-read-miss", PERF_COUNT_HW_CACHE_L1D|(PERF_COUNT_HW_CACHE_OP_READ<<8)|(PERF_COUNT_HW_CACHE_RESULT_MISS<<16),
     PERF_COUNT_HW_CACHE_L1D, COUNTER_DCACHE },
-#if 0
-  // fault on AMD
-  { PERF_TYPE_HW_CACHE,"l1d-write", PERF_COUNT_HW_CACHE_L1D|(PERF_COUNT_HW_CACHE_OP_WRITE<<8)|(PERF_COUNT_HW_CACHE_RESULT_ACCESS<<16),
-    PERF_COUNT_HW_CACHE_L1D, COUNTER_DCACHE },
-  { PERF_TYPE_HW_CACHE,"l1d-write-miss", PERF_COUNT_HW_CACHE_L1D|(PERF_COUNT_HW_CACHE_OP_WRITE<<8)|(PERF_COUNT_HW_CACHE_RESULT_MISS<<16),
-    PERF_COUNT_HW_CACHE_L1D, COUNTER_DCACHE },
-#endif
 
   // L1I
   { PERF_TYPE_HW_CACHE, "l1i-read", PERF_COUNT_HW_CACHE_L1I|(PERF_COUNT_HW_CACHE_OP_READ<<8)|(PERF_COUNT_HW_CACHE_RESULT_ACCESS<<16),
@@ -454,32 +462,23 @@ struct cache_event cache_events[] = {
   { PERF_TYPE_HW_CACHE,"l1i-read-miss", PERF_COUNT_HW_CACHE_L1I|(PERF_COUNT_HW_CACHE_OP_READ<<8)|(PERF_COUNT_HW_CACHE_RESULT_MISS<<16),
     PERF_COUNT_HW_CACHE_L1I, COUNTER_ICACHE },
 
-#if 0
-  // LL
-  { PERF_TYPE_HW_CACHE, "ll-read", PERF_COUNT_HW_CACHE_LL|(PERF_COUNT_HW_CACHE_OP_READ<<8)|(PERF_COUNT_HW_CACHE_RESULT_ACCESS<<16),
-    PERF_COUNT_HW_CACHE_LL, COUNTER_L3CACHE },
-  { PERF_TYPE_HW_CACHE,"ll-read-miss", PERF_COUNT_HW_CACHE_LL|(PERF_COUNT_HW_CACHE_OP_READ<<8)|(PERF_COUNT_HW_CACHE_RESULT_MISS<<16),
-    PERF_COUNT_HW_CACHE_LL, COUNTER_L3CACHE },
-  { PERF_TYPE_HW_CACHE,"ll-write", PERF_COUNT_HW_CACHE_LL|(PERF_COUNT_HW_CACHE_OP_WRITE<<8)|(PERF_COUNT_HW_CACHE_RESULT_ACCESS<<16),
-    PERF_COUNT_HW_CACHE_LL, COUNTER_L3CACHE },
-  { PERF_TYPE_HW_CACHE,"ll-write-miss", PERF_COUNT_HW_CACHE_LL|(PERF_COUNT_HW_CACHE_OP_WRITE<<8)|(PERF_COUNT_HW_CACHE_RESULT_MISS<<16),
-    PERF_COUNT_HW_CACHE_LL, COUNTER_L3CACHE },
-  
-  // NODE
-  { PERF_TYPE_HW_CACHE, "node-read", PERF_COUNT_HW_CACHE_NODE|(PERF_COUNT_HW_CACHE_OP_READ<<8)|(PERF_COUNT_HW_CACHE_RESULT_ACCESS<<16),
-    PERF_COUNT_HW_CACHE_NODE, COUNTER_MEMORY },
-  { PERF_TYPE_HW_CACHE,"node-read-miss", PERF_COUNT_HW_CACHE_NODE|(PERF_COUNT_HW_CACHE_OP_READ<<8)|(PERF_COUNT_HW_CACHE_RESULT_MISS<<16),
-    PERF_COUNT_HW_CACHE_NODE, COUNTER_MEMORY },
-  { PERF_TYPE_HW_CACHE,"node-write", PERF_COUNT_HW_CACHE_NODE|(PERF_COUNT_HW_CACHE_OP_WRITE<<8)|(PERF_COUNT_HW_CACHE_RESULT_ACCESS<<16),
-    PERF_COUNT_HW_CACHE_NODE, COUNTER_MEMORY },
-  { PERF_TYPE_HW_CACHE,"node-write-miss", PERF_COUNT_HW_CACHE_NODE|(PERF_COUNT_HW_CACHE_OP_WRITE<<8)|(PERF_COUNT_HW_CACHE_RESULT_MISS<<16),
-    PERF_COUNT_HW_CACHE_NODE, COUNTER_MEMORY },
-#endif
+  // TLB
+  { PERF_TYPE_HW_CACHE, "dTLB-loads", PERF_COUNT_HW_CACHE_DTLB|(PERF_COUNT_HW_CACHE_OP_READ<<8)|(PERF_COUNT_HW_CACHE_RESULT_ACCESS<<16),
+    PERF_COUNT_HW_CACHE_DTLB, COUNTER_TLB },
+  { PERF_TYPE_HW_CACHE,"dTLB-load-misses", PERF_COUNT_HW_CACHE_DTLB|(PERF_COUNT_HW_CACHE_OP_READ<<8)|(PERF_COUNT_HW_CACHE_RESULT_MISS<<16),
+    PERF_COUNT_HW_CACHE_DTLB, COUNTER_TLB },  
+
+  { PERF_TYPE_HW_CACHE, "iTLB-loads", PERF_COUNT_HW_CACHE_ITLB|(PERF_COUNT_HW_CACHE_OP_READ<<8)|(PERF_COUNT_HW_CACHE_RESULT_ACCESS<<16),
+    PERF_COUNT_HW_CACHE_ITLB, COUNTER_TLB },
+  { PERF_TYPE_HW_CACHE,"iTLB-load-misses", PERF_COUNT_HW_CACHE_ITLB|(PERF_COUNT_HW_CACHE_OP_READ<<8)|(PERF_COUNT_HW_CACHE_RESULT_MISS<<16),
+    PERF_COUNT_HW_CACHE_ITLB, COUNTER_TLB },  
 };
+
 // creates and allocates a group for cache performance counters
 struct counter_group *cache_counter_group(char *name,unsigned int mask){
   int i;
   int ncounters = 0;
+  int num_counters_available = (nmi_running)?5:6;
   struct counter_group *cgroup = NULL;
   
   for (i=0;i<sizeof(cache_events)/sizeof(cache_events[0]);i++){
@@ -499,10 +498,8 @@ struct counter_group *cache_counter_group(char *name,unsigned int mask){
     if (mask & cache_events[i].use){
       cgroup->cinfo[count].label = cache_events[i].name;
       cgroup->cinfo[count].config = cache_events[i].config;
-      if (cache_events[i].group_id != group_id){
+      if ((count % num_counters_available) == 0)
 	cgroup->cinfo[count].is_group_leader = 1;
-	group_id = cache_events[i].group_id;
-      }
       count++;
     }
   }
@@ -512,6 +509,7 @@ struct counter_group *cache_counter_group(char *name,unsigned int mask){
 // creates and allocates a group for raw hardware performance counters
 struct counter_group *raw_counter_group(char *name,unsigned int mask){
   int i;
+  int available_counters = (nmi_running)?5:6;
   
   struct raw_event *events;
   unsigned int num_events;
@@ -544,6 +542,9 @@ struct counter_group *raw_counter_group(char *name,unsigned int mask){
     if (events[i].use & mask){
       cgroup->cinfo[count].label = events[i].name;
       cgroup->cinfo[count].config = events[i].raw.config;
+      // chunck into multiplex groups if needed
+      if ((count % available_counters) == 0)
+	cgroup->cinfo[count].is_group_leader = 1;
       count++;
     }
   }
@@ -557,7 +558,7 @@ void setup_counter_groups(struct counter_group **counter_group_list){
   struct counter_group *cgroup;
 
   // note: These get pushed onto a linked list, so last listed is first printed
-  if (counter_mask & (COUNTER_DCACHE|COUNTER_ICACHE|COUNTER_L3CACHE|COUNTER_MEMORY)){
+  if (counter_mask & (COUNTER_DCACHE|COUNTER_ICACHE|COUNTER_TLB)){
     if (cgroup = cache_counter_group("cache",counter_mask)){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;
@@ -691,6 +692,19 @@ void stop_counters(struct counter_group *counter_group_list){
 	}
       }
     }
+  }
+}
+
+int check_nmi_watchdog(void){
+  int c;
+  FILE *fp;
+  if ((fp = fopen("/proc/sys/kernel/nmi_watchdog","r")) != NULL){
+    c = getc(fp);
+    if (c == '1'){
+      warning("/proc/sys/kernel/nmi_watchdog is running, missing performance counters\n");
+      nmi_running = 1;
+    }
+    fclose(fp);
   }
 }
 
@@ -947,6 +961,8 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (inventory_cpu() != 0){
     fatal("unable to query CPU information\n");
   }
+
+  check_nmi_watchdog();
 
   // parse the event tables
   setup_raw_events();
