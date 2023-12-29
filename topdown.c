@@ -40,7 +40,7 @@ int dummy = 0;
 #define COUNTER_TLB         0x200
 #define COUNTER_OPCACHE     0x400
 #define COUNTER_SOFTWARE    0x800
-#define COUNTER_FLOPS       0x1000
+#define COUNTER_FLOAT       0x1000
 
 
 unsigned int counter_mask = COUNTER_IPC;
@@ -59,8 +59,8 @@ struct raw_event intel_raw_events[] = {
 };
 
 struct raw_event amd_raw_events[] = {
-  { "instructions","event=0xc0",COUNTER_IPC|COUNTER_BRANCH|COUNTER_OPCACHE|COUNTER_L2CACHE,0 },
-  { "cpu-cycles","event=0x76",COUNTER_IPC|COUNTER_BRANCH|COUNTER_TOPDOWN|COUNTER_TOPDOWN2|COUNTER_FLOPS,0 },
+  { "instructions","event=0xc0",COUNTER_IPC|COUNTER_BRANCH|COUNTER_OPCACHE|COUNTER_L2CACHE|COUNTER_FLOAT,0 },
+  { "cpu-cycles","event=0x76",COUNTER_IPC|COUNTER_BRANCH|COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
   { "ex_ret_ops","event=0xc1",COUNTER_IPC|COUNTER_TOPDOWN,0 },
   { "de_no_dispatch_per_slot.no_ops_from_frontend","event=0x1a0,umask=0x1",COUNTER_TOPDOWN,0 },
   { "de_no_dispatch_per_slot.backend_stalls","event=0x1a0,umask=0x1e",COUNTER_TOPDOWN,0 },
@@ -79,7 +79,11 @@ struct raw_event amd_raw_events[] = {
   { "ls_data_cache_refills.remote_all","event=0x43,umask=0x50",COUNTER_MEMORY,0 },
   { "ls_hwpref_data_cache_refills.local_all","event=0x50,umask=0xf",COUNTER_MEMORY,0 },
   { "ls_hwpref_data_cache_refills.remote_all","event=0x50,umask=0x50",COUNTER_MEMORY,0 },
-  { "fp_ret_sse_avx_flops_all","event=0x3,umask=0x4",COUNTER_FLOPS,0},
+  { "fp_ret_fops_AVX512","event=0x20,umask=0x8",COUNTER_FLOAT,0},
+  { "fp_ret_fops_AVX256","event=0x10,umask=0x8",COUNTER_FLOAT,0},
+  { "fp_ret_fops_AVX128","event=0x8,umask=0x8",COUNTER_FLOAT,0},
+  { "fp_ret_fops_MMX","event=0x2,umask=0x8",COUNTER_FLOAT,0},
+  { "fp_ret_fops_scalar","event=0x5,umask=0x8",COUNTER_FLOAT,0},  
 };
 
 unsigned long parse_intel_event(char *description){
@@ -183,7 +187,7 @@ int parse_options(int argc,char *const argv[]){
     { "no-cache3", no_argument, 0, 9 },
     { "dcache", no_argument, 0, 10 }, // likwid (CACHE)
     { "no-cache", no_argument, 0, 11 },
-    { "flops",no_argument,0,33 },
+    { "float",no_argument,0,33 },
     { "icache", no_argument, 0, 12 }, // likwid
     { "no-icache", no_argument, 0, 13 },
     { "interval", no_argument, 0, 0 },
@@ -326,8 +330,8 @@ int parse_options(int argc,char *const argv[]){
       if (vflag>1) set_error_level(ERROR_LEVEL_DEBUG2);
       else set_error_level(ERROR_LEVEL_DEBUG);
       break;
-    case 33: // --flops
-      counter_mask |= COUNTER_FLOPS;
+    case 33: // --float
+      counter_mask |= COUNTER_FLOAT;
       break;
     default:
       return 1;
@@ -566,6 +570,13 @@ void setup_counter_groups(struct counter_group **counter_group_list){
       *counter_group_list = cgroup;
     }
   }
+
+  if (counter_mask & COUNTER_FLOAT){
+    if (cgroup = raw_counter_group("float",COUNTER_FLOAT)){
+      cgroup->next = *counter_group_list;
+      *counter_group_list = cgroup;      
+    }
+  }  
 
   if (counter_mask & COUNTER_MEMORY){
     if (cgroup = raw_counter_group("memory",COUNTER_MEMORY)){
@@ -1037,6 +1048,62 @@ void print_memory(struct counter_group *cgroup,enum output_format oformat){
   }  
 }
 
+void print_float(struct counter_group *cgroup,enum output_format oformat){
+  struct counter_info *cinfo;
+  unsigned long instructions = 0;
+  unsigned long float_512 = 0;
+  unsigned long float_256 = 0;
+  unsigned long float_128 = 0;
+  unsigned long float_mmx = 0;
+  unsigned long float_scalar = 0;
+  unsigned long float_all = 0;
+
+  if (oformat == PRINT_CSV_HEADER){
+    fprintf(outfile,"float,");
+    return;
+  }  
+
+  switch(cpu_info->vendor){
+  case VENDOR_INTEL:
+    break;
+  case VENDOR_AMD:
+    if (cinfo = find_ci_label(cgroup,"instructions"))
+      instructions = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"fp_ret_fops_AVX512"))
+      float_512 = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"fp_ret_fops_AVX256"))
+      float_256 = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"fp_ret_fops_AVX128"))
+      float_128 = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"fp_ret_fops_MMX"))
+      float_mmx = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"fp_ret_fops_scalar"))
+      float_scalar = cinfo->value;
+
+    float_all = float_512 + float_256 + float_128 + float_mmx + float_scalar;
+
+    if (csvflag){
+      fprintf(outfile,"%4.2f%%\n",(double) float_all / instructions * 100.0);
+    } else {
+      fprintf(outfile,"instructions         %-14lu # %4.3f float per 1000 inst\n",
+	      instructions,(double) float_all / instructions*1000.0);
+      fprintf(outfile,"float 512            %-14lu # %4.3f AVX-512 per 1000 inst\n",
+	      float_512,(double) float_512 / instructions*1000.0);      
+      fprintf(outfile,"float 256            %-14lu # %4.3f AVX-256 per 1000 inst\n",
+	      float_256,(double) float_256 / instructions*1000.0);      
+      fprintf(outfile,"float 128            %-14lu # %4.3f AVX-128 per 1000 inst\n",
+	      float_128,(double) float_128 / instructions*1000.0);
+      fprintf(outfile,"float MMX            %-14lu # %4.3f MMX per 1000 inst\n",
+	      float_mmx,(double) float_mmx / instructions*1000.0);      
+      fprintf(outfile,"float scalar         %-14lu # %4.3f scalar per 1000 inst\n",
+	      float_scalar,(double) float_scalar / instructions*1000.0);      
+    }
+    break;    
+  default:
+    return;
+  }
+}
+
 void print_software(struct counter_group *cgroup,enum output_format oformat){
   int i;
   struct counter_info *task_info = find_ci_label(cgroup,"task-clock");
@@ -1076,6 +1143,8 @@ void print_metrics(struct counter_group *counter_group_list,enum output_format o
       print_l2cache(cgroup,oformat);      
     } else if (cgroup->mask & COUNTER_MEMORY){
       print_memory(cgroup,oformat);
+    } else if (cgroup->mask & COUNTER_FLOAT){
+      print_float(cgroup,oformat);
     }
   }
 }
