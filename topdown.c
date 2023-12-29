@@ -958,9 +958,9 @@ void print_branch(struct counter_group *cgroup,enum output_format oformat){
       fprintf(outfile,"branch misses        %-14lu # %4.2f%% branch miss\n",
 	      branch_miss, (double) branch_miss / branches * 100.0);
       fprintf(outfile,"conditional          %-14lu # %4.3f conditional branches per 1000 inst\n",
-	      cond_branches,(double) branches / instructions * 1000.0);
+	      cond_branches,(double) cond_branches / instructions * 1000.0);
       fprintf(outfile,"indirect             %-14lu # %4.3f indirect branches per 1000 inst\n",
-	      ind_branches,(double) branches / instructions * 1000.0);      
+	      ind_branches,(double) ind_branches / instructions * 1000.0);      
   }
 }
 
