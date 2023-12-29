@@ -215,7 +215,6 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 4: // --branch
     case 'b':
-      warning("--branch not implemented, ignored\n");
       counter_mask |= COUNTER_BRANCH;
       break;
     case 5: // --no-branch
