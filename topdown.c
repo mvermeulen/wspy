@@ -581,6 +581,13 @@ void setup_counter_groups(struct counter_group **counter_group_list){
       *counter_group_list = cgroup;      
     }    
   }
+
+  if (counter_mask & COUNTER_BRANCH){
+    if (cgroup = raw_counter_group("branch",COUNTER_BRANCH)){
+      cgroup->next = *counter_group_list;
+      *counter_group_list = cgroup;      
+    }        
+  }
       
   if (counter_mask & COUNTER_TOPDOWN){
     if (cgroup = raw_counter_group("topdown2",COUNTER_TOPDOWN2)){
@@ -809,10 +816,6 @@ void print_ipc(struct counter_group *cgroup,enum output_format oformat){
     if (cpu_cycles){
       printf("cpu-cycles           %-14lu # %4.2f GHz\n",cpu_cycles,(double) cpu_cycles / elapsed / 1000000000.0 / cpu_info->num_cores_available / (aflag?cpu_info->num_cores_available:1));
       printf("instructions         %-14lu # %4.2f IPC\n",instructions,(double) instructions / cpu_cycles);
-      if (instructions){
-	printf("branches             %-14lu # %4.2f%%\n",branches,(double) branches / instructions * 100.0);
-	printf("branch-misses        %-14lu # %4.2f%%\n",branch_misses,(double) branch_misses / branches * 100.0);
-      }
       break;
     case PRINT_CSV:
       fprintf(outfile,"%4.2f,",(double) instructions / cpu_cycles);
@@ -907,6 +910,38 @@ void print_topdown2(struct counter_group *cgroup,enum output_format oformat){
   }
 }
 
+void print_branch(struct counter_group *cgroup,enum output_format oformat){
+  struct counter_info *cinfo;
+  unsigned long instructions = 0;
+  unsigned long cpu_cycles = 0;
+  unsigned long branches = 0;
+  unsigned long branch_miss = 0;
+
+  if (oformat == PRINT_CSV_HEADER){
+    fprintf(outfile,"branch miss,");
+    return;
+  }  
+
+  if (cinfo = find_ci_label(cgroup,"instructions"))
+    instructions = cinfo->value;
+  if (cinfo = find_ci_label(cgroup,"cpu-cycles"))
+    cpu_cycles = cinfo->value;
+  if (cinfo = find_ci_label(cgroup,"branch-instructions"))
+    branches = cinfo->value;
+  if (cinfo = find_ci_label(cgroup,"branch-misses"))
+    branch_miss = cinfo->value;  
+  
+
+  if (csvflag){
+      fprintf(outfile,"%4.2f%%\n",(double) branch_miss / branches * 100.0);
+  } else {
+      fprintf(outfile,"branches             %-14lu # %4.3f branches per 1000 inst\n",
+	      branches,(double) branches / instructions * 1000.0);
+      fprintf(outfile,"branch misses        %-14lu # %4.2f%% branch miss\n",
+	      branch_miss, (double) branch_miss / branches * 100.0);
+  }
+}
+
 void print_l2cache(struct counter_group *cgroup,enum output_format oformat){
   struct counter_info *cinfo;
   unsigned long l2_access=0, l2_miss=0;
@@ -947,7 +982,7 @@ void print_l2cache(struct counter_group *cgroup,enum output_format oformat){
     } else {
       fprintf(outfile,"instructions         %-14lu # %4.3f l2 access per 1000 inst\n",
 	      instructions,(double) l2_access / instructions*1000.0);
-      fprintf(outfile,"l2 hit from l1       %-14lu # l2 miss %4.2f%%\n",
+      fprintf(outfile,"l2 hit from l1       %-14lu # %4.2f%% l2 miss\n",
 	      l2_from_l1_no_prefetch, (double) l2_miss / l2_access * 100.0);
       fprintf(outfile,"l2 miss from l1      %-14lu #\n",l1_miss_l2_miss);
       fprintf(outfile,"l2 hit from l2 pf    %-14lu #\n",l2_pf_hit_l2);
@@ -1036,6 +1071,8 @@ void print_metrics(struct counter_group *counter_group_list,enum output_format o
       print_topdown(cgroup,oformat);
     } else if (cgroup->mask & COUNTER_TOPDOWN2){
       print_topdown2(cgroup,oformat);
+    } else if (cgroup->mask & COUNTER_BRANCH){
+      print_branch(cgroup,oformat);
     } else if (cgroup->mask & COUNTER_L2CACHE){
       print_l2cache(cgroup,oformat);      
     } else if (cgroup->mask & COUNTER_MEMORY){
