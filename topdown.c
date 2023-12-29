@@ -61,12 +61,18 @@ struct raw_event intel_raw_events[] = {
 
 struct raw_event amd_raw_events[] = {
   { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_OPCACHE|COUNTER_L2CACHE|COUNTER_L3CACHE|COUNTER_FLOAT,0 },
-  { "cpu-cycles","event=0x76",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_TOPDOWN,0 },
-  { "ex_ret_ops","event=0xc1",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_TOPDOWN,0 },
-  { "de_no_dispatch_per_slot.no_ops_from_frontend","event=0x1a0,umask=0x1",PERF_TYPE_RAW,COUNTER_TOPDOWN,0 },
-  { "de_no_dispatch_per_slot.backend_stalls","event=0x1a0,umask=0x1e",PERF_TYPE_RAW,COUNTER_TOPDOWN,0 },
-  { "de_src_op_disp.all","event=0xaa,umask=0x7",PERF_TYPE_RAW,COUNTER_TOPDOWN,0 },
-  { "de_no_dispatch_per_slot.smt_contention","event=0x1a0,umask=0x60",PERF_TYPE_RAW,COUNTER_TOPDOWN,0 },
+  { "cpu-cycles","event=0x76",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
+  { "ex_ret_ops","event=0xc1",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
+  { "de_no_dispatch_per_slot.no_ops_from_frontend","event=0x1a0,umask=0x1",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
+  { "de_no_dispatch_per_slot.backend_stalls","event=0x1a0,umask=0x1e",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
+  { "de_src_op_disp.all","event=0xaa,umask=0x7",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
+  { "de_no_dispatch_per_slot.smt_contention","event=0x1a0,umask=0x60",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
+  { "ex_no_retire.load_not_complete","event=0xd6,umask=0xa2",PERF_TYPE_RAW,COUNTER_TOPDOWN2, 0 },
+  { "ex_no_retire.not_complete","event=0xd6,umask=0x2",PERF_TYPE_RAW,COUNTER_TOPDOWN2, 0 },
+  { "ex_ret_brn_misp","event=0xc3",PERF_TYPE_RAW,COUNTER_TOPDOWN2, 0 },
+  { "resyncs_or_nc_redirects","event=0x96",PERF_TYPE_RAW,COUNTER_TOPDOWN2, 0 },
+  { "de_no_dispatch_per_slot.no_ops_from_frontend.cmask_0x6","event=0x1a0,umask=0x1,cmask=0x6",PERF_TYPE_RAW,COUNTER_TOPDOWN2,0 },
+  { "ex_ret_ucode_ops","event=0x1c1",PERF_TYPE_RAW,COUNTER_TOPDOWN2,0 },
   { "branch-instructions","event=0xc2",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
   { "branch-misses","event=0xc3",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
   { "conditional-branches","event=0xd1",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
@@ -138,6 +144,8 @@ unsigned long parse_amd_event(char *description){
 	result.event2 = value>>8;
       } else if (!strcmp(name,"umask")){
 	result.umask = value;
+      } else if (!strcmp(name,"cmask")){
+	result.cmask = value;
       } else if (!strcmp(name,"requires")){
 	// the value encodes the name of the type field...
 	debug("checking for %s\n",val);
@@ -326,7 +334,6 @@ int parse_options(int argc,char *const argv[]){
       counter_mask &= (~COUNTER_TOPDOWN);
       break;
     case 29: // --topdown2
-      warning("--topdown2 not implemented, ignored\n");
       counter_mask |= COUNTER_TOPDOWN2;
       break;
     case 30: // --no-topdown2
@@ -870,14 +877,26 @@ void print_ipc(struct counter_group *cgroup,enum output_format oformat){
   }
 }
 
-void print_topdown(struct counter_group *cgroup,enum output_format oformat){
+void print_topdown(struct counter_group *cgroup,enum output_format oformat,int mask){
   unsigned long slots=0;
   unsigned long slots_no_contention = 0;
   unsigned long retiring=0;
   unsigned long frontend=0;
+  unsigned long frontend_latency=0;
+  unsigned long frontend_bandwidth=0;
   unsigned long backend=0;
+  unsigned long retire_not_complete=0;
+  unsigned long retire_load_not_complete=0;
+  unsigned long backend_cpu=0;
+  unsigned long backend_memory=0;
   unsigned long speculation=0;
+  unsigned long speculation_branches=0;
+  unsigned long speculation_pipeline=0;
+  unsigned long branches_mispredicted=0;
+  unsigned long resyncs_or_nc_redirects=0;
   unsigned long contention=0;
+  unsigned long retire_ucode=0;
+  unsigned long retire_fastpath=0;
   int too_short = 0;
   struct counter_info *cinfo;
 
@@ -904,6 +923,38 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat){
       if (cinfo->time_running == 0) too_short = 1;
       speculation = cinfo->value - retiring;
     }
+    // backend level 2
+    if (cinfo = find_ci_label(cgroup,"ex_no_retire.load_not_complete"))
+      retire_load_not_complete = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"ex_no_retire.not_complete"))
+      retire_not_complete = cinfo->value;
+    if (retire_load_not_complete && retire_not_complete){
+      backend_memory = backend * (double) retire_load_not_complete / retire_not_complete;
+      backend_cpu = backend - backend_memory;
+    }
+
+    // speculation level 2
+    if (cinfo = find_ci_label(cgroup,"ex_ret_brn_misp"))
+      branches_mispredicted = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"resyncs_or_nc_redirects"))
+      resyncs_or_nc_redirects = cinfo->value;
+    if (branches_mispredicted && resyncs_or_nc_redirects){
+      speculation_pipeline = speculation * (double) resyncs_or_nc_redirects / (resyncs_or_nc_redirects + branches_mispredicted);
+      speculation_branches = speculation - speculation_pipeline;
+    }
+
+    // frontend
+    if (cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.no_ops_from_frontend.cmask_0x6")){
+      frontend_latency = cinfo->value*6;
+      frontend_bandwidth = frontend - frontend_latency;
+    }
+
+    // retire
+    if (cinfo = find_ci_label(cgroup,"ex_ret_ucode_ops")){
+      retire_ucode = retiring * (double) cinfo->value / retiring;
+      retire_fastpath = retiring - retire_ucode;
+    }
+    
     slots_no_contention = slots - contention;
     break;
   default:
@@ -913,10 +964,11 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat){
   if (slots){
     switch(oformat){
     case PRINT_CSV:
-      fprintf(outfile,"%4.1f,",(double) retiring/slots*100);
-      fprintf(outfile,"%4.1f,",(double) frontend/slots*100);
-      fprintf(outfile,"%4.1f,",(double) backend/slots*100);
-      fprintf(outfile,"%4.1f,",(double) speculation/slots*100);
+      fprintf(outfile,"%4.1f,",(double) retiring/slots_no_contention*100);
+      fprintf(outfile,"%4.1f,",(double) frontend/slots_no_contention*100);
+      fprintf(outfile,"%4.1f,",(double) backend/slots_no_contention*100);
+      fprintf(outfile,"%4.1f,",(double) speculation/slots_no_contention*100);
+      
       break;
     case PRINT_NORMAL:
       if (too_short){
@@ -925,12 +977,36 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat){
 	fprintf(outfile,"slots                %-14lu #\n",slots);
 	fprintf(outfile,"retiring             %-14lu # %4.1f%% (%4.1lf%%)\n",
 		retiring,(double) retiring/slots*100, (double) retiring/slots_no_contention*100);
+	if (retire_ucode && frontend_bandwidth){
+	  fprintf(outfile,"-- ucode             %-14lu #    %4.1f%%\n",
+		  retire_ucode,(double) retire_ucode/slots*100);
+	  fprintf(outfile,"-- fastpath          %-14lu #    %4.1f%%\n",
+		  retire_fastpath,(double) retire_fastpath/slots*100);
+	}		
 	fprintf(outfile,"frontend             %-14lu # %4.1f%% (%4.1lf%%)\n",
 		frontend,(double) frontend/slots*100, (double) frontend/slots_no_contention*100);
+	if (frontend_latency && frontend_bandwidth){
+	  fprintf(outfile,"-- latency           %-14lu #    %4.1f%%\n",
+		  frontend_latency,(double) frontend_latency/slots*100);
+	  fprintf(outfile,"-- bandwidth         %-14lu #    %4.1f%%\n",
+		  frontend_bandwidth,(double) frontend_bandwidth/slots*100);
+	}	
 	fprintf(outfile,"backend              %-14lu # %4.1f%% (%4.1lf%%)\n",
 		backend,(double) backend/slots*100, (double) backend/slots_no_contention*100);
+	if (backend_memory && backend_cpu){
+	  fprintf(outfile,"-- cpu               %-14lu #    %4.1f%%\n",
+		  backend_cpu,(double) backend_cpu/slots*100);
+	  fprintf(outfile,"-- memory            %-14lu #    %4.1f%%\n",
+		  backend_memory,(double) backend_memory/slots*100);
+	}
 	fprintf(outfile,"speculation          %-14lu # %4.1f%% (%4.1lf%%)\n",
 		speculation,(double) speculation/slots*100, (double) speculation/slots_no_contention*100);
+	if (speculation_pipeline && speculation_branches){
+	  fprintf(outfile,"-- branch mispredict %-14lu #    %4.1lf%%\n",
+		  speculation_branches,(double) speculation_branches/slots*100);
+	  fprintf(outfile,"-- pipeline restart  %-14lu #    %4.1f%%\n",
+		  speculation_pipeline,(double) speculation_pipeline/slots*100);
+	}
 	fprintf(outfile,"smt-contention       %-14lu # %4.1f%% ( 0.0%%)\n",contention,(double) contention/slots*100);
       }
       break;
@@ -938,41 +1014,6 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat){
   }
 }
 
-void print_topdown2(struct counter_group *cgroup,enum output_format oformat){
-  unsigned long slots=0;
-  unsigned long smt_contention=0;
-  unsigned long retiring=0;
-  unsigned long frontend=0;
-  unsigned long backend=0;
-  unsigned long speculation=0;  
-  struct counter_info *cinfo;
-
-  if (oformat == PRINT_CSV_HEADER){
-    fprintf(outfile,"smt,");
-    return;
-  }  
-
-  switch(cpu_info->vendor){
-  case VENDOR_INTEL:
-    if (cinfo = find_ci_label(cgroup,"slots")) slots = cinfo->value;
-    if (!csvflag){
-      fprintf(outfile,"slots                %-14lu #\n",slots);      
-    }
-    break;
-  case VENDOR_AMD:
-    if (cinfo = find_ci_label(cgroup,"cpu-cycles")) slots = cinfo->value * 6;
-    if (cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.smt_contention")) smt_contention = cinfo->value;
-    if (csvflag){
-      fprintf(outfile,"%4.1f",(double) smt_contention/slots*100);
-    } else {
-      fprintf(outfile,"slots                %-14lu #\n",slots);
-      fprintf(outfile,"smt-contention       %-14lu # %4.1f%%\n",smt_contention,(double) smt_contention/slots*100);
-    }
-    break;
-  default:
-    return;
-  }
-}
 
 void print_branch(struct counter_group *cgroup,enum output_format oformat){
   struct counter_info *cinfo;
@@ -1263,9 +1304,9 @@ void print_metrics(struct counter_group *counter_group_list,enum output_format o
     } else if (!strcmp(cgroup->label,"generic hardware")){
       print_ipc(cgroup,oformat);      
     } else if (cgroup->mask & COUNTER_TOPDOWN){
-      print_topdown(cgroup,oformat);
+      print_topdown(cgroup,oformat,COUNTER_TOPDOWN);
     } else if (cgroup->mask & COUNTER_TOPDOWN2){
-      print_topdown2(cgroup,oformat);
+      print_topdown(cgroup,oformat,COUNTER_TOPDOWN2);
     } else if (cgroup->mask & COUNTER_BRANCH){
       print_branch(cgroup,oformat);
     } else if (cgroup->mask & COUNTER_L2CACHE){
