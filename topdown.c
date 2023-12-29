@@ -269,7 +269,6 @@ int parse_options(int argc,char *const argv[]){
       counter_mask &= (~COUNTER_MEMORY);
       break;
     case 18: // --opcache
-      warning("--opcache not implemented, ignored\n");
       counter_mask |= COUNTER_OPCACHE;
       break;
     case 19: // --no-opcache
@@ -578,7 +577,15 @@ void setup_counter_groups(struct counter_group **counter_group_list){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;      
     }
-  }  
+  }
+
+  if (counter_mask & COUNTER_OPCACHE){
+    if (cgroup = raw_counter_group("op cache",COUNTER_OPCACHE)){
+      cgroup->next = *counter_group_list;
+      *counter_group_list = cgroup;      
+    }    
+  }
+  
 
   if (counter_mask & COUNTER_MEMORY){
     if (cgroup = raw_counter_group("memory",COUNTER_MEMORY)){
@@ -1060,6 +1067,34 @@ void print_memory(struct counter_group *cgroup,enum output_format oformat){
   }  
 }
 
+void print_opcache(struct counter_group *cgroup,enum output_format oformat){
+  struct counter_info *cinfo;
+  unsigned long instructions = 0;
+  unsigned long opcache = 0;
+  unsigned long opcache_miss = 0;
+
+  if (oformat == PRINT_CSV_HEADER){
+    fprintf(outfile,"opcache miss,");
+    return;
+  }  
+
+  if (cinfo = find_ci_label(cgroup,"instructions"))
+    instructions = cinfo->value;
+  if (cinfo = find_ci_label(cgroup,"op_cache_hit_miss.all_op_cache_accesses"))
+    opcache = cinfo->value;
+  if (cinfo = find_ci_label(cgroup,"op_cache_hit_miss.op_cache_miss"))
+    opcache_miss = cinfo->value;  
+
+  if (csvflag){
+      fprintf(outfile,"%4.2f%%\n",(double) opcache_miss / opcache * 100.0);
+  } else {
+      fprintf(outfile,"opcache              %-14lu # %4.3f opcache per 1000 inst\n",
+	      opcache,(double) opcache / instructions * 1000.0);
+      fprintf(outfile,"opcache misses       %-14lu # %4.2f%% opcache miss\n",
+	      opcache_miss, (double) opcache_miss / opcache * 100.0);
+  }
+}
+
 void print_float(struct counter_group *cgroup,enum output_format oformat){
   struct counter_info *cinfo;
   unsigned long instructions = 0;
@@ -1153,8 +1188,8 @@ void print_metrics(struct counter_group *counter_group_list,enum output_format o
       print_branch(cgroup,oformat);
     } else if (cgroup->mask & COUNTER_L2CACHE){
       print_l2cache(cgroup,oformat);      
-    } else if (cgroup->mask & COUNTER_MEMORY){
-      print_memory(cgroup,oformat);
+    } else if (cgroup->mask & COUNTER_OPCACHE){
+      print_opcache(cgroup,oformat);
     } else if (cgroup->mask & COUNTER_FLOAT){
       print_float(cgroup,oformat);
     }
