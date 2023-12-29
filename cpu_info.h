@@ -41,6 +41,7 @@ struct counter_info {
   char *label;
   int corenum; // for hw counters
   unsigned int is_group_leader : 1;
+  unsigned int device_type;
   unsigned long int config;
   struct counter_def *cdef;
   int fd;
@@ -90,9 +91,11 @@ union amd_raw_cpu_format {
   unsigned long config;
 };
 
+#define PERF_TYPE_L3 0xe // extra device for amd_l3
 struct raw_event {
   char *name;
   char *description;
+  unsigned int device_type;
   unsigned int use;
   union {
     union intel_raw_cpu_format raw_intel;

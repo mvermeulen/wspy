@@ -13,6 +13,7 @@
 #include <sys/syscall.h>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <linux/perf_event.h>
 #include <errno.h>
 #include "error.h"
@@ -49,43 +50,46 @@ struct timespec start_time,finish_time;
 
 // Counter definitions for RAW performance counters
 struct raw_event intel_raw_events[] = {
-  { "instructions","event=0xc0",COUNTER_IPC,0 },
-  { "cpu-cycles","event=0x3c",COUNTER_IPC,0 },
+  { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC,0 },
+  { "cpu-cycles","event=0x3c",PERF_TYPE_RAW,COUNTER_IPC,0 },
   { "slots","event=0x00,umask=0x4",COUNTER_TOPDOWN,0 },
-  { "core.topdown-bad-spec","event=0x00,umask=0x81",COUNTER_TOPDOWN,0 },
-  { "core.topdown-be-bound","event=0x00,umask=0x83",COUNTER_TOPDOWN,0 },
-  { "core.topdown-fe-bound","event=0x00,umask=0x82",COUNTER_TOPDOWN,0 },
-  { "core.topdown-retiring","event=0x00,umask=0x80",COUNTER_TOPDOWN,0 },        
+  { "core.topdown-bad-spec","event=0x00,umask=0x81",PERF_TYPE_RAW,COUNTER_TOPDOWN,0 },
+  { "core.topdown-be-bound","event=0x00,umask=0x83",PERF_TYPE_RAW,COUNTER_TOPDOWN,0 },
+  { "core.topdown-fe-bound","event=0x00,umask=0x82",PERF_TYPE_RAW,COUNTER_TOPDOWN,0 },
+  { "core.topdown-retiring","event=0x00,umask=0x80",PERF_TYPE_RAW,COUNTER_TOPDOWN,0 },        
 };
 
 struct raw_event amd_raw_events[] = {
-  { "instructions","event=0xc0",COUNTER_IPC|COUNTER_BRANCH|COUNTER_OPCACHE|COUNTER_L2CACHE|COUNTER_FLOAT,0 },
-  { "cpu-cycles","event=0x76",COUNTER_IPC|COUNTER_BRANCH|COUNTER_TOPDOWN,0 },
-  { "ex_ret_ops","event=0xc1",COUNTER_IPC|COUNTER_TOPDOWN,0 },
-  { "de_no_dispatch_per_slot.no_ops_from_frontend","event=0x1a0,umask=0x1",COUNTER_TOPDOWN,0 },
-  { "de_no_dispatch_per_slot.backend_stalls","event=0x1a0,umask=0x1e",COUNTER_TOPDOWN,0 },
-  { "de_src_op_disp.all","event=0xaa,umask=0x7",COUNTER_TOPDOWN,0 },
-  { "de_no_dispatch_per_slot.smt_contention","event=0x1a0,umask=0x60",COUNTER_TOPDOWN,0 },
-  { "branch-instructions","event=0xc2",COUNTER_BRANCH,0 },
-  { "branch-misses","event=0xc3",COUNTER_BRANCH,0 },
-  { "conditional-branches","event=0xd1",COUNTER_BRANCH,0 },
-  { "indirect-branches","event=0xcc",COUNTER_BRANCH,0 },
-  { "op_cache_hit_miss.all_op_cache_accesses","event=0x28f,umask=0x7",COUNTER_OPCACHE,0 },
-  { "op_cache_hit_miss.op_cache_miss","event=0x28f,umask=0x4",COUNTER_OPCACHE,0 },
-  { "l2_request_g1.all_no_prefetch","event=0x60,umask=0xf9",COUNTER_L2CACHE,0 },
-  { "l2_pf_hit_l2","event=0x70,umask=0x1f",COUNTER_L2CACHE,0 },
-  { "l2_pf_miss_l2_hit_l3", "event=0x71,umask=0x1f",COUNTER_L2CACHE,0 },
-  { "l2_pf_miss_l2_l3","event=0x72,umask=0x1f",COUNTER_L2CACHE,0 },
-  { "l2_cache_req_stat.ic_dc_miss_in_l2","event=0x64,umask=0x9",COUNTER_L2CACHE,0 },
-  { "ls_data_cache_refills.local_all","event=0x43,umask=0xf",COUNTER_MEMORY,0 },
-  { "ls_data_cache_refills.remote_all","event=0x43,umask=0x50",COUNTER_MEMORY,0 },
-  { "ls_hwpref_data_cache_refills.local_all","event=0x50,umask=0xf",COUNTER_MEMORY,0 },
-  { "ls_hwpref_data_cache_refills.remote_all","event=0x50,umask=0x50",COUNTER_MEMORY,0 },
-  { "fp_ret_fops_AVX512","event=0x20,umask=0x8",COUNTER_FLOAT,0},
-  { "fp_ret_fops_AVX256","event=0x10,umask=0x8",COUNTER_FLOAT,0},
-  { "fp_ret_fops_AVX128","event=0x8,umask=0x8",COUNTER_FLOAT,0},
-  { "fp_ret_fops_MMX","event=0x2,umask=0x8",COUNTER_FLOAT,0},
-  { "fp_ret_fops_scalar","event=0x5,umask=0x8",COUNTER_FLOAT,0},  
+  { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_OPCACHE|COUNTER_L2CACHE|COUNTER_L3CACHE|COUNTER_FLOAT,0 },
+  { "cpu-cycles","event=0x76",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_TOPDOWN,0 },
+  { "ex_ret_ops","event=0xc1",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_TOPDOWN,0 },
+  { "de_no_dispatch_per_slot.no_ops_from_frontend","event=0x1a0,umask=0x1",PERF_TYPE_RAW,COUNTER_TOPDOWN,0 },
+  { "de_no_dispatch_per_slot.backend_stalls","event=0x1a0,umask=0x1e",PERF_TYPE_RAW,COUNTER_TOPDOWN,0 },
+  { "de_src_op_disp.all","event=0xaa,umask=0x7",PERF_TYPE_RAW,COUNTER_TOPDOWN,0 },
+  { "de_no_dispatch_per_slot.smt_contention","event=0x1a0,umask=0x60",PERF_TYPE_RAW,COUNTER_TOPDOWN,0 },
+  { "branch-instructions","event=0xc2",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
+  { "branch-misses","event=0xc3",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
+  { "conditional-branches","event=0xd1",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
+  { "indirect-branches","event=0xcc",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
+  { "op_cache_hit_miss.all_op_cache_accesses","event=0x28f,umask=0x7",PERF_TYPE_RAW,COUNTER_OPCACHE,0 },
+  { "op_cache_hit_miss.op_cache_miss","event=0x28f,umask=0x4",PERF_TYPE_RAW,COUNTER_OPCACHE,0 },
+  { "l2_request_g1.all_no_prefetch","event=0x60,umask=0xf9",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
+  { "l2_pf_hit_l2","event=0x70,umask=0x1f",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
+  { "l2_pf_miss_l2_hit_l3", "event=0x71,umask=0x1f",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
+  { "l2_pf_miss_l2_l3","event=0x72,umask=0x1f",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
+  { "l2_cache_req_stat.ic_dc_miss_in_l2","event=0x64,umask=0x9",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
+  { "ls_data_cache_refills.local_all","event=0x43,umask=0xf",PERF_TYPE_RAW,COUNTER_MEMORY,0 },
+  { "ls_data_cache_refills.remote_all","event=0x43,umask=0x50",PERF_TYPE_RAW,COUNTER_MEMORY,0 },
+  { "ls_hwpref_data_cache_refills.local_all","event=0x50,umask=0xf",PERF_TYPE_RAW,COUNTER_MEMORY,0 },
+  { "ls_hwpref_data_cache_refills.remote_all","event=0x50,umask=0x50",PERF_TYPE_RAW,COUNTER_MEMORY,0 },
+  { "fp_ret_fops_AVX512","event=0x20,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,0},
+  { "fp_ret_fops_AVX256","event=0x10,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,0},
+  { "fp_ret_fops_AVX128","event=0x8,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,0},
+  { "fp_ret_fops_MMX","event=0x2,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,0},
+  { "fp_ret_fops_scalar","event=0x5,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,0},
+  // l3 events, need to have /sys/devices/amd_l3/type available...
+  { "l3_lookup_state.all_coherent_accesses_to_l3","event=0x4,umask=0xff,requires=/sys/devices/amd_l3/type",PERF_TYPE_L3,COUNTER_L3CACHE, 0 },
+  { "l3_lookup_state.l3_miss","event=0x4,umask=0x1,requires=/sys/devices/amd_l3/type",PERF_TYPE_L3,COUNTER_L3CACHE, 0 },  
 };
 
 unsigned long parse_intel_event(char *description){
@@ -120,6 +124,7 @@ unsigned long parse_amd_event(char *description){
   char *name,*val;
   unsigned long value;
   union amd_raw_cpu_format result;
+  struct stat statbuf;
   result.config = 0;
   
   for (name = strtok(desc,",\n");name;name = strtok(NULL,",\n")){
@@ -133,8 +138,14 @@ unsigned long parse_amd_event(char *description){
 	result.event2 = value>>8;
       } else if (!strcmp(name,"umask")){
 	result.umask = value;
+      } else if (!strcmp(name,"requires")){
+	// the value encodes the name of the type field...
+	debug("checking for %s\n",val);
+	if (stat(val,&statbuf) ==-1){
+	  fatal("%s not found, is the perf module for this device loaded in the kernel?\n");
+	}
       } else {
-	fatal("unimplemented %s in parse_intel_event\n",name);
+	fatal("unimplemented %s in parse_amd_event\n",name);
       }
     }
   }
@@ -234,7 +245,6 @@ int parse_options(int argc,char *const argv[]){
       counter_mask &= (~COUNTER_L2CACHE);
       break;
     case 8: // --cache3
-      warning("--cache3 not implemented, ignored\n");
       counter_mask |= COUNTER_L3CACHE;
       break;
     case 9: // --no-cache3
@@ -549,8 +559,9 @@ struct counter_group *raw_counter_group(char *name,unsigned int mask){
     if (events[i].use & mask){
       cgroup->cinfo[count].label = events[i].name;
       cgroup->cinfo[count].config = events[i].raw.config;
-      // chunck into multiplex groups if needed
-      if ((count % available_counters) == 0)
+      cgroup->cinfo[count].device_type = events[i].device_type;
+      // chunk into multiplex groups if needed
+      if (((count % available_counters) == 0) || (events[i].device_type != PERF_TYPE_RAW))
 	cgroup->cinfo[count].is_group_leader = 1;
       count++;
     }
@@ -593,6 +604,13 @@ void setup_counter_groups(struct counter_group **counter_group_list){
       *counter_group_list = cgroup;      
     }
   }
+
+  if (counter_mask & COUNTER_L3CACHE){
+    if (cgroup = raw_counter_group("l3 cache",COUNTER_L3CACHE)){
+      cgroup->next = *counter_group_list;
+      *counter_group_list = cgroup;      
+    }    
+  }  
 
   if (counter_mask & COUNTER_L2CACHE){
     if (cgroup = raw_counter_group("l2 cache",COUNTER_L2CACHE)){
@@ -652,7 +670,7 @@ void setup_counters(struct counter_group *counter_group_list){
       if (cgroup->cinfo[i].is_group_leader == 1)
 	group_id = -1;
       memset(&pe,0,sizeof(pe));
-      pe.type = cgroup->type_id;
+      pe.type = (cgroup->type_id==PERF_TYPE_RAW)?cgroup->cinfo[i].device_type:cgroup->type_id;
       pe.config = cgroup->cinfo[i].config;
       pe.sample_type = PERF_SAMPLE_IDENTIFIER; // is this needed?
       pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED|PERF_FORMAT_TOTAL_TIME_RUNNING;
@@ -661,7 +679,16 @@ void setup_counters(struct counter_group *counter_group_list){
       pe.inherit = 1;
       pe.disabled = 1;
 
-      status = perf_event_open(&pe,0,-1,group_id,PERF_FLAG_FD_CLOEXEC);
+      if (pe.type == PERF_TYPE_L3){
+	// read from any process on this core
+	pe.exclude_guest = 0;
+	status = perf_event_open(&pe,-1,0,group_id,0);
+      } else {
+	// read from current process
+	status = perf_event_open(&pe,0,-1,group_id,PERF_FLAG_FD_CLOEXEC);	
+      }
+
+
       if (status == -1){
 	error("unable to create %s performance counter, name=%s, errno=%d - %s\n",
 	      cgroup->label,cgroup->cinfo[i].label,errno,strerror(errno));
@@ -1042,6 +1069,43 @@ void print_l2cache(struct counter_group *cgroup,enum output_format oformat){
   }
 }
 
+void print_l3cache(struct counter_group *cgroup,enum output_format oformat){
+  struct counter_info *cinfo;
+  unsigned long l3_access=0, l3_miss=0;
+  unsigned long instructions = 0;
+
+  if (oformat == PRINT_CSV_HEADER){
+    fprintf(outfile,"l3miss,");
+    return;
+  }  
+
+  switch(cpu_info->vendor){
+  case VENDOR_INTEL:
+    break;
+  case VENDOR_AMD:
+    if (cinfo = find_ci_label(cgroup,"instructions"))
+      instructions = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"l3_lookup_state.all_coherent_accesses_to_l3"))
+      l3_access = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"l3_lookup_state.l3_miss"))
+      l3_miss = cinfo->value;
+
+    if (csvflag){
+      fprintf(outfile,"%4.2f%%\n",(double) l3_miss / l3_access * 100.0);
+    } else {
+      fprintf(outfile,"instructions         %-14lu # %4.3f l3 access per 1000 inst\n",
+	      instructions,(double) l3_access / instructions*1000.0);
+      fprintf(outfile,"l3 access            %-14lu # %4.3f l3 access per 1000 inst\n",
+	      l3_access, (double) l3_access / instructions*1000.0);
+      fprintf(outfile,"l3 miss              %-14lu # %4.2f%% l3 miss\n",
+	      l3_miss, (double) l3_miss / l3_access * 100.0);
+    }
+    break;    
+  default:
+    return;
+  }
+}
+
 void print_memory(struct counter_group *cgroup,enum output_format oformat){
   unsigned long data_cache_local=0;
   unsigned long data_cache_remote=0;
@@ -1206,6 +1270,8 @@ void print_metrics(struct counter_group *counter_group_list,enum output_format o
       print_branch(cgroup,oformat);
     } else if (cgroup->mask & COUNTER_L2CACHE){
       print_l2cache(cgroup,oformat);      
+    } else if (cgroup->mask & COUNTER_L3CACHE){
+      print_l3cache(cgroup,oformat);      
     } else if (cgroup->mask & COUNTER_OPCACHE){
       print_opcache(cgroup,oformat);
     } else if (cgroup->mask & COUNTER_FLOAT){
