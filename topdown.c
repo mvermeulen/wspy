@@ -68,6 +68,8 @@ struct raw_event amd_raw_events[] = {
   { "de_no_dispatch_per_slot.smt_contention","event=0x1a0,umask=0x60",COUNTER_TOPDOWN,0 },
   { "branch-instructions","event=0xc2",COUNTER_BRANCH,0 },
   { "branch-misses","event=0xc3",COUNTER_BRANCH,0 },
+  { "conditional-branches","event=0xd1",COUNTER_BRANCH,0 },
+  { "indirect-branches","event=0xcc",COUNTER_BRANCH,0 },
   { "op_cache_hit_miss.all_op_cache_accesses","event=0x28f,umask=0x7",COUNTER_OPCACHE,0 },
   { "op_cache_hit_miss.op_cache_miss","event=0x28f,umask=0x4",COUNTER_OPCACHE,0 },
   { "l2_request_g1.all_no_prefetch","event=0x60,umask=0xf9",COUNTER_L2CACHE,0 },
@@ -926,6 +928,8 @@ void print_branch(struct counter_group *cgroup,enum output_format oformat){
   unsigned long cpu_cycles = 0;
   unsigned long branches = 0;
   unsigned long branch_miss = 0;
+  unsigned long cond_branches = 0;
+  unsigned long ind_branches = 0;
 
   if (oformat == PRINT_CSV_HEADER){
     fprintf(outfile,"branch miss,");
@@ -939,7 +943,11 @@ void print_branch(struct counter_group *cgroup,enum output_format oformat){
   if (cinfo = find_ci_label(cgroup,"branch-instructions"))
     branches = cinfo->value;
   if (cinfo = find_ci_label(cgroup,"branch-misses"))
-    branch_miss = cinfo->value;  
+    branch_miss = cinfo->value;
+  if (cinfo = find_ci_label(cgroup,"conditional-branches"))
+    cond_branches = cinfo->value;
+  if (cinfo = find_ci_label(cgroup,"indirect-branches"))
+    ind_branches = cinfo->value;  
   
 
   if (csvflag){
@@ -949,6 +957,10 @@ void print_branch(struct counter_group *cgroup,enum output_format oformat){
 	      branches,(double) branches / instructions * 1000.0);
       fprintf(outfile,"branch misses        %-14lu # %4.2f%% branch miss\n",
 	      branch_miss, (double) branch_miss / branches * 100.0);
+      fprintf(outfile,"conditional          %-14lu # %4.3f conditional branches per 1000 inst\n",
+	      cond_branches,(double) branches / instructions * 1000.0);
+      fprintf(outfile,"indirect             %-14lu # %4.3f indirect branches per 1000 inst\n",
+	      ind_branches,(double) branches / instructions * 1000.0);      
   }
 }
 
