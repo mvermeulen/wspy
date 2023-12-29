@@ -59,8 +59,8 @@ struct raw_event intel_raw_events[] = {
 };
 
 struct raw_event amd_raw_events[] = {
-  { "instructions","event=0xc0",COUNTER_IPC|COUNTER_BRANCH|COUNTER_OPCACHE,0 },
-  { "cpu-cycles","event=0x76",COUNTER_IPC|COUNTER_BRANCH|COUNTER_TOPDOWN|COUNTER_TOPDOWN2|COUNTER_L2CACHE|COUNTER_FLOPS,0 },
+  { "instructions","event=0xc0",COUNTER_IPC|COUNTER_BRANCH|COUNTER_OPCACHE|COUNTER_L2CACHE,0 },
+  { "cpu-cycles","event=0x76",COUNTER_IPC|COUNTER_BRANCH|COUNTER_TOPDOWN|COUNTER_TOPDOWN2|COUNTER_FLOPS,0 },
   { "ex_ret_ops","event=0xc1",COUNTER_IPC|COUNTER_TOPDOWN,0 },
   { "de_no_dispatch_per_slot.no_ops_from_frontend","event=0x1a0,umask=0x1",COUNTER_TOPDOWN,0 },
   { "de_no_dispatch_per_slot.backend_stalls","event=0x1a0,umask=0x1e",COUNTER_TOPDOWN,0 },
@@ -71,9 +71,9 @@ struct raw_event amd_raw_events[] = {
   { "op_cache_hit_miss.all_op_cache_accesses","event=0x28f,umask=0x7",COUNTER_OPCACHE,0 },
   { "op_cache_hit_miss.op_cache_miss","event=0x28f,umask=0x4",COUNTER_OPCACHE,0 },
   { "l2_request_g1.all_no_prefetch","event=0x60,umask=0xf9",COUNTER_L2CACHE,0 },
-  { "l2_pf_hit_l2","event=0x70,umask=0xff",COUNTER_L2CACHE,0 },
-  { "l2_pf_miss_l2_hit_l3", "event=0x71,umask=0xff",COUNTER_L2CACHE,0 },
-  { "l2_pf_miss_l2_l3","event=0x72,umask=0xff",COUNTER_L2CACHE,0 },
+  { "l2_pf_hit_l2","event=0x70,umask=0x1f",COUNTER_L2CACHE,0 },
+  { "l2_pf_miss_l2_hit_l3", "event=0x71,umask=0x1f",COUNTER_L2CACHE,0 },
+  { "l2_pf_miss_l2_l3","event=0x72,umask=0x1f",COUNTER_L2CACHE,0 },
   { "l2_cache_req_stat.ic_dc_miss_in_l2","event=0x64,umask=0x9",COUNTER_L2CACHE,0 },
   { "ls_data_cache_refills.local_all","event=0x43,umask=0xf",COUNTER_MEMORY,0 },
   { "ls_data_cache_refills.remote_all","event=0x43,umask=0x50",COUNTER_MEMORY,0 },
@@ -223,7 +223,6 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 6: // --cache2
     case 'c':
-      warning("--cache2 not implemented, ignored\n");
       counter_mask |= COUNTER_L2CACHE;
       break;
     case 7: // --no-cache2
@@ -259,7 +258,6 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 16: // --memory
     case 'm':
-      warning("--memory not implemented, ignored\n");
       counter_mask |= COUNTER_MEMORY;
       break;
     case 17: // --no-memory
@@ -575,6 +573,13 @@ void setup_counter_groups(struct counter_group **counter_group_list){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;      
     }
+  }
+
+  if (counter_mask & COUNTER_L2CACHE){
+    if (cgroup = raw_counter_group("l2 cache",COUNTER_L2CACHE)){
+      cgroup->next = *counter_group_list;
+      *counter_group_list = cgroup;      
+    }    
   }
       
   if (counter_mask & COUNTER_TOPDOWN){
@@ -902,6 +907,59 @@ void print_topdown2(struct counter_group *cgroup,enum output_format oformat){
   }
 }
 
+void print_l2cache(struct counter_group *cgroup,enum output_format oformat){
+  struct counter_info *cinfo;
+  unsigned long l2_access=0, l2_miss=0;
+  unsigned long instructions = 0;
+  unsigned long l2_from_l1_no_prefetch = 0;
+  unsigned long l2_pf_hit_l2 = 0;
+  unsigned long l2_pf_hit_l3 = 0;
+  unsigned long l2_pf_miss_l3 = 0;
+  unsigned long l1_miss_l2_miss = 0;
+
+  if (oformat == PRINT_CSV_HEADER){
+    fprintf(outfile,"l2miss,");
+    return;
+  }  
+
+  switch(cpu_info->vendor){
+  case VENDOR_INTEL:
+    break;
+  case VENDOR_AMD:
+    if (cinfo = find_ci_label(cgroup,"instructions"))
+      instructions = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"l2_request_g1.all_no_prefetch"))
+      l2_from_l1_no_prefetch = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"l2_pf_hit_l2"))
+      l2_pf_hit_l2 = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"l2_pf_miss_l2_hit_l3"))
+      l2_pf_hit_l3 = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"l2_pf_miss_l2_l3"))
+      l2_pf_miss_l3 = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"l2_cache_req_stat.ic_dc_miss_in_l2"))
+      l1_miss_l2_miss = cinfo->value;
+
+    l2_access = l2_from_l1_no_prefetch + l2_pf_hit_l2 + l2_pf_hit_l3 + l2_pf_miss_l3;
+    l2_miss = l1_miss_l2_miss + l2_pf_hit_l3 + l2_pf_miss_l3;
+
+    if (csvflag){
+      fprintf(outfile,"%4.2f%%\n",(double) l2_miss / l2_access * 100.0);
+    } else {
+      fprintf(outfile,"instructions         %-14lu # %4.3f l2 access per 1000 inst\n",
+	      instructions,(double) l2_access / instructions*1000.0);
+      fprintf(outfile,"l2 hit from l1       %-14lu # l2 miss %4.2f%%\n",
+	      l2_from_l1_no_prefetch, (double) l2_miss / l2_access * 100.0);
+      fprintf(outfile,"l2 miss from l1      %-14lu #\n",l1_miss_l2_miss);
+      fprintf(outfile,"l2 hit from l2 pf    %-14lu #\n",l2_pf_hit_l2);
+      fprintf(outfile,"l3 hit from l2 pf    %-14lu #\n",l2_pf_hit_l3);
+      fprintf(outfile,"l3 miss from l2 pf   %-14lu #\n",l2_pf_miss_l3);
+    }
+    break;    
+  default:
+    return;
+  }
+}
+
 void print_memory(struct counter_group *cgroup,enum output_format oformat){
   unsigned long data_cache_local=0;
   unsigned long data_cache_remote=0;
@@ -978,6 +1036,8 @@ void print_metrics(struct counter_group *counter_group_list,enum output_format o
       print_topdown(cgroup,oformat);
     } else if (cgroup->mask & COUNTER_TOPDOWN2){
       print_topdown2(cgroup,oformat);
+    } else if (cgroup->mask & COUNTER_L2CACHE){
+      print_l2cache(cgroup,oformat);      
     } else if (cgroup->mask & COUNTER_MEMORY){
       print_memory(cgroup,oformat);
     }
