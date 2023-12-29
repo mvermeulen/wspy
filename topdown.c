@@ -51,7 +51,7 @@ struct timespec start_time,finish_time;
 struct raw_event intel_raw_events[] = {
   { "instructions","event=0xc0",COUNTER_IPC,0 },
   { "cpu-cycles","event=0x3c",COUNTER_IPC,0 },
-  { "slots","event=0x00,umask=0x4",COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
+  { "slots","event=0x00,umask=0x4",COUNTER_TOPDOWN,0 },
   { "core.topdown-bad-spec","event=0x00,umask=0x81",COUNTER_TOPDOWN,0 },
   { "core.topdown-be-bound","event=0x00,umask=0x83",COUNTER_TOPDOWN,0 },
   { "core.topdown-fe-bound","event=0x00,umask=0x82",COUNTER_TOPDOWN,0 },
@@ -60,7 +60,7 @@ struct raw_event intel_raw_events[] = {
 
 struct raw_event amd_raw_events[] = {
   { "instructions","event=0xc0",COUNTER_IPC|COUNTER_BRANCH|COUNTER_OPCACHE|COUNTER_L2CACHE|COUNTER_FLOAT,0 },
-  { "cpu-cycles","event=0x76",COUNTER_IPC|COUNTER_BRANCH|COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
+  { "cpu-cycles","event=0x76",COUNTER_IPC|COUNTER_BRANCH|COUNTER_TOPDOWN,0 },
   { "ex_ret_ops","event=0xc1",COUNTER_IPC|COUNTER_TOPDOWN,0 },
   { "de_no_dispatch_per_slot.no_ops_from_frontend","event=0x1a0,umask=0x1",COUNTER_TOPDOWN,0 },
   { "de_no_dispatch_per_slot.backend_stalls","event=0x1a0,umask=0x1e",COUNTER_TOPDOWN,0 },
@@ -608,7 +608,7 @@ void setup_counter_groups(struct counter_group **counter_group_list){
     }        
   }
       
-  if (counter_mask & COUNTER_TOPDOWN){
+  if (counter_mask & COUNTER_TOPDOWN2){
     if (cgroup = raw_counter_group("topdown2",COUNTER_TOPDOWN2)){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;      
@@ -845,10 +845,13 @@ void print_ipc(struct counter_group *cgroup,enum output_format oformat){
 
 void print_topdown(struct counter_group *cgroup,enum output_format oformat){
   unsigned long slots=0;
+  unsigned long slots_no_contention = 0;
   unsigned long retiring=0;
   unsigned long frontend=0;
   unsigned long backend=0;
   unsigned long speculation=0;
+  unsigned long contention=0;
+  int too_short = 0;
   struct counter_info *cinfo;
 
   if (oformat == PRINT_CSV_HEADER){
@@ -862,13 +865,19 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat){
     if (cinfo = find_ci_label(cgroup,"core.topdown-fe-bound")) frontend = cinfo->value;
     if (cinfo = find_ci_label(cgroup,"core.topdown-be-bound")) backend = cinfo->value;
     if (cinfo = find_ci_label(cgroup,"core.topdown-bad-spec")) speculation = cinfo->value;
+    slots_no_contention = slots;
     break;
   case VENDOR_AMD:
     if (cinfo = find_ci_label(cgroup,"cpu-cycles")) slots = cinfo->value * 6;
     if (cinfo = find_ci_label(cgroup,"ex_ret_ops")) retiring = cinfo->value;
     if (cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.no_ops_from_frontend")) frontend = cinfo->value;
     if (cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.backend_stalls")) backend = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"de_src_op_disp.all")) speculation = cinfo->value - retiring;
+    if (cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.smt_contention")) contention = cinfo->value;    
+    if (cinfo = find_ci_label(cgroup,"de_src_op_disp.all")){
+      if (cinfo->time_running == 0) too_short = 1;
+      speculation = cinfo->value - retiring;
+    }
+    slots_no_contention = slots - contention;
     break;
   default:
     return;
@@ -883,11 +892,20 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat){
       fprintf(outfile,"%4.1f,",(double) speculation/slots*100);
       break;
     case PRINT_NORMAL:
-      fprintf(outfile,"slots                %-14lu #\n",slots);
-      fprintf(outfile,"retiring             %-14lu # %4.1f%%\n",retiring,(double) retiring/slots*100);
-      fprintf(outfile,"frontend             %-14lu # %4.1f%%\n",frontend,(double) frontend/slots*100);
-      fprintf(outfile,"backend              %-14lu # %4.1f%%\n",backend,(double) backend/slots*100);
-      fprintf(outfile,"speculation          %-14lu # %4.1f%%\n",speculation,(double) speculation/slots*100);
+      if (too_short){
+	warning("unable to read performance counter, is runtime too short?\n");
+      } else {
+	fprintf(outfile,"slots                %-14lu #\n",slots);
+	fprintf(outfile,"retiring             %-14lu # %4.1f%% (%4.1lf%%)\n",
+		retiring,(double) retiring/slots*100, (double) retiring/slots_no_contention*100);
+	fprintf(outfile,"frontend             %-14lu # %4.1f%% (%4.1lf%%)\n",
+		frontend,(double) frontend/slots*100, (double) frontend/slots_no_contention*100);
+	fprintf(outfile,"backend              %-14lu # %4.1f%% (%4.1lf%%)\n",
+		backend,(double) backend/slots*100, (double) backend/slots_no_contention*100);
+	fprintf(outfile,"speculation          %-14lu # %4.1f%% (%4.1lf%%)\n",
+		speculation,(double) speculation/slots*100, (double) speculation/slots_no_contention*100);
+	fprintf(outfile,"smt-contention       %-14lu # %4.1f%% ( 0.0%%)\n",contention,(double) contention/slots*100);
+      }
       break;
     }
   }
