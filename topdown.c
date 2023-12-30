@@ -867,8 +867,8 @@ void print_ipc(struct counter_group *cgroup,enum output_format oformat){
   switch(oformat){
   case PRINT_NORMAL:
     if (cpu_cycles){
-      printf("cpu-cycles           %-14lu # %4.2f GHz\n",cpu_cycles,(double) cpu_cycles / elapsed / 1000000000.0 / cpu_info->num_cores_available / (aflag?cpu_info->num_cores_available:1));
-      printf("instructions         %-14lu # %4.2f IPC\n",instructions,(double) instructions / cpu_cycles);
+      fprintf(outfile,"cpu-cycles           %-14lu # %4.2f GHz\n",cpu_cycles,(double) cpu_cycles / elapsed / 1000000000.0 / cpu_info->num_cores_available / (aflag?cpu_info->num_cores_available:1));
+      fprintf(outfile,"instructions         %-14lu # %4.2f IPC\n",instructions,(double) instructions / cpu_cycles);
       break;
     case PRINT_CSV:
       fprintf(outfile,"%4.2f,",(double) instructions / cpu_cycles);
