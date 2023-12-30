@@ -60,7 +60,7 @@ struct raw_event intel_raw_events[] = {
 };
 
 struct raw_event amd_raw_events[] = {
-  { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_OPCACHE|COUNTER_L2CACHE|COUNTER_L3CACHE|COUNTER_FLOAT,0 },
+  { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_OPCACHE|COUNTER_TLB|COUNTER_L2CACHE|COUNTER_L3CACHE|COUNTER_FLOAT,0 },
   { "cpu-cycles","event=0x76",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
   { "ex_ret_ops","event=0xc1",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
   { "de_no_dispatch_per_slot.no_ops_from_frontend","event=0x1a0,umask=0x1",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
@@ -171,14 +171,16 @@ int setup_raw_events(void){
     events = amd_raw_events;
     num_events = sizeof(amd_raw_events)/sizeof(amd_raw_events[0]);
     for (i=0;i<num_events;i++){
-      events[i].raw.config = parse_amd_event(events[i].description);
+      if (events[i].use & counter_mask)
+	events[i].raw.config = parse_amd_event(events[i].description);
     }    
     break;
   case VENDOR_INTEL:
     events = intel_raw_events;
     num_events = sizeof(intel_raw_events)/sizeof(intel_raw_events[0]);
     for (i=0;i<num_events;i++){
-      events[i].raw.config = parse_intel_event(events[i].description);
+      if (events[i].use & counter_mask)
+	events[i].raw.config = parse_intel_event(events[i].description);
     }        
     break;
   default:
@@ -259,14 +261,12 @@ int parse_options(int argc,char *const argv[]){
       counter_mask &= (~COUNTER_L3CACHE);
       break;
     case 10: // --dcache
-      warning("--dcache not implemented, ignored\n");
       counter_mask |= COUNTER_DCACHE;
       break;
     case 11: // --no-dcache
       counter_mask &= (~COUNTER_DCACHE);
       break;
     case 12: // --icache
-      warning("--icache not implemented, ignored\n");
       counter_mask |= COUNTER_ICACHE;
       break;
     case 13: // --no-icache
@@ -320,7 +320,6 @@ int parse_options(int argc,char *const argv[]){
       counter_mask &= (~COUNTER_SOFTWARE);
       break;
     case 25: // --tlb
-      warning("--tlb not implemented, ignored\n");
       counter_mask |= COUNTER_TLB;
       break;
     case 26: // --no-tlb
@@ -495,7 +494,9 @@ struct cache_event cache_events[] = {
   { PERF_TYPE_HW_CACHE, "iTLB-loads", PERF_COUNT_HW_CACHE_ITLB|(PERF_COUNT_HW_CACHE_OP_READ<<8)|(PERF_COUNT_HW_CACHE_RESULT_ACCESS<<16),
     PERF_COUNT_HW_CACHE_ITLB, COUNTER_TLB },
   { PERF_TYPE_HW_CACHE,"iTLB-load-misses", PERF_COUNT_HW_CACHE_ITLB|(PERF_COUNT_HW_CACHE_OP_READ<<8)|(PERF_COUNT_HW_CACHE_RESULT_MISS<<16),
-    PERF_COUNT_HW_CACHE_ITLB, COUNTER_TLB },  
+    PERF_COUNT_HW_CACHE_ITLB, COUNTER_TLB },
+  // instructions
+  { PERF_TYPE_HARDWARE,"instructions",PERF_COUNT_HW_INSTRUCTIONS,0,COUNTER_DCACHE|COUNTER_ICACHE|COUNTER_TLB },
 };
 
 // creates and allocates a group for cache performance counters
@@ -1190,32 +1191,71 @@ void print_memory(struct counter_group *cgroup,enum output_format oformat){
   }  
 }
 
-void print_opcache(struct counter_group *cgroup,enum output_format oformat){
+void print_cache(struct counter_group *cgroup,
+		 enum output_format oformat,
+		 char *name,char *access_counter,char *miss_counter){
   struct counter_info *cinfo;
+  char miss_name[20];
   unsigned long instructions = 0;
-  unsigned long opcache = 0;
-  unsigned long opcache_miss = 0;
+  unsigned long access = 0;
+  unsigned long miss = 0;
+  snprintf(miss_name,sizeof(miss_name),"%s miss",name);
 
   if (oformat == PRINT_CSV_HEADER){
-    fprintf(outfile,"opcache miss,");
+    fprintf(outfile,"%s miss,",name);
     return;
   }  
 
   if (cinfo = find_ci_label(cgroup,"instructions"))
     instructions = cinfo->value;
-  if (cinfo = find_ci_label(cgroup,"op_cache_hit_miss.all_op_cache_accesses"))
-    opcache = cinfo->value;
-  if (cinfo = find_ci_label(cgroup,"op_cache_hit_miss.op_cache_miss"))
-    opcache_miss = cinfo->value;  
+  if (cinfo = find_ci_label(cgroup,access_counter))
+    access = cinfo->value;
+  if (cinfo = find_ci_label(cgroup,miss_counter))
+    miss = cinfo->value;  
 
   if (csvflag){
-      fprintf(outfile,"%4.2f%%\n",(double) opcache_miss / opcache * 100.0);
+    fprintf(outfile,"%4.2f%%\n",(double) miss / access * 100.0);
   } else {
-      fprintf(outfile,"opcache              %-14lu # %4.3f opcache per 1000 inst\n",
-	      opcache,(double) opcache / instructions * 1000.0);
-      fprintf(outfile,"opcache misses       %-14lu # %4.2f%% opcache miss\n",
-	      opcache_miss, (double) opcache_miss / opcache * 100.0);
+    fprintf(outfile,"instructions         %-14lu #\n",instructions);
+    fprintf(outfile,"%-20s %-14lu # %4.3f %s per 1000 inst\n",
+	    name,access,(double) access / instructions * 1000.0,name);
+    fprintf(outfile,"%-20s %-14lu # %4.2f%% %s\n",
+	    miss_name, miss, (double) miss / access * 100.0, miss_name);
   }
+}
+
+void print_opcache(struct counter_group *cgroup,enum output_format oformat){
+  print_cache(cgroup,oformat,"opcache",
+	      "op_cache_hit_miss.all_op_cache_accesses",
+	      "op_cache_hit_miss.op_cache_miss");
+}
+
+void print_dcache(struct counter_group *cgroup,enum output_format oformat){
+  print_cache(cgroup,oformat,
+	      "L1-dcache",
+	      "l1d-read",
+	      "l1d-read-miss");
+}
+
+void print_icache(struct counter_group *cgroup,enum output_format oformat){
+  print_cache(cgroup,oformat,
+	      "L1-icache",
+	      "l1i-read",
+	      "l1i-read-miss");
+}
+
+void print_itlb(struct counter_group *cgroup,enum output_format oformat){
+  print_cache(cgroup,oformat,
+	      "iTLB",
+	      "iTLB-loads",
+	      "iTLB-load-misses");
+}
+
+void print_dtlb(struct counter_group *cgroup,enum output_format oformat){
+  print_cache(cgroup,oformat,
+	      "dTLB",
+	      "dTLB-loads",
+	      "dTLB-load-misses");
 }
 
 void print_float(struct counter_group *cgroup,enum output_format oformat){
@@ -1302,7 +1342,7 @@ void print_metrics(struct counter_group *counter_group_list,enum output_format o
     if (!strcmp(cgroup->label,"software")){
       print_software(cgroup,oformat);
     } else if (!strcmp(cgroup->label,"generic hardware")){
-      print_ipc(cgroup,oformat);      
+      print_ipc(cgroup,oformat);
     } else if (cgroup->mask & COUNTER_TOPDOWN){
       print_topdown(cgroup,oformat,COUNTER_TOPDOWN);
     } else if (cgroup->mask & COUNTER_TOPDOWN2){
@@ -1315,6 +1355,13 @@ void print_metrics(struct counter_group *counter_group_list,enum output_format o
       print_l3cache(cgroup,oformat);      
     } else if (cgroup->mask & COUNTER_OPCACHE){
       print_opcache(cgroup,oformat);
+    } else if (cgroup->mask & (COUNTER_DCACHE|COUNTER_ICACHE|COUNTER_TLB)){
+      if (cgroup->mask & COUNTER_DCACHE) print_dcache(cgroup,oformat);
+      if (cgroup->mask & COUNTER_ICACHE) print_icache(cgroup,oformat);
+      if (cgroup->mask & COUNTER_TLB){
+	print_dtlb(cgroup,oformat);	  
+	print_itlb(cgroup,oformat);
+      }
     } else if (cgroup->mask & COUNTER_FLOAT){
       print_float(cgroup,oformat);
     }
