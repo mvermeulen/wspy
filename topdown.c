@@ -52,7 +52,7 @@ struct timespec start_time,finish_time;
 struct raw_event intel_raw_events[] = {
   { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC,0 },
   { "cpu-cycles","event=0x3c",PERF_TYPE_RAW,COUNTER_IPC,0 },
-  { "slots","event=0x00,umask=0x4",COUNTER_TOPDOWN,0 },
+  { "slots","event=0x00,umask=0x4",PERF_TYPE_RAW,COUNTER_TOPDOWN,0 },
   { "core.topdown-bad-spec","event=0x00,umask=0x81",PERF_TYPE_RAW,COUNTER_TOPDOWN,0 },
   { "core.topdown-be-bound","event=0x00,umask=0x83",PERF_TYPE_RAW,COUNTER_TOPDOWN,0 },
   { "core.topdown-fe-bound","event=0x00,umask=0x82",PERF_TYPE_RAW,COUNTER_TOPDOWN,0 },
