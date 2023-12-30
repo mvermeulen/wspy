@@ -50,8 +50,9 @@ unsigned int counter_mask = COUNTER_IPC;
 struct timespec start_time,finish_time;
 
 // Counter definitions for RAW performance counters
+static int intel_group_id = -1;
 struct raw_event intel_raw_events[] = {
-  { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH,0 },
+  { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_L2CACHE,0 },
   { "cpu-cycles","event=0x3c",PERF_TYPE_RAW,COUNTER_IPC,0 },
   { "slots","event=0x00,umask=0x4",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
   { "core.topdown-retiring","event=0x00,umask=0x80",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
@@ -66,6 +67,8 @@ struct raw_event intel_raw_events[] = {
   { "br_misp_retired.all_branches","event=0xc5,period=0x61a89",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
   { "br_inst_retired.cond","event=0xc4,period=0x61a89",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
   { "br_inst_retired.indirect","event=0xc4,period=0x186a3,umask=0x80",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
+  { "l2_request.all","event=0x24,period=0x30d43,umask=0xff",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
+  { "l2_request.miss","event=0x24,period=0x30d43,umask=0x3f",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },  
 };
 
 struct raw_event amd_raw_events[] = {
@@ -672,7 +675,7 @@ void setup_counter_groups(struct counter_group **counter_group_list){
   }  
 
   if (counter_mask & COUNTER_IPC){
-    if (cgroup = generic_hardware_counter_group("generic hardware")){
+    if (cgroup = raw_counter_group("ipc",COUNTER_IPC)){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;		
     }
@@ -698,14 +701,18 @@ void setup_counters(struct counter_group *counter_group_list){
   for (cgroup = counter_group_list;cgroup;cgroup = cgroup->next){
     debug("Setting up %s counters\n",cgroup->label);
     for (i=0;i<cgroup->ncounters;i++){
-      if (cgroup->cinfo[i].is_group_leader == 1) group_id = -1;
+      if (cpu_info->vendor == VENDOR_INTEL){
+	group_id = intel_group_id;
+      } else {
+	if (cgroup->cinfo[i].is_group_leader == 1) group_id = -1;
+      }
       memset(&pe,0,sizeof(pe));
       pe.type = (cgroup->type_id==PERF_TYPE_RAW)?cgroup->cinfo[i].device_type:cgroup->type_id;
       pe.config = cgroup->cinfo[i].config;
       pe.sample_type = PERF_SAMPLE_IDENTIFIER; // is this needed?
       pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED|PERF_FORMAT_TOTAL_TIME_RUNNING;
       pe.size = sizeof(struct perf_event_attr);
-      pe.exclude_guest = 1; // is this needed
+      //      pe.exclude_guest = 1; // is this needed
       pe.inherit = 1;
       pe.disabled = 1;
 
@@ -730,6 +737,7 @@ void setup_counters(struct counter_group *counter_group_list){
 	debug("   create %s performance counter, name=%s\n",cgroup->label,cgroup->cinfo[i].label);
 	if (group_id == -1){
 	  group_id = cgroup->cinfo[i].fd;
+	  intel_group_id = group_id;
 	}
       }
     }
@@ -1140,12 +1148,23 @@ void print_l2cache(struct counter_group *cgroup,enum output_format oformat){
     return;
   }  
 
+  if (cinfo = find_ci_label(cgroup,"instructions"))
+    instructions = cinfo->value;
+
   switch(cpu_info->vendor){
   case VENDOR_INTEL:
+    if (cinfo = find_ci_label(cgroup,"l2_request.all")) l2_access = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"l2_request.miss")) l2_miss = cinfo->value;
+    if (csvflag){
+      fprintf(outfile,"%4.2f%%\n",(double) l2_miss / l2_access * 100.0);
+    } else {    
+      fprintf(outfile,"l2 access            %-14lu # %4.3f l2 access per 1000 inst\n",
+	      l2_access,(double) l2_access / instructions*1000.0);
+      fprintf(outfile,"l2 miss              %-14lu # %4.2f%% l2 miss\n",
+	      l2_miss, (double) l2_miss / l2_access * 100.0);
+    }
     break;
   case VENDOR_AMD:
-    if (cinfo = find_ci_label(cgroup,"instructions"))
-      instructions = cinfo->value;
     if (cinfo = find_ci_label(cgroup,"l2_request_g1.all_no_prefetch"))
       l2_from_l1_no_prefetch = cinfo->value;
     if (cinfo = find_ci_label(cgroup,"l2_pf_hit_l2"))
@@ -1172,7 +1191,7 @@ void print_l2cache(struct counter_group *cgroup,enum output_format oformat){
       fprintf(outfile,"l3 hit from l2 pf    %-14lu #\n",l2_pf_hit_l3);
       fprintf(outfile,"l3 miss from l2 pf   %-14lu #\n",l2_pf_miss_l3);
     }
-    break;    
+    break;
   default:
     return;
   }
@@ -1408,7 +1427,7 @@ void print_metrics(struct counter_group *counter_group_list,enum output_format o
   for (cgroup = counter_group_list;cgroup;cgroup = cgroup->next){
     if (!strcmp(cgroup->label,"software")){
       print_software(cgroup,oformat);
-    } else if (!strcmp(cgroup->label,"generic hardware")){
+    } else if (cgroup->mask & COUNTER_IPC){
       print_ipc(cgroup,oformat);
     } else if (cgroup->mask & COUNTER_TOPDOWN){
       print_topdown(cgroup,oformat,COUNTER_TOPDOWN);
