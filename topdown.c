@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <signal.h>
 #include <getopt.h>
 #include <time.h>
 #include <sys/wait.h>
@@ -19,6 +20,7 @@
 #include "error.h"
 #include "cpu_info.h"
 
+volatile int is_still_running;
 int num_procs;
 int aflag = 0;
 int oflag = 0;
@@ -419,6 +421,7 @@ int launch_child(int argc,char *const argv[],char *const envp[]){
   default:
     // parent
     child_pid = child;
+    is_still_running = 1;
     break;
   }
   return 0;
@@ -1454,6 +1457,28 @@ void print_metrics(struct counter_group *counter_group_list,enum output_format o
   }
 }
 
+// simple alarm(2) based timer
+void timer_callback(int signum){
+  int i;
+  struct rusage rusage;
+  double elapsed;
+  
+  elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
+    start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
+
+  clock_gettime(CLOCK_REALTIME,&finish_time);
+  read_counters(cpu_info->systemwide_counters,0);
+  if (csvflag){
+    fprintf(outfile,"%4.1f,",elapsed);
+  }
+  print_metrics(cpu_info->systemwide_counters,csvflag?PRINT_CSV:PRINT_NORMAL);
+  if (csvflag) fprintf(outfile,"\n");
+
+  if (is_still_running){
+    alarm(interval);
+  }
+}
+
 int main(int argc,char *const argv[],char *const envp[]){
   int i;
   int status;
@@ -1532,8 +1557,27 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (launch_child(command_line_argc,command_line_argv,envp)){
     fatal("unable to launch %s\n",command_line_argv[0]);
   }
+
+  // create CSV headers
+  if (csvflag){
+    if (interval){
+      fprintf(outfile,"time,");
+    } else if (xflag){
+      print_usage(NULL,PRINT_CSV_HEADER);
+    }
+    print_metrics(cpu_info->systemwide_counters,PRINT_CSV_HEADER);
+    fprintf(outfile,"\n");
+  }
+
+  if (interval){
+    signal(SIGALRM,timer_callback);
+    alarm(interval);
+  }
+  
   wait4(child_pid,&status,0,&rusage);
 
+  is_still_running = 0;
+  
   clock_gettime(CLOCK_REALTIME,&finish_time);
 
   // -----  
@@ -1544,14 +1588,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   }
   read_counters(cpu_info->systemwide_counters,1);  
 
-  // create CSV headers
-  if (csvflag){
-    print_usage(NULL,PRINT_CSV_HEADER);
-    print_metrics(cpu_info->systemwide_counters,PRINT_CSV_HEADER);
-    fprintf(outfile,"\n");
-  }
-
-  if (xflag){
+  if (xflag && (csvflag && interval)){
     print_usage(&rusage,csvflag?PRINT_CSV:PRINT_NORMAL);
   }
 

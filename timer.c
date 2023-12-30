@@ -32,7 +32,7 @@ void *timer_start(void *arg){
     now = ((double *) arg)[0];
   }
 
-  pipe(timer_cmd_pipe);
+  pipe(time_cmd_pipe);
 
   if (cpuinfo == NULL) cpuinfo = tmpfile();
 
