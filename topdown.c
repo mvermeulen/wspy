@@ -1123,7 +1123,7 @@ void print_branch(struct counter_group *cgroup,enum output_format oformat){
   
 
   if (csvflag){
-      fprintf(outfile,"%4.2f%%\n",(double) branch_miss / branches * 100.0);
+      fprintf(outfile,"%4.2f%%,",(double) branch_miss / branches * 100.0);
   } else {
       fprintf(outfile,"branches             %-14lu # %4.3f branches per 1000 inst\n",
 	      branches,(double) branches / instructions * 1000.0);
@@ -1159,7 +1159,7 @@ void print_l2cache(struct counter_group *cgroup,enum output_format oformat){
     if (cinfo = find_ci_label(cgroup,"l2_request.all")) l2_access = cinfo->value;
     if (cinfo = find_ci_label(cgroup,"l2_request.miss")) l2_miss = cinfo->value;
     if (csvflag){
-      fprintf(outfile,"%4.2f%%\n",(double) l2_miss / l2_access * 100.0);
+      fprintf(outfile,"%4.2f%%,",(double) l2_miss / l2_access * 100.0);
     } else {    
       fprintf(outfile,"l2 access            %-14lu # %4.3f l2 access per 1000 inst\n",
 	      l2_access,(double) l2_access / instructions*1000.0);
@@ -1183,7 +1183,7 @@ void print_l2cache(struct counter_group *cgroup,enum output_format oformat){
     l2_miss = l1_miss_l2_miss + l2_pf_hit_l3 + l2_pf_miss_l3;
 
     if (csvflag){
-      fprintf(outfile,"%4.2f%%\n",(double) l2_miss / l2_access * 100.0);
+      fprintf(outfile,"%4.2f%%,",(double) l2_miss / l2_access * 100.0);
     } else {
       fprintf(outfile,"instructions         %-14lu # %4.3f l2 access per 1000 inst\n",
 	      instructions,(double) l2_access / instructions*1000.0);
@@ -1222,7 +1222,7 @@ void print_l3cache(struct counter_group *cgroup,enum output_format oformat){
       l3_miss = cinfo->value;
 
     if (csvflag){
-      fprintf(outfile,"%4.2f%%\n",(double) l3_miss / l3_access * 100.0);
+      fprintf(outfile,"%4.2f%%,",(double) l3_miss / l3_access * 100.0);
     } else {
       fprintf(outfile,"instructions         %-14lu # %4.3f l3 access per 1000 inst\n",
 	      instructions,(double) l3_access / instructions*1000.0);
@@ -1269,7 +1269,7 @@ void print_memory(struct counter_group *cgroup,enum output_format oformat){
   }
 
   if (csvflag){
-    fprintf(outfile,"%4.1f",(double) (data_cache_local+data_cache_remote+prefetch_local+prefetch_remote)*64.0/1024/1024/elapsed);
+    fprintf(outfile,"%4.1f,",(double) (data_cache_local+data_cache_remote+prefetch_local+prefetch_remote)*64.0/1024/1024/elapsed);
   } else {
     fprintf(outfile,"local bandwidth      %-14lu # %4.1f MB/s\n",
 	    data_cache_local+prefetch_local,
@@ -1303,7 +1303,7 @@ void print_cache(struct counter_group *cgroup,
     miss = cinfo->value;  
 
   if (csvflag){
-    fprintf(outfile,"%4.2f%%\n",(double) miss / access * 100.0);
+    fprintf(outfile,"%4.2f%%,",(double) miss / access * 100.0);
   } else {
     fprintf(outfile,"instructions         %-14lu #\n",instructions);
     fprintf(outfile,"%-20s %-14lu # %4.3f %s per 1000 inst\n",
@@ -1382,7 +1382,7 @@ void print_float(struct counter_group *cgroup,enum output_format oformat){
     float_all = float_512 + float_256 + float_128 + float_mmx + float_scalar;
 
     if (csvflag){
-      fprintf(outfile,"%4.2f%%\n",(double) float_all / instructions * 100.0);
+      fprintf(outfile,"%4.2f%%,",(double) float_all / instructions * 100.0);
     } else {
       fprintf(outfile,"instructions         %-14lu # %4.3f float per 1000 inst\n",
 	      instructions,(double) float_all / instructions*1000.0);
@@ -1462,11 +1462,11 @@ void timer_callback(int signum){
   int i;
   struct rusage rusage;
   double elapsed;
-  
+
+  clock_gettime(CLOCK_REALTIME,&finish_time);
   elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
     start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
 
-  clock_gettime(CLOCK_REALTIME,&finish_time);
   read_counters(cpu_info->systemwide_counters,0);
   if (csvflag){
     fprintf(outfile,"%4.1f,",elapsed);
@@ -1586,13 +1586,21 @@ int main(int argc,char *const argv[],char *const envp[]){
     if (cpu_info->coreinfo[i].core_specific_counters)
       read_counters(cpu_info->coreinfo[i].core_specific_counters,1);
   }
-  read_counters(cpu_info->systemwide_counters,1);  
+  read_counters(cpu_info->systemwide_counters,1);
 
-  if (xflag && (csvflag && interval)){
-    print_usage(&rusage,csvflag?PRINT_CSV:PRINT_NORMAL);
+  if (csvflag){
+    if (interval){
+      double elapsed;
+  
+      elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
+	start_time.tv_sec - start_time.tv_nsec / 1000000000.0;    
+      fprintf(outfile,"%4.1f,",elapsed);
+    } else if (xflag){
+      print_usage(&rusage,PRINT_CSV);
+    }
+  } else if (xflag){
+    print_usage(&rusage,PRINT_NORMAL);
   }
-
-  //  dump_counters();
 
   print_metrics(cpu_info->systemwide_counters,csvflag?PRINT_CSV:PRINT_NORMAL);
   if (csvflag) fprintf(outfile,"\n");
