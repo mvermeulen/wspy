@@ -51,7 +51,7 @@ struct timespec start_time,finish_time;
 
 // Counter definitions for RAW performance counters
 struct raw_event intel_raw_events[] = {
-  { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC,0 },
+  { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH,0 },
   { "cpu-cycles","event=0x3c",PERF_TYPE_RAW,COUNTER_IPC,0 },
   { "slots","event=0x00,umask=0x4",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
   { "core.topdown-retiring","event=0x00,umask=0x80",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
@@ -62,6 +62,10 @@ struct raw_event intel_raw_events[] = {
   { "core.topdown-br-mispredict","event=0x00,umask=0x85",PERF_TYPE_RAW,COUNTER_TOPDOWN2,0 },
   { "core.topdown-fetch-lat","event=0x00,umask=0x86",PERF_TYPE_RAW,COUNTER_TOPDOWN2,0 },
   { "core.topdown-mem-bound","event=0x00,umask=0x87",PERF_TYPE_RAW,COUNTER_TOPDOWN2,0 },
+  { "br_inst_retired.all_branches","event=0xc4,period=0x61a89",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
+  { "br_misp_retired.all_branches","event=0xc5,period=0x61a89",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
+  { "br_inst_retired.cond","event=0xc4,period=0x61a89",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
+  { "br_inst_retired.indirect","event=0xc4,period=0x186a3,umask=0x80",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
 };
 
 struct raw_event amd_raw_events[] = {
@@ -120,6 +124,8 @@ unsigned long parse_intel_event(char *description){
 	result.event = value;
       } else if (!strcmp(name,"umask")){
 	result.umask = value;
+      } else if (!strcmp(name,"period")){
+	// appears in some Intel perf list output, but not sure of purpose, ignore...
       } else {
 	fatal("unimplemented %s in parse_intel_event\n",name);
       }
@@ -1080,14 +1086,29 @@ void print_branch(struct counter_group *cgroup,enum output_format oformat){
     instructions = cinfo->value;
   if (cinfo = find_ci_label(cgroup,"cpu-cycles"))
     cpu_cycles = cinfo->value;
-  if (cinfo = find_ci_label(cgroup,"branch-instructions"))
-    branches = cinfo->value;
-  if (cinfo = find_ci_label(cgroup,"branch-misses"))
-    branch_miss = cinfo->value;
-  if (cinfo = find_ci_label(cgroup,"conditional-branches"))
-    cond_branches = cinfo->value;
-  if (cinfo = find_ci_label(cgroup,"indirect-branches"))
-    ind_branches = cinfo->value;  
+  switch (cpu_info->vendor){
+  case VENDOR_AMD:
+    if (cinfo = find_ci_label(cgroup,"branch-instructions"))
+      branches = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"branch-misses"))
+      branch_miss = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"conditional-branches"))
+      cond_branches = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"indirect-branches"))
+      ind_branches = cinfo->value;
+    break;
+  case VENDOR_INTEL:
+    if (cinfo = find_ci_label(cgroup,"br_inst_retired.all_branches"))
+      branches = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"br_misp_retired.all_branches"))
+      branch_miss = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"br_inst_retired.cond"))
+      cond_branches = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"br_inst_retired.indirect"))
+      ind_branches = cinfo->value;
+    break;
+    break;
+  }
   
 
   if (csvflag){
