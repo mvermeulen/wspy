@@ -46,6 +46,8 @@ struct counter_info {
   struct counter_def *cdef;
   int fd;
   unsigned long int value;
+  unsigned long int last_read;
+  unsigned long int prev_read;
   unsigned long int time_running;
   unsigned long int time_enabled;
 };

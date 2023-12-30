@@ -25,6 +25,7 @@ int oflag = 0;
 int xflag = 1;
 int vflag = 0;
 int nmi_running = 0;
+int interval = 0;
 enum output_format { PRINT_NORMAL, PRINT_CSV, PRINT_CSV_HEADER };
 int csvflag = 0;
 int dummy = 0;
@@ -199,33 +200,34 @@ int parse_options(int argc,char *const argv[]){
   FILE *fp;
   int opt;
   int i;
+  int value;
   unsigned int lev;
   static struct option long_options[] = {
-    { "branch", no_argument, 0, 4 }, // likwid (b)
+    { "branch", no_argument, 0, 4 }, 
     { "no-branch", no_argument, 0, 5 },
     { "csv", no_argument, 0, 3 },
-    { "cache2", no_argument, 0, 6 }, // likwid (c)
+    { "cache2", no_argument, 0, 6 }, 
     { "no-cache2", no_argument, 0, 7 },
-    { "cache3", no_argument, 0, 8 }, // likwid
+    { "cache3", no_argument, 0, 8 }, 
     { "no-cache3", no_argument, 0, 9 },
-    { "dcache", no_argument, 0, 10 }, // likwid (CACHE)
+    { "dcache", no_argument, 0, 10 },
     { "no-cache", no_argument, 0, 11 },
     { "float",no_argument,0,33 },
-    { "icache", no_argument, 0, 12 }, // likwid
+    { "icache", no_argument, 0, 12 },
     { "no-icache", no_argument, 0, 13 },
-    { "interval", no_argument, 0, 0 },
-    { "ipc", no_argument, 0, 14 }, // hook to existing (i)
-    { "no-ipc", no_argument, 0, 15 }, // hook to existing
-    { "memory", no_argument, 0, 16 }, // likwid, memory bandwidth (m)
+    { "interval", required_argument, 0, 34 },
+    { "ipc", no_argument, 0, 14 }, 
+    { "no-ipc", no_argument, 0, 15 },
+    { "memory", no_argument, 0, 16 }, 
     { "no-memory", no_argument, 0, 17 },
-    { "opcache", no_argument, 0, 18 }, // ppr
+    { "opcache", no_argument, 0, 18 }, 
     { "no-opcache", no_argument, 0, 19 },
     { "per-core", no_argument, 0, 20 },
     { "rusage", no_argument, 0, 21 },
     { "no-rusage", no_argument, 0, 22 },
-    { "software", no_argument, 0, 23 }, // hook to existing (s)
-    { "no-software", no_argument, 0, 24 }, // hook to existing
-    { "tlb", no_argument, 0, 25 }, // likwid
+    { "software", no_argument, 0, 23 },
+    { "no-software", no_argument, 0, 24 },
+    { "tlb", no_argument, 0, 25 }, 
     { "no-tlb", no_argument, 0, 26 },
     { "topdown", no_argument, 0, 27 }, // (t)
     { "no-topdown", no_argument, 0, 28 },
@@ -349,6 +351,13 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 33: // --float
       counter_mask |= COUNTER_FLOAT;
+      break;
+    case 34:
+      if ((sscanf(optarg,"%d",&value) == 1) && value > 0){
+	interval = value;
+      } else {
+	warning("invalid argument to --interval: %s, ignored\n",optarg);
+      }
       break;
     default:
       return 1;
@@ -736,7 +745,7 @@ void start_counters(struct counter_group *counter_group_list){
   }
 }
 
-void stop_counters(struct counter_group *counter_group_list){
+void read_counters(struct counter_group *counter_group_list,int stop_counters){
   int i,j;
   int status;
   struct counter_group *cgroup;
@@ -752,20 +761,25 @@ void stop_counters(struct counter_group *counter_group_list){
 	  error("unable to read %s counter %s, errno=%d - %s\n",
 		cgroup->label,cgroup->cinfo[i].label,errno,strerror(errno));
 	} else {
-	  cgroup->cinfo[i].value = rf.value;
+	  cgroup->cinfo[i].prev_read = cgroup->cinfo[i].last_read;
+	  cgroup->cinfo[i].last_read = rf.value;
+	  // save only the delta since this was last read...
+	  cgroup->cinfo[i].value = rf.value - cgroup->cinfo[i].prev_read;
 	  cgroup->cinfo[i].time_running = rf.time_running;
 	  cgroup->cinfo[i].time_enabled = rf.time_enabled;
 	  // TODO: add scaling for performance counters...
+
+	  if (stop_counters){
+	    status = ioctl(cgroup->cinfo[i].fd,PERF_EVENT_IOC_DISABLE,0);
 	  
-	  status = ioctl(cgroup->cinfo[i].fd,PERF_EVENT_IOC_DISABLE,0);
-	  
-	  if (status != 0){
-	    error("unable to stop %s counter %s, errno=%d,%s\n",
-		  cgroup->label,cgroup->cinfo[i].label,errno,strerror(errno));
-	  } else {
-	    debug("   stopped %s counter, name=%s, value=%lu enabled=%lu running=%lu\n",
-		  cgroup->label,cgroup->cinfo[i].label,cgroup->cinfo[i].value,
-		  rf.time_enabled,rf.time_running);
+	    if (status != 0){
+	      error("unable to stop %s counter %s, errno=%d,%s\n",
+		    cgroup->label,cgroup->cinfo[i].label,errno,strerror(errno));
+	    } else {
+	      debug("   stopped %s counter, name=%s, value=%lu enabled=%lu running=%lu\n",
+		    cgroup->label,cgroup->cinfo[i].label,cgroup->cinfo[i].value,
+		    rf.time_enabled,rf.time_running);
+	    }
 	  }
 	}
       }
@@ -868,8 +882,8 @@ void print_ipc(struct counter_group *cgroup,enum output_format oformat){
   switch(oformat){
   case PRINT_NORMAL:
     if (cpu_cycles){
-      fprintf(outfile,"cpu-cycles           %-14lu # %4.2f GHz\n",cpu_cycles,(double) cpu_cycles / elapsed / 1000000000.0 / cpu_info->num_cores_available / (aflag?cpu_info->num_cores_available:1));
-      fprintf(outfile,"instructions         %-14lu # %4.2f IPC\n",instructions,(double) instructions / cpu_cycles);
+      fprintf(outfile,"cpu-cycles          %-14lu # %4.2f GHz\n",cpu_cycles,(double) cpu_cycles / elapsed / 1000000000.0 / cpu_info->num_cores_available / (aflag?cpu_info->num_cores_available:1));
+      fprintf(outfile,"instructions        %-14lu # %4.2f IPC\n",instructions,(double) instructions / cpu_cycles);
       break;
     case PRINT_CSV:
       fprintf(outfile,"%4.2f,",(double) instructions / cpu_cycles);
@@ -1381,7 +1395,8 @@ int main(int argc,char *const argv[],char *const envp[]){
 	    "\t--rusage or -r            - show getrusage(2) information\n"
 	    "\t--tree                    - print process tree\n"
 	    "\t-o <file>                 - send output to file\n"
-	    "\t--csv                     - create csv output\n"	    
+	    "\t--csv                     - create csv output\n"
+	    "\t--interval <sec>          - read every <sec> seconds\n"
 	    "\t--verbose or -v           - print verbose information\n"
 	    "\n"
 	    "\t--software or -s          - software counters\n"
@@ -1453,9 +1468,9 @@ int main(int argc,char *const argv[],char *const envp[]){
   // stop core-specific and system-wide counters
   for (i=0;i<cpu_info->num_cores;i++){
     if (cpu_info->coreinfo[i].core_specific_counters)
-      stop_counters(cpu_info->coreinfo[i].core_specific_counters);
+      read_counters(cpu_info->coreinfo[i].core_specific_counters,1);
   }
-  stop_counters(cpu_info->systemwide_counters);  
+  read_counters(cpu_info->systemwide_counters,1);  
 
   // create CSV headers
   if (csvflag){
