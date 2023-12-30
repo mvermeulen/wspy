@@ -53,11 +53,15 @@ struct timespec start_time,finish_time;
 struct raw_event intel_raw_events[] = {
   { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC,0 },
   { "cpu-cycles","event=0x3c",PERF_TYPE_RAW,COUNTER_IPC,0 },
-  { "slots","event=0x00,umask=0x4",PERF_TYPE_RAW,COUNTER_TOPDOWN,0 },
-  { "core.topdown-bad-spec","event=0x00,umask=0x81",PERF_TYPE_RAW,COUNTER_TOPDOWN,0 },
-  { "core.topdown-be-bound","event=0x00,umask=0x83",PERF_TYPE_RAW,COUNTER_TOPDOWN,0 },
-  { "core.topdown-fe-bound","event=0x00,umask=0x82",PERF_TYPE_RAW,COUNTER_TOPDOWN,0 },
-  { "core.topdown-retiring","event=0x00,umask=0x80",PERF_TYPE_RAW,COUNTER_TOPDOWN,0 },        
+  { "slots","event=0x00,umask=0x4",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
+  { "core.topdown-retiring","event=0x00,umask=0x80",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
+  { "core.topdown-bad-spec","event=0x00,umask=0x81",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
+  { "core.topdown-fe-bound","event=0x00,umask=0x82",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
+  { "core.topdown-be-bound","event=0x00,umask=0x83",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
+  { "core.topdown-heavy-ops","event=0x00,umask=0x84",PERF_TYPE_RAW,COUNTER_TOPDOWN2,0 },
+  { "core.topdown-br-mispredict","event=0x00,umask=0x85",PERF_TYPE_RAW,COUNTER_TOPDOWN2,0 },
+  { "core.topdown-fetch-lat","event=0x00,umask=0x86",PERF_TYPE_RAW,COUNTER_TOPDOWN2,0 },
+  { "core.topdown-mem-bound","event=0x00,umask=0x87",PERF_TYPE_RAW,COUNTER_TOPDOWN2,0 },
 };
 
 struct raw_event amd_raw_events[] = {
@@ -532,8 +536,10 @@ struct counter_group *cache_counter_group(char *name,unsigned int mask){
     if (mask & cache_events[i].use){
       cgroup->cinfo[count].label = cache_events[i].name;
       cgroup->cinfo[count].config = cache_events[i].config;
-      if ((count % num_counters_available) == 0)
-	cgroup->cinfo[count].is_group_leader = 1;
+      if (cpu_info->vendor == VENDOR_AMD){
+	if ((count % num_counters_available) == 0)
+	  cgroup->cinfo[count].is_group_leader = 1;
+      }
       count++;
     }
   }
@@ -578,8 +584,10 @@ struct counter_group *raw_counter_group(char *name,unsigned int mask){
       cgroup->cinfo[count].config = events[i].raw.config;
       cgroup->cinfo[count].device_type = events[i].device_type;
       // chunk into multiplex groups if needed
-      if (((count % available_counters) == 0) || (events[i].device_type != PERF_TYPE_RAW))
-	cgroup->cinfo[count].is_group_leader = 1;
+      if (cpu_info->vendor == VENDOR_AMD){
+	if (((count % available_counters) == 0) || (events[i].device_type != PERF_TYPE_RAW))
+	  cgroup->cinfo[count].is_group_leader = 1;
+      }
       count++;
     }
   }
@@ -684,8 +692,7 @@ void setup_counters(struct counter_group *counter_group_list){
   for (cgroup = counter_group_list;cgroup;cgroup = cgroup->next){
     debug("Setting up %s counters\n",cgroup->label);
     for (i=0;i<cgroup->ncounters;i++){
-      if (cgroup->cinfo[i].is_group_leader == 1)
-	group_id = -1;
+      if (cgroup->cinfo[i].is_group_leader == 1) group_id = -1;
       memset(&pe,0,sizeof(pe));
       pe.type = (cgroup->type_id==PERF_TYPE_RAW)?cgroup->cinfo[i].device_type:cgroup->type_id;
       pe.config = cgroup->cinfo[i].config;
@@ -926,6 +933,31 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
     if (cinfo = find_ci_label(cgroup,"core.topdown-fe-bound")) frontend = cinfo->value;
     if (cinfo = find_ci_label(cgroup,"core.topdown-be-bound")) backend = cinfo->value;
     if (cinfo = find_ci_label(cgroup,"core.topdown-bad-spec")) speculation = cinfo->value;
+
+    // backend level 2
+    if (cinfo = find_ci_label(cgroup,"core.topdown-mem-bound")){
+      backend_memory = cinfo->value;
+      backend_cpu = backend - backend_memory;
+    }
+
+    // speculation level 2
+    if (cinfo = find_ci_label(cgroup,"core.topdown-br-mispredict")){
+      speculation_branches = cinfo->value;
+      speculation_pipeline = speculation - speculation_branches;
+    }
+
+    // frontend level 2
+    if (cinfo = find_ci_label(cgroup,"core.topdown-fetch-lat")){
+      frontend_latency = cinfo->value;
+      frontend_bandwidth = frontend - frontend_latency;
+    }
+
+    // retire level 2
+    if (cinfo = find_ci_label(cgroup,"core.topdown-heavy-ops")){
+      retire_ucode = cinfo->value;
+      retire_fastpath = retiring - retire_ucode;
+    }
+    
     slots_no_contention = slots;
     break;
   case VENDOR_AMD:
@@ -958,13 +990,13 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
       speculation_branches = speculation - speculation_pipeline;
     }
 
-    // frontend
+    // frontend level 2
     if (cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.no_ops_from_frontend.cmask_0x6")){
       frontend_latency = cinfo->value*6;
       frontend_bandwidth = frontend - frontend_latency;
     }
 
-    // retire
+    // retire level 2
     if (cinfo = find_ci_label(cgroup,"ex_ret_ucode_ops")){
       retire_ucode = retiring * (double) cinfo->value / retiring;
       retire_fastpath = retiring - retire_ucode;
