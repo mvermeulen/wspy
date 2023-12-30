@@ -882,8 +882,8 @@ void print_ipc(struct counter_group *cgroup,enum output_format oformat){
   switch(oformat){
   case PRINT_NORMAL:
     if (cpu_cycles){
-      fprintf(outfile,"cpu-cycles          %-14lu # %4.2f GHz\n",cpu_cycles,(double) cpu_cycles / elapsed / 1000000000.0 / cpu_info->num_cores_available / (aflag?cpu_info->num_cores_available:1));
-      fprintf(outfile,"instructions        %-14lu # %4.2f IPC\n",instructions,(double) instructions / cpu_cycles);
+      fprintf(outfile,"cpu-cycles           %-14lu # %4.2f GHz\n",cpu_cycles,(double) cpu_cycles / elapsed / 1000000000.0 / cpu_info->num_cores_available / (aflag?cpu_info->num_cores_available:1));
+      fprintf(outfile,"instructions         %-14lu # %4.2f IPC\n",instructions,(double) instructions / cpu_cycles);
       break;
     case PRINT_CSV:
       fprintf(outfile,"%4.2f,",(double) instructions / cpu_cycles);
@@ -1337,13 +1337,13 @@ void print_software(struct counter_group *cgroup,enum output_format oformat){
     return;
   }
   for (i=0;i<cgroup->ncounters;i++){
-    fprintf(outfile,"%-20s %-12lu",cgroup->cinfo[i].label,cgroup->cinfo[i].value);
+    fprintf(outfile,"%-20s %-14lu",cgroup->cinfo[i].label,cgroup->cinfo[i].value);
     if (!strcmp(cgroup->cinfo[i].label,"task-clock") ||
 	!strcmp(cgroup->cinfo[i].label,"cpu-clock")){
-      fprintf(outfile,"   # %4.3f seconds",
+      fprintf(outfile," # %4.3f seconds",
 	     (double) cgroup->cinfo[i].value / 1000000000.0);
     } else {
-      fprintf(outfile,"   # %4.3f/sec",cgroup->cinfo[i].value / task_time);
+      fprintf(outfile," # %4.3f/sec",cgroup->cinfo[i].value / task_time);
 	     
     }
     fprintf(outfile,"\n");
