@@ -1701,17 +1701,17 @@ int main(int argc,char *const argv[],char *const envp[]){
     fprintf(outfile,"\n");
   }
 
-  if (interval){
-    signal(SIGALRM,timer_callback);
-    alarm(interval);
-  }
-
   // let the child start after two seconds
   sleep(2);
 
   clock_gettime(CLOCK_REALTIME,&start_time);
   if (launch_child(command_line_argc,command_line_argv,envp)){
     fatal("unable to launch %s\n",command_line_argv[0]);
+  }
+
+  if (interval){
+    signal(SIGALRM,timer_callback);
+    alarm(interval);
   }
 
   write(child_pipe[1],"start\n",6);
