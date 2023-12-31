@@ -1,37 +1,56 @@
 Higher Priority
-   openvino - neural networks
-   blender - 3d creation and modeling
-   rawtherapee - image processing (threaded?)
-   gimp - image creation (single thread?)
-   compress-7zip - compression
-   tensorflow - ai framework
-   tensorflow-lite - ai framework
-   deepsparse - utility
-   pytorch - framework
-   ffmpeg
-   svt-avi
-   svt-hevc
-   svt-vp9
-   kvazaar - video encoder
-   uvg266 - video encoder, based on kvazaar
-   vvenc
-   x265
-   avifenc
-   webp - image encode
-   quantlib
-   openradioss
-   john-the-ripper
-   phpbench
-   pybench
-   pyperformance
-   simdjson
-   openscad
+   - run successful
+     build-ffmpeg - compilation
+     build-godot - compilation
+     build-llvm - compilation
+     compress-7zip - compression
+     gimp - image creation (single thread?)
+     john-the-ripper
+     openscad
+     phpbench
+     pybench
+     rawtherapee - image processing (threaded?)
+     tensorflow-lite - ai framework
+     webp - image encode
 
-Medium Priority
-   build-linux-kernel - compilation
-   build-ffmpeg - compilation
-   build-godot - compilation
-   build-llvm - compilation
-
+   - long runtime
+     blender - 3d creation and modeling (3 hours 7 minutes)
+     openradioss - (1 hour 10 minutes)
+     selenium - browser benchmark - (2 hours 14 minutes)
+     build-linux-kernel - compilation (1 hour 50 minutes)
+   
+   - install successful
+     
 Lower Priority
-   selenium - browser benchmark
+   svt-av1
+	needs bospohorus 3840x2160
+   svt-hevc
+	needs bospohorus 3840x2160   
+   svt-vp9
+	needs bospohorus 3840x2160   
+   kvazaar - video encoder
+	needs bospohorus 3840x2160   
+   uvg266 - video encoder, based on kvazaar
+	needs bospohorus 3840x2160   
+   vvenc
+	needs bospohorus 3840x2160   
+   x265
+	needs bospohorus 3840x2160   
+   openvino - neural networks
+   	    needs hack for libssl.so.1.1 on ubuntu 22.04
+   simdjson
+   	    needs hack for libssl.so.1.1 on ubuntu 22.04
+   quantlib
+   	    needs hack for libssl.so.1.1 on ubuntu 22.04
+   avifenc
+   	    needs hack for libssl.so.1.1 on ubuntu 22.04
+   ffmpeg     
+   	    needs hack for libssl.so.1.1 on ubuntu 22.04
+   pyperformance
+	python ecosystem
+   tensorflow - ai framework
+        python ecosystem	
+   deepsparse - utility
+        python ecosystem   
+   pytorch - framework
+        python ecosystem      
