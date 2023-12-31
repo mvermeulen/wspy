@@ -505,7 +505,7 @@ void ptrace_loop(){
 	  clock_gettime(CLOCK_REALTIME,&finish_time);
 	  elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
 	    start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
-	  fprintf(treefile,"%4.2f start %lu\n",elapsed,data);
+	  fprintf(treefile,"%4.2f start %lu %d\n",elapsed,data,pid);
 	  debug2("   clone/fork/vfork - pid=%d\n",data);
 	  break;
 	case PTRACE_EVENT_EXIT:
@@ -1717,6 +1717,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   write(child_pipe[1],"start\n",6);
   if (treeflag){
     ptrace_setup(child_pid);
+    fprintf(treefile,"0.00 root %d\n",child_pid);
     ptrace_loop();
     getrusage(RUSAGE_CHILDREN,&rusage);
   } else {
