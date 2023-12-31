@@ -2,9 +2,11 @@
 while read bench
 do
     cd $bench
-    ./run.sh
+    TESTNAME=$bench ./run.sh
     cd ..
 done <<-BENCH_LIST
+coremark
+build-gcc
 build-ffmpeg
 build-godot
 build-llvm
@@ -16,9 +18,7 @@ phpbench
 pybench
 pytorch
 rawtherapee
+stream
 tensorflow
 tensorflow-lite
-stream
-coremark
-build-gcc
 BENCH_LIST
