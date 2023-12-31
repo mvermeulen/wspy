@@ -14,7 +14,9 @@
 #include <sys/syscall.h>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
+#include <sys/user.h>
 #include <sys/stat.h>
+#include <sys/ptrace.h>
 #include <linux/perf_event.h>
 #include <errno.h>
 #include "error.h"
@@ -30,6 +32,8 @@ int nmi_running = 0;
 int interval = 0;
 enum output_format { PRINT_NORMAL, PRINT_CSV, PRINT_CSV_HEADER };
 int csvflag = 0;
+int treeflag = 0;
+FILE *treefile = NULL;
 int dummy = 0;
 
 #define COUNTER_IPC         0x1
@@ -248,7 +252,7 @@ int parse_options(int argc,char *const argv[]){
     { "no-topdown", no_argument, 0, 28 },
     { "topdown2", no_argument, 0, 29 }, //
     { "no-topdown2", no_argument, 0, 30 },
-    { "tree", no_argument, 0, 31 }, //
+    { "tree", required_argument, 0, 31 }, //
     { "verbose", no_argument, 0, 32 },
     { 0,0,0,0 },
   };
@@ -356,7 +360,11 @@ int parse_options(int argc,char *const argv[]){
       counter_mask &= (~COUNTER_TOPDOWN2);
       break;
     case 31: // --tree
-      warning("--tree not implemented, ignored\n");
+      if ((treefile = fopen(optarg,"w")) == NULL){
+	warning("unable to open tree file: %s, ignored\n",optarg);
+      } else {
+	treeflag = 1;
+      }
       break;
     case 32: // --verbose
     case 'v':
@@ -390,14 +398,22 @@ int parse_options(int argc,char *const argv[]){
   return 0;
 }
 
+int child_pipe[2];
 int launch_child(int argc,char *const argv[],char *const envp[]){
   pid_t child;
   int len;
   char *p,*path;
   char pathbuf[1024];
-  
+
+  if (pipe(child_pipe) == -1) fatal("pipe creation failed\n");
   switch(child = fork()){
   case 0: // child
+    if (treeflag){
+      debug("ptrace(PTRACE_TRACEME,0)\n");
+      ptrace(PTRACE_TRACEME,0,NULL,NULL);
+    }
+    close(child_pipe[1]); // close writing end
+    read(child_pipe[0],pathbuf,sizeof(pathbuf)); // wait until the parent has written
     execve(argv[0],argv,envp);
     // if argv[0] fails, look in path
     path = strdup(getenv("PATH"));
@@ -420,11 +436,123 @@ int launch_child(int argc,char *const argv[],char *const envp[]){
     return 1;
   default:
     // parent
+    close(child_pipe[0]); // close reading end
     child_pid = child;
     is_still_running = 1;
     break;
   }
   return 0;
+}
+
+void ptrace_setup(pid_t child_pid){
+  int status;
+  
+  debug("ptrace_setup\n");
+  waitpid(child_pid,&status,0); // wait for an initial event from the PTRACE_TRACEME
+
+  if (WIFEXITED(status)){
+    fatal("child process exited unexpectedly\n");
+  } else if (WIFSIGNALED(status)){
+    fatal("child process signaled unexpectedly, signal = %d\n",
+	  WSTOPSIG(status));
+  }
+  // set the ptrace event flags
+  status = ptrace(PTRACE_SETOPTIONS,child_pid,0,
+		  PTRACE_O_EXITKILL | // kill child if I exit
+		  PTRACE_O_TRACECLONE|PTRACE_O_TRACEFORK|PTRACE_O_TRACEVFORK|
+		  PTRACE_O_TRACEEXIT); // exit(0)
+  ptrace(PTRACE_CONT,child_pid,NULL,NULL); // let the child being
+}
+
+// loop through and handle ptrace events
+void ptrace_loop(){
+  pid_t pid,child;
+  int status;
+  int i;
+  int last_syscall = 0;
+  int syscall_entry = 0;
+  unsigned long data;
+  char buffer[1024];
+  char stat_name[128];
+  FILE *stat_file;
+  struct user_regs_struct regs;
+  struct rusage rusage;
+  double elapsed;
+
+  while(1){
+    pid = wait4(-1,&status,0,&rusage);
+    debug2("event: pid=%d\n",pid);
+    if (pid == -1){
+      if (errno == ECHILD){
+	break; // no more children to wait
+      } else {
+	error("wait returns -1 with errno %d - %s\n",errno,strerror(errno));
+      }
+    }
+    if (WIFEXITED(status)){
+      debug2("   exited\n");
+      if (pid == child_pid) break;
+    } else if (WIFSIGNALED(status)){
+      debug2("   signaled\n");
+    } else if (WIFSTOPPED(status)){
+      if (WSTOPSIG(status) == SIGTRAP){
+	// we have an event!
+	switch(status>>16){
+	case PTRACE_EVENT_CLONE:
+	case PTRACE_EVENT_FORK:
+	case PTRACE_EVENT_VFORK:
+	  ptrace(PTRACE_GETEVENTMSG,pid,NULL,&data);
+	  clock_gettime(CLOCK_REALTIME,&finish_time);
+	  elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
+	    start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
+	  fprintf(treefile,"%4.2f start %lu\n",elapsed,data);
+	  debug2("   clone/fork/vfork - pid=%d\n",data);
+	  break;
+	case PTRACE_EVENT_EXIT:
+	  ptrace(PTRACE_GETEVENTMSG,pid,NULL,&data);
+	  // dump contents of proc/<pid>/stat
+	  snprintf(stat_name,sizeof(stat_name),"/proc/%d/stat",pid);
+	  if ((stat_file = fopen(stat_name,"r")) != NULL){
+	    if (fgets(buffer,sizeof(buffer),stat_file) != NULL){
+	      clock_gettime(CLOCK_REALTIME,&finish_time);
+	      elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
+		start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
+	      fprintf(treefile,"%4.2f exit ",elapsed);
+	      fputs(buffer,treefile);
+	    }
+	    fclose(stat_file);
+	  }
+	  debug2("   exit - exit status=%d\n",data);
+	  break;
+	default:
+	  debug2("   unknown event: %d\n",status>>16,pid);
+	  break;
+	}
+      } else if (WSTOPSIG(status) == SIGSTOP){
+	// newly created process after fork/vfork/clone, continue wihtout passing along signal
+	debug2("   new pid\n");
+	ptrace(PTRACE_CONT,pid,NULL,NULL);
+	continue;
+      } else if ((WSTOPSIG(status) == SIGTRAP | 0x80)){
+	// stopped because of a system call
+	ptrace(PTRACE_GETREGS,pid,0,&regs);
+	if (last_syscall != regs.orig_rax){
+	  syscall_entry = 1;
+	} else {
+	  syscall_entry = (1-syscall_entry);
+	}
+	last_syscall = regs.orig_rax;
+	ptrace(PTRACE_SYSCALL,pid,NULL,NULL,NULL);
+      } else {
+	// pass other signals to the child
+	ptrace(PTRACE_CONT,pid,NULL,WSTOPSIG(status));
+      }
+    } else if (WIFCONTINUED(status)){
+      // nothing here
+    }
+    // let the child go to the next event
+    ptrace(PTRACE_CONT,pid,NULL,NULL);
+  }
 }
 
 // syscall wrapper since not part of glibc
@@ -1490,7 +1618,7 @@ int main(int argc,char *const argv[],char *const envp[]){
       fatal("usage: %s -[abcistv][-o <file>] <cmd><args>...\n"
 	    "\t--per-core or -a          - metrics per core\n"
 	    "\t--rusage or -r            - show getrusage(2) information\n"
-	    "\t--tree                    - print process tree\n"
+	    "\t--tree <file>             - create CSV of processes\n"
 	    "\t-o <file>                 - send output to file\n"
 	    "\t--csv                     - create csv output\n"
 	    "\t--interval <sec>          - read every <sec> seconds\n"
@@ -1553,11 +1681,6 @@ int main(int argc,char *const argv[],char *const envp[]){
   }
   start_counters(cpu_info->systemwide_counters);  
 
-  clock_gettime(CLOCK_REALTIME,&start_time);
-  if (launch_child(command_line_argc,command_line_argv,envp)){
-    fatal("unable to launch %s\n",command_line_argv[0]);
-  }
-
   // create CSV headers
   if (csvflag){
     if (interval){
@@ -1573,8 +1696,24 @@ int main(int argc,char *const argv[],char *const envp[]){
     signal(SIGALRM,timer_callback);
     alarm(interval);
   }
-  
-  wait4(child_pid,&status,0,&rusage);
+
+  // let the child start after two seconds
+  sleep(2);
+
+  clock_gettime(CLOCK_REALTIME,&start_time);
+  if (launch_child(command_line_argc,command_line_argv,envp)){
+    fatal("unable to launch %s\n",command_line_argv[0]);
+  }
+
+  write(child_pipe[1],"start\n",6);
+  if (treeflag){
+    ptrace_setup(child_pid);
+    ptrace_loop();
+    getrusage(RUSAGE_CHILDREN,&rusage);
+  } else {
+    // without ptrace, this process waits to complete
+    wait4(child_pid,&status,0,&rusage);
+  }
 
   is_still_running = 0;
   
