@@ -1,9 +1,7 @@
 #!/bin/bash
 while read bench
 do
-    cd $bench
-    TESTNAME=$bench ./run.sh
-    cd ..
+    TESTNAME=$bench ./run_test.sh
 done <<-BENCH_LIST
 coremark
 build-gcc
