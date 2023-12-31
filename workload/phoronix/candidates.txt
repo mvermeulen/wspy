@@ -1,0 +1,37 @@
+Higher Priority
+   openvino - neural networks
+   blender - 3d creation and modeling
+   rawtherapee - image processing (threaded?)
+   gimp - image creation (single thread?)
+   compress-7zip - compression
+   tensorflow - ai framework
+   tensorflow-lite - ai framework
+   deepsparse - utility
+   pytorch - framework
+   ffmpeg
+   svt-avi
+   svt-hevc
+   svt-vp9
+   kvazaar - video encoder
+   uvg266 - video encoder, based on kvazaar
+   vvenc
+   x265
+   avifenc
+   webp - image encode
+   quantlib
+   openradioss
+   john-the-ripper
+   phpbench
+   pybench
+   pyperformance
+   simdjson
+   openscad
+
+Medium Priority
+   build-linux-kernel - compilation
+   build-ffmpeg - compilation
+   build-godot - compilation
+   build-llvm - compilation
+
+Lower Priority
+   selenium - browser benchmark
