@@ -509,14 +509,23 @@ void ptrace_loop(){
 	  debug2("   clone/fork/vfork - pid=%d\n",data);
 	  break;
 	case PTRACE_EVENT_EXIT:
+	  clock_gettime(CLOCK_REALTIME,&finish_time);
+	  elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
+	    start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
 	  ptrace(PTRACE_GETEVENTMSG,pid,NULL,&data);
+	  // dump contents of proc/<pid>/comm
+	  snprintf(stat_name,sizeof(stat_name),"/proc/%d/comm",pid);
+	  if ((stat_file = fopen(stat_name,"r")) != NULL){
+	    if (fgets(buffer,sizeof(buffer),stat_file) != NULL){
+	      fprintf(treefile,"%4.2f comm ",elapsed);
+	      fputs(buffer,treefile);
+	    }
+	    fclose(stat_file);
+	  }	  
 	  // dump contents of proc/<pid>/stat
 	  snprintf(stat_name,sizeof(stat_name),"/proc/%d/stat",pid);
 	  if ((stat_file = fopen(stat_name,"r")) != NULL){
 	    if (fgets(buffer,sizeof(buffer),stat_file) != NULL){
-	      clock_gettime(CLOCK_REALTIME,&finish_time);
-	      elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
-		start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
 	      fprintf(treefile,"%4.2f exit ",elapsed);
 	      fputs(buffer,treefile);
 	    }
