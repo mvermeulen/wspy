@@ -10,6 +10,7 @@ else
     /home/mev/source/wspy/topdown -o l2.float.txt --cache2 --float --no-software --no-ipc --no-rusage phoronix-test-suite batch-run coremark
     /home/mev/source/wspy/topdown -o amdtopdown.csv --csv --interval 1 --topdown --no-ipc --no-software --no-rusage phoronix-test-suite batch-run coremark
     cat software.branch.txt ipc.topdown.txt l2.float.txt > amdtopdown.txt
+    ./gnuplot.sh
 fi
     
 
