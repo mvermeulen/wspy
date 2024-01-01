@@ -20,6 +20,7 @@ FILE *process_file = NULL;
 int treeflag = 1;
 int statflag = 1;
 int vflag = 0;
+int output_width = 80;
 
 /* process_info - maintained for each process */
 struct process_info {
@@ -28,8 +29,8 @@ struct process_info {
   char *cmdline; // long command line
   struct process_info *parent;
   struct process_info *children; // linked using the "sibling" relationship
-  struct process_info *prev_sibling; // elder sibling
-  struct process_info *next_sibling; // younger sibling
+  struct process_info *older_sibling; // elder sibling
+  struct process_info *younger_sibling; // younger sibling
 };
 
 struct process_info *root_process = NULL;
@@ -39,6 +40,7 @@ struct process_info *root_process = NULL;
  */
 #define NUM_PROC_TABLE_BUCKETS 101
 int num_processes = 0;
+int total_processes = 0;
 int max_num_processes = 0;
 struct proc_table_entry {
   unsigned int pid;
@@ -68,6 +70,7 @@ struct proc_table_entry *lookup_pid(unsigned int pid,int insert){
   }
   proc_table[bucket] = pentry;
   num_processes++;
+  total_processes++;
   if (num_processes > max_num_processes)
     max_num_processes = num_processes;
   return pentry;
@@ -102,7 +105,7 @@ int remove_pid(unsigned int pid){
 
 // format: elapsed pid root
 void handle_root(double elapsed,unsigned int pid){
-  notice("handle_root(%u)\n",pid);
+  debug("handle_root(%u)\n",pid);
 
   struct proc_table_entry *pentry = lookup_pid(pid,1);
   root_process = pentry->pinfo;
@@ -111,9 +114,22 @@ void handle_root(double elapsed,unsigned int pid){
 // format: elapsed pid fork child_pid
 void handle_fork(double elapsed,unsigned int pid,char *child){
   debug("handle_fork(%d,%s)\n",elapsed,pid,child);  
-
   unsigned int child_pid = atoi(child);
+  struct process_info *pinfo,*parent_pinfo;
   struct proc_table_entry *pentry = lookup_pid(child_pid,1);
+  struct proc_table_entry *parent_pentry = lookup_pid(pid,0);  
+  if (pentry && parent_pentry){
+    pinfo = pentry->pinfo;
+    parent_pinfo = parent_pentry->pinfo;
+    
+    pinfo->parent = parent_pinfo;
+    
+    if (parent_pinfo->children){
+      pinfo->older_sibling = parent_pinfo->children;
+      pinfo->older_sibling->younger_sibling = pinfo;
+    }
+    parent_pinfo->children = pinfo;
+  }
 }
 
 // format: elapsed pid exit </proc/pid/stat>
@@ -145,6 +161,45 @@ void handle_cmdline(double elapsed,unsigned int pid,char *cmdline){
     pentry->pinfo->cmdline = strdup(cmdline);
   }
 }
+
+static void print_statistics(){
+  printf("%d processes\n",total_processes);
+  printf("%d processes running\n",num_processes);
+  printf("%d maximum processes\n",max_num_processes);
+  printf("\n");
+}
+
+static void print_tree(struct process_info *pinfo,int level){
+  int i;
+  int comm_width;
+  int print_width;
+  struct process_info *eldest;
+  // print the node
+  for (i=0;i<level;i++) printf("  ");
+  if (pinfo->comm){
+    printf("%s)",pinfo->comm);
+    comm_width = strlen(pinfo->comm);
+  } else {
+    printf("?)");
+    comm_width = 1;
+  }
+  if (pinfo->cmdline){
+    print_width = output_width - comm_width - 2 - (2*level);
+    printf(" %.*s",print_width,pinfo->cmdline);
+  }
+  printf("\n");
+
+  if (!pinfo->children) return;
+  
+  // find the eldest child and print the children
+  for (eldest=pinfo->children;eldest->older_sibling != NULL;eldest=eldest->older_sibling);
+
+  while (eldest){
+    print_tree(eldest,level+1);
+    eldest = eldest->younger_sibling;
+  }
+}
+
 
 int main(int argc,char *const argv[],char *const envp[]){
   int opt;
@@ -226,9 +281,8 @@ int main(int argc,char *const argv[],char *const envp[]){
     }
   }
 
-  if (statflag){
-    printf("%d processes running\n",num_processes);
-    printf("%d maximum processes\n",max_num_processes);
-  }
+  if (statflag) print_statistics();
+  if (treeflag) print_tree(root_process,0);
+
   return 0;
 }
