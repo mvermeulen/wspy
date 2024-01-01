@@ -19,9 +19,12 @@
 FILE *process_file = NULL;
 int treeflag = 1;
 int statflag = 1;
+int uflag = 0;
 int vflag = 0;
+int fflag = 1;
 int output_width = 80;
 int print_cmdline = 0;
+int clocks_per_second;
 
 /* process_info - maintained for each process */
 struct process_info {
@@ -29,6 +32,13 @@ struct process_info {
   char *comm; // short version of the command
   char *cmdline; // long command line
   double start,finish;
+  // selected data from /proc/<pid>/stat
+  unsigned int utime;
+  unsigned int stime;
+  unsigned long long starttime;
+  unsigned int vsize;
+  unsigned int processor;
+  unsigned int exit_code;
   struct process_info *parent;
   struct process_info *children; // linked using the "sibling" relationship
   struct process_info *older_sibling; // elder sibling
@@ -135,6 +145,34 @@ void handle_fork(double elapsed,unsigned int pid,char *child){
   }
 }
 
+// parse the /proc/<pid>/stat line and add information to the pinfo node
+
+#define NUM_STAT_FIELDS 52
+void parse_stat(char *stat,struct process_info *pinfo){
+  debug2("parse_stat: %s\n",stat);
+  char *p;
+  int i;
+  int index = 0;
+  char *stat_fields[NUM_STAT_FIELDS] = { 0 };
+  char *stat_line = strdup(stat);
+  p = strtok(stat_line," \n");
+  while (p && index < NUM_STAT_FIELDS){
+    stat_fields[index] = p;
+    p = strtok(NULL," \n");
+    index++;
+  }
+  for (i=0;i<index;i++){
+    debug2("\t%d: %s\n",i,stat_fields[i]);
+  }
+  if (stat_fields[13]) pinfo->utime = atoi(stat_fields[13]); // utime user time in clock ticks
+  if (stat_fields[14]) pinfo->stime = atoi(stat_fields[14]); // stime system time in clock ticks
+  if (stat_fields[21]) pinfo->starttime = atoll(stat_fields[21]); // starttime since boot in clock ticks
+  if (stat_fields[22]) pinfo->vsize = atoi(stat_fields[22]); // vsize - virtual memory in bytes
+  if (stat_fields[38]) pinfo->processor = atoi(stat_fields[38]); // last processor
+  if (stat_fields[51]) pinfo->exit_code = atoi(stat_fields[51]); // exit code
+  free(stat_line);
+}
+
 // format: elapsed pid exit </proc/pid/stat>
 void handle_exit(double elapsed,unsigned int pid,char *stat){
   debug("handle_exit(%d,%s)\n",elapsed,pid,stat);
@@ -143,6 +181,7 @@ void handle_exit(double elapsed,unsigned int pid,char *stat){
   struct proc_table_entry *pentry = lookup_pid(pid,0);
   if (pentry){
     pentry->pinfo->finish = elapsed;
+    parse_stat(stat,pentry->pinfo);
     status = remove_pid(pid);
     if (status) warning("unable to remove process %d?\n",pid);
   }
@@ -190,7 +229,14 @@ static void print_tree(struct process_info *pinfo,int level){
   } else {
     printf(" ??");
   }
-  printf(" start=%5.2f finish=%5.2f",pinfo->start,pinfo->finish);
+  if (fflag){
+    printf(" start=%-5.2f finish=%-5.2f",pinfo->start,pinfo->finish);
+  }
+  if (uflag){
+    printf(" utime=%-4.2f stime=%-4.2f",
+	   ((double) pinfo->utime/clocks_per_second),
+	   ((double) pinfo->stime/clocks_per_second));
+  }
 
   printf("\n");
 
@@ -215,13 +261,25 @@ int main(int argc,char *const argv[],char *const envp[]){
   double elapsed;
   int event_pid;
 
+  clocks_per_second = sysconf(_SC_CLK_TCK);
+  printf("clocks_per_second = %d\n",clocks_per_second);
+
   initialize_error_subsystem(argv[0],"-");
 
   // parse options
-  while ((opt = getopt(argc,argv,"+cSsTtvw:")) != -1){
+  while ((opt = getopt(argc,argv,"+CcFfSsTtUuvw:")) != -1){
     switch(opt){
-    case 'c':
+    case 'C':
       print_cmdline = 1;
+      break;
+    case 'c':
+      print_cmdline = 0;
+      break;
+    case 'F':
+      fflag = 1;
+      break;
+    case 'f':
+      fflag = 0;
       break;
     case 't':
       treeflag = 0;
@@ -234,6 +292,12 @@ int main(int argc,char *const argv[],char *const envp[]){
       break;
     case 'S':
       statflag = 1;
+      break;
+    case 'U':
+      uflag = 1;
+      break;
+    case 'u':
+      uflag = 0;
       break;
     case 'v':
       vflag++;
@@ -250,11 +314,16 @@ int main(int argc,char *const argv[],char *const envp[]){
     default:
     usage:
       fatal("usage: %s -[sStTv] file\n"
-	    "\t-c\tprint command line\n"
+	    "\t-C\tturn on longer command line\n"
+	    "\t-c\tturn on abbreviated command (default)\n"
+	    "\t-F\turn on start/finish info (default)\n"
+	    "\t-f\tturn off start/finish info\n"
 	    "\t-S\tturn on summary output\n"
 	    "\t-s\tturn off summary output (default)\n"
 	    "\t-T\tturn on tree output (default)\n"
 	    "\t-t\tturn off tree output\n"
+	    "\t-U\tturn off utime in tree\n"
+	    "\t-u\tturn on utime in tree\n"
 	    "\t-v\tverbose messages\n"
 	    "\t-w width\tset command width\n",
 	    argv[0]);
