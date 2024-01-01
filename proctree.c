@@ -21,12 +21,14 @@ int treeflag = 1;
 int statflag = 1;
 int vflag = 0;
 int output_width = 80;
+int print_cmdline = 0;
 
 /* process_info - maintained for each process */
 struct process_info {
   unsigned int pid;
   char *comm; // short version of the command
   char *cmdline; // long command line
+  double start,finish;
   struct process_info *parent;
   struct process_info *children; // linked using the "sibling" relationship
   struct process_info *older_sibling; // elder sibling
@@ -117,7 +119,8 @@ void handle_fork(double elapsed,unsigned int pid,char *child){
   unsigned int child_pid = atoi(child);
   struct process_info *pinfo,*parent_pinfo;
   struct proc_table_entry *pentry = lookup_pid(child_pid,1);
-  struct proc_table_entry *parent_pentry = lookup_pid(pid,0);  
+  struct proc_table_entry *parent_pentry = lookup_pid(pid,0);
+  if (pentry) pentry->pinfo->start = elapsed;
   if (pentry && parent_pentry){
     pinfo = pentry->pinfo;
     parent_pinfo = parent_pentry->pinfo;
@@ -139,6 +142,7 @@ void handle_exit(double elapsed,unsigned int pid,char *stat){
   int status;
   struct proc_table_entry *pentry = lookup_pid(pid,0);
   if (pentry){
+    pentry->pinfo->finish = elapsed;
     status = remove_pid(pid);
     if (status) warning("unable to remove process %d?\n",pid);
   }
@@ -176,17 +180,18 @@ static void print_tree(struct process_info *pinfo,int level){
   struct process_info *eldest;
   // print the node
   for (i=0;i<level;i++) printf("  ");
-  if (pinfo->comm){
-    printf("%s)",pinfo->comm);
-    comm_width = strlen(pinfo->comm);
-  } else {
-    printf("?)");
-    comm_width = 1;
-  }
-  if (pinfo->cmdline){
-    print_width = output_width - comm_width - 2 - (2*level);
+  printf("%d)",pinfo->pid);
+
+  if (print_cmdline && pinfo->cmdline){
+    print_width = output_width - 8 - 2*level;
     printf(" %.*s",print_width,pinfo->cmdline);
+  } else if (pinfo->comm){
+    printf(" %s",pinfo->comm);
+  } else {
+    printf(" ??");
   }
+  printf(" start=%5.2f finish=%5.2f",pinfo->start,pinfo->finish);
+
   printf("\n");
 
   if (!pinfo->children) return;
@@ -203,6 +208,7 @@ static void print_tree(struct process_info *pinfo,int level){
 
 int main(int argc,char *const argv[],char *const envp[]){
   int opt;
+  int value;
   char *p,*p2,*cmd;
   char *orig_buffer;
   char buffer[1024];
@@ -212,8 +218,11 @@ int main(int argc,char *const argv[],char *const envp[]){
   initialize_error_subsystem(argv[0],"-");
 
   // parse options
-  while ((opt = getopt(argc,argv,"+SsTtv")) != -1){
+  while ((opt = getopt(argc,argv,"+cSsTtvw:")) != -1){
     switch(opt){
+    case 'c':
+      print_cmdline = 1;
+      break;
     case 't':
       treeflag = 0;
       break;
@@ -231,14 +240,23 @@ int main(int argc,char *const argv[],char *const envp[]){
       if (vflag>1) set_error_level(ERROR_LEVEL_DEBUG2);
       else set_error_level(ERROR_LEVEL_DEBUG);
       break;
+    case 'w':
+      if (sscanf(optarg,"%d",&value) == 1){
+	output_width = value;
+      } else {
+	warning("bad output width:%s ignored\n",optarg);
+      }
+      break;
     default:
     usage:
       fatal("usage: %s -[sStTv] file\n"
+	    "\t-c\tprint command line\n"
 	    "\t-S\tturn on summary output\n"
 	    "\t-s\tturn off summary output (default)\n"
 	    "\t-T\tturn on tree output (default)\n"
 	    "\t-t\tturn off tree output\n"
-	    "\t-v\tverbose messages\n",
+	    "\t-v\tverbose messages\n"
+	    "\t-w width\tset command width\n",
 	    argv[0]);
       break;
     }
