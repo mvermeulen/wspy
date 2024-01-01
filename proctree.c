@@ -205,8 +205,86 @@ void handle_cmdline(double elapsed,unsigned int pid,char *cmdline){
   }
 }
 
+// add totals for processes with the same name
+struct comm_info {
+  char *comm;
+  unsigned int count;
+  unsigned int total_utime;
+  unsigned int total_stime;
+  struct comm_info *next;
+};
+struct comm_info *comm_totals = NULL;
+int num_comm_info;
+
+// walk the tree accumulating totals in comm_totals structure
+static void collect_process_totals(struct process_info *pinfo){
+  struct comm_info *ci;
+  struct process_info *child;
+
+  // look for this process
+  int found = 0;
+  for (ci = comm_totals;ci;ci=ci->next){
+    if (!strcmp(pinfo->comm,ci->comm)){
+      ci->total_utime += pinfo->utime;
+      ci->total_stime += pinfo->stime;
+      ci->count++;
+      found = 1;
+      break;
+    }
+  }
+  // not found, so add an entry
+  if (!found){
+    ci = calloc(1,sizeof(struct comm_info));
+    ci->comm = strdup(pinfo->comm);
+    ci->next = comm_totals;
+    ci->total_utime = pinfo->utime;
+    ci->total_stime = pinfo->stime;
+    ci->count = 1;
+    comm_totals = ci;
+    num_comm_info++;
+  }
+  
+  // walk the tree of children (the particular order doesn't matter so go from youngest to oldest
+  for (child=pinfo->children;child;child=child->older_sibling)
+    collect_process_totals(child);
+}
+
+int comm_compare(const void *c1,const void *c2){
+  const struct comm_info *comm1 = c1;
+  const struct comm_info *comm2 = c2;
+  if (comm1->total_utime > comm2->total_utime) return -1;
+  else if (comm1->total_utime < comm2->total_utime) return 1;
+  else if (comm1->total_stime > comm2->total_stime) return -1;
+  else if (comm1->total_stime < comm2->total_stime) return 1;
+  else if (comm1->count > comm2->count) return -1;
+  else if (comm1->count < comm2->count) return 1;
+  else return strcmp(comm1->comm,comm2->comm);
+}
+
 static void print_statistics(){
+  int count;
+  int i;
+
   printf("%d processes\n",total_processes);
+  
+  struct comm_info *ci;
+  collect_process_totals(root_process);
+  // format and sort
+  struct comm_info *comm_table = malloc(num_comm_info*sizeof(struct comm_info));
+  count = 0;
+  for (ci=comm_totals;ci;ci=ci->next){
+    *(&comm_table[count]) = *ci;
+    count++;
+  }
+  qsort(comm_table,num_comm_info,sizeof(struct comm_info),comm_compare);
+  for (i=0;i<num_comm_info;i++){
+    printf("\t%3d %-20s %8.2f %8.2f\n",
+	   comm_table[i].count,
+	   comm_table[i].comm,
+	   (double) comm_table[i].total_utime / clocks_per_second,
+	   (double) comm_table[i].total_stime / clocks_per_second);    
+  }
+  
   printf("%d processes running\n",num_processes);
   printf("%d maximum processes\n",max_num_processes);
   printf("\n");
@@ -262,7 +340,6 @@ int main(int argc,char *const argv[],char *const envp[]){
   int event_pid;
 
   clocks_per_second = sysconf(_SC_CLK_TCK);
-  printf("clocks_per_second = %d\n",clocks_per_second);
 
   initialize_error_subsystem(argv[0],"-");
 
