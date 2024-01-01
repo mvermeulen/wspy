@@ -335,7 +335,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   int value;
   char *p,*p2,*cmd;
   char *orig_buffer;
-  char buffer[1024];
+  char buffer[8192];
   double elapsed;
   int event_pid;
 
@@ -390,7 +390,7 @@ int main(int argc,char *const argv[],char *const envp[]){
       break;
     default:
     usage:
-      fatal("usage: %s -[sStTv] file\n"
+      fatal("usage: %s -[CcFfSsTtuv][-w width] file\n"
 	    "\t-C\tturn on longer command line\n"
 	    "\t-c\tturn on abbreviated command (default)\n"
 	    "\t-F\turn on start/finish info (default)\n"

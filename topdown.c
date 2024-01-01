@@ -1650,6 +1650,7 @@ int main(int argc,char *const argv[],char *const envp[]){
 	    "\t--per-core or -a          - metrics per core\n"
 	    "\t--rusage or -r            - show getrusage(2) information\n"
 	    "\t--tree <file>             - create CSV of processes\n"
+	    "\t--tree-cmdline            - record full command lines\n"
 	    "\t-o <file>                 - send output to file\n"
 	    "\t--csv                     - create csv output\n"
 	    "\t--interval <sec>          - read every <sec> seconds\n"
