@@ -5,7 +5,7 @@ SRCS = wspy.c ftrace.c ptrace.c ptrace2.c tracecmd.c proctable.c timer.c cpustat
 OBJS = wspy.o ftrace.o ptrace.o ptrace2.o tracecmd.o proctable.o timer.o cpustats.o diskstats.o memstats.o netstats.o pcounter.o config.c error.o vendor.o
 LIBS = -lpthread -lm
 
-all:	wspy process-csv topdown cpu_info
+all:	wspy process-csv topdown cpu_info proctree
 
 wspy:	$(OBJS)
 	$(CC) -o $(PROG) $(CFLAGS) $(OBJS) $(LIBS)
@@ -16,6 +16,9 @@ process-csv:	process_csv.o error.o
 topdown:	topdown.o error.o vendor.o cpu_info.c cpu_info.h
 	$(CC) -o topdown $(CFLAGS) topdown.o vendor.o cpu_info.c error.o
 
+proctree:	proctree.o error.o
+	$(CC) -o proctree proctree.o error.o
+
 cpu_info:	cpu_info.c error.o cpu_info.h
 	$(CC) -o cpu_info -DTEST_CPU_INFO cpu_info.c error.o
 
@@ -24,6 +27,9 @@ process-csv.o:	process_csv.c
 
 topdown.o:	topdown.c
 	$(CC) -c $(CFLAGS) topdown.c
+
+proctree.o:	proctree.c
+	$(CC) -c $(CFLAGS) proctree.c
 
 depend:
 	-makedepend -Y -- $(CFLAGS) -- $(SRCS)
