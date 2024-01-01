@@ -482,7 +482,6 @@ void ptrace_loop(){
   char stat_name[128];
   struct stat statbuf;
   FILE *stat_file;
-  int stat_fd;
   struct user_regs_struct regs;
   struct rusage rusage;
   double elapsed;
@@ -513,7 +512,7 @@ void ptrace_loop(){
 	  clock_gettime(CLOCK_REALTIME,&finish_time);
 	  elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
 	    start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
-	  fprintf(treefile,"%5.3f start %lu %d\n",elapsed,data,pid);
+	  fprintf(treefile,"%5.3f %d fork %lu\n",elapsed,pid,data);
 	  debug2("   clone/fork/vfork - pid=%d\n",data);
 	  break;
 	case PTRACE_EVENT_EXIT:
@@ -525,7 +524,7 @@ void ptrace_loop(){
 	  snprintf(stat_name,sizeof(stat_name),"/proc/%d/comm",pid);
 	  if ((stat_file = fopen(stat_name,"r")) != NULL){
 	    if (fgets(buffer,sizeof(buffer),stat_file) != NULL){
-	      fprintf(treefile,"%5.3f comm %d ",elapsed,pid);
+	      fprintf(treefile,"%5.3f %d comm ",elapsed,pid);
 	      fputs(buffer,treefile);
 	    }
 	    fclose(stat_file);
@@ -533,21 +532,18 @@ void ptrace_loop(){
 	  // dump the full command line
 	  if (tree_cmdline){
 	    snprintf(stat_name,sizeof(stat_name),"/proc/%d/cmdline",pid);
-	    if (stat(stat_name,&statbuf) == 0){
-	      if ((stat_fd = open(stat_name,O_RDONLY)) != -1){
-		int len = statbuf.st_size;
-		if (len > sizeof(buffer)) len = sizeof(buffer)-1;
-		read(stat_fd,buffer,len);
-		for (i=0;i<len;i++){
-		  if (buffer[i] == 0) buffer[i] = ' ';
-		  else if (buffer[i] == '\n') buffer[i] = 0;
-		}
-		buffer[len] = 0;
-		fprintf(treefile,"%5.3f cmdline %d %s\n",elapsed,pid,buffer);
-		close(stat_fd);
+	    fprintf(treefile,"%5.3f %d cmdline",elapsed,pid);
+	    if ((stat_file = fopen(stat_name,"rb")) != NULL){
+	      char *arg = 0;
+	      size_t size = 0;
+	      while (getdelim(&arg,&size,0,stat_file) != -1){
+		fprintf(treefile," %s",arg);
 	      }
 	    }
+	    fprintf(treefile,"\n");
+	    fclose(stat_file);
 	  }
+
 	  // dump contents of proc/<pid>/stat
 	  snprintf(stat_name,sizeof(stat_name),"/proc/%d/stat",pid);
 	  if ((stat_file = fopen(stat_name,"r")) != NULL){
@@ -1743,7 +1739,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   write(child_pipe[1],"start\n",6);
   if (treeflag){
     ptrace_setup(child_pid);
-    fprintf(treefile,"0.000 root %d\n",child_pid);
+    fprintf(treefile,"0.000 %d root\n",child_pid);
     ptrace_loop();
     getrusage(RUSAGE_CHILDREN,&rusage);
   } else {
