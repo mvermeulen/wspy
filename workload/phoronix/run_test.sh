@@ -20,6 +20,6 @@ else
     /home/mev/source/wspy/topdown -o amdtopdown.csv --csv --interval 1 --topdown --no-rusage --no-software --no-ipc phoronix-test-suite batch-run $TESTNAME
     /home/mev/source/wspy/topdown -o treerun.txt --tree process.tree.txt --tree-cmdline --software --no-ipc phoronix-test-suite batch-run $TESTNAME
     cat software.branch.txt ipc.topdown.txt l2.float.txt > amdtopdown.txt
-    ./gnuplot.sh
+    /home/mev/source/wspy/workload/phoronix/gnuplot.sh
 fi
 cd ..
