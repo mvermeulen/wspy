@@ -27,7 +27,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   char *orig_buffer;
   char buffer[1024];
   double elapsed;
-  int new_pid,new_parent;
+  int event_pid;
 
   initialize_error_subsystem(argv[0],"-");
 
@@ -79,24 +79,25 @@ int main(int argc,char *const argv[],char *const envp[]){
     else continue;
     elapsed = atof(buffer);
     p++;
-    cmd = p;
-    if (p = strchr(cmd,' ')) *p = 0;
+    
+    if (p2 = strchr(p,' ')) *p2 = 0;
     else continue;
-    p++;
-    if (!strcmp(cmd,"start")){
-      if (sscanf(p,"%d %d",&new_pid,&new_parent))
-	debug("handle_start(%d,%d)\n",new_pid,new_parent);
-    } else if (!strcmp(cmd,"root")){
-      if (sscanf(p,"%d",&new_pid))
-	debug("handle_root(%d)\n",new_pid);
-    } else if (!strcmp(cmd,"comm")){
-      if (p2 = strchr(p,'\n')) *p2 = 0;
-      debug("handle_comm(%s)\n",p);
-    } else if (!strcmp(cmd,"exit")){
-      if (p2 = strchr(p,'\n')) *p2 = 0;      
-      debug("handle_exit(%s)\n",p);
+    event_pid = atoi(p);
+    p = p2+1;
+    if (p2 = strchr(p,'\n')) *p2 = 0; // zap newline
+    
+    if (!strncmp(p,"fork",4)){
+      notice("handle_fork(%d,%s)\n",elapsed,event_pid,p+5);
+    } else if (!strncmp(p,"root",4)){
+      notice("handle_root(%d)\n",elapsed,event_pid);      
+    } else if (!strncmp(p,"comm",4)){
+      notice("handle_comm(%d,%s)\n",elapsed,event_pid,p+5);
+    } else if (!strncmp(p,"cmdline",7)){
+      notice("handle_cmdline(%d,%s)\n",elapsed,event_pid,p+8);
+    } else if (!strncmp(p,"exit",4)){
+      notice("handle_exit(%d,%s)\n",elapsed,event_pid,p+8);
     } else {
-      warning("unknown command: %4.2f %s %s",elapsed,cmd,p);
+      warning("unknown command: %4.2f %d %s\n",elapsed,event_pid,p);
     }
   }
   return 0;
