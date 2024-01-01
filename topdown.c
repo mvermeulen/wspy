@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <getopt.h>
 #include <time.h>
+#include <fcntl.h>
 #include <sys/wait.h>
 #include <sys/sysinfo.h>
 #include <sys/syscall.h>
@@ -33,6 +34,7 @@ int interval = 0;
 enum output_format { PRINT_NORMAL, PRINT_CSV, PRINT_CSV_HEADER };
 int csvflag = 0;
 int treeflag = 0;
+int tree_cmdline = 0;
 FILE *treefile = NULL;
 int dummy = 0;
 
@@ -253,6 +255,7 @@ int parse_options(int argc,char *const argv[]){
     { "topdown2", no_argument, 0, 29 }, //
     { "no-topdown2", no_argument, 0, 30 },
     { "tree", required_argument, 0, 31 }, //
+    { "tree-cmdline",no_argument,0,35 },
     { "verbose", no_argument, 0, 32 },
     { 0,0,0,0 },
   };
@@ -382,6 +385,9 @@ int parse_options(int argc,char *const argv[]){
 	warning("invalid argument to --interval: %s, ignored\n",optarg);
       }
       break;
+    case 35:
+      tree_cmdline = 1;
+      break;
     default:
       return 1;
     }
@@ -474,7 +480,9 @@ void ptrace_loop(){
   unsigned long data;
   char buffer[1024];
   char stat_name[128];
+  struct stat statbuf;
   FILE *stat_file;
+  int stat_fd;
   struct user_regs_struct regs;
   struct rusage rusage;
   double elapsed;
@@ -517,16 +525,34 @@ void ptrace_loop(){
 	  snprintf(stat_name,sizeof(stat_name),"/proc/%d/comm",pid);
 	  if ((stat_file = fopen(stat_name,"r")) != NULL){
 	    if (fgets(buffer,sizeof(buffer),stat_file) != NULL){
-	      fprintf(treefile,"%5.3f comm ",elapsed);
+	      fprintf(treefile,"%5.3f comm %d ",elapsed,pid);
 	      fputs(buffer,treefile);
 	    }
 	    fclose(stat_file);
-	  }	  
+	  }
+	  // dump the full command line
+	  if (tree_cmdline){
+	    snprintf(stat_name,sizeof(stat_name),"/proc/%d/cmdline",pid);
+	    if (stat(stat_name,&statbuf) == 0){
+	      if ((stat_fd = open(stat_name,O_RDONLY)) != -1){
+		int len = statbuf.st_size;
+		if (len > sizeof(buffer)) len = sizeof(buffer)-1;
+		read(stat_fd,buffer,len);
+		for (i=0;i<len;i++){
+		  if (buffer[i] == 0) buffer[i] = ' ';
+		  else if (buffer[i] == '\n') buffer[i] = 0;
+		}
+		buffer[len] = 0;
+		fprintf(treefile,"%5.3f cmdline %d %s\n",elapsed,pid,buffer);
+		close(stat_fd);
+	      }
+	    }
+	  }
 	  // dump contents of proc/<pid>/stat
 	  snprintf(stat_name,sizeof(stat_name),"/proc/%d/stat",pid);
 	  if ((stat_file = fopen(stat_name,"r")) != NULL){
 	    if (fgets(buffer,sizeof(buffer),stat_file) != NULL){
-	      fprintf(treefile,"%5.3f exit ",elapsed);
+	      fprintf(treefile,"%5.3f %d exit ",elapsed,pid);
 	      fputs(buffer,treefile);
 	    }
 	    fclose(stat_file);
