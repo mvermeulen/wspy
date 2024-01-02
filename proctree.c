@@ -224,7 +224,7 @@ static void collect_process_totals(struct process_info *pinfo){
   // look for this process
   int found = 0;
   for (ci = comm_totals;ci;ci=ci->next){
-    if (!strcmp(pinfo->comm,ci->comm)){
+    if (pinfo->comm && !strcmp(pinfo->comm,ci->comm)){
       ci->total_utime += pinfo->utime;
       ci->total_stime += pinfo->stime;
       ci->count++;
