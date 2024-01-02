@@ -2,38 +2,32 @@ Added:
 	1/1 - tensorflow (resnet50/batch64)
 	1/2 - pytorch (resnet50/batch64)
 
-On deck:
-libxsmm
-x265
-build-ffmpeg
-gimp
-webp
-compress-7zip
-phpbench
-	
-Higher Priority
-   - run successful
-     build-ffmpeg - compilation
-     build-godot - compilation
-     build-llvm - compilation
-     compress-7zip - compression
-     gimp - image creation (single thread?)
-     john-the-ripper
-     openscad
-     phpbench
-     pybench
-     rawtherapee - image processing (threaded?)
-     tensorflow-lite - ai framework
-     webp - image encode
+Installed but not yet run:
+   build-ffmpeg
+   build-gcc (formalize; hangs in tree?)
+   build-godot
+   build-llvm
+   compress-7zip
+   coremark (take credit)
+   john-the-ripper
+   libxsmm
+   phpbench
+   pybench
+   stream (take credit)
+   tensorflow-lite
+   webp
+   x265
+   gimp
+   openscad
+   rawtherapee
 
+Higher Priority
    - long runtime
      blender - 3d creation and modeling (3 hours 7 minutes)
      openradioss - (1 hour 10 minutes)
      selenium - browser benchmark - (2 hours 14 minutes)
      build-linux-kernel - compilation (1 hour 50 minutes)
    
-   - install successful
-     
 Lower Priority
    svt-av1
 	needs bospohorus 3840x2160
