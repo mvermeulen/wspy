@@ -233,7 +233,7 @@ static void collect_process_totals(struct process_info *pinfo){
     }
   }
   // not found, so add an entry
-  if (!found){
+  if (!found && pinfo->comm){
     ci = calloc(1,sizeof(struct comm_info));
     ci->comm = strdup(pinfo->comm);
     ci->next = comm_totals;

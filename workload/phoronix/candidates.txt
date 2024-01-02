@@ -1,5 +1,15 @@
 Added:
 	1/1 - tensorflow (resnet50/batch64)
+	1/2 - pytorch (resnet50/batch64)
+
+On deck:
+libxsmm
+x265
+build-ffmpeg
+gimp
+webp
+compress-7zip
+phpbench
 	
 Higher Priority
    - run successful
@@ -51,9 +61,7 @@ Lower Priority
    	    needs hack for libssl.so.1.1 on ubuntu 22.04
    pyperformance
 	python ecosystem
-   tensorflow - ai framework
-        python ecosystem	
    deepsparse - utility
         python ecosystem   
-   pytorch - framework
-        python ecosystem      
+   onnx
+	builds OK with cmake, but net access to workload is an issue
