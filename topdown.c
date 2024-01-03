@@ -1064,8 +1064,10 @@ void print_usage(struct rusage *rusage,enum output_format oformat){
 	    rusage->ru_nvcsw,(double) rusage->ru_nvcsw / (rusage->ru_nvcsw + rusage->ru_nivcsw) * 100.0);
     fprintf(outfile,"nivcsw               %-15lu# %4.2f%%\n",
 	    rusage->ru_nivcsw,(double) rusage->ru_nivcsw / (rusage->ru_nvcsw + rusage->ru_nivcsw) * 100.0);
-    fprintf(outfile,"inblock              %lu\n",rusage->ru_inblock);
-    fprintf(outfile,"onblock              %lu\n",rusage->ru_oublock);
+    fprintf(outfile,"inblock              %-15lu# %4.2f/sec\n",
+	    rusage->ru_inblock,rusage->ru_inblock/elapsed);
+    fprintf(outfile,"onblock              %-15lu# %4.2f/sec\n",
+	    rusage->ru_oublock,rusage->ru_oublock/elapsed);
     break;
   }
 }
