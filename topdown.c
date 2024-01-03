@@ -599,9 +599,9 @@ void ptrace_loop(){
 	  clock_gettime(CLOCK_REALTIME,&finish_time);
 	  elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
 	    start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
-	  fprintf(treefile,"%5.3f %d unknown %d\n",elapsed,pid,status>>16);
+	  fprintf(treefile,"%5.3f %d unknown %x\n",elapsed,pid,status);
 	  fflush(treefile);
-	  debug2("   unknown event: %d %d\n",status>>16,pid);
+	  debug2("   unknown event: %d status=%x %d\n",pid,status);
 	  ptrace(PTRACE_CONT,pid,NULL,NULL);
 	  continue;
 	}
