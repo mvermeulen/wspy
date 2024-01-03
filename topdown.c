@@ -622,9 +622,19 @@ void ptrace_loop(){
 	ptrace(PTRACE_SYSCALL,pid,NULL,NULL,NULL);
       } else {
 	// pass other signals to the child
+	clock_gettime(CLOCK_REALTIME,&finish_time);
+	elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
+	  start_time.tv_sec - start_time.tv_nsec / 1000000000.0;	
+	fprintf(treefile,"%5.3f %d signal %d\n",elapsed,pid,WSTOPSIG(status));
+	fflush(treefile);
 	ptrace(PTRACE_CONT,pid,NULL,WSTOPSIG(status));
       }
     } else if (WIFCONTINUED(status)){
+      clock_gettime(CLOCK_REALTIME,&finish_time);
+      elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
+	start_time.tv_sec - start_time.tv_nsec / 1000000000.0;	
+      fprintf(treefile,"%5.3f %d continued\n",elapsed,pid);
+      fflush(treefile);      
       // nothing here
     }
     // let the child go to the next event
