@@ -1,6 +1,11 @@
 Added:
 	1/1 - tensorflow (resnet50/batch64)
 	1/2 - pytorch (resnet50/batch64)
+	1/3 - x265
+	1/4 - gromacs
+	1/5 - namd
+	1/6 - coremark
+	1/7 - stream
 
 Installed but not yet run:
    build-ffmpeg
@@ -8,19 +13,14 @@ Installed but not yet run:
    build-godot
    build-llvm
    compress-7zip
-   coremark (take credit)
-   gromacs
    john-the-ripper
    libxsmm
-   namd
    openfoam
    phpbench
    pybench
    stockfish
-   stream (take credit)
    tensorflow-lite
    webp
-   x265
    gimp
    openscad
    rawtherapee
