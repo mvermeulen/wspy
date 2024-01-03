@@ -9,10 +9,14 @@ Installed but not yet run:
    build-llvm
    compress-7zip
    coremark (take credit)
+   gromacs
    john-the-ripper
    libxsmm
+   namd
+   openfoam
    phpbench
    pybench
+   stockfish
    stream (take credit)
    tensorflow-lite
    webp
