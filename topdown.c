@@ -497,10 +497,47 @@ void ptrace_loop(){
       }
     }
     if (WIFEXITED(status)){
+      clock_gettime(CLOCK_REALTIME,&finish_time);
+      elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
+	start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
+      fprintf(treefile,"%5.3f %d exited\n",elapsed,pid);
+      fflush(treefile);
       debug2("   exited\n");
       if (pid == child_pid) break;
+      continue;
     } else if (WIFSIGNALED(status)){
+      clock_gettime(CLOCK_REALTIME,&finish_time);
+      elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
+	start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
+
+      // dump contents of proc/<pid>/comm
+      snprintf(stat_name,sizeof(stat_name),"/proc/%d/comm",pid);
+      if ((stat_file = fopen(stat_name,"r")) != NULL){
+	if (fgets(buffer,sizeof(buffer),stat_file) != NULL){
+	  fprintf(treefile,"%5.3f %d comm ",elapsed,pid);
+	  fputs(buffer,treefile);
+	}
+	fclose(stat_file);
+      }
+      // dump the full command line
+      if (tree_cmdline){
+	snprintf(stat_name,sizeof(stat_name),"/proc/%d/cmdline",pid);
+	fprintf(treefile,"%5.3f %d cmdline",elapsed,pid);
+	if ((stat_file = fopen(stat_name,"rb")) != NULL){
+	  char *arg = 0;
+	  size_t size = 0;
+	  while (getdelim(&arg,&size,0,stat_file) != -1){
+	    fprintf(treefile," %s",arg);
+	  }
+	  fclose(stat_file);
+	}
+	fprintf(treefile,"\n");
+      }
+      
+      fprintf(treefile,"%5.3f %d signal %u\n",elapsed,pid,WTERMSIG(status));
+      fflush(treefile);
       debug2("   signaled\n");
+      continue;
     } else if (WIFSTOPPED(status)){
       if (WSTOPSIG(status) == SIGTRAP){
 	// we have an event!
@@ -513,6 +550,7 @@ void ptrace_loop(){
 	  elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
 	    start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
 	  fprintf(treefile,"%5.3f %d fork %lu\n",elapsed,pid,data);
+	  fflush(treefile);
 	  debug2("   clone/fork/vfork - pid=%d\n",data);
 	  break;
 	case PTRACE_EVENT_EXIT:
@@ -550,17 +588,25 @@ void ptrace_loop(){
 	    if (fgets(buffer,sizeof(buffer),stat_file) != NULL){
 	      fprintf(treefile,"%5.3f %d exit ",elapsed,pid);
 	      fputs(buffer,treefile);
+	      fflush(treefile);
 	    }
 	    fclose(stat_file);
 	  }
 	  debug2("   exit - exit status=%d\n",data);
 	  break;
 	default:
-	  debug2("   unknown event: %d\n",status>>16,pid);
-	  break;
+	  // normal SIGTRAP - not sure how we got here, but continue without it.
+	  clock_gettime(CLOCK_REALTIME,&finish_time);
+	  elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
+	    start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
+	  fprintf(treefile,"%5.3f %d unknown %d\n",elapsed,pid,status>>16);
+	  fflush(treefile);
+	  debug2("   unknown event: %d %d\n",status>>16,pid);
+	  ptrace(PTRACE_CONT,pid,NULL,NULL);
+	  continue;
 	}
       } else if (WSTOPSIG(status) == SIGSTOP){
-	// newly created process after fork/vfork/clone, continue wihtout passing along signal
+	// newly created process after fork/vfork/clone, continue without passing along signal
 	debug2("   new pid\n");
 	ptrace(PTRACE_CONT,pid,NULL,NULL);
 	continue;

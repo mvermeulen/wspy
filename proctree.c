@@ -437,7 +437,11 @@ int main(int argc,char *const argv[],char *const envp[]){
     } else if (!strncmp(p,"comm",4)){
       handle_comm(elapsed,event_pid,p+5);
     } else if (!strncmp(p,"cmdline",7)){
-      handle_cmdline(elapsed,event_pid,p+8);      
+      handle_cmdline(elapsed,event_pid,p+8);
+    } else if (!strncmp(p,"exited",6)){
+      // ignore exited events.
+    } else if (!strncmp(p,"unknown",7)){
+      // ignore unknown events
     } else if (!strncmp(p,"exit",4)){
       handle_exit(elapsed,event_pid,p+5);
     } else {
