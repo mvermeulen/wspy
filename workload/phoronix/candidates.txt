@@ -6,6 +6,9 @@ Added:
 	1/5 - namd
 	1/6 - coremark
 	1/7 - stream
+	1/8 - gimp
+	1/9 - openfoam
+	1/10 - blender
 
 Installed but not yet run:
    build-ffmpeg
@@ -15,19 +18,41 @@ Installed but not yet run:
    compress-7zip
    john-the-ripper
    libxsmm
-   openfoam
    phpbench
    pybench
    stockfish
    tensorflow-lite
    webp
-   gimp
    openscad
    rawtherapee
 
 Higher Priority
+   - benchmarks 1/4 - https://www.phoronix.com/review/intel-meteorlake-gcc-clang/2
+     quantlib
+     lczero
+     minibude
+     smhasher
+     llamps
+     mrbayes
+     xmrig
+     compress-lz4
+     compress-zstd
+     webp
+     tscp
+     john-the-ripper
+     graphics-magick
+     kvazaar
+     uvg266
+     stargate
+     libavif
+     c-ray
+     encode-flac
+     encode-mp3
+     encode-opus
+     securemark
+     openjpeg
+     liquid-dsp
    - long runtime
-     blender - 3d creation and modeling (3 hours 7 minutes)
      openradioss - (1 hour 10 minutes)
      selenium - browser benchmark - (2 hours 14 minutes)
      build-linux-kernel - compilation (1 hour 50 minutes)
