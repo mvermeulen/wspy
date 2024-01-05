@@ -14,6 +14,7 @@ Added:
 	1/13 - c-ray
 	1/14 - stockfish
 	1/15 - build-ffmpeg
+	1/16 - build-gcc
 
 Installed but not part of a benchmark
    build-gcc (already on pages)
@@ -61,10 +62,10 @@ Higher Priority
      onednn
      ospray-studio
      openvino
-     
 
 Missing download files (try periodically)
    onnx
+   y-cruncher
    
 Lower Priority
    svt-av1
