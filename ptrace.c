@@ -204,7 +204,7 @@ void ptrace_loop(void){
   static int syscall_entry = 0;
   while (1){
     pid = wait(&status);
-    debug2("event: pid=%d\n",pid);
+    debug2("event: pid=%d status=%x\n",pid,status);
     if (pid == -1){
       if (errno == ECHILD) break; // no more children to wait
       error("wait returns -1 with errno %d: %s\n",errno,strerror(errno));
