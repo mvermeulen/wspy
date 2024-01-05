@@ -28,7 +28,8 @@ Installed but not part of a benchmark
    tensorflow-lite
 
 Higher Priority
-   - benchmarks missing 1/4 - https://www.phoronix.com/review/intel-meteorlake-gcc-clang
+   - benchmarks missing but installed
+       1/4 - https://www.phoronix.com/review/intel-meteorlake-gcc-clang
      avifenc
      compress-lz4
      compress-zstd
@@ -50,6 +51,17 @@ Higher Priority
      uvg266
      webp
      xmrig
+   - benchmarks missing
+       1/5 - https://www.phoronix.com/review/intel-5th-gen-xeon-avx512
+     minibude
+     embree
+     openvkl
+     ospray
+     y-cruncher
+     onednn
+     ospray-studio
+     openvino
+     
 
 Missing download files (try periodically)
    onnx
