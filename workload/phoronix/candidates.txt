@@ -11,50 +11,49 @@ Added:
 	1/10 - blender
 	1/11 - john-the-ripper
 
-Installed but not yet run:
+Installed but not part of a benchmark
    build-ffmpeg
    build-gcc (formalize; hangs in tree?)
    build-godot
    build-llvm
    compress-7zip
    libxsmm
+   openscad
    phpbench
    pybench
+   rawtherapee
    stockfish
    tensorflow-lite
-   webp
-   openscad
-   rawtherapee
 
 Higher Priority
-   - benchmarks 1/4 - https://www.phoronix.com/review/intel-meteorlake-gcc-clang/2
-     quantlib
-     lczero
-     minibude
-     smhasher
-     llamps
-     mrbayes
-     xmrig
+   - benchmarks missing 1/4 - https://www.phoronix.com/review/intel-meteorlake-gcc-clang
+     avifenc
+     c-ray
      compress-lz4
      compress-zstd
-     webp
-     tscp
-     graphics-magick
-     kvazaar
-     uvg266
-     stargate
-     libavif
-     c-ray
      encode-flac
      encode-mp3
      encode-opus
-     securemark
-     openjpeg
+     graphics-magick
+     kvazaar
+     lczero
+     libavif
      liquid-dsp
-   - long runtime
-     openradioss - (1 hour 10 minutes)
-     selenium - browser benchmark - (2 hours 14 minutes)
-     build-linux-kernel - compilation (1 hour 50 minutes)
+     lammps
+     minibude
+     mrbayes
+     openjpeg
+     quantlib
+     securemark
+     smhasher
+     stargate
+     tscp
+     uvg266
+     webp
+     xmrig
+
+Missing download files (try periodically)
+   onnx
    
 Lower Priority
    svt-av1
@@ -63,21 +62,11 @@ Lower Priority
 	needs bospohorus 3840x2160   
    svt-vp9
 	needs bospohorus 3840x2160   
-   kvazaar - video encoder
-	needs bospohorus 3840x2160   
-   uvg266 - video encoder, based on kvazaar
-	needs bospohorus 3840x2160   
    vvenc
-	needs bospohorus 3840x2160   
-   x265
 	needs bospohorus 3840x2160   
    openvino - neural networks
    	    needs hack for libssl.so.1.1 on ubuntu 22.04
    simdjson
-   	    needs hack for libssl.so.1.1 on ubuntu 22.04
-   quantlib
-   	    needs hack for libssl.so.1.1 on ubuntu 22.04
-   avifenc
    	    needs hack for libssl.so.1.1 on ubuntu 22.04
    ffmpeg     
    	    needs hack for libssl.so.1.1 on ubuntu 22.04
@@ -85,5 +74,7 @@ Lower Priority
 	python ecosystem
    deepsparse - utility
         python ecosystem   
-   onnx
-	builds OK with cmake, but net access to workload is an issue
+   - long runtime
+     openradioss - (1 hour 10 minutes)
+     selenium - browser benchmark - (2 hours 14 minutes)
+     build-linux-kernel - compilation (1 hour 50 minutes)
