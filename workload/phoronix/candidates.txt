@@ -13,10 +13,10 @@ Added:
 	1/12 - lammps
 	1/13 - c-ray
 	1/14 - stockfish
+	1/15 - build-ffmpeg
 
 Installed but not part of a benchmark
-   build-ffmpeg
-   build-gcc (formalize; hangs in tree?)
+   build-gcc (already on pages)
    build-godot
    build-llvm
    compress-7zip
