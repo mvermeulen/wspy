@@ -466,7 +466,7 @@ void ptrace_setup(pid_t child_pid){
   status = ptrace(PTRACE_SETOPTIONS,child_pid,0,
 		  PTRACE_O_EXITKILL | // kill child if I exit
 		  PTRACE_O_TRACECLONE|PTRACE_O_TRACEFORK|PTRACE_O_TRACEVFORK|
-		  PTRACE_O_TRACEEXIT); // exit(0)
+		  PTRACE_O_TRACEEXIT); // exit(2)
   ptrace(PTRACE_CONT,child_pid,NULL,NULL); // let the child being
 }
 
@@ -488,7 +488,7 @@ void ptrace_loop(){
 
   while(1){
     pid = wait4(-1,&status,0,&rusage);
-    debug2("event: pid=%d\n",pid);
+    debug2("event: pid=%d status=%x\n",pid,status);
     if (pid == -1){
       if (errno == ECHILD){
 	break; // no more children to wait
@@ -596,6 +596,7 @@ void ptrace_loop(){
 	  break;
 	default:
 	  // normal SIGTRAP - not sure how we got here, but continue without it.
+	  // we seem to get these after a process has exited...
 	  clock_gettime(CLOCK_REALTIME,&finish_time);
 	  elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
 	    start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
@@ -610,7 +611,7 @@ void ptrace_loop(){
 	debug2("   new pid\n");
 	ptrace(PTRACE_CONT,pid,NULL,NULL);
 	continue;
-      } else if ((WSTOPSIG(status) == SIGTRAP | 0x80)){
+      } else if (WSTOPSIG(status) == (SIGTRAP | 0x80)){
 	// stopped because of a system call
 	ptrace(PTRACE_GETREGS,pid,0,&regs);
 	if (last_syscall != regs.orig_rax){
@@ -1769,7 +1770,9 @@ int main(int argc,char *const argv[],char *const envp[]){
     if (cpu_info->coreinfo[i].core_specific_counters)
       start_counters(cpu_info->coreinfo[i].core_specific_counters);
   }
-  start_counters(cpu_info->systemwide_counters);  
+  start_counters(cpu_info->systemwide_counters);
+
+  signal(SIGINT,SIG_IGN);
 
   // create CSV headers
   if (csvflag){
