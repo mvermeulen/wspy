@@ -9,6 +9,7 @@ Added:
 	1/8 - gimp
 	1/9 - openfoam
 	1/10 - blender
+	1/11 - john-the-ripper
 
 Installed but not yet run:
    build-ffmpeg
@@ -16,7 +17,6 @@ Installed but not yet run:
    build-godot
    build-llvm
    compress-7zip
-   john-the-ripper
    libxsmm
    phpbench
    pybench
@@ -39,7 +39,6 @@ Higher Priority
      compress-zstd
      webp
      tscp
-     john-the-ripper
      graphics-magick
      kvazaar
      uvg266
