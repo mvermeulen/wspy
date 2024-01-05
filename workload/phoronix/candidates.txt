@@ -10,6 +10,9 @@ Added:
 	1/9 - openfoam
 	1/10 - blender
 	1/11 - john-the-ripper
+	1/12 - lammps
+	1/13 - c-ray
+	1/14 - stockfish
 
 Installed but not part of a benchmark
    build-ffmpeg
@@ -22,13 +25,11 @@ Installed but not part of a benchmark
    phpbench
    pybench
    rawtherapee
-   stockfish
    tensorflow-lite
 
 Higher Priority
    - benchmarks missing 1/4 - https://www.phoronix.com/review/intel-meteorlake-gcc-clang
      avifenc
-     c-ray
      compress-lz4
      compress-zstd
      encode-flac
@@ -37,9 +38,7 @@ Higher Priority
      graphics-magick
      kvazaar
      lczero
-     libavif
      liquid-dsp
-     lammps
      minibude
      mrbayes
      openjpeg
