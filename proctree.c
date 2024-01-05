@@ -442,6 +442,8 @@ int main(int argc,char *const argv[],char *const envp[]){
       // ignore exited events.
     } else if (!strncmp(p,"unknown",7)){
       // ignore unknown events
+    } else if (!strncmp(p,"signal",6)){
+      // ignore signal events
     } else if (!strncmp(p,"exit",4)){
       handle_exit(elapsed,event_pid,p+5);
     } else {
