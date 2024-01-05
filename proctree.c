@@ -421,12 +421,16 @@ int main(int argc,char *const argv[],char *const envp[]){
   while (fgets(buffer,sizeof(buffer),process_file) != NULL){
     if (p = strchr(buffer,' ')) *p = 0;
     else continue;
-    elapsed = atof(buffer);
+    elapsed = strtod(buffer,&p2);
+    if (p2 == buffer) // no value parsed, there can be newlines in input so ignore
+      continue;
+    
     p++;
     
     if (p2 = strchr(p,' ')) *p2 = 0;
     else continue;
-    event_pid = atoi(p);
+    event_pid = atoi(p); // no value parsed, there can be newlines in input so ignore
+    if (event_pid <= 0) continue;
     p = p2+1;
     if (p2 = strchr(p,'\n')) *p2 = 0; // zap newline
     
