@@ -64,8 +64,23 @@ Higher Priority
      openvino
 
 Missing download files (try periodically)
+   compress-pbzip2
    onnx
    y-cruncher
+
+Compression tests
+     compress-7zip
+     compress-gzip
+     compress-pbzip2
+     compress-zstd
+     compress-lz4
+     compress-rar
+     compress-xz
+     system-decompress-xz
+     system-decompress-gzip
+     system-decompress-zlib
+     lzbench
+     blosc
    
 Lower Priority
    svt-av1
