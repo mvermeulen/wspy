@@ -17,7 +17,6 @@ Added:
 	1/16 - build-gcc
 
 Installed but not part of a benchmark
-   build-gcc (already on pages)
    build-godot
    build-llvm
    compress-7zip
