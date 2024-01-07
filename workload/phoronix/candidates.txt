@@ -64,6 +64,7 @@ Higher Priority
 
 Missing download files (try periodically)
    compress-pbzip2
+   system-decompress-zlib
    onnx
    y-cruncher
 
