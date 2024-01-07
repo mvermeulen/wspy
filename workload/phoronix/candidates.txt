@@ -15,11 +15,17 @@ Added:
 	1/14 - stockfish
 	1/15 - build-ffmpeg
 	1/16 - build-gcc
+	1/17 - embree
+	1/18 - compress-7zip
+	1/19 - compress-gzip
+	1/20 - compress-lz4
+	1/21 - compress-rar
+	1/22 - compress-xz
+	1/23 - compress-zstd
 
 Installed but not part of a benchmark
    build-godot
    build-llvm
-   compress-7zip
    libxsmm
    openscad
    phpbench
@@ -31,8 +37,6 @@ Higher Priority
    - benchmarks missing but installed
        1/4 - https://www.phoronix.com/review/intel-meteorlake-gcc-clang
      avifenc
-     compress-lz4
-     compress-zstd
      encode-flac
      encode-mp3
      encode-opus
@@ -54,7 +58,6 @@ Higher Priority
    - benchmarks missing
        1/5 - https://www.phoronix.com/review/intel-5th-gen-xeon-avx512
      minibude
-     embree
      openvkl
      ospray
      y-cruncher
