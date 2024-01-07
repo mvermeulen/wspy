@@ -303,10 +303,11 @@ static void print_tree(struct process_info *pinfo,int level){
     print_width = output_width - 8 - 2*level;
     printf(" %.*s",print_width,pinfo->cmdline);
   } else if (pinfo->comm){
-    printf(" %s",pinfo->comm);
+    printf(" %-16s",pinfo->comm);
   } else {
     printf(" ??");
   }
+  printf(" cpu=%d",pinfo->processor);
   if (fflag){
     printf(" start=%-5.2f finish=%-5.2f",pinfo->start,pinfo->finish);
   }
