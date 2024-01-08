@@ -22,6 +22,8 @@ Added:
 	1/21 - compress-rar
 	1/22 - compress-xz
 	1/23 - compress-zstd
+	1/24 - openvino
+	1/25 - ffmpeg
 
 Installed but not part of a benchmark
    build-godot
@@ -63,7 +65,25 @@ Higher Priority
      y-cruncher
      onednn
      ospray-studio
-     openvino
+   - benchmarks missing (mostly graphics)
+      1/7 - https://www.phoronix.com/review/z1-extreme-meteorlake
+     etlegacy (graphics)
+     gravitymark (vulkan)
+     npb
+     openradioss
+     quantlib
+     selenium /browser
+     simdjson
+     tesseract (graphics)
+     unigine-heaven (games)
+     unigine-super (games)
+     unigine-valley (games)
+     unvanquished (games)
+     warsow (games)
+     wireguard /network
+     xonotic (games)
+     z3
+     
 
 Missing download files (try periodically)
    compress-pbzip2
@@ -72,13 +92,7 @@ Missing download files (try periodically)
    y-cruncher
 
 Compression tests
-     compress-7zip
-     compress-gzip
      compress-pbzip2
-     compress-zstd
-     compress-lz4
-     compress-rar
-     compress-xz
      system-decompress-xz
      system-decompress-gzip
      system-decompress-zlib
@@ -94,11 +108,7 @@ Lower Priority
 	needs bospohorus 3840x2160   
    vvenc
 	needs bospohorus 3840x2160   
-   openvino - neural networks
-   	    needs hack for libssl.so.1.1 on ubuntu 22.04
    simdjson
-   	    needs hack for libssl.so.1.1 on ubuntu 22.04
-   ffmpeg     
    	    needs hack for libssl.so.1.1 on ubuntu 22.04
    pyperformance
 	python ecosystem
