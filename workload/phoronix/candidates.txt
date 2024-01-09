@@ -83,8 +83,6 @@ Higher Priority
      wireguard /network
      xonotic (games)
      y-cruncher
-     z3
-     
 
 Missing download files (try periodically)
    compress-pbzip2
