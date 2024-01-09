@@ -26,11 +26,11 @@ Added:
 	1/25 - ffmpeg
 	1/26 - minibude
 	1/27 - z3
+	1/28 - libxsmm
 
 Installed but not part of a benchmark
    build-godot
    build-llvm
-   libxsmm
    openscad
    phpbench
    pybench
