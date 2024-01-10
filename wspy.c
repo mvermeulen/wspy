@@ -15,6 +15,7 @@
 
 int aflag = 0;
 int oflag = 0;
+int sflag = 0;
 int vflag = 0;
 int xflag = 1;
 int csvflag = 0;
@@ -62,6 +63,8 @@ int parse_options(int argc,char *const argv[]){
     { "no-rusage", no_argument, 0, 22 },
     { "software", no_argument, 0, 23 },
     { "no-software", no_argument, 0, 24 },
+    { "system", no_argument, 0, 36 },
+    { "no-system", no_argument, 0, 37 },
     { "tlb", no_argument, 0, 25 }, 
     { "no-tlb", no_argument, 0, 26 },
     { "topdown", no_argument, 0, 27 }, // (t)
@@ -73,7 +76,7 @@ int parse_options(int argc,char *const argv[]){
     { "verbose", no_argument, 0, 32 },
     { 0,0,0,0 },
   };
-  while ((opt = getopt_long(argc,argv,"+abcio:rstv",long_options,NULL)) != -1){
+  while ((opt = getopt_long(argc,argv,"+abcio:rsStv",long_options,NULL)) != -1){
     switch (opt){
     case 3: //--csv
       csvflag = 1;
@@ -151,7 +154,7 @@ int parse_options(int argc,char *const argv[]){
       xflag = 0;
       break;
     case 23: // --software
-    case 'S':
+    case 's':
       counter_mask |= COUNTER_SOFTWARE;
       break;
     case 24: // --no-software
@@ -201,6 +204,13 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 35:
       tree_cmdline = 1;
+      break;
+    case 36: // --system
+    case 's':
+      sflag = 1;
+      break;
+    case 37:
+      sflag = 0;
       break;
     default:
       return 1;

@@ -1,14 +1,14 @@
 CC=gcc
 CFLAGS=-g
 PROG = wspy
-SRCS = wspy.c cpu_info.c error.c proctree.c topdown.c
-OBJS = wspy.o cpu_info.o error.o proctree.o topdown.o
+SRCS = wspy.c cpu_info.c error.c proctree.c system.c topdown.c
+OBJS = wspy.o cpu_info.o error.o proctree.o system.o topdown.o
 LIBS = -lpthread -lm
 
 all:	wspy cpu_info proctree
 
-wspy:	wspy.o topdown.o error.o cpu_info.c cpu_info.h
-	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c error.o
+wspy:	wspy.o topdown.o error.o system.o cpu_info.c cpu_info.h
+	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c error.o system.o
 
 proctree:	proctree.o error.o
 	$(CC) -o proctree proctree.o error.o

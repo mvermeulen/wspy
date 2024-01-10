@@ -9,6 +9,7 @@ FILE *outfile;
 
 extern int aflag;
 extern int oflag;
+extern int sflag;
 extern int vflag;
 extern int xflag;
 extern int csvflag;
