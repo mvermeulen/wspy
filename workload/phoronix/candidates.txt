@@ -27,6 +27,9 @@ Added:
 	1/26 - minibude
 	1/27 - z3
 	1/28 - libxsmm
+	1/29 - y-cruncher
+	1/30 - ospray
+	1/31 - ospray-studio
 
 Installed but not part of a benchmark
    build-godot
@@ -62,7 +65,6 @@ Higher Priority
        1/5 - https://www.phoronix.com/review/intel-5th-gen-xeon-avx512
      openvkl
      ospray
-     y-cruncher
      onednn
      ospray-studio
    - benchmarks missing (mostly graphics)
@@ -82,7 +84,6 @@ Higher Priority
      warsow (games)
      wireguard /network
      xonotic (games)
-     y-cruncher
 
 Missing download files (try periodically)
    compress-pbzip2
