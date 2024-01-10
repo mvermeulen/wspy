@@ -4,6 +4,7 @@
 
 #include <stdio.h>
 #include <time.h>
+#include <sys/resource.h>
 #include "cpu_info.h"
 FILE *outfile;
 
@@ -55,3 +56,6 @@ int launch_child(int argc,char *const argv[],char *const envp[]);
 void timer_callback(int signum);
 void ptrace_setup(pid_t child_pid);
 void ptrace_loop(void);
+// system.c
+void read_system(void);
+void print_system(enum output_format oformat);

@@ -308,8 +308,9 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (csvflag){
     if (interval){
       fprintf(outfile,"time,");
-    } else if (xflag){
-      print_usage(NULL,PRINT_CSV_HEADER);
+    } else {
+      if (sflag) print_system(PRINT_CSV_HEADER);
+      if (xflag) print_usage(NULL,PRINT_CSV_HEADER);
     }
     print_metrics(cpu_info->systemwide_counters,PRINT_CSV_HEADER);
     fprintf(outfile,"\n");
@@ -343,6 +344,8 @@ int main(int argc,char *const argv[],char *const envp[]){
   
   clock_gettime(CLOCK_REALTIME,&finish_time);
 
+  read_system();
+
   // -----  
   // stop core-specific and system-wide counters
   for (i=0;i<cpu_info->num_cores;i++){
@@ -358,13 +361,15 @@ int main(int argc,char *const argv[],char *const envp[]){
       elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
 	start_time.tv_sec - start_time.tv_nsec / 1000000000.0;    
       fprintf(outfile,"%4.1f,",elapsed);
-    } else if (xflag){
-      print_usage(&rusage,PRINT_CSV);
+    } else {
+      if (sflag) print_system(PRINT_CSV);
+      if (xflag) print_usage(&rusage,PRINT_CSV);
     }
-  } else if (xflag){
-    print_usage(&rusage,PRINT_NORMAL);
+  } else {
+    if (sflag) print_system(PRINT_NORMAL);
+    if (xflag) print_usage(&rusage,PRINT_NORMAL);
   }
-
+  
   print_metrics(cpu_info->systemwide_counters,csvflag?PRINT_CSV:PRINT_NORMAL);
   if (csvflag) fprintf(outfile,"\n");
   for (i=0;i<cpu_info->num_cores;i++){

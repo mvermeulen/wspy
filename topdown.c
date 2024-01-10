@@ -1463,6 +1463,11 @@ void timer_callback(int signum){
   elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
     start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
 
+  if (sflag){
+    read_system();
+    print_system(csvflag?PRINT_CSV:PRINT_NORMAL);
+  }
+  
   read_counters(cpu_info->systemwide_counters,0);
   if (csvflag){
     fprintf(outfile,"%4.1f,",elapsed);
