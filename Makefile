@@ -1,14 +1,14 @@
 CC=gcc
 CFLAGS=-g
 PROG = wspy
-SRCS = cpu_info.c error.c proctree.c topdown.c
-OBJS = cpu_info.o error.o proctree.o topdown.o
+SRCS = wspy.c cpu_info.c error.c proctree.c topdown.c
+OBJS = wspy.o cpu_info.o error.o proctree.o topdown.o
 LIBS = -lpthread -lm
 
 all:	wspy cpu_info proctree
 
-wspy:	topdown.o error.o cpu_info.c cpu_info.h
-	$(CC) -o wspy $(CFLAGS) topdown.o cpu_info.c error.o
+wspy:	wspy.o topdown.o error.o cpu_info.c cpu_info.h
+	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c error.o
 
 proctree:	proctree.o error.o
 	$(CC) -o proctree proctree.o error.o
@@ -33,7 +33,8 @@ clobber:	clean
 
 # DO NOT DELETE
 
+wspy.o: wspy.h cpu_info.h error.h
 cpu_info.o: cpu_info.h error.h
 error.o: error.h
 proctree.o: error.h
-topdown.o: error.h cpu_info.h
+topdown.o: error.h wspy.h cpu_info.h
