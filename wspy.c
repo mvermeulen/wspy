@@ -308,10 +308,9 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (csvflag){
     if (interval){
       fprintf(outfile,"time,");
-    } else {
-      if (sflag) print_system(PRINT_CSV_HEADER);
-      if (xflag) print_usage(NULL,PRINT_CSV_HEADER);
     }
+    if (sflag) print_system(PRINT_CSV_HEADER);
+    if (xflag) print_usage(NULL,PRINT_CSV_HEADER);
     print_metrics(cpu_info->systemwide_counters,PRINT_CSV_HEADER);
     fprintf(outfile,"\n");
   }
