@@ -154,7 +154,6 @@ int parse_options(int argc,char *const argv[]){
       xflag = 0;
       break;
     case 23: // --software
-    case 's':
       counter_mask |= COUNTER_SOFTWARE;
       break;
     case 24: // --no-software
