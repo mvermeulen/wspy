@@ -9,7 +9,7 @@ fi
 
 cd $TESTNAME
 if [ $(grep -c Intel /proc/cpuinfo) -gt 0 ]; then
-    /home/mev/source/wspy/wspy -o software.branch.txt --rusage --software --branch --no-ipc phoronix-test-suite batch-run $TESTNAME 2>&1 | tee intel.${TESTNAME}.out
+    /home/mev/source/wspy/wspy -o software.branch.txt --interval 1 --csv --rusage --software --branch --no-ipc phoronix-test-suite batch-run $TESTNAME 2>&1 | tee intel.${TESTNAME}.out
     /home/mev/source/wspy/wspy -o topdown.txt --topdown2 --no-rusage --no-software --no-ipc phoronix-test-suite batch-run $TESTNAME
     /home/mev/source/wspy/wspy -o ipc.l2.txt --ipc --cache2 --no-rusage --no-software phoronix-test-suite batch-run $TESTNAME
     cat software.branch.txt topdown.txt ipc.l2.txt > inteltopdown.txt
