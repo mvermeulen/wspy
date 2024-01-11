@@ -11,7 +11,8 @@ unsigned int system_mask = SYSTEM_LOADAVG|SYSTEM_CPU;
 
 // system state
 struct system_state {
-  double load;
+  double load; // 1 minute load average
+  int runnable; // # runnable processes
   struct cpustat {
     unsigned long usertime, systemtime;
     unsigned long last_usertime, last_systemtime;
@@ -22,12 +23,16 @@ struct system_state {
 void read_system(void){
   FILE *fp;
   char buffer[1024];
-  double value;
+  double value1,value5,value15;
+  int runnable;
   unsigned long usertime,nicetime,systemtime;
   // loadavg
   if (system_mask & SYSTEM_LOADAVG){
     if (fp = fopen("/proc/loadavg","r")){
-      if (fscanf(fp,"%lf",&value) == 1) system_state.load = value;
+      if (fscanf(fp,"%lf %lf %lf %d",&value1,&value5,&value15,&runnable) == 4){
+	system_state.load = value1;
+	system_state.runnable = runnable;
+      }
       fclose(fp);
     }
   }
@@ -63,18 +68,20 @@ void print_system(enum output_format oformat){
 
   switch(oformat){
   case PRINT_CSV_HEADER:
-    if (system_mask & SYSTEM_LOADAVG) fprintf(outfile,"load,");
+    if (system_mask & SYSTEM_LOADAVG) fprintf(outfile,"load,runnable,");
     if (system_mask & SYSTEM_CPU) fprintf(outfile,"cpu,");
     break;
   case PRINT_CSV:
-    if (system_mask & SYSTEM_LOADAVG) fprintf(outfile,"%4.2f,",system_state.load);
+    if (system_mask & SYSTEM_LOADAVG) fprintf(outfile,"%4.2f,%d,",system_state.load,system_state.runnable);
     if (system_mask & SYSTEM_CPU)
       fprintf(outfile,"%3.2f%%,",
 	      (double) (system_state.cpu.usertime+system_state.cpu.systemtime)/elapsed/num_procs);
     break;
   case PRINT_NORMAL:
-    if (system_mask & SYSTEM_LOADAVG)
+    if (system_mask & SYSTEM_LOADAVG){
       fprintf(outfile,"load                 %4.2f\n",system_state.load);
+      fprintf(outfile,"runnable             %d\n",system_state.runnable);      
+    }
     if (system_mask & SYSTEM_CPU)
       fprintf(outfile,"cpu                  %3.2f%%\n",
 	      (double) (system_state.cpu.usertime+system_state.cpu.systemtime)/elapsed/num_procs);
