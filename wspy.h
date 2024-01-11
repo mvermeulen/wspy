@@ -20,6 +20,7 @@ extern int tree_cmdline;
 extern FILE *treefile;
 
 extern int num_procs;
+extern int clocks_per_second;
 extern struct timespec start_time,finish_time;
 
 #define COUNTER_IPC         0x1
@@ -37,6 +38,12 @@ extern struct timespec start_time,finish_time;
 #define COUNTER_FLOAT       0x1000
 
 extern unsigned int counter_mask;
+
+#define SYSTEM_LOADAVG      0x1
+#define SYSTEM_CPU          0x2
+
+extern unsigned int system_mask;
+
 extern pid_t child_pid;
 extern int child_pipe[2];
 extern volatile int is_still_running;

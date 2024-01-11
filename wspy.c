@@ -28,7 +28,7 @@ FILE *outfile = NULL;
 unsigned int counter_mask = COUNTER_IPC;
 
 int num_procs;
-
+int clocks_per_second;
 int command_line_argc;
 char **command_line_argv;
 
@@ -234,6 +234,8 @@ int main(int argc,char *const argv[],char *const envp[]){
   struct counter_group *cgroup;
   outfile = stdout;
   num_procs = get_nprocs();
+  clocks_per_second = sysconf(_SC_CLK_TCK);
+  
   if (parse_options(argc,argv)){
       fatal("usage: %s -[abcistv][-o <file>] <cmd><args>...\n"
 	    "\t--per-core or -a          - metrics per core\n"
@@ -295,6 +297,8 @@ int main(int argc,char *const argv[],char *const envp[]){
   }
   setup_counters(cpu_info->systemwide_counters);
 
+  if (sflag) read_system();
+
   // start core-specific and system-wide counters
   for (i=0;i<cpu_info->num_cores;i++){
     if (cpu_info->coreinfo[i].core_specific_counters)
@@ -310,7 +314,7 @@ int main(int argc,char *const argv[],char *const envp[]){
       fprintf(outfile,"time,");
     }
     if (sflag) print_system(PRINT_CSV_HEADER);
-    if (xflag) print_usage(NULL,PRINT_CSV_HEADER);
+    if (!interval && xflag) print_usage(NULL,PRINT_CSV_HEADER);
     print_metrics(cpu_info->systemwide_counters,PRINT_CSV_HEADER);
     fprintf(outfile,"\n");
   }
