@@ -17,6 +17,8 @@ extern int csvflag;
 extern int interval;
 extern int treeflag;
 extern int tree_cmdline;
+extern int tree_open;
+extern int trace_syscall;
 extern FILE *treefile;
 
 extern int num_procs;

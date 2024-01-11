@@ -22,6 +22,8 @@ int csvflag = 0;
 int interval = 0;
 int treeflag = 0;
 int tree_cmdline = 0;
+int tree_open = 0;
+int trace_syscall = 0;
 
 FILE *treefile = NULL;
 FILE *outfile = NULL;
@@ -73,6 +75,7 @@ int parse_options(int argc,char *const argv[]){
     { "no-topdown2", no_argument, 0, 30 },
     { "tree", required_argument, 0, 31 }, //
     { "tree-cmdline",no_argument,0,35 },
+    { "tree-open",no_argument,0, 38 },
     { "verbose", no_argument, 0, 32 },
     { 0,0,0,0 },
   };
@@ -210,6 +213,10 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 37:
       sflag = 0;
+      break;
+    case 38:
+      tree_open = 1;
+      trace_syscall = 1;
       break;
     default:
       return 1;
