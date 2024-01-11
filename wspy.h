@@ -6,7 +6,7 @@
 #include <time.h>
 #include <sys/resource.h>
 #include "cpu_info.h"
-FILE *outfile;
+extern FILE *outfile;
 
 extern int aflag;
 extern int oflag;

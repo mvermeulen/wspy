@@ -24,7 +24,7 @@ int treeflag = 0;
 int tree_cmdline = 0;
 
 FILE *treefile = NULL;
-
+FILE *outfile = NULL;
 unsigned int counter_mask = COUNTER_IPC;
 
 int num_procs;
