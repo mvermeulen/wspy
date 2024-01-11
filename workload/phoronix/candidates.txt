@@ -64,9 +64,7 @@ Higher Priority
    - benchmarks missing
        1/5 - https://www.phoronix.com/review/intel-5th-gen-xeon-avx512
      openvkl
-     ospray
      onednn
-     ospray-studio
    - benchmarks missing (mostly graphics)
       1/7 - https://www.phoronix.com/review/z1-extreme-meteorlake
      etlegacy (graphics)
