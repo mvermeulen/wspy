@@ -17,10 +17,10 @@ set datafile separator ','
 set key autotitle columnhead
 unset ytics
 set y2tics nomirror                                                  
-plot 'systemtime.csv' using 1:4 linetype 7, 
-   'systemtime.csv'   using 1:5 linetype 1, 
-   'systemtime.csv'   using 1:6 linetype 2,
-   'systemtime.csv'   using 1:7 linetype 3,
-   'systemtime.csv'   using 1:3 axis x1y2 linetype 4
+plot 'systemtime.csv' using 1:4 with lines, \
+   'systemtime.csv'   using 1:5 with lines, \
+   'systemtime.csv'   using 1:6 with lines, \
+   'systemtime.csv'   using 1:7 with lines, \
+   'systemtime.csv'   using 1:3 axis x1y2 lc "blue"
 PLOTCMD                                                                         
 fi
