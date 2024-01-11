@@ -1470,7 +1470,9 @@ void timer_callback(int signum){
     fprintf(outfile,"%4.1f,",elapsed);
   }
 
-  if (sflag) print_system(csvflag?PRINT_CSV:PRINT_NORMAL);
+  if (sflag){
+    print_system(csvflag?PRINT_CSV:PRINT_NORMAL);
+  }
   
   print_metrics(cpu_info->systemwide_counters,csvflag?PRINT_CSV:PRINT_NORMAL);
   if (csvflag) fprintf(outfile,"\n");

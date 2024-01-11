@@ -297,8 +297,6 @@ int main(int argc,char *const argv[],char *const envp[]){
   }
   setup_counters(cpu_info->systemwide_counters);
 
-  if (sflag) read_system();
-
   // start core-specific and system-wide counters
   for (i=0;i<cpu_info->num_cores;i++){
     if (cpu_info->coreinfo[i].core_specific_counters)
@@ -321,6 +319,8 @@ int main(int argc,char *const argv[],char *const envp[]){
 
   // let the child start after two seconds
   sleep(2);
+
+  if (sflag) read_system();
 
   clock_gettime(CLOCK_REALTIME,&start_time);
   if (launch_child(command_line_argc,command_line_argv,envp)){
@@ -364,17 +364,17 @@ int main(int argc,char *const argv[],char *const envp[]){
       elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
 	start_time.tv_sec - start_time.tv_nsec / 1000000000.0;    
       fprintf(outfile,"%4.1f,",elapsed);
-    } else {
-      if (sflag) print_system(PRINT_CSV);
-      if (xflag) print_usage(&rusage,PRINT_CSV);
     }
+    if (sflag) print_system(PRINT_CSV);
+    if (xflag && !interval) print_usage(&rusage,PRINT_CSV);
+    print_metrics(cpu_info->systemwide_counters,PRINT_CSV);    
+    fprintf(outfile,"\n");    
   } else {
     if (sflag) print_system(PRINT_NORMAL);
     if (xflag) print_usage(&rusage,PRINT_NORMAL);
+    print_metrics(cpu_info->systemwide_counters,PRINT_NORMAL);
   }
-  
-  print_metrics(cpu_info->systemwide_counters,csvflag?PRINT_CSV:PRINT_NORMAL);
-  if (csvflag) fprintf(outfile,"\n");
+
   for (i=0;i<cpu_info->num_cores;i++){
     if (cpu_info->coreinfo[i].core_specific_counters){
       if (csvflag){
