@@ -9,7 +9,7 @@ plot 'amdtopdown.csv' using 1:2, 'amdtopdown.csv' using 1:3, 'amdtopdown.csv' us
 PLOTCMD
 
 if [ -f systemtime.csv ]; then
-    gnuplot <<PLOTCMD                                                               
+    gnuplot <<PLOTCMD2
 set terminal png size 1280,960
 set output 'systemtime.png'                                                     
 set title 'Time Overview'                                                     
@@ -22,5 +22,6 @@ plot 'systemtime.csv' using 1:4 with lines, \
    'systemtime.csv'   using 1:6 with lines, \
    'systemtime.csv'   using 1:7 with lines, \
    'systemtime.csv'   using 1:3 axis x1y2 lc "blue"
-PLOTCMD                                                                         
+PLOTCMD2
+
 fi
