@@ -44,6 +44,8 @@ int parse_options(int argc,char *const argv[]){
     { "branch", no_argument, 0, 4 }, 
     { "no-branch", no_argument, 0, 5 },
     { "csv", no_argument, 0, 3 },
+    { "cache1", no_argument, 0, 39 },
+    { "no-cache1", no_argument, 0, 40 },
     { "cache2", no_argument, 0, 6 }, 
     { "no-cache2", no_argument, 0, 7 },
     { "cache3", no_argument, 0, 8 }, 
@@ -90,6 +92,12 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 5: // --no-branch
       counter_mask &= (~COUNTER_BRANCH);
+      break;
+    case 39: // --cache1
+      counter_mask |= COUNTER_L1CACHE;
+      break;
+    case 40:
+      counter_mask &= (~COUNTER_L1CACHE);
       break;
     case 6: // --cache2
     case 'c':
