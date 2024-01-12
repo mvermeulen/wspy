@@ -30,6 +30,8 @@ Added:
 	1/29 - y-cruncher
 	1/30 - ospray
 	1/31 - ospray-studio
+	2/1 - onednn
+	2/2 - openvkl
 
 Installed but not part of a benchmark
    build-godot
@@ -61,10 +63,6 @@ Higher Priority
      uvg266
      webp
      xmrig
-   - benchmarks missing
-       1/5 - https://www.phoronix.com/review/intel-5th-gen-xeon-avx512
-     openvkl
-     onednn
    - benchmarks missing (mostly graphics)
       1/7 - https://www.phoronix.com/review/z1-extreme-meteorlake
      etlegacy (graphics)
