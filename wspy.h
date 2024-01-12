@@ -44,6 +44,9 @@ extern unsigned int counter_mask;
 
 #define SYSTEM_LOADAVG      0x1
 #define SYSTEM_CPU          0x2
+#if AMDGPU
+#define SYSTEM_GPU          0x4
+#endif
 
 extern unsigned int system_mask;
 

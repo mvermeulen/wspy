@@ -1,6 +1,7 @@
 /*
  * gpu_info.c - get information on AMD ROCm GPU using libamdsmi
  */
+#if AMDGPU
 #include <stdio.h>
 #include <stdlib.h>
 #include "amd_smi/amdsmi.h"
@@ -13,7 +14,7 @@ amdsmi_processor_handle *processor_handles;
 int num_gpu = 0;
 void **gpu_handles;
 
-void gpu_info_query(void){
+void gpu_info_query(struct gpu_query_data *qd){
   amdsmi_gpu_metrics_t metric_info;
   int status;
   
@@ -21,11 +22,12 @@ void gpu_info_query(void){
     status = amdsmi_get_gpu_metrics_info(gpu_handles[0],&metric_info);
   if (status != AMDSMI_STATUS_SUCCESS)
     fatal("unable to get gpu metrics\n");
-  
-  notice("temperature         %dC\n",metric_info.temperature_edge);
-  notice("gfx activity        %d\n",metric_info.average_gfx_activity);
-  notice("umc activity        %d\n",metric_info.average_umc_activity);
-  notice("mm activity         %d\n",metric_info.average_mm_activity);
+  if (!qd) return;
+
+  qd->temperature = metric_info.temperature_edge;
+  qd->gfx_activity = metric_info.average_gfx_activity;
+  qd->umc_activity = metric_info.average_umc_activity;
+  qd->mm_activity = metric_info.average_mm_activity;
   //  notice("gfxclk              %d MHz\n",metric_info.average_gfxclk_frequency);
   //  notice("gfx activity acc    %d\n",metric_info.gfx_activity_acc);
   //  notice("mem activity acc    %d\n",metric_info.mem_activity_acc);
@@ -92,8 +94,16 @@ void gpu_info_finalize(void){
 
 #if TEST_GPU_INFO
 int main(void){
+  struct gpu_query_data qd;
   gpu_info_initialize();
-  gpu_info_query();
+
+  gpu_info_query(&qd);
+  notice("temperature = %dC\n",qd.temperature);
+  notice("gfx         = %d%%\n",qd.gfx_activity);
+  notice("umc         = %d%%\n",qd.umc_activity);
+  notice("mm          = %d%%\n",qd.mm_activity);
+
   gpu_info_finalize();
 }
+#endif
 #endif

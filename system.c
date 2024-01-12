@@ -6,8 +6,15 @@
 #include <unistd.h>
 #include "wspy.h"
 #include "error.h"
+#if AMDGPU
+#include "gpu_info.h"
+#endif
 
+#if AMDGPU
+unsigned int system_mask = SYSTEM_LOADAVG|SYSTEM_CPU|SYSTEM_GPU;
+#else
 unsigned int system_mask = SYSTEM_LOADAVG|SYSTEM_CPU;
+#endif
 
 // system state
 struct system_state {
@@ -16,7 +23,11 @@ struct system_state {
   struct cpustat {
     unsigned long usertime, systemtime, idletime, iowaittime, irqtime;
     unsigned long last_usertime, last_systemtime, last_idletime, last_iowaittime, last_irqtime;
-    unsigned long prev_usertime, prev_systemtime, prev_idletime, prev_iowaittime, prev_irqtime; } cpu;
+    unsigned long prev_usertime, prev_systemtime, prev_idletime, prev_iowaittime, prev_irqtime;
+  } cpu;
+#if AMDGPU
+  struct gpu_query_data gpu;
+#endif
 } system_state = { 0 };
 
 // read system-wide state
@@ -65,6 +76,12 @@ void read_system(void){
       fclose(fp);
     }
   }
+#if AMDGPU
+  // gpu
+  if (SYSTEM_GPU){
+    gpu_info_query(&system_state.gpu);
+  }
+#endif
 }
 
 void print_system(enum output_format oformat){
@@ -80,6 +97,10 @@ void print_system(enum output_format oformat){
   case PRINT_CSV_HEADER:
     if (system_mask & SYSTEM_LOADAVG) fprintf(outfile,"load,runnable,");
     if (system_mask & SYSTEM_CPU) fprintf(outfile,"cpu,idle,iowait,irq,");
+#if AMDGPU
+    if (system_mask & SYSTEM_GPU)
+      fprintf(outfile,"gpu temp,gpu gfx,gpu umc,gpu_mm,");
+#endif
     break;
   case PRINT_CSV:
     if (system_mask & SYSTEM_LOADAVG) fprintf(outfile,"%4.2f,%d,",system_state.load,system_state.runnable);
@@ -91,8 +112,16 @@ void print_system(enum output_format oformat){
       fprintf(outfile,"%3.2f%%,",
 	      (double) (system_state.cpu.iowaittime)/elapsed/num_procs);      
       fprintf(outfile,"%3.2f%%,",
-	      (double) (system_state.cpu.irqtime)/elapsed/num_procs);      
+	      (double) (system_state.cpu.irqtime)/elapsed/num_procs);
     }
+#if AMDGPU
+    if (system_mask & SYSTEM_GPU){
+      fprintf(outfile,"%d,",system_state.gpu.temperature);
+      fprintf(outfile,"%d%%,",system_state.gpu.gfx_activity);
+      fprintf(outfile,"%d%%,",system_state.gpu.umc_activity);
+      fprintf(outfile,"%d%%,",system_state.gpu.mm_activity);
+    }
+#endif
     break;
   case PRINT_NORMAL:
     if (system_mask & SYSTEM_LOADAVG){
@@ -109,5 +138,13 @@ void print_system(enum output_format oformat){
       fprintf(outfile,"irq                  %3.2f%%\n",
 	      (double) (system_state.cpu.usertime+system_state.cpu.systemtime)/elapsed/num_procs);      
     }
+#if AMDGPU
+    if (system_mask & SYSTEM_GPU){
+      fprintf(outfile,"temperature          %dC\n",system_state.gpu.temperature);
+      fprintf(outfile,"gpu gfx              %d%%\n",system_state.gpu.gfx_activity);
+      fprintf(outfile,"gpu umc              %d%%\n",system_state.gpu.umc_activity);
+      fprintf(outfile,"gpu mm               %d%%\n",system_state.gpu.mm_activity);      
+    }
+#endif
   }
 }

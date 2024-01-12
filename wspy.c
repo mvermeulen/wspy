@@ -11,6 +11,9 @@
 #include <sys/time.h>
 #include <sys/wait.h>
 #include "wspy.h"
+#if AMDGPU
+#include "gpu_info.h"
+#endif
 #include "error.h"
 
 int aflag = 0;
@@ -283,6 +286,10 @@ int main(int argc,char *const argv[],char *const envp[]){
 
   check_nmi_watchdog();
 
+#if AMDGPU
+  gpu_info_initialize();
+#endif
+
   // parse the event tables
   setup_raw_events();
 
@@ -404,5 +411,10 @@ int main(int argc,char *const argv[],char *const envp[]){
 
   if (oflag) fclose(outfile);
   // -----
+
+#if AMDGPU
+  gpu_info_finalize();
+#endif
+  
   return 0;
 }

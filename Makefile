@@ -4,13 +4,24 @@ PROG = wspy cpu_info gpu_info
 SRCS = wspy.c cpu_info.c error.c proctree.c system.c topdown.c
 OBJS = wspy.o cpu_info.o error.o proctree.o system.o topdown.o
 LIBS = -lpthread -lm
-GPUFLAGS=-I/home/mev/sandbox/amdsmi/include
-GPULIBS=-L/home/mev/sandbox/amdsmi/lib -lamd_smi
 
+ifdef AMDGPU
+CFLAGS += -DAMDGPU=1 -I/opt/rocm/include
+LIBS += -L /opt/rocm/lib -lamd_smi
+endif
+
+ifdef AMDGPU
+all:	wspy cpu_info proctree gpu_info
+else
 all:	wspy cpu_info proctree
+endif
 
 wspy:	wspy.o topdown.o error.o system.o cpu_info.c cpu_info.h
-	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c error.o system.o
+ifdef AMDGPU
+	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c gpu_info.c error.o system.o $(LIBS)
+else
+	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c error.o system.o $(LIBS)
+endif
 
 proctree:	proctree.o error.o
 	$(CC) -o proctree proctree.o error.o
@@ -19,7 +30,7 @@ cpu_info:	cpu_info.c error.o cpu_info.h
 	$(CC) -o cpu_info $(CFLAGS) -DTEST_CPU_INFO cpu_info.c error.o
 
 gpu_info:	gpu_info.c error.c gpu_info.h
-	$(CC) -o gpu_info $(CFLAGS) $(GPUFLAGS) -DTEST_GPU_INFO gpu_info.c error.o $(GPULIBS)
+	$(CC) -o gpu_info $(CFLAGS) $(GPUFLAGS) -DTEST_GPU_INFO gpu_info.c error.o $(LIBS)
 
 topdown.o:	topdown.c
 	$(CC) -c $(CFLAGS) topdown.c
@@ -34,7 +45,7 @@ clean:
 	-rm *~ *.o *.bak
 
 clobber:	clean
-	-rm wspy wspy cpu_info proctree
+	-rm wspy wspy cpu_info gpu_info proctree
 
 # DO NOT DELETE
 
