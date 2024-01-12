@@ -2,8 +2,10 @@
  * system.c - system-wide status
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <ctype.h>
 #include "wspy.h"
 #include "error.h"
 #if AMDGPU
@@ -11,10 +13,15 @@
 #endif
 
 #if AMDGPU
-unsigned int system_mask = SYSTEM_LOADAVG|SYSTEM_CPU|SYSTEM_GPU;
+unsigned int system_mask = SYSTEM_LOADAVG|SYSTEM_CPU|SYSTEM_NETWORK|SYSTEM_GPU;
 #else
-unsigned int system_mask = SYSTEM_LOADAVG|SYSTEM_CPU;
+unsigned int system_mask = SYSTEM_LOADAVG|SYSTEM_CPU|SYSTEM_NETWORK;
 #endif
+
+struct netinfo {
+  char *name;
+  unsigned long bytes, last_bytes, prev_bytes;
+};
 
 // system state
 struct system_state {
@@ -28,15 +35,53 @@ struct system_state {
 #if AMDGPU
   struct gpu_query_data gpu;
 #endif
+  int num_net;
+  struct netinfo *netinfo;
 } system_state = { 0 };
+
+// read /proc/net/dev and initialize the system_state structure for networks...
+void setup_net_info(void){
+  FILE *fp;
+  char buffer[1024];
+  char *p,*p2;
+  int i;
+  int count = 0;
+  if (fp = fopen("/proc/net/dev","r")){
+    // process once to count the number of lines with ':'
+    while (fgets(buffer,sizeof(buffer),fp) != NULL){
+      p = strchr(buffer,':');
+      if (p == NULL) continue;
+      count++;
+    }
+
+    rewind(fp);
+    system_state.num_net = count;
+    system_state.netinfo = calloc(count,sizeof(struct netinfo));
+
+    // process again to count create device entries
+    count = 0;
+    while (fgets(buffer,sizeof(buffer),fp) != NULL){
+      p = strchr(buffer,':');
+      if (p == NULL) continue;      
+      *p = 0;
+      p2 = buffer;
+      while (isspace(*p2)) p2++;
+      system_state.netinfo[count].name = strdup(p2);
+      count++;
+    }
+    fclose(fp);
+  }
+}
 
 // read system-wide state
 void read_system(void){
   FILE *fp;
   char buffer[1024];
+  char *p,*p2;
   double value1,value5,value15;
   int runnable;
   unsigned long usertime,nicetime,systemtime,idletime,iowait,irqtime,softirqtime;
+  int i;
   // loadavg
   if (system_mask & SYSTEM_LOADAVG){
     if (fp = fopen("/proc/loadavg","r")){
@@ -78,14 +123,43 @@ void read_system(void){
   }
 #if AMDGPU
   // gpu
-  if (SYSTEM_GPU){
+  if (system_mask & SYSTEM_GPU){
     gpu_info_query(&system_state.gpu);
   }
 #endif
+
+  //
+  if (system_mask & SYSTEM_NETWORK){
+    unsigned long int field1,field2,field3,field4,field5,field6,field7,field8,field9;
+    if (system_state.netinfo == NULL) setup_net_info();
+    if (fp = fopen("/proc/net/dev","r")){
+      while (fgets(buffer,sizeof(buffer),fp) != NULL){
+	p = strchr(buffer,':');
+	if (p == NULL) continue;
+	*p = 0;
+	p++;
+	p2 = buffer;
+	while (isspace(*p2)) p2++;
+	for (i=0;i<system_state.num_net;i++){
+	  if (!strcmp(p2,system_state.netinfo[i].name)){
+	    if (sscanf(p,"%lu %lu %lu %lu %lu %lu %lu %lu %lu",
+		       &field1,&field2,&field3,&field4,&field5,&field6,&field7,&field8,&field9) == 9){
+	      system_state.netinfo[i].prev_bytes = system_state.netinfo[i].last_bytes;
+	      system_state.netinfo[i].last_bytes = field1 + field9; // receive and transmit
+	      system_state.netinfo[i].bytes = system_state.netinfo[i].last_bytes - system_state.netinfo[i].prev_bytes;
+	      continue;
+	    }
+	  }
+	}
+      }
+      fclose(fp);
+    }
+  }
 }
 
 void print_system(enum output_format oformat){
   double elapsed;
+  int i;
   if (interval) elapsed = interval;
   else {
     clock_gettime(CLOCK_REALTIME,&finish_time);
@@ -101,6 +175,10 @@ void print_system(enum output_format oformat){
     if (system_mask & SYSTEM_GPU)
       fprintf(outfile,"gpu temp,gpu gfx,gpu umc,gpu_mm,");
 #endif
+    if (system_mask & SYSTEM_NETWORK){
+      if (system_state.netinfo == NULL) setup_net_info();
+      for (i=0;i<system_state.num_net;i++) fprintf(outfile,"net %s,",system_state.netinfo[i].name);
+    }
     break;
   case PRINT_CSV:
     if (system_mask & SYSTEM_LOADAVG) fprintf(outfile,"%4.2f,%d,",system_state.load,system_state.runnable);
@@ -122,6 +200,12 @@ void print_system(enum output_format oformat){
       fprintf(outfile,"%d%%,",system_state.gpu.mm_activity);
     }
 #endif
+    if (system_mask & SYSTEM_NETWORK){
+      if (system_state.netinfo == NULL) setup_net_info();
+      for (i=0;i<system_state.num_net;i++){
+	fprintf(outfile,"%lu,",system_state.netinfo[i].bytes);
+      }
+    }    
     break;
   case PRINT_NORMAL:
     if (system_mask & SYSTEM_LOADAVG){
@@ -146,5 +230,11 @@ void print_system(enum output_format oformat){
       fprintf(outfile,"gpu mm               %d%%\n",system_state.gpu.mm_activity);      
     }
 #endif
+    if (system_mask & SYSTEM_NETWORK){
+      if (system_state.netinfo == NULL) setup_net_info();
+      for (i=0;i<system_state.num_net;i++){
+	fprintf(outfile,"%-14s       %lu\n",system_state.netinfo[i].name,system_state.netinfo[i].bytes);
+      }
+    }    
   }
 }
