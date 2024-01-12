@@ -33,6 +33,7 @@ Added:
 	2/1 - onednn
 	2/2 - openvkl
 	2/3 - quantlib
+	2/4 - xmrig
 
 Installed but not part of a benchmark
    build-godot
@@ -62,7 +63,6 @@ Higher Priority
      tscp
      uvg266
      webp
-     xmrig
    - benchmarks missing (mostly graphics)
       1/7 - https://www.phoronix.com/review/z1-extreme-meteorlake
      etlegacy (graphics)
