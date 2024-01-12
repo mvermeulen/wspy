@@ -77,6 +77,17 @@ void gpu_info_initialize(void){
       if (status != AMDSMI_STATUS_SUCCESS)
 	fatal("unable to get gpu temp metric\n");      
       notice("device %d temperature %luC\n",j,value);
+
+      // get all metrics
+      amdsmi_gpu_metrics_t metric_info;
+      status = amdsmi_get_gpu_metrics_info(processor_handles[j],&metric_info);
+      if (status != AMDSMI_STATUS_SUCCESS)
+	fatal("unable to get gpu metrics\n");
+      notice("device %d temperature %dC\n",j,metric_info.temperature_edge);
+      notice("device %d gfx activity %d %d %d\n",
+	     metric_info.average_gfx_activity,
+	     metric_info.average_umc_activity,
+	     metric_info.average_mm_activity);
     }
   }
 }
