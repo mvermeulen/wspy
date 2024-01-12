@@ -32,6 +32,7 @@ Added:
 	1/31 - ospray-studio
 	2/1 - onednn
 	2/2 - openvkl
+	2/3 - quantlib
 
 Installed but not part of a benchmark
    build-godot
@@ -55,7 +56,6 @@ Higher Priority
      liquid-dsp
      mrbayes
      openjpeg
-     quantlib
      securemark
      smhasher
      stargate
@@ -69,7 +69,6 @@ Higher Priority
      gravitymark (vulkan)
      npb
      openradioss
-     quantlib
      selenium /browser
      simdjson
      tesseract (graphics)
