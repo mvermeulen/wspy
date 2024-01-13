@@ -34,6 +34,11 @@ Added:
 	2/2 - openvkl
 	2/3 - quantlib
 	2/4 - xmrig
+	2/5 - wireguard
+	2/6 - encode-flac
+	2/7 - encode-mp3
+	2/8 - encode-opus
+	2/9 - encode-wavpack
 
 Installed but not part of a benchmark
    build-godot
@@ -48,9 +53,6 @@ Higher Priority
    - benchmarks missing but installed
        1/4 - https://www.phoronix.com/review/intel-meteorlake-gcc-clang
      avifenc
-     encode-flac
-     encode-mp3
-     encode-opus
      graphics-magick
      kvazaar
      lczero
@@ -77,7 +79,6 @@ Higher Priority
      unigine-valley (games)
      unvanquished (games)
      warsow (games)
-     wireguard /network
      xonotic (games)
 
 Missing download files (try periodically)
