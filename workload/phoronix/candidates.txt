@@ -41,6 +41,9 @@ Added:
 	2/9 - encode-wavpack
 	2/10 - openradioss
 	2/11 - selenium
+	2/12 - npb
+	2/13 - avifenc
+	2/14 - graphics-magick
 
 Installed but not part of a benchmark
    build-godot
@@ -54,7 +57,6 @@ Installed but not part of a benchmark
 Higher Priority
    - benchmarks missing but installed
        1/4 - https://www.phoronix.com/review/intel-meteorlake-gcc-clang
-     avifenc
      graphics-magick
      kvazaar
      lczero
@@ -71,7 +73,6 @@ Higher Priority
       1/7 - https://www.phoronix.com/review/z1-extreme-meteorlake
      etlegacy (graphics)
      gravitymark (vulkan)
-     npb
      simdjson
      tesseract (graphics)
      unigine-heaven (games)
