@@ -39,6 +39,8 @@ Added:
 	2/7 - encode-mp3
 	2/8 - encode-opus
 	2/9 - encode-wavpack
+	2/10 - openradioss
+	2/11 - selenium
 
 Installed but not part of a benchmark
    build-godot
@@ -70,8 +72,6 @@ Higher Priority
      etlegacy (graphics)
      gravitymark (vulkan)
      npb
-     openradioss
-     selenium /browser
      simdjson
      tesseract (graphics)
      unigine-heaven (games)
@@ -109,6 +109,4 @@ Lower Priority
    deepsparse - utility
         python ecosystem   
    - long runtime
-     openradioss - (1 hour 10 minutes)
-     selenium - browser benchmark - (2 hours 14 minutes)
      build-linux-kernel - compilation (1 hour 50 minutes)
