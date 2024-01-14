@@ -49,6 +49,8 @@ Added:
 	2/17 - tscp
 	2/18 - uvg266
 	2/19 - webp
+	2/20 - liquid-dsp
+	2/21 - mrbayes
 
 Installed but not part of a benchmark
    build-godot
@@ -62,8 +64,6 @@ Installed but not part of a benchmark
 Higher Priority
    - benchmarks missing but installed
        1/4 - https://www.phoronix.com/review/intel-meteorlake-gcc-clang
-     liquid-dsp
-     mrbayes
      openjpeg
      securemark
      smhasher
