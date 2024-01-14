@@ -51,6 +51,7 @@ Added:
 	2/19 - webp
 	2/20 - liquid-dsp
 	2/21 - mrbayes
+	2/22 - openjpeg
 
 Installed but not part of a benchmark
    build-godot
@@ -64,7 +65,6 @@ Installed but not part of a benchmark
 Higher Priority
    - benchmarks missing but installed
        1/4 - https://www.phoronix.com/review/intel-meteorlake-gcc-clang
-     openjpeg
      securemark
      smhasher
      stargate
