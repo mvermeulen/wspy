@@ -44,6 +44,11 @@ Added:
 	2/12 - npb
 	2/13 - avifenc
 	2/14 - graphics-magick
+	2/15 - kvazaar
+	2/16 - lczero
+	2/17 - tscp
+	2/18 - uvg266
+	2/19 - webp
 
 Installed but not part of a benchmark
    build-godot
@@ -57,18 +62,17 @@ Installed but not part of a benchmark
 Higher Priority
    - benchmarks missing but installed
        1/4 - https://www.phoronix.com/review/intel-meteorlake-gcc-clang
-     graphics-magick
-     kvazaar
-     lczero
+     kvazaar-
+     lczero-
      liquid-dsp
      mrbayes
      openjpeg
      securemark
      smhasher
      stargate
-     tscp
-     uvg266
-     webp
+     tscp-
+     uvg266-
+     webp-
    - benchmarks missing (mostly graphics)
       1/7 - https://www.phoronix.com/review/z1-extreme-meteorlake
      etlegacy (graphics)
