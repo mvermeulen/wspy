@@ -62,17 +62,12 @@ Installed but not part of a benchmark
 Higher Priority
    - benchmarks missing but installed
        1/4 - https://www.phoronix.com/review/intel-meteorlake-gcc-clang
-     kvazaar-
-     lczero-
      liquid-dsp
      mrbayes
      openjpeg
      securemark
      smhasher
      stargate
-     tscp-
-     uvg266-
-     webp-
    - benchmarks missing (mostly graphics)
       1/7 - https://www.phoronix.com/review/z1-extreme-meteorlake
      etlegacy (graphics)
@@ -85,6 +80,10 @@ Higher Priority
      unvanquished (games)
      warsow (games)
      xonotic (games)
+
+New Benchmarks:
+    quicksilver
+    speedb
 
 Missing download files (try periodically)
    compress-pbzip2
