@@ -1,0 +1,357 @@
+pts/ai-benchmark            AI Benchmark Alpha                                System    
+pts/aircrack-ng             Aircrack-ng                                       Processor 
+pts/amg                     Algebraic Multi-Grid Benchmark                    Processor 
+pts/aobench                 AOBench                                           Processor 
+pts/aom-av1                 AOM AV1                                           Processor 
+pts/apache                  Apache HTTP Server                                System    
+pts/apache-iotdb            Apache IoTDB                                      System    
+pts/apache-siege            Apache Siege                                      System    
+pts/appleseed               Appleseed                                         System    
+pts/arrayfire               ArrayFire                                         Processor 
+pts/askap                   ASKAP                                             System    
+pts/asmfish                 asmFish                                           Processor 
+pts/astcenc                 ASTC Encoder                                      System    
+pts/axs2mlperf              axs2mlperf                                        System    
+pts/basemark                Basemark GPU                                      System    
+pts/basis                   Basis Universal                                   System    
+pts/blake2                  BLAKE2                                            Processor 
+pts/blogbench               BlogBench                                         Disk      
+pts/blosc                   C-Blosc                                           Processor 
+pts/bork                    Bork File Encrypter                               Processor 
+pts/botan                   Botan                                             Processor 
+pts/brl-cad                 BRL-CAD                                           System    
+pts/build-apache            Timed Apache Compilation                          Processor 
+pts/build-clash             Timed Clash Compilation                           Processor 
+pts/build-eigen             Timed Eigen Compilation                           Processor 
+pts/build-erlang            Timed Erlang/OTP Compilation                      Processor 
+pts/build-gdb               Timed GDB GNU Debugger Compilation                Processor 
+pts/build-gem5              Timed Gem5 Compilation                            Processor 
+pts/build-godot             Timed Godot Game Engine Compilation               Processor 
+pts/build-imagemagick       Timed ImageMagick Compilation                     Processor 
+pts/build-linux-kernel      Timed Linux Kernel Compilation                    Processor 
+pts/build-llvm              Timed LLVM Compilation                            Processor 
+pts/build-mesa              Timed Mesa Compilation                            Processor 
+pts/build-mplayer           Timed MPlayer Compilation                         Processor 
+pts/build-nodejs            Timed Node.js Compilation                         Processor 
+pts/build-php               Timed PHP Compilation                             Processor 
+pts/build-python            Timed CPython Compilation                         Processor 
+pts/build-wasmer            Timed Wasmer Compilation                          Processor 
+pts/build2                  Build2                                            Processor 
+pts/bullet                  Bullet Physics Engine                             Processor 
+pts/byte                    BYTE Unix Benchmark                               Processor 
+pts/cachebench              CacheBench                                        Processor 
+pts/caffe                   Caffe                                             System    
+pts/cassandra               Apache Cassandra                                  System    
+pts/chia-vdf                Chia Blockchain VDF                               Processor 
+pts/clickhouse              ClickHouse                                        System    
+pts/clomp                   CLOMP                                             Processor 
+pts/cloudsuite-da           CloudSuite Data Analytics                         System    
+pts/cloudsuite-ga           CloudSuite Graph Analytics                        System    
+pts/cloudsuite-ma           CloudSuite In-Memory Analytics                    System    
+pts/cloudsuite-ms           CloudSuite Media Streaming                        System    
+pts/cloudsuite-ws           CloudSuite Web Serving                            System    
+pts/cloverleaf              CloverLeaf                                        Processor 
+pts/cockroach               CockroachDB                                       System    
+pts/comd-cl                 CoMD OpenCL                                       System    
+pts/compilebench            Compile Bench                                     Disk      
+pts/compress-pbzip2         Parallel BZIP2 Compression                        Processor 
+pts/core-latency            Core-Latency                                      Processor 
+pts/couchdb                 Apache CouchDB                                    System    
+pts/cp2k                    CP2K Molecular Dynamics                           Processor 
+pts/cpp-perf-bench          CppPerformanceBenchmarks                          System    
+pts/cpuminer-opt            Cpuminer-Opt                                      Processor 
+pts/crafty                  Crafty                                            Processor 
+pts/cryptopp                Crypto++                                          Processor 
+pts/ctx-clock               ctx_clock                                         System    
+pts/cyclictest              Cyclictest                                        System    
+pts/cython-bench            Cython Benchmark                                  Processor 
+pts/dacapobench             DaCapo Benchmark                                  Processor 
+pts/daphne                  Darmstadt Automotive Parallel Heterogeneous Suite System    
+pts/dav1d                   dav1d                                             Processor 
+pts/dbench                  Dbench                                            Disk      
+pts/deeprec                 DeepRec                                           System    
+pts/deepsparse              Neural Magic DeepSparse                           System    
+pts/deepspeech              DeepSpeech                                        Processor 
+pts/dolfyn                  Dolfyn                                            Processor 
+pts/draco                   Google Draco                                      System    
+pts/dragonflydb             Dragonflydb                                       System    
+pts/duckdb                  DuckDB                                            System    
+pts/easywave                easyWave                                          Processor 
+pts/ebizzy                  ebizzy                                            Processor 
+pts/ecp-candle              ECP-CANDLE                                        System    
+pts/encodec                 EnCodec                                           System    
+pts/espeak                  eSpeak-NG Speech Engine                           Processor 
+pts/etcd                    etcd                                              System    
+pts/etcpak                  Etcpak                                            Processor 
+pts/ethr                    Ethr                                              Network   
+pts/etqw-demo-iqc           ET: Quake Wars Image Quality                      System    
+pts/faiss                   Faiss                                             System    
+pts/fast-cli                fast-cli                                          Network   
+pts/ffte                    FFTE                                              Processor 
+pts/fftw                    FFTW                                              Processor 
+pts/fhourstones             Fhourstones                                       Processor 
+pts/financebench            FinanceBench                                      System    
+pts/fio                     Flexible IO Tester                                Disk      
+pts/fs-mark                 FS-Mark                                           Disk      
+pts/gcrypt                  Gcrypt Library                                    Processor 
+pts/geekbench               Geekbench                                         System    
+pts/git                     Git                                               System    
+pts/glibc-bench             Glibc Benchmarks                                  OS        
+pts/gmpbench                GNU GMP GMPbench                                  Processor 
+pts/gnupg                   GnuPG                                             System    
+pts/go-benchmark            Go Benchmarks                                     Processor 
+pts/gpaw                    GPAW                                              System    
+pts/graph500                Graph500                                          System    
+pts/hackbench               Hackbench                                         Processor 
+pts/hadoop                  Apache Hadoop                                     System    
+pts/hammerdb-mariadb        HammerDB - MariaDB                                System    
+pts/hammerdb-postgresql     HammerDB - PostgreSQL                             System    
+pts/hbase                   Apache HBase                                      System    
+pts/hdparm-read             hdparm Timed Disk Reads                           Disk      
+pts/heffte                  HeFFTe - Highly Efficient FFT for Exascale        Processor 
+pts/helsing                 Helsing                                           Processor 
+pts/himeno                  Himeno Benchmark                                  Processor 
+pts/hint                    Hierarchical INTegration                          System    
+pts/hmmer                   Timed HMMer Search                                Processor 
+pts/hpcc                    HPC Challenge                                     Processor 
+pts/hpcg                    High Performance Conjugate Gradient               Processor 
+pts/idle                    Timed Idle                                        System    
+pts/idle-power-usage        Idle Power Usage                                  System    
+pts/incompact3d             Xcompact3d Incompact3d                            Processor 
+pts/indigobench             IndigoBench                                       System    
+pts/influxdb                InfluxDB                                          System    
+pts/intel-mlc               Intel Memory Latency Checker                      Memory    
+pts/intel-mpi               Intel MPI Benchmarks                              System    
+pts/intel-tensorflow        Intel TensorFlow                                  System    
+pts/ior                     IOR                                               Disk      
+pts/ipc-benchmark           IPC_benchmark                                     Processor 
+pts/iperf                   iPerf                                             Network   
+pts/java-gradle-perf        Java Gradle Build                                 Processor 
+pts/java-jmh                Java JMH                                          System    
+pts/java-scimark2           Java SciMark                                      Processor 
+pts/jpegxl                  JPEG XL libjxl                                    Processor 
+pts/jpegxl-decode           JPEG XL Decoding libjxl                           Processor 
+pts/juliagpu                JuliaGPU                                          System    
+pts/keydb                   KeyDB                                             System    
+pts/kripke                  Kripke                                            System    
+pts/laghos                  Laghos                                            Processor 
+pts/leveldb                 LevelDB                                           Disk      
+pts/libgav1                 libgav1                                           Processor 
+pts/libraw                  LibRaw                                            Processor 
+pts/llama-cpp               Llama.cpp                                         System    
+pts/luajit                  LuaJIT                                            Processor 
+pts/luaradio                LuaRadio                                          Processor 
+pts/lulesh                  LULESH                                            Processor 
+pts/lulesh-cl               Lulesh OpenCL                                     System    
+pts/luxcorerender           LuxCoreRender                                     Processor 
+pts/luxmark                 LuxMark                                           System    
+pts/lzbench                 lzbench                                           Processor 
+pts/m-queens                m-queens                                          Processor 
+pts/mafft                   Timed MAFFT Alignment                             Processor 
+pts/mandelbulbgpu           MandelbulbGPU                                     System    
+pts/mandelgpu               MandelGPU                                         System    
+pts/mbw                     MBW                                               Memory    
+pts/memcached               Memcached                                         System    
+pts/memtier-benchmark       Redis 7.0.12 + memtier_benchmark                  System    
+pts/mencoder                Mencoder                                          Processor 
+pts/minife                  miniFE                                            Processor 
+pts/minion                  Minion                                            Processor 
+pts/mkl-dnn                 oneDNN MKL-DNN                                    Processor 
+pts/mlpack                  Mlpack Benchmark                                  System    
+pts/mnn                     Mobile Neural Network                             System    
+pts/mocassin                Monte Carlo Simulations of Ionised Nebulae        Processor 
+pts/montage                 Montage Astronomical Image Mosaic Engine          Processor 
+pts/mpcbench                GNU MPC                                           Processor 
+pts/mt-dgemm                ACES DGEMM                                        Processor 
+pts/multichase              Multichase Pointer Chaser                         Processor 
+pts/mutex                   BenchmarkMutex                                    System    
+pts/mysqlslap               MariaDB                                           System    
+pts/n-queens                N-Queens                                          Processor 
+pts/natron                  Natron                                            System    
+pts/ncnn                    NCNN                                              System    
+pts/neat                    Nebular Empirical Analysis Tool                   Processor 
+pts/neatbench               NeatBench                                         System    
+pts/nekrs                   nekRS                                             Processor 
+pts/nero2d                  Open FMM Nero2D                                   Processor 
+pts/netperf                 Netperf                                           Network   
+pts/nettle                  Nettle                                            Processor 
+pts/network-loopback        Loopback TCP Network Performance                  Network   
+pts/nginx                   nginx                                             System    
+pts/ngspice                 Ngspice                                           Processor 
+pts/node-express-loadtest   Node.js Express HTTP Load Test                    Processor 
+pts/node-octane             Node.js Octane Benchmark                          Processor 
+pts/node-web-tooling        Node.js V8 Web Tooling Benchmark                  Processor 
+pts/novabench               Novabench                                         System    
+pts/numenta-nab             Numenta Anomaly Benchmark                         System    
+pts/numpy                   Numpy Benchmark                                   Processor 
+pts/nuttcp                  Nuttcp                                            Network   
+pts/nwchem                  NWChem                                            Processor 
+pts/oidn                    Intel Open Image Denoise                          Processor 
+pts/oneapi-level-zero       oneAPI Level Zero Tests                           System    
+pts/onnx                    ONNX Runtime                                      System    
+pts/open-porous-media       Open Porous Media                                 Processor 
+pts/opencv                  OpenCV                                            System    
+pts/opencv-bench            OpenCV Benchmark                                  Processor 
+pts/opendwarfs              OpenDwarfs                                        System    
+pts/openems                 OpenEMS                                           System    
+pts/openssl                 OpenSSL                                           Processor 
+pts/optcarrot               Optcarrot                                         System    
+pts/osbench                 OSBench                                           OS        
+pts/palabos                 Palabos                                           Processor 
+pts/parboil                 Parboil                                           Processor 
+pts/pennant                 Pennant                                           Processor 
+pts/perf-bench              perf-bench                                        OS        
+pts/perl-benchmark          Perl Benchmarks                                   Processor 
+pts/petsc                   PETSc                                             System    
+pts/pgbench                 PostgreSQL                                        System    
+pts/php                     PHP Micro Benchmarks                              System    
+pts/phpbench                PHPBench                                          System    
+pts/pjdfstest               Pjdfstest                                         Disk      
+pts/pjsip                   PJSIP                                             Processor 
+pts/plaidml                 PlaidML                                           System    
+pts/pmbench                 pmbench                                           Memory    
+pts/polybench-c             PolyBench-C                                       Processor 
+pts/polyhedron              Polyhedron Fortran Benchmarks                     Processor 
+pts/postmark                PostMark                                          Disk      
+pts/povray                  POV-Ray                                           Processor 
+pts/powertop-wakeups        Powertop Wakeups                                  Processor 
+pts/primesieve              Primesieve                                        Processor 
+pts/pts-self-test           Phoronix Test Suite Self Test                     System    
+pts/pybench                 PyBench                                           System    
+pts/pyhpc                   PyHPC Benchmarks                                  System    
+pts/pymongo-inserts         PyMongo Inserts                                   System    
+pts/pyperformance           PyPerformance                                     System    
+pts/qe                      Quantum ESPRESSO                                  Processor 
+pts/qmcpack                 QMCPACK                                           Processor 
+pts/qmlbench                Qmlbench                                          System    
+pts/quadray                 QuadRay                                           Processor 
+pts/quicksilver             Quicksilver                                       Processor 
+pts/rabbitmq                RabbitMQ                                          System    
+pts/radiance                Radiance Benchmark                                Processor 
+pts/ramspeed                RAMspeed SMP                                      Memory    
+pts/rav1e                   rav1e                                             Processor 
+pts/rays1bench              rays1bench                                        Processor 
+pts/rbenchmark              R Benchmark                                       Processor 
+pts/redis                   Redis                                             System    
+pts/relion                  RELION                                            Processor 
+pts/remhos                  Remhos                                            Processor 
+pts/renaissance             Renaissance                                       Processor 
+pts/rnnoise                 RNNoise                                           Processor 
+pts/rocksdb                 RocksDB                                           System    
+pts/rodinia                 Rodinia                                           Processor 
+pts/rust-mandel             Rust Mandelbrot                                   Processor 
+pts/rust-prime              Rust Prime Benchmark                              Processor 
+pts/schbench                Schbench                                          System    
+pts/scikit-learn            Scikit-Learn                                      System    
+pts/scimark2                SciMark                                           Processor 
+pts/scylladb                ScyllaDB                                          System    
+pts/serial-loopback         Serial Loopback Test                              System    
+pts/simdjson                simdjson                                          Processor 
+pts/smallpt                 Smallpt                                           Processor 
+pts/smallpt-gpu             SmallPT GPU                                       System    
+pts/smart                   SMART Disk Self-Report                            Disk      
+pts/sockperf                Sockperf                                          OS        
+pts/spacy                   spaCy                                             System    
+pts/spark                   Apache Spark                                      System    
+pts/spec-cpu2017            SPEC CPU 2017                                     System    
+pts/spec-jbb2015            SPECjbb 2015                                      System    
+pts/specfem3d               SPECFEM3D                                         Processor 
+pts/speedb                  Speedb                                            System    
+pts/speedtest-cli           speedtest-cli                                     Network   
+pts/sqlite                  SQLite                                            Disk      
+pts/sqlite-speedtest        SQLite Speedtest                                  System    
+pts/srslte                  srsLTE                                            Processor 
+pts/srsran                  srsRAN Project                                    Processor 
+pts/startup-time            Application Start-up Time                         Disk      
+pts/stream-dynamic          Stream-Dynamic                                    Memory    
+pts/stress-ng               Stress-NG                                         System    
+pts/stressapptest           Stressful Application Test                        Memory    
+pts/sudokut                 Sudokut                                           Processor 
+pts/sunflow                 Sunflow Rendering System                          System    
+pts/svt-av1                 SVT-AV1                                           Processor 
+pts/svt-hevc                SVT-HEVC                                          Processor 
+pts/svt-vp9                 SVT-VP9                                           Processor 
+pts/swet                    Swet                                              Processor 
+pts/synthmark               Google SynthMark                                  Processor 
+pts/sysbench                Sysbench                                          System    
+pts/system-decompress-bzip2 System BZIP2 Decompression                        Processor 
+pts/system-decompress-gzip  System GZIP Decompression                         Processor 
+pts/system-decompress-tiff  System Libtiff Decompression                      Processor 
+pts/system-decompress-xz    System XZ Decompression                           Processor 
+pts/system-libjpeg          System JPEG Library Decode                        Processor 
+pts/system-libxml2          System Libxml2 Parsing                            Processor 
+pts/systemd-boot-kernel     Systemd Kernel Boot Time                          Processor 
+pts/systemd-boot-total      Systemd Total Boot Time                           System    
+pts/systemd-boot-userspace  Systemd Userspace Boot Time                       Processor 
+pts/t-test1                 t-test1                                           Memory    
+pts/tachyon                 Tachyon                                           Processor 
+pts/tensorflow-lite         TensorFlow Lite                                   System    
+pts/tidb                    TiDB Community Server                             System    
+pts/tinymembench            Tinymembench                                      Memory    
+pts/tiobench                Threaded I/O Tester                               Disk      
+pts/tjbench                 libjpeg-turbo tjbench                             System    
+pts/tnn                     TNN                                               System    
+pts/toktx                   KTX-Software toktx                                System    
+pts/toybrot                 toyBrot Fractal Generator                         Processor 
+pts/ttsiod-renderer         TTSIOD 3D Renderer                                Processor 
+pts/tungsten                Tungsten Renderer                                 Processor 
+pts/unpack-firefox          Unpacking Firefox                                 System    
+pts/unpack-linux            Unpacking The Linux Kernel                        Disk      
+pts/v-ray                   Chaos Group V-RAY                                 System    
+pts/viennacl                ViennaCL                                          System    
+pts/vosk                    VOSK Speech Recognition Toolkit                   Processor 
+pts/vpxenc                  VP9 libvpx Encoding                               Processor 
+pts/vvenc                   VVenC                                             Processor 
+pts/webp2                   WebP2 Image Encode                                Processor 
+pts/whisper-cpp             Whisper.cpp                                       System    
+pts/will-it-scale           will-it-scale                                     OS        
+pts/wrf                     WRF                                               System    
+pts/x264                    x264                                              Processor 
+pts/xsbench                 Xsbench                                           System    
+pts/xsbench-cl              Xsbench OpenCL                                    System    
+pts/yafaray                 YafaRay                                           Processor 
+pts/yugabytedb              YugabyteDB                                        System    
+pts/zendnn-tensorflow       AMD ZenDNN TensorFlow                             System    
+system/apache               Apache Benchmark                                            
+system/blender              Blender                                           System    
+system/blogbench            BlogBench                                         Disk      
+system/cephfs-rados         CephFS RADOS Benchmark                            System    
+system/clpeak               clpeak                                            System    
+system/compress-lzma        LZMA Compression                                            
+system/compress-pbzip2      PBZIP2 Compression                                          
+system/compress-zstd        Zstd Compression                                  Processor 
+system/cryptsetup           Cryptsetup                                        System    
+system/darktable            Darktable                                         System    
+system/dbench               Dbench                                            Disk      
+system/ethminer             Ethereum Ethminer                                 System    
+system/fio                  Flexible IO Tester                                Disk      
+system/gegl                 GEGL                                              System    
+system/gmic                 G'MIC                                             System    
+system/gnupg                GnuPG                                             Processor 
+system/gnuradio             GNU Radio                                         Processor 
+system/hugin                Hugin                                             System    
+system/inkscape             Inkscape                                          System    
+system/iozone               IOzone                                            Disk      
+system/libreoffice          LibreOffice                                       System    
+system/mpv                  MPV                                               System    
+system/nginx                Nginx                                             System    
+system/ocrmypdf             OCRMyPDF                                          System    
+system/octave-benchmark     GNU Octave Benchmark                              System    
+system/openscad             OpenSCAD                                          System    
+system/openssl              OpenSSL                                           Processor 
+system/opm                  Open Porous Media                                 Processor 
+system/rawtherapee          RawTherapee                                       System    
+system/redis                Redis Memtier / Redis Benchmark                   System    
+system/rsvg                 librsvg                                           System    
+system/selenium-top-sites   Time To Load + View Popular Websites              System    
+system/sqlite               SQLite                                                      
+system/tesseract-ocr        Tesseract OCR                                     System    
+git/aom-av1                 AOM AV1                                           Processor 
+git/dav1d                   dav1d                                             Processor 
+git/rav1e                   rav1e                                             Processor 
+git/svt-av1                 SVT-AV1                                           Processor 
+git/svt-hevc                SVT-HEVC                                          Processor 
+git/svt-vp9                 SVT-VP9                                           Processor 
+git/vpxenc                  VP9 libvpx Encoding                               Processor 
+git/x265                    x265                                              Processor 
+
