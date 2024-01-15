@@ -53,6 +53,8 @@ Added:
 	2/21 - mrbayes
 	2/22 - openjpeg
 	2/23 - securemark
+	2/24 - smhasher
+	2/25 - stargate
 
 Installed but not part of a benchmark
    build-godot
@@ -64,10 +66,6 @@ Installed but not part of a benchmark
    tensorflow-lite
 
 Higher Priority
-   - benchmarks missing but installed
-       1/4 - https://www.phoronix.com/review/intel-meteorlake-gcc-clang
-     smhasher
-     stargate
    - benchmarks missing (mostly graphics)
       1/7 - https://www.phoronix.com/review/z1-extreme-meteorlake
      etlegacy (graphics)
