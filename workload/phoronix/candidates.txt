@@ -55,6 +55,7 @@ Added:
 	2/23 - securemark
 	2/24 - smhasher
 	2/25 - stargate
+	2/26 - tesseract
 
 Installed but not part of a benchmark
    build-godot
@@ -68,16 +69,9 @@ Installed but not part of a benchmark
 Higher Priority
    - benchmarks missing (mostly graphics)
       1/7 - https://www.phoronix.com/review/z1-extreme-meteorlake
-     etlegacy (graphics)
-     gravitymark (vulkan)
-     simdjson
-     tesseract (graphics)
-     unigine-heaven (games)
-     unigine-super (games)
-     unigine-valley (games)
-     unvanquished (games)
-     warsow (games)
-     xonotic (games)
+     Graphics: etlegacy, gravitymark, unigine-heaven, unigine-super,
+     unigine-valley, unvanquished, warsow, xonotic
+     simdjson // install issues w/python
 
 New Benchmarks:
     quicksilver
