@@ -67,15 +67,43 @@ Installed but not part of a benchmark
    tensorflow-lite
 
 Higher Priority
+   - queue:
+     apache
+     build-linux-kernel
+     cloverleaf
+     crafty
+     fftw
+     glibc-bench
+     gmpbench
+     gnupg
+     hmmer
+     llama-cpp
+     mpcbench
+     n-queens
+     ngspice
+     numpy
+     nwchem
+     opencv
+     perl-benchmark
+     phpbench
+     povray
+     pybench
+     quicksilver
+     rawtherapee
+     rbenchmark
+     redis
+     rodinia
+     scimark2
+     speedb
+     sqlite
+     sysbench
+     vpcenc
+     wrf
    - benchmarks missing (mostly graphics)
       1/7 - https://www.phoronix.com/review/z1-extreme-meteorlake
      Graphics: etlegacy, gravitymark, unigine-heaven, unigine-super,
      unigine-valley, unvanquished, warsow, xonotic
      simdjson // install issues w/python
-
-New Benchmarks:
-    quicksilver
-    speedb
 
 Missing download files (try periodically)
    compress-pbzip2
