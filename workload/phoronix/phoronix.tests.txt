@@ -223,7 +223,6 @@ pts/qe                      Quantum ESPRESSO                                  Pr
 pts/qmcpack                 QMCPACK                                           Processor 
 pts/qmlbench                Qmlbench                                          System    
 pts/quadray                 QuadRay                                           Processor 
-pts/quicksilver             Quicksilver                                       Processor 
 pts/rabbitmq                RabbitMQ                                          System    
 pts/radiance                Radiance Benchmark                                Processor 
 pts/ramspeed                RAMspeed SMP                                      Memory    
