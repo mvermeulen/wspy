@@ -28,7 +28,6 @@ pts/build-gdb               Timed GDB GNU Debugger Compilation                Pr
 pts/build-gem5              Timed Gem5 Compilation                            Processor 
 pts/build-godot             Timed Godot Game Engine Compilation               Processor 
 pts/build-imagemagick       Timed ImageMagick Compilation                     Processor 
-pts/build-linux-kernel      Timed Linux Kernel Compilation                    Processor 
 pts/build-llvm              Timed LLVM Compilation                            Processor 
 pts/build-mesa              Timed Mesa Compilation                            Processor 
 pts/build-mplayer           Timed MPlayer Compilation                         Processor 

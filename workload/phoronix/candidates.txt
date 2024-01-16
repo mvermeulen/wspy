@@ -57,6 +57,7 @@ Added:
 	2/25 - stargate
 	2/26 - tesseract
 	2/27 - build-linux-kernel
+	2/28 - apache
 
 Installed but not part of a benchmark
    build-godot
