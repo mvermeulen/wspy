@@ -3,7 +3,6 @@ pts/aircrack-ng             Aircrack-ng                                       Pr
 pts/amg                     Algebraic Multi-Grid Benchmark                    Processor 
 pts/aobench                 AOBench                                           Processor 
 pts/aom-av1                 AOM AV1                                           Processor 
-pts/apache                  Apache HTTP Server                                System    
 pts/apache-iotdb            Apache IoTDB                                      System    
 pts/apache-siege            Apache Siege                                      System    
 pts/appleseed               Appleseed                                         System    
