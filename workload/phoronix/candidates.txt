@@ -59,6 +59,7 @@ Added:
 	2/27 - build-linux-kernel
 	2/28 - apache
         2/29 - quicksilver
+	3/1 - hmmer
 
 Installed but not part of a benchmark
    build-godot
@@ -77,7 +78,6 @@ Higher Priority
      glibc-bench
      gmpbench
      gnupg
-     hmmer
      llama-cpp
      mpcbench
      n-queens

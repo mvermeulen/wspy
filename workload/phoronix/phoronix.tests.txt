@@ -110,7 +110,6 @@ pts/heffte                  HeFFTe - Highly Efficient FFT for Exascale        Pr
 pts/helsing                 Helsing                                           Processor 
 pts/himeno                  Himeno Benchmark                                  Processor 
 pts/hint                    Hierarchical INTegration                          System    
-pts/hmmer                   Timed HMMer Search                                Processor 
 pts/hpcc                    HPC Challenge                                     Processor 
 pts/hpcg                    High Performance Conjugate Gradient               Processor 
 pts/idle                    Timed Idle                                        System    
