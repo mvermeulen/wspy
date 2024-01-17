@@ -74,17 +74,25 @@ Installed but not part of a benchmark
 
 Higher Priority
    - queue:
+     aom-av1
+     build-mplayer
      cloverleaf
+     dolfyn
      fftw
      glibc-bench
      gmpbench
      gnupg
+     himeno
+     jpegxl
      llama-cpp
+     mnn
      mpcbench
+     ncnn
      n-queens
      ngspice
      numpy
      nwchem
+     openssl
      perl-benchmark
      phpbench
      povray
@@ -92,11 +100,14 @@ Higher Priority
      rawtherapee
      rbenchmark
      redis
+     rnnoise
      rodinia
      scimark2
+     specfm3d
      speedb
      sqlite
      sysbench
+     tnn
      vpcenc
      wrf
    - benchmarks missing (mostly graphics)
