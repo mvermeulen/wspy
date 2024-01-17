@@ -58,7 +58,6 @@ pts/couchdb                 Apache CouchDB                                    Sy
 pts/cp2k                    CP2K Molecular Dynamics                           Processor 
 pts/cpp-perf-bench          CppPerformanceBenchmarks                          System    
 pts/cpuminer-opt            Cpuminer-Opt                                      Processor 
-pts/crafty                  Crafty                                            Processor 
 pts/cryptopp                Crypto++                                          Processor 
 pts/ctx-clock               ctx_clock                                         System    
 pts/cyclictest              Cyclictest                                        System    
@@ -187,7 +186,6 @@ pts/oidn                    Intel Open Image Denoise                          Pr
 pts/oneapi-level-zero       oneAPI Level Zero Tests                           System    
 pts/onnx                    ONNX Runtime                                      System    
 pts/open-porous-media       Open Porous Media                                 Processor 
-pts/opencv                  OpenCV                                            System    
 pts/opencv-bench            OpenCV Benchmark                                  Processor 
 pts/opendwarfs              OpenDwarfs                                        System    
 pts/openems                 OpenEMS                                           System    

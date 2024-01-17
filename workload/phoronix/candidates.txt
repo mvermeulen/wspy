@@ -60,6 +60,8 @@ Added:
 	2/28 - apache
         2/29 - quicksilver
 	3/1 - hmmer
+	3/2 - opencv
+	3/3 - crafty
 
 Installed but not part of a benchmark
    build-godot
@@ -73,7 +75,6 @@ Installed but not part of a benchmark
 Higher Priority
    - queue:
      cloverleaf
-     crafty
      fftw
      glibc-bench
      gmpbench
@@ -84,7 +85,6 @@ Higher Priority
      ngspice
      numpy
      nwchem
-     opencv
      perl-benchmark
      phpbench
      povray
