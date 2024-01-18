@@ -62,6 +62,7 @@ Added:
 	3/1 - hmmer
 	3/2 - opencv
 	3/3 - crafty
+	3/4 - cloverleaf
 
 Installed but not part of a benchmark
    build-godot
@@ -76,7 +77,6 @@ Higher Priority
    - queue:
      aom-av1
      build-mplayer
-     cloverleaf
      dolfyn
      fftw
      glibc-bench
