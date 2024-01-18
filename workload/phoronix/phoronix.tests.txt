@@ -48,7 +48,6 @@ pts/cloudsuite-ga           CloudSuite Graph Analytics                        Sy
 pts/cloudsuite-ma           CloudSuite In-Memory Analytics                    System    
 pts/cloudsuite-ms           CloudSuite Media Streaming                        System    
 pts/cloudsuite-ws           CloudSuite Web Serving                            System    
-pts/cloverleaf              CloverLeaf                                        Processor 
 pts/cockroach               CockroachDB                                       System    
 pts/comd-cl                 CoMD OpenCL                                       System    
 pts/compilebench            Compile Bench                                     Disk      
@@ -69,7 +68,6 @@ pts/dbench                  Dbench                                            Di
 pts/deeprec                 DeepRec                                           System    
 pts/deepsparse              Neural Magic DeepSparse                           System    
 pts/deepspeech              DeepSpeech                                        Processor 
-pts/dolfyn                  Dolfyn                                            Processor 
 pts/draco                   Google Draco                                      System    
 pts/dragonflydb             Dragonflydb                                       System    
 pts/duckdb                  DuckDB                                            System    
