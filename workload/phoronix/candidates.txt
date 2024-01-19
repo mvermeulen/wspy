@@ -65,6 +65,8 @@ Added:
 	3/4 - cloverleaf
 	3/5 - dolfyn
 	3/6 - nwchem
+	3/7 - openssl
+	3/8 - numpy
 
 Installed but not part of a benchmark
    build-godot
@@ -91,8 +93,6 @@ Higher Priority
      ncnn
      n-queens
      ngspice
-     numpy
-     openssl
      perl-benchmark
      phpbench
      povray
