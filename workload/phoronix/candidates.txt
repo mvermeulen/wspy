@@ -67,6 +67,7 @@ Added:
 	3/6 - nwchem
 	3/7 - openssl
 	3/8 - numpy
+	3/9 - povray
 
 Installed but not part of a benchmark
    build-godot
@@ -95,7 +96,6 @@ Higher Priority
      ngspice
      perl-benchmark
      phpbench
-     povray
      pybench
      rawtherapee
      rbenchmark
