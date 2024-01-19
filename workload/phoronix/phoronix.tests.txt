@@ -177,9 +177,7 @@ pts/node-octane             Node.js Octane Benchmark                          Pr
 pts/node-web-tooling        Node.js V8 Web Tooling Benchmark                  Processor 
 pts/novabench               Novabench                                         System    
 pts/numenta-nab             Numenta Anomaly Benchmark                         System    
-pts/numpy                   Numpy Benchmark                                   Processor 
 pts/nuttcp                  Nuttcp                                            Network   
-pts/nwchem                  NWChem                                            Processor 
 pts/oidn                    Intel Open Image Denoise                          Processor 
 pts/oneapi-level-zero       oneAPI Level Zero Tests                           System    
 pts/onnx                    ONNX Runtime                                      System    
@@ -187,7 +185,6 @@ pts/open-porous-media       Open Porous Media                                 Pr
 pts/opencv-bench            OpenCV Benchmark                                  Processor 
 pts/opendwarfs              OpenDwarfs                                        System    
 pts/openems                 OpenEMS                                           System    
-pts/openssl                 OpenSSL                                           Processor 
 pts/optcarrot               Optcarrot                                         System    
 pts/osbench                 OSBench                                           OS        
 pts/palabos                 Palabos                                           Processor 
