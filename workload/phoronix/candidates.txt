@@ -68,9 +68,9 @@ Added:
 	3/7 - openssl
 	3/8 - numpy
 	3/9 - povray
+	3/10 - specfem3d
 
 Installed but not part of a benchmark
-   build-godot
    build-llvm
    openscad
    phpbench
@@ -79,6 +79,16 @@ Installed but not part of a benchmark
    tensorflow-lite
 
 Higher Priority
+   - benchmark article https://www.phoronix.com/review/amd-ryzen-7840hs-linux/3
+     appleseed
+     build-godot
+     deepsparse
+     node-web-tooling
+     simdjson
+     svt-av1
+     svt-vp9
+     v-ray - no longer available
+     vvenc
    - queue:
      aom-av1
      build-mplayer
@@ -103,7 +113,6 @@ Higher Priority
      rnnoise
      rodinia
      scimark2
-     specfm3d
      speedb
      sqlite
      sysbench
@@ -113,8 +122,7 @@ Higher Priority
    - benchmarks missing (mostly graphics)
       1/7 - https://www.phoronix.com/review/z1-extreme-meteorlake
      Graphics: etlegacy, gravitymark, unigine-heaven, unigine-super,
-     unigine-valley, unvanquished, warsow, xonotic
-     simdjson // install issues w/python
+     unigine-valley, unvanquished, warsow, xonotic, vkpeak
 
 Missing download files (try periodically)
    compress-pbzip2
