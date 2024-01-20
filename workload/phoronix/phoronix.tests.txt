@@ -5,7 +5,6 @@ pts/aobench                 AOBench                                           Pr
 pts/aom-av1                 AOM AV1                                           Processor 
 pts/apache-iotdb            Apache IoTDB                                      System    
 pts/apache-siege            Apache Siege                                      System    
-pts/appleseed               Appleseed                                         System    
 pts/arrayfire               ArrayFire                                         Processor 
 pts/askap                   ASKAP                                             System    
 pts/asmfish                 asmFish                                           Processor 
@@ -25,7 +24,6 @@ pts/build-eigen             Timed Eigen Compilation                           Pr
 pts/build-erlang            Timed Erlang/OTP Compilation                      Processor 
 pts/build-gdb               Timed GDB GNU Debugger Compilation                Processor 
 pts/build-gem5              Timed Gem5 Compilation                            Processor 
-pts/build-godot             Timed Godot Game Engine Compilation               Processor 
 pts/build-imagemagick       Timed ImageMagick Compilation                     Processor 
 pts/build-llvm              Timed LLVM Compilation                            Processor 
 pts/build-mesa              Timed Mesa Compilation                            Processor 
@@ -66,7 +64,6 @@ pts/daphne                  Darmstadt Automotive Parallel Heterogeneous Suite Sy
 pts/dav1d                   dav1d                                             Processor 
 pts/dbench                  Dbench                                            Disk      
 pts/deeprec                 DeepRec                                           System    
-pts/deepsparse              Neural Magic DeepSparse                           System    
 pts/deepspeech              DeepSpeech                                        Processor 
 pts/draco                   Google Draco                                      System    
 pts/dragonflydb             Dragonflydb                                       System    
@@ -174,7 +171,6 @@ pts/nginx                   nginx                                             Sy
 pts/ngspice                 Ngspice                                           Processor 
 pts/node-express-loadtest   Node.js Express HTTP Load Test                    Processor 
 pts/node-octane             Node.js Octane Benchmark                          Processor 
-pts/node-web-tooling        Node.js V8 Web Tooling Benchmark                  Processor 
 pts/novabench               Novabench                                         System    
 pts/numenta-nab             Numenta Anomaly Benchmark                         System    
 pts/nuttcp                  Nuttcp                                            Network   
@@ -235,7 +231,6 @@ pts/scikit-learn            Scikit-Learn                                      Sy
 pts/scimark2                SciMark                                           Processor 
 pts/scylladb                ScyllaDB                                          System    
 pts/serial-loopback         Serial Loopback Test                              System    
-pts/simdjson                simdjson                                          Processor 
 pts/smallpt                 Smallpt                                           Processor 
 pts/smallpt-gpu             SmallPT GPU                                       System    
 pts/smart                   SMART Disk Self-Report                            Disk      
@@ -257,9 +252,7 @@ pts/stress-ng               Stress-NG                                         Sy
 pts/stressapptest           Stressful Application Test                        Memory    
 pts/sudokut                 Sudokut                                           Processor 
 pts/sunflow                 Sunflow Rendering System                          System    
-pts/svt-av1                 SVT-AV1                                           Processor 
 pts/svt-hevc                SVT-HEVC                                          Processor 
-pts/svt-vp9                 SVT-VP9                                           Processor 
 pts/swet                    Swet                                              Processor 
 pts/synthmark               Google SynthMark                                  Processor 
 pts/sysbench                Sysbench                                          System    
@@ -286,11 +279,9 @@ pts/ttsiod-renderer         TTSIOD 3D Renderer                                Pr
 pts/tungsten                Tungsten Renderer                                 Processor 
 pts/unpack-firefox          Unpacking Firefox                                 System    
 pts/unpack-linux            Unpacking The Linux Kernel                        Disk      
-pts/v-ray                   Chaos Group V-RAY                                 System    
 pts/viennacl                ViennaCL                                          System    
 pts/vosk                    VOSK Speech Recognition Toolkit                   Processor 
 pts/vpxenc                  VP9 libvpx Encoding                               Processor 
-pts/vvenc                   VVenC                                             Processor 
 pts/webp2                   WebP2 Image Encode                                Processor 
 pts/whisper-cpp             Whisper.cpp                                       System    
 pts/will-it-scale           will-it-scale                                     OS        

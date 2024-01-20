@@ -69,6 +69,15 @@ Added:
 	3/8 - numpy
 	3/9 - povray
 	3/10 - specfem3d
+	3/11 - appleseed
+	3/12 - build-godot
+	3/13 - deepsparse
+	3/14 - node-web-tooling
+	3/15 - simdjson
+	3/16 - svt-av1
+	3/17 - svt-vp9
+	3/18 - v-ray
+	3/19 - vvenc
 
 Installed but not part of a benchmark
    build-llvm
@@ -79,16 +88,6 @@ Installed but not part of a benchmark
    tensorflow-lite
 
 Higher Priority
-   - benchmark article https://www.phoronix.com/review/amd-ryzen-7840hs-linux/3
-     appleseed
-     build-godot
-     deepsparse
-     node-web-tooling
-     simdjson
-     svt-av1
-     svt-vp9
-     v-ray - no longer available
-     vvenc
    - queue:
      aom-av1
      build-mplayer
@@ -137,17 +136,7 @@ Compression tests
      blosc
    
 Lower Priority
-   svt-av1
-	needs bospohorus 3840x2160
    svt-hevc
 	needs bospohorus 3840x2160   
-   svt-vp9
-	needs bospohorus 3840x2160   
-   vvenc
-	needs bospohorus 3840x2160   
-   simdjson
-   	    needs hack for libssl.so.1.1 on ubuntu 22.04
    pyperformance
 	python ecosystem
-   deepsparse - utility
-        python ecosystem   
