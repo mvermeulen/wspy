@@ -2,7 +2,6 @@ pts/ai-benchmark            AI Benchmark Alpha                                Sy
 pts/aircrack-ng             Aircrack-ng                                       Processor 
 pts/amg                     Algebraic Multi-Grid Benchmark                    Processor 
 pts/aobench                 AOBench                                           Processor 
-pts/aom-av1                 AOM AV1                                           Processor 
 pts/apache-iotdb            Apache IoTDB                                      System    
 pts/apache-siege            Apache Siege                                      System    
 pts/arrayfire               ArrayFire                                         Processor 
@@ -27,7 +26,6 @@ pts/build-gem5              Timed Gem5 Compilation                            Pr
 pts/build-imagemagick       Timed ImageMagick Compilation                     Processor 
 pts/build-llvm              Timed LLVM Compilation                            Processor 
 pts/build-mesa              Timed Mesa Compilation                            Processor 
-pts/build-mplayer           Timed MPlayer Compilation                         Processor 
 pts/build-nodejs            Timed Node.js Compilation                         Processor 
 pts/build-php               Timed PHP Compilation                             Processor 
 pts/build-python            Timed CPython Compilation                         Processor 
@@ -149,7 +147,6 @@ pts/minife                  miniFE                                            Pr
 pts/minion                  Minion                                            Processor 
 pts/mkl-dnn                 oneDNN MKL-DNN                                    Processor 
 pts/mlpack                  Mlpack Benchmark                                  System    
-pts/mnn                     Mobile Neural Network                             System    
 pts/mocassin                Monte Carlo Simulations of Ionised Nebulae        Processor 
 pts/montage                 Montage Astronomical Image Mosaic Engine          Processor 
 pts/mpcbench                GNU MPC                                           Processor 
@@ -199,7 +196,6 @@ pts/pmbench                 pmbench                                           Me
 pts/polybench-c             PolyBench-C                                       Processor 
 pts/polyhedron              Polyhedron Fortran Benchmarks                     Processor 
 pts/postmark                PostMark                                          Disk      
-pts/povray                  POV-Ray                                           Processor 
 pts/powertop-wakeups        Powertop Wakeups                                  Processor 
 pts/primesieve              Primesieve                                        Processor 
 pts/pts-self-test           Phoronix Test Suite Self Test                     System    
@@ -239,7 +235,6 @@ pts/spacy                   spaCy                                             Sy
 pts/spark                   Apache Spark                                      System    
 pts/spec-cpu2017            SPEC CPU 2017                                     System    
 pts/spec-jbb2015            SPECjbb 2015                                      System    
-pts/specfem3d               SPECFEM3D                                         Processor 
 pts/speedb                  Speedb                                            System    
 pts/speedtest-cli           speedtest-cli                                     Network   
 pts/sqlite                  SQLite                                            Disk      
@@ -292,14 +287,11 @@ pts/xsbench-cl              Xsbench OpenCL                                    Sy
 pts/yafaray                 YafaRay                                           Processor 
 pts/yugabytedb              YugabyteDB                                        System    
 pts/zendnn-tensorflow       AMD ZenDNN TensorFlow                             System    
-system/apache               Apache Benchmark                                            
-system/blender              Blender                                           System    
 system/blogbench            BlogBench                                         Disk      
 system/cephfs-rados         CephFS RADOS Benchmark                            System    
 system/clpeak               clpeak                                            System    
 system/compress-lzma        LZMA Compression                                            
 system/compress-pbzip2      PBZIP2 Compression                                          
-system/compress-zstd        Zstd Compression                                  Processor 
 system/cryptsetup           Cryptsetup                                        System    
 system/darktable            Darktable                                         System    
 system/dbench               Dbench                                            Disk      
@@ -326,7 +318,6 @@ system/rsvg                 librsvg                                           Sy
 system/selenium-top-sites   Time To Load + View Popular Websites              System    
 system/sqlite               SQLite                                                      
 system/tesseract-ocr        Tesseract OCR                                     System    
-git/aom-av1                 AOM AV1                                           Processor 
 git/dav1d                   dav1d                                             Processor 
 git/rav1e                   rav1e                                             Processor 
 git/svt-av1                 SVT-AV1                                           Processor 
