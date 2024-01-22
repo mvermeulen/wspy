@@ -81,6 +81,7 @@ Added:
 	3/20 - mnn
 	3/21 - aom-av1
 	3/22 - build-mplayer
+	3/23 - fftw
 
 Installed but not part of a benchmark
    build-llvm
@@ -91,8 +92,15 @@ Installed but not part of a benchmark
    tensorflow-lite
 
 Higher Priority
+   - phoronix article, 1/21 - https://www.phoronix.com/news/Threadripper-7980X-Perf-Boost
+     build-llvm
+     build-nodejs
+     build-php
+     pgbench
+     rav1e
+     speedb
+     stress-ng
    - queue:
-     fftw
      glibc-bench
      gmpbench
      gnupg

@@ -78,7 +78,6 @@ pts/etqw-demo-iqc           ET: Quake Wars Image Quality                      Sy
 pts/faiss                   Faiss                                             System    
 pts/fast-cli                fast-cli                                          Network   
 pts/ffte                    FFTE                                              Processor 
-pts/fftw                    FFTW                                              Processor 
 pts/fhourstones             Fhourstones                                       Processor 
 pts/financebench            FinanceBench                                      System    
 pts/fio                     Flexible IO Tester                                Disk      
