@@ -84,10 +84,10 @@ Added:
 	3/23 - fftw
 	3/24 - stress-ng
 	3/25 - speedb
+	3/26 - build-llvm
 
 Higher Priority
    - phoronix article, 1/21 - https://www.phoronix.com/news/Threadripper-7980X-Perf-Boost
-     build-llvm
      build-nodejs
      build-php
      pgbench
