@@ -87,6 +87,12 @@ Added:
 	3/26 - build-llvm
 
 Higher Priority
+   - phoronix article, 1/23 - https://www.phoronix.com/review/framework-laptop-16
+     build-apache
+     indigobench
+     llamafile
+     openscad
+     rawtherapee
    - phoronix article, 1/21 - https://www.phoronix.com/news/Threadripper-7980X-Perf-Boost
      build-nodejs
      build-php
@@ -100,17 +106,14 @@ Higher Priority
      himeno
      jpegxl
      llama-cpp
-     llamafile
      mpcbench
      ncnn
      n-queens
      ngspice
-     openscad
      perl-benchmark
      phpbench
      pybench
      pyperformance
-     rawtherapee
      rbenchmark
      redis
      rnnoise
