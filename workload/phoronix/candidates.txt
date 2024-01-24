@@ -85,6 +85,8 @@ Added:
 	3/24 - stress-ng
 	3/25 - speedb
 	3/26 - build-llvm
+	3/27 - rav1e
+	3/28 - pgbench
 
 Higher Priority
    - phoronix article, 1/23 - https://www.phoronix.com/review/framework-laptop-16
