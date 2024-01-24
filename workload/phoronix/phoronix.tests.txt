@@ -17,7 +17,6 @@ pts/blosc                   C-Blosc                                           Pr
 pts/bork                    Bork File Encrypter                               Processor 
 pts/botan                   Botan                                             Processor 
 pts/brl-cad                 BRL-CAD                                           System    
-pts/build-apache            Timed Apache Compilation                          Processor 
 pts/build-clash             Timed Clash Compilation                           Processor 
 pts/build-eigen             Timed Eigen Compilation                           Processor 
 pts/build-erlang            Timed Erlang/OTP Compilation                      Processor 
@@ -26,7 +25,6 @@ pts/build-gem5              Timed Gem5 Compilation                            Pr
 pts/build-imagemagick       Timed ImageMagick Compilation                     Processor 
 pts/build-mesa              Timed Mesa Compilation                            Processor 
 pts/build-nodejs            Timed Node.js Compilation                         Processor 
-pts/build-php               Timed PHP Compilation                             Processor 
 pts/build-python            Timed CPython Compilation                         Processor 
 pts/build-wasmer            Timed Wasmer Compilation                          Processor 
 pts/build2                  Build2                                            Processor 
@@ -184,7 +182,6 @@ pts/pennant                 Pennant                                           Pr
 pts/perf-bench              perf-bench                                        OS        
 pts/perl-benchmark          Perl Benchmarks                                   Processor 
 pts/petsc                   PETSc                                             System    
-pts/pgbench                 PostgreSQL                                        System    
 pts/php                     PHP Micro Benchmarks                              System    
 pts/phpbench                PHPBench                                          System    
 pts/pjdfstest               Pjdfstest                                         Disk      
@@ -208,7 +205,6 @@ pts/quadray                 QuadRay                                           Pr
 pts/rabbitmq                RabbitMQ                                          System    
 pts/radiance                Radiance Benchmark                                Processor 
 pts/ramspeed                RAMspeed SMP                                      Memory    
-pts/rav1e                   rav1e                                             Processor 
 pts/rays1bench              rays1bench                                        Processor 
 pts/rbenchmark              R Benchmark                                       Processor 
 pts/redis                   Redis                                             System    
@@ -315,10 +311,6 @@ system/selenium-top-sites   Time To Load + View Popular Websites              Sy
 system/sqlite               SQLite                                                      
 system/tesseract-ocr        Tesseract OCR                                     System    
 git/dav1d                   dav1d                                             Processor 
-git/rav1e                   rav1e                                             Processor 
-git/svt-av1                 SVT-AV1                                           Processor 
 git/svt-hevc                SVT-HEVC                                          Processor 
-git/svt-vp9                 SVT-VP9                                           Processor 
 git/vpxenc                  VP9 libvpx Encoding                               Processor 
-git/x265                    x265                                              Processor 
 

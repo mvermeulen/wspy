@@ -87,19 +87,17 @@ Added:
 	3/26 - build-llvm
 	3/27 - rav1e
 	3/28 - pgbench
+	3/29 - build-apache
+	3/30 - build-php
 
 Higher Priority
    - phoronix article, 1/23 - https://www.phoronix.com/review/framework-laptop-16
-     build-apache
      indigobench
      llamafile
      openscad
      rawtherapee
    - phoronix article, 1/21 - https://www.phoronix.com/news/Threadripper-7980X-Perf-Boost
      build-nodejs
-     build-php
-     pgbench
-     rav1e
    - queue:
      glibc-bench
      gmpbench
