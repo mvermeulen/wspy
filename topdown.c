@@ -916,7 +916,14 @@ void print_ipc(struct counter_group *cgroup,enum output_format oformat){
   case PRINT_NORMAL:
     if (cpu_cycles){
       fprintf(outfile,"cpu-cycles           %-14lu # %4.2f GHz\n",cpu_cycles,(double) cpu_cycles / elapsed / 1000000000.0 / cpu_info->num_cores_available / (aflag?cpu_info->num_cores_available:1));
-      fprintf(outfile,"instructions         %-14lu # %4.2f IPC\n",instructions,(double) instructions / cpu_cycles);
+      fprintf(outfile,"instructions         %-14lu # %4.2f IPC",instructions,(double) instructions / cpu_cycles);
+      if (((double) instructions / cpu_cycles) > 3.0){
+	fprintf(outfile," high");
+      }
+      else if (((double) instructions / cpu_cycles) < 0.7){
+	fprintf(outfile," low");
+      }
+      fprintf(outfile,"\n");
       break;
     case PRINT_CSV:
       fprintf(outfile,"%4.2f,",(double) instructions / cpu_cycles);
@@ -1048,32 +1055,56 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
 	warning("unable to read performance counter, is runtime too short?\n");
       } else {
 	fprintf(outfile,"slots                %-14lu #\n",slots);
-	fprintf(outfile,"retiring             %-14lu # %4.1f%% (%4.1lf%%)\n",
+	fprintf(outfile,"retiring             %-14lu # %4.1f%% (%4.1lf%%)",
 		retiring,(double) retiring/slots*100, (double) retiring/slots_no_contention*100);
+	if (((double) retiring/slots_no_contention) > 0.54){
+	  fprintf(outfile," high");
+	} else if (((double) retiring/slots_no_contention) < 0.14){
+	  fprintf(outfile," low");
+	}
+	fprintf(outfile,"\n");
 	if (retire_ucode && frontend_bandwidth){
 	  fprintf(outfile,"-- ucode             %-14lu #    %4.1f%%\n",
 		  retire_ucode,(double) retire_ucode/slots*100);
 	  fprintf(outfile,"-- fastpath          %-14lu #    %4.1f%%\n",
 		  retire_fastpath,(double) retire_fastpath/slots*100);
 	}		
-	fprintf(outfile,"frontend             %-14lu # %4.1f%% (%4.1lf%%)\n",
+	fprintf(outfile,"frontend             %-14lu # %4.1f%% (%4.1lf%%)",
 		frontend,(double) frontend/slots*100, (double) frontend/slots_no_contention*100);
+	if (((double) frontend/slots_no_contention) > 0.45){
+	  fprintf(outfile," high");
+	} else if (((double) frontend/slots_no_contention) < 0.05){
+	  fprintf(outfile," low");
+	}
+	fprintf(outfile,"\n");
 	if (frontend_latency && frontend_bandwidth){
 	  fprintf(outfile,"-- latency           %-14lu #    %4.1f%%\n",
 		  frontend_latency,(double) frontend_latency/slots*100);
 	  fprintf(outfile,"-- bandwidth         %-14lu #    %4.1f%%\n",
 		  frontend_bandwidth,(double) frontend_bandwidth/slots*100);
 	}	
-	fprintf(outfile,"backend              %-14lu # %4.1f%% (%4.1lf%%)\n",
+	fprintf(outfile,"backend              %-14lu # %4.1f%% (%4.1lf%%)",
 		backend,(double) backend/slots*100, (double) backend/slots_no_contention*100);
+	if (((double) backend/slots_no_contention) > 0.70){
+	  fprintf(outfile," high");
+	} else if (((double) backend/slots_no_contention) < 0.18){
+	  fprintf(outfile," low");
+	}
+	fprintf(outfile,"\n");
 	if (backend_memory && backend_cpu){
 	  fprintf(outfile,"-- cpu               %-14lu #    %4.1f%%\n",
 		  backend_cpu,(double) backend_cpu/slots*100);
 	  fprintf(outfile,"-- memory            %-14lu #    %4.1f%%\n",
 		  backend_memory,(double) backend_memory/slots*100);
 	}
-	fprintf(outfile,"speculation          %-14lu # %4.1f%% (%4.1lf%%)\n",
+	fprintf(outfile,"speculation          %-14lu # %4.1f%% (%4.1lf%%)",
 		speculation,(double) speculation/slots*100, (double) speculation/slots_no_contention*100);
+	if (((double) speculation/slots_no_contention) > 0.10){
+	  fprintf(outfile," high");
+	} else if (((double) speculation/slots_no_contention) < 0.01){
+	  fprintf(outfile," low");
+	}
+	fprintf(outfile,"\n");
 	if (speculation_pipeline && speculation_branches){
 	  fprintf(outfile,"-- branch mispredict %-14lu #    %4.1lf%%\n",
 		  speculation_branches,(double) speculation_branches/slots*100);

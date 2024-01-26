@@ -94,11 +94,11 @@ Added:
 	4/2 - llamafile
 	4/3 - rawtherapee
 	4/4 - openscad
-
+	4/5 - cassandra
+	
 Higher Priority
    - phoronix article, 1/25 - https://www.phoronix.com/review/amd-zen1-zen4c
      apache-iotdb
-     cassandra
      duckdb
      easywave
      llama.cpp
