@@ -92,6 +92,8 @@ Added:
 	3/31 - build-nodejs
 	4/1 - indigobench
 	4/2 - llamafile
+	4/3 - rawtherapee
+	4/4 - openscad
 
 Higher Priority
    - phoronix article, 1/25 - https://www.phoronix.com/review/amd-zen1-zen4c
@@ -103,9 +105,6 @@ Higher Priority
      nginx
      redis
      rocksdb
-   - phoronix article, 1/23 - https://www.phoronix.com/review/framework-laptop-16
-     openscad
-     rawtherapee
    - queue:
      glibc-bench
      gmpbench
@@ -123,7 +122,6 @@ Higher Priority
      pybench
      pyperformance
      rbenchmark
-     redis
      rnnoise
      rodinia
      scimark2
