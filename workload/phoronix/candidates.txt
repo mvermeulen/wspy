@@ -100,11 +100,10 @@ Added:
 	4/8 - easywave
 	4/9 - nginx
 	4/10 - redis
+	4/11 - llama-cpp
+	4/12 - rocksdb
 	
 Higher Priority
-   - phoronix article, 1/25 - https://www.phoronix.com/review/amd-zen1-zen4c
-     llama-cpp
-     rocksdb
    - queue:
      glibc-bench
      gmpbench
