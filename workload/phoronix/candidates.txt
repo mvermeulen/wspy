@@ -95,15 +95,15 @@ Added:
 	4/3 - rawtherapee
 	4/4 - openscad
 	4/5 - cassandra
+	4/6 - apache-iotdb
+	4/7 - duckdb
+	4/8 - easywave
+	4/9 - nginx
+	4/10 - redis
 	
 Higher Priority
    - phoronix article, 1/25 - https://www.phoronix.com/review/amd-zen1-zen4c
-     apache-iotdb
-     duckdb
-     easywave
-     llama.cpp
-     nginx
-     redis
+     llama-cpp
      rocksdb
    - queue:
      glibc-bench
@@ -112,7 +112,6 @@ Higher Priority
      gpuowl
      himeno
      jpegxl
-     llama-cpp
      mpcbench
      ncnn
      n-queens
