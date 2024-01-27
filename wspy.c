@@ -81,6 +81,7 @@ int parse_options(int argc,char *const argv[]){
     { "tree", required_argument, 0, 31 }, //
     { "tree-cmdline",no_argument,0,35 },
     { "tree-open",no_argument,0, 38 },
+    { "tree-vmsize",no_argument,0,41 },
     { "verbose", no_argument, 0, 32 },
     { 0,0,0,0 },
   };
@@ -260,6 +261,7 @@ int main(int argc,char *const argv[],char *const envp[]){
 	    "\t--rusage or -r            - show getrusage(2) information\n"
 	    "\t--tree <file>             - create CSV of processes\n"
 	    "\t--tree-cmdline            - record full command lines\n"
+	    "\t--tree-vmsize             - virtual memory size\n"
 	    "\t-o <file>                 - send output to file\n"
 	    "\t--csv                     - create csv output\n"
 	    "\t--interval <sec>          - read every <sec> seconds\n"

@@ -19,6 +19,7 @@
 FILE *process_file = NULL;
 int treeflag = 1;
 int statflag = 1;
+int mflag = 0;
 int uflag = 0;
 int vflag = 0;
 int fflag = 1;
@@ -311,6 +312,9 @@ static void print_tree(struct process_info *pinfo,int level){
   if (fflag){
     printf(" start=%-5.2f finish=%-5.2f",pinfo->start,pinfo->finish);
   }
+  if (mflag){
+    printf(" vmsize=%uk",(pinfo->vsize+512)/1024);
+  }
   if (uflag){
     printf(" utime=%-4.2f stime=%-4.2f",
 	   ((double) pinfo->utime/clocks_per_second),
@@ -345,7 +349,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   initialize_error_subsystem(argv[0],"-");
 
   // parse options
-  while ((opt = getopt(argc,argv,"+CcFfSsTtUuvw:")) != -1){
+  while ((opt = getopt(argc,argv,"+CcFfMmSsTtUuvw:")) != -1){
     switch(opt){
     case 'C':
       print_cmdline = 1;
@@ -358,6 +362,12 @@ int main(int argc,char *const argv[],char *const envp[]){
       break;
     case 'f':
       fflag = 0;
+      break;
+    case 'M':
+      mflag = 1;
+      break;
+    case 'm':
+      mflag = 0;
       break;
     case 't':
       treeflag = 0;
@@ -396,6 +406,8 @@ int main(int argc,char *const argv[],char *const envp[]){
 	    "\t-c\tturn on abbreviated command (default)\n"
 	    "\t-F\turn on start/finish info (default)\n"
 	    "\t-f\tturn off start/finish info\n"
+	    "\t-M\tturn on vmsize printing\n"
+	    "\t-m\tturn off vmsize printing\n"
 	    "\t-S\tturn on summary output\n"
 	    "\t-s\tturn off summary output (default)\n"
 	    "\t-T\tturn on tree output (default)\n"
