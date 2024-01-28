@@ -102,13 +102,12 @@ Added:
 	4/10 - redis
 	4/11 - llama-cpp
 	4/12 - rocksdb
+	4/13 - glibc-bench
 	
 Higher Priority
    - queue:
-     glibc-bench
      gmpbench
      gnupg
-     gpuowl
      himeno
      jpegxl
      mpcbench

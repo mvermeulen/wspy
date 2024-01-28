@@ -3,6 +3,7 @@ while read bench
 do
     TESTNAME=$bench ./run_test.sh
 done <<-BENCH_LIST
-nginx
-redis
+llama-cpp-perf
+rocksdb
+glibc-bench
 BENCH_LIST

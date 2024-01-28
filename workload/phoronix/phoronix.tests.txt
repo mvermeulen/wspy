@@ -82,7 +82,6 @@ pts/fs-mark                 FS-Mark                                           Di
 pts/gcrypt                  Gcrypt Library                                    Processor 
 pts/geekbench               Geekbench                                         System    
 pts/git                     Git                                               System    
-pts/glibc-bench             Glibc Benchmarks                                  OS        
 pts/gmpbench                GNU GMP GMPbench                                  Processor 
 pts/gnupg                   GnuPG                                             System    
 pts/go-benchmark            Go Benchmarks                                     Processor 
@@ -123,7 +122,6 @@ pts/laghos                  Laghos                                            Pr
 pts/leveldb                 LevelDB                                           Disk      
 pts/libgav1                 libgav1                                           Processor 
 pts/libraw                  LibRaw                                            Processor 
-pts/llama-cpp               Llama.cpp                                         System    
 pts/luajit                  LuaJIT                                            Processor 
 pts/luaradio                LuaRadio                                          Processor 
 pts/lulesh                  LULESH                                            Processor 
@@ -212,7 +210,6 @@ pts/relion                  RELION                                            Pr
 pts/remhos                  Remhos                                            Processor 
 pts/renaissance             Renaissance                                       Processor 
 pts/rnnoise                 RNNoise                                           Processor 
-pts/rocksdb                 RocksDB                                           System    
 pts/rodinia                 Rodinia                                           Processor 
 pts/rust-mandel             Rust Mandelbrot                                   Processor 
 pts/rust-prime              Rust Prime Benchmark                              Processor 
