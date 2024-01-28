@@ -103,6 +103,8 @@ Added:
 	4/11 - llama-cpp
 	4/12 - rocksdb
 	4/13 - glibc-bench
+	4/14 - tnn
+	4/15 - ncnn
 	
 Higher Priority
    - queue:
@@ -111,7 +113,6 @@ Higher Priority
      himeno
      jpegxl
      mpcbench
-     ncnn
      n-queens
      ngspice
      perl-benchmark
@@ -126,7 +127,6 @@ Higher Priority
      svt-hevc
      sysbench
      tensorflow-lite
-     tnn
      vpcenc
      wrf
    - benchmarks missing (mostly graphics)
