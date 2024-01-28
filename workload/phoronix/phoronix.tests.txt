@@ -150,7 +150,6 @@ pts/mutex                   BenchmarkMutex                                    Sy
 pts/mysqlslap               MariaDB                                           System    
 pts/n-queens                N-Queens                                          Processor 
 pts/natron                  Natron                                            System    
-pts/ncnn                    NCNN                                              System    
 pts/neat                    Nebular Empirical Analysis Tool                   Processor 
 pts/neatbench               NeatBench                                         System    
 pts/nekrs                   nekRS                                             Processor 
@@ -256,7 +255,6 @@ pts/tidb                    TiDB Community Server                             Sy
 pts/tinymembench            Tinymembench                                      Memory    
 pts/tiobench                Threaded I/O Tester                               Disk      
 pts/tjbench                 libjpeg-turbo tjbench                             System    
-pts/tnn                     TNN                                               System    
 pts/toktx                   KTX-Software toktx                                System    
 pts/toybrot                 toyBrot Fractal Generator                         Processor 
 pts/ttsiod-renderer         TTSIOD 3D Renderer                                Processor 
@@ -295,11 +293,8 @@ system/inkscape             Inkscape                                          Sy
 system/iozone               IOzone                                            Disk      
 system/libreoffice          LibreOffice                                       System    
 system/mpv                  MPV                                               System    
-system/nginx                Nginx                                             System    
 system/ocrmypdf             OCRMyPDF                                          System    
 system/octave-benchmark     GNU Octave Benchmark                              System    
-system/openscad             OpenSCAD                                          System    
-system/openssl              OpenSSL                                           Processor 
 system/opm                  Open Porous Media                                 Processor 
 system/rawtherapee          RawTherapee                                       System    
 system/redis                Redis Memtier / Redis Benchmark                   System    

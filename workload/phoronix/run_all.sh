@@ -3,7 +3,9 @@ while read bench
 do
     TESTNAME=$bench ./run_test.sh
 done <<-BENCH_LIST
-llama-cpp-perf
-rocksdb
-glibc-bench
+gmpbench
+gnupg
+himeno
+libreoffice
+scimark2
 BENCH_LIST
