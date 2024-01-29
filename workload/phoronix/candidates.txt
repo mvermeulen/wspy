@@ -110,6 +110,10 @@ Added:
 	4/18 - himeno
 	4/19 - libreoffice
 	4/20 - scimark
+	4/21 - perl-benchmark
+	4/22 - phpbench
+	4/23 - pybench
+	4/24 - pyperformance
 	
 Higher Priority
    - queue:
