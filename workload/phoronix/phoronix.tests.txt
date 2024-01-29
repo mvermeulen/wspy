@@ -24,7 +24,6 @@ pts/build-gdb               Timed GDB GNU Debugger Compilation                Pr
 pts/build-gem5              Timed Gem5 Compilation                            Processor 
 pts/build-imagemagick       Timed ImageMagick Compilation                     Processor 
 pts/build-mesa              Timed Mesa Compilation                            Processor 
-pts/build-nodejs            Timed Node.js Compilation                         Processor 
 pts/build-python            Timed CPython Compilation                         Processor 
 pts/build-wasmer            Timed Wasmer Compilation                          Processor 
 pts/build2                  Build2                                            Processor 
@@ -32,7 +31,6 @@ pts/bullet                  Bullet Physics Engine                             Pr
 pts/byte                    BYTE Unix Benchmark                               Processor 
 pts/cachebench              CacheBench                                        Processor 
 pts/caffe                   Caffe                                             System    
-pts/cassandra               Apache Cassandra                                  System    
 pts/chia-vdf                Chia Blockchain VDF                               Processor 
 pts/clickhouse              ClickHouse                                        System    
 pts/clomp                   CLOMP                                             Processor 
@@ -82,8 +80,6 @@ pts/fs-mark                 FS-Mark                                           Di
 pts/gcrypt                  Gcrypt Library                                    Processor 
 pts/geekbench               Geekbench                                         System    
 pts/git                     Git                                               System    
-pts/gmpbench                GNU GMP GMPbench                                  Processor 
-pts/gnupg                   GnuPG                                             System    
 pts/go-benchmark            Go Benchmarks                                     Processor 
 pts/gpaw                    GPAW                                              System    
 pts/graph500                Graph500                                          System    
@@ -95,7 +91,6 @@ pts/hbase                   Apache HBase                                      Sy
 pts/hdparm-read             hdparm Timed Disk Reads                           Disk      
 pts/heffte                  HeFFTe - Highly Efficient FFT for Exascale        Processor 
 pts/helsing                 Helsing                                           Processor 
-pts/himeno                  Himeno Benchmark                                  Processor 
 pts/hint                    Hierarchical INTegration                          System    
 pts/hpcc                    HPC Challenge                                     Processor 
 pts/hpcg                    High Performance Conjugate Gradient               Processor 
@@ -214,7 +209,6 @@ pts/rust-mandel             Rust Mandelbrot                                   Pr
 pts/rust-prime              Rust Prime Benchmark                              Processor 
 pts/schbench                Schbench                                          System    
 pts/scikit-learn            Scikit-Learn                                      System    
-pts/scimark2                SciMark                                           Processor 
 pts/scylladb                ScyllaDB                                          System    
 pts/serial-loopback         Serial Loopback Test                              System    
 pts/smallpt                 Smallpt                                           Processor 
@@ -286,12 +280,10 @@ system/ethminer             Ethereum Ethminer                                 Sy
 system/fio                  Flexible IO Tester                                Disk      
 system/gegl                 GEGL                                              System    
 system/gmic                 G'MIC                                             System    
-system/gnupg                GnuPG                                             Processor 
 system/gnuradio             GNU Radio                                         Processor 
 system/hugin                Hugin                                             System    
 system/inkscape             Inkscape                                          System    
 system/iozone               IOzone                                            Disk      
-system/libreoffice          LibreOffice                                       System    
 system/mpv                  MPV                                               System    
 system/ocrmypdf             OCRMyPDF                                          System    
 system/octave-benchmark     GNU Octave Benchmark                              System    
