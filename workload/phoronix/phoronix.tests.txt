@@ -107,7 +107,6 @@ pts/ipc-benchmark           IPC_benchmark                                     Pr
 pts/iperf                   iPerf                                             Network   
 pts/java-gradle-perf        Java Gradle Build                                 Processor 
 pts/java-jmh                Java JMH                                          System    
-pts/java-scimark2           Java SciMark                                      Processor 
 pts/jpegxl                  JPEG XL libjxl                                    Processor 
 pts/jpegxl-decode           JPEG XL Decoding libjxl                           Processor 
 pts/juliagpu                JuliaGPU                                          System    
@@ -172,10 +171,8 @@ pts/palabos                 Palabos                                           Pr
 pts/parboil                 Parboil                                           Processor 
 pts/pennant                 Pennant                                           Processor 
 pts/perf-bench              perf-bench                                        OS        
-pts/perl-benchmark          Perl Benchmarks                                   Processor 
 pts/petsc                   PETSc                                             System    
 pts/php                     PHP Micro Benchmarks                              System    
-pts/phpbench                PHPBench                                          System    
 pts/pjdfstest               Pjdfstest                                         Disk      
 pts/pjsip                   PJSIP                                             Processor 
 pts/plaidml                 PlaidML                                           System    
@@ -186,10 +183,8 @@ pts/postmark                PostMark                                          Di
 pts/powertop-wakeups        Powertop Wakeups                                  Processor 
 pts/primesieve              Primesieve                                        Processor 
 pts/pts-self-test           Phoronix Test Suite Self Test                     System    
-pts/pybench                 PyBench                                           System    
 pts/pyhpc                   PyHPC Benchmarks                                  System    
 pts/pymongo-inserts         PyMongo Inserts                                   System    
-pts/pyperformance           PyPerformance                                     System    
 pts/qe                      Quantum ESPRESSO                                  Processor 
 pts/qmcpack                 QMCPACK                                           Processor 
 pts/qmlbench                Qmlbench                                          System    
@@ -198,8 +193,6 @@ pts/rabbitmq                RabbitMQ                                          Sy
 pts/radiance                Radiance Benchmark                                Processor 
 pts/ramspeed                RAMspeed SMP                                      Memory    
 pts/rays1bench              rays1bench                                        Processor 
-pts/rbenchmark              R Benchmark                                       Processor 
-pts/redis                   Redis                                             System    
 pts/relion                  RELION                                            Processor 
 pts/remhos                  Remhos                                            Processor 
 pts/renaissance             Renaissance                                       Processor 
@@ -288,8 +281,6 @@ system/mpv                  MPV                                               Sy
 system/ocrmypdf             OCRMyPDF                                          System    
 system/octave-benchmark     GNU Octave Benchmark                              System    
 system/opm                  Open Porous Media                                 Processor 
-system/rawtherapee          RawTherapee                                       System    
-system/redis                Redis Memtier / Redis Benchmark                   System    
 system/rsvg                 librsvg                                           System    
 system/selenium-top-sites   Time To Load + View Popular Websites              System    
 system/sqlite               SQLite                                                      

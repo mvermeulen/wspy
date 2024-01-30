@@ -114,22 +114,18 @@ Added:
 	4/22 - phpbench
 	4/23 - pybench
 	4/24 - pyperformance
+	4/25 - rbenchmark
+	4/26 - java-scimark
 	
 Higher Priority
    - 1/29 phoronix article - https://www.phoronix.com/review/amd-ryzen7-8700g-linux
      vkpeak (vulkan compute)
      whisper.cpp
-     java-scimark
    - queue:
      jpegxl
      mpcbench
      n-queens
      ngspice
-     perl-benchmark
-     phpbench
-     pybench
-     pyperformance
-     rbenchmark
      rnnoise
      rodinia
      sqlite
