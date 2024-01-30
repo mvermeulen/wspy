@@ -122,18 +122,33 @@ Higher Priority
      vkpeak (vulkan compute)
      whisper.cpp
    - queue:
+     blogbench
+     dav1d
      jpegxl
+     lulesh
+     luxmark
+     lzbench
      mpcbench
      n-queens
      ngspice
+     octave-benchmark
+     opm
+     polyhedron
+     qe
      rnnoise
      rodinia
+     scikit-learn
      sqlite
+     sudokut
      svt-hevc
      sysbench
      tensorflow-lite
+     tungsten
      vpcenc
+     vpxenc
      wrf
+     x264
+     zendnn-tensorflow
    - benchmarks missing (mostly graphics)
       1/7 - https://www.phoronix.com/review/z1-extreme-meteorlake
      Graphics: etlegacy, gravitymark, unigine-heaven, unigine-super,

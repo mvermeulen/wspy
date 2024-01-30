@@ -2,7 +2,6 @@ pts/ai-benchmark            AI Benchmark Alpha                                Sy
 pts/aircrack-ng             Aircrack-ng                                       Processor 
 pts/amg                     Algebraic Multi-Grid Benchmark                    Processor 
 pts/aobench                 AOBench                                           Processor 
-pts/apache-iotdb            Apache IoTDB                                      System    
 pts/apache-siege            Apache Siege                                      System    
 pts/arrayfire               ArrayFire                                         Processor 
 pts/askap                   ASKAP                                             System    
@@ -61,7 +60,6 @@ pts/deepspeech              DeepSpeech                                        Pr
 pts/draco                   Google Draco                                      System    
 pts/dragonflydb             Dragonflydb                                       System    
 pts/duckdb                  DuckDB                                            System    
-pts/easywave                easyWave                                          Processor 
 pts/ebizzy                  ebizzy                                            Processor 
 pts/ecp-candle              ECP-CANDLE                                        System    
 pts/encodec                 EnCodec                                           System    
@@ -78,7 +76,6 @@ pts/financebench            FinanceBench                                      Sy
 pts/fio                     Flexible IO Tester                                Disk      
 pts/fs-mark                 FS-Mark                                           Disk      
 pts/gcrypt                  Gcrypt Library                                    Processor 
-pts/geekbench               Geekbench                                         System    
 pts/git                     Git                                               System    
 pts/go-benchmark            Go Benchmarks                                     Processor 
 pts/gpaw                    GPAW                                              System    
@@ -97,7 +94,6 @@ pts/hpcg                    High Performance Conjugate Gradient               Pr
 pts/idle                    Timed Idle                                        System    
 pts/idle-power-usage        Idle Power Usage                                  System    
 pts/incompact3d             Xcompact3d Incompact3d                            Processor 
-pts/indigobench             IndigoBench                                       System    
 pts/influxdb                InfluxDB                                          System    
 pts/intel-mlc               Intel Memory Latency Checker                      Memory    
 pts/intel-mpi               Intel MPI Benchmarks                              System    
