@@ -3,9 +3,9 @@ while read bench
 do
     TESTNAME=$bench ./run_test.sh
 done <<-BENCH_LIST
-perl-benchmark
-phpbench
-pybench
-pyperformance
-r-benchmark
+dacapobench
+darktable
+hackbench
+incompact3d
+svt-hevc
 BENCH_LIST
