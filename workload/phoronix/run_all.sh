@@ -8,4 +8,6 @@ darktable
 hackbench
 incompact3d
 svt-hevc
+vkpeak
+blogbench
 BENCH_LIST
