@@ -117,6 +117,13 @@ Added:
 	4/25 - rbenchmark
 	4/26 - java-scimark
 	4/27 - whisper.cpp
+	4/28 - dacapobench
+	4/29 - darktable
+	4/30 - hackbench
+	5/1 - incompact3d
+	5/2 - svt-hevc
+	5/3 - vkpeak
+	5/4 - blogbench
 	
 Higher Priority
    - 1/29 phoronix article - https://www.phoronix.com/review/amd-ryzen7-8700g-linux
@@ -146,7 +153,6 @@ Higher Priority
      scikit-learn
      sqlite
      sudokut
-     svt-hevc
      sysbench
      tensorflow-lite
      tungsten
