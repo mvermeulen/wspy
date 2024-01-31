@@ -154,9 +154,11 @@ Higher Priority
      zendnn-tensorflow
    - benchmarks missing (mostly graphics)
       1/7 - https://www.phoronix.com/review/z1-extreme-meteorlake
-     Graphics: etlegacy, gravitymark, unigine-heaven, unigine-super,
-     unigine-valley, unvanquished, warsow, xonotic, vkpeak, paraview,
-     vkpeak
+     Graphics:
+     dirt-rally2, etlegacy, f122, fluidx3d, gpuowl, gravitymark, hitman3,
+     luxcorerenderer, opencl-benchmark, paraview, quake2rtx, specviewperf2020,
+     unigine-heaven, unigine-super, unigine-valley, unvanquished,
+     warsow, xonotic, vkpeak, xplane12
 
 Missing download files (try periodically)
    compress-pbzip2
