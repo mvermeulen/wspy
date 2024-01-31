@@ -126,16 +126,7 @@ Added:
 	5/4 - blogbench
 	
 Higher Priority
-   - 1/29 phoronix article - https://www.phoronix.com/review/amd-ryzen7-8700g-linux
-     vkpeak (vulkan compute)
-   - 1/30 phoronix article - https://www.phoronix.com/news/Ubuntu-Generic-LL-Kernel
-     dacapobench
-     darktable
-     hackbench
-     incompact3d
-     svt-hevc
    - queue:
-     blogbench
      dav1d
      jpegxl
      lulesh
