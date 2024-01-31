@@ -130,7 +130,6 @@ Higher Priority
      dav1d
      jpegxl
      lulesh
-     luxmark
      lzbench
      mpcbench
      n-queens
@@ -147,7 +146,7 @@ Higher Priority
      sysbench
      tensorflow-lite
      tungsten
-     vpcenc
+     vvenc
      vpxenc
      wrf
      x264
