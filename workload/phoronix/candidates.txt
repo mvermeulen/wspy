@@ -124,12 +124,12 @@ Added:
 	5/2 - svt-hevc
 	5/3 - vkpeak
 	5/4 - blogbench
+	5/5 - dav1d
+	5/6 - jpegxl
+	5/7 - lulesh
 	
 Higher Priority
    - queue:
-     dav1d
-     jpegxl
-     lulesh
      lzbench
      mpcbench
      n-queens
