@@ -127,6 +127,7 @@ Added:
 	5/5 - dav1d
 	5/6 - jpegxl
 	5/7 - lulesh
+	5/8 - sqlite
 	
 Higher Priority
    - queue:
@@ -141,7 +142,6 @@ Higher Priority
      rnnoise
      rodinia
      scikit-learn
-     sqlite
      sudokut
      sysbench
      tensorflow-lite
@@ -168,5 +168,4 @@ Compression tests
      system-decompress-xz
      system-decompress-gzip
      system-decompress-zlib (deprecated?)
-     lzbench
      blosc

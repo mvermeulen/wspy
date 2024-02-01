@@ -11,7 +11,6 @@ pts/axs2mlperf              axs2mlperf                                        Sy
 pts/basemark                Basemark GPU                                      System    
 pts/basis                   Basis Universal                                   System    
 pts/blake2                  BLAKE2                                            Processor 
-pts/blogbench               BlogBench                                         Disk      
 pts/blosc                   C-Blosc                                           Processor 
 pts/bork                    Bork File Encrypter                               Processor 
 pts/botan                   Botan                                             Processor 
@@ -53,7 +52,6 @@ pts/cyclictest              Cyclictest                                        Sy
 pts/cython-bench            Cython Benchmark                                  Processor 
 pts/dacapobench             DaCapo Benchmark                                  Processor 
 pts/daphne                  Darmstadt Automotive Parallel Heterogeneous Suite System    
-pts/dav1d                   dav1d                                             Processor 
 pts/dbench                  Dbench                                            Disk      
 pts/deeprec                 DeepRec                                           System    
 pts/deepspeech              DeepSpeech                                        Processor 
@@ -80,7 +78,6 @@ pts/git                     Git                                               Sy
 pts/go-benchmark            Go Benchmarks                                     Processor 
 pts/gpaw                    GPAW                                              System    
 pts/graph500                Graph500                                          System    
-pts/hackbench               Hackbench                                         Processor 
 pts/hadoop                  Apache Hadoop                                     System    
 pts/hammerdb-mariadb        HammerDB - MariaDB                                System    
 pts/hammerdb-postgresql     HammerDB - PostgreSQL                             System    
@@ -103,7 +100,6 @@ pts/ipc-benchmark           IPC_benchmark                                     Pr
 pts/iperf                   iPerf                                             Network   
 pts/java-gradle-perf        Java Gradle Build                                 Processor 
 pts/java-jmh                Java JMH                                          System    
-pts/jpegxl                  JPEG XL libjxl                                    Processor 
 pts/jpegxl-decode           JPEG XL Decoding libjxl                           Processor 
 pts/juliagpu                JuliaGPU                                          System    
 pts/keydb                   KeyDB                                             System    
@@ -114,7 +110,6 @@ pts/libgav1                 libgav1                                           Pr
 pts/libraw                  LibRaw                                            Processor 
 pts/luajit                  LuaJIT                                            Processor 
 pts/luaradio                LuaRadio                                          Processor 
-pts/lulesh                  LULESH                                            Processor 
 pts/lulesh-cl               Lulesh OpenCL                                     System    
 pts/luxcorerender           LuxCoreRender                                     Processor 
 pts/luxmark                 LuxMark                                           System    
@@ -209,7 +204,6 @@ pts/spark                   Apache Spark                                      Sy
 pts/spec-cpu2017            SPEC CPU 2017                                     System    
 pts/spec-jbb2015            SPECjbb 2015                                      System    
 pts/speedtest-cli           speedtest-cli                                     Network   
-pts/sqlite                  SQLite                                            Disk      
 pts/sqlite-speedtest        SQLite Speedtest                                  System    
 pts/srslte                  srsLTE                                            Processor 
 pts/srsran                  srsRAN Project                                    Processor 
@@ -248,7 +242,6 @@ pts/viennacl                ViennaCL                                          Sy
 pts/vosk                    VOSK Speech Recognition Toolkit                   Processor 
 pts/vpxenc                  VP9 libvpx Encoding                               Processor 
 pts/webp2                   WebP2 Image Encode                                Processor 
-pts/whisper-cpp             Whisper.cpp                                       System    
 pts/will-it-scale           will-it-scale                                     OS        
 pts/wrf                     WRF                                               System    
 pts/x264                    x264                                              Processor 
@@ -257,13 +250,11 @@ pts/xsbench-cl              Xsbench OpenCL                                    Sy
 pts/yafaray                 YafaRay                                           Processor 
 pts/yugabytedb              YugabyteDB                                        System    
 pts/zendnn-tensorflow       AMD ZenDNN TensorFlow                             System    
-system/blogbench            BlogBench                                         Disk      
 system/cephfs-rados         CephFS RADOS Benchmark                            System    
 system/clpeak               clpeak                                            System    
 system/compress-lzma        LZMA Compression                                            
 system/compress-pbzip2      PBZIP2 Compression                                          
 system/cryptsetup           Cryptsetup                                        System    
-system/darktable            Darktable                                         System    
 system/dbench               Dbench                                            Disk      
 system/ethminer             Ethereum Ethminer                                 System    
 system/fio                  Flexible IO Tester                                Disk      
@@ -279,9 +270,5 @@ system/octave-benchmark     GNU Octave Benchmark                              Sy
 system/opm                  Open Porous Media                                 Processor 
 system/rsvg                 librsvg                                           System    
 system/selenium-top-sites   Time To Load + View Popular Websites              System    
-system/sqlite               SQLite                                                      
 system/tesseract-ocr        Tesseract OCR                                     System    
-git/dav1d                   dav1d                                             Processor 
-git/svt-hevc                SVT-HEVC                                          Processor 
 git/vpxenc                  VP9 libvpx Encoding                               Processor 
-
