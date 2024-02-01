@@ -113,7 +113,6 @@ pts/luaradio                LuaRadio                                          Pr
 pts/lulesh-cl               Lulesh OpenCL                                     System    
 pts/luxcorerender           LuxCoreRender                                     Processor 
 pts/luxmark                 LuxMark                                           System    
-pts/lzbench                 lzbench                                           Processor 
 pts/m-queens                m-queens                                          Processor 
 pts/mafft                   Timed MAFFT Alignment                             Processor 
 pts/mandelbulbgpu           MandelbulbGPU                                     System    
@@ -176,7 +175,6 @@ pts/primesieve              Primesieve                                        Pr
 pts/pts-self-test           Phoronix Test Suite Self Test                     System    
 pts/pyhpc                   PyHPC Benchmarks                                  System    
 pts/pymongo-inserts         PyMongo Inserts                                   System    
-pts/qe                      Quantum ESPRESSO                                  Processor 
 pts/qmcpack                 QMCPACK                                           Processor 
 pts/qmlbench                Qmlbench                                          System    
 pts/quadray                 QuadRay                                           Processor 

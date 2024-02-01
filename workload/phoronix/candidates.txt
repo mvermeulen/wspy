@@ -128,17 +128,17 @@ Added:
 	5/6 - jpegxl
 	5/7 - lulesh
 	5/8 - sqlite
+	5/9 - lzbench
+	5/10 - qe
 	
 Higher Priority
    - queue:
-     lzbench
      mpcbench
      n-queens
      ngspice
      octave-benchmark
      opm
      polyhedron
-     qe
      rnnoise
      rodinia
      scikit-learn
