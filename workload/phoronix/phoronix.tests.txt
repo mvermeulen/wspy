@@ -50,7 +50,6 @@ pts/cryptopp                Crypto++                                          Pr
 pts/ctx-clock               ctx_clock                                         System    
 pts/cyclictest              Cyclictest                                        System    
 pts/cython-bench            Cython Benchmark                                  Processor 
-pts/dacapobench             DaCapo Benchmark                                  Processor 
 pts/daphne                  Darmstadt Automotive Parallel Heterogeneous Suite System    
 pts/dbench                  Dbench                                            Disk      
 pts/deeprec                 DeepRec                                           System    
