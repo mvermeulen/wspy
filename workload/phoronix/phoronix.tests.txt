@@ -56,7 +56,6 @@ pts/deeprec                 DeepRec                                           Sy
 pts/deepspeech              DeepSpeech                                        Processor 
 pts/draco                   Google Draco                                      System    
 pts/dragonflydb             Dragonflydb                                       System    
-pts/duckdb                  DuckDB                                            System    
 pts/ebizzy                  ebizzy                                            Processor 
 pts/ecp-candle              ECP-CANDLE                                        System    
 pts/encodec                 EnCodec                                           System    
