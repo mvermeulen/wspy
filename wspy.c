@@ -78,6 +78,8 @@ int parse_options(int argc,char *const argv[]){
     { "no-topdown", no_argument, 0, 28 },
     { "topdown2", no_argument, 0, 29 }, //
     { "no-topdown2", no_argument, 0, 30 },
+    { "topdown-frontend",no_argument, 0, 42 },
+    { "no-topdown-frontend",no_argument, 0, 43 },
     { "tree", required_argument, 0, 31 }, //
     { "tree-cmdline",no_argument,0,35 },
     { "tree-open",no_argument,0, 38 },
@@ -192,6 +194,12 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 30: // --no-topdown2
       counter_mask &= (~COUNTER_TOPDOWN2);
+      break;
+    case 42: // --topdown-frontend
+      counter_mask |= COUNTER_TOPDOWN_FE;
+      break;
+    case 43: // --no-topdown-frontend
+      counter_mask &= (~COUNTER_TOPDOWN_FE);
       break;
     case 31: // --tree
       if ((treefile = fopen(optarg,"w")) == NULL){

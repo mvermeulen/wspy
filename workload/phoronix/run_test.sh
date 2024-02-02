@@ -19,8 +19,9 @@ else
     /home/mev/source/wspy/wspy -o ipc.topdown.txt --ipc --topdown2 --no-rusage --no-software phoronix-test-suite batch-run $TESTNAME
     /home/mev/source/wspy/wspy -o l2.float.txt --cache2 --float --no-rusage --no-software phoronix-test-suite batch-run $TESTNAME
     /home/mev/source/wspy/wspy -o amdtopdown.csv --csv --interval 1 --topdown --no-rusage --no-software --no-ipc phoronix-test-suite batch-run $TESTNAME
+    /home/mev/source/wspy/wspy -o frontend.txt --topdown-frontend --no-ipc --no-software --no-rusage batch-run $TESTNAME
     timeout 3600 /home/mev/source/wspy/wspy -o treerun.txt --tree process.tree.txt --tree-cmdline --software --no-ipc phoronix-test-suite batch-run $TESTNAME
-    cat software.branch.txt ipc.topdown.txt l2.float.txt > amdtopdown.txt
+    cat software.branch.txt ipc.topdown.txt l2.float.txt frontend.txt > amdtopdown.txt
     /home/mev/source/wspy/workload/phoronix/gnuplot.sh
 fi
 cd ..
