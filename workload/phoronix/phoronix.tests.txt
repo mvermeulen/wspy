@@ -113,7 +113,6 @@ pts/luaradio                LuaRadio                                          Pr
 pts/lulesh-cl               Lulesh OpenCL                                     System    
 pts/luxcorerender           LuxCoreRender                                     Processor 
 pts/luxmark                 LuxMark                                           System    
-pts/m-queens                m-queens                                          Processor 
 pts/mafft                   Timed MAFFT Alignment                             Processor 
 pts/mandelbulbgpu           MandelbulbGPU                                     System    
 pts/mandelgpu               MandelGPU                                         System    
@@ -127,12 +126,10 @@ pts/mkl-dnn                 oneDNN MKL-DNN                                    Pr
 pts/mlpack                  Mlpack Benchmark                                  System    
 pts/mocassin                Monte Carlo Simulations of Ionised Nebulae        Processor 
 pts/montage                 Montage Astronomical Image Mosaic Engine          Processor 
-pts/mpcbench                GNU MPC                                           Processor 
 pts/mt-dgemm                ACES DGEMM                                        Processor 
 pts/multichase              Multichase Pointer Chaser                         Processor 
 pts/mutex                   BenchmarkMutex                                    System    
 pts/mysqlslap               MariaDB                                           System    
-pts/n-queens                N-Queens                                          Processor 
 pts/natron                  Natron                                            System    
 pts/neat                    Nebular Empirical Analysis Tool                   Processor 
 pts/neatbench               NeatBench                                         System    
@@ -141,8 +138,6 @@ pts/nero2d                  Open FMM Nero2D                                   Pr
 pts/netperf                 Netperf                                           Network   
 pts/nettle                  Nettle                                            Processor 
 pts/network-loopback        Loopback TCP Network Performance                  Network   
-pts/nginx                   nginx                                             System    
-pts/ngspice                 Ngspice                                           Processor 
 pts/node-express-loadtest   Node.js Express HTTP Load Test                    Processor 
 pts/node-octane             Node.js Octane Benchmark                          Processor 
 pts/novabench               Novabench                                         System    
@@ -264,7 +259,6 @@ system/inkscape             Inkscape                                          Sy
 system/iozone               IOzone                                            Disk      
 system/mpv                  MPV                                               System    
 system/ocrmypdf             OCRMyPDF                                          System    
-system/octave-benchmark     GNU Octave Benchmark                              System    
 system/opm                  Open Porous Media                                 Processor 
 system/rsvg                 librsvg                                           System    
 system/selenium-top-sites   Time To Load + View Popular Websites              System    

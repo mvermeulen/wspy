@@ -3,7 +3,7 @@ while read bench
 do
     TESTNAME=$bench ./run_test.sh
 done <<-BENCH_LIST
-mpcbench
-n-queens
-m-queens
+x264
+polyhedron
+tungsten
 BENCH_LIST

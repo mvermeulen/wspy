@@ -130,14 +130,14 @@ Added:
 	5/8 - sqlite
 	5/9 - lzbench
 	5/10 - qe
+	5/11 - ngspice
+	5/12 - mpcbench
+	5/13 - m-queens
+	5/14 - n-queens
+	5/15 - octave-benchmark
 	
 Higher Priority
    - queue:
-     mpcbench
-     n-queens
-     ngspice
-     octave-benchmark
-     opm
      polyhedron
      rnnoise
      rodinia
