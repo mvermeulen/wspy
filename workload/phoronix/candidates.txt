@@ -135,21 +135,19 @@ Added:
 	5/13 - m-queens
 	5/14 - n-queens
 	5/15 - octave-benchmark
+	5/16 - polyhedron
+	5/17 - x264
+	5/18 - tungsten
 	
 Higher Priority
    - queue:
-     polyhedron
      rnnoise
      rodinia
      scikit-learn
      sudokut
      sysbench
      tensorflow-lite
-     tungsten
      vpxenc
-     wrf
-     x264
-     zendnn-tensorflow
    - benchmarks missing (mostly graphics)
       1/7 - https://www.phoronix.com/review/z1-extreme-meteorlake
      Graphics:
