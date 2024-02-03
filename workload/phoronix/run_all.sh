@@ -3,6 +3,6 @@ while read bench
 do
     TESTNAME=$bench ./run_test.sh
 done <<-BENCH_LIST
-rnnoise
-ai-benchmark
+rodinia
+sysbench
 BENCH_LIST
