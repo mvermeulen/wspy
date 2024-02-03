@@ -3,6 +3,8 @@ while read bench
 do
     TESTNAME=$bench ./run_test.sh
 done <<-BENCH_LIST
-rodinia
-sysbench
+scikit-learn-perf
+sudokut
+vpxenc
+aircrack-ng
 BENCH_LIST

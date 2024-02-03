@@ -37,7 +37,6 @@ pts/cloudsuite-ma           CloudSuite In-Memory Analytics                    Sy
 pts/cloudsuite-ms           CloudSuite Media Streaming                        System    
 pts/cloudsuite-ws           CloudSuite Web Serving                            System    
 pts/cockroach               CockroachDB                                       System    
-pts/comd-cl                 CoMD OpenCL                                       System    
 pts/compilebench            Compile Bench                                     Disk      
 pts/compress-pbzip2         Parallel BZIP2 Compression                        Processor 
 pts/core-latency            Core-Latency                                      Processor 
@@ -107,9 +106,6 @@ pts/libgav1                 libgav1                                           Pr
 pts/libraw                  LibRaw                                            Processor 
 pts/luajit                  LuaJIT                                            Processor 
 pts/luaradio                LuaRadio                                          Processor 
-pts/lulesh-cl               Lulesh OpenCL                                     System    
-pts/luxcorerender           LuxCoreRender                                     Processor 
-pts/luxmark                 LuxMark                                           System    
 pts/mafft                   Timed MAFFT Alignment                             Processor 
 pts/mandelbulbgpu           MandelbulbGPU                                     System    
 pts/mandelgpu               MandelGPU                                         System    
@@ -230,7 +226,6 @@ pts/webp2                   WebP2 Image Encode                                Pr
 pts/will-it-scale           will-it-scale                                     OS        
 pts/wrf                     WRF                                               System    
 pts/xsbench                 Xsbench                                           System    
-pts/xsbench-cl              Xsbench OpenCL                                    System    
 pts/yafaray                 YafaRay                                           Processor 
 pts/yugabytedb              YugabyteDB                                        System    
 pts/zendnn-tensorflow       AMD ZenDNN TensorFlow                             System    
