@@ -169,7 +169,6 @@ pts/renaissance             Renaissance                                       Pr
 pts/rust-mandel             Rust Mandelbrot                                   Processor 
 pts/rust-prime              Rust Prime Benchmark                              Processor 
 pts/schbench                Schbench                                          System    
-pts/scikit-learn            Scikit-Learn                                      System    
 pts/scylladb                ScyllaDB                                          System    
 pts/serial-loopback         Serial Loopback Test                              System    
 pts/smallpt                 Smallpt                                           Processor 
@@ -187,7 +186,6 @@ pts/srsran                  srsRAN Project                                    Pr
 pts/startup-time            Application Start-up Time                         Disk      
 pts/stream-dynamic          Stream-Dynamic                                    Memory    
 pts/stressapptest           Stressful Application Test                        Memory    
-pts/sudokut                 Sudokut                                           Processor 
 pts/sunflow                 Sunflow Rendering System                          System    
 pts/svt-hevc                SVT-HEVC                                          Processor 
 pts/swet                    Swet                                              Processor 

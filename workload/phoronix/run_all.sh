@@ -12,4 +12,5 @@ blosc
 bork
 botan
 brl-cad
+plaidml
 BENCH_LIST
