@@ -30,7 +30,7 @@ struct timespec start_time,finish_time;
 static int intel_group_id = -1;
 struct raw_event intel_raw_events[] = {
   { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_L2CACHE,0 },
-  { "cpu-cycles","event=0x3c",PERF_TYPE_RAW,COUNTER_IPC,0 },
+  { "cpu-cycles","event=0x3c",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_TOPDOWN_BE,0 },
   { "slots","event=0x00,umask=0x4",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
   { "core.topdown-retiring","event=0x00,umask=0x80",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
   { "core.topdown-bad-spec","event=0x00,umask=0x81",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
@@ -45,7 +45,12 @@ struct raw_event intel_raw_events[] = {
   { "br_inst_retired.cond","event=0xc4,period=0x61a89",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
   { "br_inst_retired.indirect","event=0xc4,period=0x186a3,umask=0x80",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
   { "l2_request.all","event=0x24,period=0x30d43,umask=0xff",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
-  { "l2_request.miss","event=0x24,period=0x30d43,umask=0x3f",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },  
+  { "l2_request.miss","event=0x24,period=0x30d43,umask=0x3f",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
+  { "exe_activity.bound_on_loads","event=0xa6,cmask=0x5,period=0x1e8483,umask=0x21",PERF_TYPE_RAW,COUNTER_TOPDOWN_BE,0 },
+  { "exe_activity.bound_on_stores","event=0xa6,cmask=0x2,period=0x1e8483,umask=0x40",PERF_TYPE_RAW,COUNTER_TOPDOWN_BE,0 },  
+  { "memory_activity.stalls_l1d_miss","event=0x47,cmask=0x2,period=0xf4243,umask=0x3",PERF_TYPE_RAW,COUNTER_TOPDOWN_BE,0 },    
+  { "memory_activity.stalls_l2_miss","event=0x47,cmask=0x5,period=0xf4243,umask=0x5",PERF_TYPE_RAW,COUNTER_TOPDOWN_BE,0 },    
+  { "memory_activity.stalls_l3_miss","event=0x47,cmask=0x9,period=0xf4243,umask=0x9",PERF_TYPE_RAW,COUNTER_TOPDOWN_BE,0 },
 };
 
 struct raw_event amd_raw_events[] = {
@@ -692,6 +697,13 @@ void setup_counter_groups(struct counter_group **counter_group_list){
     }
   }  
 
+  if (counter_mask & COUNTER_TOPDOWN_BE){
+    if (cgroup = raw_counter_group("topdown-be",COUNTER_TOPDOWN_BE)){
+      cgroup->next = *counter_group_list;
+      *counter_group_list = cgroup;      
+    }
+  }  
+  
   if (counter_mask & COUNTER_TOPDOWN2){
     if (cgroup = raw_counter_group("topdown2",COUNTER_TOPDOWN2)){
       cgroup->next = *counter_group_list;
@@ -1135,6 +1147,63 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
 	}
 	fprintf(outfile,"smt-contention       %-14lu # %4.1f%% ( 0.0%%)\n",contention,(double) contention/slots*100);
       }
+      break;
+    }
+  }
+}
+
+void print_topdown_be(struct counter_group *cgroup,enum output_format oformat,int mask){
+  unsigned long cpu_cycles=0;
+  unsigned long load_stall=0;
+  unsigned long store_stall=0;  
+  unsigned long l1_miss=0;
+  unsigned long l2_miss=0;
+  unsigned long l3_miss=0;
+  
+  struct counter_info *cinfo;
+
+  if (oformat == PRINT_CSV_HEADER){
+    fprintf(outfile,"l1_bound,l2_bound,l3_bound,dram_bound,store_bound");
+  }
+
+  switch(cpu_info->vendor){
+  case VENDOR_INTEL:
+    if (cinfo = find_ci_label(cgroup,"cpu-cycles")) cpu_cycles = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"exe_activity.bound_on_loads")) load_stall = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"exe_activity.bound_on_stores")) store_stall = cinfo->value;    
+    if (cinfo = find_ci_label(cgroup,"memory_activity.stalls_l1d_miss")) l1_miss = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"memory_activity.stalls_l2_miss")) l2_miss = cinfo->value;    
+    if (cinfo = find_ci_label(cgroup,"memory_activity.stalls_l3_miss")) l3_miss = cinfo->value;
+    break;
+  case VENDOR_AMD:
+    return;
+  default:
+    return;
+  }
+
+  if (cpu_cycles){
+    switch(oformat){
+    case PRINT_CSV:
+      fprintf(outfile,"%4.1f,%4.1f,%4.1f,%4.1f,%4.1f,",
+	      (double) (load_stall - l1_miss)*100.0/cpu_cycles,
+	      (double) (l1_miss - l2_miss)*100.0/cpu_cycles,
+	      (double) (l2_miss - l3_miss)*100.0/cpu_cycles,
+	      (double) l3_miss*100.0/cpu_cycles,
+	      (double) store_stall*100.0/cpu_cycles);
+      break;
+    case PRINT_NORMAL:
+      fprintf(outfile,"cpu-cycles           %-14lu # %4.1f%% memory latency\n",
+	      cpu_cycles,(double) (load_stall+store_stall)*100.0/cpu_cycles);
+      fprintf(outfile,"load stalls          %-14lu # %4.1f%% l1 bound\n",
+	      load_stall,(load_stall - l1_miss)*100.0/cpu_cycles);
+      fprintf(outfile,"l1 miss              %-14lu # %4.1f%% l2 bound\n",
+	      l1_miss,(double) (l1_miss - l2_miss)*100.0/cpu_cycles);
+      fprintf(outfile,"l2 miss              %-14lu # %4.1f%% l3 bound\n",
+	      l2_miss,(double) (l2_miss - l3_miss)*100.0/cpu_cycles);      
+      fprintf(outfile,"l3 miss              %-14lu # %4.1f%% dram bound\n",
+	      l3_miss,(double) l3_miss*100.0/cpu_cycles);
+      fprintf(outfile,"store_stalls         %-14lu # %4.1f%% store bound\n",
+	      store_stall,(double) store_stall*100.0/cpu_cycles);      
       break;
     }
   }
@@ -1608,6 +1677,8 @@ void print_metrics(struct counter_group *counter_group_list,enum output_format o
       print_topdown(cgroup,oformat,COUNTER_TOPDOWN);
     } else if (cgroup->mask & COUNTER_TOPDOWN2){
       print_topdown(cgroup,oformat,COUNTER_TOPDOWN2);
+    } else if (cgroup->mask & COUNTER_TOPDOWN_BE){
+      print_topdown_be(cgroup,oformat,COUNTER_TOPDOWN_BE);
     } else if (cgroup->mask & COUNTER_TOPDOWN_FE){
       print_topdown_fe(cgroup,oformat,COUNTER_TOPDOWN_FE);
     } else if (cgroup->mask & COUNTER_TOPDOWN_OP){

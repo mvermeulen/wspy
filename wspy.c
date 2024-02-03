@@ -80,6 +80,8 @@ int parse_options(int argc,char *const argv[]){
     { "no-topdown2", no_argument, 0, 30 },
     { "topdown-frontend",no_argument, 0, 42 },
     { "no-topdown-frontend",no_argument, 0, 43 },
+    { "topdown-backend",no_argument,0,46 },
+    { "no-topdown-backend",no_argument,0,47 },
     { "topdown-optlb",no_argument,0,44 },
     { "no-topdown-optlb",no_argument,0,45 },
     { "tree", required_argument, 0, 31 }, //
@@ -203,6 +205,12 @@ int parse_options(int argc,char *const argv[]){
     case 43: // --no-topdown-frontend
       counter_mask &= (~COUNTER_TOPDOWN_FE);
       break;
+    case 46: // --topdown-backend
+      counter_mask |= COUNTER_TOPDOWN_BE;
+      break;
+    case 47: // --no-topdown-backend
+      counter_mask &= (~COUNTER_TOPDOWN_BE);
+      break;      
     case 44: // --topdown-optlb
       counter_mask |= COUNTER_TOPDOWN_OP;
       break;
