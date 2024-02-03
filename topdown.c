@@ -117,6 +117,8 @@ unsigned long parse_intel_event(char *description){
 	result.event = value;
       } else if (!strcmp(name,"umask")){
 	result.umask = value;
+      } else if (!strcmp(name,"cmask")){
+	result.cmask = value;	
       } else if (!strcmp(name,"period")){
 	// appears in some Intel perf list output, but not sure of purpose, ignore...
       } else {
@@ -1185,7 +1187,7 @@ void print_topdown_be(struct counter_group *cgroup,enum output_format oformat,in
     switch(oformat){
     case PRINT_CSV:
       fprintf(outfile,"%4.1f,%4.1f,%4.1f,%4.1f,%4.1f,",
-	      (double) (load_stall - l1_miss)*100.0/cpu_cycles,
+	      (double) (load_stall > l1_miss)?(load_stall - l1_miss)*100.0/cpu_cycles:0,
 	      (double) (l1_miss - l2_miss)*100.0/cpu_cycles,
 	      (double) (l2_miss - l3_miss)*100.0/cpu_cycles,
 	      (double) l3_miss*100.0/cpu_cycles,
@@ -1195,7 +1197,7 @@ void print_topdown_be(struct counter_group *cgroup,enum output_format oformat,in
       fprintf(outfile,"cpu-cycles           %-14lu # %4.1f%% memory latency\n",
 	      cpu_cycles,(double) (load_stall+store_stall)*100.0/cpu_cycles);
       fprintf(outfile,"load stalls          %-14lu # %4.1f%% l1 bound\n",
-	      load_stall,(load_stall - l1_miss)*100.0/cpu_cycles);
+	      load_stall,(load_stall>l1_miss)?(load_stall - l1_miss)*100.0/cpu_cycles:0);
       fprintf(outfile,"l1 miss              %-14lu # %4.1f%% l2 bound\n",
 	      l1_miss,(double) (l1_miss - l2_miss)*100.0/cpu_cycles);
       fprintf(outfile,"l2 miss              %-14lu # %4.1f%% l3 bound\n",

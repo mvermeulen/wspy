@@ -12,6 +12,7 @@ if [ $(grep -c Intel /proc/cpuinfo) -gt 0 ]; then
     /home/mev/source/wspy/wspy -o software.branch.txt --rusage --software --branch --no-ipc phoronix-test-suite batch-run $TESTNAME 2>&1 | tee intel.${TESTNAME}.out
     /home/mev/source/wspy/wspy -o topdown.txt --topdown2 --no-rusage --no-software --no-ipc phoronix-test-suite batch-run $TESTNAME
     /home/mev/source/wspy/wspy -o ipc.l2.txt --ipc --cache2 --no-rusage --no-software phoronix-test-suite batch-run $TESTNAME
+    /home/mev/source/wspy/wspy -o backend.txt --no-ipc --no-rusage --topdown-backend phoronix-test-suite batch-run $TESTNAME
     cat software.branch.txt topdown.txt ipc.l2.txt > inteltopdown.txt
 else
     /home/mev/source/wspy/wspy -o systemtime.csv --csv --interval 1 --no-rusage --no-software --system --no-ipc phoronix-test-suite batch-run $TESTNAME 2>&1 | tee amd.${TESTNAME}.out    
