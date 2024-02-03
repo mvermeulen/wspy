@@ -142,13 +142,14 @@ Added:
 	5/20 - rnnoise
 	5/21 - rodinia
 	5/22 - sysbench
+	5/23 - sudokut
+	5/24 - tensorflow-lite
+	5/25 - vpxenc
+	5/26 - aircrack-ng
 	
 Higher Priority
    - queue:
      scikit-learn
-     sudokut
-     tensorflow-lite
-     vpxenc
    - benchmarks missing (mostly graphics)
       1/7 - https://www.phoronix.com/review/z1-extreme-meteorlake
      Graphics:

@@ -1,7 +1,6 @@
-pts/aircrack-ng             Aircrack-ng                                       Processor 
 pts/amg                     Algebraic Multi-Grid Benchmark                    Processor 
 pts/aobench                 AOBench                                           Processor 
-pts/apache-siege            Apache Siege                                      System    
+pts/apache-siege            Apache Siege                                      System    // download failed
 pts/arrayfire               ArrayFire                                         Processor 
 pts/askap                   ASKAP                                             System    
 pts/asmfish                 asmFish                                           Processor 
@@ -209,7 +208,6 @@ pts/systemd-boot-total      Systemd Total Boot Time                           Sy
 pts/systemd-boot-userspace  Systemd Userspace Boot Time                       Processor 
 pts/t-test1                 t-test1                                           Memory    
 pts/tachyon                 Tachyon                                           Processor 
-pts/tensorflow-lite         TensorFlow Lite                                   System    
 pts/tidb                    TiDB Community Server                             System    
 pts/tinymembench            Tinymembench                                      Memory    
 pts/tiobench                Threaded I/O Tester                               Disk      
@@ -221,7 +219,6 @@ pts/unpack-firefox          Unpacking Firefox                                 Sy
 pts/unpack-linux            Unpacking The Linux Kernel                        Disk      
 pts/viennacl                ViennaCL                                          System    
 pts/vosk                    VOSK Speech Recognition Toolkit                   Processor 
-pts/vpxenc                  VP9 libvpx Encoding                               Processor 
 pts/webp2                   WebP2 Image Encode                                Processor 
 pts/will-it-scale           will-it-scale                                     OS        
 pts/wrf                     WRF                                               System    
@@ -249,4 +246,3 @@ system/opm                  Open Porous Media                                 Pr
 system/rsvg                 librsvg                                           System    
 system/selenium-top-sites   Time To Load + View Popular Websites              System    
 system/tesseract-ocr        Tesseract OCR                                     System    
-git/vpxenc                  VP9 libvpx Encoding                               Processor 
