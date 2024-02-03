@@ -49,7 +49,8 @@ struct raw_event intel_raw_events[] = {
 };
 
 struct raw_event amd_raw_events[] = {
-  { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_OPCACHE|COUNTER_TLB|COUNTER_L2CACHE|COUNTER_L3CACHE|COUNTER_FLOAT,0 },
+  { "instructions","event=0xc0",
+    PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_OPCACHE|COUNTER_TLB|COUNTER_L2CACHE|COUNTER_L3CACHE|COUNTER_FLOAT|COUNTER_TOPDOWN_FE|COUNTER_TOPDOWN_OP,0 },
   { "cpu-cycles","event=0x76",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
   { "ex_ret_ops","event=0xc1",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
   { "de_no_dispatch_per_slot.no_ops_from_frontend","event=0x1a0,umask=0x1",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
@@ -66,8 +67,8 @@ struct raw_event amd_raw_events[] = {
   { "branch-misses","event=0xc3",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
   { "conditional-branches","event=0xd1",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
   { "indirect-branches","event=0xcc",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
-  { "op_cache_hit_miss.all_op_cache_accesses","event=0x28f,umask=0x7",PERF_TYPE_RAW,COUNTER_OPCACHE,0 },
-  { "op_cache_hit_miss.op_cache_miss","event=0x28f,umask=0x4",PERF_TYPE_RAW,COUNTER_OPCACHE,0 },
+  { "op_cache_hit_miss.all_op_cache_accesses","event=0x28f,umask=0x7",PERF_TYPE_RAW,COUNTER_OPCACHE|COUNTER_TOPDOWN_OP,0 },
+  { "op_cache_hit_miss.op_cache_miss","event=0x28f,umask=0x4",PERF_TYPE_RAW,COUNTER_OPCACHE|COUNTER_TOPDOWN_OP,0 },
   { "l2_request_g1.all_no_prefetch","event=0x60,umask=0xf9",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
   { "l2_pf_hit_l2","event=0x70,umask=0x1f",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
   { "l2_pf_miss_l2_hit_l3", "event=0x71,umask=0x1f",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
@@ -84,7 +85,14 @@ struct raw_event amd_raw_events[] = {
   { "fp_ret_fops_scalar","event=0x5,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,0},
   // l3 events, need to have /sys/devices/amd_l3/type available...
   { "l3_lookup_state.all_coherent_accesses_to_l3","event=0x4,umask=0xff,requires=/sys/devices/amd_l3/type",PERF_TYPE_L3,COUNTER_L3CACHE, 0 },
-  { "l3_lookup_state.l3_miss","event=0x4,umask=0x1,requires=/sys/devices/amd_l3/type",PERF_TYPE_L3,COUNTER_L3CACHE, 0 },  
+  { "l3_lookup_state.l3_miss","event=0x4,umask=0x1,requires=/sys/devices/amd_l3/type",PERF_TYPE_L3,COUNTER_L3CACHE, 0 },
+  { "ic_tag_hit_miss.instruction_cache_miss","event=0x18e,umask=0x18",PERF_TYPE_RAW,COUNTER_TOPDOWN_FE,0},
+  { "ic_tag_hit_miss.instruction_cache_accesses","event=0x18e,umask=0x1f",PERF_TYPE_RAW,COUNTER_TOPDOWN_FE,0},
+  { "bp_l1_tlb_miss_l2_tlb_hit","event=0x84",PERF_TYPE_RAW,COUNTER_TOPDOWN_FE,0},
+  { "bp_l1_tlb_miss_l2_tlb_miss.all","event=0xf",PERF_TYPE_RAW,COUNTER_TOPDOWN_FE,0},
+  { "ls_tlb_flush.all","event=0x78,umask=0xff",PERF_TYPE_RAW,COUNTER_TOPDOWN_FE,0},
+  { "ls_l1_d_tlb_miss.all","event=0x45,umask=0xff",PERF_TYPE_RAW,COUNTER_TOPDOWN_OP,0},
+  { "ls_l1_d_tlb_miss.all_l2_miss","event=0x45,umask=0xf0",PERF_TYPE_RAW,COUNTER_TOPDOWN_OP,0},
 };
 
 unsigned long parse_intel_event(char *description){
@@ -669,7 +677,21 @@ void setup_counter_groups(struct counter_group **counter_group_list){
       *counter_group_list = cgroup;      
     }        
   }
+
+  if (counter_mask & COUNTER_TOPDOWN_OP){
+    if (cgroup = raw_counter_group("topdown-op",COUNTER_TOPDOWN_OP)){
+      cgroup->next = *counter_group_list;
+      *counter_group_list = cgroup;      
+    }
+  }    
       
+  if (counter_mask & COUNTER_TOPDOWN_FE){
+    if (cgroup = raw_counter_group("topdown-fe",COUNTER_TOPDOWN_FE)){
+      cgroup->next = *counter_group_list;
+      *counter_group_list = cgroup;      
+    }
+  }  
+
   if (counter_mask & COUNTER_TOPDOWN2){
     if (cgroup = raw_counter_group("topdown2",COUNTER_TOPDOWN2)){
       cgroup->next = *counter_group_list;
@@ -1118,6 +1140,116 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
   }
 }
 
+void print_topdown_fe(struct counter_group *cgroup,enum output_format oformat,int mask){
+  unsigned long instructions=0;
+  unsigned long icache_miss=0;
+  unsigned long icache_access=0;
+  unsigned long itlb1=0;
+  unsigned long itlb2=0;
+  unsigned long tlb_flush=0;
+  
+  struct counter_info *cinfo;
+
+  if (oformat == PRINT_CSV_HEADER){
+    fprintf(outfile,"icache,itlb1,itlb2,tlbflush,");
+  }
+
+  switch(cpu_info->vendor){
+  case VENDOR_INTEL:
+    return;
+    break;
+  case VENDOR_AMD:
+    if (cinfo = find_ci_label(cgroup,"instructions")) instructions = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"ic_tag_hit_miss.instruction_cache_miss")) icache_miss = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"ic_tag_hit_miss.instruction_cache_accesses")) icache_access = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"bp_l1_tlb_miss_l2_tlb_hit")) itlb1 = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"bp_l1_tlb_miss_l2_tlb_miss.all")) itlb2 = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"ls_tlb_flush.all")) tlb_flush = cinfo->value;
+    break;
+  default:
+    return;
+  }
+
+  if (instructions){
+    switch(oformat){
+    case PRINT_CSV:
+      if (icache_access)
+	fprintf(outfile,"%4.1f,",(double) icache_miss / icache_access*100);
+      else
+	fprintf(outfile,"0.0");
+      fprintf(outfile,"%4.3f",(double) (itlb1 + itlb2)*1000.0 / instructions);
+      fprintf(outfile,"%4.3f",(double) itlb2*1000.0 / instructions);
+      fprintf(outfile,"%4.3f",(double) tlb_flush*1000.0 / instructions);
+      break;
+    case PRINT_NORMAL:
+      fprintf(outfile,"instructions         %-14lu #\n",instructions);
+      fprintf(outfile,"icache               %-14lu # %4.3f icache per 1000 inst\n",
+	      icache_access,(double) icache_access * 1000 / instructions);
+      fprintf(outfile,"icache miss          %-14lu # %4.1f%% icache miss rate\n",
+	      icache_miss,(double) icache_miss / icache_access*100.0);
+      fprintf(outfile,"l1 iTLB miss         %-14lu # %4.3f L1 iTLB per 1000 inst\n",
+	      itlb1+itlb2,(double) (itlb1+itlb2)*1000/instructions);
+      fprintf(outfile,"l2 iTLB miss         %-14lu # %4.3f L2 iTLB per 1000 inst\n",
+	      itlb2,(double) itlb2*1000/instructions);
+      fprintf(outfile,"tlb flush            %-14lu # %4.3f TLB flush per 1000 inst\n",
+	      tlb_flush,(double) tlb_flush*1000/instructions);      
+      break;
+    }
+  }
+}
+
+void print_topdown_op(struct counter_group *cgroup,enum output_format oformat,int mask){
+  unsigned long instructions=0;
+  unsigned long opcache_miss=0;
+  unsigned long opcache_access=0;
+  unsigned long dtlb1=0;
+  unsigned long dtlb2=0;
+  
+  struct counter_info *cinfo;
+
+  if (oformat == PRINT_CSV_HEADER){
+    fprintf(outfile,"opcache,dtlb1,dtlb2,");
+  }
+
+  switch(cpu_info->vendor){
+  case VENDOR_INTEL:
+    return;
+    break;
+  case VENDOR_AMD:
+    if (cinfo = find_ci_label(cgroup,"instructions")) instructions = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"op_cache_hit_miss.all_op_cache_accesses")) opcache_access = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"op_cache_hit_miss.op_cache_miss")) opcache_miss = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"ls_l1_d_tlb_miss.all")) dtlb1 = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"ls_l1_d_tlb_miss.all_l2_miss")) dtlb2 = cinfo->value;
+    break;
+  default:
+    return;
+  }
+
+  if (instructions){
+    switch(oformat){
+    case PRINT_CSV:
+      if (opcache_access)
+	fprintf(outfile,"%4.1f,",(double) opcache_miss / opcache_access*100);
+      else
+	fprintf(outfile,"0.0");
+      fprintf(outfile,"%4.3f",(double) dtlb1*1000.0 / instructions);
+      fprintf(outfile,"%4.3f",(double) dtlb2*1000.0 / instructions);
+      break;
+    case PRINT_NORMAL:
+      fprintf(outfile,"instructions         %-14lu #\n",instructions);
+      fprintf(outfile,"opcache              %-14lu # %4.3f opcache per 1000 inst\n",
+	      opcache_access,(double) opcache_access * 1000 / instructions);
+      fprintf(outfile,"opcache miss         %-14lu # %4.1f%% opcache miss rate\n",
+	      opcache_miss,(double) opcache_miss / opcache_access*100.0);
+      fprintf(outfile,"l1 dTLB miss         %-14lu # %4.3f L1 dTLB per 1000 inst\n",
+	      dtlb1,(double) dtlb1*1000/instructions);
+      fprintf(outfile,"l2 dTLB miss         %-14lu # %4.3f L2 dTLB per 1000 inst\n",
+	      dtlb2,(double) dtlb2*1000/instructions);
+      break;
+    }
+  }
+}
 
 void print_branch(struct counter_group *cgroup,enum output_format oformat){
   struct counter_info *cinfo;
@@ -1476,6 +1608,10 @@ void print_metrics(struct counter_group *counter_group_list,enum output_format o
       print_topdown(cgroup,oformat,COUNTER_TOPDOWN);
     } else if (cgroup->mask & COUNTER_TOPDOWN2){
       print_topdown(cgroup,oformat,COUNTER_TOPDOWN2);
+    } else if (cgroup->mask & COUNTER_TOPDOWN_FE){
+      print_topdown_fe(cgroup,oformat,COUNTER_TOPDOWN_FE);
+    } else if (cgroup->mask & COUNTER_TOPDOWN_OP){
+      print_topdown_op(cgroup,oformat,COUNTER_TOPDOWN_OP);      
     } else if (cgroup->mask & COUNTER_BRANCH){
       print_branch(cgroup,oformat);
     } else if (cgroup->mask & COUNTER_L2CACHE){

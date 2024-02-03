@@ -28,17 +28,19 @@ extern struct timespec start_time,finish_time;
 #define COUNTER_IPC         0x1
 #define COUNTER_TOPDOWN     0x2
 #define COUNTER_TOPDOWN2    0x4
-#define COUNTER_BRANCH      0x8
-#define COUNTER_DCACHE      0x10
-#define COUNTER_ICACHE      0x20
-#define COUNTER_L1CACHE     0x40
-#define COUNTER_L2CACHE     0x80
-#define COUNTER_L3CACHE     0x100
-#define COUNTER_MEMORY      0x200
-#define COUNTER_TLB         0x400
-#define COUNTER_OPCACHE     0x800
-#define COUNTER_SOFTWARE    0x1000
-#define COUNTER_FLOAT       0x2000
+#define COUNTER_TOPDOWN_FE  0x8
+#define COUNTER_TOPDOWN_OP  0x10
+#define COUNTER_BRANCH      0x20
+#define COUNTER_DCACHE      0x40
+#define COUNTER_ICACHE      0x80
+#define COUNTER_L1CACHE     0x100
+#define COUNTER_L2CACHE     0x200
+#define COUNTER_L3CACHE     0x400
+#define COUNTER_MEMORY      0x800
+#define COUNTER_TLB         0x1000
+#define COUNTER_OPCACHE     0x2000
+#define COUNTER_SOFTWARE    0x4000
+#define COUNTER_FLOAT       0x8000
 
 extern unsigned int counter_mask;
 
