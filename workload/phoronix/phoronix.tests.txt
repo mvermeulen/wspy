@@ -161,7 +161,6 @@ pts/pjsip                   PJSIP                                             Pr
 pts/plaidml                 PlaidML                                           System    
 pts/pmbench                 pmbench                                           Memory    
 pts/polybench-c             PolyBench-C                                       Processor 
-pts/polyhedron              Polyhedron Fortran Benchmarks                     Processor 
 pts/postmark                PostMark                                          Disk      
 pts/powertop-wakeups        Powertop Wakeups                                  Processor 
 pts/primesieve              Primesieve                                        Processor 
@@ -226,7 +225,6 @@ pts/tjbench                 libjpeg-turbo tjbench                             Sy
 pts/toktx                   KTX-Software toktx                                System    
 pts/toybrot                 toyBrot Fractal Generator                         Processor 
 pts/ttsiod-renderer         TTSIOD 3D Renderer                                Processor 
-pts/tungsten                Tungsten Renderer                                 Processor 
 pts/unpack-firefox          Unpacking Firefox                                 System    
 pts/unpack-linux            Unpacking The Linux Kernel                        Disk      
 pts/viennacl                ViennaCL                                          System    
@@ -235,7 +233,6 @@ pts/vpxenc                  VP9 libvpx Encoding                               Pr
 pts/webp2                   WebP2 Image Encode                                Processor 
 pts/will-it-scale           will-it-scale                                     OS        
 pts/wrf                     WRF                                               System    
-pts/x264                    x264                                              Processor 
 pts/xsbench                 Xsbench                                           System    
 pts/xsbench-cl              Xsbench OpenCL                                    System    
 pts/yafaray                 YafaRay                                           Processor 
