@@ -1,12 +1,7 @@
-pts/amg                     Algebraic Multi-Grid Benchmark                    Processor 
-pts/aobench                 AOBench                                           Processor 
 pts/apache-siege            Apache Siege                                      System    // download failed
-pts/arrayfire               ArrayFire                                         Processor 
 pts/askap                   ASKAP                                             System    
 pts/asmfish                 asmFish                                           Processor 
 pts/astcenc                 ASTC Encoder                                      System    
-pts/axs2mlperf              axs2mlperf                                        System    
-pts/basemark                Basemark GPU                                      System    
 pts/basis                   Basis Universal                                   System    
 pts/blake2                  BLAKE2                                            Processor 
 pts/blosc                   C-Blosc                                           Processor 
