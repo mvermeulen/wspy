@@ -150,6 +150,15 @@ Added:
 	5/28 - aobench
 	5/29 - amg
 	5/30 - arrayfire
+	5/31 - askap
+	6/1 - asmfish
+	6/2 - astcenc
+	6/3 - basis
+	6/4 - blake2
+	6/5 - blosc
+	6/6 - bork
+	6/7 - botan
+	6/8 - brl-cad
 	
 Higher Priority
    - queue:
