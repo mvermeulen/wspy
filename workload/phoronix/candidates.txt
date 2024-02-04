@@ -153,7 +153,6 @@ Added:
 	
 Higher Priority
    - queue:
-     scikit-learn
    - benchmarks missing (mostly graphics)
       1/7 - https://www.phoronix.com/review/z1-extreme-meteorlake
      Graphics:
