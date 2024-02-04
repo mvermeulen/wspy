@@ -15,4 +15,5 @@ build-wasmer
 build2
 bullet
 byte
+plaidml
 BENCH_LIST
