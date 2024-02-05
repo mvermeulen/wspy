@@ -3,7 +3,8 @@ while read bench
 do
     TESTNAME=$bench ./run_test.sh
 done <<-BENCH_LIST
-apache-iotdb-perf
-appleseed
-avifenc
+build-apache
+build-ffmpeg
+build-godot
+graphics-magick
 BENCH_LIST
