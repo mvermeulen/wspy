@@ -3,10 +3,9 @@ while read bench
 do
     TESTNAME=$bench ./run_test.sh
 done <<-BENCH_LIST
-build-nodejs
-build-php
-compress-7zip
-c-ray
-duckdb
-openfoam-perf
+compress-lz4
+compress-zstd
+encode-flac
+encode-mp3
+encode-opus
 BENCH_LIST
