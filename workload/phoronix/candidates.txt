@@ -162,6 +162,12 @@ Added:
 	
 Higher Priority
    - queue:
+      2/8 - https://www.phoronix.com/review/nvidia-gh200-gptshop-benchmark
+      graph500
+      helsing
+      hpcg
+      mt-dgemm
+      primesieve
    - benchmarks missing (mostly graphics)
       1/7 - https://www.phoronix.com/review/z1-extreme-meteorlake
      Graphics:
