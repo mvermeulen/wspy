@@ -3,9 +3,12 @@ while read bench
 do
     TESTNAME=$bench ./run_test.sh
 done <<-BENCH_LIST
-compress-lz4
-compress-zstd
-encode-flac
-encode-mp3
-encode-opus
+easywave
+embree-perf
+gimp
+gromacs
+java-scimark2
+llama-cpp-perf
+openjpeg
+phpbench
 BENCH_LIST
