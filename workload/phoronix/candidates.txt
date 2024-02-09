@@ -159,6 +159,12 @@ Added:
 	6/6 - bork
 	6/7 - botan
 	6/8 - brl-cad
+	6/9 - build-clash
+	6/10 - build-eigen
+	6/11 - build-erlang
+	6/12 - build-gem5
+	6/13 - build-imagemagick
+	6/9 - graph500
 	
 Higher Priority
    - queue:
