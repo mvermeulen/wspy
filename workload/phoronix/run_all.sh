@@ -3,7 +3,7 @@ while read bench
 do
     TESTNAME=$bench ./run_test.sh
 done <<-BENCH_LIST
-graph500
+graph500-perf
 helsing
 hpcg-perf
 mt-dgemm
