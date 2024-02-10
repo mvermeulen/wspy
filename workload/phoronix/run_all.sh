@@ -3,7 +3,8 @@ while read bench
 do
     TESTNAME=$bench ./run_test.sh
 done <<-BENCH_LIST
-john-the-ripper
-kvazaar
-lczero
+hpcg-perf
+primesieve
+mt-dgemm
+spark-tpcds
 BENCH_LIST
