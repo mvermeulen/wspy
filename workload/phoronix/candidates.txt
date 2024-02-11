@@ -174,6 +174,16 @@ Added:
 	
 Higher Priority
    - queue:
+     compress-pbzip2 - image downloaded (share/Downloads)
+     clomp
+     cockroach
+     core-latency
+     couchdb
+     cp2k
+     cpp-perf-bench
+     cpuminer-opt
+     cryptopp
+     cython-bench
    - benchmarks missing (mostly graphics)
       1/7 - https://www.phoronix.com/review/z1-extreme-meteorlake
      Graphics:
@@ -182,13 +192,11 @@ Higher Priority
      unigine-heaven, unigine-super, unigine-valley, unvanquished,
      warsow, xonotic, vkpeak, xplane12
 
-Missing download files (try periodically)
-   compress-pbzip2
-   onnx - fails to build even after downloading the files.
+Fails to build (try periodically)
+   onnx - fails to build even after downloading the files/googletest-adsl conflict
 
 Compression tests
      compress-pbzip2
      system-decompress-xz
      system-decompress-gzip
      system-decompress-zlib (deprecated?)
-     blosc
