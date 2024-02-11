@@ -170,13 +170,12 @@ Added:
 	6/12 - mt-dgemm
 	6/13 - primesieve
 	6/14 - spark-tpcds
-	
+	6/15 - clomp
+	6/16 - cockroach
 	
 Higher Priority
    - queue:
      compress-pbzip2 - image downloaded (share/Downloads)
-     clomp
-     cockroach
      core-latency
      couchdb
      cp2k
