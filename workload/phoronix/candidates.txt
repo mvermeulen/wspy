@@ -172,13 +172,13 @@ Added:
 	6/14 - spark-tpcds
 	6/15 - clomp
 	6/16 - cockroach
+	6/17 - cp2k
 	
 Higher Priority
    - queue:
      compress-pbzip2 - image downloaded (share/Downloads)
      core-latency
      couchdb
-     cp2k
      cpp-perf-bench
      cpuminer-opt
      cryptopp
