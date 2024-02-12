@@ -1,25 +1,4 @@
 pts/apache-siege            Apache Siege                                      System    // download failed
-pts/askap                   ASKAP                                             System    
-pts/asmfish                 asmFish                                           Processor 
-pts/astcenc                 ASTC Encoder                                      System    
-pts/basis                   Basis Universal                                   System    
-pts/blake2                  BLAKE2                                            Processor 
-pts/blosc                   C-Blosc                                           Processor 
-pts/bork                    Bork File Encrypter                               Processor 
-pts/botan                   Botan                                             Processor 
-pts/brl-cad                 BRL-CAD                                           System    
-pts/build-clash             Timed Clash Compilation                           Processor 
-pts/build-eigen             Timed Eigen Compilation                           Processor 
-pts/build-erlang            Timed Erlang/OTP Compilation                      Processor 
-pts/build-gdb               Timed GDB GNU Debugger Compilation                Processor 
-pts/build-gem5              Timed Gem5 Compilation                            Processor 
-pts/build-imagemagick       Timed ImageMagick Compilation                     Processor 
-pts/build-mesa              Timed Mesa Compilation                            Processor 
-pts/build-python            Timed CPython Compilation                         Processor 
-pts/build-wasmer            Timed Wasmer Compilation                          Processor 
-pts/build2                  Build2                                            Processor 
-pts/bullet                  Bullet Physics Engine                             Processor 
-pts/byte                    BYTE Unix Benchmark                               Processor 
 pts/cachebench              CacheBench                                        Processor 
 pts/caffe                   Caffe                                             System    
 pts/chia-vdf                Chia Blockchain VDF                               Processor 
