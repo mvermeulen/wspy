@@ -17,5 +17,5 @@ incompact3d
 libreoffice
 lulesh
 mnn
-tensorflow
+tensorflow-perf
 BENCH_LIST
