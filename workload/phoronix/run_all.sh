@@ -6,5 +6,5 @@ done <<-BENCH_LIST
 nginx
 ngspice
 openradioss
-pgbench
+pgbench-perf
 BENCH_LIST
