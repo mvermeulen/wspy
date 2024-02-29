@@ -180,6 +180,8 @@ Added:
 	6/22 - pyhpc
 	6/23 - renaissance
 	6/24 - spark
+	6/25 - cython-bench
+	6/26 - cachebench
 	
 Higher Priority
    - new tests
@@ -190,7 +192,6 @@ Higher Priority
      cpp-perf-bench
      cpuminer-opt
      cryptopp
-     cython-bench
    - benchmarks missing (mostly graphics)
       1/7 - https://www.phoronix.com/review/z1-extreme-meteorlake
      Graphics:
