@@ -1,15 +1,12 @@
 pts/apache-siege            Apache Siege                                      System    // download failed
 pts/cachebench              CacheBench                                        Processor 
-pts/caffe                   Caffe                                             System    
-pts/chia-vdf                Chia Blockchain VDF                               Processor 
-pts/clickhouse              ClickHouse                                        System    
-pts/clomp                   CLOMP                                             Processor 
-pts/cloudsuite-da           CloudSuite Data Analytics                         System    
-pts/cloudsuite-ga           CloudSuite Graph Analytics                        System    
-pts/cloudsuite-ma           CloudSuite In-Memory Analytics                    System    
-pts/cloudsuite-ms           CloudSuite Media Streaming                        System    
-pts/cloudsuite-ws           CloudSuite Web Serving                            System    
-pts/cockroach               CockroachDB                                       System    
+pts/caffe                   Caffe                                             System    // outdated
+pts/chia-vdf                Chia Blockchain VDF                               Processor // fails to compile
+pts/cloudsuite-da           CloudSuite Data Analytics                         System    // docker based
+pts/cloudsuite-ga           CloudSuite Graph Analytics                        System    // docker based
+pts/cloudsuite-ma           CloudSuite In-Memory Analytics                    System    // docker based
+pts/cloudsuite-ms           CloudSuite Media Streaming                        System    // docker based
+pts/cloudsuite-ws           CloudSuite Web Serving                            System    // docker based
 pts/compilebench            Compile Bench                                     Disk      
 pts/compress-pbzip2         Parallel BZIP2 Compression                        Processor 
 pts/core-latency            Core-Latency                                      Processor 
@@ -20,7 +17,6 @@ pts/cpuminer-opt            Cpuminer-Opt                                      Pr
 pts/cryptopp                Crypto++                                          Processor 
 pts/ctx-clock               ctx_clock                                         System    
 pts/cyclictest              Cyclictest                                        System    
-pts/cython-bench            Cython Benchmark                                  Processor 
 pts/daphne                  Darmstadt Automotive Parallel Heterogeneous Suite System    
 pts/dbench                  Dbench                                            Disk      
 pts/deeprec                 DeepRec                                           System    
