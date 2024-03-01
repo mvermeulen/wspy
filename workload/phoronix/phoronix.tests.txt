@@ -1,5 +1,4 @@
 pts/apache-siege            Apache Siege                                      System    // download failed
-pts/cachebench              CacheBench                                        Processor 
 pts/caffe                   Caffe                                             System    // outdated
 pts/chia-vdf                Chia Blockchain VDF                               Processor // fails to compile
 pts/cloudsuite-da           CloudSuite Data Analytics                         System    // docker based
@@ -7,8 +6,7 @@ pts/cloudsuite-ga           CloudSuite Graph Analytics                        Sy
 pts/cloudsuite-ma           CloudSuite In-Memory Analytics                    System    // docker based
 pts/cloudsuite-ms           CloudSuite Media Streaming                        System    // docker based
 pts/cloudsuite-ws           CloudSuite Web Serving                            System    // docker based
-pts/compilebench            Compile Bench                                     Disk      
-pts/compress-pbzip2         Parallel BZIP2 Compression                        Processor 
+pts/compress-pbzip2         Parallel BZIP2 Compression                        Processor // download failed
 pts/core-latency            Core-Latency                                      Processor 
 pts/couchdb                 Apache CouchDB                                    System    
 pts/cp2k                    CP2K Molecular Dynamics                           Processor 
@@ -31,7 +29,6 @@ pts/etcd                    etcd                                              Sy
 pts/etcpak                  Etcpak                                            Processor 
 pts/ethr                    Ethr                                              Network   
 pts/etqw-demo-iqc           ET: Quake Wars Image Quality                      System    
-pts/faiss                   Faiss                                             System    
 pts/fast-cli                fast-cli                                          Network   
 pts/ffte                    FFTE                                              Processor 
 pts/fhourstones             Fhourstones                                       Processor 
@@ -39,20 +36,16 @@ pts/financebench            FinanceBench                                      Sy
 pts/fio                     Flexible IO Tester                                Disk      
 pts/fs-mark                 FS-Mark                                           Disk      
 pts/gcrypt                  Gcrypt Library                                    Processor 
-pts/git                     Git                                               System    
 pts/go-benchmark            Go Benchmarks                                     Processor 
 pts/gpaw                    GPAW                                              System    
-pts/graph500                Graph500                                          System    
 pts/hadoop                  Apache Hadoop                                     System    
 pts/hammerdb-mariadb        HammerDB - MariaDB                                System    
 pts/hammerdb-postgresql     HammerDB - PostgreSQL                             System    
 pts/hbase                   Apache HBase                                      System    
 pts/hdparm-read             hdparm Timed Disk Reads                           Disk      
 pts/heffte                  HeFFTe - Highly Efficient FFT for Exascale        Processor 
-pts/helsing                 Helsing                                           Processor 
 pts/hint                    Hierarchical INTegration                          System    
 pts/hpcc                    HPC Challenge                                     Processor 
-pts/hpcg                    High Performance Conjugate Gradient               Processor 
 pts/idle                    Timed Idle                                        System    
 pts/idle-power-usage        Idle Power Usage                                  System    
 pts/incompact3d             Xcompact3d Incompact3d                            Processor 
@@ -140,7 +133,6 @@ pts/ramspeed                RAMspeed SMP                                      Me
 pts/rays1bench              rays1bench                                        Processor 
 pts/relion                  RELION                                            Processor 
 pts/remhos                  Remhos                                            Processor 
-pts/renaissance             Renaissance                                       Processor 
 pts/rust-mandel             Rust Mandelbrot                                   Processor 
 pts/rust-prime              Rust Prime Benchmark                              Processor 
 pts/schbench                Schbench                                          System    
@@ -151,7 +143,6 @@ pts/smallpt-gpu             SmallPT GPU                                       Sy
 pts/smart                   SMART Disk Self-Report                            Disk      
 pts/sockperf                Sockperf                                          OS        
 pts/spacy                   spaCy                                             System    
-pts/spark                   Apache Spark                                      System    
 pts/spec-cpu2017            SPEC CPU 2017                                     System    
 pts/spec-jbb2015            SPECjbb 2015                                      System    
 pts/speedtest-cli           speedtest-cli                                     Network   
@@ -162,7 +153,6 @@ pts/startup-time            Application Start-up Time                         Di
 pts/stream-dynamic          Stream-Dynamic                                    Memory    
 pts/stressapptest           Stressful Application Test                        Memory    
 pts/sunflow                 Sunflow Rendering System                          System    
-pts/svt-hevc                SVT-HEVC                                          Processor 
 pts/swet                    Swet                                              Processor 
 pts/synthmark               Google SynthMark                                  Processor 
 pts/system-decompress-bzip2 System BZIP2 Decompression                        Processor 
@@ -204,13 +194,10 @@ system/ethminer             Ethereum Ethminer                                 Sy
 system/fio                  Flexible IO Tester                                Disk      
 system/gegl                 GEGL                                              System    
 system/gmic                 G'MIC                                             System    
-system/gnuradio             GNU Radio                                         Processor 
 system/hugin                Hugin                                             System    
-system/inkscape             Inkscape                                          System    
 system/iozone               IOzone                                            Disk      
 system/mpv                  MPV                                               System    
 system/ocrmypdf             OCRMyPDF                                          System    
 system/opm                  Open Porous Media                                 Processor 
-system/rsvg                 librsvg                                           System    
 system/selenium-top-sites   Time To Load + View Popular Websites              System    
 system/tesseract-ocr        Tesseract OCR                                     System    

@@ -182,12 +182,16 @@ Added:
 	6/24 - spark
 	6/25 - cython-bench
 	6/26 - cachebench
+	6/27 - compilebench
+	6/28 - git
+	6/29 - gnuradio
+	6/30 - rsvg
+	7/1 - core-latency
 	
 Higher Priority
    - new tests
    - queue:
      compress-pbzip2 - image downloaded (share/Downloads)
-     core-latency
      couchdb
      cpp-perf-bench
      cpuminer-opt
