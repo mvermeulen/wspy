@@ -7,8 +7,7 @@ pts/cloudsuite-ma           CloudSuite In-Memory Analytics                    Sy
 pts/cloudsuite-ms           CloudSuite Media Streaming                        System    // docker based
 pts/cloudsuite-ws           CloudSuite Web Serving                            System    // docker based
 pts/compress-pbzip2         Parallel BZIP2 Compression                        Processor // download failed
-pts/core-latency            Core-Latency                                      Processor 
-pts/couchdb                 Apache CouchDB                                    System    
+pts/couchdb                 Apache CouchDB                                    System    // install failed
 pts/cp2k                    CP2K Molecular Dynamics                           Processor 
 pts/cpp-perf-bench          CppPerformanceBenchmarks                          System    
 pts/cpuminer-opt            Cpuminer-Opt                                      Processor 

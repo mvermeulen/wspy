@@ -189,26 +189,14 @@ Added:
 	7/1 - core-latency
 	
 Higher Priority
-   - new tests
+   - queue
+     cp2k
+     gcrypt
+     ipc-benchmark
    - queue:
-     compress-pbzip2 - image downloaded (share/Downloads)
-     couchdb
      cpp-perf-bench
      cpuminer-opt
      cryptopp
-   - benchmarks missing (mostly graphics)
-      1/7 - https://www.phoronix.com/review/z1-extreme-meteorlake
-     Graphics:
-     dirt-rally2, etlegacy, f122, fluidx3d, gpuowl, gravitymark, hitman3,
-     luxcorerenderer, opencl-benchmark, paraview, quake2rtx, specviewperf2020,
-     unigine-heaven, unigine-super, unigine-valley, unvanquished,
-     warsow, xonotic, vkpeak, xplane12
 
 Fails to build (try periodically)
    onnx - fails to build even after downloading the files/googletest-adsl conflict
-
-Compression tests
-     compress-pbzip2
-     system-decompress-xz
-     system-decompress-gzip
-     system-decompress-zlib (deprecated?)
