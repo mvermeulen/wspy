@@ -3,7 +3,7 @@ while read bench
 do
     TESTNAME=$bench ./run_test.sh
 done <<-BENCH_LIST
-git
-gnuradio
-rsvg
+cp2k
+gcrypt
+ipc-benchmark
 BENCH_LIST
