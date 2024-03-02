@@ -187,12 +187,11 @@ Added:
 	6/29 - gnuradio
 	6/30 - rsvg
 	7/1 - core-latency
+	7/2 - gcrypt
+	7/3 - ipc-benchmark
 	
 Higher Priority
    - queue
-     cp2k
-     gcrypt
-     ipc-benchmark
    - queue:
      cpp-perf-bench
      cpuminer-opt

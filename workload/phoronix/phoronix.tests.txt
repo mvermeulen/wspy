@@ -8,7 +8,6 @@ pts/cloudsuite-ms           CloudSuite Media Streaming                        Sy
 pts/cloudsuite-ws           CloudSuite Web Serving                            System    // docker based
 pts/compress-pbzip2         Parallel BZIP2 Compression                        Processor // download failed
 pts/couchdb                 Apache CouchDB                                    System    // install failed
-pts/cp2k                    CP2K Molecular Dynamics                           Processor 
 pts/cpp-perf-bench          CppPerformanceBenchmarks                          System    
 pts/cpuminer-opt            Cpuminer-Opt                                      Processor 
 pts/cryptopp                Crypto++                                          Processor 
@@ -34,7 +33,6 @@ pts/fhourstones             Fhourstones                                       Pr
 pts/financebench            FinanceBench                                      System    
 pts/fio                     Flexible IO Tester                                Disk      
 pts/fs-mark                 FS-Mark                                           Disk      
-pts/gcrypt                  Gcrypt Library                                    Processor 
 pts/go-benchmark            Go Benchmarks                                     Processor 
 pts/gpaw                    GPAW                                              System    
 pts/hadoop                  Apache Hadoop                                     System    
@@ -47,13 +45,11 @@ pts/hint                    Hierarchical INTegration                          Sy
 pts/hpcc                    HPC Challenge                                     Processor 
 pts/idle                    Timed Idle                                        System    
 pts/idle-power-usage        Idle Power Usage                                  System    
-pts/incompact3d             Xcompact3d Incompact3d                            Processor 
 pts/influxdb                InfluxDB                                          System    
 pts/intel-mlc               Intel Memory Latency Checker                      Memory    
 pts/intel-mpi               Intel MPI Benchmarks                              System    
 pts/intel-tensorflow        Intel TensorFlow                                  System    
 pts/ior                     IOR                                               Disk      
-pts/ipc-benchmark           IPC_benchmark                                     Processor 
 pts/iperf                   iPerf                                             Network   
 pts/java-gradle-perf        Java Gradle Build                                 Processor 
 pts/java-jmh                Java JMH                                          System    
@@ -80,7 +76,6 @@ pts/mkl-dnn                 oneDNN MKL-DNN                                    Pr
 pts/mlpack                  Mlpack Benchmark                                  System    
 pts/mocassin                Monte Carlo Simulations of Ionised Nebulae        Processor 
 pts/montage                 Montage Astronomical Image Mosaic Engine          Processor 
-pts/mt-dgemm                ACES DGEMM                                        Processor 
 pts/multichase              Multichase Pointer Chaser                         Processor 
 pts/mutex                   BenchmarkMutex                                    System    
 pts/mysqlslap               MariaDB                                           System    
@@ -97,7 +92,6 @@ pts/node-octane             Node.js Octane Benchmark                          Pr
 pts/novabench               Novabench                                         System    
 pts/numenta-nab             Numenta Anomaly Benchmark                         System    
 pts/nuttcp                  Nuttcp                                            Network   
-pts/oidn                    Intel Open Image Denoise                          Processor 
 pts/oneapi-level-zero       oneAPI Level Zero Tests                           System    
 pts/onnx                    ONNX Runtime                                      System    
 pts/open-porous-media       Open Porous Media                                 Processor 
@@ -108,26 +102,21 @@ pts/optcarrot               Optcarrot                                         Sy
 pts/osbench                 OSBench                                           OS        
 pts/palabos                 Palabos                                           Processor 
 pts/parboil                 Parboil                                           Processor 
-pts/pennant                 Pennant                                           Processor 
 pts/perf-bench              perf-bench                                        OS        
 pts/petsc                   PETSc                                             System    
 pts/php                     PHP Micro Benchmarks                              System    
 pts/pjdfstest               Pjdfstest                                         Disk      
 pts/pjsip                   PJSIP                                             Processor 
-pts/plaidml                 PlaidML                                           System    
 pts/pmbench                 pmbench                                           Memory    
 pts/polybench-c             PolyBench-C                                       Processor 
 pts/postmark                PostMark                                          Disk      
 pts/powertop-wakeups        Powertop Wakeups                                  Processor 
-pts/primesieve              Primesieve                                        Processor 
 pts/pts-self-test           Phoronix Test Suite Self Test                     System    
-pts/pyhpc                   PyHPC Benchmarks                                  System    
 pts/pymongo-inserts         PyMongo Inserts                                   System    
 pts/qmcpack                 QMCPACK                                           Processor 
 pts/qmlbench                Qmlbench                                          System    
 pts/quadray                 QuadRay                                           Processor 
 pts/rabbitmq                RabbitMQ                                          System    
-pts/radiance                Radiance Benchmark                                Processor 
 pts/ramspeed                RAMspeed SMP                                      Memory    
 pts/rays1bench              rays1bench                                        Processor 
 pts/relion                  RELION                                            Processor 
