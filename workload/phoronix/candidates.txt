@@ -189,13 +189,16 @@ Added:
 	7/1 - core-latency
 	7/2 - gcrypt
 	7/3 - ipc-benchmark
+	7/4 - cpp-perf-bench
 	
 Higher Priority
    - queue
    - queue:
-     cpp-perf-bench
      cpuminer-opt
      cryptopp
+     ctx-clock
+     cyclictest
+     daphne
 
 Fails to build (try periodically)
    onnx - fails to build even after downloading the files/googletest-adsl conflict
