@@ -3,9 +3,7 @@ while read bench
 do
     TESTNAME=$bench ./run_test.sh
 done <<-BENCH_LIST
-cpuminer-opt
-cryptopp
-ctx-clock
-cyclictest
-daphne
+deeprec
+deepspeech
+neat
 BENCH_LIST

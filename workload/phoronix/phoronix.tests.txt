@@ -8,11 +8,7 @@ pts/cloudsuite-ms           CloudSuite Media Streaming                        Sy
 pts/cloudsuite-ws           CloudSuite Web Serving                            System    // docker based
 pts/compress-pbzip2         Parallel BZIP2 Compression                        Processor // download failed
 pts/couchdb                 Apache CouchDB                                    System    // install failed
-pts/cpuminer-opt            Cpuminer-Opt                                      Processor 
-pts/cryptopp                Crypto++                                          Processor 
-pts/ctx-clock               ctx_clock                                         System    
-pts/cyclictest              Cyclictest                                        System    
-pts/daphne                  Darmstadt Automotive Parallel Heterogeneous Suite System    
+pts/cyclictest              Cyclictest                                        System    // requires root
 pts/dbench                  Dbench                                            Disk      
 pts/deeprec                 DeepRec                                           System    
 pts/deepspeech              DeepSpeech                                        Processor 

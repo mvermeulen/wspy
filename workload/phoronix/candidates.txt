@@ -190,15 +190,14 @@ Added:
 	7/2 - gcrypt
 	7/3 - ipc-benchmark
 	7/4 - cpp-perf-bench
+	7/5 - cpuminer-opt
+	7/6 - cryptopp
+	7/7 - ctx-clock
+	7/8 - daphne
 	
 Higher Priority
-   - queue
-   - queue:
-     cpuminer-opt
-     cryptopp
-     ctx-clock
-     cyclictest
-     daphne
-
-Fails to build (try periodically)
-   onnx - fails to build even after downloading the files/googletest-adsl conflict
+   queue -
+      dbench
+      deeprec
+      deepspeech
+      neat
