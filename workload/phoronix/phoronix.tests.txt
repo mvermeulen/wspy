@@ -9,10 +9,8 @@ pts/cloudsuite-ws           CloudSuite Web Serving                            Sy
 pts/compress-pbzip2         Parallel BZIP2 Compression                        Processor // download failed
 pts/couchdb                 Apache CouchDB                                    System    // install failed
 pts/cyclictest              Cyclictest                                        System    // requires root
-pts/dbench                  Dbench                                            Disk      
-pts/deeprec                 DeepRec                                           System    
-pts/deepspeech              DeepSpeech                                        Processor 
-pts/draco                   Google Draco                                      System    
+pts/deeprec                 DeepRec                                           System    // docker based
+pts/draco                   Google Draco                                      System    // download failed
 pts/dragonflydb             Dragonflydb                                       System    
 pts/ebizzy                  ebizzy                                            Processor 
 pts/ecp-candle              ECP-CANDLE                                        System    

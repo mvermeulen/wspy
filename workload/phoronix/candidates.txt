@@ -194,10 +194,9 @@ Added:
 	7/6 - cryptopp
 	7/7 - ctx-clock
 	7/8 - daphne
+	7/9 - dbench
+	7/10 - deepspeech
 	
 Higher Priority
    queue -
-      dbench
-      deeprec
-      deepspeech
       neat
