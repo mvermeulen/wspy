@@ -11,7 +11,6 @@ pts/couchdb                 Apache CouchDB                                    Sy
 pts/cyclictest              Cyclictest                                        System    // requires root
 pts/deeprec                 DeepRec                                           System    // docker based
 pts/draco                   Google Draco                                      System    // download failed
-pts/dragonflydb             Dragonflydb                                       System    
 pts/ebizzy                  ebizzy                                            Processor 
 pts/ecp-candle              ECP-CANDLE                                        System    
 pts/encodec                 EnCodec                                           System    
@@ -73,7 +72,6 @@ pts/multichase              Multichase Pointer Chaser                         Pr
 pts/mutex                   BenchmarkMutex                                    System    
 pts/mysqlslap               MariaDB                                           System    
 pts/natron                  Natron                                            System    
-pts/neat                    Nebular Empirical Analysis Tool                   Processor 
 pts/neatbench               NeatBench                                         System    
 pts/nekrs                   nekRS                                             Processor 
 pts/nero2d                  Open FMM Nero2D                                   Processor 
@@ -170,7 +168,6 @@ system/clpeak               clpeak                                            Sy
 system/compress-lzma        LZMA Compression                                            
 system/compress-pbzip2      PBZIP2 Compression                                          
 system/cryptsetup           Cryptsetup                                        System    
-system/dbench               Dbench                                            Disk      
 system/ethminer             Ethereum Ethminer                                 System    
 system/fio                  Flexible IO Tester                                Disk      
 system/gegl                 GEGL                                              System    

@@ -196,7 +196,9 @@ Added:
 	7/8 - daphne
 	7/9 - dbench
 	7/10 - deepspeech
+	7/11 - neat
+	7/12 - dragonflydb
 	
 Higher Priority
    queue -
-      neat
+      parboil
