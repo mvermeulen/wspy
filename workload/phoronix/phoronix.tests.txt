@@ -92,7 +92,6 @@ pts/openems                 OpenEMS                                           Sy
 pts/optcarrot               Optcarrot                                         System    
 pts/osbench                 OSBench                                           OS        
 pts/palabos                 Palabos                                           Processor 
-pts/parboil                 Parboil                                           Processor 
 pts/perf-bench              perf-bench                                        OS        
 pts/petsc                   PETSc                                             System    
 pts/php                     PHP Micro Benchmarks                              System    

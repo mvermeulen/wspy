@@ -198,7 +198,8 @@ Added:
 	7/10 - deepspeech
 	7/11 - neat
 	7/12 - dragonflydb
+	7/13 - parboil
 	
 Higher Priority
    queue -
-      parboil
+      financebench
