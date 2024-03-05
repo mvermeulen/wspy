@@ -199,7 +199,8 @@ Added:
 	7/11 - neat
 	7/12 - dragonflydb
 	7/13 - parboil
+	7/14 - financebench
 	
 Higher Priority
    queue -
-      financebench
+      ebizzy
