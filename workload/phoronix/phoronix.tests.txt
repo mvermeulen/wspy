@@ -11,9 +11,8 @@ pts/couchdb                 Apache CouchDB                                    Sy
 pts/cyclictest              Cyclictest                                        System    // requires root
 pts/deeprec                 DeepRec                                           System    // docker based
 pts/draco                   Google Draco                                      System    // download failed
-pts/ebizzy                  ebizzy                                            Processor 
-pts/ecp-candle              ECP-CANDLE                                        System    
-pts/encodec                 EnCodec                                           System    
+pts/ecp-candle              ECP-CANDLE                                        System    // download failed
+pts/encodec                 EnCodec                                           System    // missing backends
 pts/espeak                  eSpeak-NG Speech Engine                           Processor 
 pts/etcd                    etcd                                              System    
 pts/etcpak                  Etcpak                                            Processor 
