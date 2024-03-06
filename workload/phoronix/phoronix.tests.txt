@@ -13,8 +13,6 @@ pts/deeprec                 DeepRec                                           Sy
 pts/draco                   Google Draco                                      System    // download failed
 pts/ecp-candle              ECP-CANDLE                                        System    // download failed
 pts/encodec                 EnCodec                                           System    // missing backends
-pts/espeak                  eSpeak-NG Speech Engine                           Processor 
-pts/etcd                    etcd                                              System    
 pts/etcpak                  Etcpak                                            Processor 
 pts/ethr                    Ethr                                              Network   
 pts/etqw-demo-iqc           ET: Quake Wars Image Quality                      System    
@@ -57,7 +55,6 @@ pts/mafft                   Timed MAFFT Alignment                             Pr
 pts/mandelbulbgpu           MandelbulbGPU                                     System    
 pts/mandelgpu               MandelGPU                                         System    
 pts/mbw                     MBW                                               Memory    
-pts/memcached               Memcached                                         System    
 pts/memtier-benchmark       Redis 7.0.12 + memtier_benchmark                  System    
 pts/mencoder                Mencoder                                          Processor 
 pts/minife                  miniFE                                            Processor 

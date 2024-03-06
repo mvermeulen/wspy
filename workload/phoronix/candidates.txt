@@ -201,8 +201,9 @@ Added:
 	7/13 - parboil
 	7/14 - financebench
 	7/15 - ebizzy
+	7/16 - espeak
+	7/17 - memcached
 	
 Higher Priority
    queue -
-      espeak
-      etcd
+      etcpak
