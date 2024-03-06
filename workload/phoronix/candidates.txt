@@ -207,3 +207,6 @@ Added:
 Higher Priority
    queue -
       etcpak
+      fast-cli
+      ffte
+      nettle
