@@ -203,10 +203,10 @@ Added:
 	7/15 - ebizzy
 	7/16 - espeak
 	7/17 - memcached
+	7/18 - etcpak
+	7/19 - fast-cli
 	
 Higher Priority
    queue -
-      etcpak
-      fast-cli
       ffte
       nettle
