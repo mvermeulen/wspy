@@ -205,8 +205,10 @@ Added:
 	7/17 - memcached
 	7/18 - etcpak
 	7/19 - fast-cli
+	7/20 - ffte
+	7/21 - nettle
 	
 Higher Priority
    queue -
-      ffte
-      nettle
+      fhourstones
+      mutex

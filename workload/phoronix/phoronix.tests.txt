@@ -13,11 +13,6 @@ pts/deeprec                 DeepRec                                           Sy
 pts/draco                   Google Draco                                      System    // download failed
 pts/ecp-candle              ECP-CANDLE                                        System    // download failed
 pts/encodec                 EnCodec                                           System    // missing backends
-pts/etcpak                  Etcpak                                            Processor 
-pts/ethr                    Ethr                                              Network   
-pts/etqw-demo-iqc           ET: Quake Wars Image Quality                      System    
-pts/fast-cli                fast-cli                                          Network   
-pts/ffte                    FFTE                                              Processor 
 pts/fhourstones             Fhourstones                                       Processor 
 pts/fio                     Flexible IO Tester                                Disk      
 pts/fs-mark                 FS-Mark                                           Disk      
@@ -71,7 +66,6 @@ pts/neatbench               NeatBench                                         Sy
 pts/nekrs                   nekRS                                             Processor 
 pts/nero2d                  Open FMM Nero2D                                   Processor 
 pts/netperf                 Netperf                                           Network   
-pts/nettle                  Nettle                                            Processor 
 pts/network-loopback        Loopback TCP Network Performance                  Network   
 pts/node-express-loadtest   Node.js Express HTTP Load Test                    Processor 
 pts/node-octane             Node.js Octane Benchmark                          Processor 
