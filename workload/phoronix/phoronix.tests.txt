@@ -13,7 +13,6 @@ pts/deeprec                 DeepRec                                           Sy
 pts/draco                   Google Draco                                      System    // download failed
 pts/ecp-candle              ECP-CANDLE                                        System    // download failed
 pts/encodec                 EnCodec                                           System    // missing backends
-pts/fhourstones             Fhourstones                                       Processor 
 pts/fio                     Flexible IO Tester                                Disk      
 pts/fs-mark                 FS-Mark                                           Disk      
 pts/go-benchmark            Go Benchmarks                                     Processor 
@@ -59,7 +58,6 @@ pts/mlpack                  Mlpack Benchmark                                  Sy
 pts/mocassin                Monte Carlo Simulations of Ionised Nebulae        Processor 
 pts/montage                 Montage Astronomical Image Mosaic Engine          Processor 
 pts/multichase              Multichase Pointer Chaser                         Processor 
-pts/mutex                   BenchmarkMutex                                    System    
 pts/mysqlslap               MariaDB                                           System    
 pts/natron                  Natron                                            System    
 pts/neatbench               NeatBench                                         System    
@@ -97,7 +95,6 @@ pts/qmlbench                Qmlbench                                          Sy
 pts/quadray                 QuadRay                                           Processor 
 pts/rabbitmq                RabbitMQ                                          System    
 pts/ramspeed                RAMspeed SMP                                      Memory    
-pts/rays1bench              rays1bench                                        Processor 
 pts/relion                  RELION                                            Processor 
 pts/remhos                  Remhos                                            Processor 
 pts/rust-mandel             Rust Mandelbrot                                   Processor 

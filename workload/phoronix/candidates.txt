@@ -207,8 +207,10 @@ Added:
 	7/19 - fast-cli
 	7/20 - ffte
 	7/21 - nettle
+	7/22 - fhourstones
+	7/23 - mutex
+	7/24 - rays1bench
 	
 Higher Priority
    queue -
-      fhourstones
-      mutex
+      go-benchmark
