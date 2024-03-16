@@ -3,7 +3,7 @@ while read bench
 do
     TESTNAME=$bench ./run_test.sh
 done <<-BENCH_LIST
-deeprec
-deepspeech
-neat
+draco
+srsran
+compress-pbzip2
 BENCH_LIST

@@ -210,7 +210,11 @@ Added:
 	7/22 - fhourstones
 	7/23 - mutex
 	7/24 - rays1bench
+	7/25 - kripke
 	
 Higher Priority
    queue -
-      go-benchmark
+      draco
+      srsran
+      compress-pbzip2
+

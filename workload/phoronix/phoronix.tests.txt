@@ -38,7 +38,6 @@ pts/java-jmh                Java JMH                                          Sy
 pts/jpegxl-decode           JPEG XL Decoding libjxl                           Processor 
 pts/juliagpu                JuliaGPU                                          System    
 pts/keydb                   KeyDB                                             System    
-pts/kripke                  Kripke                                            System    
 pts/laghos                  Laghos                                            Processor 
 pts/leveldb                 LevelDB                                           Disk      
 pts/libgav1                 libgav1                                           Processor 
