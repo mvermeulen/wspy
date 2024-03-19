@@ -3,7 +3,9 @@ while read bench
 do
     TESTNAME=$bench ./run_test.sh
 done <<-BENCH_LIST
-draco
-srsran
-compress-pbzip2
+gpaw
+minife
+qmcpack
+toybrot
+webp2
 BENCH_LIST
