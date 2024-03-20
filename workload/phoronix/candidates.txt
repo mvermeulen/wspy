@@ -211,10 +211,15 @@ Added:
 	7/23 - mutex
 	7/24 - rays1bench
 	7/25 - kripke
+	7/26 - draco
+	7/27 - srsran
+	7/28 - compress-pbzip2
+	7/29 - gpaw
+	7/30 - minife
+	7/31 - qmcpack
+	8/1 - toybrot
+	8/2 - webp2
 	
 Higher Priority
    queue -
-      draco
-      srsran
-      compress-pbzip2
 

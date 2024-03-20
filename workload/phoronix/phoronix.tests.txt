@@ -6,17 +6,14 @@ pts/cloudsuite-ga           CloudSuite Graph Analytics                        Sy
 pts/cloudsuite-ma           CloudSuite In-Memory Analytics                    System    // docker based
 pts/cloudsuite-ms           CloudSuite Media Streaming                        System    // docker based
 pts/cloudsuite-ws           CloudSuite Web Serving                            System    // docker based
-pts/compress-pbzip2         Parallel BZIP2 Compression                        Processor // download failed
 pts/couchdb                 Apache CouchDB                                    System    // install failed
 pts/cyclictest              Cyclictest                                        System    // requires root
 pts/deeprec                 DeepRec                                           System    // docker based
-pts/draco                   Google Draco                                      System    // download failed
 pts/ecp-candle              ECP-CANDLE                                        System    // download failed
 pts/encodec                 EnCodec                                           System    // missing backends
 pts/fio                     Flexible IO Tester                                Disk      
 pts/fs-mark                 FS-Mark                                           Disk      
 pts/go-benchmark            Go Benchmarks                                     Processor 
-pts/gpaw                    GPAW                                              System    
 pts/hadoop                  Apache Hadoop                                     System    
 pts/hammerdb-mariadb        HammerDB - MariaDB                                System    
 pts/hammerdb-postgresql     HammerDB - PostgreSQL                             System    
@@ -50,7 +47,6 @@ pts/mandelgpu               MandelGPU                                         Sy
 pts/mbw                     MBW                                               Memory    
 pts/memtier-benchmark       Redis 7.0.12 + memtier_benchmark                  System    
 pts/mencoder                Mencoder                                          Processor 
-pts/minife                  miniFE                                            Processor 
 pts/minion                  Minion                                            Processor 
 pts/mkl-dnn                 oneDNN MKL-DNN                                    Processor 
 pts/mlpack                  Mlpack Benchmark                                  System    
@@ -89,7 +85,6 @@ pts/postmark                PostMark                                          Di
 pts/powertop-wakeups        Powertop Wakeups                                  Processor 
 pts/pts-self-test           Phoronix Test Suite Self Test                     System    
 pts/pymongo-inserts         PyMongo Inserts                                   System    
-pts/qmcpack                 QMCPACK                                           Processor 
 pts/qmlbench                Qmlbench                                          System    
 pts/quadray                 QuadRay                                           Processor 
 pts/rabbitmq                RabbitMQ                                          System    
@@ -111,7 +106,6 @@ pts/spec-jbb2015            SPECjbb 2015                                      Sy
 pts/speedtest-cli           speedtest-cli                                     Network   
 pts/sqlite-speedtest        SQLite Speedtest                                  System    
 pts/srslte                  srsLTE                                            Processor 
-pts/srsran                  srsRAN Project                                    Processor 
 pts/startup-time            Application Start-up Time                         Disk      
 pts/stream-dynamic          Stream-Dynamic                                    Memory    
 pts/stressapptest           Stressful Application Test                        Memory    
@@ -134,13 +128,11 @@ pts/tinymembench            Tinymembench                                      Me
 pts/tiobench                Threaded I/O Tester                               Disk      
 pts/tjbench                 libjpeg-turbo tjbench                             System    
 pts/toktx                   KTX-Software toktx                                System    
-pts/toybrot                 toyBrot Fractal Generator                         Processor 
 pts/ttsiod-renderer         TTSIOD 3D Renderer                                Processor 
 pts/unpack-firefox          Unpacking Firefox                                 System    
 pts/unpack-linux            Unpacking The Linux Kernel                        Disk      
 pts/viennacl                ViennaCL                                          System    
 pts/vosk                    VOSK Speech Recognition Toolkit                   Processor 
-pts/webp2                   WebP2 Image Encode                                Processor 
 pts/will-it-scale           will-it-scale                                     OS        
 pts/wrf                     WRF                                               System    
 pts/xsbench                 Xsbench                                           System    
