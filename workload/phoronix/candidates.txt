@@ -222,4 +222,5 @@ Added:
 	
 Higher Priority
    queue -
-
+      hadoop
+      libraw
