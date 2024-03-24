@@ -14,7 +14,6 @@ pts/encodec                 EnCodec                                           Sy
 pts/fio                     Flexible IO Tester                                Disk      
 pts/fs-mark                 FS-Mark                                           Disk      
 pts/go-benchmark            Go Benchmarks                                     Processor 
-pts/hadoop                  Apache Hadoop                                     System    
 pts/hammerdb-mariadb        HammerDB - MariaDB                                System    
 pts/hammerdb-postgresql     HammerDB - PostgreSQL                             System    
 pts/hbase                   Apache HBase                                      System    
@@ -38,7 +37,6 @@ pts/keydb                   KeyDB                                             Sy
 pts/laghos                  Laghos                                            Processor 
 pts/leveldb                 LevelDB                                           Disk      
 pts/libgav1                 libgav1                                           Processor 
-pts/libraw                  LibRaw                                            Processor 
 pts/luajit                  LuaJIT                                            Processor 
 pts/luaradio                LuaRadio                                          Processor 
 pts/mafft                   Timed MAFFT Alignment                             Processor 

@@ -219,6 +219,7 @@ Added:
 	7/31 - qmcpack
 	8/1 - toybrot
 	8/2 - webp2
+	8/3 - polybench-c
 	
 Higher Priority
    queue -
