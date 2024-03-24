@@ -78,7 +78,6 @@ pts/php                     PHP Micro Benchmarks                              Sy
 pts/pjdfstest               Pjdfstest                                         Disk      
 pts/pjsip                   PJSIP                                             Processor 
 pts/pmbench                 pmbench                                           Memory    
-pts/polybench-c             PolyBench-C                                       Processor 
 pts/postmark                PostMark                                          Disk      
 pts/powertop-wakeups        Powertop Wakeups                                  Processor 
 pts/pts-self-test           Phoronix Test Suite Self Test                     System    

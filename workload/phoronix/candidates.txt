@@ -220,8 +220,17 @@ Added:
 	8/1 - toybrot
 	8/2 - webp2
 	8/3 - polybench-c
+	8/4 - hadoop
+	8/5 - libraw
 	
 Higher Priority
    queue -
-      hadoop
-      libraw
+   	 palabos
+	 jpegxl-decode
+	 furmark
+	 pjsip
+	 quadray
+	 schbench
+	 synthmark
+	 go-benchmark
+	 java-gradle-perf
