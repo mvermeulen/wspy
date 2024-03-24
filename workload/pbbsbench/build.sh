@@ -1,5 +1,5 @@
 #!/bin/bash
-PBBSBENCH=${PBBSBENCH:="/home/mev/pbbsbench"}
+PBBSBENCH=${PBBSBENCH:="/home/mev/source/pbbsbench"}
 
 cd $PBBSBENCH
 ./runall -small -notime
