@@ -222,15 +222,14 @@ Added:
 	8/3 - polybench-c
 	8/4 - hadoop
 	8/5 - libraw
+	8/6 - palabos
+	8/7 - jpegxl-decode
+	8/8 - furmark
+	8/9 - pjsip
+	8/10 - quadray
+	8/11 - schbench
+	8/12 - synthmark
 	
 Higher Priority
    queue -
-   	 palabos
-	 jpegxl-decode
-	 furmark
-	 pjsip
-	 quadray
-	 schbench
-	 synthmark
-	 go-benchmark
 	 java-gradle-perf

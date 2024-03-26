@@ -13,7 +13,7 @@ pts/ecp-candle              ECP-CANDLE                                        Sy
 pts/encodec                 EnCodec                                           System    // missing backends
 pts/fio                     Flexible IO Tester                                Disk      
 pts/fs-mark                 FS-Mark                                           Disk      
-pts/go-benchmark            Go Benchmarks                                     Processor 
+pts/go-benchmark            Go Benchmarks                                     Processor // run config failed
 pts/hammerdb-mariadb        HammerDB - MariaDB                                System    
 pts/hammerdb-postgresql     HammerDB - PostgreSQL                             System    
 pts/hbase                   Apache HBase                                      System    
@@ -31,7 +31,6 @@ pts/ior                     IOR                                               Di
 pts/iperf                   iPerf                                             Network   
 pts/java-gradle-perf        Java Gradle Build                                 Processor 
 pts/java-jmh                Java JMH                                          System    
-pts/jpegxl-decode           JPEG XL Decoding libjxl                           Processor 
 pts/juliagpu                JuliaGPU                                          System    
 pts/keydb                   KeyDB                                             System    
 pts/laghos                  Laghos                                            Processor 
@@ -71,26 +70,22 @@ pts/opendwarfs              OpenDwarfs                                        Sy
 pts/openems                 OpenEMS                                           System    
 pts/optcarrot               Optcarrot                                         System    
 pts/osbench                 OSBench                                           OS        
-pts/palabos                 Palabos                                           Processor 
 pts/perf-bench              perf-bench                                        OS        
 pts/petsc                   PETSc                                             System    
 pts/php                     PHP Micro Benchmarks                              System    
 pts/pjdfstest               Pjdfstest                                         Disk      
-pts/pjsip                   PJSIP                                             Processor 
 pts/pmbench                 pmbench                                           Memory    
 pts/postmark                PostMark                                          Disk      
 pts/powertop-wakeups        Powertop Wakeups                                  Processor 
 pts/pts-self-test           Phoronix Test Suite Self Test                     System    
 pts/pymongo-inserts         PyMongo Inserts                                   System    
 pts/qmlbench                Qmlbench                                          System    
-pts/quadray                 QuadRay                                           Processor 
 pts/rabbitmq                RabbitMQ                                          System    
 pts/ramspeed                RAMspeed SMP                                      Memory    
 pts/relion                  RELION                                            Processor 
 pts/remhos                  Remhos                                            Processor 
 pts/rust-mandel             Rust Mandelbrot                                   Processor 
 pts/rust-prime              Rust Prime Benchmark                              Processor 
-pts/schbench                Schbench                                          System    
 pts/scylladb                ScyllaDB                                          System    
 pts/serial-loopback         Serial Loopback Test                              System    
 pts/smallpt                 Smallpt                                           Processor 
@@ -108,7 +103,6 @@ pts/stream-dynamic          Stream-Dynamic                                    Me
 pts/stressapptest           Stressful Application Test                        Memory    
 pts/sunflow                 Sunflow Rendering System                          System    
 pts/swet                    Swet                                              Processor 
-pts/synthmark               Google SynthMark                                  Processor 
 pts/system-decompress-bzip2 System BZIP2 Decompression                        Processor 
 pts/system-decompress-gzip  System GZIP Decompression                         Processor 
 pts/system-decompress-tiff  System Libtiff Decompression                      Processor 
