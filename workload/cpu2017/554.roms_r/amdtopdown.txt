@@ -1,0 +1,62 @@
+elapsed              2913.604
+on_cpu               0.989          # 15.82 / 16 cores
+utime                45952.410
+stime                146.539
+nvcsw                60191          # 11.00%
+nivcsw               486901         # 89.00%
+inblock              0              # 0.00/sec
+onblock              23672          # 8.12/sec
+cpu-clock            46110694195743 # 46110.694 seconds
+task-clock           46111603372414 # 46111.603 seconds
+page faults          27680650       # 600.297/sec
+context switches     546536         # 11.852/sec
+cpu migrations       206            # 0.004/sec
+major page faults    736            # 0.016/sec
+minor page faults    27679914       # 600.281/sec
+alignment faults     0              # 0.000/sec
+emulation faults     0              # 0.000/sec
+branches             2529052541972  # 76.566 branches per 1000 inst
+branch misses        10962054534    # 0.43% branch miss
+conditional          1893553882793  # 57.327 conditional branches per 1000 inst
+indirect             220110756070   # 6.664 indirect branches per 1000 inst
+cpu-cycles           209575823621539 # 4.45 GHz
+instructions         33028652913423 # 0.16 IPC low
+slots                419100802566912 #
+retiring             11541439578728 #  2.8% ( 2.8%) low
+-- ucode             2996339981     #     0.0%
+-- fastpath          11538443238747 #     2.8%
+frontend             9239383775568  #  2.2% ( 2.3%) low
+-- latency           7530373522626  #     1.8%
+-- bandwidth         1709010252942  #     0.4%
+backend              389455334744808 # 92.9% (94.9%) high
+-- cpu               30852021068967 #     7.4%
+-- memory            358603313675841 #    85.6%
+speculation          311627888135   #  0.1% ( 0.1%) low
+-- branch mispredict 194460337886   #     0.0%
+-- pipeline restart  117167550249   #     0.0%
+smt-contention       8552850550540  #  2.0% ( 0.0%)
+cpu-cycles           208979424152334 # 4.46 GHz
+instructions         33022374135409 # 0.16 IPC low
+instructions         11010464374416 # 196.455 l2 access per 1000 inst
+l2 hit from l1       1690964709861  # 36.36% l2 miss
+l2 miss from l1      463953169216   #
+l2 hit from l2 pf    149577757193   #
+l3 hit from l2 pf    137767015603   #
+l3 miss from l2 pf   184753487636   #
+instructions         11009639724002 # 129.670 float per 1000 inst
+float 512            178            # 0.000 AVX-512 per 1000 inst
+float 256            9876442032     # 0.897 AVX-256 per 1000 inst
+float 128            1417741198942  # 128.773 AVX-128 per 1000 inst
+float MMX            0              # 0.000 MMX per 1000 inst
+float scalar         1              # 0.000 scalar per 1000 inst
+instructions         33019001845309 #
+opcache              4407926813123  # 133.497 opcache per 1000 inst
+opcache miss         193858813401   #  4.4% opcache miss rate
+l1 dTLB miss         1096430967354  # 33.206 L1 dTLB per 1000 inst
+l2 dTLB miss         99268449419    # 3.006 L2 dTLB per 1000 inst
+instructions         33019153737204 #
+icache               248333528124   # 7.521 icache per 1000 inst
+icache miss          53829148554    # 21.7% icache miss rate
+l1 iTLB miss         421656863      # 0.013 L1 iTLB per 1000 inst
+l2 iTLB miss         0              # 0.000 L2 iTLB per 1000 inst
+tlb flush            296659         # 0.000 TLB flush per 1000 inst

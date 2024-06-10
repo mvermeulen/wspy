@@ -1,0 +1,21 @@
+elapsed              1280.597
+on_cpu               0.981          # 15.70 / 16 cores
+utime                19200.014
+stime                909.941
+nvcsw                32854          # 14.82%
+nivcsw               188784         # 85.18%
+inblock              0              # 0.00/sec
+onblock              6205272        # 4845.61/sec
+cpu-clock            20111905298337 # 20111.905 seconds
+task-clock           20112088550148 # 20112.089 seconds
+page faults          535001091      # 26600.971/sec
+context switches     220189         # 10.948/sec
+cpu migrations       520            # 0.026/sec
+major page faults    2187           # 0.109/sec
+minor page faults    534998904      # 26600.863/sec
+alignment faults     0              # 0.000/sec
+emulation faults     0              # 0.000/sec
+branches             12188344159605 # 222.751 branches per 1000 inst
+branch misses        242752600366   # 1.99% branch miss
+conditional          9304535575408  # 170.047 conditional branches per 1000 inst
+indirect             306078372636   # 5.594 indirect branches per 1000 inst

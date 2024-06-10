@@ -1,0 +1,16 @@
+cpu-cycles           209575823621539 # 4.45 GHz
+instructions         33028652913423 # 0.16 IPC low
+slots                419100802566912 #
+retiring             11541439578728 #  2.8% ( 2.8%) low
+-- ucode             2996339981     #     0.0%
+-- fastpath          11538443238747 #     2.8%
+frontend             9239383775568  #  2.2% ( 2.3%) low
+-- latency           7530373522626  #     1.8%
+-- bandwidth         1709010252942  #     0.4%
+backend              389455334744808 # 92.9% (94.9%) high
+-- cpu               30852021068967 #     7.4%
+-- memory            358603313675841 #    85.6%
+speculation          311627888135   #  0.1% ( 0.1%) low
+-- branch mispredict 194460337886   #     0.0%
+-- pipeline restart  117167550249   #     0.0%
+smt-contention       8552850550540  #  2.0% ( 0.0%)

@@ -1,0 +1,6 @@
+instructions         38186835935369 #
+icache               320200387260   # 8.385 icache per 1000 inst
+icache miss          41085810541    # 12.8% icache miss rate
+l1 iTLB miss         227493969      # 0.006 L1 iTLB per 1000 inst
+l2 iTLB miss         0              # 0.000 L2 iTLB per 1000 inst
+tlb flush            226825         # 0.000 TLB flush per 1000 inst

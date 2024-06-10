@@ -1,0 +1,5 @@
+instructions         9383775361054  #
+opcache              1267171993600  # 135.039 opcache per 1000 inst
+opcache miss         604865222155   # 47.7% opcache miss rate
+l1 dTLB miss         534977958244   # 57.011 L1 dTLB per 1000 inst
+l2 dTLB miss         7159514212     # 0.763 L2 dTLB per 1000 inst

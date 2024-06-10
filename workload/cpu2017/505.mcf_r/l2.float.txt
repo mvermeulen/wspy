@@ -1,0 +1,14 @@
+cpu-cycles           46040502246132 # 4.06 GHz
+instructions         45222810883149 # 0.98 IPC
+instructions         15081324990270 # 53.401 l2 access per 1000 inst
+l2 hit from l1       582731046360   # 16.33% l2 miss
+l2 miss from l1      59898460107    #
+l2 hit from l2 pf    151011671810   #
+l3 hit from l2 pf    23060950282    #
+l3 miss from l2 pf   48547255992    #
+instructions         15065650967893 # 0.687 float per 1000 inst
+float 512            177            # 0.000 AVX-512 per 1000 inst
+float 256            7002           # 0.000 AVX-256 per 1000 inst
+float 128            10343593417    # 0.687 AVX-128 per 1000 inst
+float MMX            0              # 0.000 MMX per 1000 inst
+float scalar         29             # 0.000 scalar per 1000 inst

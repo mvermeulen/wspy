@@ -1,0 +1,70 @@
+SPEC CPU(r) 2017 Benchmark Suites
+Copyright 1995-2019 Standard Performance Evaluation Corporation (SPEC)
+
+runcpu v6612
+Using 'linux-x86_64' tools
+Reading file manifests... read 32351 entries from 2 files in 0.09s (351046 files/s)
+Loading runcpu modules.................
+Locating benchmarks...found 47 benchmarks in 73 benchsets.
+Reading config file '/home/mev/cpu2017/config/mev-aocc-7840.cfg'
+WARNING: Duplicate setting for "flagsurl" on line 148
+         of /home/mev/cpu2017/config/mev-aocc-7840.cfg
+1 configuration selected:
+
+ Action    Run Mode   Workload     Report Type      Benchmarks
+--------   --------   --------   ----------------   ---------------------------
+validate   rate       refrate    SPECrate2017_int   525.x264_r                 
+-------------------------------------------------------------------------------
+
+Setting up environment for running 525.x264_r...
+Starting runcpu for 525.x264_r...
+WARNING: Duplicate setting for "flagsurl" on line 148
+         of /home/mev/cpu2017/config/mev-aocc-7840.cfg
+Running "specperl /home/mev/cpu2017/bin/sysinfo" to gather system information.
+sysinfo: r6732 of 2022-11-07 (fe91c89b7ed5c36ae2c92cc097bec197)
+sysinfo: ...getting basic information about kernel, users, and limits
+sysinfo: Getting system information for Linux...
+sysinfo: ...getting CPU info
+sysinfo: ...getting info from numactl
+sysinfo: ...getting memory info
+sysinfo: ...getting info from systemd
+sysinfo: ...getting power info
+sysinfo: ...getting system tuning info
+sysinfo: ...getting OS info
+sysinfo: ...getting disk info
+sysinfo: ...getting info from /sys/devices/virtual/dmi/id
+sysinfo: ...getting info from dmidecode
+WARNING: Your config file sets some fields that are also set by sysinfo:
+  hw_memory001, hw_memory002, hw_ncores, hw_nthreadspercore
+To avoid this warning in the future, see
+  https://www.spec.org/cpu2017/Docs/config.html#sysinfo
+
+Retrieving flags file (http://www.spec.org/cpu2017/flags/aocc400-flags.xml)...
+Benchmarks selected: 525.x264_r
+Compiling Binaries
+  Up to date 525.x264_r base mev-aocc-7840
+
+
+Setting Up Run Directories
+  Setting up 525.x264_r refrate (ref) base mev-aocc-7840 (16 copies): run_base_refrate_mev-aocc-7840.0000-0015
+Running Benchmarks
+  Running (#1) 525.x264_r refrate (ref) base mev-aocc-7840 (16 copies) [2024-06-06 06:36:22]
+  Running (#2) 525.x264_r refrate (ref) base mev-aocc-7840 (16 copies) [2024-06-06 06:38:36]
+  Running (#3) 525.x264_r refrate (ref) base mev-aocc-7840 (16 copies) [2024-06-06 06:40:50]
+Success: 3x525.x264_r
+Producing Raw Reports
+ label: mev-aocc-7840
+  workload: refrate (ref)
+   metric: SPECrate2017_int_base
+    format: raw -> /home/mev/cpu2017/result/CPU2017.259.intrate.refrate.rsf
+Parsing flags for 525.x264_r base: done
+Doing flag reduction: done
+    format: flags -> /home/mev/cpu2017/result/CPU2017.259.intrate.refrate.flags.html
+    format: cfg -> /home/mev/cpu2017/result/CPU2017.259.intrate.refrate.cfg
+    format: CSV -> /home/mev/cpu2017/result/CPU2017.259.intrate.refrate.csv
+    format: PDF -> /home/mev/cpu2017/result/CPU2017.259.intrate.refrate.pdf
+    format: HTML -> /home/mev/cpu2017/result/CPU2017.259.intrate.refrate.html
+    format: Text -> /home/mev/cpu2017/result/CPU2017.259.intrate.refrate.txt
+The log for this run is in /home/mev/cpu2017/result/CPU2017.259.log
+
+runcpu finished at 2024-06-06 06:43:06; 425 total seconds elapsed
