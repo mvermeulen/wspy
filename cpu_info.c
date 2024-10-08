@@ -75,7 +75,8 @@ int inventory_cpu(void){
   // specify the core type
   for (i=0;i<cpu_info->num_cores;i++){
     if (cpu_info->vendor == VENDOR_AMD){
-      if ((cpu_info->family == 0x17) || (cpu_info->family == 0x19)){
+      if ((cpu_info->family == 0x17) || (cpu_info->family == 0x19)
+	  ||(cpu_info->family == 0x1a)){
 	// Zen
 	cpu_info->coreinfo[i].vendor = CORE_AMD_ZEN;
       } else {
