@@ -11,7 +11,7 @@ coremark
 tscp
 build-gcc
 phpbench
-lammps
+lzbench
 compress-zstd
 simdjson
 perl-benchmark
