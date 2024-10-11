@@ -8,7 +8,7 @@ compress-xz
 quicksilver
 x265
 coremark
-tscp
+build-eigen
 build-gcc
 phpbench
 lzbench
