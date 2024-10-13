@@ -325,7 +325,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   if (aflag){
     for (i=0;i<cpu_info->num_cores;i++){
       if (cpu_info->coreinfo[i].is_available &&
-	  ((cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN)||(cpu_info->coreinfo[i].vendor == CORE_INTEL_CORE))){
+	  ((cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN)||(cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN5)||(cpu_info->coreinfo[i].vendor == CORE_INTEL_CORE))){
 	setup_counter_groups(&cpu_info->coreinfo[i].core_specific_counters);
       }
     }

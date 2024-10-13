@@ -75,10 +75,12 @@ int inventory_cpu(void){
   // specify the core type
   for (i=0;i<cpu_info->num_cores;i++){
     if (cpu_info->vendor == VENDOR_AMD){
-      if ((cpu_info->family == 0x17) || (cpu_info->family == 0x19)
-	  ||(cpu_info->family == 0x1a)){
+      if ((cpu_info->family == 0x17) || (cpu_info->family == 0x19)){
 	// Zen
 	cpu_info->coreinfo[i].vendor = CORE_AMD_ZEN;
+      } else if (cpu_info->family == 0x1a) {
+	// Zen5
+	cpu_info->coreinfo[i].vendor = CORE_AMD_ZEN5;
       } else {
 	cpu_info->coreinfo[i].vendor = CORE_AMD_UNKNOWN;
 	if (nwarn == 0){
@@ -175,6 +177,9 @@ int main(void){
     switch(cpu_info->coreinfo[i].vendor){
     case CORE_AMD_ZEN:
       printf("Zen");
+      break;
+    case CORE_AMD_ZEN5:
+      printf("Zen5");
       break;
     case CORE_INTEL_ATOM:
       printf("Atom");
