@@ -3,6 +3,8 @@ while read bench
 do
     TESTNAME=$bench ./run_test.sh
 done <<-BENCH_LIST
-whisperfile
-xnnpack
+neatbench
+litert
+openvino-genai
+rustls
 BENCH_LIST
