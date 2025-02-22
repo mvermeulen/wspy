@@ -33,7 +33,7 @@ struct counter_group {
 // cpu core information
 enum cpu_core_type {
   CORE_UNKNOWN,
-  CORE_AMD_UNKNOWN, CORE_AMD_ZEN,
+  CORE_AMD_UNKNOWN, CORE_AMD_ZEN, CORE_AMD_ZEN5,
   CORE_INTEL_UNKNOWN, CORE_INTEL_ATOM, CORE_INTEL_CORE
 };
 

@@ -1030,7 +1030,13 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
     slots_no_contention = slots;
     break;
   case VENDOR_AMD:
-    if (cinfo = find_ci_label(cgroup,"cpu-cycles")) slots = cinfo->value * 6;
+    if (cinfo = find_ci_label(cgroup,"cpu-cycles")){
+      if (cpu_info->coreinfo[0].vendor == CORE_AMD_ZEN){
+	slots = cinfo->value * 6;
+      } else if (cpu_info->coreinfo[0].vendor == CORE_AMD_ZEN5){
+	slots = cinfo->value * 8;	
+      }
+    }
     if (cinfo = find_ci_label(cgroup,"ex_ret_ops")) retiring = cinfo->value;
     if (cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.no_ops_from_frontend")) frontend = cinfo->value;
     if (cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.backend_stalls")) backend = cinfo->value;
