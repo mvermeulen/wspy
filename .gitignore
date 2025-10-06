@@ -1,0 +1,21 @@
+# Build artifacts
+*.o
+*.obj
+*.exe
+*~
+
+# Binaries
+wspy
+cpu_info
+proctree
+gpu_info
+
+# Backup files
+*.bak
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# Misc
+.DS_Store
