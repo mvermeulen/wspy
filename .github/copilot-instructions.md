@@ -1,60 +1,90 @@
-The repository is a small C utility (wspy) for collecting runtime and
-performance counter metrics for a child workload. Keep guidance brief and
-actionable so an automated coding agent can be productive quickly.
+This repository contains a small C utility (wspy) used to instrument a child
+workload and collect runtime + performance counter metrics. The instructions
+below are focused, actionable, and designed to help an automated coding
+agent jump straight into meaningful edits.
 
-1) Big picture
-- Binary targets: `wspy`, `cpu_info`, `proctree`, optionally `gpu_info` (if built
-  with `AMDGPU`). Core logic lives in `wspy.c` (CLI, orchestration),
-  `topdown.c` (perf counter handling and print logic), and `cpu_info.*` (CPU
-  inventory and platform quirks). `system.c` reads /proc and /sys for system
-  metrics; `error.c` centralizes logging and verbosity.
+Key files and architecture
+- `wspy.c` — CLI, option parsing, launch/coordination of a traced child,
+  CSV header generation and high-level orchestration (calls into counter
+  setup/printing and system reads).
+- `topdown.c` — all perf counter handling: event tables, parsing of raw AMD/
+  Intel event descriptions, counter group constructors (`raw_counter_group`,
+  `cache_counter_group`, `software_counter_group`), perf_event_open wrapper,
+  printing logic (CSV and human-readable via print_* functions).
+- `cpu_info.c` / `cpu_info.h` — CPU/vendor detection, core types, affinity and
+  per-core availability. Many decisions (which counters to enable) depend on
+  values computed here.
+- `system.c` — /proc and /sys reads for load, CPU times, network, and (when
+  built) GPU queries.
+- `error.c` / `error.h` — centralized logging; use `warning()`, `error()`,
+  `fatal()`, `debug()`, `debug2()` consistently when adding diagnostics.
 
-2) Build / test / debug
-- Build: `make` at the repository root. `Makefile` compiles with `gcc -g` and
-  produces `wspy`, `cpu_info`, `proctree`. To include AMD GPU support set
-  `AMDGPU=1` in the make invocation and ensure ROCm headers/libraries are
-  available: `make AMDGPU=1`.
-- Quick smoke: run `./cpu_info` (or `./cpu_info` after build) to exercise CPU
-  detection paths. Run `./wspy -- <cmd>` to run under instrumentation.
-- Logs / verbosity: use `-v`/`--verbose` to increase error subsystem level. The
-  `error.c` helpers (warning, error, fatal, debug, debug2) gate output by level.
+Build, quick tests and environment
+- Build: run `make` at the repo root. To include AMD GPU support set
+  `AMDGPU=1` and ensure ROCm headers/libs are available: `make AMDGPU=1`.
+- Binaries produced: `wspy`, `cpu_info`, `proctree` (and `gpu_info` if
+  built). Quick smoke commands after build:
+  - `./cpu_info` — exercises CPU detection paths.
+  - `./wspy -- <cmd>` — runs `<cmd>` under instrumentation and prints CSV or
+    human-readable output depending on flags.
+- Privileges: many features (perf counters, ptrace) require root or proper
+  perf/ptrace capabilities. Prefer local/manual smoke runs on a dev machine
+  that can run perf (or use `cpu_info` to test detection logic without root).
 
-3) Project-specific patterns to follow
-- Feature flags via macros: e.g., `#if AMDGPU` wraps GPU-specific code and the
-  `Makefile` sets `AMDGPU`. Preserve existing guard style when adding GPU code.
-- Counter groups: performance counters are grouped by `struct counter_group`.
-  Use existing helper constructors `raw_counter_group`, `cache_counter_group`,
-  `software_counter_group` in `topdown.c` when adding counters.
-- Vendor-specific logic: tables and parsing differ for AMD vs Intel
-  (see `topdown.c`’s `amd_raw_events` / `intel_raw_events` and parse_* helpers).
-  Keep platform-specific code co-located with these tables.
+Project-specific patterns and conventions
+- Feature gating: GPU-specific code is guarded by the AMDGPU compile-time
+  flag (see the `Makefile` and use of preprocessor guards). Follow this
+  pattern for optional subsystems and preserve the existing guard style.
+- Counter grouping: counters are represented by `struct counter_group` and
+  linked lists. New counters should be added to the appropriate group via the
+  helper constructors in `topdown.c` rather than ad-hoc arrays.
+- Vendor splits: raw event tables are separated into `intel_raw_events` and
+  `amd_raw_events`. Parsing differs (see `parse_intel_event` /
+  `parse_amd_event`) — keep vendor-specific logic colocated with these
+  tables.
+- CSV vs human output: printing code has two modes. Add CSV column labels in
+  the `PRINT_CSV_HEADER` cases inside the relevant `print_*` functions and
+  provide matching values in `PRINT_CSV` paths.
 
-4) Integration points & runtime assumptions
-- Relies heavily on Linux /proc, /sys, perf_event, and ptrace. Changes that
-  introduce new sysfs or proc reads should add graceful fallbacks (many places
-  already check for file presence and warn).
-- Performance counters open via `perf_event_open` system call wrappers.
-  Changes must respect group leader semantics (see how `is_group_leader` and
-  `group_id` are used when calling `perf_event_open`).
+Integration points and runtime assumptions
+- /proc and /sys: `system.c` and `topdown.c` rely on specific files (e.g.
+  `/proc/stat`, `/proc/loadavg`, `/proc/net/dev`, `/sys/devices/amd_l3/type`).
+  Add checks and graceful fallbacks when introducing additional sysfs reads.
+- perf_event_open: counters are opened with group leader semantics. When
+  adding new raw counters, ensure `is_group_leader` and group_fd behavior
+  mirrors existing code (see `setup_counters` for examples).
+- ptrace: process tree recording uses PTRACE options (`ptrace_setup` and
+  `ptrace_loop`) and expects traced children to call `PTRACE_TRACEME`. Be
+  careful when modifying child launch semantics — the parent writes a start
+  token into a pipe and the child waits on it before execve.
 
-5) Where to make common edits
-- CLI and orchestration: `wspy.c` (option parsing, child launch, CSV output).
-- Counter definitions and printing: `topdown.c` (add/adjust events or output
-  format). Example labels: `"instructions"`, `"cpu-cycles"`, `"op_cache_hit_miss.op_cache_miss"`.
-- CPU detection / affinity: `cpu_info.c` / `cpu_info.h`.
+Concrete examples to guide edits
+- Add a new raw topdown counter (AMD or Intel):
+  1. Add an entry to `amd_raw_events` or `intel_raw_events` in `topdown.c`.
+  2. Ensure the entry's `.use` mask includes the correct COUNTER_* flag
+     defined in `wspy.h`.
+  3. The parser (`parse_intel_event` / `parse_amd_event`) will convert the
+     description into `.raw.config` during `setup_raw_events()` at startup.
 
-6) Small examples
-- Add a topdown counter: add an entry to `intel_raw_events` or `amd_raw_events`
-  and ensure `use` mask matches one of the COUNTER_* flags defined in
-  `wspy.h`. The code calls `parse_intel_event` / `parse_amd_event` to convert
-  description strings to raw `config` values.
-- To add a CSV column: update the print_* functions in `topdown.c` and ensure
-  the header case (`PRINT_CSV_HEADER`) prints the new column label.
+- Add a CSV column: update the appropriate `print_*` function in `topdown.c`.
+  Add the column label in the `PRINT_CSV_HEADER` branch and the matching
+  value in the `PRINT_CSV` branch.
 
-7) Safety & testing notes
-- Many subsystems assume root or appropriate perf/ptrace privileges. Tests that
-  exercise perf counters or ptrace should be isolated and may require elevated
-  privileges; use `cpu_info` and `wspy` smoke runs to validate changes.
+Where to change things
+- CLI flags and orchestration: `wspy.c`.
+- Counters and printing: `topdown.c` (primary). See helper functions named
+  `print_ipc`, `print_topdown`, `print_branch`, `print_l2cache`, etc.
+- CPU/platform logic: `cpu_info.c` and headers.
+- System reads and CSV composition: `system.c`.
 
-If anything here is unclear or you'd like more detail (examples of adding a
-counter or a new CLI flag), tell me which area to expand and I will iterate.
+Quality and safety notes
+- Many runtime checks already exist (file presence, fallbacks). Mirror their
+  style when adding new sysfs/proc reads.
+- Avoid changing group leader semantics for perf counters. Test on a
+  machine with the target CPU (Intel vs AMD) and check `/proc/sys/kernel/nmi_watchdog` —
+  when NMI watchdog is active, available perf counters are reduced and the
+  code uses `nmi_running` to adapt.
+
+If you want, I can: add a small example patch (e.g., add a sample counter and
+CSV column), or extend guidance with a short checklist for adding GPU events.
+Tell me which area you'd like expanded.
