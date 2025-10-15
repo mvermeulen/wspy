@@ -5,9 +5,15 @@ SRCS = wspy.c cpu_info.c error.c proctree.c system.c topdown.c
 OBJS = wspy.o cpu_info.o error.o proctree.o system.o topdown.o
 LIBS = -lpthread -lm
 
+# ROCm/AMDGPU defaults (can be overridden on the make command line):
+#   make AMDGPU=1 ROCM_DIR=/path/to/rocm
+ROCM_DIR ?= /opt/rocm
+ROCM_INCLUDE := $(ROCM_DIR)/include
+ROCM_LIB := $(ROCM_DIR)/lib
+
 ifdef AMDGPU
-CFLAGS += -DAMDGPU=1 -I/opt/rocm/include
-LIBS += -L /opt/rocm/lib -lamd_smi
+CFLAGS += -DAMDGPU=1 -I$(ROCM_INCLUDE)
+LIBS += -L$(ROCM_LIB) -lamd_smi
 endif
 
 ifdef AMDGPU
