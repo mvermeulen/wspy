@@ -467,7 +467,7 @@ void ptrace_setup(pid_t child_pid){
 		  PTRACE_O_EXITKILL | // kill child if I exit
 		  PTRACE_O_TRACECLONE|PTRACE_O_TRACEFORK|PTRACE_O_TRACEVFORK|
 		  PTRACE_O_TRACEEXIT); // exit(2)
-  ptrace(PTRACE_CONT,child_pid,NULL,NULL); // let the child being
+  ptrace(PTRACE_CONT,child_pid,NULL,NULL); // let the child continue
 }
 
 // loop through and handle ptrace events

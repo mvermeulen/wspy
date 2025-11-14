@@ -261,7 +261,7 @@ void ptrace_setup(pid_t child_pid){
 		  PTRACE_O_TRACESYSGOOD | // set 0x80 for syscall traps
 		  PTRACE_O_TRACECLONE|PTRACE_O_TRACEFORK|PTRACE_O_TRACEVFORK|
 		  PTRACE_O_TRACEEXIT); // exit(2)
-  ptrace(trace_syscall?PTRACE_SYSCALL:PTRACE_CONT,child_pid,NULL,NULL); // let the child being
+  ptrace(trace_syscall?PTRACE_SYSCALL:PTRACE_CONT,child_pid,NULL,NULL); // let the child continue
 }
 
 // read filenames and similar arguments

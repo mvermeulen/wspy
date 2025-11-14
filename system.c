@@ -58,7 +58,7 @@ void setup_net_info(void){
     system_state.num_net = count;
     system_state.netinfo = calloc(count,sizeof(struct netinfo));
 
-    // process again to count create device entries
+    // process again to create device entries
     count = 0;
     while (fgets(buffer,sizeof(buffer),fp) != NULL){
       p = strchr(buffer,':');

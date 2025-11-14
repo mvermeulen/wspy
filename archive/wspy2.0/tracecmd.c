@@ -49,7 +49,7 @@ void *tracecmd_start(void *arg){
 	p = strtok(NULL,":\n");
       } while (p);
     }
-    // all the the exec failed
+    // all exec attempts failed
     error("exec of %s failed (errno=%d): %s\n",
 	  tracecmdline[0],errno,strerror(errno));
     return 0;
