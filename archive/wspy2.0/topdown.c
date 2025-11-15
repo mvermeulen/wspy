@@ -80,42 +80,42 @@ struct raw_event intel_raw_events[] = {
 };
 
 struct raw_event amd_raw_events[] = {
-  { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_OPCACHE|COUNTER_TLB|COUNTER_L2CACHE|COUNTER_L3CACHE|COUNTER_FLOAT,0 },
-  { "cpu-cycles","event=0x76",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
-  { "ex_ret_ops","event=0xc1",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
-  { "de_no_dispatch_per_slot.no_ops_from_frontend","event=0x1a0,umask=0x1",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
-  { "de_no_dispatch_per_slot.backend_stalls","event=0x1a0,umask=0x1e",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
-  { "de_src_op_disp.all","event=0xaa,umask=0x7",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
-  { "de_no_dispatch_per_slot.smt_contention","event=0x1a0,umask=0x60",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
-  { "ex_no_retire.load_not_complete","event=0xd6,umask=0xa2",PERF_TYPE_RAW,COUNTER_TOPDOWN2, 0 },
-  { "ex_no_retire.not_complete","event=0xd6,umask=0x2",PERF_TYPE_RAW,COUNTER_TOPDOWN2, 0 },
-  { "ex_ret_brn_misp","event=0xc3",PERF_TYPE_RAW,COUNTER_TOPDOWN2, 0 },
-  { "resyncs_or_nc_redirects","event=0x96",PERF_TYPE_RAW,COUNTER_TOPDOWN2, 0 },
-  { "de_no_dispatch_per_slot.no_ops_from_frontend.cmask_0x6","event=0x1a0,umask=0x1,cmask=0x6",PERF_TYPE_RAW,COUNTER_TOPDOWN2,0 },
-  { "ex_ret_ucode_ops","event=0x1c1",PERF_TYPE_RAW,COUNTER_TOPDOWN2,0 },
-  { "branch-instructions","event=0xc2",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
-  { "branch-misses","event=0xc3",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
-  { "conditional-branches","event=0xd1",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
-  { "indirect-branches","event=0xcc",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
-  { "op_cache_hit_miss.all_op_cache_accesses","event=0x28f,umask=0x7",PERF_TYPE_RAW,COUNTER_OPCACHE,0 },
-  { "op_cache_hit_miss.op_cache_miss","event=0x28f,umask=0x4",PERF_TYPE_RAW,COUNTER_OPCACHE,0 },
-  { "l2_request_g1.all_no_prefetch","event=0x60,umask=0xf9",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
-  { "l2_pf_hit_l2","event=0x70,umask=0x1f",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
-  { "l2_pf_miss_l2_hit_l3", "event=0x71,umask=0x1f",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
-  { "l2_pf_miss_l2_l3","event=0x72,umask=0x1f",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
-  { "l2_cache_req_stat.ic_dc_miss_in_l2","event=0x64,umask=0x9",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
-  { "ls_data_cache_refills.local_all","event=0x43,umask=0xf",PERF_TYPE_RAW,COUNTER_MEMORY,0 },
-  { "ls_data_cache_refills.remote_all","event=0x43,umask=0x50",PERF_TYPE_RAW,COUNTER_MEMORY,0 },
-  { "ls_hwpref_data_cache_refills.local_all","event=0x50,umask=0xf",PERF_TYPE_RAW,COUNTER_MEMORY,0 },
-  { "ls_hwpref_data_cache_refills.remote_all","event=0x50,umask=0x50",PERF_TYPE_RAW,COUNTER_MEMORY,0 },
-  { "fp_ret_fops_AVX512","event=0x20,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,0},
-  { "fp_ret_fops_AVX256","event=0x10,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,0},
-  { "fp_ret_fops_AVX128","event=0x8,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,0},
-  { "fp_ret_fops_MMX","event=0x2,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,0},
-  { "fp_ret_fops_scalar","event=0x5,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,0},
+  { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_OPCACHE|COUNTER_TLB|COUNTER_L2CACHE|COUNTER_L3CACHE|COUNTER_FLOAT, {0} },
+  { "cpu-cycles","event=0x76",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_TOPDOWN|COUNTER_TOPDOWN2, {0} },
+  { "ex_ret_ops","event=0xc1",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_TOPDOWN|COUNTER_TOPDOWN2, {0} },
+  { "de_no_dispatch_per_slot.no_ops_from_frontend","event=0x1a0,umask=0x1",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2, {0} },
+  { "de_no_dispatch_per_slot.backend_stalls","event=0x1a0,umask=0x1e",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2, {0} },
+  { "de_src_op_disp.all","event=0xaa,umask=0x7",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2, {0} },
+  { "de_no_dispatch_per_slot.smt_contention","event=0x1a0,umask=0x60",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2, {0} },
+  { "ex_no_retire.load_not_complete","event=0xd6,umask=0xa2",PERF_TYPE_RAW,COUNTER_TOPDOWN2, {0} },
+  { "ex_no_retire.not_complete","event=0xd6,umask=0x2",PERF_TYPE_RAW,COUNTER_TOPDOWN2, {0} },
+  { "ex_ret_brn_misp","event=0xc3",PERF_TYPE_RAW,COUNTER_TOPDOWN2, {0} },
+  { "resyncs_or_nc_redirects","event=0x96",PERF_TYPE_RAW,COUNTER_TOPDOWN2, {0} },
+  { "de_no_dispatch_per_slot.no_ops_from_frontend.cmask_0x6","event=0x1a0,umask=0x1,cmask=0x6",PERF_TYPE_RAW,COUNTER_TOPDOWN2,{0} },
+  { "ex_ret_ucode_ops","event=0x1c1",PERF_TYPE_RAW,COUNTER_TOPDOWN2,{0} },
+  { "branch-instructions","event=0xc2",PERF_TYPE_RAW,COUNTER_BRANCH,{0} },
+  { "branch-misses","event=0xc3",PERF_TYPE_RAW,COUNTER_BRANCH,{0} },
+  { "conditional-branches","event=0xd1",PERF_TYPE_RAW,COUNTER_BRANCH,{0} },
+  { "indirect-branches","event=0xcc",PERF_TYPE_RAW,COUNTER_BRANCH,{0} },
+  { "op_cache_hit_miss.all_op_cache_accesses","event=0x28f,umask=0x7",PERF_TYPE_RAW,COUNTER_OPCACHE,{0} },
+  { "op_cache_hit_miss.op_cache_miss","event=0x28f,umask=0x4",PERF_TYPE_RAW,COUNTER_OPCACHE,{0} },
+  { "l2_request_g1.all_no_prefetch","event=0x60,umask=0xf9",PERF_TYPE_RAW,COUNTER_L2CACHE,{0} },
+  { "l2_pf_hit_l2","event=0x70,umask=0x1f",PERF_TYPE_RAW,COUNTER_L2CACHE,{0} },
+  { "l2_pf_miss_l2_hit_l3", "event=0x71,umask=0x1f",PERF_TYPE_RAW,COUNTER_L2CACHE,{0} },
+  { "l2_pf_miss_l2_l3","event=0x72,umask=0x1f",PERF_TYPE_RAW,COUNTER_L2CACHE,{0} },
+  { "l2_cache_req_stat.ic_dc_miss_in_l2","event=0x64,umask=0x9",PERF_TYPE_RAW,COUNTER_L2CACHE,{0} },
+  { "ls_data_cache_refills.local_all","event=0x43,umask=0xf",PERF_TYPE_RAW,COUNTER_MEMORY,{0} },
+  { "ls_data_cache_refills.remote_all","event=0x43,umask=0x50",PERF_TYPE_RAW,COUNTER_MEMORY,{0} },
+  { "ls_hwpref_data_cache_refills.local_all","event=0x50,umask=0xf",PERF_TYPE_RAW,COUNTER_MEMORY,{0} },
+  { "ls_hwpref_data_cache_refills.remote_all","event=0x50,umask=0x50",PERF_TYPE_RAW,COUNTER_MEMORY,{0} },
+  { "fp_ret_fops_AVX512","event=0x20,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,{0}},
+  { "fp_ret_fops_AVX256","event=0x10,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,{0}},
+  { "fp_ret_fops_AVX128","event=0x8,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,{0}},
+  { "fp_ret_fops_MMX","event=0x2,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,{0}},
+  { "fp_ret_fops_scalar","event=0x5,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,{0}},
   // l3 events, need to have /sys/devices/amd_l3/type available...
-  { "l3_lookup_state.all_coherent_accesses_to_l3","event=0x4,umask=0xff,requires=/sys/devices/amd_l3/type",PERF_TYPE_L3,COUNTER_L3CACHE, 0 },
-  { "l3_lookup_state.l3_miss","event=0x4,umask=0x1,requires=/sys/devices/amd_l3/type",PERF_TYPE_L3,COUNTER_L3CACHE, 0 },  
+  { "l3_lookup_state.all_coherent_accesses_to_l3","event=0x4,umask=0xff,requires=/sys/devices/amd_l3/type",PERF_TYPE_L3,COUNTER_L3CACHE, {0} },
+  { "l3_lookup_state.l3_miss","event=0x4,umask=0x1,requires=/sys/devices/amd_l3/type",PERF_TYPE_L3,COUNTER_L3CACHE, {0} },  
 };
 
 unsigned long parse_intel_event(char *description){
@@ -126,7 +126,7 @@ unsigned long parse_intel_event(char *description){
   result.config = 0;
   
   for (name = strtok(desc,",\n");name;name = strtok(NULL,",\n")){
-    if (val = strchr(name,'=')){ // expected format "desc=value"
+    if ((val = strchr(name,'='))){ // expected format "desc=value"
       *val = 0; // null terminator for name
       val++;
       value = strtol(val,NULL,16);
@@ -156,7 +156,7 @@ unsigned long parse_amd_event(char *description){
   result.config = 0;
   
   for (name = strtok(desc,",\n");name;name = strtok(NULL,",\n")){
-    if (val = strchr(name,'=')){ // expected format "desc=value"
+    if ((val = strchr(name,'='))){ // expected format "desc=value"
       *val = 0; // null terminator for name
       val++;
       value = strtol(val,NULL,16);

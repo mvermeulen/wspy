@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <time.h>
 #include <signal.h>
 #include <fcntl.h>
 #include <sys/wait.h>
@@ -29,75 +30,75 @@ struct timespec start_time,finish_time;
 // Counter definitions for RAW performance counters
 static int intel_group_id = -1;
 struct raw_event intel_raw_events[] = {
-  { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_L2CACHE,0 },
-  { "cpu-cycles","event=0x3c",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_TOPDOWN_BE,0 },
-  { "slots","event=0x00,umask=0x4",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
-  { "core.topdown-retiring","event=0x00,umask=0x80",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
-  { "core.topdown-bad-spec","event=0x00,umask=0x81",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
-  { "core.topdown-fe-bound","event=0x00,umask=0x82",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
-  { "core.topdown-be-bound","event=0x00,umask=0x83",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
-  { "core.topdown-heavy-ops","event=0x00,umask=0x84",PERF_TYPE_RAW,COUNTER_TOPDOWN2,0 },
-  { "core.topdown-br-mispredict","event=0x00,umask=0x85",PERF_TYPE_RAW,COUNTER_TOPDOWN2,0 },
-  { "core.topdown-fetch-lat","event=0x00,umask=0x86",PERF_TYPE_RAW,COUNTER_TOPDOWN2,0 },
-  { "core.topdown-mem-bound","event=0x00,umask=0x87",PERF_TYPE_RAW,COUNTER_TOPDOWN2,0 },
-  { "br_inst_retired.all_branches","event=0xc4,period=0x61a89",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
-  { "br_misp_retired.all_branches","event=0xc5,period=0x61a89",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
-  { "br_inst_retired.cond","event=0xc4,period=0x61a89",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
-  { "br_inst_retired.indirect","event=0xc4,period=0x186a3,umask=0x80",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
-  { "l2_request.all","event=0x24,period=0x30d43,umask=0xff",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
-  { "l2_request.miss","event=0x24,period=0x30d43,umask=0x3f",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
-  { "exe_activity.bound_on_loads","event=0xa6,cmask=0x5,period=0x1e8483,umask=0x21",PERF_TYPE_RAW,COUNTER_TOPDOWN_BE,0 },
-  { "exe_activity.bound_on_stores","event=0xa6,cmask=0x2,period=0x1e8483,umask=0x40",PERF_TYPE_RAW,COUNTER_TOPDOWN_BE,0 },  
-  { "memory_activity.stalls_l1d_miss","event=0x47,cmask=0x2,period=0xf4243,umask=0x3",PERF_TYPE_RAW,COUNTER_TOPDOWN_BE,0 },    
-  { "memory_activity.stalls_l2_miss","event=0x47,cmask=0x5,period=0xf4243,umask=0x5",PERF_TYPE_RAW,COUNTER_TOPDOWN_BE,0 },    
-  { "memory_activity.stalls_l3_miss","event=0x47,cmask=0x9,period=0xf4243,umask=0x9",PERF_TYPE_RAW,COUNTER_TOPDOWN_BE,0 },
+  { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_L2CACHE,{{0}} },
+  { "cpu-cycles","event=0x3c",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_TOPDOWN_BE,{{0}} },
+  { "slots","event=0x00,umask=0x4",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,{{0}} },
+  { "core.topdown-retiring","event=0x00,umask=0x80",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,{{0}} },
+  { "core.topdown-bad-spec","event=0x00,umask=0x81",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,{{0}} },
+  { "core.topdown-fe-bound","event=0x00,umask=0x82",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,{{0}} },
+  { "core.topdown-be-bound","event=0x00,umask=0x83",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,{{0}} },
+  { "core.topdown-heavy-ops","event=0x00,umask=0x84",PERF_TYPE_RAW,COUNTER_TOPDOWN2,{{0}} },
+  { "core.topdown-br-mispredict","event=0x00,umask=0x85",PERF_TYPE_RAW,COUNTER_TOPDOWN2,{{0}} },
+  { "core.topdown-fetch-lat","event=0x00,umask=0x86",PERF_TYPE_RAW,COUNTER_TOPDOWN2,{{0}} },
+  { "core.topdown-mem-bound","event=0x00,umask=0x87",PERF_TYPE_RAW,COUNTER_TOPDOWN2,{{0}} },
+  { "br_inst_retired.all_branches","event=0xc4,period=0x61a89",PERF_TYPE_RAW,COUNTER_BRANCH,{{0}} },
+  { "br_misp_retired.all_branches","event=0xc5,period=0x61a89",PERF_TYPE_RAW,COUNTER_BRANCH,{{0}} },
+  { "br_inst_retired.cond","event=0xc4,period=0x61a89",PERF_TYPE_RAW,COUNTER_BRANCH,{{0}} },
+  { "br_inst_retired.indirect","event=0xc4,period=0x186a3,umask=0x80",PERF_TYPE_RAW,COUNTER_BRANCH,{{0}} },
+  { "l2_request.all","event=0x24,period=0x30d43,umask=0xff",PERF_TYPE_RAW,COUNTER_L2CACHE,{{0}} },
+  { "l2_request.miss","event=0x24,period=0x30d43,umask=0x3f",PERF_TYPE_RAW,COUNTER_L2CACHE,{{0}} },
+  { "exe_activity.bound_on_loads","event=0xa6,cmask=0x5,period=0x1e8483,umask=0x21",PERF_TYPE_RAW,COUNTER_TOPDOWN_BE,{{0}} },
+  { "exe_activity.bound_on_stores","event=0xa6,cmask=0x2,period=0x1e8483,umask=0x40",PERF_TYPE_RAW,COUNTER_TOPDOWN_BE,{{0}} },  
+  { "memory_activity.stalls_l1d_miss","event=0x47,cmask=0x2,period=0xf4243,umask=0x3",PERF_TYPE_RAW,COUNTER_TOPDOWN_BE,{{0}} },    
+  { "memory_activity.stalls_l2_miss","event=0x47,cmask=0x5,period=0xf4243,umask=0x5",PERF_TYPE_RAW,COUNTER_TOPDOWN_BE,{{0}} },    
+  { "memory_activity.stalls_l3_miss","event=0x47,cmask=0x9,period=0xf4243,umask=0x9",PERF_TYPE_RAW,COUNTER_TOPDOWN_BE,{{0}} },
 };
 
 struct raw_event amd_raw_events[] = {
   { "instructions","event=0xc0",
-    PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_OPCACHE|COUNTER_TLB|COUNTER_L2CACHE|COUNTER_L3CACHE|COUNTER_FLOAT|COUNTER_TOPDOWN_FE|COUNTER_TOPDOWN_OP,0 },
-  { "cpu-cycles","event=0x76",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
-  { "ex_ret_ops","event=0xc1",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
-  { "de_no_dispatch_per_slot.no_ops_from_frontend","event=0x1a0,umask=0x1",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
-  { "de_no_dispatch_per_slot.backend_stalls","event=0x1a0,umask=0x1e",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
-  { "de_src_op_disp.all","event=0xaa,umask=0x7",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
-  { "de_no_dispatch_per_slot.smt_contention","event=0x1a0,umask=0x60",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,0 },
+    PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_OPCACHE|COUNTER_TLB|COUNTER_L2CACHE|COUNTER_L3CACHE|COUNTER_FLOAT|COUNTER_TOPDOWN_FE|COUNTER_TOPDOWN_OP,{0} },
+  { "cpu-cycles","event=0x76",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_TOPDOWN|COUNTER_TOPDOWN2,{0} },
+  { "ex_ret_ops","event=0xc1",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_TOPDOWN|COUNTER_TOPDOWN2,{0} },
+  { "de_no_dispatch_per_slot.no_ops_from_frontend","event=0x1a0,umask=0x1",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,{0} },
+  { "de_no_dispatch_per_slot.backend_stalls","event=0x1a0,umask=0x1e",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,{0} },
+  { "de_src_op_disp.all","event=0xaa,umask=0x7",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,{0} },
+  { "de_no_dispatch_per_slot.smt_contention","event=0x1a0,umask=0x60",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,{0} },
   { "ex_no_retire.load_not_complete","event=0xd6,umask=0xa2",PERF_TYPE_RAW,COUNTER_TOPDOWN2, 0 },
   { "ex_no_retire.not_complete","event=0xd6,umask=0x2",PERF_TYPE_RAW,COUNTER_TOPDOWN2, 0 },
   { "ex_ret_brn_misp","event=0xc3",PERF_TYPE_RAW,COUNTER_TOPDOWN2, 0 },
   { "resyncs_or_nc_redirects","event=0x96",PERF_TYPE_RAW,COUNTER_TOPDOWN2, 0 },
-  { "de_no_dispatch_per_slot.no_ops_from_frontend.cmask_0x6","event=0x1a0,umask=0x1,cmask=0x6",PERF_TYPE_RAW,COUNTER_TOPDOWN2,0 },
-  { "ex_ret_ucode_ops","event=0x1c1",PERF_TYPE_RAW,COUNTER_TOPDOWN2,0 },
-  { "branch-instructions","event=0xc2",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
-  { "branch-misses","event=0xc3",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
-  { "conditional-branches","event=0xd1",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
-  { "indirect-branches","event=0xcc",PERF_TYPE_RAW,COUNTER_BRANCH,0 },
-  { "op_cache_hit_miss.all_op_cache_accesses","event=0x28f,umask=0x7",PERF_TYPE_RAW,COUNTER_OPCACHE|COUNTER_TOPDOWN_OP,0 },
-  { "op_cache_hit_miss.op_cache_miss","event=0x28f,umask=0x4",PERF_TYPE_RAW,COUNTER_OPCACHE|COUNTER_TOPDOWN_OP,0 },
-  { "l2_request_g1.all_no_prefetch","event=0x60,umask=0xf9",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
-  { "l2_pf_hit_l2","event=0x70,umask=0x1f",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
-  { "l2_pf_miss_l2_hit_l3", "event=0x71,umask=0x1f",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
-  { "l2_pf_miss_l2_l3","event=0x72,umask=0x1f",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
-  { "l2_cache_req_stat.ic_dc_miss_in_l2","event=0x64,umask=0x9",PERF_TYPE_RAW,COUNTER_L2CACHE,0 },
-  { "ls_data_cache_refills.local_all","event=0x43,umask=0xf",PERF_TYPE_RAW,COUNTER_MEMORY,0 },
-  { "ls_data_cache_refills.remote_all","event=0x43,umask=0x50",PERF_TYPE_RAW,COUNTER_MEMORY,0 },
-  { "ls_hwpref_data_cache_refills.local_all","event=0x50,umask=0xf",PERF_TYPE_RAW,COUNTER_MEMORY,0 },
-  { "ls_hwpref_data_cache_refills.remote_all","event=0x50,umask=0x50",PERF_TYPE_RAW,COUNTER_MEMORY,0 },
+  { "de_no_dispatch_per_slot.no_ops_from_frontend.cmask_0x6","event=0x1a0,umask=0x1,cmask=0x6",PERF_TYPE_RAW,COUNTER_TOPDOWN2,{0} },
+  { "ex_ret_ucode_ops","event=0x1c1",PERF_TYPE_RAW,COUNTER_TOPDOWN2,{0} },
+  { "branch-instructions","event=0xc2",PERF_TYPE_RAW,COUNTER_BRANCH,{0} },
+  { "branch-misses","event=0xc3",PERF_TYPE_RAW,COUNTER_BRANCH,{0} },
+  { "conditional-branches","event=0xd1",PERF_TYPE_RAW,COUNTER_BRANCH,{0} },
+  { "indirect-branches","event=0xcc",PERF_TYPE_RAW,COUNTER_BRANCH,{0} },
+  { "op_cache_hit_miss.all_op_cache_accesses","event=0x28f,umask=0x7",PERF_TYPE_RAW,COUNTER_OPCACHE|COUNTER_TOPDOWN_OP,{0} },
+  { "op_cache_hit_miss.op_cache_miss","event=0x28f,umask=0x4",PERF_TYPE_RAW,COUNTER_OPCACHE|COUNTER_TOPDOWN_OP,{0} },
+  { "l2_request_g1.all_no_prefetch","event=0x60,umask=0xf9",PERF_TYPE_RAW,COUNTER_L2CACHE,{0} },
+  { "l2_pf_hit_l2","event=0x70,umask=0x1f",PERF_TYPE_RAW,COUNTER_L2CACHE,{0} },
+  { "l2_pf_miss_l2_hit_l3", "event=0x71,umask=0x1f",PERF_TYPE_RAW,COUNTER_L2CACHE,{0} },
+  { "l2_pf_miss_l2_l3","event=0x72,umask=0x1f",PERF_TYPE_RAW,COUNTER_L2CACHE,{0} },
+  { "l2_cache_req_stat.ic_dc_miss_in_l2","event=0x64,umask=0x9",PERF_TYPE_RAW,COUNTER_L2CACHE,{0} },
+  { "ls_data_cache_refills.local_all","event=0x43,umask=0xf",PERF_TYPE_RAW,COUNTER_MEMORY,{0} },
+  { "ls_data_cache_refills.remote_all","event=0x43,umask=0x50",PERF_TYPE_RAW,COUNTER_MEMORY,{0} },
+  { "ls_hwpref_data_cache_refills.local_all","event=0x50,umask=0xf",PERF_TYPE_RAW,COUNTER_MEMORY,{0} },
+  { "ls_hwpref_data_cache_refills.remote_all","event=0x50,umask=0x50",PERF_TYPE_RAW,COUNTER_MEMORY,{0} },
   { "fp_ret_fops_AVX512","event=0x20,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,0},
   { "fp_ret_fops_AVX256","event=0x10,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,0},
   { "fp_ret_fops_AVX128","event=0x8,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,0},
   { "fp_ret_fops_MMX","event=0x2,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,0},
   { "fp_ret_fops_scalar","event=0x5,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,0},
   // l3 events, need to have /sys/devices/amd_l3/type available...
-  { "l3_lookup_state.all_coherent_accesses_to_l3","event=0x4,umask=0xff,requires=/sys/devices/amd_l3/type",PERF_TYPE_L3,COUNTER_L3CACHE, 0 },
-  { "l3_lookup_state.l3_miss","event=0x4,umask=0x1,requires=/sys/devices/amd_l3/type",PERF_TYPE_L3,COUNTER_L3CACHE, 0 },
-  { "ic_tag_hit_miss.instruction_cache_miss","event=0x18e,umask=0x18",PERF_TYPE_RAW,COUNTER_TOPDOWN_FE,0},
-  { "ic_tag_hit_miss.instruction_cache_accesses","event=0x18e,umask=0x1f",PERF_TYPE_RAW,COUNTER_TOPDOWN_FE,0},
-  { "bp_l1_tlb_miss_l2_tlb_hit","event=0x84",PERF_TYPE_RAW,COUNTER_TOPDOWN_FE,0},
-  { "bp_l1_tlb_miss_l2_tlb_miss.all","event=0xf",PERF_TYPE_RAW,COUNTER_TOPDOWN_FE,0},
-  { "ls_tlb_flush.all","event=0x78,umask=0xff",PERF_TYPE_RAW,COUNTER_TOPDOWN_FE,0},
-  { "ls_l1_d_tlb_miss.all","event=0x45,umask=0xff",PERF_TYPE_RAW,COUNTER_TOPDOWN_OP,0},
-  { "ls_l1_d_tlb_miss.all_l2_miss","event=0x45,umask=0xf0",PERF_TYPE_RAW,COUNTER_TOPDOWN_OP,0},
+  { "l3_lookup_state.all_coherent_accesses_to_l3","event=0x4,umask=0xff,requires=/sys/devices/amd_l3/type",PERF_TYPE_L3,COUNTER_L3CACHE,{{0}} },
+  { "l3_lookup_state.l3_miss","event=0x4,umask=0x1,requires=/sys/devices/amd_l3/type",PERF_TYPE_L3,COUNTER_L3CACHE,{{0}} },
+  { "ic_tag_hit_miss.instruction_cache_miss","event=0x18e,umask=0x18",PERF_TYPE_RAW,COUNTER_TOPDOWN_FE,{{0}}},
+  { "ic_tag_hit_miss.instruction_cache_accesses","event=0x18e,umask=0x1f",PERF_TYPE_RAW,COUNTER_TOPDOWN_FE,{{0}}},
+  { "bp_l1_tlb_miss_l2_tlb_hit","event=0x84",PERF_TYPE_RAW,COUNTER_TOPDOWN_FE,{{0}}},
+  { "bp_l1_tlb_miss_l2_tlb_miss.all","event=0xf",PERF_TYPE_RAW,COUNTER_TOPDOWN_FE,{{0}}},
+  { "ls_tlb_flush.all","event=0x78,umask=0xff",PERF_TYPE_RAW,COUNTER_TOPDOWN_FE,{{0}}},
+  { "ls_l1_d_tlb_miss.all","event=0x45,umask=0xff",PERF_TYPE_RAW,COUNTER_TOPDOWN_OP,{{0}}},
+  { "ls_l1_d_tlb_miss.all_l2_miss","event=0x45,umask=0xf0",PERF_TYPE_RAW,COUNTER_TOPDOWN_OP,{{0}}},
 };
 
 unsigned long parse_intel_event(char *description){
@@ -108,7 +109,7 @@ unsigned long parse_intel_event(char *description){
   result.config = 0;
   
   for (name = strtok(desc,",\n");name;name = strtok(NULL,",\n")){
-    if (val = strchr(name,'=')){ // expected format "desc=value"
+    if ((val = strchr(name,'=')) != NULL){ // expected format "desc=value"
       *val = 0; // null terminator for name
       val++;
       value = strtol(val,NULL,16);
@@ -140,7 +141,7 @@ unsigned long parse_amd_event(char *description){
   result.config = 0;
   
   for (name = strtok(desc,",\n");name;name = strtok(NULL,",\n")){
-    if (val = strchr(name,'=')){ // expected format "desc=value"
+    if ((val = strchr(name,'=')) != NULL){ // expected format "desc=value"
       *val = 0; // null terminator for name
       val++;
       value = strtol(val,NULL,16);
@@ -169,7 +170,7 @@ unsigned long parse_amd_event(char *description){
 };
 
 int setup_raw_events(void){
-  int i;
+  unsigned int i;
   struct raw_event *events;
   unsigned int num_events;
   switch(cpu_info->vendor){
@@ -193,6 +194,7 @@ int setup_raw_events(void){
     warning("Unknown CPU, no events parsed\n");
     break;
   }
+    return 0;
 }
 
 pid_t child_pid = 0;
@@ -204,6 +206,7 @@ int launch_child(int argc,char *const argv[],char *const envp[]){
   char *p,*path;
   char pathbuf[1024];
 
+  (void)argc;
   if (pipe(child_pipe) == -1) fatal("pipe creation failed\n");
   switch(child = fork()){
   case 0: // child
@@ -268,7 +271,6 @@ void ptrace_setup(pid_t child_pid){
 char *ptrace_read_null_terminated_string(pid_t pid,long addr){
   static char buffer[4096];
   char *bufptr = buffer;
-  int i;
   int len = 0;
   long int result;
   do {
@@ -292,10 +294,10 @@ char *ptrace_read_null_terminated_string(pid_t pid,long addr){
 
 // loop through and handle ptrace events
 void ptrace_loop(void){
-  pid_t pid,child;
+  pid_t pid;
   int status;
-  int i;
-  int last_syscall = 0;
+  // (i removed) use large type to match regs.orig_rax on x86_64
+  long long last_syscall = 0;
   int syscall_entry = 0;
   unsigned long data;
   char buffer[1024];
@@ -422,7 +424,7 @@ void ptrace_loop(void){
       } else if (WSTOPSIG(status) == (SIGTRAP | 0x80)){
 	// stopped because of a system call
 	ptrace(PTRACE_GETREGS,pid,0,&regs);
-	if (last_syscall != regs.orig_rax){
+        if (last_syscall != (long long)regs.orig_rax){
 	  syscall_entry = 1;
 	} else {
 	  syscall_entry = (1-syscall_entry);
@@ -548,12 +550,13 @@ struct cache_event cache_events[] = {
 
 // creates and allocates a group for cache performance counters
 struct counter_group *cache_counter_group(char *name,unsigned int mask){
-  int i;
+  unsigned int i;
   int ncounters = 0;
   int num_counters_available = (nmi_running)?5:6;
   struct counter_group *cgroup = NULL;
+  (void)name;
   
-  for (i=0;i<sizeof(cache_events)/sizeof(cache_events[0]);i++){
+  for (i=0;i<(unsigned int)(sizeof(cache_events)/sizeof(cache_events[0]));i++){
     if (mask & cache_events[i].use) ncounters++;
   }
   if (ncounters == 0) return NULL;
@@ -565,8 +568,8 @@ struct counter_group *cache_counter_group(char *name,unsigned int mask){
   cgroup->mask = mask;
 
   int count = 0;
-  unsigned int group_id = -1;
-  for (i=0;i<sizeof(cache_events)/sizeof(cache_events[0]);i++){
+  unsigned int group_id = (unsigned int)-1;
+  for (i=0;i<(unsigned int)(sizeof(cache_events)/sizeof(cache_events[0]));i++){
     if (mask & cache_events[i].use){
       cgroup->cinfo[count].label = cache_events[i].name;
       cgroup->cinfo[count].config = cache_events[i].config;
@@ -582,7 +585,7 @@ struct counter_group *cache_counter_group(char *name,unsigned int mask){
 
 // creates and allocates a group for raw hardware performance counters
 struct counter_group *raw_counter_group(char *name,unsigned int mask){
-  int i;
+  unsigned int i;
   int available_counters = (nmi_running)?5:6;
   
   struct raw_event *events;
@@ -601,7 +604,7 @@ struct counter_group *raw_counter_group(char *name,unsigned int mask){
   }
 
   int num_counters = 0;
-  for (i=0;i<num_events;i++){
+  for (i=0;i<(unsigned int)num_events;i++){
     if (events[i].use & mask) num_counters++;
   }
   
@@ -612,7 +615,7 @@ struct counter_group *raw_counter_group(char *name,unsigned int mask){
   cgroup->cinfo = calloc(cgroup->ncounters,sizeof(struct counter_info));
   cgroup->mask = mask;
   int count = 0;
-  for (i=0;i<num_events;i++){
+  for (i=0;i<(unsigned int)num_events;i++){
     if (events[i].use & mask){
       cgroup->cinfo[count].label = events[i].name;
       cgroup->cinfo[count].config = events[i].raw.config;
@@ -631,26 +634,25 @@ struct counter_group *raw_counter_group(char *name,unsigned int mask){
 
 void setup_counter_groups(struct counter_group **counter_group_list){
 
-  int i,count;
   struct counter_group *cgroup;
 
   // note: These get pushed onto a linked list, so last listed is first printed
   if (counter_mask & (COUNTER_DCACHE|COUNTER_ICACHE|COUNTER_TLB)){
-    if (cgroup = cache_counter_group("cache",counter_mask)){
+    if ((cgroup = cache_counter_group("cache",counter_mask))){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;
     }
   }
 
   if (counter_mask & COUNTER_FLOAT){
-    if (cgroup = raw_counter_group("float",COUNTER_FLOAT)){
+    if ((cgroup = raw_counter_group("float",COUNTER_FLOAT))){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;      
     }
   }
 
   if (counter_mask & COUNTER_OPCACHE){
-    if (cgroup = raw_counter_group("op cache",COUNTER_OPCACHE)){
+    if ((cgroup = raw_counter_group("op cache",COUNTER_OPCACHE))){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;      
     }    
@@ -658,70 +660,70 @@ void setup_counter_groups(struct counter_group **counter_group_list){
   
 
   if (counter_mask & COUNTER_MEMORY){
-    if (cgroup = raw_counter_group("memory",COUNTER_MEMORY)){
+    if ((cgroup = raw_counter_group("memory",COUNTER_MEMORY))){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;      
     }
   }
 
   if (counter_mask & COUNTER_L3CACHE){
-    if (cgroup = raw_counter_group("l3 cache",COUNTER_L3CACHE)){
+    if ((cgroup = raw_counter_group("l3 cache",COUNTER_L3CACHE))){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;      
     }    
   }  
 
   if (counter_mask & COUNTER_L2CACHE){
-    if (cgroup = raw_counter_group("l2 cache",COUNTER_L2CACHE)){
+    if ((cgroup = raw_counter_group("l2 cache",COUNTER_L2CACHE))){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;      
     }    
   }
 
   if (counter_mask & COUNTER_BRANCH){
-    if (cgroup = raw_counter_group("branch",COUNTER_BRANCH)){
+    if ((cgroup = raw_counter_group("branch",COUNTER_BRANCH))){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;      
     }        
   }
 
   if (counter_mask & COUNTER_TOPDOWN_OP){
-    if (cgroup = raw_counter_group("topdown-op",COUNTER_TOPDOWN_OP)){
+    if ((cgroup = raw_counter_group("topdown-op",COUNTER_TOPDOWN_OP))){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;      
     }
   }    
       
   if (counter_mask & COUNTER_TOPDOWN_FE){
-    if (cgroup = raw_counter_group("topdown-fe",COUNTER_TOPDOWN_FE)){
+    if ((cgroup = raw_counter_group("topdown-fe",COUNTER_TOPDOWN_FE))){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;      
     }
   }  
 
   if (counter_mask & COUNTER_TOPDOWN_BE){
-    if (cgroup = raw_counter_group("topdown-be",COUNTER_TOPDOWN_BE)){
+    if ((cgroup = raw_counter_group("topdown-be",COUNTER_TOPDOWN_BE))){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;      
     }
   }  
   
   if (counter_mask & COUNTER_TOPDOWN2){
-    if (cgroup = raw_counter_group("topdown2",COUNTER_TOPDOWN2)){
+    if ((cgroup = raw_counter_group("topdown2",COUNTER_TOPDOWN2))){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;      
     }
   }  
   
   if (counter_mask & COUNTER_TOPDOWN){
-    if (cgroup = raw_counter_group("topdown",COUNTER_TOPDOWN)){
+    if ((cgroup = raw_counter_group("topdown",COUNTER_TOPDOWN))){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;      
     }
   }  
 
   if (counter_mask & COUNTER_IPC){
-    if (cgroup = raw_counter_group("ipc",COUNTER_IPC)){
+    if ((cgroup = raw_counter_group("ipc",COUNTER_IPC))){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;		
     }
@@ -731,7 +733,10 @@ void setup_counter_groups(struct counter_group **counter_group_list){
 
 void setup_counters(struct counter_group *counter_group_list){
   unsigned int mask = 0;
-  int i,j,k;
+  int i;
+  (void)i; // quiet - used below
+  int j,k;
+  (void)j; (void)k;
   int count;
   int nerror = 0;
   int status;
@@ -739,9 +744,10 @@ void setup_counters(struct counter_group *counter_group_list){
   struct counter_group *cgroup;
   struct perf_event_attr pe;
 
-  struct cpu_core_info *coreinfo;
-  struct counter_def *counter_def;
-  int ncounters;
+  // quiet unused variables for strict build
+  // struct cpu_core_info *coreinfo;
+  // struct counter_def *counter_def;
+  // int ncounters;
 
   // create system-wide counters
   for (cgroup = counter_group_list;cgroup;cgroup = cgroup->next){
@@ -792,7 +798,10 @@ void setup_counters(struct counter_group *counter_group_list){
 }
 
 void start_counters(struct counter_group *counter_group_list){
-  int i,j;
+  int i;
+  (void)i; // used below
+  int j;
+  (void)j;
   int status;
   struct counter_group *cgroup;
 
@@ -813,7 +822,10 @@ void start_counters(struct counter_group *counter_group_list){
 }
 
 void read_counters(struct counter_group *counter_group_list,int stop_counters){
-  int i,j;
+  int i;
+  (void)i; // used below
+  int j;
+  (void)j;
   int status;
   struct counter_group *cgroup;
   
@@ -865,6 +877,7 @@ int check_nmi_watchdog(void){
     }
     fclose(fp);
   }
+  return nmi_running;
 }
 
 void print_usage(struct rusage *rusage,enum output_format oformat){
@@ -949,6 +962,9 @@ void print_ipc(struct counter_group *cgroup,enum output_format oformat){
   }
 
   switch(oformat){
+  case PRINT_CSV_HEADER:
+    fprintf(outfile,"IPC,cycles\n");
+    break;
   case PRINT_NORMAL:
     if (cpu_cycles){
       fprintf(outfile,"cpu-cycles           %-14lu # %4.2f GHz\n",cpu_cycles,(double) cpu_cycles / elapsed / 1000000000.0 / cpu_info->num_cores_available / (aflag?cpu_info->num_cores_available:1));
@@ -997,32 +1013,32 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
 
   switch(cpu_info->vendor){
   case VENDOR_INTEL:
-    if (cinfo = find_ci_label(cgroup,"slots")) slots = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"core.topdown-retiring")) retiring = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"core.topdown-fe-bound")) frontend = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"core.topdown-be-bound")) backend = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"core.topdown-bad-spec")) speculation = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"slots"))) slots = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"core.topdown-retiring"))) retiring = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"core.topdown-fe-bound"))) frontend = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"core.topdown-be-bound"))) backend = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"core.topdown-bad-spec"))) speculation = cinfo->value;
 
     // backend level 2
-    if (cinfo = find_ci_label(cgroup,"core.topdown-mem-bound")){
+    if ((cinfo = find_ci_label(cgroup,"core.topdown-mem-bound"))){
       backend_memory = cinfo->value;
       backend_cpu = backend - backend_memory;
     }
 
     // speculation level 2
-    if (cinfo = find_ci_label(cgroup,"core.topdown-br-mispredict")){
+    if ((cinfo = find_ci_label(cgroup,"core.topdown-br-mispredict"))){
       speculation_branches = cinfo->value;
       speculation_pipeline = speculation - speculation_branches;
     }
 
     // frontend level 2
-    if (cinfo = find_ci_label(cgroup,"core.topdown-fetch-lat")){
+    if ((cinfo = find_ci_label(cgroup,"core.topdown-fetch-lat"))){
       frontend_latency = cinfo->value;
       frontend_bandwidth = frontend - frontend_latency;
     }
 
     // retire level 2
-    if (cinfo = find_ci_label(cgroup,"core.topdown-heavy-ops")){
+    if ((cinfo = find_ci_label(cgroup,"core.topdown-heavy-ops"))){
       retire_ucode = cinfo->value;
       retire_fastpath = retiring - retire_ucode;
     }
@@ -1030,25 +1046,25 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
     slots_no_contention = slots;
     break;
   case VENDOR_AMD:
-    if (cinfo = find_ci_label(cgroup,"cpu-cycles")){
+    if ((cinfo = find_ci_label(cgroup,"cpu-cycles"))){
       if (cpu_info->coreinfo[0].vendor == CORE_AMD_ZEN){
 	slots = cinfo->value * 6;
       } else if (cpu_info->coreinfo[0].vendor == CORE_AMD_ZEN5){
 	slots = cinfo->value * 8;	
       }
     }
-    if (cinfo = find_ci_label(cgroup,"ex_ret_ops")) retiring = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.no_ops_from_frontend")) frontend = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.backend_stalls")) backend = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.smt_contention")) contention = cinfo->value;    
-    if (cinfo = find_ci_label(cgroup,"de_src_op_disp.all")){
+    if ((cinfo = find_ci_label(cgroup,"ex_ret_ops"))) retiring = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.no_ops_from_frontend"))) frontend = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.backend_stalls"))) backend = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.smt_contention"))) contention = cinfo->value;    
+    if ((cinfo = find_ci_label(cgroup,"de_src_op_disp.all"))){
       if (cinfo->time_running == 0) too_short = 1;
       speculation = cinfo->value - retiring;
     }
     // backend level 2
-    if (cinfo = find_ci_label(cgroup,"ex_no_retire.load_not_complete"))
+    if ((cinfo = find_ci_label(cgroup,"ex_no_retire.load_not_complete")))
       retire_load_not_complete = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"ex_no_retire.not_complete"))
+    if ((cinfo = find_ci_label(cgroup,"ex_no_retire.not_complete")))
       retire_not_complete = cinfo->value;
     if (retire_load_not_complete && retire_not_complete){
       backend_memory = backend * (double) retire_load_not_complete / retire_not_complete;
@@ -1056,9 +1072,9 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
     }
 
     // speculation level 2
-    if (cinfo = find_ci_label(cgroup,"ex_ret_brn_misp"))
+    if ((cinfo = find_ci_label(cgroup,"ex_ret_brn_misp")))
       branches_mispredicted = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"resyncs_or_nc_redirects"))
+    if ((cinfo = find_ci_label(cgroup,"resyncs_or_nc_redirects")))
       resyncs_or_nc_redirects = cinfo->value;
     if (branches_mispredicted && resyncs_or_nc_redirects){
       speculation_pipeline = speculation * (double) resyncs_or_nc_redirects / (resyncs_or_nc_redirects + branches_mispredicted);
@@ -1066,13 +1082,13 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
     }
 
     // frontend level 2
-    if (cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.no_ops_from_frontend.cmask_0x6")){
+    if ((cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.no_ops_from_frontend.cmask_0x6"))){
       frontend_latency = cinfo->value*6;
       frontend_bandwidth = frontend - frontend_latency;
     }
 
     // retire level 2
-    if (cinfo = find_ci_label(cgroup,"ex_ret_ucode_ops")){
+    if ((cinfo = find_ci_label(cgroup,"ex_ret_ucode_ops"))){
       retire_ucode = retiring * (double) cinfo->value / retiring;
       retire_fastpath = retiring - retire_ucode;
     }
@@ -1085,6 +1101,9 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
 
   if (slots){
     switch(oformat){
+    case PRINT_CSV_HEADER:
+      fprintf(outfile,"retire,frontend,backend,speculate\n");
+      break;
     case PRINT_CSV:
       fprintf(outfile,"%4.1f,",(double) retiring/slots_no_contention*100);
       fprintf(outfile,"%4.1f,",(double) frontend/slots_no_contention*100);
@@ -1172,16 +1191,17 @@ void print_topdown_be(struct counter_group *cgroup,enum output_format oformat,in
 
   if (oformat == PRINT_CSV_HEADER){
     fprintf(outfile,"l1_bound,l2_bound,l3_bound,dram_bound,store_bound");
+    return;
   }
 
   switch(cpu_info->vendor){
   case VENDOR_INTEL:
-    if (cinfo = find_ci_label(cgroup,"cpu-cycles")) cpu_cycles = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"exe_activity.bound_on_loads")) load_stall = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"exe_activity.bound_on_stores")) store_stall = cinfo->value;    
-    if (cinfo = find_ci_label(cgroup,"memory_activity.stalls_l1d_miss")) l1_miss = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"memory_activity.stalls_l2_miss")) l2_miss = cinfo->value;    
-    if (cinfo = find_ci_label(cgroup,"memory_activity.stalls_l3_miss")) l3_miss = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"cpu-cycles"))) cpu_cycles = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"exe_activity.bound_on_loads"))) load_stall = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"exe_activity.bound_on_stores"))) store_stall = cinfo->value;    
+    if ((cinfo = find_ci_label(cgroup,"memory_activity.stalls_l1d_miss"))) l1_miss = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"memory_activity.stalls_l2_miss"))) l2_miss = cinfo->value;    
+    if ((cinfo = find_ci_label(cgroup,"memory_activity.stalls_l3_miss"))) l3_miss = cinfo->value;
     break;
   case VENDOR_AMD:
     return;
@@ -1191,6 +1211,9 @@ void print_topdown_be(struct counter_group *cgroup,enum output_format oformat,in
 
   if (cpu_cycles){
     switch(oformat){
+    case PRINT_CSV_HEADER:
+      fprintf(outfile,"l1_bound,l2_bound,l3_bound,dram_bound,store_bound\n");
+      break;
     case PRINT_CSV:
       fprintf(outfile,"%4.1f,%4.1f,%4.1f,%4.1f,%4.1f,",
 	      (double) (load_stall > l1_miss)?(load_stall - l1_miss)*100.0/cpu_cycles:0,
@@ -1229,6 +1252,7 @@ void print_topdown_fe(struct counter_group *cgroup,enum output_format oformat,in
 
   if (oformat == PRINT_CSV_HEADER){
     fprintf(outfile,"icache,itlb1,itlb2,tlbflush,");
+    return;
   }
 
   switch(cpu_info->vendor){
@@ -1236,12 +1260,12 @@ void print_topdown_fe(struct counter_group *cgroup,enum output_format oformat,in
     return;
     break;
   case VENDOR_AMD:
-    if (cinfo = find_ci_label(cgroup,"instructions")) instructions = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"ic_tag_hit_miss.instruction_cache_miss")) icache_miss = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"ic_tag_hit_miss.instruction_cache_accesses")) icache_access = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"bp_l1_tlb_miss_l2_tlb_hit")) itlb1 = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"bp_l1_tlb_miss_l2_tlb_miss.all")) itlb2 = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"ls_tlb_flush.all")) tlb_flush = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"instructions"))) instructions = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"ic_tag_hit_miss.instruction_cache_miss"))) icache_miss = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"ic_tag_hit_miss.instruction_cache_accesses"))) icache_access = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"bp_l1_tlb_miss_l2_tlb_hit"))) itlb1 = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"bp_l1_tlb_miss_l2_tlb_miss.all"))) itlb2 = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"ls_tlb_flush.all"))) tlb_flush = cinfo->value;
     break;
   default:
     return;
@@ -1249,6 +1273,9 @@ void print_topdown_fe(struct counter_group *cgroup,enum output_format oformat,in
 
   if (instructions){
     switch(oformat){
+    case PRINT_CSV_HEADER:
+      fprintf(outfile,"icache,itlb1,itlb2,tlbflush\n");
+      break;
     case PRINT_CSV:
       if (icache_access)
 	fprintf(outfile,"%4.1f,",(double) icache_miss / icache_access*100);
@@ -1286,6 +1313,7 @@ void print_topdown_op(struct counter_group *cgroup,enum output_format oformat,in
 
   if (oformat == PRINT_CSV_HEADER){
     fprintf(outfile,"opcache,dtlb1,dtlb2,");
+    return;
   }
 
   switch(cpu_info->vendor){
@@ -1293,11 +1321,11 @@ void print_topdown_op(struct counter_group *cgroup,enum output_format oformat,in
     return;
     break;
   case VENDOR_AMD:
-    if (cinfo = find_ci_label(cgroup,"instructions")) instructions = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"op_cache_hit_miss.all_op_cache_accesses")) opcache_access = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"op_cache_hit_miss.op_cache_miss")) opcache_miss = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"ls_l1_d_tlb_miss.all")) dtlb1 = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"ls_l1_d_tlb_miss.all_l2_miss")) dtlb2 = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"instructions"))) instructions = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"op_cache_hit_miss.all_op_cache_accesses"))) opcache_access = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"op_cache_hit_miss.op_cache_miss"))) opcache_miss = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"ls_l1_d_tlb_miss.all"))) dtlb1 = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"ls_l1_d_tlb_miss.all_l2_miss"))) dtlb2 = cinfo->value;
     break;
   default:
     return;
@@ -1305,6 +1333,9 @@ void print_topdown_op(struct counter_group *cgroup,enum output_format oformat,in
 
   if (instructions){
     switch(oformat){
+    case PRINT_CSV_HEADER:
+      fprintf(outfile,"opcache,dtlb1,dtlb2\n");
+      break;
     case PRINT_CSV:
       if (opcache_access)
 	fprintf(outfile,"%4.1f,",(double) opcache_miss / opcache_access*100);
@@ -1342,31 +1373,30 @@ void print_branch(struct counter_group *cgroup,enum output_format oformat){
     return;
   }  
 
-  if (cinfo = find_ci_label(cgroup,"instructions"))
+  if ((cinfo = find_ci_label(cgroup,"instructions")))
     instructions = cinfo->value;
-  if (cinfo = find_ci_label(cgroup,"cpu-cycles"))
+  if ((cinfo = find_ci_label(cgroup,"cpu-cycles")))
     cpu_cycles = cinfo->value;
   switch (cpu_info->vendor){
   case VENDOR_AMD:
-    if (cinfo = find_ci_label(cgroup,"branch-instructions"))
+    if ((cinfo = find_ci_label(cgroup,"branch-instructions")))
       branches = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"branch-misses"))
+    if ((cinfo = find_ci_label(cgroup,"branch-misses")))
       branch_miss = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"conditional-branches"))
+    if ((cinfo = find_ci_label(cgroup,"conditional-branches")))
       cond_branches = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"indirect-branches"))
+    if ((cinfo = find_ci_label(cgroup,"indirect-branches")))
       ind_branches = cinfo->value;
     break;
   case VENDOR_INTEL:
-    if (cinfo = find_ci_label(cgroup,"br_inst_retired.all_branches"))
+    if ((cinfo = find_ci_label(cgroup,"br_inst_retired.all_branches")))
       branches = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"br_misp_retired.all_branches"))
+    if ((cinfo = find_ci_label(cgroup,"br_misp_retired.all_branches")))
       branch_miss = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"br_inst_retired.cond"))
+    if ((cinfo = find_ci_label(cgroup,"br_inst_retired.cond")))
       cond_branches = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"br_inst_retired.indirect"))
+    if ((cinfo = find_ci_label(cgroup,"br_inst_retired.indirect")))
       ind_branches = cinfo->value;
-    break;
     break;
   }
   
@@ -1400,13 +1430,13 @@ void print_l2cache(struct counter_group *cgroup,enum output_format oformat){
     return;
   }  
 
-  if (cinfo = find_ci_label(cgroup,"instructions"))
+  if ((cinfo = find_ci_label(cgroup,"instructions")))
     instructions = cinfo->value;
 
   switch(cpu_info->vendor){
   case VENDOR_INTEL:
-    if (cinfo = find_ci_label(cgroup,"l2_request.all")) l2_access = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"l2_request.miss")) l2_miss = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"l2_request.all"))) l2_access = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"l2_request.miss"))) l2_miss = cinfo->value;
     if (csvflag){
       fprintf(outfile,"%4.2f%%,",(double) l2_miss / l2_access * 100.0);
     } else {    
@@ -1417,15 +1447,15 @@ void print_l2cache(struct counter_group *cgroup,enum output_format oformat){
     }
     break;
   case VENDOR_AMD:
-    if (cinfo = find_ci_label(cgroup,"l2_request_g1.all_no_prefetch"))
+    if ((cinfo = find_ci_label(cgroup,"l2_request_g1.all_no_prefetch")))
       l2_from_l1_no_prefetch = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"l2_pf_hit_l2"))
+    if ((cinfo = find_ci_label(cgroup,"l2_pf_hit_l2")))
       l2_pf_hit_l2 = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"l2_pf_miss_l2_hit_l3"))
+    if ((cinfo = find_ci_label(cgroup,"l2_pf_miss_l2_hit_l3")))
       l2_pf_hit_l3 = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"l2_pf_miss_l2_l3"))
+    if ((cinfo = find_ci_label(cgroup,"l2_pf_miss_l2_l3")))
       l2_pf_miss_l3 = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"l2_cache_req_stat.ic_dc_miss_in_l2"))
+    if ((cinfo = find_ci_label(cgroup,"l2_cache_req_stat.ic_dc_miss_in_l2")))
       l1_miss_l2_miss = cinfo->value;
 
     l2_access = l2_from_l1_no_prefetch + l2_pf_hit_l2 + l2_pf_hit_l3 + l2_pf_miss_l3;
@@ -1463,7 +1493,7 @@ void print_l3cache(struct counter_group *cgroup,enum output_format oformat){
   case VENDOR_INTEL:
     break;
   case VENDOR_AMD:
-    if (cinfo = find_ci_label(cgroup,"instructions"))
+    if ((cinfo = find_ci_label(cgroup,"instructions")))
       instructions = cinfo->value;
     if (cinfo = find_ci_label(cgroup,"l3_lookup_state.all_coherent_accesses_to_l3"))
       l3_access = cinfo->value;
@@ -1544,11 +1574,11 @@ void print_cache(struct counter_group *cgroup,
     return;
   }  
 
-  if (cinfo = find_ci_label(cgroup,"instructions"))
+  if ((cinfo = find_ci_label(cgroup,"instructions")))
     instructions = cinfo->value;
-  if (cinfo = find_ci_label(cgroup,access_counter))
+  if ((cinfo = find_ci_label(cgroup,access_counter)))
     access = cinfo->value;
-  if (cinfo = find_ci_label(cgroup,miss_counter))
+  if ((cinfo = find_ci_label(cgroup,miss_counter)))
     miss = cinfo->value;  
 
   if (csvflag){
@@ -1615,17 +1645,17 @@ void print_float(struct counter_group *cgroup,enum output_format oformat){
   case VENDOR_INTEL:
     break;
   case VENDOR_AMD:
-    if (cinfo = find_ci_label(cgroup,"instructions"))
+    if ((cinfo = find_ci_label(cgroup,"instructions")))
       instructions = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"fp_ret_fops_AVX512"))
+    if ((cinfo = find_ci_label(cgroup,"fp_ret_fops_AVX512")))
       float_512 = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"fp_ret_fops_AVX256"))
+    if ((cinfo = find_ci_label(cgroup,"fp_ret_fops_AVX256")))
       float_256 = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"fp_ret_fops_AVX128"))
+    if ((cinfo = find_ci_label(cgroup,"fp_ret_fops_AVX128")))
       float_128 = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"fp_ret_fops_MMX"))
+    if ((cinfo = find_ci_label(cgroup,"fp_ret_fops_MMX")))
       float_mmx = cinfo->value;
-    if (cinfo = find_ci_label(cgroup,"fp_ret_fops_scalar"))
+    if ((cinfo = find_ci_label(cgroup,"fp_ret_fops_scalar")))
       float_scalar = cinfo->value;
 
     float_all = float_512 + float_256 + float_128 + float_mmx + float_scalar;
@@ -1656,6 +1686,8 @@ void print_software(struct counter_group *cgroup,enum output_format oformat){
   int i;
   struct counter_info *task_info = find_ci_label(cgroup,"task-clock");
   double task_time = (double) task_info->value / 1000000000.0;
+  (void)cgroup;
+  (void)oformat;
   struct counter_info *cinfo;
   if (oformat == PRINT_CSV_HEADER){
     return;
@@ -1715,7 +1747,10 @@ void print_metrics(struct counter_group *counter_group_list,enum output_format o
 // simple alarm(2) based timer
 void timer_callback(int signum){
   int i;
+  (void)i;
   struct rusage rusage;
+  (void)rusage;
+  (void)signum;
   double elapsed;
 
   clock_gettime(CLOCK_REALTIME,&finish_time);

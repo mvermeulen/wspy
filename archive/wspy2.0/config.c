@@ -231,7 +231,7 @@ int parse_options(int argc,char *const argv[]){
 	  inventory_counters(0);
 	  flag_require_counters = 1;
       }
-      if (p = strchr(optarg,':')){
+      if ((p = strchr(optarg,':'))){
 	// cpulist
 	*p = 0;
 	arg = p+1;

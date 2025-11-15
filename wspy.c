@@ -334,7 +334,7 @@ int main(int argc,char *const argv[],char *const envp[]){
   }
   // software counters are only system-wide
   if (counter_mask & COUNTER_SOFTWARE){
-    if (cgroup = software_counter_group("software")){
+    if ((cgroup = software_counter_group("software"))){
       cgroup->next = cpu_info->systemwide_counters;
       cpu_info->systemwide_counters = cgroup;
     }

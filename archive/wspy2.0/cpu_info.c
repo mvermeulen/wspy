@@ -101,8 +101,8 @@ int inventory_cpu(void){
 	nwarn++;
       }
     }
-    cpu_info->coreinfo->is_available = 0;
-    cpu_info->coreinfo->is_counter_started = 0;
+    cpu_info->coreinfo[i].is_available = 0;
+    cpu_info->coreinfo[i].is_counter_started = 0;
   }
   // fix up hybrid cores for Raptor Lake and Alder Lake
   if (cpu_info->vendor == VENDOR_INTEL &&
