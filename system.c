@@ -174,7 +174,7 @@ void print_system(enum output_format oformat){
     if (system_mask & SYSTEM_CPU) fprintf(outfile,"cpu,idle,iowait,irq,");
 #if AMDGPU
     if (system_mask & SYSTEM_GPU)
-      fprintf(outfile,"gpu temp,gpu gfx,gpu umc,gpu_mm,");
+      fprintf(outfile,"gpu temp,gpu gfx,gpu umc,gpu mm,vram used,vram total,gfx clk,mem clk,gpu power,");
 #endif
     if (system_mask & SYSTEM_NETWORK){
       if (system_state.netinfo == NULL) setup_net_info();
@@ -199,6 +199,11 @@ void print_system(enum output_format oformat){
       fprintf(outfile,"%d%%,",system_state.gpu.gfx_activity);
       fprintf(outfile,"%d%%,",system_state.gpu.umc_activity);
       fprintf(outfile,"%d%%,",system_state.gpu.mm_activity);
+      fprintf(outfile,"%u,",system_state.gpu.vram_used_mb);
+      fprintf(outfile,"%u,",system_state.gpu.vram_total_mb);
+      fprintf(outfile,"%u,",system_state.gpu.gfx_clock_mhz);
+      fprintf(outfile,"%u,",system_state.gpu.mem_clock_mhz);
+      fprintf(outfile,"%u,",system_state.gpu.power_watts);
     }
 #endif
     if (system_mask & SYSTEM_NETWORK){
@@ -228,7 +233,17 @@ void print_system(enum output_format oformat){
       fprintf(outfile,"temperature          %dC\n",system_state.gpu.temperature);
       fprintf(outfile,"gpu gfx              %d%%\n",system_state.gpu.gfx_activity);
       fprintf(outfile,"gpu umc              %d%%\n",system_state.gpu.umc_activity);
-      fprintf(outfile,"gpu mm               %d%%\n",system_state.gpu.mm_activity);      
+      fprintf(outfile,"gpu mm               %d%%\n",system_state.gpu.mm_activity);
+      if (system_state.gpu.vram_total_mb > 0) {
+        fprintf(outfile,"vram used            %u MB\n",system_state.gpu.vram_used_mb);
+        fprintf(outfile,"vram total           %u MB\n",system_state.gpu.vram_total_mb);
+      }
+      if (system_state.gpu.gfx_clock_mhz > 0)
+        fprintf(outfile,"gfx clock            %u MHz\n",system_state.gpu.gfx_clock_mhz);
+      if (system_state.gpu.mem_clock_mhz > 0)
+        fprintf(outfile,"mem clock            %u MHz\n",system_state.gpu.mem_clock_mhz);
+      if (system_state.gpu.power_watts > 0)
+        fprintf(outfile,"gpu power            %u W\n",system_state.gpu.power_watts);
     }
 #endif
     if (system_mask & SYSTEM_NETWORK){
