@@ -18,10 +18,28 @@ void gpu_info_query(struct gpu_query_data *qd){
   amdsmi_gpu_metrics_t metric_info;
   int status;
   
-  if (num_gpu > 0)
-    status = amdsmi_get_gpu_metrics_info(gpu_handles[0],&metric_info);
-  if (status != AMDSMI_STATUS_SUCCESS)
-    fatal("unable to get gpu metrics\n");
+  if (num_gpu == 0) {
+    debug("no GPUs detected, cannot query GPU metrics\n");
+    if (qd) {
+      qd->temperature = 0;
+      qd->gfx_activity = 0;
+      qd->umc_activity = 0;
+      qd->mm_activity = 0;
+    }
+    return;
+  }
+  
+  status = amdsmi_get_gpu_metrics_info(gpu_handles[0],&metric_info);
+  if (status != AMDSMI_STATUS_SUCCESS){
+    debug("unable to get gpu metrics (status=%d - AMDSMI_STATUS_UNEXPECTED_DATA), GPU may not support metrics API\n", status);
+    if (qd) {
+      qd->temperature = 0;
+      qd->gfx_activity = 0;
+      qd->umc_activity = 0;
+      qd->mm_activity = 0;
+    }
+    return;
+  }
   if (!qd) return;
 
   qd->temperature = metric_info.temperature_edge;
@@ -42,32 +60,48 @@ void gpu_info_initialize(void){
   unsigned long value;
   
   status = amdsmi_init(AMDSMI_INIT_AMD_GPUS);
-  if (status != AMDSMI_STATUS_SUCCESS)
-    fatal("unable to initialize amdsmi\n");
+  if (status != AMDSMI_STATUS_SUCCESS){
+    warning("unable to initialize amdsmi (status=%d) - no AMD GPUs available?\n", status);
+    return;
+  }
 
   // get the socket count and allocate memory
   status = amdsmi_get_socket_handles(&socket_count,NULL);
-  if (status != AMDSMI_STATUS_SUCCESS)
-    fatal("unable to get amdsmi socket handles\n");
+  if (status != AMDSMI_STATUS_SUCCESS){
+    warning("unable to get amdsmi socket handles (status=%d)\n", status);
+    return;
+  }
+
+  debug("found %d socket(s)\n", socket_count);
 
   sockets = calloc(socket_count,sizeof(amdsmi_socket_handle));
   
   // fill in the socket handles
   status = amdsmi_get_socket_handles(&socket_count,sockets);
-  if (status != AMDSMI_STATUS_SUCCESS)
-    fatal("unable to get amdsmi socket handles\n");
+  if (status != AMDSMI_STATUS_SUCCESS){
+    warning("unable to get amdsmi socket handles (status=%d)\n", status);
+    return;
+  }
   
   // for each socket, get identifier and devices
   for (i=0;i<socket_count;i++){
     char socket_info[128];
     status = amdsmi_get_socket_info(sockets[i],sizeof(socket_info),socket_info);
-    if (status != AMDSMI_STATUS_SUCCESS)
-      fatal("unable to get amdsmi socket info\n");
+    if (status != AMDSMI_STATUS_SUCCESS){
+      warning("unable to get amdsmi socket info (status=%d)\n", status);
+      continue;
+    }
+
+    debug("socket %d: %s\n", i, socket_info);
 
     // get the device count for the socket and allocate memory
     status = amdsmi_get_processor_handles(sockets[i],&device_count,NULL);
-    if (status != AMDSMI_STATUS_SUCCESS)
-      fatal("unable to get amdsmi device count\n");
+    if (status != AMDSMI_STATUS_SUCCESS){
+      warning("unable to get amdsmi device count (status=%d)\n", status);
+      continue;
+    }
+
+    debug("socket %d has %d device(s)\n", i, device_count);
 
     if (num_gpu == 0){
       gpu_handles = malloc(device_count * sizeof(gpu_handles[0]));
@@ -79,10 +113,14 @@ void gpu_info_initialize(void){
 
     // get the devices of the socket
     status = amdsmi_get_processor_handles(sockets[i],&device_count,/*processor_handles*/&gpu_handles[num_gpu]);
-    if (status != AMDSMI_STATUS_SUCCESS)
-      fatal("unable to get amdsmi device count\n");
+    if (status != AMDSMI_STATUS_SUCCESS){
+      warning("unable to get amdsmi device handles (status=%d)\n", status);
+      continue;
+    }
     num_gpu += device_count;
   }
+  
+  debug("total GPUs found: %d\n", num_gpu);
 }
 
 void gpu_info_finalize(void){
@@ -95,15 +133,39 @@ void gpu_info_finalize(void){
 #if TEST_GPU_INFO
 int main(void){
   struct gpu_query_data qd;
+  
+  initialize_error_subsystem("gpu_info", "-");
+  set_error_level(ERROR_LEVEL_DEBUG);
+  
   gpu_info_initialize();
 
+  if (num_gpu == 0) {
+    notice("No AMD GPUs detected\n");
+    return 1;
+  }
+
+  notice("Found %d GPU(s)\n", num_gpu);
+  
+  // Try to get device info
+  amdsmi_asic_info_t asic_info;
+  int status = amdsmi_get_gpu_asic_info(gpu_handles[0], &asic_info);
+  if (status == AMDSMI_STATUS_SUCCESS) {
+    notice("ASIC: %s\n", asic_info.market_name);
+  }
+
   gpu_info_query(&qd);
-  notice("temperature = %dC\n",qd.temperature);
-  notice("gfx         = %d%%\n",qd.gfx_activity);
-  notice("umc         = %d%%\n",qd.umc_activity);
-  notice("mm          = %d%%\n",qd.mm_activity);
+  
+  if (qd.temperature > 0 || qd.gfx_activity > 0) {
+    notice("temperature = %dC\n",qd.temperature);
+    notice("gfx         = %d%%\n",qd.gfx_activity);
+    notice("umc         = %d%%\n",qd.umc_activity);
+    notice("mm          = %d%%\n",qd.mm_activity);
+  } else {
+    notice("GPU metrics not available (older GPU or unsupported)\n");
+  }
 
   gpu_info_finalize();
+  return 0;
 }
 #endif
 #endif
