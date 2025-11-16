@@ -1,5 +1,5 @@
 /*
- * gpu_info.h - query for AMD GPUs
+ * gpu_smi.h - query for AMD GPUs
  */
 
 #if AMDGPU

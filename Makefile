@@ -36,7 +36,7 @@ cpu_info:	cpu_info.c error.o cpu_info.h
 	$(CC) -o cpu_info $(CFLAGS) -DTEST_CPU_INFO cpu_info.c error.o
 
 gpu_smi:	gpu_smi.c error.o gpu_smi.h
-	$(CC) -o gpu_smi $(CFLAGS) $(GPUFLAGS) -DTEST_GPU_INFO gpu_smi.c error.o $(LIBS)
+	$(CC) -o gpu_smi $(CFLAGS) $(GPUFLAGS) -DTEST_GPU_SMI gpu_smi.c error.o $(LIBS)
 
 topdown.o:	topdown.c
 	$(CC) -c $(CFLAGS) topdown.c

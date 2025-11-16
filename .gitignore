@@ -8,7 +8,7 @@
 wspy
 cpu_info
 proctree
-gpu_info
+gpu_smi
 
 # Backup files
 *.bak

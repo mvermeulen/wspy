@@ -1,5 +1,5 @@
 /*
- * gpu_info.c - get information on AMD ROCm GPU using libamdsmi
+ * gpu_smi.c - get information on AMD ROCm GPU using libamdsmi
  */
 #if AMDGPU
 #include <stdio.h>
@@ -130,7 +130,7 @@ void gpu_smi_finalize(void){
     fatal("unable to shut down amdsmi\n");
 }
 
-#if TEST_GPU_INFO
+#if TEST_GPU_SMI
 int main(void){
   struct gpu_smi_data qd;
   gpu_smi_initialize();
