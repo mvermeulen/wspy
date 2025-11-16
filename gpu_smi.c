@@ -36,6 +36,16 @@ void gpu_smi_query(struct gpu_smi_data *qd){
   qd->gfx_activity = metric_info.average_gfx_activity;
   qd->umc_activity = metric_info.average_umc_activity;
   qd->mm_activity = metric_info.average_mm_activity;
+  // Optional extended metrics (best-effort; default to 0 if unavailable)
+  qd->gfx_clock_mhz = metric_info.average_gfxclk_frequency;
+#ifdef AMDSMI_METRIC_HAS_UMC_CLK
+  qd->mem_clock_mhz = metric_info.average_umcclk_frequency;
+#else
+  qd->mem_clock_mhz = 0;
+#endif
+  qd->power_watts = metric_info.current_socket_power;
+  qd->vram_used_mb = 0;
+  qd->vram_total_mb = 0;
   //  notice("gfxclk              %d MHz\n",metric_info.average_gfxclk_frequency);
   //  notice("gfx activity acc    %d\n",metric_info.gfx_activity_acc);
   //  notice("mem activity acc    %d\n",metric_info.mem_activity_acc);

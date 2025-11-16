@@ -8,6 +8,11 @@ struct gpu_smi_data {
   int gfx_activity;
   int umc_activity;
   int mm_activity;
+  unsigned int vram_used_mb;
+  unsigned int vram_total_mb;
+  unsigned int gfx_clock_mhz;
+  unsigned int mem_clock_mhz;
+  unsigned int power_watts;
 };
 
 void gpu_smi_initialize();
