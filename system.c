@@ -1,6 +1,7 @@
 /*
  * system.c - system-wide status
  */
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,14 +11,10 @@
 #include "wspy.h"
 #include "error.h"
 #if AMDGPU
-#include "gpu_info.h"
+#include "gpu_smi.h"
 #endif
 
-#if AMDGPU
-unsigned int system_mask = SYSTEM_LOADAVG|SYSTEM_CPU|SYSTEM_NETWORK|SYSTEM_GPU;
-#else
 unsigned int system_mask = SYSTEM_LOADAVG|SYSTEM_CPU|SYSTEM_NETWORK;
-#endif
 
 struct netinfo {
   char *name;
@@ -34,7 +31,7 @@ struct system_state {
     unsigned long prev_usertime, prev_systemtime, prev_idletime, prev_iowaittime, prev_irqtime;
   } cpu;
 #if AMDGPU
-  struct gpu_query_data gpu;
+  struct gpu_smi_data gpu;
 #endif
   int num_net;
   struct netinfo *netinfo;
@@ -125,7 +122,7 @@ void read_system(void){
 #if AMDGPU
   // gpu
   if (system_mask & SYSTEM_GPU){
-    gpu_info_query(&system_state.gpu);
+    gpu_smi_query(&system_state.gpu);
   }
 #endif
 
