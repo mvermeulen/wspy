@@ -1,8 +1,8 @@
 CC=gcc
 CFLAGS=-g
-PROG = wspy cpu_info gpu_smi
-SRCS = wspy.c cpu_info.c error.c proctree.c system.c topdown.c gpu_smi.c
-OBJS = wspy.o cpu_info.o error.o proctree.o system.o topdown.o gpu_smi.o
+PROG = wspy cpu_info gpu_smi amd_smi
+SRCS = wspy.c cpu_info.c error.c proctree.c system.c topdown.c gpu_smi.c amd_smi.c
+OBJS = wspy.o cpu_info.o error.o proctree.o system.o topdown.o gpu_smi.o amd_smi.o
 LIBS = -lpthread -lm
 
 # ROCm/AMDGPU defaults (can be overridden on the make command line):
@@ -17,14 +17,14 @@ LIBS += -L$(ROCM_LIB) -lamd_smi
 endif
 
 ifdef AMDGPU
-all:	wspy cpu_info proctree gpu_smi
+all:	wspy cpu_info proctree gpu_smi amd_smi
 else
 all:	wspy cpu_info proctree
 endif
 
 wspy:	wspy.o topdown.o error.o system.o cpu_info.c cpu_info.h
 ifdef AMDGPU
-	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c gpu_smi.c error.o system.o $(LIBS)
+	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c gpu_smi.c amd_smi.c error.o system.o $(LIBS)
 else
 	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c error.o system.o $(LIBS)
 endif
@@ -54,7 +54,7 @@ clean:
 	-rm *~ *.o *.bak
 
 clobber:	clean
-	-rm wspy cpu_info gpu_smi proctree
+	-rm wspy cpu_info gpu_smi amd_smi proctree
 
 # DO NOT DELETE
 
