@@ -1,17 +1,22 @@
 #if AMDGPU
-/*
- * amd_smi.c - thin wrapper or stub for ROCm/AMDSMI functions if needed
- * This file intentionally left mostly empty; including it ensures a
- * single place to add AMD SMI platform-specific helpers later.
- */
 
 #include "amd_smi/amdsmi.h"
 
-/* Add any platform compatibility / wrapper helpers for amdsmi here. */
+void amd_smi_initialize(void)
+{
+	/* Placeholder for AMD SMI initialization helpers */
+}
+
+void amd_smi_finalize(void)
+{
+	/* Placeholder for AMD SMI finalization helpers */
+}
 
 #if TEST_AMD_SMI
 int main(void){
-	/* empty test harness for AMD SMI helpers */
+    
+	amd_smi_initialize();
+	amd_smi_finalize();
 	return 0;
 }
 #endif
