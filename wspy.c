@@ -14,7 +14,7 @@
 #include <sys/wait.h>
 #include "wspy.h"
 #if AMDGPU
-#include "gpu_smi.h"
+#include "amd_smi.h"
 #endif
 #include "error.h"
 
@@ -333,12 +333,9 @@ int main(int argc,char *const argv[],char *const envp[]){
 
 #if AMDGPU
   if (system_mask & SYSTEM_GPU){
-    gpu_smi_initialize();
-    if (!gpu_smi_available()){
-      if (gpu_smi_requested)
-        error("unable to get gpu smi metrics\n");
-      system_mask &= (~SYSTEM_GPU);
-    }
+    amd_smi_initialize();
+    amd_smi_metrics();
+    amd_smi_memory();
   }
 #endif
 
@@ -466,7 +463,7 @@ int main(int argc,char *const argv[],char *const envp[]){
 
 #if AMDGPU
   if (system_mask & SYSTEM_GPU)
-    gpu_smi_finalize();
+    amd_smi_finalize();
 #endif
   
   return 0;

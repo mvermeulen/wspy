@@ -10,9 +10,6 @@
 #include <ctype.h>
 #include "wspy.h"
 #include "error.h"
-#if AMDGPU
-#include "gpu_smi.h"
-#endif
 
 unsigned int system_mask = SYSTEM_LOADAVG|SYSTEM_CPU|SYSTEM_NETWORK;
 
@@ -30,9 +27,6 @@ struct system_state {
     unsigned long last_usertime, last_systemtime, last_idletime, last_iowaittime, last_irqtime;
     unsigned long prev_usertime, prev_systemtime, prev_idletime, prev_iowaittime, prev_irqtime;
   } cpu;
-#if AMDGPU
-  struct gpu_smi_data gpu;
-#endif
   int num_net;
   struct netinfo *netinfo;
 } system_state = { 0 };
@@ -119,12 +113,6 @@ void read_system(void){
       fclose(fp);
     }
   }
-#if AMDGPU
-  // gpu
-  if (system_mask & SYSTEM_GPU){
-    gpu_smi_query(&system_state.gpu);
-  }
-#endif
 
   //
   if (system_mask & SYSTEM_NETWORK){
@@ -169,10 +157,6 @@ void print_system(enum output_format oformat){
   case PRINT_CSV_HEADER:
     if (system_mask & SYSTEM_LOADAVG) fprintf(outfile,"load,runnable,");
     if (system_mask & SYSTEM_CPU) fprintf(outfile,"cpu,idle,iowait,irq,");
-#if AMDGPU
-    if (system_mask & SYSTEM_GPU)
-      fprintf(outfile,"gpu temp,gpu gfx,gpu umc,gpu mm,vram used,vram total,gfx clk,mem clk,gpu power,");
-#endif
     if (system_mask & SYSTEM_NETWORK){
       if (system_state.netinfo == NULL) setup_net_info();
       for (i=0;i<system_state.num_net;i++) fprintf(outfile,"net %s,",system_state.netinfo[i].name);
@@ -190,19 +174,6 @@ void print_system(enum output_format oformat){
       fprintf(outfile,"%3.2f%%,",
 	      (double) (system_state.cpu.irqtime)/elapsed/num_procs);
     }
-#if AMDGPU
-    if (system_mask & SYSTEM_GPU){
-      fprintf(outfile,"%d,",system_state.gpu.temperature);
-      fprintf(outfile,"%d%%,",system_state.gpu.gfx_activity);
-      fprintf(outfile,"%d%%,",system_state.gpu.umc_activity);
-      fprintf(outfile,"%d%%,",system_state.gpu.mm_activity);
-      fprintf(outfile,"%u,",system_state.gpu.vram_used_mb);
-      fprintf(outfile,"%u,",system_state.gpu.vram_total_mb);
-      fprintf(outfile,"%u,",system_state.gpu.gfx_clock_mhz);
-      fprintf(outfile,"%u,",system_state.gpu.mem_clock_mhz);
-      fprintf(outfile,"%u,",system_state.gpu.power_watts);
-    }
-#endif
     if (system_mask & SYSTEM_NETWORK){
       if (system_state.netinfo == NULL) setup_net_info();
       for (i=0;i<system_state.num_net;i++){
@@ -225,24 +196,6 @@ void print_system(enum output_format oformat){
       fprintf(outfile,"irq                  %3.2f%%\n",
 	      (double) (system_state.cpu.usertime+system_state.cpu.systemtime)/elapsed/num_procs);      
     }
-#if AMDGPU
-    if (system_mask & SYSTEM_GPU){
-      fprintf(outfile,"temperature          %dC\n",system_state.gpu.temperature);
-      fprintf(outfile,"gpu gfx              %d%%\n",system_state.gpu.gfx_activity);
-      fprintf(outfile,"gpu umc              %d%%\n",system_state.gpu.umc_activity);
-      fprintf(outfile,"gpu mm               %d%%\n",system_state.gpu.mm_activity);
-      if (system_state.gpu.vram_total_mb > 0) {
-        fprintf(outfile,"vram used            %u MB\n",system_state.gpu.vram_used_mb);
-        fprintf(outfile,"vram total           %u MB\n",system_state.gpu.vram_total_mb);
-      }
-      if (system_state.gpu.gfx_clock_mhz > 0)
-        fprintf(outfile,"gfx clock            %u MHz\n",system_state.gpu.gfx_clock_mhz);
-      if (system_state.gpu.mem_clock_mhz > 0)
-        fprintf(outfile,"mem clock            %u MHz\n",system_state.gpu.mem_clock_mhz);
-      if (system_state.gpu.power_watts > 0)
-        fprintf(outfile,"gpu power            %u W\n",system_state.gpu.power_watts);
-    }
-#endif
     if (system_mask & SYSTEM_NETWORK){
       if (system_state.netinfo == NULL) setup_net_info();
       for (i=0;i<system_state.num_net;i++){
