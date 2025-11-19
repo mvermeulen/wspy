@@ -6,6 +6,7 @@
 
 void amd_smi_initialize(void);
 void amd_smi_metrics(void);
+void amd_smi_memory(void);
 void amd_smi_finalize(void);
 
 #endif /* AMDGPU */

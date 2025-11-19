@@ -3,6 +3,7 @@
 #include "amd_smi/amdsmi.h"
 #include "error.h"
 #include <stdlib.h>
+#include <inttypes.h>
 
 static amdsmi_socket_handle *sockets = NULL;
 static uint32_t socket_count = 0;
@@ -115,6 +116,26 @@ void amd_smi_metrics(void)
 	}
 }
 
+
+void amd_smi_memory(void)
+{
+	amdsmi_status_t ret;
+	if (devices == NULL || device_count == 0) {
+		debug("No devices available for VRAM usage\n");
+		return;
+	}
+	for (uint32_t i = 0; i < device_count; i++) {
+		amdsmi_vram_usage_t vram;
+		ret = amdsmi_get_gpu_vram_usage(devices[i], &vram);
+		if (ret == AMDSMI_STATUS_SUCCESS) {
+			debug("Device %u VRAM usage: total=%u MB, used=%u MB\n", 
+			      i, vram.vram_total, vram.vram_used);
+		} else {
+			error("amdsmi_get_gpu_vram_usage failed for device %u with status %d\n", i, ret);
+		}
+	}
+}
+
 void amd_smi_finalize(void)
 {
 	amdsmi_status_t ret;
@@ -143,6 +164,7 @@ int main(void){
 	
 	amd_smi_initialize();
 	amd_smi_metrics();
+	amd_smi_memory();
 	amd_smi_finalize();
 	return 0;
 }
