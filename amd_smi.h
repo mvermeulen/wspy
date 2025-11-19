@@ -5,6 +5,7 @@
 #include "amd_smi/amdsmi.h"
 
 void amd_smi_initialize(void);
+void amd_smi_metrics(void);
 void amd_smi_finalize(void);
 
 #endif /* AMDGPU */
