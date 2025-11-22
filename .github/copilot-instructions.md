@@ -45,7 +45,7 @@ This guide helps AI coding agents make productive edits immediately.
 
 ## Project-Specific Patterns
 
-**Feature gating:** GPU-specific code uses the AMDGPU compile-time flag (see `Makefile`, `system.c`, `wspy.h`). GPU metrics go through `gpu_info.c` and ROCm's `amd_smi` library.
+**Feature gating:** GPU-specific code uses the AMDGPU compile-time flag (see `Makefile`, `system.c`, `wspy.h`). GPU metrics go through `gpu_smi.c` and ROCm's `amd_smi` library.
 
 **Vendor-specific counters:** Intel and AMD use different event formats (unions in `cpu_info.h`). When adding counters:
 - Add to `intel_raw_events[]` or `amd_raw_events[]` in `topdown.c`
@@ -107,7 +107,7 @@ Match header/value order exactly when adding columns.
 - AMD L3: `/sys/devices/amd_l3/type` (checked at runtime, gracefully skipped if missing)
 - Perf: `/sys/devices/cpu_core/format` (describes Intel counter fields)
 
-**External libraries:** ROCm's `libamd_smi` when `AMDGPU=1` (see `gpu_info.c`)
+**External libraries:** ROCm's `libamd_smi` when `AMDGPU=1` (see `gpu_smi.c`)
 
 **Child launch protocol:**
 1. Parent creates pipe, forks child

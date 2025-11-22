@@ -1,18 +1,20 @@
 /*
  * wspy.c - workload spy - main program
  */
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
 #include <getopt.h>
 #include <unistd.h>
+#include <time.h>
 #include <sys/resource.h>
 #include <sys/sysinfo.h>
 #include <sys/time.h>
 #include <sys/wait.h>
 #include "wspy.h"
 #if AMDGPU
-#include "gpu_info.h"
+#include "amd_smi.h"
 #endif
 #include "error.h"
 
@@ -27,6 +29,9 @@ int treeflag = 0;
 int tree_cmdline = 0;
 int tree_open = 0;
 int trace_syscall = 0;
+#if AMDGPU
+int gpu_smi_requested = 0;
+#endif
 
 FILE *treefile = NULL;
 FILE *outfile = NULL;
@@ -56,6 +61,9 @@ int parse_options(int argc,char *const argv[]){
     { "dcache", no_argument, 0, 10 },
     { "no-cache", no_argument, 0, 11 },
     { "float",no_argument,0,33 },
+#if AMDGPU
+    { "gpu-smi", no_argument, 0, 48 },
+#endif
     { "icache", no_argument, 0, 12 },
     { "no-icache", no_argument, 0, 13 },
     { "interval", required_argument, 0, 34 },
@@ -217,6 +225,12 @@ int parse_options(int argc,char *const argv[]){
     case 45: // --no-topdown-optlb
       counter_mask &= (~COUNTER_TOPDOWN_OP);
       break;
+    case 48: // --gpu-smi
+#if AMDGPU
+      gpu_smi_requested = 1;
+      system_mask |= SYSTEM_GPU;
+#endif
+      break;
     case 31: // --tree
       if ((treefile = fopen(optarg,"w")) == NULL){
 	warning("unable to open tree file: %s, ignored\n",optarg);
@@ -309,6 +323,9 @@ int main(int argc,char *const argv[],char *const envp[]){
 	    "\t--topdown-frontend        - topdown related to fe\n"
 	    "\t--topdown-backend         - topdown related to be\n"
 	    "\t--topdown-optlb           - topdown related to opcache, dtlb\n"
+#if AMDGPU
+	    "\t--gpu-smi                 - get gpu information from smi interface\n"
+#endif
 	    ,argv[0]);
   }
 
@@ -319,7 +336,11 @@ int main(int argc,char *const argv[],char *const envp[]){
   check_nmi_watchdog();
 
 #if AMDGPU
-  gpu_info_initialize();
+  if (system_mask & SYSTEM_GPU){
+    amd_smi_initialize();
+    amd_smi_metrics();
+    amd_smi_memory();
+  }
 #endif
 
   // parse the event tables
@@ -445,7 +466,8 @@ int main(int argc,char *const argv[],char *const envp[]){
   // -----
 
 #if AMDGPU
-  gpu_info_finalize();
+  if (system_mask & SYSTEM_GPU)
+    amd_smi_finalize();
 #endif
   
   return 0;
