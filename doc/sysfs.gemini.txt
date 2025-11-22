@@ -1,0 +1,191 @@
+The `/sys/class/drm/cardX/device/gpu_metrics` file provides a binary blob containing raw hardware metrics (clocks, temperatures, power usage) directly from the AMDGPU driver. Because it is binary, you cannot read it with `cat`; you must parse it using the specific C-struct layout defined in the Linux kernel headers (specifically `kgd_pp_interface.h`).
+
+Below are three ways to access this data: a **Python script** (easiest for scripting), a **C program** (best for performance/drivers), and a reference to **existing tools**.
+
+### 1\. Python Example (Using `ctypes`)
+
+This script defines the binary structure for a common metrics version (v1.0/v1.1/v1.2) and parses the file. It automatically detects the version header.
+
+```python
+import ctypes
+import struct
+
+# Path to your specific GPU metrics file
+METRICS_PATH = "/sys/class/drm/card1/device/gpu_metrics"
+
+class MetricsHeader(ctypes.Structure):
+    _fields_ = [
+        ("structure_size", ctypes.c_uint16),
+        ("format_revision", ctypes.c_uint8),
+        ("content_revision", ctypes.c_uint8)
+    ]
+
+# Definition for gpu_metrics_v1_0 (common for many AMD GPUs)
+# Note: This struct matches kernel 5.14+ definitions.
+class GpuMetricsV1(ctypes.Structure):
+    _fields_ = [
+        ("header", MetricsHeader),
+        ("system_clock_counter", ctypes.c_uint64),
+        ("temperature_edge", ctypes.c_uint16),
+        ("temperature_hotspot", ctypes.c_uint16),
+        ("temperature_mem", ctypes.c_uint16),
+        ("temperature_vrgfx", ctypes.c_uint16),
+        ("temperature_vrsoc", ctypes.c_uint16),
+        ("temperature_vrmem", ctypes.c_uint16),
+        ("average_gfx_activity", ctypes.c_uint16),
+        ("average_umc_activity", ctypes.c_uint16),  # Memory controller
+        ("average_mm_activity", ctypes.c_uint16),   # Multimedia
+        ("average_socket_power", ctypes.c_uint16),
+        ("energy_accumulator", ctypes.c_uint64),
+        ("system_clock_counter_current", ctypes.c_uint64), # Only in v1.2+
+        # ... more fields exist in newer versions
+    ]
+
+def read_metrics():
+    try:
+        with open(METRICS_PATH, "rb") as f:
+            data = f.read()
+            
+        if not data:
+            print("File is empty.")
+            return
+
+        # 1. Parse Header to check version
+        header = MetricsHeader.from_buffer_copy(data)
+        print(f"--- GPU Metrics Header ---")
+        print(f"Size: {header.structure_size} bytes")
+        print(f"Version: {header.format_revision}.{header.content_revision}")
+
+        # 2. Parse Body based on version
+        # This example assumes v1.x. 
+        if header.format_revision == 1:
+            metrics = GpuMetricsV1.from_buffer_copy(data)
+            
+            # Conversions (Temps are usually in centidegrees C, Power in Watts)
+            print(f"\n--- Metrics ---")
+            print(f"Temp (Edge):    {metrics.temperature_edge / 100.0:.1f} °C")
+            print(f"Temp (Hotspot): {metrics.temperature_hotspot / 100.0:.1f} °C")
+            print(f"Temp (Mem):     {metrics.temperature_mem / 100.0:.1f} °C")
+            print(f"Avg Power:      {metrics.average_socket_power} W")
+            print(f"GFX Activity:   {metrics.average_gfx_activity} (Raw)")
+        else:
+            print("Unknown format revision. Struct definition needs updating.")
+
+    except FileNotFoundError:
+        print(f"Error: Could not find {METRICS_PATH}")
+    except Exception as e:
+        print(f"Error: {e}")
+
+if __name__ == "__main__":
+    read_metrics()
+```
+
+### 2\. C Program Example
+
+This approach is typical for system monitors. It reads the raw bytes and casts them to a struct.
+
+**File:** `read_gpu_metrics.c`
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+// Path to the metrics file
+#define METRICS_FILE "/sys/class/drm/card1/device/gpu_metrics"
+
+// Helper to match the kernel struct layout
+// See: drivers/gpu/drm/amd/include/kgd_pp_interface.h in Linux source
+struct metrics_header {
+    uint16_t structure_size;
+    uint8_t format_revision;
+    uint8_t content_revision;
+};
+
+// Simplified v1.0 struct
+struct gpu_metrics_v1_0 {
+    struct metrics_header common_header;
+    uint64_t system_clock_counter;
+    uint16_t temperature_edge;
+    uint16_t temperature_hotspot;
+    uint16_t temperature_mem;
+    uint16_t temperature_vrgfx;
+    uint16_t temperature_vrsoc;
+    uint16_t temperature_vrmem;
+    uint16_t average_gfx_activity;
+    uint16_t average_umc_activity;
+    uint16_t average_mm_activity;
+    uint16_t average_socket_power;
+    uint64_t energy_accumulator;
+};
+
+int main() {
+    int fd = open(METRICS_FILE, O_RDONLY);
+    if (fd < 0) {
+        perror("Failed to open metrics file");
+        return 1;
+    }
+
+    // Buffer to hold the data
+    uint8_t buffer[512];
+    ssize_t bytes_read = read(fd, buffer, sizeof(buffer));
+    close(fd);
+
+    if (bytes_read < sizeof(struct metrics_header)) {
+        fprintf(stderr, "File too small to contain header\n");
+        return 1;
+    }
+
+    // Cast the buffer to the header struct
+    struct metrics_header *header = (struct metrics_header *)buffer;
+
+    printf("--- Header ---\n");
+    printf("Struct Size: %u\n", header->structure_size);
+    printf("Format Rev:  %u\n", header->format_revision);
+    printf("Content Rev: %u\n", header->content_revision);
+
+    // Check version and cast to the full struct
+    if (header->format_revision == 1) {
+        struct gpu_metrics_v1_0 *metrics = (struct gpu_metrics_v1_0 *)buffer;
+        
+        printf("\n--- Data (v1.x) ---\n");
+        printf("Temp Edge:    %.1f C\n", metrics->temperature_edge / 100.0f);
+        printf("Temp Hotspot: %.1f C\n", metrics->temperature_hotspot / 100.0f);
+        printf("Power (Avg):  %u W\n", metrics->average_socket_power);
+        printf("GFX Activity: %u\n", metrics->average_gfx_activity);
+    } else {
+        printf("Uncommon format version %u.%u - struct update required.\n", 
+               header->format_revision, header->content_revision);
+    }
+
+    return 0;
+}
+```
+
+**Compile and Run:**
+
+```bash
+gcc read_gpu_metrics.c -o read_metrics
+./read_metrics
+```
+
+### 3\. Existing Production Tools
+
+If you prefer not to write your own parser, these open-source projects already implement the full spec for all AMD GPU generations:
+
+  * **amdgpu\_top (Rust):**
+    A comprehensive tool often used as a reference implementation. It parses `gpu_metrics` to display usage stats in a TUI.
+      * *Source file of interest:* `amdgpu_top/src/app_amd/gpu_metrics.rs`
+  * **MangoHud (C++):**
+    An overlay for Linux gaming that reads these metrics to display temps and load while gaming.
+      * *Source file of interest:* `MangoHud/src/amdgpu.cpp`
+
+### Important Note on Versioning
+
+The structure of this file is **not constant**. It changes based on your GPU model (e.g., RDNA2 vs RDNA3 vs Vega).
+
+  * **Header Check:** Always check `format_revision` and `content_revision` first.
+  * **Source of Truth:** The authoritative definition of these structs is found in the Linux kernel source tree at:
+    `drivers/gpu/drm/amd/include/kgd_pp_interface.h`
