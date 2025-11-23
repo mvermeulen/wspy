@@ -21,6 +21,11 @@
 #include <errno.h>
 #include "error.h"
 #include "wspy.h"
+#if AMDGPU
+#include "amd_sysfs.h"
+extern int gpu_busy_requested;
+extern int gpu_metrics_requested;
+#endif
 
 volatile int is_still_running;
 int nmi_running = 0;
@@ -1770,6 +1775,37 @@ void timer_callback(int signum){
   }
   
   print_metrics(cpu_info->systemwide_counters,csvflag?PRINT_CSV:PRINT_NORMAL);
+#if AMDGPU
+  if (!sflag && gpu_busy_requested){
+    int busy = amd_sysfs_gpu_busy_percent();
+    if (csvflag){
+      fprintf(outfile,"%d,",busy);
+    } else {
+      fprintf(outfile,"gpu busy             %d%%\n",busy);
+    }
+  }
+  if (!sflag && gpu_metrics_requested){
+    amd_sysfs_gpu_metrics();
+    if (csvflag){
+      if (amd_sysfs_gpu_metrics_valid()){
+        fprintf(outfile,"%d,%u,%.2f,%u,",
+          amd_sysfs_get_gpu_temp(),
+          amd_sysfs_get_gpu_activity(),
+          amd_sysfs_get_gpu_power(),
+          amd_sysfs_get_gpu_freq());
+      } else {
+        fprintf(outfile,"0,0,0.00,0,");
+      }
+    } else {
+      if (amd_sysfs_gpu_metrics_valid()){
+        fprintf(outfile,"gpu temp             %d C\n", amd_sysfs_get_gpu_temp());
+        fprintf(outfile,"gpu activity         %u%%\n", amd_sysfs_get_gpu_activity());
+        fprintf(outfile,"gpu power            %.2f W\n", amd_sysfs_get_gpu_power());
+        fprintf(outfile,"gpu freq             %u MHz\n", amd_sysfs_get_gpu_freq());
+      }
+    }
+  }
+#endif
   if (csvflag) fprintf(outfile,"\n");
 
   if (is_still_running){

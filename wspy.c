@@ -430,6 +430,15 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     }
     if (sflag) print_system(PRINT_CSV_HEADER);
     if (!interval && xflag) print_usage(NULL,PRINT_CSV_HEADER);
+#if AMDGPU
+    if (!sflag && gpu_busy_requested){
+      /* standalone gpu busy column after rusage */
+      fprintf(outfile,"gpu_busy,");
+    }
+    if (!sflag && gpu_metrics_requested){
+      fprintf(outfile,"gpu_temp,gpu_activity,gpu_power,gpu_freq,");
+    }
+#endif
     print_metrics(cpu_info->systemwide_counters,PRINT_CSV_HEADER);
     fprintf(outfile,"\n");
   }
@@ -484,12 +493,45 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     }
     if (sflag) print_system(PRINT_CSV);
     if (xflag && !interval) print_usage(&rusage,PRINT_CSV);
+#if AMDGPU
+    if (!sflag && gpu_busy_requested){
+      int busy = amd_sysfs_gpu_busy_percent();
+      fprintf(outfile,"%d,",busy);
+    }
+    if (!sflag && gpu_metrics_requested){
+      amd_sysfs_gpu_metrics();
+      if (amd_sysfs_gpu_metrics_valid()){
+        fprintf(outfile,"%d,%u,%.2f,%u,",
+          amd_sysfs_get_gpu_temp(),
+          amd_sysfs_get_gpu_activity(),
+          amd_sysfs_get_gpu_power(),
+          amd_sysfs_get_gpu_freq());
+      } else {
+        fprintf(outfile,"0,0,0.00,0,");
+      }
+    }
+#endif
     print_metrics(cpu_info->systemwide_counters,PRINT_CSV);    
     fprintf(outfile,"\n");    
   } else {
     if (sflag) print_system(PRINT_NORMAL);
     if (xflag) print_usage(&rusage,PRINT_NORMAL);
     print_metrics(cpu_info->systemwide_counters,PRINT_NORMAL);
+#if AMDGPU
+    if (!sflag && gpu_busy_requested){
+      int busy_final = amd_sysfs_gpu_busy_percent();
+      fprintf(outfile,"gpu busy             %d%%\n",busy_final);
+    }
+    if (!sflag && gpu_metrics_requested){
+      amd_sysfs_gpu_metrics();
+      if (amd_sysfs_gpu_metrics_valid()){
+        fprintf(outfile,"gpu temp             %d C\n", amd_sysfs_get_gpu_temp());
+        fprintf(outfile,"gpu activity         %u%%\n", amd_sysfs_get_gpu_activity());
+        fprintf(outfile,"gpu power            %.2f W\n", amd_sysfs_get_gpu_power());
+        fprintf(outfile,"gpu freq             %u MHz\n", amd_sysfs_get_gpu_freq());
+      }
+    }
+#endif
   }
 
   for (i=0;i<cpu_info->num_cores;i++){

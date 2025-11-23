@@ -11,6 +11,15 @@
 static int amd_sysfs_has_gpu_busy = 0;
 static int amd_sysfs_has_gpu_metrics = 0;
 
+/* Cached GPU metrics state */
+static struct {
+	float temp_gfx;
+	uint16_t gfx_activity;
+	float gfx_power;
+	uint16_t gfxclk_freq;
+	int valid;
+} gpu_metrics_state = {0};
+
  void amd_sysfs_initialize(void)
  {
 	const char *path = "/sys/class/drm/card1/device/gpu_busy_percent";
@@ -77,6 +86,11 @@ void amd_sysfs_gpu_metrics(void)
 		memset(&metrics_v1, 0, sizeof(metrics_v1));
 		bytes_read = fread(&metrics_v1, 1, sizeof(metrics_v1), fp);
 		debug("GPU metrics v1.0: read %zu bytes\n", bytes_read);
+		gpu_metrics_state.temp_gfx = metrics_v1.temperature_edge;
+		gpu_metrics_state.gfx_activity = metrics_v1.average_gfx_activity;
+		gpu_metrics_state.gfx_power = metrics_v1.average_socket_power;
+		gpu_metrics_state.gfxclk_freq = 0; /* v1.0 doesn't have frequency */
+		gpu_metrics_state.valid = 1;
 		debug("  Temperature edge: %u C\n", metrics_v1.temperature_edge);
 		debug("  Temperature hotspot: %u C\n", metrics_v1.temperature_hotspot);
 		debug("  Average GFX activity: %u%%\n", metrics_v1.average_gfx_activity);
@@ -86,6 +100,11 @@ void amd_sysfs_gpu_metrics(void)
 		memset(&metrics_v2, 0, sizeof(metrics_v2));
 		bytes_read = fread(&metrics_v2, 1, sizeof(metrics_v2), fp);
 		debug("GPU metrics v2.0: read %zu bytes\n", bytes_read);
+		gpu_metrics_state.temp_gfx = metrics_v2.temperature_gfx / 100.0;
+		gpu_metrics_state.gfx_activity = metrics_v2.average_gfx_activity;
+		gpu_metrics_state.gfx_power = metrics_v2.average_gfx_power / 1000.0;
+		gpu_metrics_state.gfxclk_freq = metrics_v2.average_gfxclk_frequency;
+		gpu_metrics_state.valid = 1;
 		debug("  Temperature GFX: %.1f C\n", metrics_v2.temperature_gfx / 100.0);
 		debug("  Temperature SOC: %.1f C\n", metrics_v2.temperature_soc / 100.0);
 		debug("  Average GFX activity: %u%%\n", metrics_v2.average_gfx_activity);
@@ -105,6 +124,11 @@ void amd_sysfs_gpu_metrics(void)
 		memset(&metrics_v3, 0, sizeof(metrics_v3));
 		bytes_read = fread(&metrics_v3, 1, sizeof(metrics_v3), fp);
 		debug("GPU metrics v3.0: read %zu bytes\n", bytes_read);
+		gpu_metrics_state.temp_gfx = metrics_v3.temperature_gfx / 100.0;
+		gpu_metrics_state.gfx_activity = metrics_v3.average_gfx_activity;
+		gpu_metrics_state.gfx_power = metrics_v3.average_gfx_power / 1000.0;
+		gpu_metrics_state.gfxclk_freq = metrics_v3.average_gfxclk_frequency;
+		gpu_metrics_state.valid = 1;
 		debug("  Temperature GFX: %.1f C\n", metrics_v3.temperature_gfx / 100.0);
 		debug("  Temperature SOC: %.1f C\n", metrics_v3.temperature_soc / 100.0);
 		debug("  Temperature skin: %.1f C\n", metrics_v3.temperature_skin / 100.0);
@@ -123,6 +147,31 @@ void amd_sysfs_gpu_metrics(void)
 	}
 	
 	fclose(fp);
+}
+
+int amd_sysfs_get_gpu_temp(void)
+{
+	return (int)gpu_metrics_state.temp_gfx;
+}
+
+uint16_t amd_sysfs_get_gpu_activity(void)
+{
+	return gpu_metrics_state.gfx_activity;
+}
+
+float amd_sysfs_get_gpu_power(void)
+{
+	return gpu_metrics_state.gfx_power;
+}
+
+uint16_t amd_sysfs_get_gpu_freq(void)
+{
+	return gpu_metrics_state.gfxclk_freq;
+}
+
+int amd_sysfs_gpu_metrics_valid(void)
+{
+	return gpu_metrics_state.valid;
 }
 
 #ifdef TEST_AMD_SYSFS

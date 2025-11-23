@@ -127,3 +127,8 @@ struct amd_sysfs_gpu_metrics_v3_0 {
  int amd_sysfs_gpu_busy_percent(void);
  void amd_sysfs_gpu_metrics(void);
  #endif
+ int amd_sysfs_get_gpu_temp(void);
+ uint16_t amd_sysfs_get_gpu_activity(void);
+ float amd_sysfs_get_gpu_power(void);
+ uint16_t amd_sysfs_get_gpu_freq(void);
+ int amd_sysfs_gpu_metrics_valid(void);
