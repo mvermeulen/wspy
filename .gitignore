@@ -20,3 +20,4 @@ amd_smi
 
 # Misc
 .DS_Store
+amd_sysfs

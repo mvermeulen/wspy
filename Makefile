@@ -1,7 +1,7 @@
 CC=gcc
 CFLAGS=-g
 PROG = wspy cpu_info amd_smi
-SRCS = wspy.c cpu_info.c error.c proctree.c system.c topdown.c amd_smi.c
+SRCS = wspy.c cpu_info.c error.c proctree.c system.c topdown.c amd_smi.c amd_sysfs.c
 OBJS = wspy.o cpu_info.o error.o proctree.o system.o topdown.o amd_smi.o
 LIBS = -lpthread -lm
 
@@ -17,14 +17,14 @@ LIBS += -L$(ROCM_LIB) -lamd_smi
 endif
 
 ifdef AMDGPU
-all:	wspy cpu_info proctree amd_smi
+all:	wspy cpu_info proctree amd_smi amd_sysfs
 else
 all:	wspy cpu_info proctree
 endif
 
 wspy:	wspy.o topdown.o error.o system.o cpu_info.c cpu_info.h
 ifdef AMDGPU
-	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c amd_smi.c error.o system.o $(LIBS)
+	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c amd_smi.c amd_sysfs.c error.o system.o $(LIBS)
 else
 	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c error.o system.o $(LIBS)
 endif
@@ -37,6 +37,9 @@ cpu_info:	cpu_info.c error.o cpu_info.h
 
 amd_smi: amd_smi.c error.o amd_smi.h
 	$(CC) -o amd_smi $(CFLAGS) $(GPUFLAGS) -DTEST_AMD_SMI amd_smi.c error.o $(LIBS)
+
+amd_sysfs: amd_sysfs.c error.o amd_sysfs.h
+	$(CC) -o amd_sysfs $(CFLAGS) $(GPUFLAGS) -DTEST_AMD_SYSFS amd_sysfs.c error.o $(LIBS)
 
 topdown.o:	topdown.c
 	$(CC) -c $(CFLAGS) topdown.c
@@ -51,7 +54,7 @@ clean:
 	-rm *~ *.o *.bak
 
 clobber:	clean
-	-rm wspy cpu_info amd_smi proctree
+	-rm wspy cpu_info amd_smi amd_sysfsproctree
 
 # DO NOT DELETE
 

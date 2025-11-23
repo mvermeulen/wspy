@@ -15,6 +15,7 @@
 #include "wspy.h"
 #if AMDGPU
 #include "amd_smi.h"
+#include "amd_sysfs.h"
 #endif
 #include "error.h"
 
