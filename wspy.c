@@ -31,7 +31,9 @@ int tree_cmdline = 0;
 int tree_open = 0;
 int trace_syscall = 0;
 #if AMDGPU
-int gpu_smi_requested = 0;
+int gpu_smi_requested = 0; /* legacy */
+int gpu_busy_requested = 0;
+int gpu_metrics_requested = 0;
 #endif
 
 FILE *treefile = NULL;
@@ -62,9 +64,10 @@ int parse_options(int argc,char *const argv[]){
     { "dcache", no_argument, 0, 10 },
     { "no-cache", no_argument, 0, 11 },
     { "float",no_argument,0,33 },
-#if AMDGPU
+    /* GPU options always recognized so we can warn if not built with AMDGPU */
     { "gpu-smi", no_argument, 0, 48 },
-#endif
+    { "gpu-busy", no_argument, 0, 49 },
+    { "gpu-metrics", no_argument, 0, 50 },
     { "icache", no_argument, 0, 12 },
     { "no-icache", no_argument, 0, 13 },
     { "interval", required_argument, 0, 34 },
@@ -227,10 +230,28 @@ int parse_options(int argc,char *const argv[]){
       counter_mask &= (~COUNTER_TOPDOWN_OP);
       break;
     case 48: // --gpu-smi
-#if AMDGPU
+ #if AMDGPU
       gpu_smi_requested = 1;
       system_mask |= SYSTEM_GPU;
-#endif
+ #else
+      warning("GPU support not built (rebuild with AMDGPU=1): --gpu-smi ignored\n");
+ #endif
+      break;
+        case 49: // --gpu-busy
+    #if AMDGPU
+      gpu_busy_requested = 1;
+      system_mask |= SYSTEM_GPU; /* ensure GPU init */
+    #else
+      warning("GPU support not built (rebuild with AMDGPU=1): --gpu-busy ignored\n");
+    #endif
+      break;
+        case 50: // --gpu-metrics
+    #if AMDGPU
+      gpu_metrics_requested = 1;
+      system_mask |= SYSTEM_GPU;
+    #else
+      warning("GPU support not built (rebuild with AMDGPU=1): --gpu-metrics ignored\n");
+    #endif
       break;
     case 31: // --tree
       if ((treefile = fopen(optarg,"w")) == NULL){
@@ -330,6 +351,8 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t--topdown-optlb           - topdown related to opcache, dtlb\n"
 #if AMDGPU
 	    "\t--gpu-smi                 - get gpu information from smi interface\n"
+      "\t--gpu-busy                - read instantaneous GPU busy percent (sysfs)\n"
+      "\t--gpu-metrics             - read detailed GPU metrics (sysfs)\n"
 #endif
 	    ,argv[0]);
   }
@@ -342,9 +365,23 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 
 #if AMDGPU
   if (system_mask & SYSTEM_GPU){
-    amd_smi_initialize();
-    amd_smi_metrics();
-    amd_smi_memory();
+    /* Only invoke SMI APIs when explicitly requested */
+    if (gpu_smi_requested){
+      amd_smi_initialize();
+      amd_smi_metrics();
+      amd_smi_memory();
+    }
+    /* Initialize sysfs GPU interfaces if requested */
+    if (gpu_busy_requested || gpu_metrics_requested) {
+      amd_sysfs_initialize();
+      if (gpu_busy_requested) {
+        int busy = amd_sysfs_gpu_busy_percent();
+        debug("initial gpu busy percent: %d\n", busy);
+      }
+      if (gpu_metrics_requested) {
+        amd_sysfs_gpu_metrics();
+      }
+    }
   }
 #endif
 
@@ -471,8 +508,10 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   // -----
 
 #if AMDGPU
-  if (system_mask & SYSTEM_GPU)
+  if (gpu_smi_requested)
     amd_smi_finalize();
+  if (gpu_busy_requested || gpu_metrics_requested)
+    amd_sysfs_finalize();
 #endif
   
   return 0;
