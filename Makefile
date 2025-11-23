@@ -65,7 +65,11 @@ proctree.o: error.h
 topdown.o: error.h wspy.h cpu_info.h
 
 test_wspy: test_wspy.c wspy.c wspy.h cpu_info.h error.h error.o cpu_info.o system.o topdown.o
+ifdef AMDGPU
+	$(CC) -o test_wspy $(CFLAGS) -DTEST_WSPY test_wspy.c error.o cpu_info.o system.o topdown.o amd_smi.c amd_sysfs.c $(LIBS)
+else
 	$(CC) -o test_wspy $(CFLAGS) -DTEST_WSPY test_wspy.c error.o cpu_info.o system.o topdown.o $(LIBS)
+endif
 
 test_proctree: test_proctree.c proctree.c error.h error.o
 	$(CC) -o test_proctree $(CFLAGS) -DTEST_PROCTREE test_proctree.c error.o $(LIBS)
