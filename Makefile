@@ -54,7 +54,7 @@ clean:
 	-rm *~ *.o *.bak
 
 clobber:	clean
-	-rm wspy cpu_info amd_smi amd_sysfsproctree
+	-rm wspy cpu_info amd_smi amd_sysfs proctree test_hip_init test_hip_kernel test_proctree test_wspy libwspy_profiler.so
 
 # DO NOT DELETE
 
