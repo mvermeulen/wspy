@@ -73,8 +73,3 @@ test_proctree: test_proctree.c proctree.c error.h error.o
 test: test_wspy test_proctree
 	./test_wspy
 	./test_proctree
-
-# ROCm Profiler Tool
-# Requires ROCm SDK to be present
-libwspy_profiler.so: rocm_profiler/profiler_tool.cpp
-	$(CXX) -shared -fPIC -o libwspy_profiler.so -I$(ROCM_INCLUDE) -L$(ROCM_LIB) -lrocprofiler-sdk rocm_profiler/profiler_tool.cpp
