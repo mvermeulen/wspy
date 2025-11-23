@@ -23,3 +23,7 @@ amd_smi
 amd_sysfs
 test_proctree
 test_wspy
+libwspy_profiler.so
+test_hip_init
+test_hip_kernel
+doc/.~lock.ROCm Profiler SDK C++ API.docx#
