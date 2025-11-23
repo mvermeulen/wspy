@@ -335,7 +335,11 @@ static void print_tree(struct process_info *pinfo,int level){
 }
 
 
+#ifndef TEST_PROCTREE
 int main(int argc,char *const argv[],char *const envp[]){
+#else
+static int original_main(int argc,char *const argv[],char *const envp[]){
+#endif
   int opt;
   int value;
   char *p,*p2,*cmd;

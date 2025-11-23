@@ -63,3 +63,13 @@ cpu_info.o: cpu_info.h error.h
 error.o: error.h
 proctree.o: error.h
 topdown.o: error.h wspy.h cpu_info.h
+
+test_wspy: test_wspy.c wspy.c wspy.h cpu_info.h error.h error.o cpu_info.o system.o topdown.o
+	$(CC) -o test_wspy $(CFLAGS) -DTEST_WSPY test_wspy.c error.o cpu_info.o system.o topdown.o $(LIBS)
+
+test_proctree: test_proctree.c proctree.c error.h error.o
+	$(CC) -o test_proctree $(CFLAGS) -DTEST_PROCTREE test_proctree.c error.o $(LIBS)
+
+test: test_wspy test_proctree
+	./test_wspy
+	./test_proctree

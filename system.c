@@ -127,7 +127,7 @@ void read_system(void){
 	p2 = buffer;
 	while (isspace(*p2)) p2++;
 	for (i=0;i<system_state.num_net;i++){
-	  if (!strcmp(p2,system_state.netinfo[i].name)){
+	  if (system_state.netinfo[i].name && !strcmp(p2,system_state.netinfo[i].name)){
 	    if (sscanf(p,"%lu %lu %lu %lu %lu %lu %lu %lu %lu",
 		       &field1,&field2,&field3,&field4,&field5,&field6,&field7,&field8,&field9) == 9){
 	      system_state.netinfo[i].prev_bytes = system_state.netinfo[i].last_bytes;

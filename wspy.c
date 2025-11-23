@@ -285,7 +285,11 @@ int parse_options(int argc,char *const argv[]){
   return 0;
 }
 
+#ifndef TEST_WSPY
 int main(int argc,char *const argv[],char *const envp[]){
+#else
+static int original_main(int argc,char *const argv[],char *const envp[]){
+#endif
   int i;
   int status;
   struct rusage rusage;

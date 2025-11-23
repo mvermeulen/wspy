@@ -21,3 +21,5 @@ amd_smi
 # Misc
 .DS_Store
 amd_sysfs
+test_proctree
+test_wspy
