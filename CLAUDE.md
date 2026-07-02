@@ -27,10 +27,19 @@ sudo ./wspy -- sleep 1              # basic run, default IPC counters
 sudo ./wspy --csv --topdown -- true # CSV output with topdown metrics
 ```
 
-## Editor setup (VSCode / Claude Code / Cline)
+## Editor setup (VSCode: Claude Code / Cline / Copilot)
 
-- `.vscode/settings.json` and `.vscode/extensions.json` are checked in so both editors get consistent
-  tooling; `.clinerules` points Cline at this file the same way Claude Code reads it automatically.
+This repo is worked on with Claude Code, Cline, and GitHub Copilot interchangeably, so this file (not
+tool-specific docs) is the canonical instructions source — keep the others as thin pointers here rather
+than letting per-tool copies drift (a full standalone `.github/copilot-instructions.md` previously did
+exactly that, going stale enough to reference a `gpu_smi.c` file that no longer exists).
+
+- `.vscode/settings.json` and `.vscode/extensions.json` are checked in so all three tools get consistent
+  tooling in VSCode (recommends `GitHub.copilot`/`GitHub.copilot-chat`, `saoudrizwan.claude-dev` (Cline),
+  `anthropic.claude-code`, plus `ms-vscode.cpptools`/`makefile-tools` for the C tooling below).
+- Claude Code reads this file automatically; `.clinerules` and `.github/copilot-instructions.md` are
+  one-paragraph pointers telling Cline/Copilot to read it too — if you learn something worth persisting,
+  update this file, not those.
 - `make compile_commands.json` (or `./scripts/gen_compile_commands.py` directly) generates a compile
   database from `make -Bn` dry runs — covers the AMDGPU=1 variant too if ROCm headers are found under
   `/opt/rocm` or `/usr`. It's gitignored (absolute paths, per-checkout); regenerate it after pulling

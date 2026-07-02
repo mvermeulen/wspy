@@ -3,6 +3,8 @@
     "ms-vscode.cpptools",
     "ms-vscode.makefile-tools",
     "saoudrizwan.claude-dev",
-    "anthropic.claude-code"
+    "anthropic.claude-code",
+    "GitHub.copilot",
+    "GitHub.copilot-chat"
   ]
 }

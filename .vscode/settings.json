@@ -10,5 +10,9 @@
   },
   "files.exclude": {
     "**/*.o": true
-  }
+  },
+  // Make sure Copilot Chat actually picks up .github/copilot-instructions.md
+  // (default in newer versions, but explicit here so older extension
+  // versions behave the same for every contributor).
+  "github.copilot.chat.codeGeneration.useInstructionFiles": true
 }
