@@ -1,0 +1,10 @@
+# Project instructions
+
+Read CLAUDE.md at the repository root first, before making any changes. It
+covers the build/test commands, architecture, and conventions for this
+codebase (wspy: a C instrumentation wrapper for performance-counter
+profiling) and applies to you the same as to Claude Code.
+
+Keep CLAUDE.md as the single source of truth. If you learn something about
+this project worth persisting (a build quirk, a convention, an architectural
+note), update CLAUDE.md rather than adding a separate/duplicate note here.

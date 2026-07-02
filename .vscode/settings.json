@@ -1,0 +1,14 @@
+{
+  // Generate compile_commands.json first: `make compile_commands.json`
+  // (see scripts/gen_compile_commands.py). It's gitignored/per-checkout, so
+  // IntelliSense falls back to guessed includes until you run that once.
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/compile_commands.json",
+  "C_Cpp.default.cStandard": "gnu17",
+  "C_Cpp.default.compilerPath": "/usr/bin/gcc",
+  "files.associations": {
+    "*.h": "c"
+  },
+  "files.exclude": {
+    "**/*.o": true
+  }
+}

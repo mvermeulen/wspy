@@ -27,6 +27,15 @@ sudo ./wspy -- sleep 1              # basic run, default IPC counters
 sudo ./wspy --csv --topdown -- true # CSV output with topdown metrics
 ```
 
+## Editor setup (VSCode / Claude Code / Cline)
+
+- `.vscode/settings.json` and `.vscode/extensions.json` are checked in so both editors get consistent
+  tooling; `.clinerules` points Cline at this file the same way Claude Code reads it automatically.
+- `make compile_commands.json` (or `./scripts/gen_compile_commands.py` directly) generates a compile
+  database from `make -Bn` dry runs — covers the AMDGPU=1 variant too if ROCm headers are found under
+  `/opt/rocm` or `/usr`. It's gitignored (absolute paths, per-checkout); regenerate it after pulling
+  Makefile changes or when IntelliSense/clangd diagnostics look stale.
+
 ## Architecture
 
 **Data flow:** CLI (`wspy.c`) → CPU detection (`cpu_info.c`) → counter setup (`topdown.c`) → fork/exec

@@ -56,6 +56,12 @@ proctree.o:	proctree.c
 depend:
 	-makedepend -Y -- $(CFLAGS) -- $(SRCS)
 
+# Regenerate compile_commands.json for editor tooling (VSCode C/C++ extension,
+# clangd, Cline). Paths in it are absolute to this checkout, so it's
+# gitignored and each contributor generates their own.
+compile_commands.json: scripts/gen_compile_commands.py Makefile
+	./scripts/gen_compile_commands.py
+
 clean:
 	-rm *~ *.o *.bak
 
