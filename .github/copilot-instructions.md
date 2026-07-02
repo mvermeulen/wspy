@@ -34,7 +34,7 @@ This guide helps AI coding agents make productive edits immediately.
 ## Build & Test
 
 **Standard build:** `make` produces `wspy`, `cpu_info`, `proctree`
-**AMD GPU build:** `make AMDGPU=1` (requires ROCm headers in `/opt/rocm`)
+**AMD GPU build:** `make AMDGPU=1` (requires ROCm headers; auto-detects `/opt/rocm` or `/usr`, or set `ROCM_DIR=<path>`)
 
 **Quick smoke tests:**
 - `./cpu_info` — CPU detection (no root needed)

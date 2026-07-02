@@ -7,11 +7,17 @@ LIBS = -lpthread -lm
 
 # ROCm/AMDGPU defaults (can be overridden on the make command line):
 #   make AMDGPU=1 ROCM_DIR=/path/to/rocm
-ROCM_DIR ?= /opt/rocm
+# ROCm was historically only installed under /opt/rocm, but distro packages
+# (e.g. Debian/Ubuntu's rocm-smi-lib) may instead put amd_smi/amdsmi.h and
+# libamd_smi under /usr. Auto-detect between the two unless ROCM_DIR is set
+# explicitly; /opt/rocm wins if both are present, for backwards compatibility.
+ifdef AMDGPU
+ROCM_DIR ?= $(shell \
+  if [ -e /opt/rocm/include/amd_smi/amdsmi.h ]; then echo /opt/rocm; \
+  elif [ -e /usr/include/amd_smi/amdsmi.h ]; then echo /usr; \
+  else echo /opt/rocm; fi)
 ROCM_INCLUDE := $(ROCM_DIR)/include
 ROCM_LIB := $(ROCM_DIR)/lib
-
-ifdef AMDGPU
 CFLAGS += -DAMDGPU=1 -I$(ROCM_INCLUDE)
 LIBS += -L$(ROCM_LIB) -lamd_smi
 endif
@@ -64,12 +70,17 @@ error.o: error.h
 proctree.o: error.h
 topdown.o: error.h wspy.h cpu_info.h
 
-test_wspy: test_wspy.c wspy.c wspy.h cpu_info.h error.h error.o cpu_info.o system.o topdown.o
-ifdef AMDGPU
-	$(CC) -o test_wspy $(CFLAGS) -DTEST_WSPY test_wspy.c error.o cpu_info.o system.o topdown.o amd_smi.c amd_sysfs.c $(LIBS)
-else
-	$(CC) -o test_wspy $(CFLAGS) -DTEST_WSPY test_wspy.c error.o cpu_info.o system.o topdown.o $(LIBS)
-endif
+# Always built GPU-disabled (test_wspy.c forces AMDGPU=0 to stub out main() and
+# skip GPU code), using its own objects so it never picks up a topdown.o/system.o
+# etc. left over from an `AMDGPU=1` build of wspy in the same tree, which would
+# reference gpu_busy_requested/gpu_metrics_requested symbols that this build
+# doesn't define and fail to link.
+test_wspy: test_wspy.c wspy.c wspy.h cpu_info.h error.h
+	$(CC) -g -DAMDGPU=0 -c -o test_error.o error.c
+	$(CC) -g -DAMDGPU=0 -c -o test_cpu_info.o cpu_info.c
+	$(CC) -g -DAMDGPU=0 -c -o test_system.o system.c
+	$(CC) -g -DAMDGPU=0 -c -o test_topdown.o topdown.c
+	$(CC) -o test_wspy -g -DAMDGPU=0 -DTEST_WSPY test_wspy.c test_error.o test_cpu_info.o test_system.o test_topdown.o -lpthread -lm
 
 test_proctree: test_proctree.c proctree.c error.h error.o
 	$(CC) -o test_proctree $(CFLAGS) -DTEST_PROCTREE test_proctree.c error.o $(LIBS)

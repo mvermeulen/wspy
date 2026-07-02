@@ -76,8 +76,10 @@ else
     exit 1
 fi
 
-# AMDGPU build test (if AMDGPU support is available)
-if [ -d "/opt/rocm" ]; then
+# AMDGPU build test (if AMDGPU support is available). ROCm was historically
+# only installed under /opt/rocm, but distro packages (e.g. Debian/Ubuntu's
+# rocm-smi-lib) may instead put amd_smi/amdsmi.h under /usr, so check both.
+if [ -e "/opt/rocm/include/amd_smi/amdsmi.h" ] || [ -e "/usr/include/amd_smi/amdsmi.h" ]; then
     echo "Testing AMDGPU build..."
     make clean > /dev/null 2>&1 || true
     if make AMDGPU=1 > /dev/null 2>&1; then

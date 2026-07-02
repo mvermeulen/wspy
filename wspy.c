@@ -438,6 +438,9 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     if (!sflag && gpu_metrics_requested){
       fprintf(outfile,"gpu_temp,gpu_activity,gpu_power,gpu_freq,");
     }
+    if (!sflag && gpu_smi_requested){
+      fprintf(outfile,"gpu_smi_temp,gpu_smi_activity,gpu_smi_vram_used,gpu_smi_vram_total,");
+    }
 #endif
     print_metrics(cpu_info->systemwide_counters,PRINT_CSV_HEADER);
     fprintf(outfile,"\n");
@@ -510,8 +513,17 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
         fprintf(outfile,"0,0,0.00,0,");
       }
     }
+    if (!sflag && gpu_smi_requested){
+      amd_smi_metrics();
+      amd_smi_memory();
+      fprintf(outfile,"%u,%u,%u,%u,",
+        amd_smi_metrics_valid() ? amd_smi_get_temp() : 0,
+        amd_smi_metrics_valid() ? amd_smi_get_activity() : 0,
+        amd_smi_memory_valid() ? amd_smi_get_vram_used() : 0,
+        amd_smi_memory_valid() ? amd_smi_get_vram_total() : 0);
+    }
 #endif
-    print_metrics(cpu_info->systemwide_counters,PRINT_CSV);    
+    print_metrics(cpu_info->systemwide_counters,PRINT_CSV);
     fprintf(outfile,"\n");    
   } else {
     if (sflag) print_system(PRINT_NORMAL);
@@ -529,6 +541,18 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
         fprintf(outfile,"gpu activity         %u%%\n", amd_sysfs_get_gpu_activity());
         fprintf(outfile,"gpu power            %.2f W\n", amd_sysfs_get_gpu_power());
         fprintf(outfile,"gpu freq             %u MHz\n", amd_sysfs_get_gpu_freq());
+      }
+    }
+    if (!sflag && gpu_smi_requested){
+      amd_smi_metrics();
+      amd_smi_memory();
+      if (amd_smi_metrics_valid()){
+        fprintf(outfile,"gpu smi temp         %u C\n", amd_smi_get_temp());
+        fprintf(outfile,"gpu smi activity     %u%%\n", amd_smi_get_activity());
+      }
+      if (amd_smi_memory_valid()){
+        fprintf(outfile,"gpu vram used        %u MB\n", amd_smi_get_vram_used());
+        fprintf(outfile,"gpu vram total       %u MB\n", amd_smi_get_vram_total());
       }
     }
 #endif

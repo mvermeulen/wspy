@@ -10,6 +10,14 @@ static uint32_t socket_count = 0;
 static amdsmi_processor_handle *devices = NULL;
 static uint32_t device_count = 0;
 
+static int metrics_valid = 0;
+static uint16_t last_temp = 0;
+static uint16_t last_activity = 0;
+
+static int memory_valid = 0;
+static uint32_t last_vram_used = 0;
+static uint32_t last_vram_total = 0;
+
 void amd_smi_initialize(void)
 {
 	amdsmi_status_t ret;
@@ -98,28 +106,53 @@ void amd_smi_initialize(void)
 void amd_smi_metrics(void)
 {
 	amdsmi_status_t ret;
-	
+
+	metrics_valid = 0;
+
 	if (devices == NULL || device_count == 0) {
 		debug("No devices available for metrics\n");
 		return;
 	}
-	
+
 	for (uint32_t i = 0; i < device_count; i++) {
 		amdsmi_gpu_metrics_t metrics;
 		ret = amdsmi_get_gpu_metrics_info(devices[i], &metrics);
 		if (ret == AMDSMI_STATUS_SUCCESS) {
-			debug("Device %u metrics: temperature=%u, gfx_activity=%u\n", 
+			debug("Device %u metrics: temperature=%u, gfx_activity=%u\n",
 			      i, metrics.temperature_hotspot, metrics.average_gfx_activity);
+			if (i == 0) {
+				last_temp = metrics.temperature_hotspot;
+				last_activity = metrics.average_gfx_activity;
+				metrics_valid = 1;
+			}
 		} else {
 			error("amdsmi_get_gpu_metrics_info failed for device %u with status %d\n", i, ret);
 		}
 	}
 }
 
+int amd_smi_metrics_valid(void)
+{
+	return metrics_valid;
+}
+
+uint16_t amd_smi_get_temp(void)
+{
+	return last_temp;
+}
+
+uint16_t amd_smi_get_activity(void)
+{
+	return last_activity;
+}
+
 
 void amd_smi_memory(void)
 {
 	amdsmi_status_t ret;
+
+	memory_valid = 0;
+
 	if (devices == NULL || device_count == 0) {
 		debug("No devices available for VRAM usage\n");
 		return;
@@ -128,12 +161,32 @@ void amd_smi_memory(void)
 		amdsmi_vram_usage_t vram;
 		ret = amdsmi_get_gpu_vram_usage(devices[i], &vram);
 		if (ret == AMDSMI_STATUS_SUCCESS) {
-			debug("Device %u VRAM usage: total=%u MB, used=%u MB\n", 
+			debug("Device %u VRAM usage: total=%u MB, used=%u MB\n",
 			      i, vram.vram_total, vram.vram_used);
+			if (i == 0) {
+				last_vram_used = vram.vram_used;
+				last_vram_total = vram.vram_total;
+				memory_valid = 1;
+			}
 		} else {
 			error("amdsmi_get_gpu_vram_usage failed for device %u with status %d\n", i, ret);
 		}
 	}
+}
+
+int amd_smi_memory_valid(void)
+{
+	return memory_valid;
+}
+
+uint32_t amd_smi_get_vram_used(void)
+{
+	return last_vram_used;
+}
+
+uint32_t amd_smi_get_vram_total(void)
+{
+	return last_vram_total;
 }
 
 void amd_smi_finalize(void)
