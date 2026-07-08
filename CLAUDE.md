@@ -27,6 +27,30 @@ sudo ./wspy -- sleep 1              # basic run, default IPC counters
 sudo ./wspy --csv --topdown -- true # CSV output with topdown metrics
 ```
 
+## Development workflow
+
+Starting with the 4.0 development cycle (see `INVESTIGATION_4.0.md`), new feature work happens on a
+short-lived feature branch rather than committing directly to `master`. Small housekeeping changes
+(typo fixes, doc tweaks, README updates) can still go straight to `master` — this applies to actual
+feature/behavior changes, especially anything tracked in `INVESTIGATION_4.0.md`'s phased plan.
+
+- **Branch naming:** `feature/<slug>`, e.g. `feature/run-manifest`, `feature/gpu-path-scan`. Prefer
+  one branch per inventory row/idea in `INVESTIGATION_4.0.md` rather than one branch per phase, so
+  each PR stays reviewable and revertable independently.
+- **Starting a feature:** `git checkout master && git pull && git checkout -b feature/<slug>`.
+- **While working:** commit normally on the branch; rebase or merge `master` into the branch as
+  needed to stay current, but don't rewrite history that's already been pushed.
+- **Finishing a feature:** push the branch (`git push -u origin feature/<slug>`) and open a PR with
+  `gh pr create` (origin is already `github.com/mvermeulen/wspy`). Merge through GitHub once it's
+  ready — don't merge feature branches into `master` locally and push `master` directly.
+- **Before opening the PR:** run `./run_tests.sh` (and `./test_amd_smi.sh` if the change touches GPU
+  code) — the branch should be in a state that passes the existing test suite, and CSV column-order
+  contracts in particular (see "CSV vs. human output" below) should be checked by hand since they
+  aren't all covered by `run_tests.sh` yet.
+- **Scope:** keep a feature branch to one inventory idea where practical; large phase-sized efforts
+  (e.g. all of "Run artifact foundation") should still land as a series of small merged PRs rather
+  than one long-lived branch, to avoid the drift and merge pain of a big-bang branch.
+
 ## Editor setup (VSCode: Claude Code / Cline / Copilot)
 
 This repo is worked on with Claude Code, Cline, and GitHub Copilot interchangeably, so this file (not
