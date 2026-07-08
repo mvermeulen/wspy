@@ -21,6 +21,7 @@
 #include <errno.h>
 #include "error.h"
 #include "wspy.h"
+#include "coverage.h"
 #if AMDGPU
 #include "amd_sysfs.h"
 extern int gpu_busy_requested;
@@ -808,9 +809,11 @@ void setup_counters(struct counter_group *counter_group_list){
 	error("unable to create %s performance counter, name=%s, errno=%d - %s\n",
 	      cgroup->label,cgroup->cinfo[i].label,errno,strerror(errno));
 	cgroup->cinfo[i].fd = -1;
+	coverage_note(cgroup->label,cgroup->cinfo[i].label,0,errno);
 	nerror++;
       } else {
 	cgroup->cinfo[i].fd = status;
+	coverage_note(cgroup->label,cgroup->cinfo[i].label,1,0);
 	ioctl(cgroup->cinfo[i].fd,PERF_EVENT_IOC_ENABLE,0);
 	debug("   create %s performance counter, name=%s\n",cgroup->label,cgroup->cinfo[i].label);
 	if (group_id == -1){
@@ -820,7 +823,12 @@ void setup_counters(struct counter_group *counter_group_list){
       }
     }
   }
-  if (nerror) fatal("unable to open performance counters\n");
+  /* Don't abort the run over partial counter loss -- a run with some
+   * counters unavailable (missing perf capability, restrictive
+   * perf_event_paranoid, NMI watchdog contention, ...) is still useful data
+   * as long as it's visible as such; see the coverage report/manifest
+   * rather than treating any single failure as fatal. */
+  if (nerror) warning("%d performance counter(s) unavailable this run (see counter coverage report)\n",nerror);
 }
 
 void start_counters(struct counter_group *counter_group_list){

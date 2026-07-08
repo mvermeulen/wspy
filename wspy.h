@@ -52,6 +52,13 @@ extern struct timespec start_time,finish_time;
 #define COUNTER_SOFTWARE    0x8000
 #define COUNTER_FLOAT       0x10000
 
+/* every counter type wspy knows how to request; used by --capabilities to
+ * probe the full set regardless of what counter flags were also given */
+#define COUNTER_ALL (COUNTER_IPC|COUNTER_TOPDOWN|COUNTER_TOPDOWN2|COUNTER_TOPDOWN_FE| \
+		     COUNTER_TOPDOWN_BE|COUNTER_TOPDOWN_OP|COUNTER_BRANCH|COUNTER_DCACHE| \
+		     COUNTER_ICACHE|COUNTER_L1CACHE|COUNTER_L2CACHE|COUNTER_L3CACHE| \
+		     COUNTER_MEMORY|COUNTER_TLB|COUNTER_OPCACHE|COUNTER_SOFTWARE|COUNTER_FLOAT)
+
 extern unsigned int counter_mask;
 
 #define SYSTEM_LOADAVG      0x1

@@ -1,8 +1,8 @@
 CC=gcc
 CFLAGS=-g
 PROG = wspy cpu_info amd_smi
-SRCS = wspy.c cpu_info.c error.c json_util.c manifest.c run_index.c proctree.c system.c topdown.c amd_smi.c amd_sysfs.c
-OBJS = wspy.o cpu_info.o error.o json_util.o manifest.o run_index.o proctree.o system.o topdown.o amd_smi.o
+SRCS = wspy.c cpu_info.c error.c json_util.c manifest.c run_index.c coverage.c proctree.c system.c topdown.c amd_smi.c amd_sysfs.c
+OBJS = wspy.o cpu_info.o error.o json_util.o manifest.o run_index.o coverage.o proctree.o system.o topdown.o amd_smi.o
 LIBS = -lpthread -lm
 
 # ROCm/AMDGPU defaults (can be overridden on the make command line):
@@ -28,11 +28,11 @@ else
 all:	wspy cpu_info proctree
 endif
 
-wspy:	wspy.o topdown.o error.o system.o json_util.o manifest.o run_index.o cpu_info.c cpu_info.h
+wspy:	wspy.o topdown.o error.o system.o json_util.o manifest.o run_index.o coverage.o cpu_info.c cpu_info.h
 ifdef AMDGPU
-	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c amd_smi.c amd_sysfs.c error.o system.o json_util.o manifest.o run_index.o $(LIBS)
+	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c amd_smi.c amd_sysfs.c error.o system.o json_util.o manifest.o run_index.o coverage.o $(LIBS)
 else
-	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c error.o system.o json_util.o manifest.o run_index.o $(LIBS)
+	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c error.o system.o json_util.o manifest.o run_index.o coverage.o $(LIBS)
 endif
 
 proctree:	proctree.o error.o
@@ -70,21 +70,22 @@ clobber:	clean
 
 # DO NOT DELETE
 
-wspy.o: wspy.h cpu_info.h error.h manifest.h run_index.h
+wspy.o: wspy.h cpu_info.h error.h manifest.h run_index.h coverage.h
 cpu_info.o: cpu_info.h error.h
 error.o: error.h
 json_util.o: json_util.h
 manifest.o: manifest.h wspy.h cpu_info.h error.h json_util.h
 run_index.o: run_index.h manifest.h wspy.h cpu_info.h error.h json_util.h
+coverage.o: coverage.h wspy.h cpu_info.h
 proctree.o: error.h
-topdown.o: error.h wspy.h cpu_info.h
+topdown.o: error.h wspy.h cpu_info.h coverage.h
 
 # Always built GPU-disabled (test_wspy.c forces AMDGPU=0 to stub out main() and
 # skip GPU code), using its own objects so it never picks up a topdown.o/system.o
 # etc. left over from an `AMDGPU=1` build of wspy in the same tree, which would
 # reference gpu_busy_requested/gpu_metrics_requested symbols that this build
 # doesn't define and fail to link.
-test_wspy: test_wspy.c wspy.c wspy.h cpu_info.h error.h manifest.h manifest.c run_index.h run_index.c json_util.h json_util.c
+test_wspy: test_wspy.c wspy.c wspy.h cpu_info.h error.h manifest.h manifest.c run_index.h run_index.c json_util.h json_util.c coverage.h coverage.c
 	$(CC) -g -DAMDGPU=0 -c -o test_error.o error.c
 	$(CC) -g -DAMDGPU=0 -c -o test_cpu_info.o cpu_info.c
 	$(CC) -g -DAMDGPU=0 -c -o test_system.o system.c
@@ -92,7 +93,8 @@ test_wspy: test_wspy.c wspy.c wspy.h cpu_info.h error.h manifest.h manifest.c ru
 	$(CC) -g -DAMDGPU=0 -c -o test_json_util.o json_util.c
 	$(CC) -g -DAMDGPU=0 -c -o test_manifest.o manifest.c
 	$(CC) -g -DAMDGPU=0 -c -o test_run_index.o run_index.c
-	$(CC) -o test_wspy -g -DAMDGPU=0 -DTEST_WSPY test_wspy.c test_error.o test_cpu_info.o test_system.o test_topdown.o test_json_util.o test_manifest.o test_run_index.o -lpthread -lm
+	$(CC) -g -DAMDGPU=0 -c -o test_coverage.o coverage.c
+	$(CC) -o test_wspy -g -DAMDGPU=0 -DTEST_WSPY test_wspy.c test_error.o test_cpu_info.o test_system.o test_topdown.o test_json_util.o test_manifest.o test_run_index.o test_coverage.o -lpthread -lm
 
 test_proctree: test_proctree.c proctree.c error.h error.o
 	$(CC) -o test_proctree $(CFLAGS) -DTEST_PROCTREE test_proctree.c error.o $(LIBS)

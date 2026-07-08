@@ -100,10 +100,19 @@ workload wrapper / profile-driven launcher (`wspy-run`, builtin `quick`/`deep-cp
 | Traceability links (summary row → manifest → raw CSV → plots → tree artifacts) | 4.1 | Same dependency; fold into the report generator once there's a normalized index to link from. |
 
 ### Reproducibility, comparability, statistics
+Shipped since the last consolidated pass (removed from the inventory per this file's own "ideas
+already implemented are not listed" rule — see `git log`/`CLAUDE.md` for what exists): counter
+capability discovery + "measured vs unavailable" coverage reporting (`coverage.c`, `wspy
+--capabilities`). `setup_counters()` (`topdown.c`) no longer treats any single `perf_event_open`
+failure as fatal for the whole run -- it records the outcome (`coverage_note()`) and continues, so a
+run with partial counter access (restrictive `perf_event_paranoid`, NMI-watchdog contention, an
+unsupported raw event) still produces output instead of aborting. Coverage counts/gaps are surfaced
+in human/CSV output, `--manifest`'s `counter_coverage` object (bumped `MANIFEST_SCHEMA_VERSION` to
+1.1.0), and `--run-index`'s leaner counts-only `counter_coverage` field (bumped
+`RUN_INDEX_SCHEMA_VERSION` to 1.1.0).
 | Idea | Phase | Why |
 | --- | --- | --- |
 | Environment/provenance capture (host/guest role, kernel, microcode, BIOS/power, governor, memory profile, tool versions) | 4.0 | Cheap to capture into the manifest now; expensive to reconstruct retroactively later. |
-| Counter capability discovery + "measured vs unavailable" coverage reporting | 4.0 | Needed before any cross-kernel/cross-vendor claim in a report can be trusted. |
 | Repeatability policy + confidence metadata (mean, stddev, CV, CI) as default output | 4.1 | Depends on the run index (need multiple runs grouped) more than on the manifest alone. |
 | Outlier/threshold engine (per-metric, global + suite-local) | 4.1 | Needs a populated index/history to threshold against; not meaningful on a single run. |
 | Comparison matrix mode (sweep compiler/kernel/governor/SMT/VM-native) | 4.1 | Builds on the profile-driven launcher; a declarative sweep runner, not new collection logic. |
@@ -293,7 +302,7 @@ Six items unlock nearly everything else and are independently shippable in rough
 1. ~~Run manifest (JSON) + SemVer schema version~~ — shipped (`manifest.c`)
 2. ~~Run index generation~~ — shipped (`run_index.c`)
 3. ~~Common workload wrapper / profile-driven launcher~~ — shipped (`wspy-run`)
-4. Counter capability discovery + coverage reporting
+4. ~~Counter capability discovery + coverage reporting~~ — shipped (`coverage.c`, `wspy --capabilities`)
 5. Topdown confidence envelope + sanity checks
 6. `amd_sysfs.c` dynamic GPU path scan (isolated, one-file fix, no dependency on 1-5)
 

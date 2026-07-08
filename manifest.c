@@ -109,6 +109,22 @@ int write_manifest(const char *path,const struct manifest_info *info){
   fprintf(fp,"    \"interval_seconds\": %d\n",info->interval);
   fprintf(fp,"  },\n");
 
+  fprintf(fp,"  \"counter_coverage\": {\n");
+  fprintf(fp,"    \"requested\": %d,\n",info->counters_requested);
+  fprintf(fp,"    \"measured\": %d,\n",info->counters_measured);
+  fprintf(fp,"    \"unavailable\": [\n");
+  for (i = 0; i < info->counters_unavailable_count; i++){
+    fprintf(fp,"     %s{ \"group\": ",i ? ",\n" : "");
+    json_write_string(fp,info->counters_unavailable[i].group_label);
+    fprintf(fp,", \"counter\": ");
+    json_write_string(fp,info->counters_unavailable[i].counter_label);
+    fprintf(fp,", \"errno\": %d, \"reason\": ",info->counters_unavailable[i].open_errno);
+    json_write_string(fp,strerror(info->counters_unavailable[i].open_errno));
+    fprintf(fp," }");
+  }
+  fprintf(fp,"%s    ]\n",info->counters_unavailable_count ? "\n" : "");
+  fprintf(fp,"  },\n");
+
   fprintf(fp,"  \"output_files\": [\n");
   if (info->output_path){
     fprintf(fp,"    { \"kind\": \"output\", \"path\": ");

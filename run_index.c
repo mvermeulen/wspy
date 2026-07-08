@@ -108,6 +108,9 @@ int append_run_index(const char *path,const struct manifest_info *info){
 	  info->treeflag ? "true" : "false",
 	  info->interval);
 
+  fprintf(fp,"\"counter_coverage\":{\"requested\":%d,\"measured\":%d},",
+	  info->counters_requested,info->counters_measured);
+
   fprintf(fp,"\"output_files\":{\"output_path\":");
   json_write_string_or_null(fp,info->output_path);
   fprintf(fp,",\"tree_output_path\":");

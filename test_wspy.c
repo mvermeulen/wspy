@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <errno.h>
 #include <getopt.h>
 #include <sys/wait.h>
 
@@ -16,6 +17,7 @@
 #include "wspy.c"
 #include "manifest.h"
 #include "run_index.h"
+#include "coverage.h"
 
 // Helper to reset globals for wspy
 void reset_wspy_globals() {
@@ -98,7 +100,48 @@ void test_wspy_parse_options() {
     assert(run_index_path != NULL);
     assert(strcmp(run_index_path, "/tmp/does-not-need-to-exist.jsonl") == 0);
 
+    // Test 6: --capabilities needs no workload command, unlike a normal run
+    reset_wspy_globals();
+    capabilitiesflag = 0;
+    char *argv6[] = {"wspy", "--capabilities", NULL};
+    int argc6 = 2;
+    optind = 1;
+
+    if (parse_options(argc6, argv6) != 3) {
+        fprintf(stderr, "FAIL: parse_options should return the capabilities sentinel\n");
+        exit(1);
+    }
+    assert(capabilitiesflag == 1);
+
     printf("PASS: wspy parse_options\n");
+}
+
+void test_coverage() {
+    printf("Testing counter coverage tracking...\n");
+
+    coverage_reset();
+    assert(coverage_requested == 0);
+    assert(coverage_measured == 0);
+    assert(coverage_entries == NULL);
+
+    coverage_note("ipc", "instructions", 1, 0);
+    coverage_note("ipc", "cpu-cycles", 0, EACCES);
+    coverage_note("cache", "l1d-read", 1, 0);
+
+    assert(coverage_requested == 3);
+    assert(coverage_measured == 2);
+    assert(coverage_entries != NULL);
+    assert(!strcmp(coverage_entries->group_label, "ipc"));
+    assert(!strcmp(coverage_entries->counter_label, "instructions"));
+    assert(coverage_entries->available == 1);
+    assert(coverage_entries->next->available == 0);
+    assert(coverage_entries->next->open_errno == EACCES);
+
+    coverage_reset();
+    assert(coverage_requested == 0);
+    assert(coverage_entries == NULL);
+
+    printf("PASS: counter coverage tracking\n");
 }
 
 // Read the whole file into a malloc'd, NUL-terminated buffer for substring checks.
@@ -128,6 +171,7 @@ void test_write_manifest() {
     char *contents;
     const char *manifest_out = "/tmp/test_wspy_manifest.json";
     char *test_argv[] = { "sleep", "1" };
+    struct manifest_counter_gap gaps[1] = {{ "ipc", "cpu-cycles", EACCES }};
 
     printf("Testing write_manifest...\n");
 
@@ -146,6 +190,10 @@ void test_write_manifest() {
     minfo.output_path = "out.csv";
     minfo.tree_output_path = NULL;
     minfo.manifest_path = manifest_out;
+    minfo.counters_requested = 3;
+    minfo.counters_measured = 2;
+    minfo.counters_unavailable_count = 1;
+    minfo.counters_unavailable = gaps;
 
     if (write_manifest(manifest_out, &minfo) != 0) {
         fprintf(stderr, "FAIL: write_manifest returned an error\n");
@@ -157,6 +205,13 @@ void test_write_manifest() {
         fprintf(stderr, "FAIL: could not read back manifest file\n");
         exit(1);
     }
+
+    // Counter capability coverage: requested/measured counts and the
+    // unavailable-counter detail must round-trip into the JSON.
+    assert(strstr(contents, "\"requested\": 3") != NULL);
+    assert(strstr(contents, "\"measured\": 2") != NULL);
+    assert(strstr(contents, "\"group\": \"ipc\"") != NULL);
+    assert(strstr(contents, "\"counter\": \"cpu-cycles\"") != NULL);
 
     // Schema version must be present and match the SemVer constant exactly --
     // downstream tooling depends on this field to detect shape changes.
@@ -231,6 +286,8 @@ void test_append_run_index() {
     minfo.csvflag = 1;
     minfo.output_path = "out.csv";
     minfo.manifest_path = "run.manifest.json";
+    minfo.counters_requested = 3;
+    minfo.counters_measured = 1;
 
     if (append_run_index(index_out, &minfo) != 0) {
         fprintf(stderr, "FAIL: append_run_index returned an error (first record)\n");
@@ -268,6 +325,7 @@ void test_append_run_index() {
     assert(strstr(line0, "\"command\":[\"sleep\",\"1\"]") != NULL);
     assert(strstr(line0, "\"manifest_path\":\"run.manifest.json\"") != NULL);
     assert(strstr(line0, "\"exit_code\":0") != NULL);
+    assert(strstr(line0, "\"counter_coverage\":{\"requested\":3,\"measured\":1}") != NULL);
 
     // Each line must be independently valid, self-contained JSON (a curly
     // brace per line, no shared array wrapper).
@@ -295,5 +353,6 @@ int main(int argc, char **argv) {
     test_wspy_parse_options();
     test_write_manifest();
     test_append_run_index();
+    test_coverage();
     return 0;
 }
