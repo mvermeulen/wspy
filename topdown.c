@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <math.h>
 #include <unistd.h>
 #include <time.h>
 #include <signal.h>
@@ -967,6 +968,28 @@ struct counter_info *find_ci_label(struct counter_group *cgroup,char *label){
   return NULL;
 }
 
+// TOPDOWN_LOW_CONFIDENCE_RATIO: below this running/enabled fraction, a
+// topdown counter was multiplexed off the PMU often enough that its value
+// shouldn't be read as precise -- flag it rather than presenting it at the
+// same trust level as a fully-scheduled counter.
+#define TOPDOWN_LOW_CONFIDENCE_RATIO 0.90
+// TOPDOWN_SANITY_TOLERANCE_PCT: how far the four top-level topdown
+// components (retiring+frontend+backend+speculation) may drift from 100% of
+// slots before it's flagged as an inconsistent decomposition rather than
+// ordinary counter noise.
+#define TOPDOWN_SANITY_TOLERANCE_PCT 5.0
+
+// confidence_ratio reports what fraction of the measurement window a counter
+// was actually scheduled on the PMU (perf's time_running/time_enabled).
+// 1.0 means it was never multiplexed away. A counter that was never
+// successfully read (perf_event_open failed, or fd is otherwise absent)
+// reports 0.0 rather than a false 1.0, since read_counters() leaves both
+// fields at 0 in that case.
+static double confidence_ratio(struct counter_info *cinfo){
+  if (!cinfo || cinfo->time_enabled == 0) return 0.0;
+  return (double) cinfo->time_running / (double) cinfo->time_enabled;
+}
+
 void print_ipc(struct counter_group *cgroup,enum output_format oformat){
   int i;
   unsigned long cpu_cycles=0,scaled_cpu_cycles=0;
@@ -1041,17 +1064,28 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
   int too_short = 0;
   struct counter_info *cinfo;
 
+  // per-metric confidence: fraction of the run each contributing counter was
+  // actually scheduled (1.0 = never multiplexed away); 0.0 (unmeasured) until
+  // the counter backing that metric is found below.
+  double slots_confidence = 0.0;
+  double retiring_confidence = 0.0;
+  double frontend_confidence = 0.0;
+  double backend_confidence = 0.0;
+  double speculation_confidence = 0.0;
+  double confidence;   // min across the above -- the row's overall trust level
+  double sanity_pct;   // (retiring+frontend+backend+speculation)/slots_no_contention, ideally ~100%
+
   if (oformat == PRINT_CSV_HEADER){
-    fprintf(outfile,"retire,frontend,backend,speculate,");
+    fprintf(outfile,"retire,frontend,backend,speculate,confidence,sanity,");
   }
 
   switch(cpu_info->vendor){
   case VENDOR_INTEL:
-    if ((cinfo = find_ci_label(cgroup,"slots"))) slots = cinfo->value;
-    if ((cinfo = find_ci_label(cgroup,"core.topdown-retiring"))) retiring = cinfo->value;
-    if ((cinfo = find_ci_label(cgroup,"core.topdown-fe-bound"))) frontend = cinfo->value;
-    if ((cinfo = find_ci_label(cgroup,"core.topdown-be-bound"))) backend = cinfo->value;
-    if ((cinfo = find_ci_label(cgroup,"core.topdown-bad-spec"))) speculation = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"slots"))){ slots = cinfo->value; slots_confidence = confidence_ratio(cinfo); }
+    if ((cinfo = find_ci_label(cgroup,"core.topdown-retiring"))){ retiring = cinfo->value; retiring_confidence = confidence_ratio(cinfo); }
+    if ((cinfo = find_ci_label(cgroup,"core.topdown-fe-bound"))){ frontend = cinfo->value; frontend_confidence = confidence_ratio(cinfo); }
+    if ((cinfo = find_ci_label(cgroup,"core.topdown-be-bound"))){ backend = cinfo->value; backend_confidence = confidence_ratio(cinfo); }
+    if ((cinfo = find_ci_label(cgroup,"core.topdown-bad-spec"))){ speculation = cinfo->value; speculation_confidence = confidence_ratio(cinfo); }
 
     // backend level 2
     if ((cinfo = find_ci_label(cgroup,"core.topdown-mem-bound"))){
@@ -1084,16 +1118,18 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
       if (cpu_info->coreinfo[0].vendor == CORE_AMD_ZEN){
 	slots = cinfo->value * 6;
       } else if (cpu_info->coreinfo[0].vendor == CORE_AMD_ZEN5){
-	slots = cinfo->value * 8;	
+	slots = cinfo->value * 8;
       }
+      slots_confidence = confidence_ratio(cinfo);
     }
-    if ((cinfo = find_ci_label(cgroup,"ex_ret_ops"))) retiring = cinfo->value;
-    if ((cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.no_ops_from_frontend"))) frontend = cinfo->value;
-    if ((cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.backend_stalls"))) backend = cinfo->value;
-    if ((cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.smt_contention"))) contention = cinfo->value;    
+    if ((cinfo = find_ci_label(cgroup,"ex_ret_ops"))){ retiring = cinfo->value; retiring_confidence = confidence_ratio(cinfo); }
+    if ((cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.no_ops_from_frontend"))){ frontend = cinfo->value; frontend_confidence = confidence_ratio(cinfo); }
+    if ((cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.backend_stalls"))){ backend = cinfo->value; backend_confidence = confidence_ratio(cinfo); }
+    if ((cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.smt_contention"))) contention = cinfo->value;
     if ((cinfo = find_ci_label(cgroup,"de_src_op_disp.all"))){
       if (cinfo->time_running == 0) too_short = 1;
       speculation = cinfo->value - retiring;
+      speculation_confidence = confidence_ratio(cinfo);
     }
     // backend level 2
     if ((cinfo = find_ci_label(cgroup,"ex_no_retire.load_not_complete")))
@@ -1133,19 +1169,44 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
     return;
   }
 
-  if (slots){
-    switch(oformat){
-    case PRINT_CSV_HEADER:
-      fprintf(outfile,"retire,frontend,backend,speculate\n");
-      break;
-    case PRINT_CSV:
-      fprintf(outfile,"%4.1f,",(double) retiring/slots_no_contention*100);
-      fprintf(outfile,"%4.1f,",(double) frontend/slots_no_contention*100);
-      fprintf(outfile,"%4.1f,",(double) backend/slots_no_contention*100);
-      fprintf(outfile,"%4.1f,",(double) speculation/slots_no_contention*100);
-      
-      break;
-    case PRINT_NORMAL:
+  // overall row confidence: the weakest link among the independently-read
+  // counters that feed retire/frontend/backend/speculate -- a single
+  // heavily-multiplexed counter should pull the whole row's trust down.
+  confidence = slots_confidence;
+  if (retiring_confidence < confidence) confidence = retiring_confidence;
+  if (frontend_confidence < confidence) confidence = frontend_confidence;
+  if (backend_confidence < confidence) confidence = backend_confidence;
+  if (speculation_confidence < confidence) confidence = speculation_confidence;
+
+  // decomposition sanity check: retire+frontend+backend+speculate are each
+  // read from independent counters but are defined to partition slots, so
+  // their sum should land close to 100% of slots_no_contention. A wide miss
+  // signals a bad event, a broken formula, or measurement inconsistency --
+  // not something to silently trust.
+  sanity_pct = slots_no_contention ?
+    (double) (retiring+frontend+backend+speculation) * 100.0 / slots_no_contention : 0.0;
+
+  // CSV rows must always emit exactly the columns declared in the header
+  // (printed unconditionally at the top of this function), even when slots
+  // is 0 -- e.g. every topdown counter failed to open (permissions,
+  // unsupported event). Gating this on `if (slots)` like the PRINT_NORMAL
+  // case below would silently drop all 6 columns for that row, shifting
+  // every column after this group left relative to the header.
+  if (oformat == PRINT_CSV){
+    double retiring_pct    = slots_no_contention ? (double) retiring/slots_no_contention*100    : 0.0;
+    double frontend_pct    = slots_no_contention ? (double) frontend/slots_no_contention*100     : 0.0;
+    double backend_pct     = slots_no_contention ? (double) backend/slots_no_contention*100      : 0.0;
+    double speculation_pct = slots_no_contention ? (double) speculation/slots_no_contention*100  : 0.0;
+    fprintf(outfile,"%4.1f,",retiring_pct);
+    fprintf(outfile,"%4.1f,",frontend_pct);
+    fprintf(outfile,"%4.1f,",backend_pct);
+    fprintf(outfile,"%4.1f,",speculation_pct);
+    fprintf(outfile,"%4.2f,",confidence);
+    fprintf(outfile,"%4.1f,",sanity_pct);
+    return;
+  }
+
+  if (slots && oformat == PRINT_NORMAL){
       if (too_short){
 	warning("unable to read performance counter, is runtime too short?\n");
       } else {
@@ -1156,6 +1217,9 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
 	  fprintf(outfile," high");
 	} else if (((double) retiring/slots_no_contention) < 0.14){
 	  fprintf(outfile," low");
+	}
+	if (retiring_confidence < TOPDOWN_LOW_CONFIDENCE_RATIO){
+	  fprintf(outfile," low-confidence(%.0f%%)",retiring_confidence*100);
 	}
 	fprintf(outfile,"\n");
 	if (retire_ucode && frontend_bandwidth){
@@ -1171,6 +1235,9 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
 	} else if (((double) frontend/slots_no_contention) < 0.05){
 	  fprintf(outfile," low");
 	}
+	if (frontend_confidence < TOPDOWN_LOW_CONFIDENCE_RATIO){
+	  fprintf(outfile," low-confidence(%.0f%%)",frontend_confidence*100);
+	}
 	fprintf(outfile,"\n");
 	if (frontend_latency && frontend_bandwidth){
 	  fprintf(outfile,"-- latency           %-14lu #    %4.1f%%\n",
@@ -1184,6 +1251,9 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
 	  fprintf(outfile," high");
 	} else if (((double) backend/slots_no_contention) < 0.18){
 	  fprintf(outfile," low");
+	}
+	if (backend_confidence < TOPDOWN_LOW_CONFIDENCE_RATIO){
+	  fprintf(outfile," low-confidence(%.0f%%)",backend_confidence*100);
 	}
 	fprintf(outfile,"\n");
 	if (backend_memory && backend_cpu){
@@ -1199,6 +1269,9 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
 	} else if (((double) speculation/slots_no_contention) < 0.01){
 	  fprintf(outfile," low");
 	}
+	if (speculation_confidence < TOPDOWN_LOW_CONFIDENCE_RATIO){
+	  fprintf(outfile," low-confidence(%.0f%%)",speculation_confidence*100);
+	}
 	fprintf(outfile,"\n");
 	if (speculation_pipeline && speculation_branches){
 	  fprintf(outfile,"-- branch mispredict %-14lu #    %4.1lf%%\n",
@@ -1207,9 +1280,12 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
 		  speculation_pipeline,(double) speculation_pipeline/slots*100);
 	}
 	fprintf(outfile,"smt-contention       %-14lu # %4.1f%% ( 0.0%%)\n",contention,(double) contention/slots*100);
+	fprintf(outfile,"sanity check         %4.1f%% of slots", sanity_pct);
+	if (fabs(sanity_pct - 100.0) > TOPDOWN_SANITY_TOLERANCE_PCT){
+	  fprintf(outfile," -- retire+frontend+backend+speculate should sum to ~100%%, decomposition looks inconsistent");
+	}
+	fprintf(outfile,"\n");
       }
-      break;
-    }
   }
 }
 

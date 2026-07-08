@@ -123,10 +123,20 @@ in human/CSV output, `--manifest`'s `counter_coverage` object (bumped `MANIFEST_
 
 ### Topdown quality
 See "Topdown deep-dive" below for reasoning; MVP acceptance criteria unchanged from prior draft.
+Shipped since the last consolidated pass (removed from the inventory per this file's own "ideas
+already implemented are not listed" rule — see `git log`/`CLAUDE.md` for what exists): confidence
+envelope + decomposition sanity checks for the primary `print_topdown()` breakdown (`topdown.c`).
+Each of retire/frontend/backend/speculate is annotated with `confidence_ratio()`
+(`time_running/time_enabled`) for the specific raw counter backing it, and the whole row carries a
+row-level confidence (the min across those four) plus a `sanity_pct` decomposition check
+(retire+frontend+backend+speculate vs. slots_no_contention) — both surfaced in human output
+(`low-confidence(NN%)` per-row annotations, a `sanity check` summary line) and CSV
+(`confidence,sanity` columns appended after `speculate`). Deliberately scoped to the level-1
+breakdown only — the level-2 hierarchy (backend cpu/memory, frontend latency/bandwidth, etc.) is
+still 4.1 work per the "Hierarchical" row below, and `print_topdown_be/fe/op` (the separate
+level-2-only groups) are untouched.
 | Idea | Phase | Why |
 | --- | --- | --- |
-| Confidence envelope (`time_running/time_enabled` per metric) + low-confidence labels | 4.0 | Cheapest, highest-trust win — multiplexing already silently degrades topdown accuracy today with no signal to the reader. |
-| Decomposition consistency/sanity checks | 4.0 | Pairs naturally with the confidence envelope; both are read-only checks on data already collected. |
 | Hierarchical (parent→child) schema + explicit raw-vs-contention-adjusted denominators + formula/version metadata | 4.1 | Requires the manifest/normalized-schema work from 4.0 to have somewhere to live. |
 | Core-class-aware topdown (hybrid Intel Atom+Core; weighted aggregate) | 4.1 | Depends on per-core collection (`--per-core`) plus the hierarchical schema. |
 | Phase-aware topdown (warmup/steady/degraded segmentation, drift signal) | 4.2 | Depends on interval phase-segmentation (see "Existing capability extensions") landing first. |
@@ -303,7 +313,7 @@ Six items unlock nearly everything else and are independently shippable in rough
 2. ~~Run index generation~~ — shipped (`run_index.c`)
 3. ~~Common workload wrapper / profile-driven launcher~~ — shipped (`wspy-run`)
 4. ~~Counter capability discovery + coverage reporting~~ — shipped (`coverage.c`, `wspy --capabilities`)
-5. Topdown confidence envelope + sanity checks
+5. ~~Topdown confidence envelope + sanity checks~~ — shipped (`topdown.c`'s `print_topdown()`, see "Topdown quality")
 6. `amd_sysfs.c` dynamic GPU path scan (isolated, one-file fix, no dependency on 1-5)
 
 Everything else currently tagged 4.0 (validation checks, coverage ledger, IBS profiles, `ptrace`
