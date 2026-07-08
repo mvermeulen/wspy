@@ -44,6 +44,34 @@ if [ ! -s test_proctree.out ]; then
 fi
 rm test_tree.out test_proctree.out
 
+# Manifest output
+echo "Testing wspy --manifest output..."
+./wspy --no-ipc --csv -o test_manifest_out.csv --manifest test_manifest.json -- /bin/true > /dev/null
+if [ ! -s test_manifest.json ]; then
+    echo "FAIL: manifest output is empty"
+    exit 1
+fi
+if command -v python3 > /dev/null 2>&1; then
+    if ! python3 -m json.tool test_manifest.json > /dev/null; then
+        echo "FAIL: manifest is not valid JSON"
+        exit 1
+    fi
+fi
+for expected in \
+    '"schema_version": "1.0.0"' \
+    '"wspy_version"' \
+    '"argv": \["/bin/true"\]' \
+    '"kind": "output"' \
+    '"path": "test_manifest_out.csv"' \
+    '"kind": "manifest"'; do
+    if ! grep -q "$expected" test_manifest.json; then
+        echo "FAIL: manifest missing expected content: $expected"
+        exit 1
+    fi
+done
+echo "  manifest output: OK"
+rm test_manifest_out.csv test_manifest.json
+
 # Tree stress + integrity test
 echo "Testing wspy tree stress and integrity counters..."
 STRESS_PROCS="${WSPY_TREE_STRESS_PROCS:-2000}"

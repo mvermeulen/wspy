@@ -6,6 +6,10 @@
 #include <time.h>
 #include <sys/resource.h>
 #include "cpu_info.h"
+
+#define WSPY_VERSION_MAJOR 3
+#define WSPY_VERSION_MINOR 0
+
 extern FILE *outfile;
 
 extern int aflag;
@@ -21,6 +25,9 @@ extern int tree_open;
 extern int trace_syscall;
 extern int versionflag;
 extern FILE *treefile;
+extern char *outfile_path;
+extern char *tree_output_path;
+extern char *manifest_path;
 
 extern int num_procs;
 extern int clocks_per_second;

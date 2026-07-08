@@ -4,6 +4,7 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <signal.h>
 #include <getopt.h>
 #include <unistd.h>
@@ -18,6 +19,7 @@
 #include "amd_sysfs.h"
 #endif
 #include "error.h"
+#include "manifest.h"
 
 int aflag = 0;
 int oflag = 0;
@@ -37,8 +39,9 @@ int gpu_busy_requested = 0;
 int gpu_metrics_requested = 0;
 #endif
 
-#define WSPY_VERSION_MAJOR 3
-#define WSPY_VERSION_MINOR 0
+char *outfile_path = NULL;
+char *tree_output_path = NULL;
+char *manifest_path = NULL;
 
 FILE *treefile = NULL;
 FILE *outfile = NULL;
@@ -75,9 +78,10 @@ int parse_options(int argc,char *const argv[]){
     { "icache", no_argument, 0, 12 },
     { "no-icache", no_argument, 0, 13 },
     { "interval", required_argument, 0, 34 },
-    { "ipc", no_argument, 0, 14 }, 
+    { "ipc", no_argument, 0, 14 },
     { "no-ipc", no_argument, 0, 15 },
-    { "memory", no_argument, 0, 16 }, 
+    { "manifest", required_argument, 0, 52 },
+    { "memory", no_argument, 0, 16 },
     { "no-memory", no_argument, 0, 17 },
     { "opcache", no_argument, 0, 18 }, 
     { "no-opcache", no_argument, 0, 19 },
@@ -181,6 +185,7 @@ int parse_options(int argc,char *const argv[]){
 	error("can not open file: %s\n",optarg);
       } else {
 	outfile = fp;
+	outfile_path = optarg;
 	oflag = 1;
       }
       break;
@@ -261,11 +266,15 @@ int parse_options(int argc,char *const argv[]){
             case 51: // --version
           versionflag = 1;
           break;
+    case 52: // --manifest
+      manifest_path = optarg;
+      break;
     case 31: // --tree
       if ((treefile = fopen(optarg,"w")) == NULL){
 	warning("unable to open tree file: %s, ignored\n",optarg);
       } else {
 	treeflag = 1;
+	tree_output_path = optarg;
       }
       break;
     case 32: // --verbose
@@ -345,6 +354,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t--tree-vmsize             - virtual memory size\n"
 	    "\t-o <file>                 - send output to file\n"
 	    "\t--csv                     - create csv output\n"
+	    "\t--manifest <file>         - write a JSON run manifest to <file>\n"
 	    "\t--interval <sec>          - read every <sec> seconds\n"
 	    "\t--verbose or -v           - print verbose information\n"
 	    "\t--system                  - system-wide metrics (load, cpu, gpu, network)\n"
@@ -589,6 +599,34 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 
   if (oflag) fclose(outfile);
   // -----
+
+  if (manifest_path){
+    struct manifest_info minfo;
+    memset(&minfo,0,sizeof(minfo));
+    minfo.start_time = start_time;
+    minfo.finish_time = finish_time;
+    minfo.argc = command_line_argc;
+    minfo.argv = command_line_argv;
+    /* --tree reaps children via its own ptrace wait loop, so the root
+     * child's exit status isn't available here the way it is via wait4(). */
+    minfo.exit_status.known = !treeflag;
+    if (minfo.exit_status.known){
+      minfo.exit_status.exited = WIFEXITED(status) ? 1 : 0;
+      if (minfo.exit_status.exited) minfo.exit_status.exit_code = WEXITSTATUS(status);
+      minfo.exit_status.signaled = WIFSIGNALED(status) ? 1 : 0;
+      if (minfo.exit_status.signaled) minfo.exit_status.term_signal = WTERMSIG(status);
+    }
+    minfo.counter_mask = counter_mask;
+    minfo.aflag = aflag;
+    minfo.sflag = sflag;
+    minfo.csvflag = csvflag;
+    minfo.treeflag = treeflag;
+    minfo.interval = interval;
+    minfo.output_path = oflag ? outfile_path : NULL;
+    minfo.tree_output_path = treeflag ? tree_output_path : NULL;
+    minfo.manifest_path = manifest_path;
+    write_manifest(manifest_path,&minfo);
+  }
 
 #if AMDGPU
   if (gpu_smi_requested)
