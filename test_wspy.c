@@ -15,6 +15,7 @@
 
 #include "wspy.c"
 #include "manifest.h"
+#include "run_index.h"
 
 // Helper to reset globals for wspy
 void reset_wspy_globals() {
@@ -82,6 +83,20 @@ void test_wspy_parse_options() {
     }
     assert(manifest_path != NULL);
     assert(strcmp(manifest_path, "/tmp/does-not-need-to-exist.json") == 0);
+
+    // Test 5: --run-index <file>
+    reset_wspy_globals();
+    run_index_path = NULL;
+    char *argv5[] = {"wspy", "--run-index", "/tmp/does-not-need-to-exist.jsonl", "ls", NULL};
+    int argc5 = 4;
+    optind = 1;
+
+    if (parse_options(argc5, argv5) != 0) {
+        fprintf(stderr, "FAIL: parse_options returned error for --run-index\n");
+        exit(1);
+    }
+    assert(run_index_path != NULL);
+    assert(strcmp(run_index_path, "/tmp/does-not-need-to-exist.jsonl") == 0);
 
     printf("PASS: wspy parse_options\n");
 }
@@ -176,9 +191,109 @@ void test_write_manifest() {
     printf("PASS: write_manifest\n");
 }
 
+// Extract the substring between the n-th and (n+1)-th '\n' (0-indexed), or
+// NULL if the buffer doesn't have that many lines. Caller must free().
+static char *nth_line(const char *contents, int n) {
+    const char *start = contents;
+    const char *end;
+    int i;
+
+    for (i = 0; i < n; i++) {
+        start = strchr(start, '\n');
+        if (!start) return NULL;
+        start++;
+    }
+    end = strchr(start, '\n');
+    if (!end) return NULL;
+    return strndup(start, end - start);
+}
+
+void test_append_run_index() {
+    struct manifest_info minfo;
+    char *contents, *line0, *line1;
+    const char *index_out = "/tmp/test_wspy_run_index.jsonl";
+    char *test_argv[] = { "sleep", "1" };
+
+    printf("Testing append_run_index...\n");
+
+    if (!cpu_info) inventory_cpu();
+    remove(index_out);
+
+    memset(&minfo, 0, sizeof(minfo));
+    minfo.start_time.tv_sec = 1000;
+    minfo.finish_time.tv_sec = 1001;
+    minfo.argc = 2;
+    minfo.argv = test_argv;
+    minfo.exit_status.known = 1;
+    minfo.exit_status.exited = 1;
+    minfo.exit_status.exit_code = 0;
+    minfo.counter_mask = COUNTER_IPC;
+    minfo.csvflag = 1;
+    minfo.output_path = "out.csv";
+    minfo.manifest_path = "run.manifest.json";
+
+    if (append_run_index(index_out, &minfo) != 0) {
+        fprintf(stderr, "FAIL: append_run_index returned an error (first record)\n");
+        exit(1);
+    }
+
+    // Second record, distinct start_time so it gets a distinct run_id even
+    // though it's appended by the same pid.
+    minfo.start_time.tv_sec = 2000;
+    minfo.finish_time.tv_sec = 2001;
+    minfo.exit_status.exit_code = 0;
+    if (append_run_index(index_out, &minfo) != 0) {
+        fprintf(stderr, "FAIL: append_run_index returned an error (second record)\n");
+        exit(1);
+    }
+
+    contents = slurp_file(index_out);
+    if (!contents) {
+        fprintf(stderr, "FAIL: could not read back run index file\n");
+        exit(1);
+    }
+
+    // Append must not truncate: both records must be present as separate lines.
+    line0 = nth_line(contents, 0);
+    line1 = nth_line(contents, 1);
+    if (!line0 || !line1) {
+        fprintf(stderr, "FAIL: run index file does not have two lines\n");
+        exit(1);
+    }
+    // A third line (beyond the trailing newline of line1) would mean stray output.
+    assert(nth_line(contents, 2) == NULL);
+
+    assert(strstr(line0, "\"schema_version\":\"" RUN_INDEX_SCHEMA_VERSION "\"") != NULL);
+    assert(strstr(line1, "\"schema_version\":\"" RUN_INDEX_SCHEMA_VERSION "\"") != NULL);
+    assert(strstr(line0, "\"command\":[\"sleep\",\"1\"]") != NULL);
+    assert(strstr(line0, "\"manifest_path\":\"run.manifest.json\"") != NULL);
+    assert(strstr(line0, "\"exit_code\":0") != NULL);
+
+    // Each line must be independently valid, self-contained JSON (a curly
+    // brace per line, no shared array wrapper).
+    assert(line0[0] == '{' && line0[strlen(line0) - 1] == '}');
+    assert(line1[0] == '{' && line1[strlen(line1) - 1] == '}');
+
+    // Distinct start_time -> distinct run_id, even from the same pid.
+    {
+        char *run_id0 = strstr(line0, "\"run_id\":\"");
+        char *run_id1 = strstr(line1, "\"run_id\":\"");
+        assert(run_id0 != NULL && run_id1 != NULL);
+        assert(strncmp(run_id0, run_id1, 24) != 0);
+    }
+
+    free(line0);
+    free(line1);
+    free(contents);
+    remove(index_out);
+
+    printf("PASS: append_run_index\n");
+}
+
 int main(int argc, char **argv) {
     printf("Running Wspy Test Suite...\n");
     test_wspy_parse_options();
     test_write_manifest();
+    test_append_run_index();
     return 0;
 }

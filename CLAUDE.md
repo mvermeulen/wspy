@@ -84,6 +84,8 @@ child with optional ptrace → periodic/final counter reads → CSV or human-rea
 - `proctree.c` — standalone `proctree` binary that parses the tree file produced by `wspy --tree` (not CSV: one of four line kinds — `<time> root <pid>`, `<time> start <pid> <ppid>`, `<time> exit <pid> <stat-fields>`, `<time> comm <pid> <name>` — see the comment at the top of `proctree.c`) and reconstructs the process hierarchy
 - `error.c`/`error.h` — centralized logging: `fatal()`, `error()`, `warning()`, `notice()`, `debug()`, `debug2()`, gated by `set_error_level()`
 - `manifest.c`/`manifest.h` — writes the optional JSON run manifest (`--manifest <file>`): command line, start/finish timestamps, child exit status (when known — not available in `--tree` mode since `ptrace_loop` reaps children itself), host/CPU info, the option flags used, and the list of output files produced. `MANIFEST_SCHEMA_VERSION` in `manifest.h` is the SemVer of the manifest's JSON *shape*, independent of `WSPY_VERSION_MAJOR`/`MINOR` (now in `wspy.h`); bump it when fields are added/removed/renamed. This is the run *record*, not a run *configuration* — a separate config-driven launcher is tracked as its own `INVESTIGATION_4.0.md` item.
+- `run_index.c`/`run_index.h` — appends one compact JSON Lines (JSONL) record per run to a shared file (`--run-index <file>`), independent of `--manifest` (a run can use either, neither, or both — if both are given, the index record's `output_files.manifest_path` points at the manifest file for that run). Built from the same `struct manifest_info` populated in `wspy.c:main()`, but versioned independently via `RUN_INDEX_SCHEMA_VERSION` since it's a leaner, line-oriented projection of a run, not the manifest itself. This is what item 2 of the `INVESTIGATION_4.0.md` "minimal foundation slice" calls "run index generation" — it lets tooling query "all runs" by scanning one file instead of walking output directories. Appends are serialized with `flock(LOCK_EX)` so concurrent `wspy` processes sharing an index file don't interleave records.
+- `json_util.c`/`json_util.h` — `json_write_string()` (escaping) and `format_iso8601()` (timestamp formatting) shared by `manifest.c` and `run_index.c`, the two hand-rolled JSON emitters in the tree.
 - `rocm/` — separate small C++ utilities (`smi_monitor`, `smi_info`) with their own Makefile, exploring the ROCm SMI API directly (not linked into `wspy`)
 - `workload/` — driver scripts for external benchmark suites (SPEC CPU2017, pbbsbench, Phoronix) used to exercise wspy against real workloads; not part of the build
 - `archive/wspy2.0/` — old version of the tool kept for reference, not built or maintained
@@ -134,9 +136,16 @@ in `system.c:print_system()` with matching CSV/header/normal cases, and add a `S
 if it should be independently toggleable.
 
 **New manifest field:** add it to `struct manifest_info` in `manifest.h`, populate it at the call site in
-`wspy.c:main()` (near the end, guarded by `if (manifest_path)`), and emit it in `manifest.c:write_manifest()`.
-Adding a field is a backward-compatible change — bump the MINOR component of `MANIFEST_SCHEMA_VERSION`;
-removing or renaming one is a MAJOR bump, since existing readers may depend on the old shape.
+`wspy.c:main()` (near the end, guarded by `if (manifest_path || run_index_path)`), and emit it in
+`manifest.c:write_manifest()`. Adding a field is a backward-compatible change — bump the MINOR component
+of `MANIFEST_SCHEMA_VERSION`; removing or renaming one is a MAJOR bump, since existing readers may depend
+on the old shape.
+
+**New run-index field:** most fields come from the same `struct manifest_info` used by the manifest (see
+above), so if the field already exists there just emit it in `run_index.c:append_run_index()` too. A
+field that's specific to the index record (not the manifest) needs its own plumbing through
+`append_run_index()`'s signature. Either way, bump `RUN_INDEX_SCHEMA_VERSION` in `run_index.h` (MINOR for
+an added field, MAJOR for removed/renamed) — it's versioned independently of `MANIFEST_SCHEMA_VERSION`.
 
 ## Notable runtime behavior
 

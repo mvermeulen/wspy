@@ -15,6 +15,14 @@
 
 struct cpu_info *cpu_info = NULL;
 
+const char *cpu_vendor_name(enum cpu_vendor vendor){
+  switch (vendor){
+  case VENDOR_AMD: return "AMD";
+  case VENDOR_INTEL: return "Intel";
+  default: return "unknown";
+  }
+}
+
 int inventory_cpu(void){
   unsigned int eax,ebx,ecx,edx;
   int i;
