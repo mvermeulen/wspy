@@ -225,7 +225,7 @@ void print_system(enum output_format oformat){
       fprintf(outfile,"io                   %3.2f%%\n",
 	      (double) (system_state.cpu.iowaittime/elapsed/num_procs));      
       fprintf(outfile,"irq                  %3.2f%%\n",
-	      (double) (system_state.cpu.usertime+system_state.cpu.systemtime)/elapsed/num_procs);      
+	      (double) (system_state.cpu.irqtime)/elapsed/num_procs);      
     }
     if (system_mask & SYSTEM_NETWORK){
       if (system_state.netinfo == NULL) setup_net_info();

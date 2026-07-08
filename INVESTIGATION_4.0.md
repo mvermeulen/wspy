@@ -677,7 +677,49 @@ Use this compact cross-track map for sequencing decisions. The full phase invent
 | Characterization/clustering | Feature normalization prerequisites | Archetype scorecard and confidence | Clustering and coverage-aware distance | Drift alerts and publishing integration |
 | UI/workflow | Profile launcher and standardized outputs | HTML report and run index browser | Interactive tree/timeline and similarity panels | Optional live TUI/dashboard integration |
 | Existing capability extensions | Counter-fit preflight and phase markers | Per-core topology and `proctree` exports/diffs | `--tree-open` file-I/O topology and system-pressure attribution | Fold into platform defaults |
+| Portability & Robustness | Dynamic GPU path scan, manifest SemVer, arch macros | Native Multi-pass loop, fallback CPU detection | Low-overhead syscall tracing (ftrace/eBPF) | Arch-neutral portability validation |
 | Testing/docs | Golden contract tests and troubleshooting docs | Schema compatibility tests and profile/interpretation guides | Statistical harness and contributor quality gates | Ongoing maintenance and release policy hardening |
+
+## Key architectural gaps and roadmap extensions (July 2026 Review)
+During a deep review of the current `wspy` source code, several architectural constraints and gaps were identified that should be incorporated into the v4.0 roadmap to improve portability, robust measurement, and efficiency.
+
+### 1. CPU Architecture Portability (ARM64/AArch64 Support)
+- **Constraint**: `wspy` is currently hardcoded to x86_64 CPU hardware in two critical files:
+  1. `cpu_info.c` calls `__cpuid` from `<cpuid.h>` to query vendor/family/model.
+  2. `topdown.c` directly accesses x86_64 register structures (e.g., `regs.orig_rax` for system call numbers, `regs.rsi` for system call arguments) in the `ptrace` loop.
+- **Enhancement**:
+  - Abstract CPU topology discovery: provide a fallback that reads `/proc/cpuinfo` or `/sys/devices/system/cpu` on non-x86 architectures.
+  - Abstract register layout accesses in `ptrace_loop()` behind arch-specific macros (e.g. `PTRACE_SYSCALL_NUM(regs)`, `PTRACE_SYSCALL_ARG1(regs)`) using `#ifdef __x86_64__` or `#ifdef __aarch64__`.
+- **Target**: Phase 4.0 / Phase 4.1.
+
+### 2. Native Multi-Pass Counter Execution (Multiplexing vs. Determinism)
+- **Constraint**: Workload wrapper scripts (e.g., `workload/phoronix/run_test.sh`) run the identical target command 7-8 times consecutively to collect different non-multiplexed counter subsets. This leads to duplicate launch logic, high execution overhead, and variance between runs.
+- **Enhancement**:
+  - Add native support for "multi-pass execution loops" directly in `wspy`.
+  - Let the user supply a config/JSON file defining a list of passes (e.g. `--passes=ipc,topdown,cache,software`).
+  - `wspy` will execute the workload N times internally, automatically managing stdout/stderr, collecting the target metrics for each pass, and merging them into a single coherent run manifest and CSV.
+- **Target**: Phase 4.1.
+
+### 3. Dynamic GPU Path Detection & Multi-GPU Scanning
+- **Constraint**: `amd_sysfs.c` hardcodes `/sys/class/drm/card1/device/...`. On single-GPU systems where the AMD card enumerates as `card0`, `wspy` fails to collect sysfs GPU metrics.
+- **Enhancement**:
+  - Replace the hardcoded `card1` paths with a dynamic scanning logic that searches for the AMD Vendor ID (`0x1002`) in `/sys/class/drm/card*/device/vendor` at startup.
+  - Expose a `--gpu-device=<idx>` CLI parameter to specify the GPU index.
+  - Report metrics for multiple AMD GPUs when present.
+- **Target**: Phase 4.0.
+
+### 4. Ptrace Overhead & Tracing Alternatives (eBPF / ftrace)
+- **Constraint**: Using `ptrace` for child process and system call tracking (`--tree`, `--tree-open`) induces a high performance penalty (context switches on every syscall entry/exit), which skews performance counter data (especially for I/O-bound or fork-heavy workloads).
+- **Enhancement**:
+  - Propose a low-overhead alternative backend using standard Linux tracepoints via `/sys/kernel/debug/tracing` (`ftrace`) or a minimal `eBPF` probe to track process lifecycle and file descriptor creation without stalling the target threads.
+- **Target**: Phase 4.2 / Phase 4.3.
+
+### 5. Manifest Schema Versioning and Validation
+- **Constraint**: As the metadata collected in `wspy` runs evolves, comparison and regression tools face schema compatibility risks.
+- **Enhancement**:
+  - Define a formal SemVer-based schema version for `manifest.json`.
+  - Validate run files before ingestion and output warnings when comparing runs from mismatched `wspy` manifest schemas.
+- **Target**: Phase 4.0.
 
 ## External brainstorming references
 - ReBench documentation highlights reproducible experiment configuration, resumable execution, and explicit benchmark parameter tracking:
@@ -696,7 +738,7 @@ Note: OpenBenchmarking content was attempted but returned HTTP 403 from this env
 This is the consolidated schedule view for 4.x. Track-local rollout notes above are context only; when priorities conflict, prefer this phased plan.
 
 ### Phase 4.0 (foundation)
-- Run manifest
+- Run manifest (with SemVer-based schema versioning)
 - Unified output layout
 - Common workload wrapper
 - Run index generation
@@ -714,6 +756,8 @@ This is the consolidated schedule view for 4.x. Track-local rollout notes above 
 - Multiplex-aware topdown confidence scoring and low-confidence labels
 - Topdown decomposition consistency checks and fallback coverage reporting
 - Topdown-first MVP step 1: quality envelope + sanity checks
+- Dynamic AMD GPU path scanning and multi-GPU enumeration (replaces hardcoded `card1` checks)
+- Platform-neutral macro abstractions for `ptrace` register accesses in `topdown.c`
 - Golden output-contract tests and capability-matrix smoke tests
 - Artifact contract documentation and troubleshooting runbook
 
@@ -734,6 +778,8 @@ This is the consolidated schedule view for 4.x. Track-local rollout notes above 
 - Hierarchical topdown schema export with parent-child drill-down fields
 - Core-class-aware topdown weighted aggregate views
 - Topdown-first MVP step 2: hierarchical schema with denominator/formula metadata
+- Native multi-pass counter execution (automated N-run counter partitioning and merging)
+- Fallback CPU topology detection for non-x86_64 architectures (e.g., ARM64 support via `/proc/cpuinfo`)
 - Schema compatibility/migration tests and reproducibility-idempotency tests
 - Profile cookbook and interpretation playbook documentation
 
@@ -752,8 +798,9 @@ This is the consolidated schedule view for 4.x. Track-local rollout notes above 
 - Phase-aware topdown drift analysis and phase-specific bottleneck reporting
 - Composite topdown attribution rules (topdown + cache/TLB/IBS signals)
 - Topdown-first MVP step 3: phase-aware bottleneck summaries and drift signal
+- Low-overhead tracing backend alternative to `ptrace` (e.g., using `ftrace` or minimal `eBPF` probes)
 - Statistical regression harness with tolerance bands and overhead guardrails
-- Contributor quality guide for collector and schema changes
+- Contributor guide for collector and schema changes
 
 ### Phase 4.3 (platform)
 - Config-first experiment definitions
@@ -768,6 +815,8 @@ This is the consolidated schedule view for 4.x. Track-local rollout notes above 
 - Is cross-machine comparability a hard requirement for the first round?
 - Should the website remain static-only, or include an optional interactive data backend?
 - What is the minimum metadata set that must be present for every run to be considered publishable?
+- Is cross-architecture CPU support (e.g., ARM64/AArch64 servers) a priority for the next major version?
+- Should `wspy` natively handle multi-pass executions (running target multiple times with different counter groups and merging) to avoid complex wrapper scripts?
 
 ## Success criteria for a 4.0 kickoff
 - A newcomer can run one benchmark suite and produce publish-ready structured artifacts without editing scripts.
