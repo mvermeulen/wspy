@@ -247,6 +247,16 @@ What appears confirmed from current Linux perf/PMU behavior for AMD Family 1Ah (
    decoding) are the strongest near-term source of additional signal.
 4. L3-miss-only filtering is documented to skew sampling-period behavior — runs using it need
    explicit annotation.
+5. Zen5's topdown dispatch baseline shifted from Zen4's 6 slots/cycle to 8 — already implemented
+   (`topdown.c`'s `CORE_AMD_ZEN`/`CORE_AMD_ZEN5` slot-multiplier branch), not a gap. But the finer
+   per-scheduler breakdown events AMD introduced alongside that width change aren't in
+   `amd_raw_events[]` yet: split ALU/AGU scheduler-stall counters, and op-cache/execution-queue
+   events that would separate `Frontend Latency` from `Frontend Bandwidth` (today's
+   `de_no_dispatch_per_slot.*` events only give the coarser no-ops-from-frontend/backend-stalls/
+   smt-contention split). `IBS_LD_L1_DTLB_REFILL_LAT` specifically also isn't named anywhere in the
+   IBS capability-probing rows above. Neither needs its own inventory row yet — both are candidate
+   inputs for the Topdown deep-dive's "platform formula registry" item (below) once Zen5-specific
+   formulas are actually versioned there.
 
 Caveat: if upstream kernel/perf exposes new Zen5-specific generic mappings or PMU caps, update
 presets and coverage logic without changing the report schema.
@@ -319,6 +329,35 @@ Six items unlock nearly everything else and are independently shippable in rough
 Everything else currently tagged 4.0 (validation checks, coverage ledger, IBS profiles, `ptrace`
 macro extraction, plotting templates, golden tests) can slip to a 4.0.x follow-on without blocking
 downstream phases, since nothing in 4.1+ depends on them specifically.
+
+### Next up after the minimal slice
+Once the six items above are done (2026-07-08: 4/6 shipped, "Topdown confidence envelope + sanity
+checks" and the GPU path scan remain), these are the next ~6 4.0-tagged rows worth tackling, roughly
+in priority order (confirmed bug fixes and cheap high-trust wins first, heavier design work later).
+All are already rows in the inventory above — this is a suggested ordering, not a separate list to
+maintain by hand.
+1. Environment/provenance capture ("Reproducibility, comparability, statistics" track) — cheapest
+   high-value win once the manifest exists; "Open questions" below already recommends capturing this
+   ahead of both publication automation and comparability scoring.
+2. Propagate child exit status as an opt-in flag (`--exit-with-child`) ("Portability and robustness"
+   track) — closes a confirmed real bug (`wspy.c:646` unconditionally `return 0`s) surfaced while
+   building `wspy-run`; every `workload/*/run_test.sh` invocation and `wspy-run` pass currently can't
+   detect workload-command failure from the exit code alone.
+3. Fix the `rusage` CSV/normal output mismatch ("Process / `getrusage` / `/proc` telemetry" track) —
+   confirmed real, narrow bug (CSV drops `nvcsw`/`nivcsw`/`inblock`/`oublock` that normal output
+   already prints); fix before expanding `getrusage` coverage on the same inconsistent base.
+4. Basic validation/quality checks pre-publish ("Run artifact foundation" track) — catches a bad
+   config before it poisons a result set (per the blog's own "oops" post); consumes the manifest and
+   coverage work that's already shipped.
+5. Coverage ledger (workload status: done/skipped/unsupported/needs-tool-support) ("Run artifact
+   foundation" track) — generated from the run index that's already shipped; closes the loop on
+   "what's still missing" tracking that's currently manual.
+6. Arch-neutral `ptrace` register-access macros ("Portability and robustness" track) — cheap
+   mechanical refactor now, expensive retrofit later, independent of whether ARM64 support itself is
+   prioritized any time soon.
+7. Capability-driven IBS probing ("Zen5 / IBS" track) — prerequisite for the rest of that track
+   (`ibs-basic`/`ibs-memory-deep` profiles, skew annotations), and the layer the Zen5/IBS deep-dive's
+   point 5 (new ALU/AGU and op-cache event categories) would need regardless.
 
 ## Open questions for prioritization
 Each carries a recommendation; treat these as the current default, not a closed decision — flag if
