@@ -17,7 +17,17 @@
  * breaks existing readers, MINOR when a field is added in a backward
  * compatible way, PATCH for fixes that don't change the shape. Consumers
  * should warn (not silently misparse) on an unrecognized MAJOR version. */
-#define MANIFEST_SCHEMA_VERSION "1.0.0"
+#define MANIFEST_SCHEMA_VERSION "1.1.0"
+
+/* One counter that setup_counters() (topdown.c) tried and failed to open via
+ * perf_event_open, as recorded by coverage.c. Kept as its own small struct
+ * (rather than pulling in coverage.h here) so manifest.h stays self
+ * contained, matching manifest_exit_status below. */
+struct manifest_counter_gap {
+  const char *group_label;
+  const char *counter_label;
+  int open_errno;
+};
 
 struct manifest_exit_status {
   int known;       /* 0 if the exit status was not observed this run       */
@@ -42,6 +52,14 @@ struct manifest_info {
   const char *output_path;   /* -o <file>, NULL if output went to stdout   */
   const char *tree_output_path; /* --tree <file>, NULL if not used         */
   const char *manifest_path; /* path this manifest itself is written to    */
+  /* Counter capability discovery + coverage reporting (see coverage.h): how
+   * many counters this run's counter_mask/aflag combination requested vs
+   * how many actually opened via perf_event_open. Independent of
+   * exit_status -- a run can exit cleanly with partial counter coverage. */
+  int counters_requested;
+  int counters_measured;
+  int counters_unavailable_count;
+  const struct manifest_counter_gap *counters_unavailable; /* array, length counters_unavailable_count */
 };
 
 /* Writes the manifest as JSON to path. Returns 0 on success, -1 if the file

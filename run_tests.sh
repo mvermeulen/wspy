@@ -58,12 +58,15 @@ if command -v python3 > /dev/null 2>&1; then
     fi
 fi
 for expected in \
-    '"schema_version": "1.0.0"' \
+    '"schema_version": "1.1.0"' \
     '"wspy_version"' \
     '"argv": \["/bin/true"\]' \
     '"kind": "output"' \
     '"path": "test_manifest_out.csv"' \
-    '"kind": "manifest"'; do
+    '"kind": "manifest"' \
+    '"counter_coverage": {' \
+    '"requested": 0' \
+    '"measured": 0'; do
     if ! grep -q "$expected" test_manifest.json; then
         echo "FAIL: manifest missing expected content: $expected"
         exit 1
@@ -102,9 +105,10 @@ assert records[1]['exit_status']['exit_code'] == 1
     fi
 fi
 for expected in \
-    '"schema_version":"1.0.0"' \
+    '"schema_version":"1.1.0"' \
     '"wspy_version"' \
-    '"command":\["/bin/true"\]'; do
+    '"command":\["/bin/true"\]' \
+    '"counter_coverage":{"requested":0,"measured":0}'; do
     if ! grep -q "$expected" test_run_index.jsonl; then
         echo "FAIL: run index missing expected content: $expected"
         exit 1
@@ -112,6 +116,35 @@ for expected in \
 done
 echo "  run index output: OK"
 rm test_run_index.jsonl
+
+# Counter capability discovery + coverage reporting
+echo "Testing wspy --capabilities (no workload command needed)..."
+CAPS_OUT=$(./wspy --capabilities 2>&1)
+if ! echo "$CAPS_OUT" | grep -q "^counter capability report: "; then
+    echo "FAIL: --capabilities did not print a capability report"
+    exit 1
+fi
+if ./wspy --capabilities > /dev/null 2>&1; then
+    :
+else
+    echo "FAIL: --capabilities should exit 0 even without perf access"
+    exit 1
+fi
+echo "  wspy --capabilities: OK"
+
+# Counters that fail to open (e.g. no perf access) must degrade gracefully
+# rather than aborting the whole run -- this is the other half of coverage
+# reporting: a real run's output says what it could and couldn't measure
+# instead of refusing to produce output at all.
+echo "Testing wspy graceful degradation when counters are unavailable..."
+# set -e means this line itself already asserts a zero exit status --
+# previously any single unopenable counter (e.g. no perf access) was fatal.
+DEGRADE_OUT=$(./wspy --csv --topdown -- /bin/true)
+if ! echo "$DEGRADE_OUT" | grep -q "counters_measured,counters_requested"; then
+    echo "FAIL: CSV output missing counter coverage columns"
+    exit 1
+fi
+echo "  graceful degradation on unavailable counters: OK"
 
 # wspy-run profile launcher
 echo "Testing wspy-run --list..."

@@ -21,6 +21,7 @@
 #include "error.h"
 #include "manifest.h"
 #include "run_index.h"
+#include "coverage.h"
 
 int aflag = 0;
 int oflag = 0;
@@ -34,6 +35,7 @@ int tree_cmdline = 0;
 int tree_open = 0;
 int trace_syscall = 0;
 int versionflag = 0;
+int capabilitiesflag = 0;
 #if AMDGPU
 int gpu_smi_requested = 0; /* legacy */
 int gpu_busy_requested = 0;
@@ -61,8 +63,9 @@ int parse_options(int argc,char *const argv[]){
   int value;
   unsigned int lev;
   static struct option long_options[] = {
-    { "branch", no_argument, 0, 4 }, 
+    { "branch", no_argument, 0, 4 },
     { "no-branch", no_argument, 0, 5 },
+    { "capabilities", no_argument, 0, 54 },
     { "csv", no_argument, 0, 3 },
     { "cache1", no_argument, 0, 39 },
     { "no-cache1", no_argument, 0, 40 },
@@ -275,6 +278,9 @@ int parse_options(int argc,char *const argv[]){
     case 53: // --run-index
       run_index_path = optarg;
       break;
+    case 54: // --capabilities
+      capabilitiesflag = 1;
+      break;
     case 31: // --tree
       if ((treefile = fopen(optarg,"w")) == NULL){
 	warning("unable to open tree file: %s, ignored\n",optarg);
@@ -320,6 +326,9 @@ int parse_options(int argc,char *const argv[]){
   if (versionflag){
     return 2;
   }
+  if (capabilitiesflag){
+    return 3; // no workload command needed for a capability probe
+  }
   if (optind >= argc){
     warning("missing command after options\n");
     return 1;
@@ -329,6 +338,36 @@ int parse_options(int argc,char *const argv[]){
   for (i=0;i<command_line_argc;i++){
     command_line_argv[i] = argv[i+optind];
   }
+  return 0;
+}
+
+// Standalone counter capability discovery (wspy --capabilities): probes
+// every counter type wspy knows how to request against this host/kernel
+// and reports available vs unavailable, without launching a workload.
+// Counter-selecting flags given alongside --capabilities are ignored --
+// probing "everything" is the point of a discovery run.
+static int run_capabilities_probe(void){
+  struct counter_group *cgroup;
+
+  if (inventory_cpu() != 0){
+    fatal("unable to query CPU information\n");
+  }
+  check_nmi_watchdog();
+  setup_raw_events();
+
+  counter_mask = COUNTER_ALL;
+  coverage_reset();
+  setup_counter_groups(&cpu_info->systemwide_counters);
+  if (counter_mask & COUNTER_SOFTWARE){
+    if ((cgroup = software_counter_group("software"))){
+      cgroup->next = cpu_info->systemwide_counters;
+      cpu_info->systemwide_counters = cgroup;
+    }
+  }
+  setup_counters(cpu_info->systemwide_counters);
+
+  print_capability_report();
+  if (oflag) fclose(outfile);
   return 0;
 }
 
@@ -350,9 +389,13 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     fprintf(stdout,"wspy %d.%d\n",WSPY_VERSION_MAJOR,WSPY_VERSION_MINOR);
     return 0;
   }
+  if (i == 3){
+    return run_capabilities_probe();
+  }
   if (i){
       fatal("usage: %s -[abcistv][-o <file>] <cmd><args>...\n"
 	    "\t--version                 - show version and exit\n"
+	    "\t--capabilities            - probe available counters for this host/kernel and exit\n"
 	    "\t--per-core or -a          - metrics per core\n"
 	    "\t--rusage or -r            - show getrusage(2) information\n"
 	    "\t--tree <file>             - create CSV of processes\n"
@@ -422,6 +465,8 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   // parse the event tables
   setup_raw_events();
 
+  coverage_reset();
+
   // set up either system-wide or core-specific counters
   if (aflag){
     for (i=0;i<cpu_info->num_cores;i++){
@@ -477,6 +522,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     }
 #endif
     print_metrics(cpu_info->systemwide_counters,PRINT_CSV_HEADER);
+    print_counter_coverage(PRINT_CSV_HEADER);
     fprintf(outfile,"\n");
   }
 
@@ -558,11 +604,13 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     }
 #endif
     print_metrics(cpu_info->systemwide_counters,PRINT_CSV);
-    fprintf(outfile,"\n");    
+    print_counter_coverage(PRINT_CSV);
+    fprintf(outfile,"\n");
   } else {
     if (sflag) print_system(PRINT_NORMAL);
     if (xflag) print_usage(&rusage,PRINT_NORMAL);
     print_metrics(cpu_info->systemwide_counters,PRINT_NORMAL);
+    print_counter_coverage(PRINT_NORMAL);
 #if AMDGPU
     if (!sflag && gpu_busy_requested){
       int busy_final = amd_sysfs_gpu_busy_percent();
@@ -609,6 +657,9 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 
   if (manifest_path || run_index_path){
     struct manifest_info minfo;
+    struct manifest_counter_gap *gaps = NULL;
+    struct coverage_entry *ce;
+    int ngaps = 0;
     memset(&minfo,0,sizeof(minfo));
     minfo.start_time = start_time;
     minfo.finish_time = finish_time;
@@ -632,8 +683,26 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     minfo.output_path = oflag ? outfile_path : NULL;
     minfo.tree_output_path = treeflag ? tree_output_path : NULL;
     minfo.manifest_path = manifest_path;
+    minfo.counters_requested = coverage_requested;
+    minfo.counters_measured = coverage_measured;
+    for (ce = coverage_entries; ce; ce = ce->next) if (!ce->available) ngaps++;
+    if (ngaps){
+      gaps = calloc(ngaps,sizeof(struct manifest_counter_gap));
+      ngaps = 0;
+      for (ce = coverage_entries; ce; ce = ce->next){
+	if (!ce->available){
+	  gaps[ngaps].group_label = ce->group_label;
+	  gaps[ngaps].counter_label = ce->counter_label;
+	  gaps[ngaps].open_errno = ce->open_errno;
+	  ngaps++;
+	}
+      }
+    }
+    minfo.counters_unavailable_count = ngaps;
+    minfo.counters_unavailable = gaps;
     if (manifest_path) write_manifest(manifest_path,&minfo);
     if (run_index_path) append_run_index(run_index_path,&minfo);
+    free(gaps);
   }
 
 #if AMDGPU
