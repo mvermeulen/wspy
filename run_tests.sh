@@ -44,6 +44,121 @@ if [ ! -s test_proctree.out ]; then
 fi
 rm test_tree.out test_proctree.out
 
+# Tree stress + integrity test
+echo "Testing wspy tree stress and integrity counters..."
+STRESS_PROCS="${WSPY_TREE_STRESS_PROCS:-2000}"
+./wspy --no-ipc --tree test_tree_stress.out -- /bin/sh -c 'n="$1"; i=0; while [ "$i" -lt "$n" ]; do /bin/true & i=$((i+1)); done; wait' sh "$STRESS_PROCS" > /dev/null
+
+# Ensure proctree can still reconstruct output from stress run
+./proctree test_tree_stress.out > /dev/null
+
+if ! awk '
+BEGIN {
+    root_count = 0;
+    fork_lines = 0;
+    exit_lines = 0;
+    unknown_lines = 0;
+    saw_summary = 0;
+    errors = 0;
+}
+
+/^#/ {
+    if ($2 == "ptrace-summary") {
+        saw_summary = 1;
+        for (i = 3; i <= NF; i++) {
+            split($i, kv, "=");
+            summary[kv[1]] = kv[2] + 0;
+        }
+    }
+    next;
+}
+
+{
+    if (NF < 3) next;
+
+    event = $3;
+    pid = $2 + 0;
+
+    if (event == "root") {
+        root_count++;
+        known[pid] = 1;
+        next;
+    }
+
+    if (event == "fork") {
+        child = $4 + 0;
+        fork_lines++;
+        known[pid] = 1;
+        known[child] = 1;
+
+        if (pid <= 0 || child <= 0 || pid == child) {
+            printf("invalid fork edge parent=%d child=%d\n", pid, child) > "/dev/stderr";
+            errors++;
+            next;
+        }
+
+        if ((child in parent_of) && parent_of[child] != pid) {
+            printf("multiple parents for pid %d: %d and %d\n", child, parent_of[child], pid) > "/dev/stderr";
+            errors++;
+            next;
+        }
+        parent_of[child] = pid;
+        next;
+    }
+
+    if (event == "exit") {
+        exit_lines++;
+        if (!(pid in known)) {
+            printf("exit for unknown pid %d\n", pid) > "/dev/stderr";
+            errors++;
+        }
+        next;
+    }
+
+    if (event == "unknown") {
+        unknown_lines++;
+        next;
+    }
+}
+
+END {
+    if (root_count != 1) {
+        printf("expected exactly one root event, got %d\n", root_count) > "/dev/stderr";
+        errors++;
+    }
+
+    if (!saw_summary) {
+        printf("missing ptrace summary footer\n") > "/dev/stderr";
+        errors++;
+    } else {
+        if (summary["fork_events"] != fork_lines) {
+            printf("fork counter mismatch: footer=%d lines=%d\n", summary["fork_events"], fork_lines) > "/dev/stderr";
+            errors++;
+        }
+        if (summary["exit_events"] != exit_lines) {
+            printf("exit counter mismatch: footer=%d lines=%d\n", summary["exit_events"], exit_lines) > "/dev/stderr";
+            errors++;
+        }
+        if (summary["unknown_traps"] != unknown_lines) {
+            printf("unknown trap mismatch: footer=%d lines=%d\n", summary["unknown_traps"], unknown_lines) > "/dev/stderr";
+            errors++;
+        }
+        if (!("wait_eintr" in summary)) {
+            printf("wait_eintr missing from footer\n") > "/dev/stderr";
+            errors++;
+        }
+    }
+
+    if (errors > 0) exit 1;
+}
+' test_tree_stress.out; then
+    echo "FAIL: Tree stress integrity check failed"
+    exit 1
+fi
+
+rm test_tree_stress.out
+echo "  tree stress integrity: OK"
+
 # Network interface name test (ensure no '(null)' appears)
 echo "Testing system network interface names (non-AMDGPU build)..."
 if ./wspy --system --no-ipc -- /bin/true 2>&1 | grep -q '(null)'; then

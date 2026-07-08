@@ -130,11 +130,21 @@ void handle_fork(double elapsed,unsigned int pid,char *child){
   unsigned int child_pid = atoi(child);
   struct process_info *pinfo,*parent_pinfo;
   struct proc_table_entry *pentry = lookup_pid(child_pid,1);
-  struct proc_table_entry *parent_pentry = lookup_pid(pid,0);
+  struct proc_table_entry *parent_pentry = lookup_pid(pid,1);
   if (pentry) pentry->pinfo->start = elapsed;
   if (pentry && parent_pentry){
     pinfo = pentry->pinfo;
     parent_pinfo = parent_pentry->pinfo;
+
+    if (pinfo->parent != NULL){
+      if (pinfo->parent == parent_pinfo){
+	debug2("duplicate fork edge ignored for pid=%u parent=%u\n",child_pid,pid);
+	return;
+      }
+	warning("pid %u already has parent %u, ignoring alternate parent %u\n",
+		child_pid,pinfo->parent->pid,pid);
+	return;
+	}
     
     pinfo->parent = parent_pinfo;
     

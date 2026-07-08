@@ -314,25 +314,38 @@ void ptrace_loop(void){
   struct rusage rusage;
   double elapsed;
   char *filename;
+  int wait_flags = 0;
+  unsigned long long fork_events = 0;
+  unsigned long long exit_events = 0;
+  unsigned long long unknown_traps = 0;
+  unsigned long long wait_eintr = 0;
+
+#ifdef __WALL
+  wait_flags |= __WALL;
+#endif
 
   while(1){
-    pid = wait4(-1,&status,0,&rusage);
+    pid = wait4(-1,&status,wait_flags,&rusage);
     clock_gettime(CLOCK_REALTIME,&finish_time);
     elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
       start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
     debug2("event: pid=%d status=%x\n",pid,status);
     if (pid == -1){
+      if (errno == EINTR){
+        wait_eintr++;
+        continue;
+      }
       if (errno == ECHILD){
 	break; // no more children to wait
       } else {
 	error("wait returns -1 with errno %d - %s\n",errno,strerror(errno));
+        continue;
       }
     }
     if (WIFEXITED(status)){
       fprintf(treefile,"%5.3f %d exited\n",elapsed,pid);
       fflush(treefile);
       debug2("   exited\n");
-      if (pid == child_pid) break;
       continue;
     } else if (WIFSIGNALED(status)){
       // dump contents of proc/<pid>/comm
@@ -370,12 +383,14 @@ void ptrace_loop(void){
 	case PTRACE_EVENT_CLONE:
 	case PTRACE_EVENT_FORK:
 	case PTRACE_EVENT_VFORK:
+    fork_events++;
 	  ptrace(PTRACE_GETEVENTMSG,pid,NULL,&data);
 	  fprintf(treefile,"%5.3f %d fork %lu\n",elapsed,pid,data);
 	  fflush(treefile);
 	  debug2("   clone/fork/vfork - pid=%d\n",data);
 	  break;
 	case PTRACE_EVENT_EXIT:
+    exit_events++;
 	  ptrace(PTRACE_GETEVENTMSG,pid,NULL,&data);
 	  // dump contents of proc/<pid>/comm
 	  snprintf(stat_name,sizeof(stat_name),"/proc/%d/comm",pid);
@@ -414,6 +429,7 @@ void ptrace_loop(void){
 	  debug2("   exit - exit status=%d\n",data);
 	  break;
 	default:
+    unknown_traps++;
 	  // normal SIGTRAP - not sure how we got here, but continue without it.
 	  // we seem to get these after a process has exited...
 	  fprintf(treefile,"%5.3f %d unknown %x\n",elapsed,pid,status);
@@ -455,6 +471,10 @@ void ptrace_loop(void){
     // let the child go to the next event
     ptrace(trace_syscall?PTRACE_SYSCALL:PTRACE_CONT,pid,NULL,NULL);
   }
+
+  fprintf(treefile,"# ptrace-summary fork_events=%llu exit_events=%llu unknown_traps=%llu wait_eintr=%llu\n",
+	  fork_events, exit_events, unknown_traps, wait_eintr);
+  fflush(treefile);
 }
 
 // syscall wrapper since not part of glibc
