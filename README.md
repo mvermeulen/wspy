@@ -1,4 +1,4 @@
-# wspy
+# wspy 3.0
 
 wspy - a workload spy
 
@@ -34,6 +34,8 @@ launch and instrument. Running `wspy` with invalid/missing arguments prints the 
 current option list.
 
 Some of the more commonly used options:
+
+* `--version` - print the wspy version and exit
 
 * Output
   * `-o <file>` - send output to a file instead of stdout

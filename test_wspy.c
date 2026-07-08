@@ -20,6 +20,7 @@ void reset_wspy_globals() {
     oflag = 0;
     sflag = 0;
     vflag = 0;
+    versionflag = 0;
    // Globals are defined in wspy.c, which is included below.
 // We don't need to redeclare them.
     if (outfile && outfile != stdout && outfile != stderr) fclose(outfile);
@@ -53,6 +54,18 @@ void test_wspy_parse_options() {
     parse_options(argc2, argv2);
     assert((counter_mask & COUNTER_BRANCH) != 0);
     assert((counter_mask & COUNTER_ICACHE) != 0);
+
+    // Test 3: Version flag
+    reset_wspy_globals();
+    char *argv3[] = {"wspy", "--version", NULL};
+    int argc3 = 2;
+    optind = 1;
+
+    if (parse_options(argc3, argv3) != 2) {
+        fprintf(stderr, "FAIL: parse_options should return version sentinel\n");
+        exit(1);
+    }
+    assert(versionflag == 1);
 
     printf("PASS: wspy parse_options\n");
 }

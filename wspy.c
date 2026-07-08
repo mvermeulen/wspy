@@ -30,11 +30,15 @@ int treeflag = 0;
 int tree_cmdline = 0;
 int tree_open = 0;
 int trace_syscall = 0;
+int versionflag = 0;
 #if AMDGPU
 int gpu_smi_requested = 0; /* legacy */
 int gpu_busy_requested = 0;
 int gpu_metrics_requested = 0;
 #endif
+
+#define WSPY_VERSION_MAJOR 3
+#define WSPY_VERSION_MINOR 0
 
 FILE *treefile = NULL;
 FILE *outfile = NULL;
@@ -96,6 +100,7 @@ int parse_options(int argc,char *const argv[]){
     { "no-topdown-backend",no_argument,0,47 },
     { "topdown-optlb",no_argument,0,44 },
     { "no-topdown-optlb",no_argument,0,45 },
+    { "version", no_argument, 0, 51 },
     { "tree", required_argument, 0, 31 }, //
     { "tree-cmdline",no_argument,0,35 },
     { "tree-open",no_argument,0, 38 },
@@ -253,6 +258,9 @@ int parse_options(int argc,char *const argv[]){
       warning("GPU support not built (rebuild with AMDGPU=1): --gpu-metrics ignored\n");
     #endif
       break;
+            case 51: // --version
+          versionflag = 1;
+          break;
     case 31: // --tree
       if ((treefile = fopen(optarg,"w")) == NULL){
 	warning("unable to open tree file: %s, ignored\n",optarg);
@@ -294,6 +302,9 @@ int parse_options(int argc,char *const argv[]){
       return 1;
     }
   }
+  if (versionflag){
+    return 2;
+  }
   if (optind >= argc){
     warning("missing command after options\n");
     return 1;
@@ -319,8 +330,14 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   num_procs = get_nprocs();
   clocks_per_second = sysconf(_SC_CLK_TCK);
   
-  if (parse_options(argc,argv)){
+  i = parse_options(argc,argv);
+  if (i == 2){
+    fprintf(stdout,"wspy %d.%d\n",WSPY_VERSION_MAJOR,WSPY_VERSION_MINOR);
+    return 0;
+  }
+  if (i){
       fatal("usage: %s -[abcistv][-o <file>] <cmd><args>...\n"
+	    "\t--version                 - show version and exit\n"
 	    "\t--per-core or -a          - metrics per core\n"
 	    "\t--rusage or -r            - show getrusage(2) information\n"
 	    "\t--tree <file>             - create CSV of processes\n"
