@@ -348,11 +348,130 @@ void test_append_run_index() {
     printf("PASS: append_run_index\n");
 }
 
+// Declared in topdown.c (linked in via test_topdown.o) but not exposed
+// through wspy.h since only print_metrics() is part of the public surface.
+extern void print_topdown(struct counter_group *cgroup, enum output_format oformat, int mask);
+
+void test_topdown_confidence(void) {
+    struct cpu_info fake_cpu;
+    struct cpu_info *saved_cpu_info;
+    struct counter_group cgroup;
+    struct counter_info cinfo[5];
+    char *contents;
+    const char *tmp_out = "/tmp/test_wspy_topdown.txt";
+
+    printf("Testing topdown confidence envelope + sanity checks...\n");
+
+    saved_cpu_info = cpu_info;
+    memset(&fake_cpu, 0, sizeof(fake_cpu));
+    fake_cpu.vendor = VENDOR_INTEL;
+    cpu_info = &fake_cpu;
+
+    memset(cinfo, 0, sizeof(cinfo));
+    cinfo[0].label = "slots";
+    cinfo[0].value = 1000000; cinfo[0].time_enabled = 1000000; cinfo[0].time_running = 1000000;
+    cinfo[1].label = "core.topdown-retiring";
+    cinfo[1].value = 400000; cinfo[1].time_enabled = 1000000; cinfo[1].time_running = 1000000;
+    cinfo[2].label = "core.topdown-fe-bound";
+    cinfo[2].value = 300000; cinfo[2].time_enabled = 1000000; cinfo[2].time_running = 1000000;
+    // deliberately multiplexed: only half the enabled window was actually scheduled
+    cinfo[3].label = "core.topdown-be-bound";
+    cinfo[3].value = 250000; cinfo[3].time_enabled = 1000000; cinfo[3].time_running = 500000;
+    cinfo[4].label = "core.topdown-bad-spec";
+    cinfo[4].value = 50000; cinfo[4].time_enabled = 1000000; cinfo[4].time_running = 1000000;
+
+    memset(&cgroup, 0, sizeof(cgroup));
+    cgroup.label = "topdown";
+    cgroup.ncounters = 5;
+    cgroup.cinfo = cinfo;
+    cgroup.mask = COUNTER_TOPDOWN;
+
+    // retiring+frontend+backend+speculation == slots here (400k+300k+250k+50k == 1e6):
+    // a clean decomposition, but backend's counter was only half-scheduled.
+    outfile = fopen(tmp_out, "w");
+    if (!outfile) { fprintf(stderr, "FAIL: could not open temp file\n"); exit(1); }
+    print_topdown(&cgroup, PRINT_CSV, COUNTER_TOPDOWN);
+    fclose(outfile);
+
+    contents = slurp_file(tmp_out);
+    assert(contents != NULL);
+    assert(strstr(contents, "40.0,") != NULL);   // retiring % of slots
+    assert(strstr(contents, "0.50,") != NULL);   // overall confidence: min() pulled down by backend
+    assert(strstr(contents, "100.0,") != NULL);  // sanity: sum matches slots exactly
+    free(contents);
+
+    outfile = fopen(tmp_out, "w");
+    if (!outfile) { fprintf(stderr, "FAIL: could not open temp file\n"); exit(1); }
+    print_topdown(&cgroup, PRINT_NORMAL, COUNTER_TOPDOWN);
+    fclose(outfile);
+
+    contents = slurp_file(tmp_out);
+    assert(contents != NULL);
+    // only backend's own counter was multiplexed -- the annotation should land on
+    // that row, not on rows backed by fully-scheduled counters.
+    assert(strstr(contents, "backend") != NULL);
+    assert(strstr(contents, "low-confidence(50%)") != NULL);
+    assert(strstr(contents, "sanity check") != NULL);
+    free(contents);
+
+    // Now break the decomposition: bump backend's value so the four
+    // components no longer sum anywhere near slots.
+    cinfo[3].value = 550000;
+    outfile = fopen(tmp_out, "w");
+    if (!outfile) { fprintf(stderr, "FAIL: could not open temp file\n"); exit(1); }
+    print_topdown(&cgroup, PRINT_NORMAL, COUNTER_TOPDOWN);
+    fclose(outfile);
+
+    contents = slurp_file(tmp_out);
+    assert(contents != NULL);
+    assert(strstr(contents, "decomposition looks inconsistent") != NULL);
+    free(contents);
+
+    // Regression check: when every topdown counter failed to open (perf
+    // permissions, unsupported event -- fd never opened, so read_counters()
+    // never touched value/time_running/time_enabled and they stay at their
+    // calloc()'d 0), the CSV row must still carry all 6 columns declared in
+    // the header instead of silently vanishing and shifting every column
+    // after this group left relative to the header.
+    memset(cinfo, 0, sizeof(cinfo));
+    cinfo[0].label = "slots";
+    cinfo[1].label = "core.topdown-retiring";
+    cinfo[2].label = "core.topdown-fe-bound";
+    cinfo[3].label = "core.topdown-be-bound";
+    cinfo[4].label = "core.topdown-bad-spec";
+
+    outfile = fopen(tmp_out, "w");
+    if (!outfile) { fprintf(stderr, "FAIL: could not open temp file\n"); exit(1); }
+    print_topdown(&cgroup, PRINT_CSV, COUNTER_TOPDOWN);
+    fclose(outfile);
+
+    contents = slurp_file(tmp_out);
+    assert(contents != NULL);
+    {
+        int commas = 0;
+        char *p;
+        for (p = contents; *p; p++) if (*p == ',') commas++;
+        // retire, frontend, backend, speculate, confidence, sanity == 6 fields
+        if (commas != 6) {
+            fprintf(stderr, "FAIL: expected 6 CSV columns when topdown counters are unavailable, got %d (row: %s)\n", commas, contents);
+            exit(1);
+        }
+    }
+    free(contents);
+
+    remove(tmp_out);
+    outfile = NULL;
+    cpu_info = saved_cpu_info;
+
+    printf("PASS: topdown confidence envelope + sanity checks\n");
+}
+
 int main(int argc, char **argv) {
     printf("Running Wspy Test Suite...\n");
     test_wspy_parse_options();
     test_write_manifest();
     test_append_run_index();
     test_coverage();
+    test_topdown_confidence();
     return 0;
 }
