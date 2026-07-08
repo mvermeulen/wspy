@@ -39,12 +39,28 @@ citing line numbers. This pass re-checked the load-bearing claims directly:
   `regs.rsi` directly (raw `struct user_regs_struct` fields, no macro layer), and `cpu_info.c:33,61`
   call `__cpuid()` from `<cpuid.h>`. Both are genuine portability blockers for ARM64, not just style
   issues — there is currently zero abstraction to build on.
-- **There is no manifest, no JSON output, and no schema anywhere in the codebase today**
-  (`grep -rn manifest\|json` across all `.c`/`.h` returns nothing). Every "Phase 4.0" item involving
-  a manifest, run index, or coverage ledger is greenfield infrastructure on a tool that currently
-  only emits flat CSV/text to a file — there's no prior schema to be backward-compatible with yet.
-  This matters for scoping: 4.0 isn't "extend the manifest," it's "invent the manifest," which is a
-  bigger first slice than the word "foundation" suggests (see "Minimal foundation slice" below).
+- **Superseded (2026-07-08, later in this cycle): the manifest/run-index/profile-launcher slice
+  shipped.** This section previously said "there is no manifest, no JSON output, and no schema
+  anywhere in the codebase today" — that was accurate when first written but was left stale after
+  the three branches below merged into `master`, understating how much of the "minimal foundation
+  slice" (below) is now done:
+  - `manifest.c`/`manifest.h` — JSON run manifest (`--manifest <file>`), `MANIFEST_SCHEMA_VERSION`
+    (SemVer).
+  - `run_index.c`/`run_index.h` — JSONL run-index append (`--run-index <file>`),
+    `RUN_INDEX_SCHEMA_VERSION` (SemVer, versioned independently of the manifest).
+  - `wspy-run` — the common workload wrapper / profile-driven launcher (builtin `quick`/`deep-cpu`/
+    `deep-gpu`/`tree-heavy` profiles, `-c <file>` config-file execution), reusing the two above for
+    `--manifest-dir`/`--run-index`.
+  What's still actually missing, i.e. what the "invent the manifest" framing below still applies to:
+  no reader/ingest tool validates a manifest or run-index against its schema version (see
+  "Portability and robustness" track), no unified output layout, no coverage ledger, no validation/
+  quality-check pass, and `workload/*/run_test.sh` haven't been migrated to call `wspy-run` yet.
+  Building `wspy-run` also surfaced a real, previously-unknown bug: `wspy`'s own process exit code
+  never reflects the launched command's success — see the new "Portability and robustness" row
+  ("Propagate child exit status...").
+  This matters for scoping: 4.0 isn't "extend the manifest," it's "invent the manifest," which was a
+  bigger first slice than the word "foundation" suggests (see "Minimal foundation slice" below) —
+  and it's now substantially built, not just scoped.
 - **`--tree-open` already exists and works as described** — `wspy.c:106`, `topdown.c:455` gate
   `SYS_openat` capture behind the `tree_open` flag. The "convert it into higher-level insight" idea
   is additive, not speculative.
@@ -70,12 +86,14 @@ meant to be read. Ideas already implemented are not listed (this file is 4.0 for
 log — `git log`/`README.md` cover what exists).
 
 ### Run artifact foundation
+Shipped since the last consolidated pass (removed from the inventory per this file's own "ideas
+already implemented are not listed" rule — see `git log`/`CLAUDE.md` for what exists): run manifest
+(JSON) + SemVer schema version (`manifest.c`), run index generation (`run_index.c`), and the common
+workload wrapper / profile-driven launcher (`wspy-run`, builtin `quick`/`deep-cpu`/`deep-gpu`/
+`tree-heavy` profiles plus `-c <file>` config-file execution).
 | Idea | Phase | Why |
 | --- | --- | --- |
-| Run manifest (JSON) + SemVer schema version | 4.0 | Nothing machine-readable describes a run today; every downstream idea in this doc depends on this existing first. |
 | Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,plots/*.png,manifest.json}`) | 4.0 | cpu2017/phoronix/pbbsbench each invent their own file layout; publishing tools currently need suite-specific logic. |
-| Common workload wrapper / profile-driven launcher (`quick`, `deep-cpu`, `deep-gpu`, `tree-heavy`, config-file execution) | 4.0 | Collapses the repeated long `wspy` command lines in every `workload/*/run_test.sh` into one reusable entry point; config-file form is the lightweight precursor to the full "Phase 4.3" experiment-definition system, not a separate thing. |
-| Run index generation (CSV/JSONL append per run) | 4.0 | Lets summary pages and tooling query "all runs" without scraping directories. |
 | Basic validation / quality checks (required files present, non-empty CSV, exit status, sanity ranges) pre-publish | 4.0 | The blog's "oops" post shows a bad config can look plausible and poison a whole result set; catch it at the artifact boundary. |
 | Coverage ledger (workload status: done/skipped/unsupported/needs-tool-support) | 4.0 | Blog history shows recurring "what's still missing" tracking done manually; generate it from the run index instead. |
 | Reproducibility bundle export (tarball: manifest + raw + derived per batch) | 4.1 | Depends on manifest/index existing; archival/re-analysis convenience, not foundational. |
@@ -164,7 +182,8 @@ changes to cross-vendor GPU profiling.
 ### Portability and robustness
 | Idea | Phase | Why |
 | --- | --- | --- |
-| Manifest schema versioning (SemVer) + validation on ingest, warn on mismatched schemas | 4.0 | Needs to exist from the manifest's first line, not retrofitted later — this is why 4.0 is "invent," not "extend" (see verification notes). |
+| Manifest/run-index schema validation on ingest, warn on mismatched `*_SCHEMA_VERSION` | 4.0 | The write side shipped (`MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION`, both SemVer, in `manifest.h`/`run_index.h`); there is still no reader/ingest tool anywhere in the tree to validate against, so a schema bump today has no consumer that would notice a mismatch. |
+| Propagate child exit status as `wspy`'s own process exit code (opt-in, e.g. `--exit-with-child`) | 4.0 | Confirmed while building `wspy-run` (2026-07-08): `wspy.c:646`'s `main()` unconditionally `return 0`s — `wspy`'s own exit code never reflects whether the launched command succeeded, only `--manifest`/`--run-index`'s `exit_status` does. Every `workload/*/run_test.sh` invocation and `wspy-run` pass silently "succeeds" even when the workload fails or isn't found. Must be opt-in: existing scripts (`workload/*/run_test.sh`'s `tee`-based pipelines) may already rely on `wspy` always exiting 0 regardless of the child, so flipping the default would be a breaking behavior change. |
 | Arch-neutral `ptrace` register-access macros (`PTRACE_SYSCALL_NUM(regs)` etc. behind `#ifdef __x86_64__`/`__aarch64__`) | 4.0 | Confirmed real blocker: `topdown.c` reads `regs.orig_rax`/`regs.rsi` with no abstraction today. Do the macro extraction even before an ARM64 backend exists — it's a mechanical refactor now, a risky one once more logic depends on the current shape. |
 | Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`) | 4.1 | Actual ARM64 `cpu_info` support; depends on the macro extraction above landing cleanly first. |
 | Native multi-pass counter execution (`--passes=ipc,topdown,cache,software`, internal N-run loop, merged manifest/CSV) | 4.1 | Confirmed real pain: `workload/phoronix/run_test.sh` already launches the same command up to 8 times by hand to dodge multiplexing. Depends on the profile launcher (4.0) to define what a "pass" is. |
@@ -271,9 +290,9 @@ alerting.
 
 ### Minimal foundation slice (if 4.0 needs to ship narrower)
 Six items unlock nearly everything else and are independently shippable in roughly this order:
-1. Run manifest (JSON) + SemVer schema version
-2. Run index generation
-3. Common workload wrapper / profile-driven launcher
+1. ~~Run manifest (JSON) + SemVer schema version~~ — shipped (`manifest.c`)
+2. ~~Run index generation~~ — shipped (`run_index.c`)
+3. ~~Common workload wrapper / profile-driven launcher~~ — shipped (`wspy-run`)
 4. Counter capability discovery + coverage reporting
 5. Topdown confidence envelope + sanity checks
 6. `amd_sysfs.c` dynamic GPU path scan (isolated, one-file fix, no dependency on 1-5)

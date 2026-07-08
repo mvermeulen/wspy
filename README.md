@@ -77,6 +77,28 @@ sudo ./wspy --tree tree.out -- myapp        # record the process tree while myap
 sudo ./wspy --system --gpu-busy -- myapp    # system + GPU metrics (needs AMDGPU=1 build)
 ```
 
+## wspy-run: profile-driven launcher
+
+`wspy-run` is a wrapper script that runs a sequence of predefined `wspy` passes ("a profile")
+against one workload command, so you don't have to hand-write the same multi-invocation `wspy`
+command lines every time (see `workload/*/run_test.sh` for what that used to look like).
+
+```
+./wspy-run --list                                        # show builtin profiles and their passes
+./wspy-run -o results/coremark quick -- phoronix-test-suite batch-run coremark
+./wspy-run -o results/503.bwaves --run-index results/index.jsonl deep-cpu -- \
+    runcpu --config mev-aocc.cfg --action=validate --tune base 503.bwaves_r
+./wspy-run --dry-run -c my-passes.conf -- sleep 1        # preview a custom pass list
+```
+
+Builtin profiles: `quick` (one fast IPC+system pass), `deep-cpu` (the multi-pass counter sweep
+used for topdown characterization), `deep-gpu` (`deep-cpu` plus GPU busy/metrics passes), and
+`tree-heavy` (a single `--tree` pass with full command-line capture). `-c <file>` loads a custom
+pass list instead (`<pass-name> <wspy-flags...>` per line) — see `./wspy-run --help` for the
+full option list and config-file format. Each pass writes to
+`<outdir>/<prefix><pass-name>.<csv|txt>`; `--manifest-dir`/`--run-index` pass those `wspy` flags
+through per pass.
+
 ## Other contents
 
 * `scripts/setup_perf.sh` - checks/adjusts `nmi_watchdog` and `perf_event_paranoid` for running

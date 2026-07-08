@@ -113,6 +113,82 @@ done
 echo "  run index output: OK"
 rm test_run_index.jsonl
 
+# wspy-run profile launcher
+echo "Testing wspy-run --list..."
+if ! ./wspy-run --list | grep -q "^quick:"; then
+    echo "FAIL: wspy-run --list did not show the quick profile"
+    exit 1
+fi
+if ! ./wspy-run --list | grep -q "^deep-cpu:"; then
+    echo "FAIL: wspy-run --list did not show the deep-cpu profile"
+    exit 1
+fi
+echo "  wspy-run --list: OK"
+
+echo "Testing wspy-run --dry-run..."
+DRYOUT=$(./wspy-run --dry-run -o test_wspy_run_dry --wspy ./wspy quick -- /bin/true)
+if ! echo "$DRYOUT" | grep -q -- "--ipc --system --rusage"; then
+    echo "FAIL: wspy-run --dry-run did not print the expected quick-profile flags"
+    exit 1
+fi
+if [ -e test_wspy_run_dry ]; then
+    echo "FAIL: wspy-run --dry-run should not create the output directory"
+    exit 1
+fi
+echo "  wspy-run --dry-run: OK"
+
+# Real execution of a builtin profile is not exercised here: every builtin
+# profile enables at least one hardware/software counter (quick uses --ipc,
+# tree-heavy uses --software, ...), which requires perf permissions this
+# suite otherwise avoids depending on (see the --no-ipc-only tests above and
+# below). --dry-run above already validates builtin profile flag assembly;
+# the --config test below validates real pass execution mechanics using
+# --no-ipc-only passes that need no special privileges.
+echo "Testing wspy-run --config with --manifest-dir and --run-index..."
+rm -rf test_wspy_run_cfg test_wspy_run_manifests
+cat > test_wspy_run.conf <<'EOF'
+# comment line, should be ignored
+noop --no-ipc
+csvpass --no-ipc --csv
+EOF
+./wspy-run --wspy ./wspy -o test_wspy_run_cfg -c test_wspy_run.conf \
+    --manifest-dir test_wspy_run_manifests \
+    --run-index test_wspy_run_index.jsonl \
+    -- /bin/true > /dev/null
+if [ ! -s test_wspy_run_cfg/noop.txt ]; then
+    echo "FAIL: wspy-run config pass 'noop' did not produce noop.txt"
+    exit 1
+fi
+if [ ! -s test_wspy_run_cfg/csvpass.csv ]; then
+    echo "FAIL: wspy-run config pass 'csvpass' did not produce csvpass.csv (--csv should select .csv extension)"
+    exit 1
+fi
+if [ ! -s test_wspy_run_manifests/noop.manifest.json ] || [ ! -s test_wspy_run_manifests/csvpass.manifest.json ]; then
+    echo "FAIL: wspy-run --manifest-dir did not produce a manifest per pass"
+    exit 1
+fi
+NUM_INDEX_LINES=$(wc -l < test_wspy_run_index.jsonl)
+if [ "$NUM_INDEX_LINES" -ne 2 ]; then
+    echo "FAIL: wspy-run --run-index should have one line per pass (2 passes), got $NUM_INDEX_LINES"
+    exit 1
+fi
+rm -rf test_wspy_run_cfg test_wspy_run_manifests test_wspy_run_index.jsonl test_wspy_run.conf
+echo "  wspy-run --config with --manifest-dir/--run-index: OK"
+
+echo "Testing wspy-run error handling (unknown profile, missing workload)..."
+if ./wspy-run bogus-profile -- /bin/true 2>&1 | grep -q "unknown profile"; then
+    echo "  wspy-run unknown profile error: OK"
+else
+    echo "FAIL: wspy-run should reject an unknown profile name"
+    exit 1
+fi
+if ./wspy-run quick 2>&1 | grep -q "missing workload command"; then
+    echo "  wspy-run missing workload error: OK"
+else
+    echo "FAIL: wspy-run should reject a missing workload command"
+    exit 1
+fi
+
 # Tree stress + integrity test
 echo "Testing wspy tree stress and integrity counters..."
 STRESS_PROCS="${WSPY_TREE_STRESS_PROCS:-2000}"
