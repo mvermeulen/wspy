@@ -31,10 +31,15 @@ Primary context reviewed (2026-07-08 pass, unchanged from prior pass):
 Prior passes speculated about the codebase from blog content and a source skim without always
 citing line numbers. This pass re-checked the load-bearing claims directly:
 
-- **`amd_sysfs.c` really does hardcode `card1`** — `amd_sysfs.c:25,31,48,67` all read
-  `/sys/class/drm/card1/device/{gpu_busy_percent,gpu_metrics}` literally, no scan, no env override.
-  Confirmed real; `--gpu-device=<idx>` (or an equivalent scan) is a legitimate 4.0 fix, not a
-  hypothetical.
+- **Superseded (2026-07-08, later in this cycle): the `amd_sysfs.c` `card1` hardcode is fixed.** This
+  bullet previously said `amd_sysfs.c:25,31,48,67` all read
+  `/sys/class/drm/card1/device/{gpu_busy_percent,gpu_metrics}` literally, no scan, no env override —
+  that was accurate when first written but went stale after `feature/gpu-path-scan` merged (PR #7).
+  `amd_sysfs_initialize()` now calls `find_amd_drm_card()`, which scans
+  `/sys/class/drm/card*/device/vendor` for the lowest-numbered AMD (`0x1002`) card and resolves the
+  busy-percent/metrics paths against it. What's still actually missing: per-device selection
+  (`--gpu-device=<idx>`) and full multi-GPU enumeration — a multi-AMD-GPU machine still only ever
+  uses the lowest-numbered match. See "Minimal foundation slice" item 6, now shipped.
 - **`ptrace_loop()` really is x86_64-only** — `topdown.c:449,454,456` reads `regs.orig_rax` and
   `regs.rsi` directly (raw `struct user_regs_struct` fields, no macro layer), and `cpu_info.c:33,61`
   call `__cpuid()` from `<cpuid.h>`. Both are genuine portability blockers for ARM64, not just style
@@ -178,9 +183,15 @@ source"): this codebase has no NVIDIA or Vulkan code, builds against ROCm only, 
 `CLAUDE.md` as the author's own research testbed — CUPTI/Nsight/RenderDoc integration would be a
 separate project on hardware/APIs not currently in scope. Revisit only if the project's mission
 changes to cross-vendor GPU profiling.
+
+Shipped since the last consolidated pass (`feature/gpu-path-scan`, PR #7): the dynamic path-scan half
+of the row below — `amd_sysfs.c`'s `find_amd_drm_card()` now scans `/sys/class/drm/card*/device/vendor`
+for the lowest-numbered AMD (`0x1002`) card instead of hardcoding `card1`. Per this file's own "ideas
+already implemented are not listed" rule the shipped half is dropped; the row is narrowed to what's
+still open.
 | Idea | Phase | Why |
 | --- | --- | --- |
-| Dynamic AMD GPU path scan (`/sys/class/drm/card*/device/vendor` == `0x1002`) + `--gpu-device=<idx>` + multi-GPU enumeration | 4.0 | Fixes a confirmed real bug (`amd_sysfs.c` hardcodes `card1`); single-GPU machines where the AMD card enumerates as `card0` silently get no sysfs metrics today. |
+| `--gpu-device=<idx>` override + multi-GPU enumeration (report/select among multiple AMD cards) | 4.0 | The path scan (shipped) always picks the lowest-numbered AMD card; a machine with more than one AMD GPU has no way to target a specific one or see the others, and `amd_smi.c`'s device enumeration isn't threaded through `amd_sysfs.c` either. |
 | ROCm SMI + sysfs fusion layer (one stream, source precedence, per-metric validity flags) | 4.1 | Merges the two existing independent GPU paths (`amd_smi.c`, `amd_sysfs.c`) once each is trustworthy standalone. |
 | Same manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory activity) | 4.1 | Reuses 4.0 foundation work rather than building a parallel GPU-only pipeline. |
 | `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) | 4.2 | Heavier, optional trace-rich profile — same "default vs debug profile" pattern as IBS. |
