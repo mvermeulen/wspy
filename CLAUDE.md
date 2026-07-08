@@ -83,6 +83,7 @@ child with optional ptrace → periodic/final counter reads → CSV or human-rea
 - `amd_sysfs.c`/`amd_sysfs.h` — GPU metrics (busy %, temp, activity, power, freq) read directly from sysfs, no ROCm dependency required at this layer but still gated by `AMDGPU=1`
 - `proctree.c` — standalone `proctree` binary that parses the tree file produced by `wspy --tree` (not CSV: one of four line kinds — `<time> root <pid>`, `<time> start <pid> <ppid>`, `<time> exit <pid> <stat-fields>`, `<time> comm <pid> <name>` — see the comment at the top of `proctree.c`) and reconstructs the process hierarchy
 - `error.c`/`error.h` — centralized logging: `fatal()`, `error()`, `warning()`, `notice()`, `debug()`, `debug2()`, gated by `set_error_level()`
+- `manifest.c`/`manifest.h` — writes the optional JSON run manifest (`--manifest <file>`): command line, start/finish timestamps, child exit status (when known — not available in `--tree` mode since `ptrace_loop` reaps children itself), host/CPU info, the option flags used, and the list of output files produced. `MANIFEST_SCHEMA_VERSION` in `manifest.h` is the SemVer of the manifest's JSON *shape*, independent of `WSPY_VERSION_MAJOR`/`MINOR` (now in `wspy.h`); bump it when fields are added/removed/renamed. This is the run *record*, not a run *configuration* — a separate config-driven launcher is tracked as its own `INVESTIGATION_4.0.md` item.
 - `rocm/` — separate small C++ utilities (`smi_monitor`, `smi_info`) with their own Makefile, exploring the ROCm SMI API directly (not linked into `wspy`)
 - `workload/` — driver scripts for external benchmark suites (SPEC CPU2017, pbbsbench, Phoronix) used to exercise wspy against real workloads; not part of the build
 - `archive/wspy2.0/` — old version of the tool kept for reference, not built or maintained
@@ -131,6 +132,11 @@ lands in output, and check nearby groups' relative order if you need it to appea
 **New system metric:** parse it in `system.c:read_system()`, store it in `struct system_state`, print it
 in `system.c:print_system()` with matching CSV/header/normal cases, and add a `SYSTEM_*` bit + CLI flag
 if it should be independently toggleable.
+
+**New manifest field:** add it to `struct manifest_info` in `manifest.h`, populate it at the call site in
+`wspy.c:main()` (near the end, guarded by `if (manifest_path)`), and emit it in `manifest.c:write_manifest()`.
+Adding a field is a backward-compatible change — bump the MINOR component of `MANIFEST_SCHEMA_VERSION`;
+removing or renaming one is a MAJOR bump, since existing readers may depend on the old shape.
 
 ## Notable runtime behavior
 

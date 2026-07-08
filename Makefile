@@ -1,8 +1,8 @@
 CC=gcc
 CFLAGS=-g
 PROG = wspy cpu_info amd_smi
-SRCS = wspy.c cpu_info.c error.c proctree.c system.c topdown.c amd_smi.c amd_sysfs.c
-OBJS = wspy.o cpu_info.o error.o proctree.o system.o topdown.o amd_smi.o
+SRCS = wspy.c cpu_info.c error.c manifest.c proctree.c system.c topdown.c amd_smi.c amd_sysfs.c
+OBJS = wspy.o cpu_info.o error.o manifest.o proctree.o system.o topdown.o amd_smi.o
 LIBS = -lpthread -lm
 
 # ROCm/AMDGPU defaults (can be overridden on the make command line):
@@ -28,11 +28,11 @@ else
 all:	wspy cpu_info proctree
 endif
 
-wspy:	wspy.o topdown.o error.o system.o cpu_info.c cpu_info.h
+wspy:	wspy.o topdown.o error.o system.o manifest.o cpu_info.c cpu_info.h
 ifdef AMDGPU
-	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c amd_smi.c amd_sysfs.c error.o system.o $(LIBS)
+	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c amd_smi.c amd_sysfs.c error.o system.o manifest.o $(LIBS)
 else
-	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c error.o system.o $(LIBS)
+	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c error.o system.o manifest.o $(LIBS)
 endif
 
 proctree:	proctree.o error.o
@@ -70,9 +70,10 @@ clobber:	clean
 
 # DO NOT DELETE
 
-wspy.o: wspy.h cpu_info.h error.h
+wspy.o: wspy.h cpu_info.h error.h manifest.h
 cpu_info.o: cpu_info.h error.h
 error.o: error.h
+manifest.o: manifest.h wspy.h cpu_info.h error.h
 proctree.o: error.h
 topdown.o: error.h wspy.h cpu_info.h
 
@@ -81,12 +82,13 @@ topdown.o: error.h wspy.h cpu_info.h
 # etc. left over from an `AMDGPU=1` build of wspy in the same tree, which would
 # reference gpu_busy_requested/gpu_metrics_requested symbols that this build
 # doesn't define and fail to link.
-test_wspy: test_wspy.c wspy.c wspy.h cpu_info.h error.h
+test_wspy: test_wspy.c wspy.c wspy.h cpu_info.h error.h manifest.h manifest.c
 	$(CC) -g -DAMDGPU=0 -c -o test_error.o error.c
 	$(CC) -g -DAMDGPU=0 -c -o test_cpu_info.o cpu_info.c
 	$(CC) -g -DAMDGPU=0 -c -o test_system.o system.c
 	$(CC) -g -DAMDGPU=0 -c -o test_topdown.o topdown.c
-	$(CC) -o test_wspy -g -DAMDGPU=0 -DTEST_WSPY test_wspy.c test_error.o test_cpu_info.o test_system.o test_topdown.o -lpthread -lm
+	$(CC) -g -DAMDGPU=0 -c -o test_manifest.o manifest.c
+	$(CC) -o test_wspy -g -DAMDGPU=0 -DTEST_WSPY test_wspy.c test_error.o test_cpu_info.o test_system.o test_topdown.o test_manifest.o -lpthread -lm
 
 test_proctree: test_proctree.c proctree.c error.h error.o
 	$(CC) -o test_proctree $(CFLAGS) -DTEST_PROCTREE test_proctree.c error.o $(LIBS)
