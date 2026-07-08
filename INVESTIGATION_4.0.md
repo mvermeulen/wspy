@@ -324,16 +324,18 @@ Six items unlock nearly everything else and are independently shippable in rough
 3. ~~Common workload wrapper / profile-driven launcher~~ — shipped (`wspy-run`)
 4. ~~Counter capability discovery + coverage reporting~~ — shipped (`coverage.c`, `wspy --capabilities`)
 5. ~~Topdown confidence envelope + sanity checks~~ — shipped (`topdown.c`'s `print_topdown()`, see "Topdown quality")
-6. `amd_sysfs.c` dynamic GPU path scan (isolated, one-file fix, no dependency on 1-5)
+6. ~~`amd_sysfs.c` dynamic GPU path scan~~ — shipped (`amd_sysfs.c`'s `find_amd_drm_card()`; still
+   the isolated one-file fix — `--gpu-device=<idx>` and full multi-GPU enumeration from the inventory
+   row above remain open follow-ons, not required for this slice)
 
 Everything else currently tagged 4.0 (validation checks, coverage ledger, IBS profiles, `ptrace`
 macro extraction, plotting templates, golden tests) can slip to a 4.0.x follow-on without blocking
 downstream phases, since nothing in 4.1+ depends on them specifically.
 
 ### Next up after the minimal slice
-Once the six items above are done (2026-07-08: 4/6 shipped, "Topdown confidence envelope + sanity
-checks" and the GPU path scan remain), these are the next ~6 4.0-tagged rows worth tackling, roughly
-in priority order (confirmed bug fixes and cheap high-trust wins first, heavier design work later).
+All six items above are now shipped (2026-07-08). These are the next ~6 4.0-tagged rows worth
+tackling, roughly in priority order (confirmed bug fixes and cheap high-trust wins first, heavier
+design work later).
 All are already rows in the inventory above — this is a suggested ordering, not a separate list to
 maintain by hand.
 1. Environment/provenance capture ("Reproducibility, comparability, statistics" track) — cheapest
