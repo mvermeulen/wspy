@@ -20,6 +20,7 @@
 #endif
 #include "error.h"
 #include "manifest.h"
+#include "run_index.h"
 
 int aflag = 0;
 int oflag = 0;
@@ -42,6 +43,7 @@ int gpu_metrics_requested = 0;
 char *outfile_path = NULL;
 char *tree_output_path = NULL;
 char *manifest_path = NULL;
+char *run_index_path = NULL;
 
 FILE *treefile = NULL;
 FILE *outfile = NULL;
@@ -86,6 +88,7 @@ int parse_options(int argc,char *const argv[]){
     { "opcache", no_argument, 0, 18 }, 
     { "no-opcache", no_argument, 0, 19 },
     { "per-core", no_argument, 0, 20 },
+    { "run-index", required_argument, 0, 53 },
     { "rusage", no_argument, 0, 21 },
     { "no-rusage", no_argument, 0, 22 },
     { "software", no_argument, 0, 23 },
@@ -269,6 +272,9 @@ int parse_options(int argc,char *const argv[]){
     case 52: // --manifest
       manifest_path = optarg;
       break;
+    case 53: // --run-index
+      run_index_path = optarg;
+      break;
     case 31: // --tree
       if ((treefile = fopen(optarg,"w")) == NULL){
 	warning("unable to open tree file: %s, ignored\n",optarg);
@@ -355,6 +361,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t-o <file>                 - send output to file\n"
 	    "\t--csv                     - create csv output\n"
 	    "\t--manifest <file>         - write a JSON run manifest to <file>\n"
+	    "\t--run-index <file>        - append a JSON run-index record to <file>\n"
 	    "\t--interval <sec>          - read every <sec> seconds\n"
 	    "\t--verbose or -v           - print verbose information\n"
 	    "\t--system                  - system-wide metrics (load, cpu, gpu, network)\n"
@@ -600,7 +607,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   if (oflag) fclose(outfile);
   // -----
 
-  if (manifest_path){
+  if (manifest_path || run_index_path){
     struct manifest_info minfo;
     memset(&minfo,0,sizeof(minfo));
     minfo.start_time = start_time;
@@ -625,7 +632,8 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     minfo.output_path = oflag ? outfile_path : NULL;
     minfo.tree_output_path = treeflag ? tree_output_path : NULL;
     minfo.manifest_path = manifest_path;
-    write_manifest(manifest_path,&minfo);
+    if (manifest_path) write_manifest(manifest_path,&minfo);
+    if (run_index_path) append_run_index(run_index_path,&minfo);
   }
 
 #if AMDGPU

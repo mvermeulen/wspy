@@ -6,6 +6,7 @@ extern int inventory_cpu(void);
 
 // CPU information including performance counters
 enum cpu_vendor { VENDOR_UNKNOWN=0, VENDOR_AMD=1, VENDOR_INTEL=2 };
+const char *cpu_vendor_name(enum cpu_vendor vendor);
 
 // Overall CPU
 struct cpu_info {

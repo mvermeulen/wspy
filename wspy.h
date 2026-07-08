@@ -28,6 +28,7 @@ extern FILE *treefile;
 extern char *outfile_path;
 extern char *tree_output_path;
 extern char *manifest_path;
+extern char *run_index_path;
 
 extern int num_procs;
 extern int clocks_per_second;

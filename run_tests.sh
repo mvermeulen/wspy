@@ -72,6 +72,47 @@ done
 echo "  manifest output: OK"
 rm test_manifest_out.csv test_manifest.json
 
+# Run index output
+echo "Testing wspy --run-index output..."
+rm -f test_run_index.jsonl
+./wspy --no-ipc --run-index test_run_index.jsonl -- /bin/true > /dev/null
+./wspy --no-ipc --run-index test_run_index.jsonl -- /bin/false > /dev/null || true
+if [ ! -s test_run_index.jsonl ]; then
+    echo "FAIL: run index output is empty"
+    exit 1
+fi
+NUM_LINES=$(wc -l < test_run_index.jsonl)
+if [ "$NUM_LINES" -ne 2 ]; then
+    echo "FAIL: run index should have 2 lines (one append per run), got $NUM_LINES"
+    exit 1
+fi
+if command -v python3 > /dev/null 2>&1; then
+    if ! python3 -c "
+import json
+with open('test_run_index.jsonl') as f:
+    lines = [l for l in f if l.strip()]
+assert len(lines) == 2, 'expected 2 records'
+records = [json.loads(l) for l in lines]
+assert records[0]['run_id'] != records[1]['run_id'], 'run_id must be distinct per run'
+assert records[0]['exit_status']['exit_code'] == 0
+assert records[1]['exit_status']['exit_code'] == 1
+"; then
+        echo "FAIL: run index records are not valid/distinct JSONL"
+        exit 1
+    fi
+fi
+for expected in \
+    '"schema_version":"1.0.0"' \
+    '"wspy_version"' \
+    '"command":\["/bin/true"\]'; do
+    if ! grep -q "$expected" test_run_index.jsonl; then
+        echo "FAIL: run index missing expected content: $expected"
+        exit 1
+    fi
+done
+echo "  run index output: OK"
+rm test_run_index.jsonl
+
 # Tree stress + integrity test
 echo "Testing wspy tree stress and integrity counters..."
 STRESS_PROCS="${WSPY_TREE_STRESS_PROCS:-2000}"
