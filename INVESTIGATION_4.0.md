@@ -69,12 +69,13 @@ citing line numbers. This pass re-checked the load-bearing claims directly:
 - **`--tree-open` already exists and works as described** — `wspy.c:106`, `topdown.c:455` gate
   `SYS_openat` capture behind the `tree_open` flag. The "convert it into higher-level insight" idea
   is additive, not speculative.
-- **`getrusage` output is narrower than the doc previously implied, and CSV/normal modes disagree**
-  — `topdown.c:909` `print_usage()` prints `nvcsw`, `nivcsw`, `inblock`, `oublock` in `PRINT_NORMAL`
-  mode, but the `PRINT_CSV`/`PRINT_CSV_HEADER` cases only emit `elapsed,utime,stime` — none of the
-  context-switch or block-I/O fields reach CSV output at all today. That's a real, narrow bug/gap
-  worth fixing before adding new `rusage` fields (`ru_maxrss`, `ru_minflt`, `ru_majflt`, `ru_nswap`)
-  on top of an already-inconsistent base. See inventory row "Expand getrusage coverage."
+- **Superseded (2026-07-09, later in this cycle): the `getrusage` CSV/normal mismatch is fixed.** This
+  bullet previously said `topdown.c:909` `print_usage()` printed `nvcsw`, `nivcsw`, `inblock`,
+  `oublock` in `PRINT_NORMAL` mode but only emitted `elapsed,utime,stime` in `PRINT_CSV`/
+  `PRINT_CSV_HEADER` — that was accurate when first written but went stale once the fix landed.
+  `print_usage()` now emits all four fields in CSV too (`elapsed,utime,stime,nvcsw,nivcsw,inblock,
+  oublock`), and `run_tests.sh`'s CSV column-order checks were updated to match. See "Process /
+  `getrusage` / `/proc` telemetry" track, now shipped.
 - **The `workload/phoronix/run_test.sh` 7-8 invocation pattern is real and current** — confirmed by
   reading the script directly; it launches `phoronix-test-suite batch-run $TESTNAME` up to 8 times
   per AMD run with different counter flag combinations to avoid multiplexing. This is the strongest
@@ -168,10 +169,14 @@ See "Zen5/IBS deep-dive" below.
 | IBS-derived memory-path bottleneck decomposition (combine with topdown/cache) | 4.2 | Depends on both IBS memory-source classes and the topdown hierarchy existing. |
 
 ### Process / `getrusage` / `/proc` telemetry
+Shipped since the last consolidated pass: `rusage` CSV/normal output mismatch fix — `print_usage()`
+(`topdown.c`) now emits `nvcsw,nivcsw,inblock,oublock` in `PRINT_CSV`/`PRINT_CSV_HEADER`, matching the
+fields `PRINT_NORMAL` already printed. `run_tests.sh`'s CSV column-order checks were updated for the
+four new columns landing between `stime` and the GPU/`ipc` columns. Per this file's own "ideas already
+implemented are not listed" rule the row is dropped.
 | Idea | Phase | Why |
 | --- | --- | --- |
-| Fix `rusage` CSV/normal output mismatch (`nvcsw`,`nivcsw`,`inblock`,`oublock` missing from CSV) | 4.0 | Real, narrow bug found this pass (see "Verified against current source"); fix before adding new fields on the same inconsistent base. |
-| Expand `getrusage` coverage (`ru_maxrss`, `ru_minflt`, `ru_majflt`, `ru_nswap`) with raw + normalized rates | 4.0 | Low-friction addition once the CSV/normal mismatch above is fixed, so new fields don't inherit the same bug. |
+| Expand `getrusage` coverage (`ru_maxrss`, `ru_minflt`, `ru_majflt`, `ru_nswap`) with raw + normalized rates | 4.0 | Low-friction addition now that the CSV/normal mismatch is fixed, so new fields don't inherit the same bug. |
 | `/proc/<pid>/io` byte counters (read/write/cancelled-write bytes) | 4.1 | Distinguishes small-op-count vs high-throughput I/O; needs `--tree`-style per-pid tracking already present. |
 | `/proc/<pid>/schedstat` run-delay/timeslice capture | 4.1 | Separates CPU saturation from waiting-to-run; same per-pid dependency. |
 | Memory footprint detail (`VmRSS`/`VmHWM`/anon-file-shmem split via `/proc/<pid>/status` or `smaps_rollup`) | 4.1 | Same per-pid dependency. |
@@ -362,26 +367,24 @@ downstream phases, since nothing in 4.1+ depends on them specifically.
 
 ### Next up after the minimal slice
 All six items from the minimal foundation slice are shipped (2026-07-08), plus environment/provenance
-capture (2026-07-09, `provenance.c` — see "Reproducibility, comparability, statistics" above) and
-opt-in child exit status propagation (2026-07-09, `--exit-with-child` — see "Portability and
-robustness" above); both were item 1 of this list at the time they shipped and are dropped from the
-ordering below per this file's own "ideas already implemented are not listed" rule. These are the next
-~4 4.0-tagged rows worth tackling, roughly in priority order (confirmed bug fixes and cheap high-trust
-wins first, heavier design work later). All are already rows in the inventory above — this is a
-suggested ordering, not a separate list to maintain by hand.
-1. Fix the `rusage` CSV/normal output mismatch ("Process / `getrusage` / `/proc` telemetry" track) —
-   confirmed real, narrow bug (CSV drops `nvcsw`/`nivcsw`/`inblock`/`oublock` that normal output
-   already prints); fix before expanding `getrusage` coverage on the same inconsistent base.
-2. Basic validation/quality checks pre-publish ("Run artifact foundation" track) — catches a bad
+capture (2026-07-09, `provenance.c` — see "Reproducibility, comparability, statistics" above), opt-in
+child exit status propagation (2026-07-09, `--exit-with-child` — see "Portability and robustness"
+above), and the `rusage` CSV/normal output mismatch fix (2026-07-09, `print_usage()` in `topdown.c` —
+see "Process / `getrusage` / `/proc` telemetry" above); all three were item 1 of this list at the time
+they shipped and are dropped from the ordering below per this file's own "ideas already implemented
+are not listed" rule. These are the next ~3 4.0-tagged rows worth tackling, roughly in priority order
+(confirmed bug fixes and cheap high-trust wins first, heavier design work later). All are already rows
+in the inventory above — this is a suggested ordering, not a separate list to maintain by hand.
+1. Basic validation/quality checks pre-publish ("Run artifact foundation" track) — catches a bad
    config before it poisons a result set (per the blog's own "oops" post); consumes the manifest and
    coverage work that's already shipped.
-3. Coverage ledger (workload status: done/skipped/unsupported/needs-tool-support) ("Run artifact
+2. Coverage ledger (workload status: done/skipped/unsupported/needs-tool-support) ("Run artifact
    foundation" track) — generated from the run index that's already shipped; closes the loop on
    "what's still missing" tracking that's currently manual.
-4. Arch-neutral `ptrace` register-access macros ("Portability and robustness" track) — cheap
+3. Arch-neutral `ptrace` register-access macros ("Portability and robustness" track) — cheap
    mechanical refactor now, expensive retrofit later, independent of whether ARM64 support itself is
    prioritized any time soon.
-5. Capability-driven IBS probing ("Zen5 / IBS" track) — prerequisite for the rest of that track
+4. Capability-driven IBS probing ("Zen5 / IBS" track) — prerequisite for the rest of that track
    (`ibs-basic`/`ibs-memory-deep` profiles, skew annotations), and the layer the Zen5/IBS deep-dive's
    point 5 (new ALU/AGU and op-cache event categories) would need regardless.
 

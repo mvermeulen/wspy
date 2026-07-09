@@ -403,10 +403,10 @@ if [ -e "/opt/rocm/include/amd_smi/amdsmi.h" ] || [ -e "/usr/include/amd_smi/amd
         # Test standalone GPU busy (CSV)
         echo "Testing standalone GPU busy CSV output..."
         OUTPUT=$(./wspy --gpu-busy --csv -- sleep 0.1 2>&1 | head -1)
-        if echo "$OUTPUT" | grep -q "elapsed,utime,stime,gpu_busy,ipc"; then
+        if echo "$OUTPUT" | grep -q "elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,gpu_busy,ipc"; then
             echo "  Standalone GPU busy CSV column order: OK"
         else
-            echo "FAIL: GPU busy column not in expected position (after stime)"
+            echo "FAIL: GPU busy column not in expected position (after rusage columns)"
             echo "Got: $OUTPUT"
             exit 1
         fi
@@ -431,7 +431,7 @@ if [ -e "/opt/rocm/include/amd_smi/amdsmi.h" ] || [ -e "/usr/include/amd_smi/amd
         
         # Test standalone GPU metrics (CSV)
         OUTPUT=$(./wspy --gpu-metrics --csv -- sleep 0.1 2>&1 | head -1)
-        if echo "$OUTPUT" | grep -q "elapsed,utime,stime,gpu_temp,gpu_activity,gpu_power,gpu_freq,ipc"; then
+        if echo "$OUTPUT" | grep -q "elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,gpu_temp,gpu_activity,gpu_power,gpu_freq,ipc"; then
             echo "  GPU metrics CSV column order: OK"
         else
             echo "FAIL: GPU metrics columns not in expected position"
@@ -493,7 +493,7 @@ if [ -e "/opt/rocm/include/amd_smi/amdsmi.h" ] || [ -e "/usr/include/amd_smi/amd
         
         # Test standalone GPU metrics (CSV)
         OUTPUT=$(./wspy --gpu-metrics --csv -- sleep 0.1 2>&1 | head -1)
-        if echo "$OUTPUT" | grep -q "elapsed,utime,stime,gpu_temp,gpu_activity,gpu_power,gpu_freq,ipc"; then
+        if echo "$OUTPUT" | grep -q "elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,gpu_temp,gpu_activity,gpu_power,gpu_freq,ipc"; then
             echo "  GPU metrics CSV column order: OK"
         else
             echo "FAIL: GPU metrics columns not in expected position"
