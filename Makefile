@@ -1,8 +1,8 @@
 CC=gcc
 CFLAGS=-g
 PROG = wspy cpu_info amd_smi
-SRCS = wspy.c cpu_info.c error.c json_util.c manifest.c run_index.c coverage.c provenance.c proctree.c system.c topdown.c amd_smi.c amd_sysfs.c
-OBJS = wspy.o cpu_info.o error.o json_util.o manifest.o run_index.o coverage.o provenance.o proctree.o system.o topdown.o amd_smi.o
+SRCS = wspy.c cpu_info.c error.c json_util.c json_reader.c manifest.c run_index.c coverage.c provenance.c proctree.c system.c topdown.c amd_smi.c amd_sysfs.c validate.c
+OBJS = wspy.o cpu_info.o error.o json_util.o json_reader.o manifest.o run_index.o coverage.o provenance.o proctree.o system.o topdown.o amd_smi.o
 LIBS = -lpthread -lm
 
 # ROCm/AMDGPU defaults (can be overridden on the make command line):
@@ -23,9 +23,9 @@ LIBS += -L$(ROCM_LIB) -lamd_smi
 endif
 
 ifdef AMDGPU
-all:	wspy cpu_info proctree amd_smi amd_sysfs
+all:	wspy cpu_info proctree wspy-validate amd_smi amd_sysfs
 else
-all:	wspy cpu_info proctree
+all:	wspy cpu_info proctree wspy-validate
 endif
 
 wspy:	wspy.o topdown.o error.o system.o json_util.o manifest.o run_index.o coverage.o provenance.o cpu_info.c cpu_info.h
@@ -37,6 +37,9 @@ endif
 
 proctree:	proctree.o error.o
 	$(CC) -o proctree proctree.o error.o
+
+wspy-validate:	validate.o json_reader.o
+	$(CC) -o wspy-validate $(CFLAGS) validate.o json_reader.o -lm
 
 cpu_info:	cpu_info.c error.o cpu_info.h
 	$(CC) -o cpu_info $(CFLAGS) -DTEST_CPU_INFO cpu_info.c error.o
@@ -66,7 +69,7 @@ clean:
 	-rm *~ *.o *.bak
 
 clobber:	clean
-	-rm wspy cpu_info amd_smi amd_sysfs proctree test_hip_init test_hip_kernel test_proctree test_wspy libwspy_profiler.so
+	-rm wspy cpu_info amd_smi amd_sysfs proctree wspy-validate test_hip_init test_hip_kernel test_proctree test_wspy test_validate libwspy_profiler.so
 
 # DO NOT DELETE
 
@@ -74,12 +77,14 @@ wspy.o: wspy.h cpu_info.h error.h manifest.h run_index.h coverage.h provenance.h
 cpu_info.o: cpu_info.h error.h
 error.o: error.h
 json_util.o: json_util.h
+json_reader.o: json_reader.h
 manifest.o: manifest.h wspy.h cpu_info.h error.h json_util.h provenance.h
 run_index.o: run_index.h manifest.h wspy.h cpu_info.h error.h json_util.h provenance.h
 coverage.o: coverage.h wspy.h cpu_info.h
 provenance.o: provenance.h
 proctree.o: error.h
 topdown.o: error.h wspy.h cpu_info.h coverage.h
+validate.o: json_reader.h manifest.h provenance.h
 
 # Always built GPU-disabled (test_wspy.c forces AMDGPU=0 to stub out main() and
 # skip GPU code), using its own objects so it never picks up a topdown.o/system.o
@@ -101,6 +106,10 @@ test_wspy: test_wspy.c wspy.c wspy.h cpu_info.h error.h manifest.h manifest.c ru
 test_proctree: test_proctree.c proctree.c error.h error.o
 	$(CC) -o test_proctree $(CFLAGS) -DTEST_PROCTREE test_proctree.c error.o $(LIBS)
 
-test: test_wspy test_proctree
+test_validate: test_validate.c validate.c json_reader.c json_reader.h manifest.h
+	$(CC) -o test_validate $(CFLAGS) -DTEST_VALIDATE test_validate.c json_reader.c -lm
+
+test: test_wspy test_proctree test_validate
 	./test_wspy
 	./test_proctree
+	./test_validate
