@@ -943,12 +943,16 @@ void print_usage(struct rusage *rusage,enum output_format oformat){
     start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
   switch(oformat){
   case PRINT_CSV_HEADER:
-    fprintf(outfile,"elapsed,utime,stime,");
+    fprintf(outfile,"elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,");
     break;
   case PRINT_CSV:
     fprintf(outfile,"%4.3f,",elapsed);
     fprintf(outfile,"%4.3f,",(double) rusage->ru_utime.tv_sec + rusage->ru_utime.tv_usec / 1000000.0);
-    fprintf(outfile,"%4.3f,",(double) rusage->ru_stime.tv_sec + rusage->ru_stime.tv_usec / 1000000.0);    
+    fprintf(outfile,"%4.3f,",(double) rusage->ru_stime.tv_sec + rusage->ru_stime.tv_usec / 1000000.0);
+    fprintf(outfile,"%lu,",rusage->ru_nvcsw);
+    fprintf(outfile,"%lu,",rusage->ru_nivcsw);
+    fprintf(outfile,"%lu,",rusage->ru_inblock);
+    fprintf(outfile,"%lu,",rusage->ru_oublock);
     break;
   case PRINT_NORMAL:
     fprintf(outfile,"elapsed              %4.3f\n",elapsed);
