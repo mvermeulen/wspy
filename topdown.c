@@ -943,7 +943,7 @@ void print_usage(struct rusage *rusage,enum output_format oformat){
     start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
   switch(oformat){
   case PRINT_CSV_HEADER:
-    fprintf(outfile,"elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,");
+    fprintf(outfile,"elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,");
     break;
   case PRINT_CSV:
     fprintf(outfile,"%4.3f,",elapsed);
@@ -953,6 +953,10 @@ void print_usage(struct rusage *rusage,enum output_format oformat){
     fprintf(outfile,"%lu,",rusage->ru_nivcsw);
     fprintf(outfile,"%lu,",rusage->ru_inblock);
     fprintf(outfile,"%lu,",rusage->ru_oublock);
+    fprintf(outfile,"%ld,",rusage->ru_maxrss);
+    fprintf(outfile,"%ld,",rusage->ru_minflt);
+    fprintf(outfile,"%ld,",rusage->ru_majflt);
+    fprintf(outfile,"%ld,",rusage->ru_nswap);
     break;
   case PRINT_NORMAL:
     fprintf(outfile,"elapsed              %4.3f\n",elapsed);
@@ -979,6 +983,14 @@ void print_usage(struct rusage *rusage,enum output_format oformat){
 	    rusage->ru_inblock,rusage->ru_inblock/elapsed);
     fprintf(outfile,"onblock              %-15lu# %4.2f/sec\n",
 	    rusage->ru_oublock,rusage->ru_oublock/elapsed);
+    fprintf(outfile,"maxrss               %-15ld# %4.2f MB\n",
+	    rusage->ru_maxrss,rusage->ru_maxrss/1024.0);
+    fprintf(outfile,"minflt               %-15ld# %4.2f/sec\n",
+	    rusage->ru_minflt,rusage->ru_minflt/elapsed);
+    fprintf(outfile,"majflt               %-15ld# %4.2f/sec\n",
+	    rusage->ru_majflt,rusage->ru_majflt/elapsed);
+    fprintf(outfile,"nswap                %-15ld# %4.2f/sec\n",
+	    rusage->ru_nswap,rusage->ru_nswap/elapsed);
     break;
   }
 }

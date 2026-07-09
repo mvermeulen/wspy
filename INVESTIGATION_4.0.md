@@ -172,11 +172,15 @@ See "Zen5/IBS deep-dive" below.
 Shipped since the last consolidated pass: `rusage` CSV/normal output mismatch fix — `print_usage()`
 (`topdown.c`) now emits `nvcsw,nivcsw,inblock,oublock` in `PRINT_CSV`/`PRINT_CSV_HEADER`, matching the
 fields `PRINT_NORMAL` already printed. `run_tests.sh`'s CSV column-order checks were updated for the
-four new columns landing between `stime` and the GPU/`ipc` columns. Per this file's own "ideas already
-implemented are not listed" rule the row is dropped.
+four new columns landing between `stime` and the GPU/`ipc` columns. Also shipped: expanded `getrusage`
+coverage — `print_usage()` now reports `ru_maxrss`/`ru_minflt`/`ru_majflt`/`ru_nswap` too, in both
+`PRINT_CSV` (raw values appended after `oublock`: `maxrss,minflt,majflt,nswap`) and `PRINT_NORMAL`
+(raw value plus a normalized rate — MB for `maxrss`, /sec for the three fault/swap counters — as an
+inline `#` comment, matching how `inblock`/`oublock` were already annotated). `run_tests.sh`'s CSV
+column-order checks were updated again for these four columns. Per this file's own "ideas already
+implemented are not listed" rule both rows are dropped.
 | Idea | Phase | Why |
 | --- | --- | --- |
-| Expand `getrusage` coverage (`ru_maxrss`, `ru_minflt`, `ru_majflt`, `ru_nswap`) with raw + normalized rates | 4.0 | Low-friction addition now that the CSV/normal mismatch is fixed, so new fields don't inherit the same bug. |
 | `/proc/<pid>/io` byte counters (read/write/cancelled-write bytes) | 4.1 | Distinguishes small-op-count vs high-throughput I/O; needs `--tree`-style per-pid tracking already present. |
 | `/proc/<pid>/schedstat` run-delay/timeslice capture | 4.1 | Separates CPU saturation from waiting-to-run; same per-pid dependency. |
 | Memory footprint detail (`VmRSS`/`VmHWM`/anon-file-shmem split via `/proc/<pid>/status` or `smaps_rollup`) | 4.1 | Same per-pid dependency. |
