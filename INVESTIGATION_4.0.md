@@ -1,7 +1,8 @@
 # wspy Investigation 4.0
 
-Date: 2026-07-08 (consolidated pass)
-Status: Brainstorming only (no implementation yet)
+Date: 2026-07-09 (consolidated pass)
+Status: Phase 4.0 in progress — minimal foundation slice shipped (see "Minimal foundation slice"),
+next tranche of 4.0-tagged work queued below ("Next up after the minimal slice")
 
 ## Purpose
 This document captures ideas for a future round of improvements focused on making benchmark
@@ -260,7 +261,7 @@ is dropped.
 ### Publishing, reporting, UI
 | Idea | Phase | Why |
 | --- | --- | --- |
-| Shared plotting templates (replace per-suite gnuplot scripts with one normalized-schema pipeline) | 4.0 | `workload/phoronix/gnuplot.sh` is suite-specific today; keep gnuplot support, generate from the normalized schema once it exists. |
+| Shared plotting templates (replace per-suite gnuplot scripts with one normalized-schema pipeline) | 4.1 | **Re-phased (2026-07-09)** — was tagged 4.0, but its own rationale ("generate from the normalized schema once it exists") depends on the canonical metrics schema/store, which the Reproducibility track tags 4.1–4.2. Moved to 4.1 so the phase tag matches its actual dependency; `workload/phoronix/gnuplot.sh` stays suite-specific until then. |
 | Summary table generator (min/max/median/mean/stddev/outlier flags) from indexed data | 4.1 | Depends on the run index (4.0) and ideally the stats work (4.1) landing first. |
 | Publish-ready data export format | 4.1 | Same dependency; export layer on top of the normalized store. |
 | HTML report bundle (summary, bottlenecks, tree, top counters, links to raw artifacts) + compare view | 4.1 | Depends on the report data existing in normalized form. |
@@ -348,8 +349,9 @@ bugs (`card1` hardcode, `ptrace` x86_64-only access), and land the cheapest trus
 (topdown confidence envelope, IBS capability probing). Every "Run artifact foundation" row, most
 "Portability" rows, the AMD GPU path-scan fix, and the topdown/IBS confidence work are tagged 4.0.
 
-**This phase as currently scoped is still large** — roughly 25-30 inventory rows. If a narrower
-first cut is needed, see "Minimal foundation slice" below.
+**This phase was originally scoped large** — roughly 25-30 inventory rows when first drafted. The
+minimal foundation slice (6 rows) has since shipped in full, and roughly 13 4.0-tagged rows remain
+open (see "Next up after the minimal slice" for the current priority order across all of them).
 
 ### Phase 4.1 — automation
 Goal: turn the 4.0 foundation into less manual work — stats/confidence reporting, matrix sweeps, the
@@ -388,10 +390,13 @@ above), the `rusage` CSV/normal output mismatch fix (2026-07-09, `print_usage()`
 "Process / `getrusage` / `/proc` telemetry" above), and basic pre-publish validation/quality checks
 (2026-07-09, `wspy-validate`/`validate.c`/`json_reader.c` — see "Run artifact foundation" above); all
 four were item 1 of this list at the time they shipped and are dropped from the ordering below per
-this file's own "ideas already implemented are not listed" rule. These are the next ~2 4.0-tagged
-rows worth tackling, roughly in priority order (confirmed bug fixes and cheap high-trust wins first,
-heavier design work later). All are already rows in the inventory above — this is a suggested
-ordering, not a separate list to maintain by hand.
+this file's own "ideas already implemented are not listed" rule. That leaves roughly 13 rows still
+tagged 4.0 across the inventory (one, "Shared plotting templates," was just re-phased to 4.1 above
+since its own rationale depended on the 4.1–4.2 normalized schema — see that row). The list below
+covers all of them except that one, grouped and ordered by priority (confirmed bug fixes and cheap
+high-trust/regression-guard wins first, design decisions next since they get more expensive to
+retrofit the longer they wait, heavier collection/report-layer work last). All are already rows in
+the inventory above — this is a suggested ordering, not a separate list to maintain by hand.
 1. Coverage ledger (workload status: done/skipped/unsupported/needs-tool-support) ("Run artifact
    foundation" track) — generated from the run index that's already shipped; closes the loop on
    "what's still missing" tracking that's currently manual.
@@ -401,42 +406,84 @@ ordering, not a separate list to maintain by hand.
 3. Capability-driven IBS probing ("Zen5 / IBS" track) — prerequisite for the rest of that track
    (`ibs-basic`/`ibs-memory-deep` profiles, skew annotations), and the layer the Zen5/IBS deep-dive's
    point 5 (new ALU/AGU and op-cache event categories) would need regardless.
+4. `ibs-basic` / `ibs-memory-deep` collection profiles, plus sampling skew/quality annotations
+   (`l3missonly`, `ldlat`, `fetchlat`, accepted-vs-filtered) ("Zen5 / IBS" track) — both are thin
+   layers directly on top of #3 and the profile-launcher work already shipped (`wspy-run`); do them
+   together since the skew annotations only mean something once the profiles that trigger them exist.
+5. Run-index schema validation on ingest, warn on mismatched `RUN_INDEX_SCHEMA_VERSION`
+   ("Portability and robustness" track) — closes the loop `wspy-validate` left open: it already warns
+   on a `MANIFEST_SCHEMA_VERSION` mismatch, but the run-index (JSONL) side still has no reader
+   anywhere in the tree.
+6. Golden output-contract tests (CSV header/order, summary fragments, tree format) + capability-matrix
+   smoke tests (CPU vendor/family × GPU build × key option bundles) ("Testing and documentation"
+   track) — cheapest regression guard available, and increasingly worth having given how many CSV
+   columns have shifted this cycle (`rusage`, coverage, confidence/sanity); `run_tests.sh` already has
+   informal versions of both, this formalizes them.
+7. Artifact contract doc + troubleshooting runbook ("Testing and documentation" track) — write this
+   before more external tooling (report generators, `workload/*/run_test.sh` migrations) starts
+   depending on the manifest/run-index shape by convention instead of by documented contract.
+8. Collector-plugin architecture design decision (wspy core / perf stat / trace-cmd / GPU tools behind
+   one manifest+normalization path) ("Portability and robustness" track) — only the *decision* (does
+   the schema assume one collector or many?) is 4.0 work; implementation is 4.2+. Cheap to decide now,
+   expensive to retrofit once more schema/normalization work (items above, plus 4.1's canonical
+   metrics schema) is built on top of an unexamined assumption.
+9. Counter-fit preflight ("will this profile multiplex heavily?" + suggested downgrades)
+   ("Existing-capability extensions" track) — builds directly on availability/NMI-watchdog handling
+   and `coverage.c` that already exist at runtime; this just surfaces the same fit information before
+   a run instead of after.
+10. Interval (`--interval`) → automatic phase-boundary detection (warmup/steady/degraded)
+    ("Existing-capability extensions" track) — basic marker detection can land now and is a named
+    prerequisite for phase-aware topdown (4.2) and phase-aware IBS.
+11. `--gpu-device=<idx>` override + multi-GPU enumeration ("AMD GPU track") — isolated, self-contained
+    follow-on to the `card1` path-scan fix already shipped; doesn't block or get blocked by anything
+    else in this list.
+12. Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,
+    plots/*.png,manifest.json}`) ("Run artifact foundation" track) — the largest remaining piece,
+    sequenced last here: nothing else in this list depends on it, but 4.1's report/publishing work
+    will, so it shouldn't slip past 4.0 entirely.
 
 ## Open questions for prioritization
 Each carries a recommendation; treat these as the current default, not a closed decision — flag if
-context has changed.
+context has changed. Three of the six below have since been settled by shipped work (2026-07-09 pass)
+and are marked **Resolved**; they're kept rather than deleted so the reasoning that led to what shipped
+stays attached to it.
 
 - **Publication automation first, or reproducibility/provenance first?**
-  Recommendation: provenance first, but only the *capture* half (environment fields into the
-  manifest), not the scoring/comparability half. Capturing provenance is nearly free once the
-  manifest exists and is much cheaper to do at the source than to reconstruct later; scoring and
-  publication automation both consume it, so it should land in 4.0 ahead of both.
+  **Resolved (2026-07-09):** the recommended *capture* half shipped — `provenance.c` captures
+  virtualization role, microcode, BIOS, governor, memory, and toolchain into the manifest/run-index.
+  Publication automation itself hasn't started. The remaining half of this question (whether to build
+  comparability *scoring* on top of that captured data before publication automation) is really a
+  restatement of the next question below, not a separate open decision.
 - **Is cross-machine comparability a hard requirement for the first round?**
-  Recommendation: no. Capture provenance fields in 4.0 (cheap), defer comparability *scoring* to
-  4.2. Scoring needs enough historical runs across machines to be meaningful, which won't exist
-  right after 4.0 ships.
+  Still open. Recommendation unchanged: no. Provenance fields are captured (4.0, shipped), defer
+  comparability *scoring* to 4.2. Scoring needs enough historical runs across machines to be
+  meaningful, which doesn't exist yet even with capture shipped.
 - **Should the website stay static-only, or add an interactive backend?**
-  Recommendation: static-first through 4.2, keep an optional Grafana-style backend as a 4.3
-  nice-to-have. The static path directly serves the stated success criteria (regenerate a summary
-  page from data only); an interactive backend is additive, not required to hit that bar.
-  Non-goal: do not let the interactive-backend question block the 4.1/4.2 HTML report and
-  static-site work.
+  Still open — no publishing/report-layer work (HTML bundle, static-site pipeline) has landed yet, so
+  nothing has changed since this was written. Recommendation unchanged: static-first through 4.2, keep
+  an optional Grafana-style backend as a 4.3 nice-to-have. Non-goal: do not let the interactive-backend
+  question block the 4.1/4.2 HTML report and static-site work.
 - **Minimum metadata set for a run to be "publishable"?**
-  Recommendation: benchmark name/suite, timestamps, host CPU/GPU/kernel, compiler/toolchain, wspy
-  version + manifest schema version, full command line, output file list, and a pass/fail validation
-  result. Anything environment-related beyond that (BIOS/power settings, microcode) is valuable but
-  should not block publishability — treat it as an optional-but-recommended field with a coverage
-  flag, mirroring the "measured vs unavailable" pattern already planned for counters.
+  **Resolved (2026-07-09):** every field the recommendation named is now actually captured —
+  timestamps and full command line (`manifest.c`'s always-present fields), host CPU/GPU/kernel
+  (`host` block: hostname, cpu_vendor/family/model, kernel_release), compiler/toolchain plus
+  BIOS/power/governor/memory (`provenance.c`), `wspy_version`/`schema_version`, output file list, and
+  a pass/fail validation result (`wspy-validate`). The one named field wspy itself doesn't populate is
+  "benchmark name/suite" — that's out of wspy's scope by design; it belongs to the wrapper layer
+  (`wspy-run` pass names, `workload/*/run_test.sh`), not the manifest. The optional-but-recommended /
+  coverage-flag treatment for anything beyond this set is exactly what `counters_unavailable` and
+  `provenance`'s per-field "unavailable-with-reason" already do, so that half of the recommendation is
+  also in place.
 - **Should `wspy` natively handle multi-pass execution?**
-  Recommendation: yes, in 4.1, after the profile launcher (4.0) exists to define what a "pass" is.
-  This is not speculative — `workload/phoronix/run_test.sh` already hand-rolls up to 8 sequential
-  invocations of the same command today to work around multiplexing; native support directly
-  replaces real, currently-duplicated logic.
+  Still open as a build decision, but its stated precondition is now met: the profile launcher
+  (`wspy-run`) shipped, so "what a pass is" is now defined. The feature itself (`--passes=...`, an
+  internal N-run loop, merged manifest/CSV) hasn't been built. Recommendation unchanged: yes, in 4.1 —
+  see "Portability and robustness" in the inventory.
 - **Is ARM64/AArch64 support a priority for 4.x?**
-  Recommendation: do the mechanical prep (macro-abstract the `ptrace` register access) in 4.0
-  regardless of priority, since it's cheap now and expensive to retrofit later. Defer the actual
-  `cpu_info` fallback and full ARM64 validation to 4.1+ unless there's a concrete ARM64 machine this
-  tool needs to run on soon — without that, it's prep work, not a deliverable.
+  Still open. Recommendation unchanged: do the mechanical prep (macro-abstract the `ptrace` register
+  access) in 4.0 regardless of priority — it's queued as item 2 of "Next up after the minimal slice"
+  but not yet shipped. Defer the actual `cpu_info` fallback and full ARM64 validation to 4.1+ unless a
+  concrete ARM64 machine makes it urgent sooner.
 
 ## Success criteria for a 4.0 kickoff
 - A newcomer can run one benchmark suite and produce publish-ready structured artifacts without
