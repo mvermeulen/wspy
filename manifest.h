@@ -11,13 +11,14 @@
 #define _WSPY_MANIFEST_H 1
 
 #include <time.h>
+#include "provenance.h"
 
 /* SemVer of the manifest.json *document shape*, independent of the wspy
  * tool version. Bump MAJOR when a field is removed/renamed in a way that
  * breaks existing readers, MINOR when a field is added in a backward
  * compatible way, PATCH for fixes that don't change the shape. Consumers
  * should warn (not silently misparse) on an unrecognized MAJOR version. */
-#define MANIFEST_SCHEMA_VERSION "1.1.0"
+#define MANIFEST_SCHEMA_VERSION "1.2.0"
 
 /* One counter that setup_counters() (topdown.c) tried and failed to open via
  * perf_event_open, as recorded by coverage.c. Kept as its own small struct
@@ -60,6 +61,12 @@ struct manifest_info {
   int counters_measured;
   int counters_unavailable_count;
   const struct manifest_counter_gap *counters_unavailable; /* array, length counters_unavailable_count */
+  /* Environment/provenance capture (see provenance.h): best-effort host
+   * facts beyond the always-present host{} block below (virtualization
+   * role, microcode, BIOS, governor, memory, toolchain). Populate via
+   * provenance_collect() -- every field degrades to "unavailable" rather
+   * than failing the run. */
+  struct provenance_info provenance;
 };
 
 /* Writes the manifest as JSON to path. Returns 0 on success, -1 if the file

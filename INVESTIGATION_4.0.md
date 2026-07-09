@@ -114,10 +114,19 @@ run with partial counter access (restrictive `perf_event_paranoid`, NMI-watchdog
 unsupported raw event) still produces output instead of aborting. Coverage counts/gaps are surfaced
 in human/CSV output, `--manifest`'s `counter_coverage` object (bumped `MANIFEST_SCHEMA_VERSION` to
 1.1.0), and `--run-index`'s leaner counts-only `counter_coverage` field (bumped
-`RUN_INDEX_SCHEMA_VERSION` to 1.1.0).
+`RUN_INDEX_SCHEMA_VERSION` to 1.1.0). Also shipped since that pass: environment/provenance capture
+(`provenance.c`) -- virtualization role (host/guest, from `cpuid`), microcode version, BIOS
+vendor/version/date, CPU frequency governor + uniformity across cores, total memory, and the
+compiler/libc that built the binary. Each of the 9 tracked fields degrades to unavailable-with-reason
+independently (mirroring the counter coverage "measured vs unavailable" pattern) rather than blocking
+the run, per this section's own "optional-but-recommended field with a coverage flag" recommendation
+below. Surfaced as `environment`/`environment_coverage` in `--manifest` (bumped
+`MANIFEST_SCHEMA_VERSION` to 1.2.0) and the same fields in leaner compact form plus counts-only
+coverage in `--run-index` (bumped `RUN_INDEX_SCHEMA_VERSION` to 1.2.0). Kernel release was already
+captured pre-4.0 (`--manifest`'s `host.kernel_release`); this fills in the rest of the field list this
+row named.
 | Idea | Phase | Why |
 | --- | --- | --- |
-| Environment/provenance capture (host/guest role, kernel, microcode, BIOS/power, governor, memory profile, tool versions) | 4.0 | Cheap to capture into the manifest now; expensive to reconstruct retroactively later. |
 | Repeatability policy + confidence metadata (mean, stddev, CV, CI) as default output | 4.1 | Depends on the run index (need multiple runs grouped) more than on the manifest alone. |
 | Outlier/threshold engine (per-metric, global + suite-local) | 4.1 | Needs a populated index/history to threshold against; not meaningful on a single run. |
 | Comparison matrix mode (sweep compiler/kernel/governor/SMT/VM-native) | 4.1 | Builds on the profile-driven launcher; a declarative sweep runner, not new collection logic. |
@@ -344,31 +353,30 @@ macro extraction, plotting templates, golden tests) can slip to a 4.0.x follow-o
 downstream phases, since nothing in 4.1+ depends on them specifically.
 
 ### Next up after the minimal slice
-All six items above are now shipped (2026-07-08). These are the next ~6 4.0-tagged rows worth
-tackling, roughly in priority order (confirmed bug fixes and cheap high-trust wins first, heavier
-design work later).
+All six items from the minimal foundation slice are shipped (2026-07-08), plus environment/provenance
+capture (2026-07-09, `provenance.c` — see "Reproducibility, comparability, statistics" above; it was
+item 1 of this list and is dropped from the ordering below per this file's own "ideas already
+implemented are not listed" rule). These are the next ~5 4.0-tagged rows worth tackling, roughly in
+priority order (confirmed bug fixes and cheap high-trust wins first, heavier design work later).
 All are already rows in the inventory above — this is a suggested ordering, not a separate list to
 maintain by hand.
-1. Environment/provenance capture ("Reproducibility, comparability, statistics" track) — cheapest
-   high-value win once the manifest exists; "Open questions" below already recommends capturing this
-   ahead of both publication automation and comparability scoring.
-2. Propagate child exit status as an opt-in flag (`--exit-with-child`) ("Portability and robustness"
+1. Propagate child exit status as an opt-in flag (`--exit-with-child`) ("Portability and robustness"
    track) — closes a confirmed real bug (`wspy.c:646` unconditionally `return 0`s) surfaced while
    building `wspy-run`; every `workload/*/run_test.sh` invocation and `wspy-run` pass currently can't
    detect workload-command failure from the exit code alone.
-3. Fix the `rusage` CSV/normal output mismatch ("Process / `getrusage` / `/proc` telemetry" track) —
+2. Fix the `rusage` CSV/normal output mismatch ("Process / `getrusage` / `/proc` telemetry" track) —
    confirmed real, narrow bug (CSV drops `nvcsw`/`nivcsw`/`inblock`/`oublock` that normal output
    already prints); fix before expanding `getrusage` coverage on the same inconsistent base.
-4. Basic validation/quality checks pre-publish ("Run artifact foundation" track) — catches a bad
+3. Basic validation/quality checks pre-publish ("Run artifact foundation" track) — catches a bad
    config before it poisons a result set (per the blog's own "oops" post); consumes the manifest and
    coverage work that's already shipped.
-5. Coverage ledger (workload status: done/skipped/unsupported/needs-tool-support) ("Run artifact
+4. Coverage ledger (workload status: done/skipped/unsupported/needs-tool-support) ("Run artifact
    foundation" track) — generated from the run index that's already shipped; closes the loop on
    "what's still missing" tracking that's currently manual.
-6. Arch-neutral `ptrace` register-access macros ("Portability and robustness" track) — cheap
+5. Arch-neutral `ptrace` register-access macros ("Portability and robustness" track) — cheap
    mechanical refactor now, expensive retrofit later, independent of whether ARM64 support itself is
    prioritized any time soon.
-7. Capability-driven IBS probing ("Zen5 / IBS" track) — prerequisite for the rest of that track
+6. Capability-driven IBS probing ("Zen5 / IBS" track) — prerequisite for the rest of that track
    (`ibs-basic`/`ibs-memory-deep` profiles, skew annotations), and the layer the Zen5/IBS deep-dive's
    point 5 (new ALU/AGU and op-cache event categories) would need regardless.
 
