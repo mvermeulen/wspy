@@ -9,7 +9,7 @@ make test
 
 echo ""
 echo "=== Building wspy and proctree ==="
-make wspy proctree
+make wspy proctree wspy-validate
 
 echo ""
 echo "=== Running Integration Tests ==="
@@ -78,6 +78,58 @@ for expected in \
 done
 echo "  manifest output: OK"
 rm test_manifest_out.csv test_manifest.json
+
+# wspy-validate: basic pre-publish quality checks against a manifest
+echo "Testing wspy-validate on a clean run..."
+./wspy --no-ipc --csv -o test_validate_out.csv --manifest test_validate.manifest.json -- /bin/true > /dev/null
+if ! ./wspy-validate test_validate.manifest.json > test_validate.out; then
+    echo "FAIL: wspy-validate should exit 0 on a clean run"
+    cat test_validate.out
+    exit 1
+fi
+if ! grep -q "^test_validate.manifest.json: PASS$" test_validate.out; then
+    echo "FAIL: wspy-validate did not report PASS for a clean run"
+    cat test_validate.out
+    exit 1
+fi
+if ! grep -q "1 manifest(s) checked: 1 passed, 0 warned, 0 failed" test_validate.out; then
+    echo "FAIL: wspy-validate summary line did not match a clean single-manifest run"
+    cat test_validate.out
+    exit 1
+fi
+rm test_validate_out.csv test_validate.manifest.json test_validate.out
+echo "  wspy-validate clean run: OK"
+
+echo "Testing wspy-validate catches a missing required file..."
+./wspy --no-ipc --csv -o test_validate_missing.csv --manifest test_validate_missing.manifest.json -- /bin/true > /dev/null
+rm test_validate_missing.csv
+if ./wspy-validate test_validate_missing.manifest.json > test_validate.out; then
+    echo "FAIL: wspy-validate should exit non-zero when a required output file is missing"
+    cat test_validate.out
+    exit 1
+fi
+if ! grep -q "required file missing" test_validate.out; then
+    echo "FAIL: wspy-validate did not report the missing output file"
+    cat test_validate.out
+    exit 1
+fi
+rm test_validate_missing.manifest.json test_validate.out
+echo "  wspy-validate missing file detection: OK"
+
+echo "Testing wspy-validate catches a nonzero workload exit status..."
+./wspy --no-ipc --csv -o test_validate_fail.csv --manifest test_validate_fail.manifest.json -- /bin/false > /dev/null || true
+if ./wspy-validate test_validate_fail.manifest.json > test_validate.out; then
+    echo "FAIL: wspy-validate should exit non-zero when the workload exited non-zero"
+    cat test_validate.out
+    exit 1
+fi
+if ! grep -q "exited with nonzero status" test_validate.out; then
+    echo "FAIL: wspy-validate did not report the nonzero exit status"
+    cat test_validate.out
+    exit 1
+fi
+rm test_validate_fail.csv test_validate_fail.manifest.json test_validate.out
+echo "  wspy-validate nonzero exit detection: OK"
 
 # Run index output
 echo "Testing wspy --run-index output..."

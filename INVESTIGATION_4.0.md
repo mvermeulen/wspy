@@ -57,9 +57,12 @@ citing line numbers. This pass re-checked the load-bearing claims directly:
     `deep-gpu`/`tree-heavy` profiles, `-c <file>` config-file execution), reusing the two above for
     `--manifest-dir`/`--run-index`.
   What's still actually missing, i.e. what the "invent the manifest" framing below still applies to:
-  no reader/ingest tool validates a manifest or run-index against its schema version (see
-  "Portability and robustness" track), no unified output layout, no coverage ledger, no validation/
-  quality-check pass, and `workload/*/run_test.sh` haven't been migrated to call `wspy-run` yet.
+  no unified output layout, no coverage ledger, and `workload/*/run_test.sh` haven't been migrated to
+  call `wspy-run` yet. (Superseded 2026-07-09: the "no validation/quality-check pass" clause is no
+  longer true — `wspy-validate`/`validate.c` shipped, see "Run artifact foundation" above. It's also
+  the first manifest *reader* in the tree and does warn on a `MANIFEST_SCHEMA_VERSION` major-version
+  mismatch, which partially covers the still-open "Portability and robustness" row below — that row's
+  remaining gap is run-index (`RUN_INDEX_SCHEMA_VERSION`) ingest, which `wspy-validate` doesn't touch.)
   Building `wspy-run` also surfaced a real, previously-unknown bug: `wspy`'s own process exit code
   never reflects the launched command's success — see the new "Portability and robustness" row
   ("Propagate child exit status...").
@@ -94,13 +97,21 @@ log — `git log`/`README.md` cover what exists).
 ### Run artifact foundation
 Shipped since the last consolidated pass (removed from the inventory per this file's own "ideas
 already implemented are not listed" rule — see `git log`/`CLAUDE.md` for what exists): run manifest
-(JSON) + SemVer schema version (`manifest.c`), run index generation (`run_index.c`), and the common
+(JSON) + SemVer schema version (`manifest.c`), run index generation (`run_index.c`), the common
 workload wrapper / profile-driven launcher (`wspy-run`, builtin `quick`/`deep-cpu`/`deep-gpu`/
-`tree-heavy` profiles plus `-c <file>` config-file execution).
+`tree-heavy` profiles plus `-c <file>` config-file execution), and basic pre-publish validation/quality
+checks (`wspy-validate`, backed by a new `json_reader.c` parser — the tree's first manifest *reader*,
+not just writer). Given one or more `manifest.json` paths, it checks schema version, required
+`output_files` existence, output CSV well-formedness/non-emptiness, workload exit status,
+counter-coverage completeness (partial coverage warns, doesn't fail — that's `coverage.c`'s
+by-design degradation), positive elapsed time, and per-column sanity ranges on the CSV (an
+extensible `sanity_bounds[]` table plus a generic finite/non-negative/not-implausibly-large rule for
+every other numeric column). `-q`/`--quiet` and `--strict` control report verbosity and whether
+warnings affect exit status. See `CLAUDE.md`'s `validate.c`/`json_reader.c` entries for the full
+behavior; this was item 1 of the "next up after the minimal slice" list below.
 | Idea | Phase | Why |
 | --- | --- | --- |
 | Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,plots/*.png,manifest.json}`) | 4.0 | cpu2017/phoronix/pbbsbench each invent their own file layout; publishing tools currently need suite-specific logic. |
-| Basic validation / quality checks (required files present, non-empty CSV, exit status, sanity ranges) pre-publish | 4.0 | The blog's "oops" post shows a bad config can look plausible and poison a whole result set; catch it at the artifact boundary. |
 | Coverage ledger (workload status: done/skipped/unsupported/needs-tool-support) | 4.0 | Blog history shows recurring "what's still missing" tracking done manually; generate it from the run index instead. |
 | Reproducibility bundle export (tarball: manifest + raw + derived per batch) | 4.1 | Depends on manifest/index existing; archival/re-analysis convenience, not foundational. |
 | Traceability links (summary row → manifest → raw CSV → plots → tree artifacts) | 4.1 | Same dependency; fold into the report generator once there's a normalized index to link from. |
@@ -239,7 +250,7 @@ report real exit status now. Per this file's own "ideas already implemented are 
 is dropped.
 | Idea | Phase | Why |
 | --- | --- | --- |
-| Manifest/run-index schema validation on ingest, warn on mismatched `*_SCHEMA_VERSION` | 4.0 | The write side shipped (`MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION`, both SemVer, in `manifest.h`/`run_index.h`); there is still no reader/ingest tool anywhere in the tree to validate against, so a schema bump today has no consumer that would notice a mismatch. |
+| Run-index schema validation on ingest, warn on mismatched `RUN_INDEX_SCHEMA_VERSION` | 4.0 | The write side shipped (`RUN_INDEX_SCHEMA_VERSION`, SemVer, in `run_index.h`), and the manifest half of this is now covered by `wspy-validate` (`validate.c`'s `check_schema_version()` warns on a `MANIFEST_SCHEMA_VERSION` major-version mismatch, see "Run artifact foundation"). The run-index (JSONL) side still has no reader anywhere in the tree, so a `RUN_INDEX_SCHEMA_VERSION` bump still has no consumer that would notice a mismatch. |
 | Arch-neutral `ptrace` register-access macros (`PTRACE_SYSCALL_NUM(regs)` etc. behind `#ifdef __x86_64__`/`__aarch64__`) | 4.0 | Confirmed real blocker: `topdown.c` reads `regs.orig_rax`/`regs.rsi` with no abstraction today. Do the macro extraction even before an ARM64 backend exists — it's a mechanical refactor now, a risky one once more logic depends on the current shape. |
 | Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`) | 4.1 | Actual ARM64 `cpu_info` support; depends on the macro extraction above landing cleanly first. |
 | Native multi-pass counter execution (`--passes=ipc,topdown,cache,software`, internal N-run loop, merged manifest/CSV) | 4.1 | Confirmed real pain: `workload/phoronix/run_test.sh` already launches the same command up to 8 times by hand to dodge multiplexing. Depends on the profile launcher (4.0) to define what a "pass" is. |
@@ -373,22 +384,21 @@ downstream phases, since nothing in 4.1+ depends on them specifically.
 All six items from the minimal foundation slice are shipped (2026-07-08), plus environment/provenance
 capture (2026-07-09, `provenance.c` — see "Reproducibility, comparability, statistics" above), opt-in
 child exit status propagation (2026-07-09, `--exit-with-child` — see "Portability and robustness"
-above), and the `rusage` CSV/normal output mismatch fix (2026-07-09, `print_usage()` in `topdown.c` —
-see "Process / `getrusage` / `/proc` telemetry" above); all three were item 1 of this list at the time
-they shipped and are dropped from the ordering below per this file's own "ideas already implemented
-are not listed" rule. These are the next ~3 4.0-tagged rows worth tackling, roughly in priority order
-(confirmed bug fixes and cheap high-trust wins first, heavier design work later). All are already rows
-in the inventory above — this is a suggested ordering, not a separate list to maintain by hand.
-1. Basic validation/quality checks pre-publish ("Run artifact foundation" track) — catches a bad
-   config before it poisons a result set (per the blog's own "oops" post); consumes the manifest and
-   coverage work that's already shipped.
-2. Coverage ledger (workload status: done/skipped/unsupported/needs-tool-support) ("Run artifact
+above), the `rusage` CSV/normal output mismatch fix (2026-07-09, `print_usage()` in `topdown.c` — see
+"Process / `getrusage` / `/proc` telemetry" above), and basic pre-publish validation/quality checks
+(2026-07-09, `wspy-validate`/`validate.c`/`json_reader.c` — see "Run artifact foundation" above); all
+four were item 1 of this list at the time they shipped and are dropped from the ordering below per
+this file's own "ideas already implemented are not listed" rule. These are the next ~2 4.0-tagged
+rows worth tackling, roughly in priority order (confirmed bug fixes and cheap high-trust wins first,
+heavier design work later). All are already rows in the inventory above — this is a suggested
+ordering, not a separate list to maintain by hand.
+1. Coverage ledger (workload status: done/skipped/unsupported/needs-tool-support) ("Run artifact
    foundation" track) — generated from the run index that's already shipped; closes the loop on
    "what's still missing" tracking that's currently manual.
-3. Arch-neutral `ptrace` register-access macros ("Portability and robustness" track) — cheap
+2. Arch-neutral `ptrace` register-access macros ("Portability and robustness" track) — cheap
    mechanical refactor now, expensive retrofit later, independent of whether ARM64 support itself is
    prioritized any time soon.
-4. Capability-driven IBS probing ("Zen5 / IBS" track) — prerequisite for the rest of that track
+3. Capability-driven IBS probing ("Zen5 / IBS" track) — prerequisite for the rest of that track
    (`ibs-basic`/`ibs-memory-deep` profiles, skew annotations), and the layer the Zen5/IBS deep-dive's
    point 5 (new ALU/AGU and op-cache event categories) would need regardless.
 
