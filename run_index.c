@@ -31,6 +31,11 @@ static void json_write_string_or_null(FILE *fp,const char *s){
   else fputs("null",fp);
 }
 
+static void json_write_provenance_field(FILE *fp,const struct provenance_field *f){
+  if (f->available) json_write_string(fp,f->value);
+  else fputs("null",fp);
+}
+
 int append_run_index(const char *path,const struct manifest_info *info){
   FILE *fp;
   int i;
@@ -76,6 +81,25 @@ int append_run_index(const char *path,const struct manifest_info *info){
   fprintf(fp,",");
   fprintf(fp,"\"cpu_family\":%u,",cpu_info->family);
   fprintf(fp,"\"cpu_model\":%u,",cpu_info->model);
+
+  fprintf(fp,"\"environment\":{");
+  fprintf(fp,"\"virt_role\":"); json_write_provenance_field(fp,&info->provenance.virt_role);
+  fprintf(fp,",\"hypervisor_vendor\":"); json_write_provenance_field(fp,&info->provenance.hypervisor_vendor);
+  fprintf(fp,",\"microcode_version\":"); json_write_provenance_field(fp,&info->provenance.microcode_version);
+  fprintf(fp,",\"bios_vendor\":"); json_write_provenance_field(fp,&info->provenance.bios_vendor);
+  fprintf(fp,",\"bios_version\":"); json_write_provenance_field(fp,&info->provenance.bios_version);
+  fprintf(fp,",\"bios_date\":"); json_write_provenance_field(fp,&info->provenance.bios_date);
+  fprintf(fp,",\"cpu_governor\":"); json_write_provenance_field(fp,&info->provenance.cpu_governor);
+  fprintf(fp,",\"cpu_scaling_driver\":"); json_write_provenance_field(fp,&info->provenance.cpu_scaling_driver);
+  fprintf(fp,",\"cpu_governor_uniform\":%s",
+	  info->provenance.cpu_governor.available ? (info->provenance.cpu_governor_uniform ? "true" : "false") : "null");
+  fprintf(fp,",\"memory_total_kb\":%s",info->provenance.mem_total_kb.available ? info->provenance.mem_total_kb.value : "null");
+  fprintf(fp,",\"compiler_version\":"); json_write_provenance_field(fp,&info->provenance.compiler_version);
+  fprintf(fp,",\"libc_version\":"); json_write_provenance_field(fp,&info->provenance.libc_version);
+  fprintf(fp,"},");
+  fprintf(fp,"\"environment_coverage\":{\"captured\":%d,\"probed\":%d},",
+	  provenance_count_available(&info->provenance),PROVENANCE_TRACKED_FIELD_COUNT);
+
   fprintf(fp,"\"start_time\":\"%s\",",start_buf);
   fprintf(fp,"\"finish_time\":\"%s\",",finish_buf);
   fprintf(fp,"\"elapsed_seconds\":%.3f,",elapsed);

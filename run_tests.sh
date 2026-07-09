@@ -58,7 +58,7 @@ if command -v python3 > /dev/null 2>&1; then
     fi
 fi
 for expected in \
-    '"schema_version": "1.1.0"' \
+    '"schema_version": "1.2.0"' \
     '"wspy_version"' \
     '"argv": \["/bin/true"\]' \
     '"kind": "output"' \
@@ -66,7 +66,11 @@ for expected in \
     '"kind": "manifest"' \
     '"counter_coverage": {' \
     '"requested": 0' \
-    '"measured": 0'; do
+    '"measured": 0' \
+    '"environment": {' \
+    '"virt_role":' \
+    '"environment_coverage": {' \
+    '"probed": 9'; do
     if ! grep -q "$expected" test_manifest.json; then
         echo "FAIL: manifest missing expected content: $expected"
         exit 1
@@ -105,10 +109,12 @@ assert records[1]['exit_status']['exit_code'] == 1
     fi
 fi
 for expected in \
-    '"schema_version":"1.1.0"' \
+    '"schema_version":"1.2.0"' \
     '"wspy_version"' \
     '"command":\["/bin/true"\]' \
-    '"counter_coverage":{"requested":0,"measured":0}'; do
+    '"counter_coverage":{"requested":0,"measured":0}' \
+    '"environment":{"virt_role":' \
+    '"environment_coverage":{"captured":'; do
     if ! grep -q "$expected" test_run_index.jsonl; then
         echo "FAIL: run index missing expected content: $expected"
         exit 1

@@ -11,6 +11,54 @@
 #include "error.h"
 #include "json_util.h"
 
+/* Writes one environment field as "name": <value-or-null>, where a string
+ * field is a quoted JSON string and a numeric field (memory_total_kb) is a
+ * bare JSON number -- the caller passes as_number to select which. */
+static void write_provenance_field(FILE *fp,const char *name,const struct provenance_field *f,int as_number){
+  fprintf(fp,"    \"%s\": ",name);
+  if (!f->available){
+    fputs("null",fp);
+    return;
+  }
+  if (as_number) fputs(f->value,fp);
+  else json_write_string(fp,f->value);
+}
+
+static void write_environment(FILE *fp,const struct provenance_info *prov){
+  struct provenance_gap gaps[PROVENANCE_TRACKED_FIELD_COUNT];
+  int ngaps,i;
+
+  fprintf(fp,"  \"environment\": {\n");
+  write_provenance_field(fp,"virt_role",&prov->virt_role,0);           fprintf(fp,",\n");
+  write_provenance_field(fp,"hypervisor_vendor",&prov->hypervisor_vendor,0); fprintf(fp,",\n");
+  write_provenance_field(fp,"microcode_version",&prov->microcode_version,0); fprintf(fp,",\n");
+  write_provenance_field(fp,"bios_vendor",&prov->bios_vendor,0);       fprintf(fp,",\n");
+  write_provenance_field(fp,"bios_version",&prov->bios_version,0);     fprintf(fp,",\n");
+  write_provenance_field(fp,"bios_date",&prov->bios_date,0);           fprintf(fp,",\n");
+  write_provenance_field(fp,"cpu_governor",&prov->cpu_governor,0);     fprintf(fp,",\n");
+  write_provenance_field(fp,"cpu_scaling_driver",&prov->cpu_scaling_driver,0); fprintf(fp,",\n");
+  fprintf(fp,"    \"cpu_governor_uniform\": %s,\n",prov->cpu_governor.available ? (prov->cpu_governor_uniform ? "true" : "false") : "null");
+  write_provenance_field(fp,"memory_total_kb",&prov->mem_total_kb,1);  fprintf(fp,",\n");
+  write_provenance_field(fp,"compiler_version",&prov->compiler_version,0); fprintf(fp,",\n");
+  write_provenance_field(fp,"libc_version",&prov->libc_version,0);     fprintf(fp,"\n");
+  fprintf(fp,"  },\n");
+
+  ngaps = provenance_gaps(prov,gaps);
+  fprintf(fp,"  \"environment_coverage\": {\n");
+  fprintf(fp,"    \"captured\": %d,\n",PROVENANCE_TRACKED_FIELD_COUNT - ngaps);
+  fprintf(fp,"    \"probed\": %d,\n",PROVENANCE_TRACKED_FIELD_COUNT);
+  fprintf(fp,"    \"unavailable\": [\n");
+  for (i = 0; i < ngaps; i++){
+    fprintf(fp,"     %s{ \"field\": ",i ? ",\n" : "");
+    json_write_string(fp,gaps[i].field_name);
+    fprintf(fp,", \"reason\": ");
+    json_write_string(fp,gaps[i].reason);
+    fprintf(fp," }");
+  }
+  fprintf(fp,"%s    ]\n",ngaps ? "\n" : "");
+  fprintf(fp,"  },\n");
+}
+
 int write_manifest(const char *path,const struct manifest_info *info){
   FILE *fp;
   int i;
@@ -99,6 +147,8 @@ int write_manifest(const char *path,const struct manifest_info *info){
   fprintf(fp,"    \"num_cores_available\": %u,\n",cpu_info->num_cores_available);
   fprintf(fp,"    \"is_hybrid\": %s\n",cpu_info->is_hybrid ? "true" : "false");
   fprintf(fp,"  },\n");
+
+  write_environment(fp,&info->provenance);
 
   fprintf(fp,"  \"options\": {\n");
   fprintf(fp,"    \"counter_mask\": \"0x%x\",\n",info->counter_mask);

@@ -18,6 +18,7 @@
 #include "manifest.h"
 #include "run_index.h"
 #include "coverage.h"
+#include "provenance.h"
 
 // Helper to reset globals for wspy
 void reset_wspy_globals() {
@@ -144,6 +145,64 @@ void test_coverage() {
     printf("PASS: counter coverage tracking\n");
 }
 
+// Sets up a synthetic (not host-derived) provenance_info: a mix of available
+// and unavailable fields, so manifest/run-index JSON assertions don't depend
+// on what the CI/dev machine actually has (BIOS DMI files, a live cpufreq
+// governor, etc. vary a lot between bare metal, containers, and VMs).
+static void fill_fake_provenance(struct provenance_info *p) {
+    memset(p, 0, sizeof(*p));
+    p->virt_role.available = 1;
+    strcpy(p->virt_role.value, "host");
+    p->hypervisor_vendor.available = 0;
+    strcpy(p->hypervisor_vendor.reason, "not applicable (host, not a guest)");
+    p->microcode_version.available = 1;
+    strcpy(p->microcode_version.value, "0xdeadbeef");
+    p->bios_vendor.available = 0;
+    strcpy(p->bios_vendor.reason, "No such file or directory");
+    p->bios_version.available = 0;
+    strcpy(p->bios_version.reason, "No such file or directory");
+    p->bios_date.available = 0;
+    strcpy(p->bios_date.reason, "No such file or directory");
+    p->cpu_governor.available = 1;
+    strcpy(p->cpu_governor.value, "performance");
+    p->cpu_scaling_driver.available = 1;
+    strcpy(p->cpu_scaling_driver.value, "acpi-cpufreq");
+    p->cpu_governor_uniform = 1;
+    p->mem_total_kb.available = 1;
+    strcpy(p->mem_total_kb.value, "12345678");
+    p->compiler_version.available = 1;
+    strcpy(p->compiler_version.value, "GCC 13.2.0");
+    p->libc_version.available = 1;
+    strcpy(p->libc_version.value, "2.38");
+}
+
+void test_provenance() {
+    struct provenance_info info;
+    struct provenance_gap gaps[PROVENANCE_TRACKED_FIELD_COUNT];
+    int ngaps, i;
+
+    printf("Testing provenance_collect...\n");
+
+    // Real collection against whatever host is running the tests: don't
+    // assert on specific values (they vary by machine/container/CI), just
+    // structural invariants -- cpuid-derived virt_role and the compiler
+    // version macro always succeed, and the gap accounting is self-consistent.
+    provenance_collect(&info);
+    assert(info.virt_role.available);
+    assert(!strcmp(info.virt_role.value, "host") || !strcmp(info.virt_role.value, "guest"));
+    assert(info.compiler_version.available); // this binary was built by gcc/clang, both define __VERSION__
+
+    ngaps = provenance_gaps(&info, gaps);
+    assert(ngaps >= 0 && ngaps <= PROVENANCE_TRACKED_FIELD_COUNT);
+    assert(provenance_count_available(&info) == PROVENANCE_TRACKED_FIELD_COUNT - ngaps);
+    for (i = 0; i < ngaps; i++) {
+        assert(gaps[i].field_name != NULL && gaps[i].field_name[0] != '\0');
+        assert(gaps[i].reason != NULL && gaps[i].reason[0] != '\0');
+    }
+
+    printf("PASS: provenance_collect\n");
+}
+
 // Read the whole file into a malloc'd, NUL-terminated buffer for substring checks.
 static char *slurp_file(const char *path) {
     FILE *fp;
@@ -194,6 +253,7 @@ void test_write_manifest() {
     minfo.counters_measured = 2;
     minfo.counters_unavailable_count = 1;
     minfo.counters_unavailable = gaps;
+    fill_fake_provenance(&minfo.provenance);
 
     if (write_manifest(manifest_out, &minfo) != 0) {
         fprintf(stderr, "FAIL: write_manifest returned an error\n");
@@ -223,6 +283,25 @@ void test_write_manifest() {
     assert(strstr(contents, "\"kind\": \"output\"") != NULL);
     assert(strstr(contents, "\"path\": \"out.csv\"") != NULL);
     assert(strstr(contents, "\"kind\": \"tree\"") == NULL); // not requested for this run
+
+    // Environment/provenance capture: available fields serialize as their
+    // value, unavailable ones as null (not omitted -- readers shouldn't
+    // have to distinguish "absent key" from "checked, not available"), and
+    // memory_total_kb is a bare JSON number (not a quoted string).
+    assert(strstr(contents, "\"virt_role\": \"host\"") != NULL);
+    assert(strstr(contents, "\"hypervisor_vendor\": null") != NULL);
+    assert(strstr(contents, "\"microcode_version\": \"0xdeadbeef\"") != NULL);
+    assert(strstr(contents, "\"bios_vendor\": null") != NULL);
+    assert(strstr(contents, "\"cpu_governor\": \"performance\"") != NULL);
+    assert(strstr(contents, "\"cpu_governor_uniform\": true") != NULL);
+    assert(strstr(contents, "\"memory_total_kb\": 12345678") != NULL);
+    assert(strstr(contents, "\"memory_total_kb\": \"12345678\"") == NULL);
+    assert(strstr(contents, "\"compiler_version\": \"GCC 13.2.0\"") != NULL);
+    // 3 of the 9 tracked fields (hypervisor_vendor is not tracked) were
+    // marked unavailable above: bios_vendor, bios_version, bios_date.
+    assert(strstr(contents, "\"environment_coverage\": {\n    \"captured\": 6,\n    \"probed\": 9") != NULL);
+    assert(strstr(contents, "\"field\": \"bios_vendor\"") != NULL);
+    assert(strstr(contents, "\"reason\": \"No such file or directory\"") != NULL);
 
     free(contents);
     remove(manifest_out);
@@ -288,6 +367,7 @@ void test_append_run_index() {
     minfo.manifest_path = "run.manifest.json";
     minfo.counters_requested = 3;
     minfo.counters_measured = 1;
+    fill_fake_provenance(&minfo.provenance);
 
     if (append_run_index(index_out, &minfo) != 0) {
         fprintf(stderr, "FAIL: append_run_index returned an error (first record)\n");
@@ -326,6 +406,16 @@ void test_append_run_index() {
     assert(strstr(line0, "\"manifest_path\":\"run.manifest.json\"") != NULL);
     assert(strstr(line0, "\"exit_code\":0") != NULL);
     assert(strstr(line0, "\"counter_coverage\":{\"requested\":3,\"measured\":1}") != NULL);
+
+    // Environment/provenance: compact form (leaner than the manifest's
+    // pretty-printed JSON), full field values plus a counts-only coverage
+    // summary (no per-field gap list, mirroring counter_coverage's leaner
+    // run-index treatment).
+    assert(strstr(line0, "\"environment\":{\"virt_role\":\"host\"") != NULL);
+    assert(strstr(line0, "\"hypervisor_vendor\":null") != NULL);
+    assert(strstr(line0, "\"memory_total_kb\":12345678") != NULL);
+    assert(strstr(line0, "\"cpu_governor_uniform\":true") != NULL);
+    assert(strstr(line0, "\"environment_coverage\":{\"captured\":6,\"probed\":9}") != NULL);
 
     // Each line must be independently valid, self-contained JSON (a curly
     // brace per line, no shared array wrapper).
@@ -472,6 +562,7 @@ int main(int argc, char **argv) {
     test_write_manifest();
     test_append_run_index();
     test_coverage();
+    test_provenance();
     test_topdown_confidence();
     return 0;
 }

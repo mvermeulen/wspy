@@ -22,6 +22,7 @@
 #include "manifest.h"
 #include "run_index.h"
 #include "coverage.h"
+#include "provenance.h"
 
 int aflag = 0;
 int oflag = 0;
@@ -700,6 +701,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     }
     minfo.counters_unavailable_count = ngaps;
     minfo.counters_unavailable = gaps;
+    provenance_collect(&minfo.provenance);
     if (manifest_path) write_manifest(manifest_path,&minfo);
     if (run_index_path) append_run_index(run_index_path,&minfo);
     free(gaps);
