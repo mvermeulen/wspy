@@ -74,6 +74,14 @@ extern pid_t child_pid;
 extern int child_pipe[2];
 extern volatile int is_still_running;
 
+/* Root child's exit status; set in wspy.c (non-tree, via wait4()) or
+ * topdown.c's ptrace_loop() (--tree mode). See topdown.c for details. */
+extern int child_exit_known;
+extern int child_exited;
+extern int child_exit_code;
+extern int child_signaled;
+extern int child_term_signal;
+
 enum output_format { PRINT_NORMAL, PRINT_CSV, PRINT_CSV_HEADER };
 
 int check_nmi_watchdog(void);

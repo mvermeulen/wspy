@@ -219,10 +219,18 @@ still open.
 | System (`--system`) → per-interface network attribution, user/system/iowait/steal mix, local-vs-system-pressure attribution | 4.2 | Report-layer addition to existing `system.c` collection. |
 
 ### Portability and robustness
+Shipped since the last consolidated pass (`feature/exit-with-child`): opt-in child exit status
+propagation — `wspy --exit-with-child` now exits with the launched command's own exit code (128+signal
+if it was killed by a signal), instead of `main()`'s unconditional `return 0`. This also fixed a related
+manifest/run-index gap as a side effect: `--tree` mode previously always reported `exit_status.known:
+false` because the root child's status wasn't captured outside `ptrace_loop()`'s own wait loop;
+`ptrace_loop()` now records it (`child_exit_known`/`child_exited`/`child_exit_code`/`child_signaled`/
+`child_term_signal` in `topdown.c`, shared with the non-tree `wait4()` path in `wspy.c`), so both modes
+report real exit status now. Per this file's own "ideas already implemented are not listed" rule the row
+is dropped.
 | Idea | Phase | Why |
 | --- | --- | --- |
 | Manifest/run-index schema validation on ingest, warn on mismatched `*_SCHEMA_VERSION` | 4.0 | The write side shipped (`MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION`, both SemVer, in `manifest.h`/`run_index.h`); there is still no reader/ingest tool anywhere in the tree to validate against, so a schema bump today has no consumer that would notice a mismatch. |
-| Propagate child exit status as `wspy`'s own process exit code (opt-in, e.g. `--exit-with-child`) | 4.0 | Confirmed while building `wspy-run` (2026-07-08): `wspy.c:646`'s `main()` unconditionally `return 0`s — `wspy`'s own exit code never reflects whether the launched command succeeded, only `--manifest`/`--run-index`'s `exit_status` does. Every `workload/*/run_test.sh` invocation and `wspy-run` pass silently "succeeds" even when the workload fails or isn't found. Must be opt-in: existing scripts (`workload/*/run_test.sh`'s `tee`-based pipelines) may already rely on `wspy` always exiting 0 regardless of the child, so flipping the default would be a breaking behavior change. |
 | Arch-neutral `ptrace` register-access macros (`PTRACE_SYSCALL_NUM(regs)` etc. behind `#ifdef __x86_64__`/`__aarch64__`) | 4.0 | Confirmed real blocker: `topdown.c` reads `regs.orig_rax`/`regs.rsi` with no abstraction today. Do the macro extraction even before an ARM64 backend exists — it's a mechanical refactor now, a risky one once more logic depends on the current shape. |
 | Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`) | 4.1 | Actual ARM64 `cpu_info` support; depends on the macro extraction above landing cleanly first. |
 | Native multi-pass counter execution (`--passes=ipc,topdown,cache,software`, internal N-run loop, merged manifest/CSV) | 4.1 | Confirmed real pain: `workload/phoronix/run_test.sh` already launches the same command up to 8 times by hand to dodge multiplexing. Depends on the profile launcher (4.0) to define what a "pass" is. |
@@ -354,29 +362,26 @@ downstream phases, since nothing in 4.1+ depends on them specifically.
 
 ### Next up after the minimal slice
 All six items from the minimal foundation slice are shipped (2026-07-08), plus environment/provenance
-capture (2026-07-09, `provenance.c` — see "Reproducibility, comparability, statistics" above; it was
-item 1 of this list and is dropped from the ordering below per this file's own "ideas already
-implemented are not listed" rule). These are the next ~5 4.0-tagged rows worth tackling, roughly in
-priority order (confirmed bug fixes and cheap high-trust wins first, heavier design work later).
-All are already rows in the inventory above — this is a suggested ordering, not a separate list to
-maintain by hand.
-1. Propagate child exit status as an opt-in flag (`--exit-with-child`) ("Portability and robustness"
-   track) — closes a confirmed real bug (`wspy.c:646` unconditionally `return 0`s) surfaced while
-   building `wspy-run`; every `workload/*/run_test.sh` invocation and `wspy-run` pass currently can't
-   detect workload-command failure from the exit code alone.
-2. Fix the `rusage` CSV/normal output mismatch ("Process / `getrusage` / `/proc` telemetry" track) —
+capture (2026-07-09, `provenance.c` — see "Reproducibility, comparability, statistics" above) and
+opt-in child exit status propagation (2026-07-09, `--exit-with-child` — see "Portability and
+robustness" above); both were item 1 of this list at the time they shipped and are dropped from the
+ordering below per this file's own "ideas already implemented are not listed" rule. These are the next
+~4 4.0-tagged rows worth tackling, roughly in priority order (confirmed bug fixes and cheap high-trust
+wins first, heavier design work later). All are already rows in the inventory above — this is a
+suggested ordering, not a separate list to maintain by hand.
+1. Fix the `rusage` CSV/normal output mismatch ("Process / `getrusage` / `/proc` telemetry" track) —
    confirmed real, narrow bug (CSV drops `nvcsw`/`nivcsw`/`inblock`/`oublock` that normal output
    already prints); fix before expanding `getrusage` coverage on the same inconsistent base.
-3. Basic validation/quality checks pre-publish ("Run artifact foundation" track) — catches a bad
+2. Basic validation/quality checks pre-publish ("Run artifact foundation" track) — catches a bad
    config before it poisons a result set (per the blog's own "oops" post); consumes the manifest and
    coverage work that's already shipped.
-4. Coverage ledger (workload status: done/skipped/unsupported/needs-tool-support) ("Run artifact
+3. Coverage ledger (workload status: done/skipped/unsupported/needs-tool-support) ("Run artifact
    foundation" track) — generated from the run index that's already shipped; closes the loop on
    "what's still missing" tracking that's currently manual.
-5. Arch-neutral `ptrace` register-access macros ("Portability and robustness" track) — cheap
+4. Arch-neutral `ptrace` register-access macros ("Portability and robustness" track) — cheap
    mechanical refactor now, expensive retrofit later, independent of whether ARM64 support itself is
    prioritized any time soon.
-6. Capability-driven IBS probing ("Zen5 / IBS" track) — prerequisite for the rest of that track
+5. Capability-driven IBS probing ("Zen5 / IBS" track) — prerequisite for the rest of that track
    (`ibs-basic`/`ibs-memory-deep` profiles, skew annotations), and the layer the Zen5/IBS deep-dive's
    point 5 (new ALU/AGU and op-cache event categories) would need regardless.
 

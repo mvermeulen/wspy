@@ -37,6 +37,7 @@ int tree_open = 0;
 int trace_syscall = 0;
 int versionflag = 0;
 int capabilitiesflag = 0;
+int exit_with_child_flag = 0;
 #if AMDGPU
 int gpu_smi_requested = 0; /* legacy */
 int gpu_busy_requested = 0;
@@ -76,6 +77,7 @@ int parse_options(int argc,char *const argv[]){
     { "no-cache3", no_argument, 0, 9 },
     { "dcache", no_argument, 0, 10 },
     { "no-cache", no_argument, 0, 11 },
+    { "exit-with-child", no_argument, 0, 55 },
     { "float",no_argument,0,33 },
     /* GPU options always recognized so we can warn if not built with AMDGPU */
     { "gpu-smi", no_argument, 0, 48 },
@@ -282,6 +284,9 @@ int parse_options(int argc,char *const argv[]){
     case 54: // --capabilities
       capabilitiesflag = 1;
       break;
+    case 55: // --exit-with-child
+      exit_with_child_flag = 1;
+      break;
     case 31: // --tree
       if ((treefile = fopen(optarg,"w")) == NULL){
 	warning("unable to open tree file: %s, ignored\n",optarg);
@@ -406,6 +411,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t--csv                     - create csv output\n"
 	    "\t--manifest <file>         - write a JSON run manifest to <file>\n"
 	    "\t--run-index <file>        - append a JSON run-index record to <file>\n"
+	    "\t--exit-with-child         - exit with the launched command's exit status\n"
 	    "\t--interval <sec>          - read every <sec> seconds\n"
 	    "\t--verbose or -v           - print verbose information\n"
 	    "\t--system                  - system-wide metrics (load, cpu, gpu, network)\n"
@@ -551,6 +557,11 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   } else {
     // without ptrace, this process waits to complete
     wait4(child_pid,&status,0,&rusage);
+    child_exit_known = 1;
+    child_exited = WIFEXITED(status) ? 1 : 0;
+    if (child_exited) child_exit_code = WEXITSTATUS(status);
+    child_signaled = WIFSIGNALED(status) ? 1 : 0;
+    if (child_signaled) child_term_signal = WTERMSIG(status);
   }
 
   is_still_running = 0;
@@ -666,15 +677,14 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     minfo.finish_time = finish_time;
     minfo.argc = command_line_argc;
     minfo.argv = command_line_argv;
-    /* --tree reaps children via its own ptrace wait loop, so the root
-     * child's exit status isn't available here the way it is via wait4(). */
-    minfo.exit_status.known = !treeflag;
-    if (minfo.exit_status.known){
-      minfo.exit_status.exited = WIFEXITED(status) ? 1 : 0;
-      if (minfo.exit_status.exited) minfo.exit_status.exit_code = WEXITSTATUS(status);
-      minfo.exit_status.signaled = WIFSIGNALED(status) ? 1 : 0;
-      if (minfo.exit_status.signaled) minfo.exit_status.term_signal = WTERMSIG(status);
-    }
+    /* child_exit_known etc. are populated either above (non-tree, wait4())
+     * or by ptrace_loop() itself when the root child's exit/signal event
+     * comes through its own wait loop (--tree mode). */
+    minfo.exit_status.known = child_exit_known;
+    minfo.exit_status.exited = child_exited;
+    minfo.exit_status.exit_code = child_exit_code;
+    minfo.exit_status.signaled = child_signaled;
+    minfo.exit_status.term_signal = child_term_signal;
     minfo.counter_mask = counter_mask;
     minfo.aflag = aflag;
     minfo.sflag = sflag;
@@ -713,6 +723,18 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   if (gpu_busy_requested || gpu_metrics_requested)
     amd_sysfs_finalize();
 #endif
-  
+
+  if (exit_with_child_flag){
+    if (!child_exit_known){
+      warning("--exit-with-child: child exit status not observed, exiting 0\n");
+      return 0;
+    }
+    if (child_signaled){
+      // conventional shell exit-code encoding for death-by-signal
+      return 128 + child_term_signal;
+    }
+    return child_exit_code;
+  }
+
   return 0;
 }

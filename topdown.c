@@ -207,6 +207,17 @@ int setup_raw_events(void){
 
 pid_t child_pid = 0;
 
+/* Exit status of the root child (child_pid), observed either directly via
+ * wait4() (non-tree mode, set in wspy.c) or here in ptrace_loop() (--tree
+ * mode, where the parent reaps every descendant itself rather than just
+ * child_pid). Shared source of truth for --exit-with-child and the
+ * manifest/run-index exit_status field. */
+int child_exit_known = 0;
+int child_exited = 0;
+int child_exit_code = 0;
+int child_signaled = 0;
+int child_term_signal = 0;
+
 int child_pipe[2];
 int launch_child(int argc,char *const argv[],char *const envp[]){
   pid_t child;
@@ -348,6 +359,11 @@ void ptrace_loop(void){
       fprintf(treefile,"%5.3f %d exited\n",elapsed,pid);
       fflush(treefile);
       debug2("   exited\n");
+      if (pid == child_pid){
+	child_exit_known = 1;
+	child_exited = 1;
+	child_exit_code = WEXITSTATUS(status);
+      }
       continue;
     } else if (WIFSIGNALED(status)){
       // dump contents of proc/<pid>/comm
@@ -377,6 +393,11 @@ void ptrace_loop(void){
       fprintf(treefile,"%5.3f %d signal %u\n",elapsed,pid,WTERMSIG(status));
       fflush(treefile);
       debug2("   signaled\n");
+      if (pid == child_pid){
+	child_exit_known = 1;
+	child_signaled = 1;
+	child_term_signal = WTERMSIG(status);
+      }
       continue;
     } else if (WIFSTOPPED(status)){
       if (WSTOPSIG(status) == SIGTRAP){
