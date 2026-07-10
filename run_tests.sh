@@ -527,6 +527,24 @@ else
     exit 1
 fi
 
+# Golden output-contract tests + capability-matrix smoke tests
+# (INVESTIGATION_4.0.md "Testing and documentation" track): formalized,
+# broader versions of the CSV-column-order/GPU-build-vs-not checks above.
+# Run once here against the non-AMDGPU build; run again below against the
+# AMDGPU=1 build if ROCm is available, so both ends of the GPU-build axis
+# get covered in one pass of this script.
+echo "Testing golden output-contract tests (non-AMDGPU build)..."
+if ! ./tests/golden_output.sh; then
+    echo "FAIL: golden output-contract tests failed (non-AMDGPU build)"
+    exit 1
+fi
+
+echo "Testing capability-matrix smoke tests (non-AMDGPU build)..."
+if ! ./tests/capability_matrix.sh; then
+    echo "FAIL: capability-matrix smoke tests failed (non-AMDGPU build)"
+    exit 1
+fi
+
 # AMDGPU build test (if AMDGPU support is available). ROCm was historically
 # only installed under /opt/rocm, but distro packages (e.g. Debian/Ubuntu's
 # rocm-smi-lib) may instead put amd_smi/amdsmi.h under /usr, so check both.
@@ -674,7 +692,23 @@ if [ -e "/opt/rocm/include/amd_smi/amdsmi.h" ] || [ -e "/usr/include/amd_smi/amd
             echo "FAIL: GPU metrics values not numeric (temp=$TEMP, activity=$ACTIVITY, power=$POWER, freq=$FREQ)"
             exit 1
         fi
-        
+
+        # Golden output-contract + capability-matrix smoke tests again, this
+        # time against the AMDGPU=1 build -- covers the GPU-build axis's
+        # other value (tests/capability_matrix.sh auto-detects which build
+        # it's running against and includes the GPU flag bundles either way).
+        echo "Testing golden output-contract tests (AMDGPU build)..."
+        if ! ./tests/golden_output.sh; then
+            echo "FAIL: golden output-contract tests failed (AMDGPU build)"
+            exit 1
+        fi
+
+        echo "Testing capability-matrix smoke tests (AMDGPU build)..."
+        if ! ./tests/capability_matrix.sh; then
+            echo "FAIL: capability-matrix smoke tests failed (AMDGPU build)"
+            exit 1
+        fi
+
         # Clean and rebuild standard version
         make clean > /dev/null 2>&1 || true
         make > /dev/null 2>&1
