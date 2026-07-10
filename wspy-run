@@ -21,8 +21,15 @@ RUN_INDEX=""
 DRY_RUN=0
 LIST_ONLY=0
 WORKLOAD=()
+SUITE=""
+BENCHMARK=""
+RUN_ID=""
+UNIFIED=0
+RUNROOT=""
 
-BUILTIN_PROFILES=(quick deep-cpu deep-gpu tree-heavy ibs-basic ibs-memory-deep)
+declare -A PASS_EXT PASS_OUTFILE PASS_MANIFEST PASS_IS_TREE PASS_STATUS
+
+BUILTIN_PROFILES=(quick deep-cpu deep-cpu-intel deep-gpu tree-heavy ibs-basic ibs-memory-deep)
 
 usage(){
   cat <<EOF
@@ -42,10 +49,20 @@ Builtin profiles:
   deep-cpu    the multi-pass CPU counter sweep (software/branch, ipc/topdown,
               cache/float, topdown csv, frontend, opcache) used for topdown
               characterization
+  deep-cpu-intel  the Intel-only equivalent (software/branch, topdown, ipc/l2,
+              backend) -- Intel doesn't have deep-cpu's AMD-specific opcache/
+              frontend/l3 groups, so this is a separate, shorter sweep
   deep-gpu    deep-cpu plus GPU busy/metrics passes (needs an AMDGPU=1 build
               to collect real data; passes still run otherwise since wspy
               itself just warns per pass and continues)
-  tree-heavy  single --tree pass with full command-line capture
+  tree-heavy  single --tree pass with full command-line capture, wrapped in a
+              3600s timeout -- not because ptrace tracing itself is slower,
+              but because an hour's worth of process-tree records is already
+              more data than is practical to publish/browse; the counter
+              passes' output stays small regardless of runtime, so those are
+              left unbounded and allowed to run long if the workload does
+              (see --list to check which passes in a given profile carry a
+              timeout)
   ibs-basic   single pass: unfiltered AMD IBS (ibs_fetch+ibs_op) sample counts
               (AMD-only; wspy warns and produces no IBS columns elsewhere)
   ibs-memory-deep  single pass: AMD IBS with l3missonly+ldlat filtering on
@@ -53,19 +70,53 @@ Builtin profiles:
               sampling period, see the run's own output for skew annotations
 
 Options:
-  -o, --outdir <dir>       Directory to write pass output files into (default: .)
-  -p, --prefix <name>      Prefix prepended to each pass's output filename
+  -o, --outdir <dir>       Directory to write pass output files into (default: .;
+                            root of the unified layout below when --suite/--benchmark
+                            are given)
+  -p, --prefix <name>      Prefix prepended to each pass's output filename (not
+                            allowed together with --suite/--benchmark)
   -c, --config <file>      Load pass definitions from <file> instead of a builtin
                             profile (see "Config file format" below)
   --wspy <path>            Path to the wspy binary (default: \$WSPY or ./wspy next
                             to this script)
   --manifest-dir <dir>     Write a per-pass JSON manifest to
-                            <dir>/<prefix><pass>.manifest.json
+                            <dir>/<prefix><pass>.manifest.json (defaults to the run
+                            directory itself when --suite/--benchmark are given)
   --run-index <file>       Append every pass's run-index record to <file> (shared
                             across passes; concurrent-safe via wspy's own flock)
+  --suite <name>           Suite name, e.g. cpu2017/phoronix/pbbsbench -- enables
+                            the unified output layout (see below); must be given
+                            together with --benchmark
+  --benchmark <name>       Benchmark/workload name, e.g. 503.bwaves_r, coremark --
+                            must be given together with --suite
+  --run-id <id>            Explicit run id for the unified layout (default: an
+                            auto-generated, sortable <timestamp-ms>-<pid>); only
+                            valid together with --suite/--benchmark
   --list                   List builtin profiles and their passes, then exit
   --dry-run                Print the wspy command for each pass without running it
   -h, --help                Show this help
+
+Unified output layout (INVESTIGATION_4.0.md, "Run artifact foundation"):
+  Passing --suite and --benchmark switches from flat <outdir>/<prefix><pass>.<ext>
+  output to a per-run directory tree, so publishing tools don't need suite-specific
+  logic to find a run's files:
+
+    <outdir>/<suite>/<benchmark>/<run-id>/
+      <pass-name>.<csv|txt>       one file per pass, same content as flat mode
+      <pass-name>.manifest.json   per-pass manifest (MANIFEST_DIR defaults here)
+      process.tree.txt            written directly by a --tree pass (e.g. tree-heavy)
+      summary.txt                 concatenation of every non-CSV, non-tree pass's
+                                   output, generalizing the "cat *.txt > combined.txt"
+                                   step workload/cpu2017 and workload/phoronix hand-roll
+      manifest.json                run-level index: suite/benchmark/run_id plus each
+                                   pass's output/manifest filename and wspy-level status
+      plots/                       reserved, empty -- for a future report generator
+                                   (4.1/4.2); nothing here populates it yet
+
+  A profile argument may be a comma-separated list (e.g. "deep-cpu,tree-heavy") to
+  run more than one builtin profile's passes in a single invocation -- this is how
+  a suite that needs both a counter sweep and a --tree pass produces one unified
+  run directory in one command. Pass names must be unique across the combined list.
 
 Config file format:
   One pass per non-comment, non-blank line: "<pass-name> <wspy-flags...>".
@@ -99,9 +150,11 @@ EOF
 
 declare -a PASS_NAMES
 declare -a PASS_FLAGS
+declare -a PASS_TIMEOUTS
 
 load_builtin_profile(){
   local profile="$1"
+  PASS_TIMEOUTS=()
   case "$profile" in
     quick)
       PASS_NAMES=(run)
@@ -117,6 +170,15 @@ load_builtin_profile(){
         "--csv --interval 1 --topdown --no-rusage --no-software --no-ipc"
         "--topdown-frontend --no-ipc --no-software --no-rusage"
         "--topdown-optlb --no-ipc --no-software --no-rusage"
+      )
+      ;;
+    deep-cpu-intel)
+      PASS_NAMES=(software_branch topdown ipc_l2 backend)
+      PASS_FLAGS=(
+        "--rusage --software --branch --no-ipc"
+        "--topdown2 --no-rusage --no-software --no-ipc"
+        "--ipc --cache2 --no-rusage --no-software"
+        "--no-ipc --no-rusage --topdown-backend"
       )
       ;;
     deep-gpu)
@@ -136,6 +198,17 @@ load_builtin_profile(){
     tree-heavy)
       PASS_NAMES=(tree)
       PASS_FLAGS=("--tree ${OUTDIR}/${PREFIX}process.tree.txt --tree-cmdline --software --no-ipc")
+      # workload/*/run_test.sh used to wrap only this one $WSPY invocation in
+      # `timeout 3600`, never the others -- not because ptrace tracing runs
+      # slower, but because an hour's worth of process-tree records is
+      # already more data than is practical to publish/browse, so there's no
+      # value in letting it run longer. The counter passes' output stays
+      # small regardless of runtime, so they were (and still are here) left
+      # unbounded -- a slow workload is fine to just wait out for those.
+      # TODO: this fixed 3600s is a blunt stand-in for an actual estimate;
+      # e.g. phoronix-test-suite has a run-time estimate command that could
+      # size this per-workload instead (see INVESTIGATION_4.0.md).
+      PASS_TIMEOUTS=(3600)
       ;;
     ibs-basic)
       PASS_NAMES=(ibs)
@@ -150,6 +223,12 @@ load_builtin_profile(){
       exit 1
       ;;
   esac
+  # Pad PASS_TIMEOUTS to PASS_NAMES' length for profiles above that didn't set
+  # per-pass timeouts (i.e. all of them except tree-heavy) -- "" means no timeout.
+  local i
+  for ((i=${#PASS_TIMEOUTS[@]}; i<${#PASS_NAMES[@]}; i++)); do
+    PASS_TIMEOUTS[i]=""
+  done
 }
 
 load_config_file(){
@@ -160,6 +239,7 @@ load_config_file(){
   fi
   PASS_NAMES=()
   PASS_FLAGS=()
+  PASS_TIMEOUTS=()
   local line name flags
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line#"${line%%[![:space:]]*}"}"
@@ -176,6 +256,7 @@ load_config_file(){
     fi
     PASS_NAMES+=("$name")
     PASS_FLAGS+=("$flags")
+    PASS_TIMEOUTS+=("")
   done < "$file"
   if [ ${#PASS_NAMES[@]} -eq 0 ]; then
     echo "$SCRIPT_NAME: config file has no passes: $file" >&2
@@ -183,35 +264,82 @@ load_config_file(){
   fi
 }
 
-list_profiles(){
+# Loads one or more comma-separated builtin profiles into PASS_NAMES/PASS_FLAGS,
+# concatenated in list order. A single profile name works exactly as before;
+# the comma form (e.g. "deep-cpu,tree-heavy") is how a suite that needs both a
+# counter sweep and a --tree pass produces one run directory in one invocation.
+load_profiles(){
+  local spec="$1"
+  local -a subprofiles all_names=() all_flags=() all_timeouts=()
+  IFS=',' read -r -a subprofiles <<< "$spec"
   local p i
+  for p in "${subprofiles[@]}"; do
+    load_builtin_profile "$p"
+    for i in "${!PASS_NAMES[@]}"; do
+      all_names+=("${PASS_NAMES[$i]}")
+      all_flags+=("${PASS_FLAGS[$i]}")
+      all_timeouts+=("${PASS_TIMEOUTS[$i]}")
+    done
+  done
+  PASS_NAMES=("${all_names[@]}")
+  PASS_FLAGS=("${all_flags[@]}")
+  PASS_TIMEOUTS=("${all_timeouts[@]}")
+  local seen=" " n
+  for n in "${PASS_NAMES[@]}"; do
+    case "$seen" in
+      *" $n "*)
+        echo "$SCRIPT_NAME: duplicate pass name '$n' across combined profiles: $spec" >&2
+        exit 1 ;;
+    esac
+    seen="$seen$n "
+  done
+}
+
+list_profiles(){
+  local p i suffix
   for p in "${BUILTIN_PROFILES[@]}"; do
     load_builtin_profile "$p"
     echo "$p:"
     for i in "${!PASS_NAMES[@]}"; do
-      printf '  %-16s %s\n' "${PASS_NAMES[$i]}" "${PASS_FLAGS[$i]}"
+      suffix=""
+      [ -n "${PASS_TIMEOUTS[$i]}" ] && suffix="  [timeout ${PASS_TIMEOUTS[$i]}s]"
+      printf '  %-16s %s%s\n' "${PASS_NAMES[$i]}" "${PASS_FLAGS[$i]}" "$suffix"
     done
     echo
   done
 }
 
 run_pass(){
-  local name="$1" flags="$2"
+  local name="$1" flags="$2" timeout_secs="${3:-}"
   local ext="txt"
   case " $flags " in
     *" --csv "*) ext="csv" ;;
   esac
   local outfile="${OUTDIR}/${PREFIX}${name}.${ext}"
+  local manifest_file=""
   local -a flagarr
   read -r -a flagarr <<< "$flags"
-  local -a cmd=("$WSPY" "${flagarr[@]}" -o "$outfile")
+  local -a cmd=()
+  if [ -n "$timeout_secs" ]; then
+    cmd+=(timeout "$timeout_secs")
+  fi
+  cmd+=("$WSPY" "${flagarr[@]}" -o "$outfile")
   if [ -n "$MANIFEST_DIR" ]; then
-    cmd+=(--manifest "${MANIFEST_DIR}/${PREFIX}${name}.manifest.json")
+    manifest_file="${MANIFEST_DIR}/${PREFIX}${name}.manifest.json"
+    cmd+=(--manifest "$manifest_file")
   fi
   if [ -n "$RUN_INDEX" ]; then
     cmd+=(--run-index "$RUN_INDEX")
   fi
   cmd+=(-- "${WORKLOAD[@]}")
+
+  PASS_EXT["$name"]="$ext"
+  PASS_OUTFILE["$name"]="$outfile"
+  PASS_MANIFEST["$name"]="$manifest_file"
+  case " $flags " in
+    *" --tree "*) PASS_IS_TREE["$name"]=1 ;;
+    *) PASS_IS_TREE["$name"]=0 ;;
+  esac
 
   if [ "$DRY_RUN" -eq 1 ]; then
     printf '[%s] ' "$name"
@@ -229,11 +357,90 @@ run_pass(){
   # --run-index exit_status for that.
   if "${cmd[@]}"; then
     echo "[$name] done -> $outfile" >&2
+    PASS_STATUS["$name"]="ok"
     return 0
   else
-    echo "[$name] wspy error (exit $?) -> $outfile" >&2
+    local rc=$?
+    echo "[$name] wspy error (exit $rc) -> $outfile" >&2
+    PASS_STATUS["$name"]="wspy-error"
     return 1
   fi
+}
+
+json_escape(){
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  printf '%s' "$s"
+}
+
+# Concatenates every non-CSV, non-tree pass's output into summary.txt,
+# generalizing the "cat software.branch.txt ipc.topdown.txt ... > combined.txt"
+# step workload/cpu2017 and workload/phoronix hand-roll today.
+generate_summary(){
+  local out="${RUNROOT}/summary.txt"
+  local tmp="${out}.tmp"
+  local name wrote=0
+  : > "$tmp"
+  for name in "${PASS_NAMES[@]}"; do
+    [ "${PASS_EXT[$name]}" = "txt" ] || continue
+    [ "${PASS_IS_TREE[$name]}" = "1" ] && continue
+    {
+      printf '=== %s ===\n' "$name"
+      cat "${PASS_OUTFILE[$name]}" 2>/dev/null
+      printf '\n'
+    } >> "$tmp"
+    wrote=1
+  done
+  if [ "$wrote" -eq 1 ]; then
+    mv "$tmp" "$out"
+  else
+    rm -f "$tmp"
+  fi
+}
+
+# Run-level index: not a per-process wspy manifest (see manifest.h/manifest.c --
+# each pass already writes its own via --manifest), but the thing that ties
+# suite/benchmark/run_id to the set of passes that ran and where their files
+# and per-pass manifests landed, so a reader doesn't need suite-specific logic.
+generate_manifest(){
+  local out="${RUNROOT}/manifest.json"
+  local generated_at
+  generated_at=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+  {
+    printf '{\n'
+    printf '  "layout_version": "1.0.0",\n'
+    printf '  "suite": "%s",\n' "$(json_escape "$SUITE")"
+    printf '  "benchmark": "%s",\n' "$(json_escape "$BENCHMARK")"
+    printf '  "run_id": "%s",\n' "$(json_escape "$RUN_ID")"
+    printf '  "generated_at": "%s",\n' "$generated_at"
+    printf '  "command": ['
+    local first=1 w
+    for w in "${WORKLOAD[@]}"; do
+      [ "$first" -eq 1 ] || printf ', '
+      printf '"%s"' "$(json_escape "$w")"
+      first=0
+    done
+    printf '],\n'
+    printf '  "passes": [\n'
+    local n=${#PASS_NAMES[@]} i name manifest_json
+    for ((i=0;i<n;i++)); do
+      name="${PASS_NAMES[$i]}"
+      if [ -n "${PASS_MANIFEST[$name]}" ]; then
+        manifest_json="\"$(json_escape "$(basename "${PASS_MANIFEST[$name]}")")\""
+      else
+        manifest_json="null"
+      fi
+      printf '    {"name": "%s", "output": "%s", "manifest": %s, "status": "%s"}' \
+        "$(json_escape "$name")" \
+        "$(json_escape "$(basename "${PASS_OUTFILE[$name]}")")" \
+        "$manifest_json" \
+        "${PASS_STATUS[$name]}"
+      if [ "$i" -lt $((n-1)) ]; then printf ',\n'; else printf '\n'; fi
+    done
+    printf '  ]\n'
+    printf '}\n'
+  } > "$out"
 }
 
 while [ $# -gt 0 ]; do
@@ -256,6 +463,15 @@ while [ $# -gt 0 ]; do
     --run-index)
       [ $# -ge 2 ] || { echo "$SCRIPT_NAME: $1 requires an argument" >&2; exit 1; }
       RUN_INDEX="$2"; shift 2 ;;
+    --suite)
+      [ $# -ge 2 ] || { echo "$SCRIPT_NAME: $1 requires an argument" >&2; exit 1; }
+      SUITE="$2"; shift 2 ;;
+    --benchmark)
+      [ $# -ge 2 ] || { echo "$SCRIPT_NAME: $1 requires an argument" >&2; exit 1; }
+      BENCHMARK="$2"; shift 2 ;;
+    --run-id)
+      [ $# -ge 2 ] || { echo "$SCRIPT_NAME: $1 requires an argument" >&2; exit 1; }
+      RUN_ID="$2"; shift 2 ;;
     --list)
       LIST_ONLY=1; shift ;;
     --dry-run)
@@ -295,15 +511,49 @@ if [ ${#WORKLOAD[@]} -eq 0 ]; then
   exit 1
 fi
 
+if [ -n "$SUITE" ] || [ -n "$BENCHMARK" ]; then
+  if [ -z "$SUITE" ] || [ -z "$BENCHMARK" ]; then
+    echo "$SCRIPT_NAME: --suite and --benchmark must be given together" >&2
+    exit 1
+  fi
+  UNIFIED=1
+elif [ -n "$RUN_ID" ]; then
+  echo "$SCRIPT_NAME: --run-id requires --suite and --benchmark" >&2
+  exit 1
+fi
+if [ "$UNIFIED" -eq 1 ] && [ -n "$PREFIX" ]; then
+  echo "$SCRIPT_NAME: --prefix cannot be combined with --suite/--benchmark (the run directory already namespaces output)" >&2
+  exit 1
+fi
+
+if [ "$UNIFIED" -eq 1 ]; then
+  # Sortable, unique-enough-per-host id, same shape as run_index.c's own
+  # per-process run_id (<timestamp-ms>-<pid>) -- a distinct value here since
+  # this identifies the whole wspy-run invocation, not one wspy process.
+  # (Not "date +%3N": some date implementations, e.g. uutils coreutils,
+  # ignore the field-width digit and print full nanoseconds instead of
+  # truncating -- slice milliseconds out of %N by hand instead.)
+  if [ -z "$RUN_ID" ]; then
+    stamp="$(date -u +%Y%m%dT%H%M%S)"
+    ns="$(date -u +%N)"
+    RUN_ID="${stamp}.${ns:0:3}-$$"
+  fi
+  RUNROOT="${OUTDIR%/}/${SUITE}/${BENCHMARK}/${RUN_ID}"
+  OUTDIR="$RUNROOT"
+  PREFIX=""
+  [ -n "$MANIFEST_DIR" ] || MANIFEST_DIR="$RUNROOT"
+fi
+
 if [ -n "$CONFIG_FILE" ]; then
   load_config_file "$CONFIG_FILE"
 else
-  load_builtin_profile "$PROFILE"
+  load_profiles "$PROFILE"
 fi
 
 if [ "$DRY_RUN" -ne 1 ]; then
   mkdir -p "$OUTDIR"
   [ -n "$MANIFEST_DIR" ] && mkdir -p "$MANIFEST_DIR"
+  [ "$UNIFIED" -eq 1 ] && mkdir -p "${RUNROOT}/plots"
   if [ ! -x "$WSPY" ]; then
     echo "$SCRIPT_NAME: wspy binary not found or not executable: $WSPY" >&2
     exit 1
@@ -312,7 +562,13 @@ fi
 
 FAILED=0
 for i in "${!PASS_NAMES[@]}"; do
-  run_pass "${PASS_NAMES[$i]}" "${PASS_FLAGS[$i]}" || FAILED=1
+  run_pass "${PASS_NAMES[$i]}" "${PASS_FLAGS[$i]}" "${PASS_TIMEOUTS[$i]}" || FAILED=1
 done
+
+if [ "$UNIFIED" -eq 1 ] && [ "$DRY_RUN" -ne 1 ]; then
+  generate_summary
+  generate_manifest
+  echo "run directory: $RUNROOT" >&2
+fi
 
 exit "$FAILED"
