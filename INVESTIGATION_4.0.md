@@ -32,15 +32,14 @@ Primary context reviewed (2026-07-08 pass, unchanged from prior pass):
 Prior passes speculated about the codebase from blog content and a source skim without always
 citing line numbers. This pass re-checked the load-bearing claims directly:
 
-- **Superseded (2026-07-08, later in this cycle): the `amd_sysfs.c` `card1` hardcode is fixed.** This
-  bullet previously said `amd_sysfs.c:25,31,48,67` all read
-  `/sys/class/drm/card1/device/{gpu_busy_percent,gpu_metrics}` literally, no scan, no env override —
-  that was accurate when first written but went stale after `feature/gpu-path-scan` merged (PR #7).
-  `amd_sysfs_initialize()` now calls `find_amd_drm_card()`, which scans
-  `/sys/class/drm/card*/device/vendor` for the lowest-numbered AMD (`0x1002`) card and resolves the
-  busy-percent/metrics paths against it. What's still actually missing: per-device selection
-  (`--gpu-device=<idx>`) and full multi-GPU enumeration — a multi-AMD-GPU machine still only ever
-  uses the lowest-numbered match. See "Minimal foundation slice" item 6, now shipped.
+- **Superseded (2026-07-10, later in this cycle): `--gpu-device=<idx>` + multi-GPU enumeration
+  shipped.** This bullet previously said the `amd_sysfs.c` `card1` hardcode was fixed (path scan only)
+  but per-device selection and full multi-GPU enumeration were still missing — that's now done too
+  (`feature/gpu-device-select`): `amd_sysfs_scan_devices()` enumerates every AMD card, not just the
+  lowest-numbered one; `amd_sysfs_initialize(int device_index)` and `amd_smi_initialize(int
+  device_index)` both take `-1` (auto, prior default) or an explicit index; `wspy --gpu-device=<idx>`
+  sets it for both `--gpu-busy`/`--gpu-metrics` (sysfs) and `--gpu-smi` (SMI); `wspy --capabilities`
+  prints both backends' device lists. See "AMD GPU track" for the full description.
 - **Superseded (2026-07-09, later in this cycle): `ptrace_loop()`'s register-access abstraction
   shipped.** This bullet previously said `topdown.c:449,454,456` read `regs.orig_rax`/`regs.rsi`
   directly with no macro layer — that's fixed: `ptrace_arch.h` now provides `wspy_regs_t`,
@@ -268,9 +267,25 @@ of the row below — `amd_sysfs.c`'s `find_amd_drm_card()` now scans `/sys/class
 for the lowest-numbered AMD (`0x1002`) card instead of hardcoding `card1`. Per this file's own "ideas
 already implemented are not listed" rule the shipped half is dropped; the row is narrowed to what's
 still open.
+
+Also shipped since that pass (2026-07-10, `feature/gpu-device-select`): `--gpu-device=<idx>` override +
+multi-GPU enumeration, closing the row below. `amd_sysfs_scan_devices()` replaces the old
+"find the one lowest-numbered card and stop" scan with one that enumerates every AMD card under
+`/sys/class/drm`, sorted ascending by index; `amd_sysfs_initialize(int device_index)` takes `-1` for
+the prior auto-select-lowest behavior or an explicit index that must exactly match a scanned card, else
+it degrades to no sysfs GPU data (logged, not fatal) rather than silently falling back to a different
+card. `amd_smi.c`'s device enumeration (already existed, previously hardcoded to device 0) now takes
+the same `device_index` through `amd_smi_initialize()` and threads it into `amd_smi_metrics()`/
+`amd_smi_memory()`'s device selection. `wspy --gpu-device=<idx>` (always recognized, warns "GPU support
+not built" like the other `--gpu-*` flags when built without `AMDGPU=1`) sets the index used by
+`--gpu-busy`/`--gpu-metrics` (sysfs) and `--gpu-smi` (SMI) alike. `wspy --capabilities` now also prints
+both backends' device enumeration (`amd_sysfs_print_capability_report()`/`amd_smi_print_capability_report()`)
+unconditionally on `AMDGPU=1` builds, independent of whether any `--gpu-*` flag was given, so the indices
+to pass to `--gpu-device` are discoverable without already knowing them. The two backends' device
+indices are independent numbering schemes (DRM card number vs. SMI enumeration order) — reconciling them
+into one identifier is still the separate, not-yet-built fusion layer below, not part of this row.
 | Idea | Phase | Why |
 | --- | --- | --- |
-| `--gpu-device=<idx>` override + multi-GPU enumeration (report/select among multiple AMD cards) | 4.0 | The path scan (shipped) always picks the lowest-numbered AMD card; a machine with more than one AMD GPU has no way to target a specific one or see the others, and `amd_smi.c`'s device enumeration isn't threaded through `amd_sysfs.c` either. |
 | ROCm SMI + sysfs fusion layer (one stream, source precedence, per-metric validity flags) | 4.1 | Merges the two existing independent GPU paths (`amd_smi.c`, `amd_sysfs.c`) once each is trustworthy standalone. |
 | Same manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory activity) | 4.1 | Reuses 4.0 foundation work rather than building a parallel GPU-only pipeline. |
 | `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) | 4.2 | Heavier, optional trace-rich profile — same "default vs debug profile" pattern as IBS. |
@@ -501,9 +516,9 @@ Six items unlock nearly everything else and are independently shippable in rough
 3. ~~Common workload wrapper / profile-driven launcher~~ — shipped (`wspy-run`)
 4. ~~Counter capability discovery + coverage reporting~~ — shipped (`coverage.c`, `wspy --capabilities`)
 5. ~~Topdown confidence envelope + sanity checks~~ — shipped (`topdown.c`'s `print_topdown()`, see "Topdown quality")
-6. ~~`amd_sysfs.c` dynamic GPU path scan~~ — shipped (`amd_sysfs.c`'s `find_amd_drm_card()`; still
-   the isolated one-file fix — `--gpu-device=<idx>` and full multi-GPU enumeration from the inventory
-   row above remain open follow-ons, not required for this slice)
+6. ~~`amd_sysfs.c` dynamic GPU path scan~~ — shipped (`amd_sysfs.c`'s `amd_sysfs_scan_devices()`,
+   formerly `find_amd_drm_card()`; `--gpu-device=<idx>` and full multi-GPU enumeration, once the
+   isolated open follow-on from this slice, have since shipped too — see "AMD GPU track")
 
 Everything else currently tagged 4.0 (validation checks, coverage ledger, IBS profiles, `ptrace`
 macro extraction, plotting templates, golden tests) can slip to a 4.0.x follow-on without blocking
@@ -534,17 +549,17 @@ collector-plugin architecture design decision (2026-07-10, PR #20, `manifest.h`/
 `preflight.c`/`preflight.h` — see "Existing-capability extensions" above), and interval automatic
 phase-boundary detection (2026-07-10, `phase.c`/`phase.h` — see "Existing-capability extensions"
 above); all fourteen were item 1 of this list at the time they shipped and are dropped from the
-ordering below per this file's own "ideas already implemented are not listed" rule.
-That leaves roughly 2 rows still tagged 4.0 across the inventory (one, "Shared plotting templates," was
+ordering below per this file's own "ideas already implemented are not listed" rule. Also since shipped
+(2026-07-10, `feature/gpu-device-select`): `--gpu-device=<idx>` override + multi-GPU enumeration ("AMD
+GPU track" — see that section above) — was item 1 of this list at the time it shipped, dropped for the
+same reason.
+That leaves roughly 1 row still tagged 4.0 across the inventory (one, "Shared plotting templates," was
 just re-phased to 4.1 above since its own rationale depended on the 4.1–4.2 normalized schema — see
-that row). The list below covers all of them except that one, grouped and ordered by priority (design
-decisions first since they get more expensive to retrofit the longer they wait, heavier collection/
-report-layer work last). All are already rows in the inventory above — this is a suggested ordering,
-not a separate list to maintain by hand.
-1. `--gpu-device=<idx>` override + multi-GPU enumeration ("AMD GPU track") — isolated, self-contained
-   follow-on to the `card1` path-scan fix already shipped; doesn't block or get blocked by anything
-   else in this list.
-2. Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,
+that row). The list below covers it, grouped and ordered by priority (design decisions first since they
+get more expensive to retrofit the longer they wait, heavier collection/report-layer work last). It is
+already a row in the inventory above — this is a suggested ordering, not a separate list to maintain by
+hand.
+1. Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,
    plots/*.png,manifest.json}`) ("Run artifact foundation" track) — the largest remaining piece,
    sequenced last here: nothing else in this list depends on it, but 4.1's report/publishing work
    will, so it shouldn't slip past 4.0 entirely.

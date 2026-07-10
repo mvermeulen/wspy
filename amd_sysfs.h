@@ -1,5 +1,6 @@
  #if AMDGPU
 #include <stdint.h>
+#include <stdio.h>
 
 // Helper to match the kernel struct layout
 // See: drivers/gpu/drm/amd/include/kgd_pp_interface.h in Linux source
@@ -122,10 +123,20 @@ struct amd_sysfs_gpu_metrics_v3_0 {
 };
 
 
- void amd_sysfs_initialize(void);
+/* One AMD DRM card discovered under /sys/class/drm, e.g. "card2" -> index 2. */
+struct amd_sysfs_device {
+	int index;
+	char name[16];
+};
+#define AMD_SYSFS_MAX_DEVICES 16
+
+ void amd_sysfs_initialize(int device_index); /* device_index < 0 => auto-select lowest-numbered AMD card */
  void amd_sysfs_finalize(void);
  int amd_sysfs_gpu_busy_percent(void);
  void amd_sysfs_gpu_metrics(void);
+ int amd_sysfs_scan_devices(struct amd_sysfs_device *devices, int max_devices);
+ int amd_sysfs_selected_device(void); /* -1 if none selected */
+ void amd_sysfs_print_capability_report(FILE *out);
  #endif
  int amd_sysfs_get_gpu_temp(void);
  uint16_t amd_sysfs_get_gpu_activity(void);

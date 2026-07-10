@@ -29,6 +29,10 @@ static struct {
 	int valid;
 } gpu_metrics_state = {0};
 
+/* DRM card index (e.g. 2 for "card2") of the device amd_sysfs_initialize()
+ * selected, or -1 if none has been selected (init failed or not yet run). */
+static int amd_sysfs_selected_index = -1;
+
 /* /sys/class/drm entries we care about are "card<N>" (no trailing connector
  * suffix like "card0-DP-1"), so filter on a plain numeric suffix. */
 static int is_drm_card_name(const char *name)
@@ -46,28 +50,27 @@ static int is_drm_card_name(const char *name)
 	return 1;
 }
 
-/* Scan /sys/class/drm/card<N>/device/vendor for the lowest-numbered AMD
- * (vendor 0x1002) card and copy its name (e.g. "card0") into card_name.
- * Returns 0 on success, -1 if no AMD card was found. */
-static int find_amd_drm_card(char *card_name, size_t card_name_len)
+/* Scan /sys/class/drm/card<N>/device/vendor for every AMD (vendor 0x1002)
+ * card, filling devices[] (ascending by index) up to max_devices entries.
+ * Returns the total number of AMD cards found, which may exceed max_devices
+ * (the caller should treat a return value > max_devices as "truncated"). */
+int amd_sysfs_scan_devices(struct amd_sysfs_device *devices, int max_devices)
 {
 	DIR *dir;
 	struct dirent *entry;
-	int best_index = -1;
-	int match_count = 0;
-	char best_name[256] = {0};
+	int found = 0;
 
 	dir = opendir("/sys/class/drm");
 	if (!dir) {
 		error("AMD SYSFS: unable to open /sys/class/drm");
-		return -1;
+		return 0;
 	}
 
 	while ((entry = readdir(dir)) != NULL) {
 		char vendor_path[300];
 		char vendor[16] = {0};
 		FILE *fp;
-		int index;
+		int index, pos;
 
 		if (!is_drm_card_name(entry->d_name)) {
 			continue;
@@ -88,39 +91,94 @@ static int find_amd_drm_card(char *card_name, size_t card_name_len)
 			continue;
 		}
 
-		match_count++;
 		index = atoi(entry->d_name + 4);
-		if (best_index == -1 || index < best_index) {
-			best_index = index;
-			snprintf(best_name, sizeof(best_name), "%s", entry->d_name);
+
+		/* Keep devices[] sorted ascending by index so callers (and
+		 * "lowest-numbered" auto-selection) don't depend on readdir()
+		 * order, which is unspecified. */
+		if (devices && found < max_devices) {
+			pos = found;
+			while (pos > 0 && devices[pos-1].index > index) {
+				devices[pos] = devices[pos-1];
+				pos--;
+			}
+			devices[pos].index = index;
+			snprintf(devices[pos].name, sizeof(devices[pos].name), "%s", entry->d_name);
 		}
+		found++;
 	}
 	closedir(dir);
 
-	if (best_index == -1) {
-		return -1;
-	}
-	if (match_count > 1) {
-		debug("AMD SYSFS: found %d AMD GPUs under /sys/class/drm, using %s\n", match_count, best_name);
-	}
-	snprintf(card_name, card_name_len, "%s", best_name);
-	return 0;
+	return found;
 }
 
- void amd_sysfs_initialize(void)
- {
-	char card_name[256];
+int amd_sysfs_selected_device(void)
+{
+	return amd_sysfs_selected_index;
+}
 
-	if (find_amd_drm_card(card_name, sizeof(card_name)) != 0) {
+void amd_sysfs_print_capability_report(FILE *out)
+{
+	struct amd_sysfs_device devices[AMD_SYSFS_MAX_DEVICES];
+	int found, i, n;
+
+	found = amd_sysfs_scan_devices(devices, AMD_SYSFS_MAX_DEVICES);
+	n = found < AMD_SYSFS_MAX_DEVICES ? found : AMD_SYSFS_MAX_DEVICES;
+
+	fprintf(out, "AMD SYSFS GPU devices found: %d\n", found);
+	for (i = 0; i < n; i++) {
+		fprintf(out, "  %-8s index=%d%s\n", devices[i].name, devices[i].index,
+			devices[i].index == amd_sysfs_selected_index ? " (selected)" : "");
+	}
+	if (found > n) {
+		fprintf(out, "  ... %d more (increase AMD_SYSFS_MAX_DEVICES to list them)\n", found - n);
+	}
+}
+
+/* device_index < 0 selects the lowest-numbered AMD card (prior default
+ * behavior); device_index >= 0 requires an exact match among the AMD cards
+ * found, so a bad --gpu-device index degrades to "no sysfs GPU data" (like
+ * any other unavailable-capability path here) rather than silently falling
+ * back to a different card than the one requested. */
+void amd_sysfs_initialize(int device_index)
+{
+	struct amd_sysfs_device devices[AMD_SYSFS_MAX_DEVICES];
+	int found, n, i, chosen = -1;
+
+	found = amd_sysfs_scan_devices(devices, AMD_SYSFS_MAX_DEVICES);
+	n = found < AMD_SYSFS_MAX_DEVICES ? found : AMD_SYSFS_MAX_DEVICES;
+
+	if (found == 0) {
 		error("AMD SYSFS: no AMD GPU (vendor %s) found under /sys/class/drm", AMD_PCI_VENDOR_ID);
 		return;
 	}
-	debug("AMD SYSFS: using GPU device %s\n", card_name);
+	if (found > 1) {
+		debug("AMD SYSFS: found %d AMD GPUs under /sys/class/drm\n", found);
+	}
+
+	if (device_index < 0) {
+		chosen = 0; /* devices[] is sorted ascending, so index 0 is lowest-numbered */
+	} else {
+		for (i = 0; i < n; i++) {
+			if (devices[i].index == device_index) {
+				chosen = i;
+				break;
+			}
+		}
+		if (chosen == -1) {
+			error("AMD SYSFS: --gpu-device=%d not found among AMD cards under /sys/class/drm "
+			      "(%d found)", device_index, found);
+			return;
+		}
+	}
+
+	debug("AMD SYSFS: using GPU device %s\n", devices[chosen].name);
+	amd_sysfs_selected_index = devices[chosen].index;
 
 	snprintf(amd_sysfs_gpu_busy_path, sizeof(amd_sysfs_gpu_busy_path),
-		 "/sys/class/drm/%s/device/gpu_busy_percent", card_name);
+		 "/sys/class/drm/%s/device/gpu_busy_percent", devices[chosen].name);
 	snprintf(amd_sysfs_gpu_metrics_path, sizeof(amd_sysfs_gpu_metrics_path),
-		 "/sys/class/drm/%s/device/gpu_metrics", card_name);
+		 "/sys/class/drm/%s/device/gpu_metrics", devices[chosen].name);
 
 	if (access(amd_sysfs_gpu_busy_path, R_OK) == 0) {
 		amd_sysfs_has_gpu_busy = 1;
@@ -284,7 +342,8 @@ int amd_sysfs_gpu_metrics_valid(void)
 int main(void)
 {
 	set_error_level(ERROR_LEVEL_DEBUG);
-	amd_sysfs_initialize();
+	amd_sysfs_print_capability_report(stdout);
+	amd_sysfs_initialize(-1);
 	amd_sysfs_gpu_busy_percent();
 	amd_sysfs_gpu_metrics();
 	amd_sysfs_finalize();
