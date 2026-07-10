@@ -1,8 +1,8 @@
 CC=gcc
 CFLAGS=-g
 PROG = wspy cpu_info amd_smi
-SRCS = wspy.c cpu_info.c error.c json_util.c json_reader.c manifest.c run_index.c coverage.c provenance.c proctree.c system.c topdown.c amd_smi.c amd_sysfs.c validate.c
-OBJS = wspy.o cpu_info.o error.o json_util.o json_reader.o manifest.o run_index.o coverage.o provenance.o proctree.o system.o topdown.o amd_smi.o
+SRCS = wspy.c cpu_info.c error.c json_util.c json_reader.c manifest.c run_index.c coverage.c provenance.c ibs.c proctree.c system.c topdown.c amd_smi.c amd_sysfs.c validate.c
+OBJS = wspy.o cpu_info.o error.o json_util.o json_reader.o manifest.o run_index.o coverage.o provenance.o ibs.o proctree.o system.o topdown.o amd_smi.o
 LIBS = -lpthread -lm
 
 # ROCm/AMDGPU defaults (can be overridden on the make command line):
@@ -28,11 +28,11 @@ else
 all:	wspy cpu_info proctree wspy-validate wspy-ledger
 endif
 
-wspy:	wspy.o topdown.o error.o system.o json_util.o manifest.o run_index.o coverage.o provenance.o cpu_info.c cpu_info.h
+wspy:	wspy.o topdown.o error.o system.o json_util.o manifest.o run_index.o coverage.o provenance.o ibs.o cpu_info.c cpu_info.h
 ifdef AMDGPU
-	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c amd_smi.c amd_sysfs.c error.o system.o json_util.o manifest.o run_index.o coverage.o provenance.o $(LIBS)
+	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c amd_smi.c amd_sysfs.c error.o system.o json_util.o manifest.o run_index.o coverage.o provenance.o ibs.o $(LIBS)
 else
-	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c error.o system.o json_util.o manifest.o run_index.o coverage.o provenance.o $(LIBS)
+	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c error.o system.o json_util.o manifest.o run_index.o coverage.o provenance.o ibs.o $(LIBS)
 endif
 
 proctree:	proctree.o error.o
@@ -76,7 +76,7 @@ clobber:	clean
 
 # DO NOT DELETE
 
-wspy.o: wspy.h cpu_info.h error.h manifest.h run_index.h coverage.h provenance.h
+wspy.o: wspy.h cpu_info.h error.h manifest.h run_index.h coverage.h provenance.h ibs.h
 cpu_info.o: cpu_info.h error.h
 error.o: error.h
 json_util.o: json_util.h
@@ -85,6 +85,7 @@ manifest.o: manifest.h wspy.h cpu_info.h error.h json_util.h provenance.h
 run_index.o: run_index.h manifest.h wspy.h cpu_info.h error.h json_util.h provenance.h
 coverage.o: coverage.h wspy.h cpu_info.h
 provenance.o: provenance.h
+ibs.o: ibs.h wspy.h cpu_info.h
 proctree.o: error.h
 topdown.o: error.h wspy.h cpu_info.h coverage.h ptrace_arch.h
 validate.o: json_reader.h manifest.h provenance.h
@@ -95,7 +96,7 @@ ledger.o: json_reader.h
 # etc. left over from an `AMDGPU=1` build of wspy in the same tree, which would
 # reference gpu_busy_requested/gpu_metrics_requested symbols that this build
 # doesn't define and fail to link.
-test_wspy: test_wspy.c wspy.c wspy.h cpu_info.h error.h manifest.h manifest.c run_index.h run_index.c json_util.h json_util.c coverage.h coverage.c provenance.h provenance.c
+test_wspy: test_wspy.c wspy.c wspy.h cpu_info.h error.h manifest.h manifest.c run_index.h run_index.c json_util.h json_util.c coverage.h coverage.c provenance.h provenance.c ibs.h ibs.c
 	$(CC) -g -DAMDGPU=0 -c -o test_error.o error.c
 	$(CC) -g -DAMDGPU=0 -c -o test_cpu_info.o cpu_info.c
 	$(CC) -g -DAMDGPU=0 -c -o test_system.o system.c
@@ -105,7 +106,8 @@ test_wspy: test_wspy.c wspy.c wspy.h cpu_info.h error.h manifest.h manifest.c ru
 	$(CC) -g -DAMDGPU=0 -c -o test_run_index.o run_index.c
 	$(CC) -g -DAMDGPU=0 -c -o test_coverage.o coverage.c
 	$(CC) -g -DAMDGPU=0 -c -o test_provenance.o provenance.c
-	$(CC) -o test_wspy -g -DAMDGPU=0 -DTEST_WSPY test_wspy.c test_error.o test_cpu_info.o test_system.o test_topdown.o test_json_util.o test_manifest.o test_run_index.o test_coverage.o test_provenance.o -lpthread -lm
+	$(CC) -g -DAMDGPU=0 -c -o test_ibs_probe.o ibs.c
+	$(CC) -o test_wspy -g -DAMDGPU=0 -DTEST_WSPY test_wspy.c test_error.o test_cpu_info.o test_system.o test_topdown.o test_json_util.o test_manifest.o test_run_index.o test_coverage.o test_provenance.o test_ibs_probe.o -lpthread -lm
 
 test_proctree: test_proctree.c proctree.c error.h error.o
 	$(CC) -o test_proctree $(CFLAGS) -DTEST_PROCTREE test_proctree.c error.o $(LIBS)
@@ -116,8 +118,12 @@ test_validate: test_validate.c validate.c json_reader.c json_reader.h manifest.h
 test_ledger: test_ledger.c ledger.c json_reader.c json_reader.h
 	$(CC) -o test_ledger $(CFLAGS) -DTEST_LEDGER test_ledger.c json_reader.c
 
-test: test_wspy test_proctree test_validate test_ledger
+test_ibs: test_ibs.c ibs.c ibs.h
+	$(CC) -o test_ibs $(CFLAGS) test_ibs.c
+
+test: test_wspy test_proctree test_validate test_ledger test_ibs
 	./test_wspy
 	./test_proctree
 	./test_validate
 	./test_ledger
+	./test_ibs

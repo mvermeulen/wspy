@@ -23,6 +23,7 @@
 #include "run_index.h"
 #include "coverage.h"
 #include "provenance.h"
+#include "ibs.h"
 
 int aflag = 0;
 int oflag = 0;
@@ -354,6 +355,7 @@ int parse_options(int argc,char *const argv[]){
 // probing "everything" is the point of a discovery run.
 static int run_capabilities_probe(void){
   struct counter_group *cgroup;
+  struct ibs_capabilities ibs;
 
   if (inventory_cpu() != 0){
     fatal("unable to query CPU information\n");
@@ -373,6 +375,10 @@ static int run_capabilities_probe(void){
   setup_counters(cpu_info->systemwide_counters);
 
   print_capability_report();
+
+  ibs = ibs_probe();
+  print_ibs_capability_report(&ibs);
+
   if (oflag) fclose(outfile);
   return 0;
 }
