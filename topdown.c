@@ -24,6 +24,7 @@
 #include "wspy.h"
 #include "coverage.h"
 #include "ptrace_arch.h"
+#include "ibs.h"
 #if AMDGPU
 #include "amd_sysfs.h"
 extern int gpu_busy_requested;
@@ -811,6 +812,8 @@ void setup_counters(struct counter_group *counter_group_list){
       memset(&pe,0,sizeof(pe));
       pe.type = (cgroup->type_id==PERF_TYPE_RAW)?cgroup->cinfo[i].device_type:cgroup->type_id;
       pe.config = cgroup->cinfo[i].config;
+      pe.config1 = cgroup->cinfo[i].config1;
+      pe.config2 = cgroup->cinfo[i].config2;
       pe.sample_type = PERF_SAMPLE_IDENTIFIER; // is this needed?
       pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED|PERF_FORMAT_TOTAL_TIME_RUNNING;
       pe.size = sizeof(struct perf_event_attr);
@@ -1854,6 +1857,68 @@ void print_software(struct counter_group *cgroup,enum output_format oformat){
   }
 }
 
+// prints AMD IBS counts plus the sampling skew/quality annotations
+// (l3missonly/ldlat/fetchlat requested-vs-applied, accepted-vs-filtered
+// ratio) described in INVESTIGATION_4.0.md's "Zen5/IBS deep-dive" -- these
+// must be visible in output, not just in code comments, since l3missonly/
+// ldlat filtering is documented to skew the effective sampling period.
+void print_ibs(struct counter_group *cgroup,enum output_format oformat){
+  struct counter_info *fetch_ci = find_ci_label(cgroup,"ibs_fetch");
+  struct counter_info *op_ci = find_ci_label(cgroup,"ibs_op");
+  struct counter_info *op_unf_ci = find_ci_label(cgroup,"ibs_op_unfiltered");
+  struct ibs_capabilities caps;
+  struct ibs_event fetch_ev,op_ev;
+  int deep = (ibs_collection_profile == IBS_PROFILE_MEMORY_DEEP);
+  double accepted_ratio = -1.0;
+
+  if (oformat == PRINT_CSV_HEADER){
+    fprintf(outfile,"ibs_fetch,ibs_op,");
+    if (deep) fprintf(outfile,"ibs_op_unfiltered,ibs_op_accepted_ratio,ibs_l3missonly,ibs_ldlat_threshold,ibs_fetchlat_threshold,");
+    return;
+  }
+
+  // recompute what the run actually requested/applied for the annotation
+  // fields -- cheap (a handful of sysfs reads), and keeps this print path
+  // independent of any extra state threaded through setup/read_counters.
+  caps = ibs_probe();
+  fetch_ev = ibs_build_fetch_event(&caps.fetch,ibs_collection_profile,&ibs_params);
+  op_ev = ibs_build_op_event(&caps.op,ibs_collection_profile,&ibs_params);
+  if (op_unf_ci && op_unf_ci->value > 0)
+    accepted_ratio = (double)(op_ci?op_ci->value:0) / (double)op_unf_ci->value;
+
+  if (oformat == PRINT_CSV){
+    fprintf(outfile,"%lu,%lu,",fetch_ci?fetch_ci->value:0,op_ci?op_ci->value:0);
+    if (deep){
+      fprintf(outfile,"%lu,%.4f,%d,%u,%u,",
+	      op_unf_ci?op_unf_ci->value:0,
+	      accepted_ratio >= 0 ? accepted_ratio : 0.0,
+	      op_ev.l3missonly_applied,
+	      op_ev.ldlat_applied ? op_ev.ldlat_threshold : 0,
+	      fetch_ev.fetchlat_applied ? fetch_ev.fetchlat_threshold : 0);
+    }
+    return;
+  }
+
+  fprintf(outfile,"ibs_fetch            %-14lu\n",fetch_ci?fetch_ci->value:0);
+  fprintf(outfile,"ibs_op               %-14lu",op_ci?op_ci->value:0);
+  if (deep && op_ev.l3missonly_applied) fprintf(outfile," # l3missonly filter active");
+  fprintf(outfile,"\n");
+  if (!deep) return;
+
+  if (op_unf_ci) fprintf(outfile,"ibs_op_unfiltered    %-14lu\n",op_unf_ci->value);
+  if (accepted_ratio >= 0)
+    fprintf(outfile,"ibs_op_accepted      %5.1f%%          # filtered/unfiltered ratio -- l3missonly/ldlat filtering skews the effective sampling period, see INVESTIGATION_4.0.md\n",
+	    accepted_ratio*100.0);
+  if (op_ev.ldlat_applied)
+    fprintf(outfile,"ibs_ldlat_threshold  %-14u# cycles; hardware drops below-threshold loads before they're counted\n",op_ev.ldlat_threshold);
+  if (fetch_ev.fetchlat_applied)
+    fprintf(outfile,"ibs_fetchlat_threshold %-12u# cycles\n",fetch_ev.fetchlat_threshold);
+  if (op_ev.ldlat_requested && !op_ev.ldlat_applied)
+    fprintf(outfile,"# warning: ldlat filter requested (ibs-memory-deep) but not supported by this kernel/CPU -- ibs_op is unfiltered\n");
+  if (op_ev.l3missonly_requested && !op_ev.l3missonly_applied)
+    fprintf(outfile,"# warning: l3missonly filter requested (ibs-memory-deep) but not supported by this kernel/CPU -- ibs_op is unfiltered\n");
+}
+
 void print_metrics(struct counter_group *counter_group_list,enum output_format oformat){
   struct counter_group *cgroup;
   for (cgroup = counter_group_list;cgroup;cgroup = cgroup->next){
@@ -1888,6 +1953,8 @@ void print_metrics(struct counter_group *counter_group_list,enum output_format o
       }
     } else if (cgroup->mask & COUNTER_FLOAT){
       print_float(cgroup,oformat);
+    } else if (cgroup->mask & COUNTER_IBS){
+      print_ibs(cgroup,oformat);
     }
   }
 }

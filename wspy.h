@@ -51,6 +51,12 @@ extern struct timespec start_time,finish_time;
 #define COUNTER_OPCACHE     0x4000
 #define COUNTER_SOFTWARE    0x8000
 #define COUNTER_FLOAT       0x10000
+/* AMD IBS (ibs-basic/ibs-memory-deep collection profiles, see ibs.h). Not
+ * folded into COUNTER_ALL: --capabilities already discovers IBS support via
+ * its own dedicated ibs_probe()/print_ibs_capability_report() path, so a
+ * generic "probe everything" run has no need to also open real IBS counting
+ * events (which requires an explicit profile choice, see ibs_collection_profile). */
+#define COUNTER_IBS         0x20000
 
 /* every counter type wspy knows how to request; used by --capabilities to
  * probe the full set regardless of what counter flags were also given */

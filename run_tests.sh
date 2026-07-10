@@ -253,6 +253,43 @@ if ! echo "$CAPS_OUT" | grep -qE "^  ibs_op +(available|not present)"; then
 fi
 echo "  wspy --capabilities IBS probing: OK"
 
+# ibs-basic/ibs-memory-deep collection profiles: gracefully "no IBS columns"
+# on a host/kernel without IBS support (mirrors the GPU-flag pattern above),
+# and CSV header/value column counts must match on hosts that do have it.
+echo "Testing wspy --ibs-basic / --ibs-memory-deep..."
+IBS_BASIC_OUT=$(./wspy --csv --ibs-basic -- /bin/true 2>&1)
+if ! echo "$IBS_BASIC_OUT" | grep -q "^elapsed,"; then
+    echo "FAIL: --ibs-basic did not produce CSV output"
+    echo "$IBS_BASIC_OUT"
+    exit 1
+fi
+if echo "$CAPS_OUT" | grep -q "^IBS capability report: supported"; then
+    if ! echo "$IBS_BASIC_OUT" | grep -q "ibs_fetch,ibs_op,"; then
+        echo "FAIL: --ibs-basic did not add ibs_fetch/ibs_op CSV columns on an IBS-supported host"
+        echo "$IBS_BASIC_OUT"
+        exit 1
+    fi
+    IBS_HEADER_COLS=$(echo "$IBS_BASIC_OUT" | grep "^elapsed," | head -1 | tr ',' '\n' | wc -l)
+    IBS_VALUE_COLS=$(echo "$IBS_BASIC_OUT" | grep -v "^elapsed," | grep -v "^warning:" | grep -v "^error:" | tail -1 | tr ',' '\n' | wc -l)
+    if [ "$IBS_HEADER_COLS" != "$IBS_VALUE_COLS" ]; then
+        echo "FAIL: --ibs-basic CSV header/value column count mismatch ($IBS_HEADER_COLS vs $IBS_VALUE_COLS)"
+        echo "$IBS_BASIC_OUT"
+        exit 1
+    fi
+else
+    if echo "$IBS_BASIC_OUT" | grep -q "ibs_fetch,ibs_op,"; then
+        echo "FAIL: --ibs-basic added IBS columns on a host --capabilities reports as unsupported"
+        exit 1
+    fi
+fi
+IBS_DEEP_OUT=$(./wspy --ibs-memory-deep -- /bin/true 2>&1)
+if [ $? -ne 0 ]; then
+    echo "FAIL: --ibs-memory-deep should exit 0 even without perf access / IBS support"
+    echo "$IBS_DEEP_OUT"
+    exit 1
+fi
+echo "  wspy --ibs-basic / --ibs-memory-deep: OK"
+
 # Counters that fail to open (e.g. no perf access) must degrade gracefully
 # rather than aborting the whole run -- this is the other half of coverage
 # reporting: a real run's output says what it could and couldn't measure

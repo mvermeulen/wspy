@@ -44,6 +44,8 @@ struct counter_info {
   unsigned int is_group_leader : 1;
   unsigned int device_type;
   unsigned long int config;
+  unsigned long int config1; // extended config word (e.g. AMD IBS ldlat threshold); 0 for counters that don't use it
+  unsigned long int config2;
   struct counter_def *cdef;
   int fd;
   unsigned long int value;

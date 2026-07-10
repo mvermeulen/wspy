@@ -22,7 +22,7 @@ DRY_RUN=0
 LIST_ONLY=0
 WORKLOAD=()
 
-BUILTIN_PROFILES=(quick deep-cpu deep-gpu tree-heavy)
+BUILTIN_PROFILES=(quick deep-cpu deep-gpu tree-heavy ibs-basic ibs-memory-deep)
 
 usage(){
   cat <<EOF
@@ -46,6 +46,11 @@ Builtin profiles:
               to collect real data; passes still run otherwise since wspy
               itself just warns per pass and continues)
   tree-heavy  single --tree pass with full command-line capture
+  ibs-basic   single pass: unfiltered AMD IBS (ibs_fetch+ibs_op) sample counts
+              (AMD-only; wspy warns and produces no IBS columns elsewhere)
+  ibs-memory-deep  single pass: AMD IBS with l3missonly+ldlat filtering on
+              ibs_op for memory-path analysis -- known to skew the effective
+              sampling period, see the run's own output for skew annotations
 
 Options:
   -o, --outdir <dir>       Directory to write pass output files into (default: .)
@@ -131,6 +136,14 @@ load_builtin_profile(){
     tree-heavy)
       PASS_NAMES=(tree)
       PASS_FLAGS=("--tree ${OUTDIR}/${PREFIX}process.tree.txt --tree-cmdline --software --no-ipc")
+      ;;
+    ibs-basic)
+      PASS_NAMES=(ibs)
+      PASS_FLAGS=("--csv --ibs-basic --no-ipc")
+      ;;
+    ibs-memory-deep)
+      PASS_NAMES=(ibs)
+      PASS_FLAGS=("--csv --ibs-memory-deep --no-ipc")
       ;;
     *)
       echo "$SCRIPT_NAME: unknown profile: $profile (try --list)" >&2
