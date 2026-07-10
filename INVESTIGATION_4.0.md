@@ -185,8 +185,8 @@ the 4.2 list's "Phase-aware topdown" and "Composite attribution."
 
 ## 4.1 priorities
 Goal: turn the 4.0 foundation into less manual work — normalized data, stats/confidence reporting,
-a real report generator, native multi-pass execution, `/proc` enrichment. Ordered in dependency
-tiers; items within a tier are independently startable.
+a real report generator, native multi-pass execution, `/proc` enrichment, and a multiplexed-counter
+scaling correctness fix. Ordered in dependency tiers; items within a tier are independently startable.
 
 **Tier 1 — foundational, unlocks most of the rest of 4.1:**
 1. Canonical metrics schema + normalized store (SQLite and/or Parquet) — almost everything below
@@ -199,66 +199,73 @@ tiers; items within a tier are independently startable.
    merged manifest/CSV) — confirmed real pain: `workload/phoronix/run_test.sh` used to launch the
    same command up to 8 times by hand to dodge multiplexing; `wspy-run`'s profile launcher defines
    what a "pass" is, this makes it native instead of N separate processes.
+4. **Correctness:** scale multiplexed counter values by `time_running`/`time_enabled` in
+   `read_counters()` (`topdown.c`) — today only the confidence envelope accounts for multiplexing
+   (`multiplex-aware confidence`, shipped in 4.0); the raw counter *value* itself is never
+   extrapolated to the full interval, so any run where PMU slots are oversubscribed (more groups
+   requested than `preflight.c`'s counter-fit budget, or the NMI watchdog eating a slot) silently
+   undercounts absolute values, not just their confidence. A correctness fix, not new capability —
+   worth doing before Tier 3's stats/comparison work builds on these numbers.
 
 **Tier 2 — reporting/UI on top of Tier 1's data shapes:**
-4. HTML report bundle (summary, bottlenecks, tree, top counters, links to raw artifacts) + compare
+5. HTML report bundle (summary, bottlenecks, tree, top counters, links to raw artifacts) + compare
    view.
-5. Publish-ready data export format.
-6. Historical run index browser/search.
-7. Shared plotting templates — replace `workload/phoronix/gnuplot.sh`'s per-suite script with one
+6. Publish-ready data export format.
+7. Historical run index browser/search.
+8. Shared plotting templates — replace `workload/phoronix/gnuplot.sh`'s per-suite script with one
    normalized-schema pipeline once #1 exists.
-8. Traceability links (summary row → manifest → raw CSV → plots → tree artifacts) — closes the
+9. Traceability links (summary row → manifest → raw CSV → plots → tree artifacts) — closes the
    "every published row traces back to command/environment/artifacts" criterion deferred from 4.0
    (see "Success criteria for a 4.0 kickoff").
 
 **Tier 3 — stats/confidence layer:**
-9. Repeatability policy + confidence metadata (mean, stddev, CV, CI) as default output.
-10. Outlier/threshold engine (per-metric, global + suite-local).
-11. Comparison matrix mode (sweep compiler/kernel/governor/SMT/VM-native) — builds on the
+10. Repeatability policy + confidence metadata (mean, stddev, CV, CI) as default output.
+11. Outlier/threshold engine (per-metric, global + suite-local).
+12. Comparison matrix mode (sweep compiler/kernel/governor/SMT/VM-native) — builds on the
     profile-driven launcher; a declarative sweep runner, not new collection logic.
 
 **Tier 4 — topdown/IBS refinement:**
-12. Hierarchical (parent→child) topdown schema + explicit raw-vs-contention-adjusted denominators +
+13. Hierarchical (parent→child) topdown schema + explicit raw-vs-contention-adjusted denominators +
     formula/version metadata.
-13. Core-class-aware topdown (hybrid Intel Atom+Core; weighted aggregate) — depends on per-core
-    collection (`--per-core`, shipped) plus #12.
-14. Zen-family preset packs (`zen-portable`, `zen4plus-deep`) — convenience layer now that IBS
+14. Core-class-aware topdown (hybrid Intel Atom+Core; weighted aggregate) — depends on per-core
+    collection (`--per-core`, shipped) plus #13.
+15. Zen-family preset packs (`zen-portable`, `zen4plus-deep`) — convenience layer now that IBS
     capability probing exists.
-15. PMU-capability-aware comparability warnings.
+16. PMU-capability-aware comparability warnings.
 
 **Tier 5 — `/proc` and tree enrichment (independent, moderate value, low risk):**
-16. `/proc/<pid>/io` byte counters (read/write/cancelled-write bytes).
-17. `/proc/<pid>/schedstat` run-delay/timeslice capture.
-18. Memory footprint detail (`VmRSS`/`VmHWM`/anon-file-shmem split via `/proc/<pid>/status` or
+17. `/proc/<pid>/io` byte counters (read/write/cancelled-write bytes).
+18. `/proc/<pid>/schedstat` run-delay/timeslice capture.
+19. Memory footprint detail (`VmRSS`/`VmHWM`/anon-file-shmem split via `/proc/<pid>/status` or
     `smaps_rollup`).
-19. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
+20. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
     containerized environments.
-20. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
-21. `proctree` → JSON/Graphviz export + run-to-run tree diff.
+21. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
+22. `proctree` → JSON/Graphviz export + run-to-run tree diff.
 
 **Tier 6 — GPU track:**
-22. ROCm SMI + sysfs fusion layer (one stream, source precedence, per-metric validity flags) —
+23. ROCm SMI + sysfs fusion layer (one stream, source precedence, per-metric validity flags) —
     merges the two existing independent GPU paths (`amd_smi.c`, `amd_sysfs.c`).
-23. Same manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory
+24. Same manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory
     activity) — reuses 4.0 foundation work rather than a parallel GPU-only pipeline.
 
 **Tier 7 — characterization prerequisites:**
-24. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
+25. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
     switch/I-O) — needs #1's normalized schema to draw features from.
-25. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
+26. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
     stability) + confidence + top-2 alternatives.
 
 **Tier 8 — portability:**
-26. Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`) —
+27. Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`) —
     actual ARM64 `cpu_info` support; `cpu_info.c`'s `__cpuid()`/`<cpuid.h>` use is the remaining
     x86_64-only blocker (the `ptrace` side of ARM64 prep already shipped, see `ptrace_arch.h`).
 
 **Tier 9 — testing/docs and small cleanups (track alongside the schema work above):**
-27. Schema compatibility/migration tests + reproducibility/idempotency tests.
-28. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
+28. Schema compatibility/migration tests + reproducibility/idempotency tests.
+29. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
     output).
-29. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
-30. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
+30. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
+31. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
     constant (e.g. `phoronix-test-suite` reportedly has a run-time-estimate command) — today's
     constant is a blunt stand-in; the real constraint is capping process-record data volume for
     publishing, not workload runtime, so a per-workload estimate would size it more accurately than
