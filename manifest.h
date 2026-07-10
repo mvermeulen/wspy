@@ -18,7 +18,7 @@
  * breaks existing readers, MINOR when a field is added in a backward
  * compatible way, PATCH for fixes that don't change the shape. Consumers
  * should warn (not silently misparse) on an unrecognized MAJOR version. */
-#define MANIFEST_SCHEMA_VERSION "1.2.0"
+#define MANIFEST_SCHEMA_VERSION "1.3.0"
 
 /* One counter that setup_counters() (topdown.c) tried and failed to open via
  * perf_event_open, as recorded by coverage.c. Kept as its own small struct
@@ -39,6 +39,14 @@ struct manifest_exit_status {
 };
 
 struct manifest_info {
+  /* Name of the tool that collected this run's data. Always "wspy" today --
+   * this codebase has exactly one collector -- but the field exists so the
+   * manifest/run-index schema doesn't silently assume that forever. A future
+   * non-wspy collector (perf stat, trace-cmd, a GPU vendor tool) feeding the
+   * same manifest+normalization path would populate its own name here rather
+   * than requiring a breaking schema change to add the concept. See
+   * INVESTIGATION_4.0.md's "Collector-plugin architecture" row. */
+  const char *collector;
   struct timespec start_time;
   struct timespec finish_time;
   int argc;

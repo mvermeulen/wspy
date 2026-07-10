@@ -72,6 +72,7 @@ int append_run_index(const char *path,const struct manifest_info *info){
   fprintf(fp,"{");
   fprintf(fp,"\"schema_version\":\"%s\",",RUN_INDEX_SCHEMA_VERSION);
   fprintf(fp,"\"run_id\":\"%s\",",run_id);
+  fprintf(fp,"\"collector\":\"%s\",",info->collector ? info->collector : "wspy");
   fprintf(fp,"\"wspy_version\":\"%s\",",wspy_version);
   fprintf(fp,"\"hostname\":");
   json_write_string(fp,hostname);
