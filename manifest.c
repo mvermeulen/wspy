@@ -96,6 +96,7 @@ int write_manifest(const char *path,const struct manifest_info *info){
 
   fprintf(fp,"{\n");
   fprintf(fp,"  \"schema_version\": \"%s\",\n",MANIFEST_SCHEMA_VERSION);
+  fprintf(fp,"  \"collector\": \"%s\",\n",info->collector ? info->collector : "wspy");
   fprintf(fp,"  \"wspy_version\": \"%s\",\n",wspy_version);
   fprintf(fp,"  \"generated_at\": \"%s\",\n",generated_buf);
 

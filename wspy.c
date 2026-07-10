@@ -740,6 +740,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     struct coverage_entry *ce;
     int ngaps = 0;
     memset(&minfo,0,sizeof(minfo));
+    minfo.collector = "wspy";
     minfo.start_time = start_time;
     minfo.finish_time = finish_time;
     minfo.argc = command_line_argc;
