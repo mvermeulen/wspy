@@ -316,12 +316,21 @@ a major-version difference or a missing field entirely, mirroring `validate.c`'s
 minor/patch schema drift, same as `wspy-validate` tolerates it for manifests). This closes the gap
 this file previously called out: the write side (`RUN_INDEX_SCHEMA_VERSION` in `run_index.h`) had
 shipped with no reader anywhere in the tree ever checking it.
+
+Also shipped since that pass: the collector-plugin architecture design decision itself (2026-07-10,
+PR #20) — resolved in favor of a minimal schema seam now, no plugin infrastructure. `struct
+manifest_info` (`manifest.h`) gained a `collector` field (defaults to `"wspy"`, populated in
+`wspy.c:main()`), emitted in both `manifest.json` (`manifest.c`) and the run-index JSONL records
+(`run_index.c`); `MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION` bumped to `1.3.0` (MINOR,
+additive — existing readers unaffected). No non-wspy collector was integrated; that part of the row
+below remains real 4.2+ scope. This was item 1 of the "next up after the minimal slice" list at the
+time it shipped.
 | Idea | Phase | Why |
 | --- | --- | --- |
 | Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`) | 4.1 | Actual ARM64 `cpu_info` support; the `ptrace` macro extraction it depended on has since shipped (`ptrace_arch.h`), but `cpu_info.c`'s `__cpuid()`/`<cpuid.h>` use is a separate, still-open x86_64-only blocker this row covers. |
 | Native multi-pass counter execution (`--passes=ipc,topdown,cache,software`, internal N-run loop, merged manifest/CSV) | 4.1 | Confirmed real pain: `workload/phoronix/run_test.sh` already launches the same command up to 8 times by hand to dodge multiplexing. Depends on the profile launcher (4.0) to define what a "pass" is. |
 | Low-overhead tracing alternative to `ptrace` (`ftrace` tracepoints or minimal eBPF) for `--tree`/`--tree-open` | 4.2 | `ptrace` context-switches on every syscall entry/exit, which skews the very counters being measured for I/O-heavy or fork-heavy workloads — but this is a substantial new backend, correctly sequenced after the cheaper wins above. |
-| Collector-plugin architecture (wspy core / perf stat / trace-cmd / GPU tools behind one manifest+normalization path) | design decision in 4.0, implementation 4.2+ | **Gap in the prior draft** — "major idea H" had no phase. The *decision* (does the manifest schema assume one collector or many?) needs to be made while designing the 4.0 manifest, even though building out non-wspy collectors is a 4.2+ effort — retrofitting pluggability after the schema is locked is expensive. |
+| Collector-plugin implementation (perf stat / trace-cmd / GPU tools as collectors behind the `collector` field, normalization path) | 4.2+ | **Decision shipped 2026-07-10** (see prose above): the manifest/run-index schema now carries a `collector` field rather than assuming wspy forever. What remains is real implementation — actually wrapping a non-wspy collector and normalizing its output into the same manifest/run-index shape — deliberately deferred to 4.2+. |
 
 ### Publishing, reporting, UI
 | Idea | Phase | Why |
@@ -496,31 +505,28 @@ ingest (2026-07-10, `ledger.c` — see "Portability and robustness" above), and 
 tests + capability-matrix smoke tests (2026-07-10, `tests/golden_output.sh`/`tests/capability_matrix.sh`
 — see "Testing and documentation" above, including the five output-contract bugs and one crash that
 building them surfaced and fixed), and the artifact contract doc + troubleshooting runbook
-(2026-07-10, `doc/ARTIFACT_CONTRACT.md` — see "Testing and documentation" above); all eleven were item
-1 of this list at the time they shipped and are dropped from the ordering below per this file's own
-"ideas already implemented are not listed" rule.
-That leaves roughly 5 rows still tagged 4.0 across the inventory (one, "Shared plotting templates," was
+(2026-07-10, `doc/ARTIFACT_CONTRACT.md` — see "Testing and documentation" above), and the
+collector-plugin architecture design decision (2026-07-10, PR #20, `manifest.h`/`run_index.h`'s new
+`collector` field — see "Portability and robustness" above); all twelve were item 1 of this list at
+the time they shipped and are dropped from the ordering below per this file's own "ideas already
+implemented are not listed" rule.
+That leaves roughly 4 rows still tagged 4.0 across the inventory (one, "Shared plotting templates," was
 just re-phased to 4.1 above since its own rationale depended on the 4.1–4.2 normalized schema — see
 that row). The list below covers all of them except that one, grouped and ordered by priority (design
 decisions first since they get more expensive to retrofit the longer they wait, heavier collection/
 report-layer work last). All are already rows in the inventory above — this is a suggested ordering,
 not a separate list to maintain by hand.
-1. Collector-plugin architecture design decision (wspy core / perf stat / trace-cmd / GPU tools behind
-   one manifest+normalization path) ("Portability and robustness" track) — only the *decision* (does
-   the schema assume one collector or many?) is 4.0 work; implementation is 4.2+. Cheap to decide now,
-   expensive to retrofit once more schema/normalization work (items above, plus 4.1's canonical
-   metrics schema) is built on top of an unexamined assumption.
-2. Counter-fit preflight ("will this profile multiplex heavily?" + suggested downgrades)
+1. Counter-fit preflight ("will this profile multiplex heavily?" + suggested downgrades)
    ("Existing-capability extensions" track) — builds directly on availability/NMI-watchdog handling
    and `coverage.c` that already exist at runtime; this just surfaces the same fit information before
    a run instead of after.
-3. Interval (`--interval`) → automatic phase-boundary detection (warmup/steady/degraded)
+2. Interval (`--interval`) → automatic phase-boundary detection (warmup/steady/degraded)
    ("Existing-capability extensions" track) — basic marker detection can land now and is a named
    prerequisite for phase-aware topdown (4.2) and phase-aware IBS.
-4. `--gpu-device=<idx>` override + multi-GPU enumeration ("AMD GPU track") — isolated, self-contained
+3. `--gpu-device=<idx>` override + multi-GPU enumeration ("AMD GPU track") — isolated, self-contained
    follow-on to the `card1` path-scan fix already shipped; doesn't block or get blocked by anything
    else in this list.
-5. Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,
+4. Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,
    plots/*.png,manifest.json}`) ("Run artifact foundation" track) — the largest remaining piece,
    sequenced last here: nothing else in this list depends on it, but 4.1's report/publishing work
    will, so it shouldn't slip past 4.0 entirely.
