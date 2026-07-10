@@ -41,10 +41,15 @@ citing line numbers. This pass re-checked the load-bearing claims directly:
   busy-percent/metrics paths against it. What's still actually missing: per-device selection
   (`--gpu-device=<idx>`) and full multi-GPU enumeration — a multi-AMD-GPU machine still only ever
   uses the lowest-numbered match. See "Minimal foundation slice" item 6, now shipped.
-- **`ptrace_loop()` really is x86_64-only** — `topdown.c:449,454,456` reads `regs.orig_rax` and
-  `regs.rsi` directly (raw `struct user_regs_struct` fields, no macro layer), and `cpu_info.c:33,61`
-  call `__cpuid()` from `<cpuid.h>`. Both are genuine portability blockers for ARM64, not just style
-  issues — there is currently zero abstraction to build on.
+- **Superseded (2026-07-09, later in this cycle): `ptrace_loop()`'s register-access abstraction
+  shipped.** This bullet previously said `topdown.c:449,454,456` read `regs.orig_rax`/`regs.rsi`
+  directly with no macro layer — that's fixed: `ptrace_arch.h` now provides `wspy_regs_t`,
+  `ptrace_getregs()`, and `PTRACE_SYSCALL_NUM`/`PTRACE_SYSCALL_ARG2` macros behind
+  `#ifdef __x86_64__`/`__aarch64__`, and `ptrace_loop()` uses them instead of the raw struct fields.
+  Only the x86_64 branch has been built/exercised; the aarch64 branch is unverified prep modeled on
+  documented arm64 ptrace/syscall-ABI conventions, not a working ARM64 backend. `cpu_info.c:33,61`
+  calling `__cpuid()` from `<cpuid.h>` remains a genuine, not-yet-addressed portability blocker for
+  ARM64 — that part of this bullet still stands.
 - **Superseded (2026-07-08, later in this cycle): the manifest/run-index/profile-launcher slice
   shipped.** This section previously said "there is no manifest, no JSON output, and no schema
   anywhere in the codebase today" — that was accurate when first written but was left stale after
@@ -263,11 +268,19 @@ false` because the root child's status wasn't captured outside `ptrace_loop()`'s
 `child_term_signal` in `topdown.c`, shared with the non-tree `wait4()` path in `wspy.c`), so both modes
 report real exit status now. Per this file's own "ideas already implemented are not listed" rule the row
 is dropped.
+
+Also shipped since that pass: arch-neutral `ptrace` register-access macros (`ptrace_arch.h`,
+2026-07-09) — `wspy_regs_t`, `ptrace_getregs()`, and `PTRACE_SYSCALL_NUM`/`PTRACE_SYSCALL_ARG2`
+macros behind `#ifdef __x86_64__`/`__aarch64__`, replacing `topdown.c`'s direct `struct
+user_regs_struct`/`PTRACE_GETREGS`/`.orig_rax`/`.rsi` use in `ptrace_loop()`. A mechanical refactor
+of the existing (working, x86_64) logic — the `__aarch64__` branch is unverified prep modeled on
+documented arm64 ptrace/syscall-ABI conventions, not a tested ARM64 backend. See `CLAUDE.md`'s
+`ptrace_arch.h` entry for the full behavior; this was item 1 of the "next up after the minimal
+slice" list below.
 | Idea | Phase | Why |
 | --- | --- | --- |
-| Run-index schema validation on ingest, warn on mismatched `RUN_INDEX_SCHEMA_VERSION` | 4.0 | The write side shipped (`RUN_INDEX_SCHEMA_VERSION`, SemVer, in `run_index.h`), and the manifest half of this is now covered by `wspy-validate` (`validate.c`'s `check_schema_version()` warns on a `MANIFEST_SCHEMA_VERSION` major-version mismatch, see "Run artifact foundation"). The run-index (JSONL) side still has no reader anywhere in the tree, so a `RUN_INDEX_SCHEMA_VERSION` bump still has no consumer that would notice a mismatch. |
-| Arch-neutral `ptrace` register-access macros (`PTRACE_SYSCALL_NUM(regs)` etc. behind `#ifdef __x86_64__`/`__aarch64__`) | 4.0 | Confirmed real blocker: `topdown.c` reads `regs.orig_rax`/`regs.rsi` with no abstraction today. Do the macro extraction even before an ARM64 backend exists — it's a mechanical refactor now, a risky one once more logic depends on the current shape. |
-| Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`) | 4.1 | Actual ARM64 `cpu_info` support; depends on the macro extraction above landing cleanly first. |
+| Run-index schema validation on ingest, warn on mismatched `RUN_INDEX_SCHEMA_VERSION` | 4.0 | The write side shipped (`RUN_INDEX_SCHEMA_VERSION`, SemVer, in `run_index.h`), and the manifest half of this is now covered by `wspy-validate` (`validate.c`'s `check_schema_version()` warns on a `MANIFEST_SCHEMA_VERSION` major-version mismatch, see "Run artifact foundation"). The run-index (JSONL) side still has no reader anywhere in the tree (`wspy-ledger` reads it for workload matching but doesn't check `RUN_INDEX_SCHEMA_VERSION`), so a version bump still has no consumer that would notice a mismatch. |
+| Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`) | 4.1 | Actual ARM64 `cpu_info` support; the `ptrace` macro extraction it depended on has since shipped (`ptrace_arch.h`), but `cpu_info.c`'s `__cpuid()`/`<cpuid.h>` use is a separate, still-open x86_64-only blocker this row covers. |
 | Native multi-pass counter execution (`--passes=ipc,topdown,cache,software`, internal N-run loop, merged manifest/CSV) | 4.1 | Confirmed real pain: `workload/phoronix/run_test.sh` already launches the same command up to 8 times by hand to dodge multiplexing. Depends on the profile launcher (4.0) to define what a "pass" is. |
 | Low-overhead tracing alternative to `ptrace` (`ftrace` tracepoints or minimal eBPF) for `--tree`/`--tree-open` | 4.2 | `ptrace` context-switches on every syscall entry/exit, which skews the very counters being measured for I/O-heavy or fork-heavy workloads — but this is a substantial new backend, correctly sequenced after the cheaper wins above. |
 | Collector-plugin architecture (wspy core / perf stat / trace-cmd / GPU tools behind one manifest+normalization path) | design decision in 4.0, implementation 4.2+ | **Gap in the prior draft** — "major idea H" had no phase. The *decision* (does the manifest schema assume one collector or many?) needs to be made while designing the 4.0 manifest, even though building out non-wspy collectors is a 4.2+ effort — retrofitting pluggability after the schema is locked is expensive. |
@@ -364,7 +377,7 @@ bugs (`card1` hardcode, `ptrace` x86_64-only access), and land the cheapest trus
 "Portability" rows, the AMD GPU path-scan fix, and the topdown/IBS confidence work are tagged 4.0.
 
 **This phase was originally scoped large** — roughly 25-30 inventory rows when first drafted. The
-minimal foundation slice (6 rows) has since shipped in full, and roughly 12 4.0-tagged rows remain
+minimal foundation slice (6 rows) has since shipped in full, and roughly 11 4.0-tagged rows remain
 open (see "Next up after the minimal slice" for the current priority order across all of them).
 
 ### Phase 4.1 — automation
@@ -394,9 +407,9 @@ Six items unlock nearly everything else and are independently shippable in rough
 
 Everything else currently tagged 4.0 (validation checks, coverage ledger, IBS profiles, `ptrace`
 macro extraction, plotting templates, golden tests) can slip to a 4.0.x follow-on without blocking
-downstream phases, since nothing in 4.1+ depends on them specifically. (Validation checks and the
-coverage ledger have both since shipped — see "Run artifact foundation" above and the "Next up"
-list below.)
+downstream phases, since nothing in 4.1+ depends on them specifically. (Validation checks, the
+coverage ledger, and the `ptrace` macro extraction have all since shipped — see "Run artifact
+foundation"/"Portability and robustness" above and the "Next up" list below.)
 
 ### Next up after the minimal slice
 All six items from the minimal foundation slice are shipped (2026-07-08), plus environment/provenance
@@ -405,54 +418,53 @@ child exit status propagation (2026-07-09, `--exit-with-child` — see "Portabil
 above), the `rusage` CSV/normal output mismatch fix (2026-07-09, `print_usage()` in `topdown.c` — see
 "Process / `getrusage` / `/proc` telemetry" above), basic pre-publish validation/quality checks
 (2026-07-09, `wspy-validate`/`validate.c`/`json_reader.c` — see "Run artifact foundation" above), and
-the coverage ledger (2026-07-09, `wspy-ledger`/`ledger.c` — see "Run artifact foundation" above); all
-five were item 1 of this list at the time they shipped and are dropped from the ordering below per
-this file's own "ideas already implemented are not listed" rule. That leaves roughly 12 rows still
-tagged 4.0 across the inventory (one, "Shared plotting templates," was just re-phased to 4.1 above
-since its own rationale depended on the 4.1–4.2 normalized schema — see that row). The list below
-covers all of them except that one, grouped and ordered by priority (confirmed bug fixes and cheap
-high-trust/regression-guard wins first, design decisions next since they get more expensive to
-retrofit the longer they wait, heavier collection/report-layer work last). All are already rows in
-the inventory above — this is a suggested ordering, not a separate list to maintain by hand.
-1. Arch-neutral `ptrace` register-access macros ("Portability and robustness" track) — cheap
-   mechanical refactor now, expensive retrofit later, independent of whether ARM64 support itself is
-   prioritized any time soon.
-2. Capability-driven IBS probing ("Zen5 / IBS" track) — prerequisite for the rest of that track
+the coverage ledger (2026-07-09, `wspy-ledger`/`ledger.c` — see "Run artifact foundation" above), and
+arch-neutral `ptrace` register-access macros (2026-07-09, `ptrace_arch.h` — see "Portability and
+robustness" above); all six were item 1 of this list at the time they shipped and are dropped from
+the ordering below per this file's own "ideas already implemented are not listed" rule. That leaves
+roughly 11 rows still tagged 4.0 across the inventory (one, "Shared plotting templates," was just
+re-phased to 4.1 above since its own rationale depended on the 4.1–4.2 normalized schema — see that
+row). The list below covers all of them except that one, grouped and ordered by priority (confirmed
+bug fixes and cheap high-trust/regression-guard wins first, design decisions next since they get
+more expensive to retrofit the longer they wait, heavier collection/report-layer work last). All are
+already rows in the inventory above — this is a suggested ordering, not a separate list to maintain
+by hand.
+1. Capability-driven IBS probing ("Zen5 / IBS" track) — prerequisite for the rest of that track
    (`ibs-basic`/`ibs-memory-deep` profiles, skew annotations), and the layer the Zen5/IBS deep-dive's
    point 5 (new ALU/AGU and op-cache event categories) would need regardless.
-3. `ibs-basic` / `ibs-memory-deep` collection profiles, plus sampling skew/quality annotations
+2. `ibs-basic` / `ibs-memory-deep` collection profiles, plus sampling skew/quality annotations
    (`l3missonly`, `ldlat`, `fetchlat`, accepted-vs-filtered) ("Zen5 / IBS" track) — both are thin
-   layers directly on top of #2 and the profile-launcher work already shipped (`wspy-run`); do them
+   layers directly on top of #1 and the profile-launcher work already shipped (`wspy-run`); do them
    together since the skew annotations only mean something once the profiles that trigger them exist.
-4. Run-index schema validation on ingest, warn on mismatched `RUN_INDEX_SCHEMA_VERSION`
+3. Run-index schema validation on ingest, warn on mismatched `RUN_INDEX_SCHEMA_VERSION`
    ("Portability and robustness" track) — closes the loop `wspy-validate` left open: it already warns
    on a `MANIFEST_SCHEMA_VERSION` mismatch, but the run-index (JSONL) side still has no reader
    anywhere in the tree. (`wspy-ledger` now reads the run index, but for workload-coverage matching,
    not schema-version checking — this row is still open.)
-5. Golden output-contract tests (CSV header/order, summary fragments, tree format) + capability-matrix
+4. Golden output-contract tests (CSV header/order, summary fragments, tree format) + capability-matrix
    smoke tests (CPU vendor/family × GPU build × key option bundles) ("Testing and documentation"
    track) — cheapest regression guard available, and increasingly worth having given how many CSV
    columns have shifted this cycle (`rusage`, coverage, confidence/sanity); `run_tests.sh` already has
    informal versions of both, this formalizes them.
-6. Artifact contract doc + troubleshooting runbook ("Testing and documentation" track) — write this
+5. Artifact contract doc + troubleshooting runbook ("Testing and documentation" track) — write this
    before more external tooling (report generators, `workload/*/run_test.sh` migrations) starts
    depending on the manifest/run-index shape by convention instead of by documented contract.
-7. Collector-plugin architecture design decision (wspy core / perf stat / trace-cmd / GPU tools behind
+6. Collector-plugin architecture design decision (wspy core / perf stat / trace-cmd / GPU tools behind
    one manifest+normalization path) ("Portability and robustness" track) — only the *decision* (does
    the schema assume one collector or many?) is 4.0 work; implementation is 4.2+. Cheap to decide now,
    expensive to retrofit once more schema/normalization work (items above, plus 4.1's canonical
    metrics schema) is built on top of an unexamined assumption.
-8. Counter-fit preflight ("will this profile multiplex heavily?" + suggested downgrades)
+7. Counter-fit preflight ("will this profile multiplex heavily?" + suggested downgrades)
    ("Existing-capability extensions" track) — builds directly on availability/NMI-watchdog handling
    and `coverage.c` that already exist at runtime; this just surfaces the same fit information before
    a run instead of after.
-9. Interval (`--interval`) → automatic phase-boundary detection (warmup/steady/degraded)
+8. Interval (`--interval`) → automatic phase-boundary detection (warmup/steady/degraded)
    ("Existing-capability extensions" track) — basic marker detection can land now and is a named
    prerequisite for phase-aware topdown (4.2) and phase-aware IBS.
-10. `--gpu-device=<idx>` override + multi-GPU enumeration ("AMD GPU track") — isolated, self-contained
-    follow-on to the `card1` path-scan fix already shipped; doesn't block or get blocked by anything
-    else in this list.
-11. Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,
+9. `--gpu-device=<idx>` override + multi-GPU enumeration ("AMD GPU track") — isolated, self-contained
+   follow-on to the `card1` path-scan fix already shipped; doesn't block or get blocked by anything
+   else in this list.
+10. Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,
     plots/*.png,manifest.json}`) ("Run artifact foundation" track) — the largest remaining piece,
     sequenced last here: nothing else in this list depends on it, but 4.1's report/publishing work
     will, so it shouldn't slip past 4.0 entirely.
@@ -495,10 +507,13 @@ stays attached to it.
   internal N-run loop, merged manifest/CSV) hasn't been built. Recommendation unchanged: yes, in 4.1 —
   see "Portability and robustness" in the inventory.
 - **Is ARM64/AArch64 support a priority for 4.x?**
-  Still open. Recommendation unchanged: do the mechanical prep (macro-abstract the `ptrace` register
-  access) in 4.0 regardless of priority — it's queued as item 2 of "Next up after the minimal slice"
-  but not yet shipped. Defer the actual `cpu_info` fallback and full ARM64 validation to 4.1+ unless a
-  concrete ARM64 machine makes it urgent sooner.
+  **Resolved (2026-07-09):** the recommended mechanical prep shipped — `ptrace_arch.h` macro-abstracts
+  the `ptrace` register access `ptrace_loop()` needs (see "Portability and robustness" above), with an
+  `__aarch64__` branch that's unverified prep (modeled on documented ABI conventions, never built or
+  run on real hardware) rather than a tested backend. Whether ARM64 support itself is a 4.x priority
+  is still open; the recommendation is unchanged either way — defer the actual `cpu_info` fallback
+  (`__cpuid()`/`<cpuid.h>` is still x86_64-only) and full ARM64 validation to 4.1+ unless a concrete
+  ARM64 machine makes it urgent sooner.
 
 ## Success criteria for a 4.0 kickoff
 - A newcomer can run one benchmark suite and produce publish-ready structured artifacts without
