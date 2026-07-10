@@ -142,6 +142,18 @@ assert_csv_header "topdown"     --no-ipc --topdown  -- "${BASE}retire,frontend,b
 assert_csv_header "topdown2"    --no-ipc --topdown2 -- "${BASE}retire,frontend,backend,speculate,confidence,sanity,counters_measured,counters_requested,"
 
 echo ""
+echo "=== CSV header contract (exact match, --interval phase-boundary detection) ==="
+# phase.c's "phase" column sits right after "time," and is present only when
+# phase_detect_is_available() (interval + IPC counters + phase_flag + not
+# --per-core) -- see phase.h. --interval mode also skips the base/rusage
+# columns entirely (xflag is only printed when !interval), so these don't use
+# BASE.
+assert_csv_header "interval-default-ipc"    --interval 1                    -- "time,phase,ipc,counters_measured,counters_requested,"
+assert_csv_header "interval-no-ipc"         --no-ipc --interval 1           -- "time,counters_measured,counters_requested,"
+assert_csv_header "interval-no-phase-detect" --interval 1 --no-phase-detect -- "time,ipc,counters_measured,counters_requested,"
+assert_csv_header "interval-per-core"       --per-core --interval 1         -- "time,counters_measured,counters_requested,"
+
+echo ""
 echo "=== CSV header contract (host-specific, regex) ==="
 assert_csv_header_regex "system" --no-ipc --system -- \
   'load,runnable,cpu,idle,iowait,irq,(net [^,]+,)+elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,counters_measured,counters_requested,'

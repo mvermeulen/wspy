@@ -290,9 +290,22 @@ reserving the slot that would otherwise make it fit; the same check is also avai
 `wspy --preflight [<counter flags>]`, which needs no root/perf access since it's pure arithmetic over
 the event tables. Per this file's own "ideas already implemented are not listed" rule the row is
 dropped; see `CLAUDE.md`'s `preflight.c`/`preflight.h` entry for the full behavior.
+
+Also shipped since that pass (2026-07-10, `phase.c`/`phase.h`): interval automatic phase-boundary
+detection -- the basic-marker-detection half of the row this replaces, item 1 of "Next up after the
+minimal slice" at the time it shipped. Each `--interval` tick is classified `warmup`/`steady`/`degraded`
+from that tick's IPC via a small, deliberately simple state machine (rolling-window coefficient of
+variation to end warmup, a persistence-gated + hysteresis-gated threshold to enter/exit degraded, an
+EMA-drifting baseline while steady); disabled automatically under `--no-ipc`/`--per-core` (whose
+counters live on a list `--interval`'s `timer_callback()` never reads) or explicit `--no-phase-detect`.
+Output is a `phase` CSV column (present only when the detection is active, so existing narrower interval
+headers are unaffected) plus a human-output-only end-of-run boundary summary -- downstream consumers
+reconstruct boundaries from the CSV by diffing adjacent rows rather than getting a second redundant
+representation. Manifest/run-index persistence of boundaries is deliberately deferred until phase-aware
+topdown (4.2) actually needs it. Per this file's own "ideas already implemented are not listed" rule the
+row is dropped; see `CLAUDE.md`'s `phase.c`/`phase.h` entry for the full behavior.
 | Idea | Phase | Why |
 | --- | --- | --- |
-| Interval (`--interval`) → automatic phase-boundary detection (warmup/steady/degraded) | 4.0 | Prerequisite for phase-aware topdown (Topdown track, 4.2) and phase-aware IBS; basic marker detection can land now. |
 | Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries | 4.1 | Report-layer addition on data `--per-core` already collects. |
 | `proctree` → JSON/Graphviz export + run-to-run tree diff | 4.1 | Tree capture already exists; today's consumption is text-only. |
 | `--tree-open` → file-I/O topology summary (hot paths, open-failure rates, startup storms, process→file maps) | 4.2 | `tree_open`/`SYS_openat` capture already exists (`topdown.c:455`); this is a report-layer summarization of data already collected. |
@@ -517,23 +530,21 @@ tests + capability-matrix smoke tests (2026-07-10, `tests/golden_output.sh`/`tes
 building them surfaced and fixed), and the artifact contract doc + troubleshooting runbook
 (2026-07-10, `doc/ARTIFACT_CONTRACT.md` — see "Testing and documentation" above), and the
 collector-plugin architecture design decision (2026-07-10, PR #20, `manifest.h`/`run_index.h`'s new
-`collector` field — see "Portability and robustness" above), and counter-fit preflight (2026-07-10,
-`preflight.c`/`preflight.h` — see "Existing-capability extensions" above); all thirteen were item 1 of
-this list at the time they shipped and are dropped from the ordering below per this file's own "ideas
-already implemented are not listed" rule.
-That leaves roughly 3 rows still tagged 4.0 across the inventory (one, "Shared plotting templates," was
+`collector` field — see "Portability and robustness" above), counter-fit preflight (2026-07-10,
+`preflight.c`/`preflight.h` — see "Existing-capability extensions" above), and interval automatic
+phase-boundary detection (2026-07-10, `phase.c`/`phase.h` — see "Existing-capability extensions"
+above); all fourteen were item 1 of this list at the time they shipped and are dropped from the
+ordering below per this file's own "ideas already implemented are not listed" rule.
+That leaves roughly 2 rows still tagged 4.0 across the inventory (one, "Shared plotting templates," was
 just re-phased to 4.1 above since its own rationale depended on the 4.1–4.2 normalized schema — see
 that row). The list below covers all of them except that one, grouped and ordered by priority (design
 decisions first since they get more expensive to retrofit the longer they wait, heavier collection/
 report-layer work last). All are already rows in the inventory above — this is a suggested ordering,
 not a separate list to maintain by hand.
-1. Interval (`--interval`) → automatic phase-boundary detection (warmup/steady/degraded)
-   ("Existing-capability extensions" track) — basic marker detection can land now and is a named
-   prerequisite for phase-aware topdown (4.2) and phase-aware IBS.
-2. `--gpu-device=<idx>` override + multi-GPU enumeration ("AMD GPU track") — isolated, self-contained
+1. `--gpu-device=<idx>` override + multi-GPU enumeration ("AMD GPU track") — isolated, self-contained
    follow-on to the `card1` path-scan fix already shipped; doesn't block or get blocked by anything
    else in this list.
-3. Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,
+2. Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,
    plots/*.png,manifest.json}`) ("Run artifact foundation" track) — the largest remaining piece,
    sequenced last here: nothing else in this list depends on it, but 4.1's report/publishing work
    will, so it shouldn't slip past 4.0 entirely.

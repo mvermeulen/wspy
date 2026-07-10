@@ -161,6 +161,16 @@ echo "=== Modifier bundles (per-core, interval, tree variants) ==="
 # exit-code/no-fatal/no-crash graceful-degradation contract only.
 run_bundle "per-core-topdown" 0 --no-ipc --per-core --topdown -- /bin/true
 run_bundle "interval"         0 --csv --no-ipc --interval 1         -- sleep 1
+# Interval + IPC (default) engages phase.c's automatic phase-boundary
+# detection: exercises the "phase" CSV column's own graceful-degradation
+# paths (no perf permissions -> phase_current_ipc() returns no usable
+# sample every tick, detector just never leaves "warmup"; see phase.h).
+run_bundle "interval-phase-detect"    0 --csv --interval 1                  -- sleep 1
+run_bundle "interval-no-phase-detect" 0 --csv --interval 1 --no-phase-detect -- sleep 1
+# --per-core disables phase detection outright (phase_detect_is_available()) --
+# it reads cpu_info->systemwide_counters, which per-core-topdown's own note
+# above never has an "ipc" group on.
+run_bundle "interval-per-core"        0 --csv --per-core --interval 1        -- sleep 1
 
 TREE_OUT=$(mktemp /tmp/wspy_capmatrix_tree.XXXXXX)
 trap 'rm -f "$TREE_OUT"' EXIT
