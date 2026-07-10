@@ -1,453 +1,135 @@
 # wspy Investigation 4.0
 
-Date: 2026-07-09 (consolidated pass)
-Status: Phase 4.0 in progress — minimal foundation slice shipped (see "Minimal foundation slice"),
-next tranche of 4.0-tagged work queued below ("Next up after the minimal slice")
+Date: 2026-07-10 (cleanup pass — pivot from a running changelog to a forward-looking backlog)
+Status: **4.0's data/metadata foundation is substantially built (manifest, run index, validation,
+coverage, provenance, profile-driven launcher, unified output layout). Its publishing/reporting
+deliverable — what "Success criteria for a 4.0 kickoff" below actually measures — has not started.**
+See "What remains before 4.0 is complete."
 
 ## Purpose
-This document captures ideas for a future round of improvements focused on making benchmark
-collection, organization, and publication easier and more repeatable.
+This document captures ideas for a round of improvements focused on making benchmark collection,
+organization, and publication easier and more repeatable.
+
+## Success criteria for a 4.0 kickoff
+This is the bar 4.0 is measured against — not "how many inventory rows shipped." It hasn't changed
+since 4.0 was first scoped, and it's still the right bar:
+- A newcomer can run one benchmark suite and produce publish-ready structured artifacts without
+  editing scripts.
+- A summary page can be regenerated from data only (no manual copy/paste).
+- Every published benchmark row can be traced back to command line, environment, and raw artifacts.
+
+The first criterion is largely met (see "What shipped in 4.0"). The second and third are **not**:
+no summary/report generator exists yet, so there is no "page" or "row" to trace anything back to.
 
 ## How to use this document
-- Treat this file as a prioritization backlog, not a committed implementation plan.
-- "Idea inventory" is the single source of truth for what an idea is and which phase it targets —
-  it replaces three earlier overlapping lists (blog-derived opportunities / easy edits / major
-  ideas) that said the same things at different altitudes. Don't re-add an idea in prose elsewhere;
-  extend its inventory row or its track deep-dive instead.
-- "Track deep-dives" hold reasoning that doesn't fit a table row (Zen5/IBS, topdown, AMD GPU,
-  portability, process telemetry, characterization). Each ends by pointing back at its inventory
-  rows so the two stay in sync.
-- "Phased plan" is the scheduling view. It's generated from the inventory's `Phase` column, not an
-  independently maintained list — if you move an idea's phase, update it in the inventory only.
-- "Open questions" now carry a recommendation each; re-open a question by editing its row, not by
-  appending new "what about X" prose at the bottom of the file.
+- "What shipped in 4.0" is a pointer list, not a feature log — `CLAUDE.md` documents each module's
+  actual behavior in detail; `git log` has history. Don't restate mechanism here, link to it.
+- "What remains before 4.0 is complete" is the current single source of truth for open 4.0 work.
+  When something on that list ships, delete the line — don't leave superseded narrative behind it.
+- "4.1 / 4.2 / 4.3 priorities" are ordered backlogs, one per phase, grouped into dependency tiers
+  (earlier tiers unlock later ones within the same phase). This replaces the old per-track inventory
+  tables — don't re-introduce a parallel table; add or reorder an item in these lists instead.
+- "Track deep-dives" hold reasoning that doesn't fit a single backlog line (Zen5/IBS, topdown). Each
+  points back at the priority-list items it informs.
+- "Open questions" carry a recommendation each; re-open one by editing its entry, not by appending
+  new prose elsewhere in the file.
 
-Primary context reviewed (2026-07-08 pass, unchanged from prior pass):
-- https://mvermeulen.org/perf/, /workloads/cpu2017/, /workloads/phoronix/,
-  /2024/02/10/adding-summary-statistics-for-all-benchmarks/, /tools/wspy/
-- Local: `workload/cpu2017/run_test.sh`, `run_all.sh`; `workload/phoronix/run_test.sh`,
-  `run_all.sh`, `gnuplot.sh`; `workload/pbbsbench/run.sh`
+## What shipped in 4.0
+Grouped by the same track names `CLAUDE.md` and PR history use, so existing cross-references still
+resolve. This is a pointer list — see `CLAUDE.md`'s entry for each named file for actual behavior.
 
-## Verified against current source (this pass)
-Prior passes speculated about the codebase from blog content and a source skim without always
-citing line numbers. This pass re-checked the load-bearing claims directly:
+**Run artifact foundation:** run manifest + SemVer schema (`manifest.c`, `MANIFEST_SCHEMA_VERSION`);
+run index (`run_index.c`, JSONL, `RUN_INDEX_SCHEMA_VERSION`); profile-driven launcher (`wspy-run`:
+builtin profiles including `deep-cpu-intel`, `-c <file>` config execution, comma-composed profiles,
+per-pass timeouts); pre-publish validation (`wspy-validate`/`validate.c`); coverage ledger
+(`wspy-ledger`/`ledger.c`); unified output layout (`wspy-run --suite/--benchmark`, `doc/
+ARTIFACT_CONTRACT.md`'s "Unified output layout" section); `workload/cpu2017`, `workload/phoronix`,
+and `workload/pbbsbench` migrated to call `wspy-run` instead of hand-rolling per-suite invocations.
 
-- **Superseded (2026-07-10, later in this cycle): `--gpu-device=<idx>` + multi-GPU enumeration
-  shipped.** This bullet previously said the `amd_sysfs.c` `card1` hardcode was fixed (path scan only)
-  but per-device selection and full multi-GPU enumeration were still missing — that's now done too
-  (`feature/gpu-device-select`): `amd_sysfs_scan_devices()` enumerates every AMD card, not just the
-  lowest-numbered one; `amd_sysfs_initialize(int device_index)` and `amd_smi_initialize(int
-  device_index)` both take `-1` (auto, prior default) or an explicit index; `wspy --gpu-device=<idx>`
-  sets it for both `--gpu-busy`/`--gpu-metrics` (sysfs) and `--gpu-smi` (SMI); `wspy --capabilities`
-  prints both backends' device lists. See "AMD GPU track" for the full description.
-- **Superseded (2026-07-09, later in this cycle): `ptrace_loop()`'s register-access abstraction
-  shipped.** This bullet previously said `topdown.c:449,454,456` read `regs.orig_rax`/`regs.rsi`
-  directly with no macro layer — that's fixed: `ptrace_arch.h` now provides `wspy_regs_t`,
-  `ptrace_getregs()`, and `PTRACE_SYSCALL_NUM`/`PTRACE_SYSCALL_ARG2` macros behind
-  `#ifdef __x86_64__`/`__aarch64__`, and `ptrace_loop()` uses them instead of the raw struct fields.
-  Only the x86_64 branch has been built/exercised; the aarch64 branch is unverified prep modeled on
-  documented arm64 ptrace/syscall-ABI conventions, not a working ARM64 backend. `cpu_info.c:33,61`
-  calling `__cpuid()` from `<cpuid.h>` remains a genuine, not-yet-addressed portability blocker for
-  ARM64 — that part of this bullet still stands.
-- **Superseded (2026-07-08, later in this cycle): the manifest/run-index/profile-launcher slice
-  shipped.** This section previously said "there is no manifest, no JSON output, and no schema
-  anywhere in the codebase today" — that was accurate when first written but was left stale after
-  the three branches below merged into `master`, understating how much of the "minimal foundation
-  slice" (below) is now done:
-  - `manifest.c`/`manifest.h` — JSON run manifest (`--manifest <file>`), `MANIFEST_SCHEMA_VERSION`
-    (SemVer).
-  - `run_index.c`/`run_index.h` — JSONL run-index append (`--run-index <file>`),
-    `RUN_INDEX_SCHEMA_VERSION` (SemVer, versioned independently of the manifest).
-  - `wspy-run` — the common workload wrapper / profile-driven launcher (builtin `quick`/`deep-cpu`/
-    `deep-gpu`/`tree-heavy` profiles, `-c <file>` config-file execution), reusing the two above for
-    `--manifest-dir`/`--run-index`.
-  What's still actually missing, i.e. what the "invent the manifest" framing below still applies to:
-  no unified output layout, no coverage ledger, and `workload/*/run_test.sh` haven't been migrated to
-  call `wspy-run` yet. (Superseded 2026-07-09: the "no validation/quality-check pass" clause is no
-  longer true — `wspy-validate`/`validate.c` shipped, see "Run artifact foundation" above. It's also
-  the first manifest *reader* in the tree and does warn on a `MANIFEST_SCHEMA_VERSION` major-version
-  mismatch, which partially covers the still-open "Portability and robustness" row below — that row's
-  remaining gap is run-index (`RUN_INDEX_SCHEMA_VERSION`) ingest, which `wspy-validate` doesn't touch.)
-  (Superseded 2026-07-09, later in this cycle: the "no coverage ledger" clause is also no longer
-  true — `wspy-ledger`/`ledger.c` shipped, see "Run artifact foundation" above. It's a second
-  run-index reader alongside `wspy-validate`, though it still doesn't check `RUN_INDEX_SCHEMA_VERSION`
-  itself, so the "Portability and robustness" gap above stands.)
-  (Superseded 2026-07-10: the "Portability and robustness" gap just referenced is now closed —
-  `wspy-ledger` checks each run-index record's `schema_version` against `RUN_INDEX_SCHEMA_VERSION`
-  and warns on a major-version mismatch or missing field, same as `wspy-validate` does for manifests.
-  See "Portability and robustness" above.)
-  (Superseded 2026-07-10, later in this cycle: the "no unified output layout" and "`workload/*/
-  run_test.sh` haven't been migrated" clauses are also no longer true — `wspy-run --suite/--benchmark`
-  and the three migrated `workload/*` scripts shipped, see "Run artifact foundation" above.)
-  Building `wspy-run` also surfaced a real, previously-unknown bug: `wspy`'s own process exit code
-  never reflects the launched command's success — see the new "Portability and robustness" row
-  ("Propagate child exit status...").
-  This matters for scoping: 4.0 isn't "extend the manifest," it's "invent the manifest," which was a
-  bigger first slice than the word "foundation" suggests (see "Minimal foundation slice" below) —
-  and it's now substantially built, not just scoped.
-- **`--tree-open` already exists and works as described** — `wspy.c:106`, `topdown.c:455` gate
-  `SYS_openat` capture behind the `tree_open` flag. The "convert it into higher-level insight" idea
-  is additive, not speculative.
-- **Superseded (2026-07-09, later in this cycle): the `getrusage` CSV/normal mismatch is fixed.** This
-  bullet previously said `topdown.c:909` `print_usage()` printed `nvcsw`, `nivcsw`, `inblock`,
-  `oublock` in `PRINT_NORMAL` mode but only emitted `elapsed,utime,stime` in `PRINT_CSV`/
-  `PRINT_CSV_HEADER` — that was accurate when first written but went stale once the fix landed.
-  `print_usage()` now emits all four fields in CSV too (`elapsed,utime,stime,nvcsw,nivcsw,inblock,
-  oublock`), and `run_tests.sh`'s CSV column-order checks were updated to match. See "Process /
-  `getrusage` / `/proc` telemetry" track, now shipped.
-- **The `workload/phoronix/run_test.sh` 7-8 invocation pattern is real and current** — confirmed by
-  reading the script directly; it launches `phoronix-test-suite batch-run $TESTNAME` up to 8 times
-  per AMD run with different counter flag combinations to avoid multiplexing. This is the strongest
-  concrete case for native multi-pass execution (inventory: "Native multi-pass counter execution").
-- **CUDA/Vulkan: zero footprint in the codebase.** No NVIDIA, CUDA, CUPTI, Vulkan, or Nsight
-  references anywhere in the source tree. GPU support is exclusively AMD, via two independent paths
-  (`amd_smi.c` using ROCm's `libamd_smi`, `amd_sysfs.c` reading sysfs directly), both gated by
-  `AMDGPU=1` at build time. Per project scope decision (2026-07-08): CUDA/Vulkan instrumentation is
-  cut from this roadmap — see "AMD GPU track" below.
+**Reproducibility, comparability, statistics:** counter capability discovery + coverage reporting
+(`coverage.c`, `wspy --capabilities`); environment/provenance capture (`provenance.c` — virt role,
+microcode, BIOS, governor, memory, toolchain).
 
-## Idea inventory
-Single source of truth. `Phase` is a target, not a commitment — see "Phased plan" for how phases are
-meant to be read. Ideas already implemented are not listed (this file is 4.0 forward, not a feature
-log — `git log`/`README.md` cover what exists).
+**Topdown quality:** confidence envelope + decomposition sanity checks on the level-1 breakdown
+(`topdown.c`'s `print_topdown()`).
 
-### Run artifact foundation
-Shipped since the last consolidated pass (removed from the inventory per this file's own "ideas
-already implemented are not listed" rule — see `git log`/`CLAUDE.md` for what exists): run manifest
-(JSON) + SemVer schema version (`manifest.c`), run index generation (`run_index.c`), the common
-workload wrapper / profile-driven launcher (`wspy-run`, builtin `quick`/`deep-cpu`/`deep-gpu`/
-`tree-heavy` profiles plus `-c <file>` config-file execution), and basic pre-publish validation/quality
-checks (`wspy-validate`, backed by a new `json_reader.c` parser — the tree's first manifest *reader*,
-not just writer). Given one or more `manifest.json` paths, it checks schema version, required
-`output_files` existence, output CSV well-formedness/non-emptiness, workload exit status,
-counter-coverage completeness (partial coverage warns, doesn't fail — that's `coverage.c`'s
-by-design degradation), positive elapsed time, and per-column sanity ranges on the CSV (an
-extensible `sanity_bounds[]` table plus a generic finite/non-negative/not-implausibly-large rule for
-every other numeric column). `-q`/`--quiet` and `--strict` control report verbosity and whether
-warnings affect exit status. See `CLAUDE.md`'s `validate.c`/`json_reader.c` entries for the full
-behavior; this was item 1 of the "next up after the minimal slice" list below.
+**Zen5 / IBS:** capability-driven IBS probing (`ibs.c`, readdir-driven sysfs discovery); `ibs-basic`/
+`ibs-memory-deep` collection profiles with sampling-skew/quality annotations.
 
-Also shipped since that pass: the coverage ledger (`wspy-ledger`/`ledger.c`, 2026-07-09) — workload
-status (done/skipped/unsupported/needs-tool-support) generated from one or more `--run-index` files
-instead of the hand-maintained "what's still missing" tracking `workload/phoronix/phoronix.tests.txt`
-and the "Intel not supported" early-exit in `workload/cpu2017/run_test.sh` did today. Given a
-workload-list file (name plus an optional `unsupported`/`needs-tool-support` annotation and note),
-it matches each name as a substring against every run-index record's `command` array: no match is
-`skipped`, a matching record with a clean exit is `done`, matching record(s) with none succeeding is
-`needs-tool-support` (an explicit annotation always overrides inference). `--csv` and `--strict`
-mirror `wspy-validate`'s conventions. This was item 1 of the "next up after the minimal slice" list
-at the time it shipped.
+**Process / `getrusage` / `/proc` telemetry:** CSV/normal output parity fix for `print_usage()`;
+expanded `getrusage` coverage (`maxrss`/`minflt`/`majflt`/`nswap`).
 
-Also shipped since that pass: the unified output layout (2026-07-10), `wspy-run`'s largest
-remaining "Run artifact foundation" item. `--suite <name> --benchmark <name>` switches `wspy-run`
-from flat `<outdir>/<prefix><pass>.<ext>` naming to one directory per run,
-`<outdir>/<suite>/<benchmark>/<run-id>/`, generalizing the file layout `workload/cpu2017`,
-`workload/phoronix`, and `workload/pbbsbench` used to each hand-roll independently (mkdir a
-benchmark-named directory, run 7-8 `wspy` passes into it by hand, `cat` the text passes together,
-run `gnuplot.sh` over the CSVs) — all three scripts now call `wspy-run --suite ... --benchmark ...`
-instead. Per-pass files keep their existing names (`<pass-name>.<csv|txt>` — the doc's original
-`metrics.csv` phrasing turned out not to fit today's reality of a multi-pass sweep producing more
-than one CSV; that's blocked on "Native multi-pass counter execution" below actually landing, not
-on this item); `wspy-run` adds `summary.txt` (concatenation of the non-CSV, non-`--tree` passes),
-`manifest.json` (a small run-level index of which passes ran and their status — not a per-process
-`--manifest`, which already exists per pass alongside it), and an empty `plots/` directory reserved
-for the future report generator (4.1/4.2) rather than populated now — folding `gnuplot.sh` itself
-into `wspy-run` was considered and deliberately deferred to that later report-generator work. A
-comma-separated profile list (e.g. `deep-cpu,tree-heavy`) composes more than one builtin profile's
-passes into a single invocation/run-directory, which is how the three migrated scripts get both a
-counter sweep and a `--tree` pass into one run. See `doc/ARTIFACT_CONTRACT.md`'s new "Unified
-output layout" section for the full `manifest.json` shape and `CLAUDE.md`'s `wspy-run` entry for
-the mechanics.
-| Idea | Phase | Why |
-| --- | --- | --- |
-| Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s constant (e.g. `phoronix-test-suite` has a run-time-estimate command) | 4.1 | Today's 3600s (`tree-heavy`'s `PASS_TIMEOUTS`, `wspy-run`) is a blunt stand-in; the real constraint is capping process-record data volume for publishing, not workload runtime, so a workload-specific estimate would size it more accurately than one constant across every suite. |
-| Reproducibility bundle export (tarball: manifest + raw + derived per batch) | 4.1 | Depends on manifest/index existing; archival/re-analysis convenience, not foundational. |
-| Traceability links (summary row → manifest → raw CSV → plots → tree artifacts) | 4.1 | Same dependency; fold into the report generator once there's a normalized index to link from. |
+**Existing-capability extensions:** counter-fit preflight (`preflight.c`, `wspy --preflight`);
+interval automatic phase-boundary detection (`phase.c`, `phase` CSV column + boundary summary).
 
-### Reproducibility, comparability, statistics
-Shipped since the last consolidated pass (removed from the inventory per this file's own "ideas
-already implemented are not listed" rule — see `git log`/`CLAUDE.md` for what exists): counter
-capability discovery + "measured vs unavailable" coverage reporting (`coverage.c`, `wspy
---capabilities`). `setup_counters()` (`topdown.c`) no longer treats any single `perf_event_open`
-failure as fatal for the whole run -- it records the outcome (`coverage_note()`) and continues, so a
-run with partial counter access (restrictive `perf_event_paranoid`, NMI-watchdog contention, an
-unsupported raw event) still produces output instead of aborting. Coverage counts/gaps are surfaced
-in human/CSV output, `--manifest`'s `counter_coverage` object (bumped `MANIFEST_SCHEMA_VERSION` to
-1.1.0), and `--run-index`'s leaner counts-only `counter_coverage` field (bumped
-`RUN_INDEX_SCHEMA_VERSION` to 1.1.0). Also shipped since that pass: environment/provenance capture
-(`provenance.c`) -- virtualization role (host/guest, from `cpuid`), microcode version, BIOS
-vendor/version/date, CPU frequency governor + uniformity across cores, total memory, and the
-compiler/libc that built the binary. Each of the 9 tracked fields degrades to unavailable-with-reason
-independently (mirroring the counter coverage "measured vs unavailable" pattern) rather than blocking
-the run, per this section's own "optional-but-recommended field with a coverage flag" recommendation
-below. Surfaced as `environment`/`environment_coverage` in `--manifest` (bumped
-`MANIFEST_SCHEMA_VERSION` to 1.2.0) and the same fields in leaner compact form plus counts-only
-coverage in `--run-index` (bumped `RUN_INDEX_SCHEMA_VERSION` to 1.2.0). Kernel release was already
-captured pre-4.0 (`--manifest`'s `host.kernel_release`); this fills in the rest of the field list this
-row named.
-| Idea | Phase | Why |
-| --- | --- | --- |
-| Repeatability policy + confidence metadata (mean, stddev, CV, CI) as default output | 4.1 | Depends on the run index (need multiple runs grouped) more than on the manifest alone. |
-| Outlier/threshold engine (per-metric, global + suite-local) | 4.1 | Needs a populated index/history to threshold against; not meaningful on a single run. |
-| Comparison matrix mode (sweep compiler/kernel/governor/SMT/VM-native) | 4.1 | Builds on the profile-driven launcher; a declarative sweep runner, not new collection logic. |
-| Canonical metrics schema + normalized store (SQLite and/or Parquet) | 4.1–4.2 | **Gap in the prior draft** — "major idea B" (data lake) was never assigned a phase. Needed once the run index outgrows CSV/JSONL scanning; keep raw files, add normalized querying as a second layer. |
-| Machine/environment comparability scoring | 4.2 | Depends on provenance capture (4.0) existing across enough runs to score against. |
-| Baselines and regression/anomaly detection | 4.2 | Depends on the normalized store existing (needs to query history, not just the latest run). |
-| Distribution-first reporting (quantiles, clustering) | 4.2 | Same dependency; aggregate means already exist, this is a report-layer addition. |
+**Portability and robustness:** opt-in child exit status propagation (`--exit-with-child`);
+arch-neutral `ptrace` register access (`ptrace_arch.h` — x86_64 verified and in use, `__aarch64__`
+branch is unverified prep, not a tested backend); run-index schema validation on ingest
+(`wspy-ledger`); collector-plugin schema seam (`manifest.h`/`run_index.h`'s `collector` field,
+default `"wspy"` — no non-wspy collector implementation exists yet, that's real 4.2+ scope).
 
-### Topdown quality
-See "Topdown deep-dive" below for reasoning; MVP acceptance criteria unchanged from prior draft.
-Shipped since the last consolidated pass (removed from the inventory per this file's own "ideas
-already implemented are not listed" rule — see `git log`/`CLAUDE.md` for what exists): confidence
-envelope + decomposition sanity checks for the primary `print_topdown()` breakdown (`topdown.c`).
-Each of retire/frontend/backend/speculate is annotated with `confidence_ratio()`
-(`time_running/time_enabled`) for the specific raw counter backing it, and the whole row carries a
-row-level confidence (the min across those four) plus a `sanity_pct` decomposition check
-(retire+frontend+backend+speculate vs. slots_no_contention) — both surfaced in human output
-(`low-confidence(NN%)` per-row annotations, a `sanity check` summary line) and CSV
-(`confidence,sanity` columns appended after `speculate`). Deliberately scoped to the level-1
-breakdown only — the level-2 hierarchy (backend cpu/memory, frontend latency/bandwidth, etc.) is
-still 4.1 work per the "Hierarchical" row below, and `print_topdown_be/fe/op` (the separate
-level-2-only groups) are untouched.
-| Idea | Phase | Why |
-| --- | --- | --- |
-| Hierarchical (parent→child) schema + explicit raw-vs-contention-adjusted denominators + formula/version metadata | 4.1 | Requires the manifest/normalized-schema work from 4.0 to have somewhere to live. |
-| Core-class-aware topdown (hybrid Intel Atom+Core; weighted aggregate) | 4.1 | Depends on per-core collection (`--per-core`) plus the hierarchical schema. |
-| Phase-aware topdown (warmup/steady/degraded segmentation, drift signal) | 4.2 | Depends on interval phase-segmentation (see "Existing capability extensions") landing first. |
-| Composite attribution (topdown + cache/TLB/IBS signals) | 4.2 | Depends on both the topdown hierarchy and IBS memory-source classes existing. |
+**AMD GPU track:** dynamic GPU path scan (`amd_sysfs_scan_devices()`, replacing the old `card1`
+hardcode); `--gpu-device=<idx>` override + full multi-GPU enumeration across both the sysfs and SMI
+backends. CUDA/Vulkan instrumentation is **cut from this roadmap** (project scope decision,
+2026-07-08) — this codebase has no NVIDIA/Vulkan code and builds against ROCm only; revisit only if
+the project's mission changes to cross-vendor GPU profiling.
 
-### Zen5 / IBS
-See "Zen5/IBS deep-dive" below.
+**Testing and documentation:** golden output-contract tests + capability-matrix smoke tests
+(`tests/golden_output.sh`, `tests/capability_matrix.sh`) — building these surfaced and fixed five
+independent, pre-existing output-contract bugs and one crash (see `CLAUDE.md`'s "Build & Test" for
+specifics, not repeated here); `doc/ARTIFACT_CONTRACT.md` artifact-contract doc + troubleshooting
+runbook.
 
-Shipped since the last consolidated pass: capability-driven IBS probing (`ibs.c`/`ibs.h`,
-2026-07-10) — `ibs_probe()` discovers `ibs_fetch`/`ibs_op` PMU support from
-`/sys/bus/event_source/devices/{ibs_fetch,ibs_op}/{type,format/*,caps/*}` at runtime (readdir-driven,
-not a hardcoded field list), so it doesn't hardcode which format fields/caps exist -- both vary by
-kernel version and CPU generation (Zen4 vs Zen5 caps already differ on this project's own hardware).
-Wired into `wspy --capabilities`, which now prints an IBS capability report (PMU type, format fields,
-caps) alongside the existing counter capability report. This was item 1 of the "next up after the
-minimal slice" list below.
+## What remains before 4.0 is complete
+1. **A minimal summary/report generator.** Nothing in the "Publishing, reporting, UI" backlog (see
+   4.1 priorities) has been started — this is the direct cause of success criteria 2 and 3 not being
+   met. Doesn't need to be the full HTML bundle (that's 4.1 scope); a script that reads one or more
+   `--run-index` files plus their unified-layout run directories and emits a summary table (even
+   plain text or CSV) with a link/path back to each run's `manifest.json`/raw CSV/`process.tree.txt`
+   would satisfy both remaining criteria at minimum scope.
+2. **Fix the known `--per-core` CSV column-count mismatch.** Pre-existing, documented gap (see
+   `tests/capability_matrix.sh`'s `per-core-topdown` bundle comment and `doc/ARTIFACT_CONTRACT.md`'s
+   CSV section): combined with any counter group, the header shows only base/coverage columns while
+   each per-core row still appends that group's values. This is a correctness bug in output the 4.0
+   foundation already ships, not new feature work — needs `wspy.c`'s `aflag`/per-core setup-and-print
+   flow re-architected, not a single `print_*()` fix.
+3. **Validate criterion 1 against real installs.** "Newcomer can run one suite without editing
+   scripts" is believed met (the three `workload/*` scripts now call `wspy-run --suite/--benchmark`),
+   but has only been exercised with `sleep 1` stand-ins in this environment — `runcpu`,
+   `phoronix-test-suite`, and pbbsbench's `runall` aren't installed here. See "Recommended hand
+   testing" below.
+4. **A 4.0 release manifest**, once 1-3 land: a short, structured summary of what actually shipped —
+   final schema versions, module list, known carried-forward gaps — the way a run's own
+   `--manifest` records what a `wspy` invocation did. Where it lives (a `CHANGELOG.md` entry, a
+   dedicated `RELEASE_4.0.md`, or a section here) is undecided; "What shipped in 4.0" above is
+   functioning as a running draft of it until then.
 
-Also shipped (2026-07-10, same day): `ibs-basic`/`ibs-memory-deep` collection profiles plus sampling
-skew/quality annotations (`ibs.c`'s `ibs_build_fetch_event()`/`ibs_build_op_event()`/
-`ibs_counter_group()`, `topdown.c`'s `print_ibs()`, `wspy.c`'s `--ibs-basic`/`--ibs-memory-deep`/
-`--ibs-maxcnt`/`--ibs-ldlat`/`--ibs-fetchlat`, `wspy-run`'s `ibs-basic`/`ibs-memory-deep` builtin
-profiles) — both items shipped together since the skew annotations only mean something once the
-profiles that trigger them exist, per this list's own sequencing note below. `ibs-basic` opens
-`ibs_fetch`/`ibs_op` as ordinary counting events (perf's "stat" mode, not sampling/mmap capture, so it
-reuses the same `perf_event_open()`+`read()` path every other counter in this tree uses);
-`ibs-memory-deep` additionally requests `l3missonly`+`ldlat` filtering on `ibs_op` (and
-`l3missonly`+`fetchlat` on `ibs_fetch` where exposed) and opens a second, always-unfiltered `ibs_op`
-counter as a baseline. Config bits are assembled by parsing each format field's sysfs `location` string
-at runtime (e.g. `"config1:0-11"`), not hardcoded offsets, so a kernel/CPU that places a field
-differently still works. Because l3missonly/ldlat filtering is documented to skew the effective IBS
-sampling period, that skew is now visible in output rather than only in a code comment: CSV gets
-`ibs_op_unfiltered`/`ibs_op_accepted_ratio` (the filtered/unfiltered count ratio) plus
-`ibs_l3missonly`/`ibs_ldlat_threshold`/`ibs_fetchlat_threshold`, and a filter requested by the profile
-but unsupported by the running kernel/CPU prints an explicit warning instead of silently collecting
-unfiltered data under a "deep" label. See `CLAUDE.md`'s `ibs.c` entry for the full behavior. Per this
-file's own "ideas already implemented are not listed" rule both rows are dropped.
-| Idea | Phase | Why |
-| --- | --- | --- |
-| Zen-family preset packs (`zen-portable`, `zen4plus-deep`) | 4.1 | Convenience layer now that capability probing exists (`ibs.c`); not needed for correctness. |
-| PMU-capability-aware comparability warnings | 4.1 | Depends on the general comparability-scoring work (4.2) or at minimum the provenance capture (4.0). |
-| IBS-derived memory-path bottleneck decomposition (combine with topdown/cache) | 4.2 | Depends on both IBS memory-source classes and the topdown hierarchy existing. |
-
-### Process / `getrusage` / `/proc` telemetry
-Shipped since the last consolidated pass: `rusage` CSV/normal output mismatch fix — `print_usage()`
-(`topdown.c`) now emits `nvcsw,nivcsw,inblock,oublock` in `PRINT_CSV`/`PRINT_CSV_HEADER`, matching the
-fields `PRINT_NORMAL` already printed. `run_tests.sh`'s CSV column-order checks were updated for the
-four new columns landing between `stime` and the GPU/`ipc` columns. Also shipped: expanded `getrusage`
-coverage — `print_usage()` now reports `ru_maxrss`/`ru_minflt`/`ru_majflt`/`ru_nswap` too, in both
-`PRINT_CSV` (raw values appended after `oublock`: `maxrss,minflt,majflt,nswap`) and `PRINT_NORMAL`
-(raw value plus a normalized rate — MB for `maxrss`, /sec for the three fault/swap counters — as an
-inline `#` comment, matching how `inblock`/`oublock` were already annotated). `run_tests.sh`'s CSV
-column-order checks were updated again for these four columns. Per this file's own "ideas already
-implemented are not listed" rule both rows are dropped.
-| Idea | Phase | Why |
-| --- | --- | --- |
-| `/proc/<pid>/io` byte counters (read/write/cancelled-write bytes) | 4.1 | Distinguishes small-op-count vs high-throughput I/O; needs `--tree`-style per-pid tracking already present. |
-| `/proc/<pid>/schedstat` run-delay/timeslice capture | 4.1 | Separates CPU saturation from waiting-to-run; same per-pid dependency. |
-| Memory footprint detail (`VmRSS`/`VmHWM`/anon-file-shmem split via `/proc/<pid>/status` or `smaps_rollup`) | 4.1 | Same per-pid dependency. |
-| cgroup identity + limits in manifest, `cpu.stat` throttling stats | 4.1 | Needed for fair comparison in containerized environments; depends on manifest existing (4.0). |
-| Tree/lifecycle enrichments (exit code/signal summary, spawn/exit burst indicators, optional `comm`-pattern role tagging) | 4.2 | Builds on existing `--tree` output; report-layer addition, not new collection. |
-
-### Characterization and clustering
-| Idea | Phase | Why |
-| --- | --- | --- |
-| Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-switch/I-O) | 4.1 | Needs the normalized metrics schema (above) to draw features from. |
-| Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime stability) + confidence + top-2 alternatives | 4.1 | Depends on feature normalization; explicitly emit confidence/ambiguity rather than a hard label. |
-| Clustering + nearest-neighbor + cluster profile cards, coverage-aware distance (common-subspace only when data coverage differs) | 4.2 | Needs a populated normalized store with enough runs to cluster against. |
-| Temporal drift detection (cluster movement across versions/configs/machines) | 4.3 | Needs clustering (4.2) plus enough history to detect movement; treat as an investigation trigger, not a standalone feature. |
-
-### AMD GPU track
-CUDA and Vulkan instrumentation are **cut from this roadmap** (see "Verified against current
-source"): this codebase has no NVIDIA or Vulkan code, builds against ROCm only, and is described in
-`CLAUDE.md` as the author's own research testbed — CUPTI/Nsight/RenderDoc integration would be a
-separate project on hardware/APIs not currently in scope. Revisit only if the project's mission
-changes to cross-vendor GPU profiling.
-
-Shipped since the last consolidated pass (`feature/gpu-path-scan`, PR #7): the dynamic path-scan half
-of the row below — `amd_sysfs.c`'s `find_amd_drm_card()` now scans `/sys/class/drm/card*/device/vendor`
-for the lowest-numbered AMD (`0x1002`) card instead of hardcoding `card1`. Per this file's own "ideas
-already implemented are not listed" rule the shipped half is dropped; the row is narrowed to what's
-still open.
-
-Also shipped since that pass (2026-07-10, `feature/gpu-device-select`): `--gpu-device=<idx>` override +
-multi-GPU enumeration, closing the row below. `amd_sysfs_scan_devices()` replaces the old
-"find the one lowest-numbered card and stop" scan with one that enumerates every AMD card under
-`/sys/class/drm`, sorted ascending by index; `amd_sysfs_initialize(int device_index)` takes `-1` for
-the prior auto-select-lowest behavior or an explicit index that must exactly match a scanned card, else
-it degrades to no sysfs GPU data (logged, not fatal) rather than silently falling back to a different
-card. `amd_smi.c`'s device enumeration (already existed, previously hardcoded to device 0) now takes
-the same `device_index` through `amd_smi_initialize()` and threads it into `amd_smi_metrics()`/
-`amd_smi_memory()`'s device selection. `wspy --gpu-device=<idx>` (always recognized, warns "GPU support
-not built" like the other `--gpu-*` flags when built without `AMDGPU=1`) sets the index used by
-`--gpu-busy`/`--gpu-metrics` (sysfs) and `--gpu-smi` (SMI) alike. `wspy --capabilities` now also prints
-both backends' device enumeration (`amd_sysfs_print_capability_report()`/`amd_smi_print_capability_report()`)
-unconditionally on `AMDGPU=1` builds, independent of whether any `--gpu-*` flag was given, so the indices
-to pass to `--gpu-device` are discoverable without already knowing them. The two backends' device
-indices are independent numbering schemes (DRM card number vs. SMI enumeration order) — reconciling them
-into one identifier is still the separate, not-yet-built fusion layer below, not part of this row.
-| Idea | Phase | Why |
-| --- | --- | --- |
-| ROCm SMI + sysfs fusion layer (one stream, source precedence, per-metric validity flags) | 4.1 | Merges the two existing independent GPU paths (`amd_smi.c`, `amd_sysfs.c`) once each is trustworthy standalone. |
-| Same manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory activity) | 4.1 | Reuses 4.0 foundation work rather than building a parallel GPU-only pipeline. |
-| `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) | 4.2 | Heavier, optional trace-rich profile — same "default vs debug profile" pattern as IBS. |
-| Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) | 4.2 | Depends on the fusion layer providing consistent per-metric data first. |
-| GPU coverage ledger (backend/device-class support, caveats) | 4.2 | Same pattern as `wspy-ledger` (the CPU workload coverage ledger, shipped), extended once GPU runs feed the same index. |
-| Fold into general environment-comparability scoring (power cap, memory clock, thermal state, driver version) | 4.2 | No separate "GPU comparability score" needed — this is the general provenance/comparability item (Reproducibility track) applied to GPU fields; keep one scoring mechanism, not two. |
-
-### Existing-capability extensions
-Shipped since the last consolidated pass (2026-07-10, `preflight.c`/`preflight.h`): counter-fit
-preflight — `preflight_evaluate()` estimates, from the counter groups a `counter_mask` would request,
-whether they'll fit in the available general-purpose hardware PMU counter slots without multiplexing,
-before any `perf_event_open()` calls are made. `wspy.c:main()` runs it automatically before every real
-run (silent when the fit is fine, a stderr warning with suggested downgrades — largest contributor(s)
-first, via a `COUNTER_*` → `--no-<flag>` hint table — otherwise), including an explicit tip to stop the
-NMI watchdog (`scripts/setup_perf.sh` or `sudo sysctl -w kernel.nmi_watchdog=0`) when that's what's
-reserving the slot that would otherwise make it fit; the same check is also available standalone via
-`wspy --preflight [<counter flags>]`, which needs no root/perf access since it's pure arithmetic over
-the event tables. Per this file's own "ideas already implemented are not listed" rule the row is
-dropped; see `CLAUDE.md`'s `preflight.c`/`preflight.h` entry for the full behavior.
-
-Also shipped since that pass (2026-07-10, `phase.c`/`phase.h`): interval automatic phase-boundary
-detection -- the basic-marker-detection half of the row this replaces, item 1 of "Next up after the
-minimal slice" at the time it shipped. Each `--interval` tick is classified `warmup`/`steady`/`degraded`
-from that tick's IPC via a small, deliberately simple state machine (rolling-window coefficient of
-variation to end warmup, a persistence-gated + hysteresis-gated threshold to enter/exit degraded, an
-EMA-drifting baseline while steady); disabled automatically under `--no-ipc`/`--per-core` (whose
-counters live on a list `--interval`'s `timer_callback()` never reads) or explicit `--no-phase-detect`.
-Output is a `phase` CSV column (present only when the detection is active, so existing narrower interval
-headers are unaffected) plus a human-output-only end-of-run boundary summary -- downstream consumers
-reconstruct boundaries from the CSV by diffing adjacent rows rather than getting a second redundant
-representation. Manifest/run-index persistence of boundaries is deliberately deferred until phase-aware
-topdown (4.2) actually needs it. Per this file's own "ideas already implemented are not listed" rule the
-row is dropped; see `CLAUDE.md`'s `phase.c`/`phase.h` entry for the full behavior.
-| Idea | Phase | Why |
-| --- | --- | --- |
-| Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries | 4.1 | Report-layer addition on data `--per-core` already collects. |
-| `proctree` → JSON/Graphviz export + run-to-run tree diff | 4.1 | Tree capture already exists; today's consumption is text-only. |
-| `--tree-open` → file-I/O topology summary (hot paths, open-failure rates, startup storms, process→file maps) | 4.2 | `tree_open`/`SYS_openat` capture already exists (`topdown.c:455`); this is a report-layer summarization of data already collected. |
-| System (`--system`) → per-interface network attribution, user/system/iowait/steal mix, local-vs-system-pressure attribution | 4.2 | Report-layer addition to existing `system.c` collection. |
-
-### Portability and robustness
-Shipped since the last consolidated pass (`feature/exit-with-child`): opt-in child exit status
-propagation — `wspy --exit-with-child` now exits with the launched command's own exit code (128+signal
-if it was killed by a signal), instead of `main()`'s unconditional `return 0`. This also fixed a related
-manifest/run-index gap as a side effect: `--tree` mode previously always reported `exit_status.known:
-false` because the root child's status wasn't captured outside `ptrace_loop()`'s own wait loop;
-`ptrace_loop()` now records it (`child_exit_known`/`child_exited`/`child_exit_code`/`child_signaled`/
-`child_term_signal` in `topdown.c`, shared with the non-tree `wait4()` path in `wspy.c`), so both modes
-report real exit status now. Per this file's own "ideas already implemented are not listed" rule the row
-is dropped.
-
-Also shipped since that pass: arch-neutral `ptrace` register-access macros (`ptrace_arch.h`,
-2026-07-09) — `wspy_regs_t`, `ptrace_getregs()`, and `PTRACE_SYSCALL_NUM`/`PTRACE_SYSCALL_ARG2`
-macros behind `#ifdef __x86_64__`/`__aarch64__`, replacing `topdown.c`'s direct `struct
-user_regs_struct`/`PTRACE_GETREGS`/`.orig_rax`/`.rsi` use in `ptrace_loop()`. A mechanical refactor
-of the existing (working, x86_64) logic — the `__aarch64__` branch is unverified prep modeled on
-documented arm64 ptrace/syscall-ABI conventions, not a tested ARM64 backend. See `CLAUDE.md`'s
-`ptrace_arch.h` entry for the full behavior; this was item 1 of the "next up after the minimal
-slice" list below.
-
-Also shipped since that pass: run-index schema validation on ingest (2026-07-10, `ledger.c`) —
-`wspy-ledger` now checks each run-index record's `schema_version` field against
-`RUN_INDEX_SCHEMA_VERSION` and warns (once per distinct mismatched version, per file, to stderr) on
-a major-version difference or a missing field entirely, mirroring `validate.c`'s
-`check_schema_version()` for manifests (WARN, not FAIL — a run-index reader is meant to tolerate
-minor/patch schema drift, same as `wspy-validate` tolerates it for manifests). This closes the gap
-this file previously called out: the write side (`RUN_INDEX_SCHEMA_VERSION` in `run_index.h`) had
-shipped with no reader anywhere in the tree ever checking it.
-
-Also shipped since that pass: the collector-plugin architecture design decision itself (2026-07-10,
-PR #20) — resolved in favor of a minimal schema seam now, no plugin infrastructure. `struct
-manifest_info` (`manifest.h`) gained a `collector` field (defaults to `"wspy"`, populated in
-`wspy.c:main()`), emitted in both `manifest.json` (`manifest.c`) and the run-index JSONL records
-(`run_index.c`); `MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION` bumped to `1.3.0` (MINOR,
-additive — existing readers unaffected). No non-wspy collector was integrated; that part of the row
-below remains real 4.2+ scope. This was item 1 of the "next up after the minimal slice" list at the
-time it shipped.
-| Idea | Phase | Why |
-| --- | --- | --- |
-| Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`) | 4.1 | Actual ARM64 `cpu_info` support; the `ptrace` macro extraction it depended on has since shipped (`ptrace_arch.h`), but `cpu_info.c`'s `__cpuid()`/`<cpuid.h>` use is a separate, still-open x86_64-only blocker this row covers. |
-| Native multi-pass counter execution (`--passes=ipc,topdown,cache,software`, internal N-run loop, merged manifest/CSV) | 4.1 | Confirmed real pain: `workload/phoronix/run_test.sh` already launches the same command up to 8 times by hand to dodge multiplexing. Depends on the profile launcher (4.0) to define what a "pass" is. |
-| Low-overhead tracing alternative to `ptrace` (`ftrace` tracepoints or minimal eBPF) for `--tree`/`--tree-open` | 4.2 | `ptrace` context-switches on every syscall entry/exit, which skews the very counters being measured for I/O-heavy or fork-heavy workloads — but this is a substantial new backend, correctly sequenced after the cheaper wins above. |
-| Collector-plugin implementation (perf stat / trace-cmd / GPU tools as collectors behind the `collector` field, normalization path) | 4.2+ | **Decision shipped 2026-07-10** (see prose above): the manifest/run-index schema now carries a `collector` field rather than assuming wspy forever. What remains is real implementation — actually wrapping a non-wspy collector and normalizing its output into the same manifest/run-index shape — deliberately deferred to 4.2+. |
-
-### Publishing, reporting, UI
-| Idea | Phase | Why |
-| --- | --- | --- |
-| Shared plotting templates (replace per-suite gnuplot scripts with one normalized-schema pipeline) | 4.1 | **Re-phased (2026-07-09)** — was tagged 4.0, but its own rationale ("generate from the normalized schema once it exists") depends on the canonical metrics schema/store, which the Reproducibility track tags 4.1–4.2. Moved to 4.1 so the phase tag matches its actual dependency; `workload/phoronix/gnuplot.sh` stays suite-specific until then. |
-| Summary table generator (min/max/median/mean/stddev/outlier flags) from indexed data | 4.1 | Depends on the run index (4.0) and ideally the stats work (4.1) landing first. |
-| Publish-ready data export format | 4.1 | Same dependency; export layer on top of the normalized store. |
-| HTML report bundle (summary, bottlenecks, tree, top counters, links to raw artifacts) + compare view | 4.1 | Depends on the report data existing in normalized form. |
-| Historical run index browser/search | 4.1 | Thin UI on top of the run index. |
-| Static-site publishing pipeline (per-benchmark + suite + cross-suite pages from templates) | 4.2 | **Gap in the prior draft** — "major idea C" (remove manual synthesis for the website) was never assigned a phase despite being one of the two headline goals in "Success criteria." Needs the summary generator + HTML bundle (4.1) as inputs. |
-| Characterization badges + similarity panels in reports | 4.2 | Depends on clustering (4.2) existing. |
-| Interactive tree/timeline drill-down, GPU phase overlays | 4.2 | Builds on `proctree` exports (4.1) and phase segmentation (4.0/4.2). |
-| Optional dashboard backend (e.g. Grafana) for exploratory slicing | 4.3 | Explicitly optional/coexists with static-first publishing; don't block 4.0–4.2 on this decision. |
-| Config-first experiment definition system (full YAML/JSON suites/benchmarks/repetitions, resumable/selective re-execution) | 4.3 | Full version of the lightweight config-file execution already in 4.0; don't build both at once. |
-| Optional deep trace analysis (Perfetto-compatible export of tree+topdown+interval timelines) | 4.3 | Advanced companion path for difficult workloads once the low-overhead tracing backend (4.2) exists to feed it. |
-| Optional live TUI (run progress, interval metrics, throttling/skew warnings) | 4.3 | Nice-to-have; CLI-first model stays primary. |
-
-### Testing and documentation
-Shipped (2026-07-10): golden output-contract tests + capability-matrix smoke tests
-(`tests/golden_output.sh`, `tests/capability_matrix.sh`, wired into `run_tests.sh`) — see `CLAUDE.md`'s
-"Build & Test" section for what each covers. Building the golden CSV-header/column-count checks
-surfaced five real, independent output-contract bugs that shipped alongside the tests themselves (all
-pre-existing, none introduced by this pass): `--cache3` fataled the whole run instead of gracefully
-skipping when `/sys/devices/amd_l3/type` was absent (contradicting this file's/`CLAUDE.md`'s own
-documented behavior); `--dcache`/`--icache`/`--tlb` combined with the default `--ipc` produced a
-duplicate `ipc` CSV column instead of their own (a stray `counter_mask` bit leaking into
-`print_metrics()`'s dispatch chain); `--software --csv` was corrupted (the value row never checked
-`csvflag`, so the human-readable multi-line dump landed mid-row); `--memory` measured its counters but
-never printed them anywhere (an implemented `print_memory()` was simply never wired into the dispatch
-chain); and `--topdown-frontend`/`--topdown-optlb --csv` produced malformed rows (missing trailing
-commas fusing fields together) that also silently dropped every column under permission-denied
-conditions, the same class of bug fixed for `--topdown-backend`'s premature/duplicate header branch.
-The capability-matrix smoke tests separately caught `--tree-vmsize` crashing on any use (a long option
-registered and documented in `--help` with no corresponding `case` in `parse_options()` at all).
-Documented but intentionally *not* fixed in this pass: `--per-core` combined with any counter group
-produces a CSV header with only the base/coverage columns while each per-core row still appends that
-group's values — a real gap, but one needing `wspy.c`'s `aflag`/per-core setup-and-print flow
-re-architected rather than a single `print_*()` fix (see `tests/capability_matrix.sh`'s
-`per-core-topdown` bundle comment).
-
-Shipped (2026-07-10): artifact contract doc + troubleshooting runbook (`doc/ARTIFACT_CONTRACT.md`,
-linked from `README.md`'s "Other contents"). Documents the manifest/run-index/CSV/tree-file shapes,
-the SemVer contract behind `MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION`, the
-"degrade-don't-fail" pattern shared by `coverage.c`/`provenance.c`/GPU-flag handling, how
-`wspy-validate`'s per-run gate, `counter_coverage`, and `wspy-ledger`'s suite-level status relate
-without being interchangeable, and a symptom-first troubleshooting runbook (partial counter
-coverage, `nmi_watchdog`, `--tree`'s `exit_status.known: false`, GPU-not-built warnings,
-`--per-core`'s documented CSV column-count mismatch, `wspy-validate`/`wspy-ledger` false negatives).
-
-| Idea | Phase | Why |
-| --- | --- | --- |
-| Schema compatibility/migration tests + reproducibility/idempotency tests | 4.1 | Depends on the schema versioning (4.0) having something to test compatibility against. |
-| Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster output) | 4.1 | Write once the features it documents (confidence envelope, phases) exist in 4.0. |
-| Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead guardrails | 4.2 | Needs deterministic micro-workloads and the stats/index infrastructure (4.1) to compare against. |
-| Contributor guide for adding a collector/metric/schema bump safely | 4.2 | Write once the collector-plugin decision (Portability track) and schema versioning have real precedent to document. |
+## Recommended hand testing before closing out 4.0
+Everything below requires real hardware, root/perf access, or third-party installs this environment
+doesn't have, so it hasn't been exercised beyond synthetic/unit-test coverage:
+- Run the full counter matrix as root (or `CAP_SYS_PTRACE` + `perf_event_paranoid <= 1`) on real AMD
+  Zen4 and Zen5 hardware and on Intel (including a hybrid Atom+Core part) to confirm full counter
+  coverage rather than the permission-denied degradation this environment always sees.
+- Run `workload/cpu2017/run_test.sh`, `workload/phoronix/run_test.sh`, and
+  `workload/pbbsbench/run.sh` end to end against real `runcpu`/`phoronix-test-suite`/`runall`
+  installs — confirm the unified output layout, `--run-index` accumulation, the `deep-cpu-intel`
+  Intel branch, and the `--tree` pass's 3600s timeout all behave as intended at realistic (not
+  `sleep 1`) runtimes and process-fork volumes.
+- Exercise `--ibs-basic`/`--ibs-memory-deep` against real `ibs_fetch`/`ibs_op` PMUs on Zen4/Zen5
+  hardware — `test_ibs.c` only drives `ibs_probe_at()` against a synthetic fake sysfs tree, never
+  real IBS counters or real filtering behavior.
+- Exercise `--gpu-busy`/`--gpu-metrics`/`--gpu-smi`/`--gpu-device=<idx>` on an `AMDGPU=1` build
+  against real AMD GPU hardware, ideally a multi-GPU host, to confirm device enumeration/selection
+  and metric correctness beyond what `./run_tests.sh`'s ROCm-header-gated build check covers.
+- Toggle the NMI watchdog (`scripts/setup_perf.sh`) and request a counter combination that
+  genuinely doesn't fit, to confirm `preflight.c`'s suggested downgrades are actually accurate and
+  helpful in practice, not just synthetically triggered.
+- Run `wspy-validate`/`wspy-ledger` against a real run-index file accumulated over many genuine runs
+  (not `test_ledger.c`/`test_validate.c`'s small synthetic fixtures) to sanity-check behavior at
+  realistic scale and with real-world messiness (interrupted runs, mixed schema versions over time).
+- Run `--tree`/`--tree-cmdline`/`--tree-vmsize` against a genuinely fork-heavy real workload (e.g.
+  `make -j`, a SPEC benchmark) beyond `run_tests.sh`'s synthetic ~2000-process stress test, to sanity
+  check ptrace overhead and `proctree` reconstruction under realistic timing.
 
 ## Track deep-dives
 
@@ -459,191 +141,220 @@ What appears confirmed from current Linux perf/PMU behavior for AMD Family 1Ah (
 3. IBS capability extensions (L3-miss-only, load-latency/fetch-latency filters, richer memory-source
    decoding) are the strongest near-term source of additional signal.
 4. L3-miss-only filtering is documented to skew sampling-period behavior — runs using it need
-   explicit annotation.
+   explicit annotation (shipped — see `topdown.c`'s `print_ibs()`).
 5. Zen5's topdown dispatch baseline shifted from Zen4's 6 slots/cycle to 8 — already implemented
-   (`topdown.c`'s `CORE_AMD_ZEN`/`CORE_AMD_ZEN5` slot-multiplier branch), not a gap. But the finer
-   per-scheduler breakdown events AMD introduced alongside that width change aren't in
-   `amd_raw_events[]` yet: split ALU/AGU scheduler-stall counters, and op-cache/execution-queue
-   events that would separate `Frontend Latency` from `Frontend Bandwidth` (today's
-   `de_no_dispatch_per_slot.*` events only give the coarser no-ops-from-frontend/backend-stalls/
-   smt-contention split). `IBS_LD_L1_DTLB_REFILL_LAT` specifically also isn't named anywhere in the
-   IBS capability-probing rows above. Neither needs its own inventory row yet — both are candidate
-   inputs for the Topdown deep-dive's "platform formula registry" item (below) once Zen5-specific
-   formulas are actually versioned there.
+   (`topdown.c`'s `CORE_AMD_ZEN`/`CORE_AMD_ZEN5` slot-multiplier branch). But the finer per-scheduler
+   breakdown events AMD introduced alongside that width change aren't in `amd_raw_events[]` yet:
+   split ALU/AGU scheduler-stall counters, and op-cache/execution-queue events that would separate
+   `Frontend Latency` from `Frontend Bandwidth`. `IBS_LD_L1_DTLB_REFILL_LAT` also isn't named
+   anywhere in the IBS capability-probing rows. Both are candidate inputs for a future "platform
+   formula registry" (see Topdown deep-dive item 8) once Zen5-specific formulas are actually
+   versioned there — no standalone backlog item yet.
 
 Caveat: if upstream kernel/perf exposes new Zen5-specific generic mappings or PMU caps, update
 presets and coverage logic without changing the report schema.
 
-→ Inventory rows: "Zen5 / IBS" track, the three remaining rows above (capability-driven IBS probing,
-`ibs-basic`/`ibs-memory-deep` collection profiles, and sampling skew/quality annotations all shipped,
-`ibs.c`).
+→ Informs the 4.1 priority list's "Zen-family preset packs" and "PMU-capability-aware comparability
+warnings," and the 4.2 list's "IBS-derived memory-path bottleneck decomposition."
 
 ### Topdown deep-dive
 Advancements worth adopting, in priority order for `wspy` specifically:
-1. Multiplex-aware confidence (`time_running/time_enabled`) — cheapest, most trust-building; do
-   first.
-2. Decomposition consistency/sanity checks — pairs with #1, still read-only.
+1. ~~Multiplex-aware confidence~~ — shipped (see "What shipped in 4.0").
+2. ~~Decomposition consistency/sanity checks~~ — shipped alongside #1.
 3. Hierarchical (L1→L2→L3) parent/child schema with explicit raw-vs-contention-adjusted
    denominators — needed before drill-down reporting means anything.
 4. SMT/contention-aware normalization — publish both denominators, document which one drives
    classification.
-5. Phase-aware topdown (warmup/steady/degraded) — depends on interval phase segmentation.
+5. Phase-aware topdown (warmup/steady/degraded) — depends on interval phase segmentation (shipped,
+   `phase.c`).
 6. Hybrid/heterogeneous core-class summaries — don't mix Atom+Core topdown into one headline number.
 7. Cross-signal attribution (topdown + cache/TLB/IBS) — composite bottleneck rules over single-
    counter heuristics.
 8. Platform formula registry — versioned event/formula mapping per CPU family/model, for
    auditability.
 
-**MVP acceptance criteria** (unchanged from prior draft, still the right bar):
-- ≥95% of topdown fields in standard profiles include confidence metadata.
-- Reports clearly mark low-confidence topdown rows and avoid strong claims from them.
-- One benchmark run demonstrates phase-specific topdown shifts in generated summary output.
+**MVP acceptance criteria** (still the right bar):
+- ≥95% of topdown fields in standard profiles include confidence metadata. **Met** for the level-1
+  breakdown (shipped).
+- Reports clearly mark low-confidence topdown rows and avoid strong claims from them. **Met.**
+- One benchmark run demonstrates phase-specific topdown shifts in generated summary output. **Not
+  met** — phase detection exists (`phase.c`) but nothing correlates it with topdown output yet
+  (item 5/6 above, and the 4.2 "Phase-aware topdown" priority-list entry).
 
-**MVP execution order**: quality envelope + sanity checks → hierarchical schema + denominator/
-formula metadata → phase segmentation + phase-level bottleneck summaries. This maps directly to the
-4.0 → 4.1 → 4.2 phase tags in the inventory.
+→ Items 3-8 map to the 4.1 list's "Hierarchical topdown schema" and "Core-class-aware topdown," and
+the 4.2 list's "Phase-aware topdown" and "Composite attribution."
 
-→ Inventory rows: "Topdown quality" track.
+## 4.1 priorities
+Goal: turn the 4.0 foundation into less manual work — normalized data, stats/confidence reporting,
+a real report generator, native multi-pass execution, `/proc` enrichment. Ordered in dependency
+tiers; items within a tier are independently startable.
 
-## Phased plan
-Read literally from the inventory's `Phase` column — this section is the narrative summary, not a
-separate list to keep in sync by hand.
+**Tier 1 — foundational, unlocks most of the rest of 4.1:**
+1. Canonical metrics schema + normalized store (SQLite and/or Parquet) — almost everything below
+   (stats, comparison matrix, HTML report, summary generator, feature normalization) wants queryable
+   data instead of re-scanning CSV/JSONL by hand. Keep raw files; add this as a second, derived layer.
+2. Summary table generator (min/max/median/mean/stddev/outlier flags) from indexed data — the direct
+   precursor to closing 4.0's "summary regenerated from data only" gap (see "What remains"); can
+   start against the run index directly and layer onto #1 once it exists.
+3. Native multi-pass counter execution (`--passes=ipc,topdown,cache,software`, internal N-run loop,
+   merged manifest/CSV) — confirmed real pain: `workload/phoronix/run_test.sh` used to launch the
+   same command up to 8 times by hand to dodge multiplexing; `wspy-run`'s profile launcher defines
+   what a "pass" is, this makes it native instead of N separate processes.
 
-### Phase 4.0 — foundation (greenfield, not incremental)
-Goal: invent the manifest/index/schema that everything else depends on, fix the two confirmed real
-bugs (`card1` hardcode, `ptrace` x86_64-only access), and land the cheapest trust-building wins
-(topdown confidence envelope, IBS capability probing). Every "Run artifact foundation" row, most
-"Portability" rows, the AMD GPU path-scan fix, and the topdown/IBS confidence work are tagged 4.0.
+**Tier 2 — reporting/UI on top of Tier 1's data shapes:**
+4. HTML report bundle (summary, bottlenecks, tree, top counters, links to raw artifacts) + compare
+   view.
+5. Publish-ready data export format.
+6. Historical run index browser/search.
+7. Shared plotting templates — replace `workload/phoronix/gnuplot.sh`'s per-suite script with one
+   normalized-schema pipeline once #1 exists.
+8. Traceability links (summary row → manifest → raw CSV → plots → tree artifacts).
 
-**This phase was originally scoped large** — roughly 25-30 inventory rows when first drafted. The
-minimal foundation slice (6 rows) has since shipped in full, and roughly 8 4.0-tagged rows remain
-open (see "Next up after the minimal slice" for the current priority order across all of them).
+**Tier 3 — stats/confidence layer:**
+9. Repeatability policy + confidence metadata (mean, stddev, CV, CI) as default output.
+10. Outlier/threshold engine (per-metric, global + suite-local).
+11. Comparison matrix mode (sweep compiler/kernel/governor/SMT/VM-native) — builds on the
+    profile-driven launcher; a declarative sweep runner, not new collection logic.
 
-### Phase 4.1 — automation
-Goal: turn the 4.0 foundation into less manual work — stats/confidence reporting, matrix sweeps, the
-normalized metrics store, native multi-pass execution, `/proc` enrichment, HTML reports, ARM64
-`cpu_info` fallback.
+**Tier 4 — topdown/IBS refinement:**
+12. Hierarchical (parent→child) topdown schema + explicit raw-vs-contention-adjusted denominators +
+    formula/version metadata.
+13. Core-class-aware topdown (hybrid Intel Atom+Core; weighted aggregate) — depends on per-core
+    collection (`--per-core`, shipped) plus #12.
+14. Zen-family preset packs (`zen-portable`, `zen4plus-deep`) — convenience layer now that IBS
+    capability probing exists.
+15. PMU-capability-aware comparability warnings.
 
-### Phase 4.2 — analysis
+**Tier 5 — `/proc` and tree enrichment (independent, moderate value, low risk):**
+16. `/proc/<pid>/io` byte counters (read/write/cancelled-write bytes).
+17. `/proc/<pid>/schedstat` run-delay/timeslice capture.
+18. Memory footprint detail (`VmRSS`/`VmHWM`/anon-file-shmem split via `/proc/<pid>/status` or
+    `smaps_rollup`).
+19. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
+    containerized environments.
+20. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
+21. `proctree` → JSON/Graphviz export + run-to-run tree diff.
+
+**Tier 6 — GPU track:**
+22. ROCm SMI + sysfs fusion layer (one stream, source precedence, per-metric validity flags) —
+    merges the two existing independent GPU paths (`amd_smi.c`, `amd_sysfs.c`).
+23. Same manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory
+    activity) — reuses 4.0 foundation work rather than a parallel GPU-only pipeline.
+
+**Tier 7 — characterization prerequisites:**
+24. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
+    switch/I-O) — needs #1's normalized schema to draw features from.
+25. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
+    stability) + confidence + top-2 alternatives.
+
+**Tier 8 — portability:**
+26. Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`) —
+    actual ARM64 `cpu_info` support; `cpu_info.c`'s `__cpuid()`/`<cpuid.h>` use is the remaining
+    x86_64-only blocker (the `ptrace` side of ARM64 prep already shipped, see `ptrace_arch.h`).
+
+**Tier 9 — testing/docs and small cleanups (track alongside the schema work above):**
+27. Schema compatibility/migration tests + reproducibility/idempotency tests.
+28. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
+    output).
+29. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
+30. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
+    constant (e.g. `phoronix-test-suite` reportedly has a run-time-estimate command) — today's
+    constant is a blunt stand-in; the real constraint is capping process-record data volume for
+    publishing, not workload runtime, so a per-workload estimate would size it more accurately than
+    one constant across every suite.
+
+## 4.2 priorities
 Goal: use the normalized store built in 4.1 for regression detection, clustering, phase-aware
-topdown/IBS attribution, static-site publishing, and the eBPF/ftrace tracing backend.
+topdown/IBS attribution, static-site publishing, and a lower-overhead tracing backend.
 
-### Phase 4.3 — platform
-Goal: optional/heavier pieces that shouldn't block the rest — full config-first experiment
-definitions, optional dashboard backend, deep trace analysis, live TUI, characterization drift
-alerting.
+**Tier 1 — needs 4.1's normalized store/history:**
+1. Baselines and regression/anomaly detection.
+2. Machine/environment comparability scoring — depends on provenance capture (shipped, `provenance.c`)
+   existing across enough runs to score against.
+3. Distribution-first reporting (quantiles, clustering prep).
+4. Clustering + nearest-neighbor + cluster profile cards, coverage-aware distance (common-subspace
+   only when data coverage differs).
 
-### Minimal foundation slice (if 4.0 needs to ship narrower)
-Six items unlock nearly everything else and are independently shippable in roughly this order:
-1. ~~Run manifest (JSON) + SemVer schema version~~ — shipped (`manifest.c`)
-2. ~~Run index generation~~ — shipped (`run_index.c`)
-3. ~~Common workload wrapper / profile-driven launcher~~ — shipped (`wspy-run`)
-4. ~~Counter capability discovery + coverage reporting~~ — shipped (`coverage.c`, `wspy --capabilities`)
-5. ~~Topdown confidence envelope + sanity checks~~ — shipped (`topdown.c`'s `print_topdown()`, see "Topdown quality")
-6. ~~`amd_sysfs.c` dynamic GPU path scan~~ — shipped (`amd_sysfs.c`'s `amd_sysfs_scan_devices()`,
-   formerly `find_amd_drm_card()`; `--gpu-device=<idx>` and full multi-GPU enumeration, once the
-   isolated open follow-on from this slice, have since shipped too — see "AMD GPU track")
+**Tier 2 — topdown/attribution, needs 4.1's hierarchical schema + phase detection (shipped) + IBS:**
+5. Phase-aware topdown (warmup/steady/degraded segmentation, drift signal).
+6. Composite attribution (topdown + cache/TLB/IBS signals).
+7. IBS-derived memory-path bottleneck decomposition (combine with topdown/cache).
 
-Everything else currently tagged 4.0 (validation checks, coverage ledger, IBS profiles, `ptrace`
-macro extraction, plotting templates, golden tests) can slip to a 4.0.x follow-on without blocking
-downstream phases, since nothing in 4.1+ depends on them specifically. (Validation checks, the
-coverage ledger, the `ptrace` macro extraction, the IBS profiles, and the golden output-contract/
-capability-matrix tests have all since shipped — see "Run artifact foundation"/"Portability and
-robustness"/"Zen5 / IBS"/"Testing and documentation" above and the "Next up" list below.)
+**Tier 3 — publishing/reporting expansion, needs 4.1's HTML report:**
+8. Static-site publishing pipeline (per-benchmark + suite + cross-suite pages from templates).
+9. Characterization badges + similarity panels in reports.
+10. Interactive tree/timeline drill-down, GPU phase overlays.
 
-### Next up after the minimal slice
-All six items from the minimal foundation slice are shipped (2026-07-08), plus environment/provenance
-capture (2026-07-09, `provenance.c` — see "Reproducibility, comparability, statistics" above), opt-in
-child exit status propagation (2026-07-09, `--exit-with-child` — see "Portability and robustness"
-above), the `rusage` CSV/normal output mismatch fix (2026-07-09, `print_usage()` in `topdown.c` — see
-"Process / `getrusage` / `/proc` telemetry" above), basic pre-publish validation/quality checks
-(2026-07-09, `wspy-validate`/`validate.c`/`json_reader.c` — see "Run artifact foundation" above), and
-the coverage ledger (2026-07-09, `wspy-ledger`/`ledger.c` — see "Run artifact foundation" above),
-arch-neutral `ptrace` register-access macros (2026-07-09, `ptrace_arch.h` — see "Portability and
-robustness" above), capability-driven IBS probing (2026-07-10, `ibs.c` — see "Zen5 / IBS" above), and
-`ibs-basic`/`ibs-memory-deep` collection profiles plus sampling skew/quality annotations (2026-07-10,
-`ibs.c`/`topdown.c`/`wspy.c`/`wspy-run` — see "Zen5 / IBS" above), run-index schema validation on
-ingest (2026-07-10, `ledger.c` — see "Portability and robustness" above), and golden output-contract
-tests + capability-matrix smoke tests (2026-07-10, `tests/golden_output.sh`/`tests/capability_matrix.sh`
-— see "Testing and documentation" above, including the five output-contract bugs and one crash that
-building them surfaced and fixed), and the artifact contract doc + troubleshooting runbook
-(2026-07-10, `doc/ARTIFACT_CONTRACT.md` — see "Testing and documentation" above), and the
-collector-plugin architecture design decision (2026-07-10, PR #20, `manifest.h`/`run_index.h`'s new
-`collector` field — see "Portability and robustness" above), counter-fit preflight (2026-07-10,
-`preflight.c`/`preflight.h` — see "Existing-capability extensions" above), and interval automatic
-phase-boundary detection (2026-07-10, `phase.c`/`phase.h` — see "Existing-capability extensions"
-above); all fourteen were item 1 of this list at the time they shipped and are dropped from the
-ordering below per this file's own "ideas already implemented are not listed" rule. Also since shipped
-(2026-07-10, `feature/gpu-device-select`): `--gpu-device=<idx>` override + multi-GPU enumeration ("AMD
-GPU track" — see that section above) — was item 1 of this list at the time it shipped, dropped for the
-same reason. Also since shipped (2026-07-10, `feature/unified-output-layout`): the unified output
-layout itself (`wspy-run --suite/--benchmark` — see "Run artifact foundation" above) — this was the
-largest remaining 4.0 item, explicitly sequenced last in this list; it's dropped for the same reason
-the others above are.
-That leaves 0 rows tagged 4.0 across the inventory (one, "Shared plotting templates," was re-phased to
-4.1 above since its own rationale depended on the 4.1–4.2 normalized schema — see that row). The
-priority-ordered list this section used to carry is gone along with the last item on it; a future
-consolidated pass should re-derive a 4.1 ordering from the inventory's `4.1`-tagged rows rather than
-extending this now-empty list by hand.
+**Tier 4 — report-layer additions on data already collected in 4.0:**
+11. `--tree-open` → file-I/O topology summary (hot paths, open-failure rates, startup storms,
+    process→file maps) — `tree_open`/`SYS_openat` capture already exists (`topdown.c:455`).
+12. System (`--system`) → per-interface network attribution, user/system/iowait/steal mix,
+    local-vs-system-pressure attribution.
+13. Tree/lifecycle enrichments (exit code/signal summary, spawn/exit burst indicators, optional
+    `comm`-pattern role tagging).
 
-Also a real (pre-existing, not newly introduced) gap surfaced but deliberately not fixed while building
-the tests above: `--per-core` combined with any counter group produces a CSV header with only the
-base/coverage columns while each per-core row still appends that group's values. Needs `wspy.c`'s
-`aflag`/per-core setup-and-print flow re-architected, not a single `print_*()` fix — not added as its
-own numbered item above since it hasn't been triaged into a phase yet, but flagged here so it isn't
-lost; see `tests/capability_matrix.sh`'s `per-core-topdown` bundle comment for the concrete symptom.
+**Tier 5 — GPU deeper profiling:**
+14. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
+    heavier, optional trace-rich profile, same "default vs debug profile" pattern as IBS.
+15. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) —
+    depends on the fusion layer (4.1) providing consistent per-metric data first.
+16. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`,
+    extended once GPU runs feed the same index.
+17. Fold into general environment-comparability scoring (power cap, memory clock, thermal state,
+    driver version) — no separate "GPU comparability score" needed; one scoring mechanism, not two.
+
+**Tier 6 — infra:**
+18. Low-overhead tracing alternative to `ptrace` (`ftrace` tracepoints or minimal eBPF) for
+    `--tree`/`--tree-open` — `ptrace` context-switches on every syscall entry/exit, which skews the
+    very counters being measured for I/O-heavy or fork-heavy workloads.
+19. Collector-plugin implementation (perf stat / trace-cmd / GPU tools as collectors behind the
+    `collector` field, normalization path) — the schema seam shipped in 4.0; this is the actual
+    implementation of wrapping a non-wspy collector.
+
+**Tier 7 — testing:**
+20. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
+    guardrails — needs deterministic micro-workloads and 4.1's stats/index infrastructure.
+21. Contributor guide for adding a collector/metric/schema bump safely.
+
+## 4.3 priorities
+Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
+1. Config-first experiment definition system (full YAML/JSON suites/benchmarks/repetitions,
+   resumable/selective re-execution) — full version of the lightweight config-file execution
+   already in `wspy-run` (4.0); don't build both at once.
+2. Optional deep trace analysis (Perfetto-compatible export of tree+topdown+interval timelines) —
+   advanced companion path for difficult workloads, needs 4.2's lower-overhead tracing backend to
+   feed it.
+3. Temporal drift detection (cluster movement across versions/configs/machines) — needs 4.2's
+   clustering plus enough history to detect movement; treat as an investigation trigger, not a
+   standalone feature.
+4. Optional dashboard backend (e.g. Grafana) for exploratory slicing — explicitly optional/coexists
+   with static-first publishing; doesn't block 4.0-4.2.
+5. Optional live TUI (run progress, interval metrics, throttling/skew warnings) — nice-to-have;
+   CLI-first model stays primary.
 
 ## Open questions for prioritization
-Each carries a recommendation; treat these as the current default, not a closed decision — flag if
-context has changed. Three of the six below have since been settled by shipped work (2026-07-09 pass)
-and are marked **Resolved**; they're kept rather than deleted so the reasoning that led to what shipped
-stays attached to it.
+Each carries a recommendation; treat these as the current default, not a closed decision.
 
-- **Publication automation first, or reproducibility/provenance first?**
-  **Resolved (2026-07-09):** the recommended *capture* half shipped — `provenance.c` captures
-  virtualization role, microcode, BIOS, governor, memory, and toolchain into the manifest/run-index.
-  Publication automation itself hasn't started. The remaining half of this question (whether to build
-  comparability *scoring* on top of that captured data before publication automation) is really a
-  restatement of the next question below, not a separate open decision.
-- **Is cross-machine comparability a hard requirement for the first round?**
-  Still open. Recommendation unchanged: no. Provenance fields are captured (4.0, shipped), defer
-  comparability *scoring* to 4.2. Scoring needs enough historical runs across machines to be
-  meaningful, which doesn't exist yet even with capture shipped.
-- **Should the website stay static-only, or add an interactive backend?**
-  Still open — no publishing/report-layer work (HTML bundle, static-site pipeline) has landed yet, so
-  nothing has changed since this was written. Recommendation unchanged: static-first through 4.2, keep
-  an optional Grafana-style backend as a 4.3 nice-to-have. Non-goal: do not let the interactive-backend
+- **Is cross-machine comparability a hard requirement for the first round?** Still open.
+  Recommendation: no. Provenance fields are captured (4.0); defer comparability *scoring* to 4.2 —
+  scoring needs enough historical runs across machines to be meaningful, which doesn't exist yet.
+- **Should the website stay static-only, or add an interactive backend?** Still open — no
+  publishing/report-layer work has landed yet. Recommendation: static-first through 4.2, keep an
+  optional Grafana-style backend as a 4.3 nice-to-have. Non-goal: don't let the interactive-backend
   question block the 4.1/4.2 HTML report and static-site work.
-- **Minimum metadata set for a run to be "publishable"?**
-  **Resolved (2026-07-09):** every field the recommendation named is now actually captured —
-  timestamps and full command line (`manifest.c`'s always-present fields), host CPU/GPU/kernel
-  (`host` block: hostname, cpu_vendor/family/model, kernel_release), compiler/toolchain plus
-  BIOS/power/governor/memory (`provenance.c`), `wspy_version`/`schema_version`, output file list, and
-  a pass/fail validation result (`wspy-validate`). The one named field wspy itself doesn't populate is
-  "benchmark name/suite" — that's out of wspy's scope by design; it belongs to the wrapper layer
-  (`wspy-run` pass names, `workload/*/run_test.sh`), not the manifest. The optional-but-recommended /
-  coverage-flag treatment for anything beyond this set is exactly what `counters_unavailable` and
-  `provenance`'s per-field "unavailable-with-reason" already do, so that half of the recommendation is
-  also in place.
-- **Should `wspy` natively handle multi-pass execution?**
-  Still open as a build decision, but its stated precondition is now met: the profile launcher
-  (`wspy-run`) shipped, so "what a pass is" is now defined. The feature itself (`--passes=...`, an
-  internal N-run loop, merged manifest/CSV) hasn't been built. Recommendation unchanged: yes, in 4.1 —
-  see "Portability and robustness" in the inventory.
-- **Is ARM64/AArch64 support a priority for 4.x?**
-  **Resolved (2026-07-09):** the recommended mechanical prep shipped — `ptrace_arch.h` macro-abstracts
-  the `ptrace` register access `ptrace_loop()` needs (see "Portability and robustness" above), with an
-  `__aarch64__` branch that's unverified prep (modeled on documented ABI conventions, never built or
-  run on real hardware) rather than a tested backend. Whether ARM64 support itself is a 4.x priority
-  is still open; the recommendation is unchanged either way — defer the actual `cpu_info` fallback
-  (`__cpuid()`/`<cpuid.h>` is still x86_64-only) and full ARM64 validation to 4.1+ unless a concrete
-  ARM64 machine makes it urgent sooner.
-
-## Success criteria for a 4.0 kickoff
-- A newcomer can run one benchmark suite and produce publish-ready structured artifacts without
-  editing scripts.
-- A summary page can be regenerated from data only (no manual copy/paste).
-- Every published benchmark row can be traced back to command line, environment, and raw artifacts.
+- **Should `wspy` natively handle multi-pass execution?** Its precondition is met (the profile
+  launcher, `wspy-run`, defines what a "pass" is); the feature itself (`--passes=...`, internal N-run
+  loop, merged manifest/CSV) hasn't been built. Recommendation: yes, in 4.1 (see Tier 1 above).
+- **Is ARM64/AArch64 support a priority for 4.x?** Still open. Mechanical prep shipped
+  (`ptrace_arch.h`'s `__aarch64__` branch, unverified/untested), but `cpu_info.c`'s `__cpuid()` use
+  is still x86_64-only and full ARM64 validation hasn't happened. Recommendation unchanged: defer
+  unless a concrete ARM64 machine makes it urgent sooner (4.1 Tier 8).
+- **Publication automation and reproducibility/provenance capture — resolved.** Provenance capture
+  shipped (4.0); publication automation is exactly the 4.1 Tier 1-2 work above.
+- **Minimum metadata set for a run to be "publishable" — resolved.** Every field the original
+  recommendation named is captured (timestamps, command line, host/CPU/GPU/kernel, provenance,
+  schema version, output file list, `wspy-validate` pass/fail). "Benchmark name/suite" is
+  intentionally out of `wspy`'s own scope — it's `wspy-run`/`workload/*`'s job, not the manifest's.
 
 ## External brainstorming references
 - ReBench — reproducible experiment configuration, resumable execution, explicit benchmark
