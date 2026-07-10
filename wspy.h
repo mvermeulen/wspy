@@ -81,6 +81,12 @@ extern pid_t child_pid;
 extern int child_pipe[2];
 extern volatile int is_still_running;
 
+/* Set by check_nmi_watchdog() (topdown.c); read directly (rather than by
+ * re-invoking check_nmi_watchdog(), which would re-print its warning) by
+ * anything that needs the already-determined NMI-watchdog state, e.g.
+ * preflight.c's slot-budget estimate. */
+extern int nmi_running;
+
 /* Root child's exit status; set in wspy.c (non-tree, via wait4()) or
  * topdown.c's ptrace_loop() (--tree mode). See topdown.c for details. */
 extern int child_exit_known;

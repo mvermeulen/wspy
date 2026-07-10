@@ -36,6 +36,12 @@ current option list.
 Some of the more commonly used options:
 
 * `--version` - print the wspy version and exit
+* `--capabilities` - probe available counters for this host/kernel and exit (no workload needed)
+* `--preflight [<counter flags>]` - check whether the given counter flags will fit in the
+  available hardware PMU counter slots without multiplexing, and exit; suggests which flags to
+  drop (or, if it's the cause, stopping the NMI watchdog) when they won't. No root needed, and no
+  workload command either -- this is also run automatically (silently, unless something doesn't
+  fit) before every real run.
 
 * Output
   * `-o <file>` - send output to a file instead of stdout

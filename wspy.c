@@ -24,6 +24,7 @@
 #include "coverage.h"
 #include "provenance.h"
 #include "ibs.h"
+#include "preflight.h"
 
 int aflag = 0;
 int oflag = 0;
@@ -39,6 +40,7 @@ int tree_vmsize = 0;
 int trace_syscall = 0;
 int versionflag = 0;
 int capabilitiesflag = 0;
+int preflightflag = 0;
 int exit_with_child_flag = 0;
 #if AMDGPU
 int gpu_smi_requested = 0; /* legacy */
@@ -101,6 +103,7 @@ int parse_options(int argc,char *const argv[]){
     { "opcache", no_argument, 0, 18 }, 
     { "no-opcache", no_argument, 0, 19 },
     { "per-core", no_argument, 0, 20 },
+    { "preflight", no_argument, 0, 61 },
     { "run-index", required_argument, 0, 53 },
     { "rusage", no_argument, 0, 21 },
     { "no-rusage", no_argument, 0, 22 },
@@ -323,6 +326,9 @@ int parse_options(int argc,char *const argv[]){
 	warning("invalid argument to --ibs-fetchlat: %s, ignored\n",optarg);
       }
       break;
+    case 61: // --preflight
+      preflightflag = 1;
+      break;
     case 31: // --tree
       if ((treefile = fopen(optarg,"w")) == NULL){
 	warning("unable to open tree file: %s, ignored\n",optarg);
@@ -381,6 +387,9 @@ int parse_options(int argc,char *const argv[]){
   if (capabilitiesflag){
     return 3; // no workload command needed for a capability probe
   }
+  if (preflightflag){
+    return 4; // no workload command needed, and no privileges either -- pure arithmetic
+  }
   if (optind >= argc){
     warning("missing command after options\n");
     return 1;
@@ -428,6 +437,30 @@ static int run_capabilities_probe(void){
   return 0;
 }
 
+// Standalone counter-fit preflight (wspy --preflight [<counter flags>]):
+// evaluates whatever counter_mask the given flags produced (default just
+// COUNTER_IPC, same as a normal run -- unlike --capabilities, this doesn't
+// force COUNTER_ALL, since the whole point is to check the combination the
+// caller actually intends to run) against the available general-purpose
+// hardware PMU counter slots, without launching a workload or opening any
+// perf events -- so unlike --capabilities, this needs no root/perf access.
+static int run_preflight_probe(void){
+  struct preflight_result pf;
+
+  if (inventory_cpu() != 0){
+    fatal("unable to query CPU information\n");
+  }
+  check_nmi_watchdog();
+  setup_raw_events();
+
+  pf = preflight_evaluate(counter_mask);
+  print_preflight_report(&pf);
+  preflight_result_free(&pf);
+
+  if (oflag) fclose(outfile);
+  return 0;
+}
+
 #ifndef TEST_WSPY
 int main(int argc,char *const argv[],char *const envp[]){
 #else
@@ -449,10 +482,14 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   if (i == 3){
     return run_capabilities_probe();
   }
+  if (i == 4){
+    return run_preflight_probe();
+  }
   if (i){
       fatal("usage: %s -[abcistv][-o <file>] <cmd><args>...\n"
 	    "\t--version                 - show version and exit\n"
 	    "\t--capabilities            - probe available counters for this host/kernel and exit\n"
+	    "\t--preflight               - check counter-fit for the given flags and exit (no root needed)\n"
 	    "\t--per-core or -a          - metrics per core\n"
 	    "\t--rusage or -r            - show getrusage(2) information\n"
 	    "\t--tree <file>             - create CSV of processes\n"
@@ -530,6 +567,18 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   setup_raw_events();
 
   coverage_reset();
+
+  // Counter-fit preflight: estimate whether the requested counter groups
+  // will fit in the available general-purpose hardware PMU slots without
+  // multiplexing, before any perf_event_open() calls are made below --
+  // silent when the fit is fine, a stderr warning with suggested
+  // downgrades (and the nmi_watchdog free-a-slot tip) when it isn't. See
+  // preflight.h; the same check is available standalone via --preflight.
+  {
+    struct preflight_result pf = preflight_evaluate(counter_mask);
+    preflight_warn_if_tight(&pf);
+    preflight_result_free(&pf);
+  }
 
   // set up either system-wide or core-specific counters
   if (aflag){
