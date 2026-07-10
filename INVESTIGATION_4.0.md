@@ -78,7 +78,11 @@ the project's mission changes to cross-vendor GPU profiling.
 (`tests/golden_output.sh`, `tests/capability_matrix.sh`) — building these surfaced and fixed five
 independent, pre-existing output-contract bugs and one crash (see `CLAUDE.md`'s "Build & Test" for
 specifics, not repeated here); `doc/ARTIFACT_CONTRACT.md` artifact-contract doc + troubleshooting
-runbook.
+runbook. `--per-core` CSV column-count mismatch fixed: `wspy.c`'s `per_core_csv` re-architects the
+aflag/csv print flow into one row per active core (a `core` column identifies which), so header and
+row column counts now match like any other flag combination; `--per-core` combined with `--interval`
+still keeps the old, separately-caused mismatch (`timer_callback()` never reads per-core counters —
+see `wspy.c`'s `per_core_csv` comment and `doc/ARTIFACT_CONTRACT.md`'s CSV section).
 
 ## What remains before 4.0 is complete
 1. **A minimal summary/report generator.** Nothing in the "Publishing, reporting, UI" backlog (see
@@ -87,18 +91,12 @@ runbook.
    `--run-index` files plus their unified-layout run directories and emits a summary table (even
    plain text or CSV) with a link/path back to each run's `manifest.json`/raw CSV/`process.tree.txt`
    would satisfy both remaining criteria at minimum scope.
-2. **Fix the known `--per-core` CSV column-count mismatch.** Pre-existing, documented gap (see
-   `tests/capability_matrix.sh`'s `per-core-topdown` bundle comment and `doc/ARTIFACT_CONTRACT.md`'s
-   CSV section): combined with any counter group, the header shows only base/coverage columns while
-   each per-core row still appends that group's values. This is a correctness bug in output the 4.0
-   foundation already ships, not new feature work — needs `wspy.c`'s `aflag`/per-core setup-and-print
-   flow re-architected, not a single `print_*()` fix.
-3. **Validate criterion 1 against real installs.** "Newcomer can run one suite without editing
+2. **Validate criterion 1 against real installs.** "Newcomer can run one suite without editing
    scripts" is believed met (the three `workload/*` scripts now call `wspy-run --suite/--benchmark`),
    but has only been exercised with `sleep 1` stand-ins in this environment — `runcpu`,
    `phoronix-test-suite`, and pbbsbench's `runall` aren't installed here. See "Recommended hand
    testing" below.
-4. **A 4.0 release manifest**, once 1-3 land: a short, structured summary of what actually shipped —
+3. **A 4.0 release manifest**, once 1-2 land: a short, structured summary of what actually shipped —
    final schema versions, module list, known carried-forward gaps — the way a run's own
    `--manifest` records what a `wspy` invocation did. Where it lives (a `CHANGELOG.md` entry, a
    dedicated `RELEASE_4.0.md`, or a section here) is undecided; "What shipped in 4.0" above is

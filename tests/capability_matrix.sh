@@ -155,16 +155,16 @@ run_bundle "gpu-device-out-of-range" 0 --no-ipc --gpu-device=999 --gpu-busy -- /
 
 echo ""
 echo "=== Modifier bundles (per-core, interval, tree variants) ==="
-# NOTE: intentionally not --csv here. --per-core combined with any counter
-# group produces a CSV header that only ever has the base/coverage columns
-# (aflag's per-core rows each append that group's columns to every row after
-# the first, e.g. an extra "ipc," value column with no matching header
-# column) -- a real, pre-existing CSV-contract gap distinct from the ones
-# fixed alongside these test files, and involves per-core setup/print flow
-# (wspy.c's aflag handling) rather than a single print_*() function. Left as
-# a known follow-up rather than fixed here; this bundle checks the
-# exit-code/no-fatal/no-crash graceful-degradation contract only.
-run_bundle "per-core-topdown" 0 --no-ipc --per-core --topdown -- /bin/true
+# --per-core combined with any counter group used to produce a CSV header
+# with only the base/coverage columns while each per-core row appended that
+# group's values as extra, unheaded columns (INVESTIGATION_4.0.md's
+# "Fix the known --per-core CSV column-count mismatch" item). wspy.c's
+# per_core_csv now re-architects the aflag/csv print flow into one row per
+# active core, tagged with a "core" column, so header and row column counts
+# match -- see tests/golden_output.sh's "per-core-topdown"
+# assert_csv_columns_match case for the column-count-parity check itself;
+# this bundle still just checks the exit-code/no-fatal/no-crash contract.
+run_bundle "per-core-topdown" 0 --csv --no-ipc --per-core --topdown -- /bin/true
 run_bundle "interval"         0 --csv --no-ipc --interval 1         -- sleep 1
 # Interval + IPC (default) engages phase.c's automatic phase-boundary
 # detection: exercises the "phase" CSV column's own graceful-degradation
@@ -173,8 +173,12 @@ run_bundle "interval"         0 --csv --no-ipc --interval 1         -- sleep 1
 run_bundle "interval-phase-detect"    0 --csv --interval 1                  -- sleep 1
 run_bundle "interval-no-phase-detect" 0 --csv --interval 1 --no-phase-detect -- sleep 1
 # --per-core disables phase detection outright (phase_detect_is_available()) --
-# it reads cpu_info->systemwide_counters, which per-core-topdown's own note
-# above never has an "ipc" group on.
+# it reads cpu_info->systemwide_counters, which is empty of per-core groups
+# under aflag. --per-core + --interval also still has the pre-existing,
+# separate CSV column-count mismatch above: timer_callback() only ever reads
+# cpu_info->systemwide_counters, so per_core_csv's new row shape deliberately
+# doesn't apply while --interval is active (see wspy.c's per_core_csv
+# comment) -- this combination isn't fixed by this bundle's sibling above.
 run_bundle "interval-per-core"        0 --csv --per-core --interval 1        -- sleep 1
 
 TREE_OUT=$(mktemp /tmp/wspy_capmatrix_tree.XXXXXX)

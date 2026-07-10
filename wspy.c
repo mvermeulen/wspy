@@ -504,6 +504,8 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   struct rusage rusage;
   struct counter_group *cgroup;
   enum wspy_phase final_phase = PHASE_WARMUP;
+  int per_core_csv = 0;
+  int first_core_with_counters = -1;
   outfile = stdout;
   num_procs = get_nprocs();
   clocks_per_second = sysconf(_SC_CLK_TCK);
@@ -662,6 +664,28 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   }
   start_counters(cpu_info->systemwide_counters);
 
+  // --per-core CSV output needs a different row shape than the default
+  // aggregate single row: aflag routes every counter group named in
+  // counter_mask onto each core's own core_specific_counters rather than
+  // cpu_info->systemwide_counters, so the old single aggregate row (built
+  // from systemwide_counters alone) never had per-core group columns of
+  // its own -- the header matched it, but per-core data was then appended
+  // as extra unheaded columns below. Below, one CSV row per active core
+  // (tagged with a "core" column) replaces that aggregate row instead.
+  // Interval mode keeps its existing, separately-documented limitation --
+  // timer_callback() only ever reads systemwide_counters, so per-core data
+  // isn't visible in periodic ticks either way -- so this new shape only
+  // applies outside --interval.
+  if (aflag && csvflag && !interval){
+    for (i=0;i<cpu_info->num_cores;i++){
+      if (cpu_info->coreinfo[i].core_specific_counters){
+	first_core_with_counters = i;
+	break;
+      }
+    }
+    per_core_csv = (first_core_with_counters >= 0);
+  }
+
   signal(SIGINT,SIG_IGN);
 
   // interval automatic phase-boundary detection (warmup/steady/degraded);
@@ -689,6 +713,10 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       fprintf(outfile,"gpu_smi_temp,gpu_smi_activity,gpu_smi_vram_used,gpu_smi_vram_total,");
     }
 #endif
+    if (per_core_csv){
+      fprintf(outfile,"core,");
+      print_metrics(cpu_info->coreinfo[first_core_with_counters].core_specific_counters,PRINT_CSV_HEADER);
+    }
     print_metrics(cpu_info->systemwide_counters,PRINT_CSV_HEADER);
     print_counter_coverage(PRINT_CSV_HEADER);
     fprintf(outfile,"\n");
@@ -748,7 +776,50 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       phase_current_ipc(cpu_info->systemwide_counters),phase_elapsed);
   }
 
-  if (csvflag){
+  if (csvflag && per_core_csv){
+    // one row per active core, each tagged with its core index -- matches
+    // the "core,"+group-header addition above. The old aggregate row is
+    // folded into these (software/ibs's systemwide-only groups and the
+    // coverage counts are the same on every row, same as they'd be on the
+    // single row they used to only appear on once).
+    for (i=0;i<cpu_info->num_cores;i++){
+      if (!cpu_info->coreinfo[i].core_specific_counters) continue;
+      if (sflag) print_system(PRINT_CSV);
+      if (xflag) print_usage(&rusage,PRINT_CSV);
+#if AMDGPU
+      if (!sflag && gpu_busy_requested){
+        int busy = amd_sysfs_gpu_busy_percent();
+        fprintf(outfile,"%d,",busy);
+      }
+      if (!sflag && gpu_metrics_requested){
+        amd_sysfs_gpu_metrics();
+        if (amd_sysfs_gpu_metrics_valid()){
+          fprintf(outfile,"%d,%u,%.2f,%u,",
+            amd_sysfs_get_gpu_temp(),
+            amd_sysfs_get_gpu_activity(),
+            amd_sysfs_get_gpu_power(),
+            amd_sysfs_get_gpu_freq());
+        } else {
+          fprintf(outfile,"0,0,0.00,0,");
+        }
+      }
+      if (!sflag && gpu_smi_requested){
+        amd_smi_metrics();
+        amd_smi_memory();
+        fprintf(outfile,"%u,%u,%u,%u,",
+          amd_smi_metrics_valid() ? amd_smi_get_temp() : 0,
+          amd_smi_metrics_valid() ? amd_smi_get_activity() : 0,
+          amd_smi_memory_valid() ? amd_smi_get_vram_used() : 0,
+          amd_smi_memory_valid() ? amd_smi_get_vram_total() : 0);
+      }
+#endif
+      fprintf(outfile,"%d,",i);
+      print_metrics(cpu_info->coreinfo[i].core_specific_counters,PRINT_CSV);
+      print_metrics(cpu_info->systemwide_counters,PRINT_CSV);
+      print_counter_coverage(PRINT_CSV);
+      fprintf(outfile,"\n");
+    }
+  } else if (csvflag){
     if (interval){
       double elapsed;
 
@@ -825,15 +896,22 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 #endif
   }
 
-  for (i=0;i<cpu_info->num_cores;i++){
-    if (cpu_info->coreinfo[i].core_specific_counters){
-      if (csvflag){
-	print_usage(&rusage,PRINT_CSV);
-      } else {
-	fprintf(outfile,"##### core %2d #######################\n",i);
+  // per_core_csv already emitted one row per core above; this loop only
+  // has work left to do for the human (non-CSV) block form, or for the
+  // pre-existing --interval + --per-core combination that per_core_csv
+  // deliberately doesn't touch (see the comment where per_core_csv is
+  // computed).
+  if (!per_core_csv){
+    for (i=0;i<cpu_info->num_cores;i++){
+      if (cpu_info->coreinfo[i].core_specific_counters){
+	if (csvflag){
+	  print_usage(&rusage,PRINT_CSV);
+	} else {
+	  fprintf(outfile,"##### core %2d #######################\n",i);
+	}
+	print_metrics(cpu_info->coreinfo[i].core_specific_counters,csvflag?PRINT_CSV:PRINT_NORMAL);
+	if (csvflag) fprintf(outfile,"\n");
       }
-      print_metrics(cpu_info->coreinfo[i].core_specific_counters,csvflag?PRINT_CSV:PRINT_NORMAL);
-      if (csvflag) fprintf(outfile,"\n");
     }
   }
 
