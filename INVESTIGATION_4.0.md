@@ -76,6 +76,9 @@ citing line numbers. This pass re-checked the load-bearing claims directly:
   `wspy-ledger` checks each run-index record's `schema_version` against `RUN_INDEX_SCHEMA_VERSION`
   and warns on a major-version mismatch or missing field, same as `wspy-validate` does for manifests.
   See "Portability and robustness" above.)
+  (Superseded 2026-07-10, later in this cycle: the "no unified output layout" and "`workload/*/
+  run_test.sh` haven't been migrated" clauses are also no longer true — `wspy-run --suite/--benchmark`
+  and the three migrated `workload/*` scripts shipped, see "Run artifact foundation" above.)
   Building `wspy-run` also surfaced a real, previously-unknown bug: `wspy`'s own process exit code
   never reflects the launched command's success — see the new "Portability and robustness" row
   ("Propagate child exit status...").
@@ -133,9 +136,30 @@ it matches each name as a substring against every run-index record's `command` a
 `needs-tool-support` (an explicit annotation always overrides inference). `--csv` and `--strict`
 mirror `wspy-validate`'s conventions. This was item 1 of the "next up after the minimal slice" list
 at the time it shipped.
+
+Also shipped since that pass: the unified output layout (2026-07-10), `wspy-run`'s largest
+remaining "Run artifact foundation" item. `--suite <name> --benchmark <name>` switches `wspy-run`
+from flat `<outdir>/<prefix><pass>.<ext>` naming to one directory per run,
+`<outdir>/<suite>/<benchmark>/<run-id>/`, generalizing the file layout `workload/cpu2017`,
+`workload/phoronix`, and `workload/pbbsbench` used to each hand-roll independently (mkdir a
+benchmark-named directory, run 7-8 `wspy` passes into it by hand, `cat` the text passes together,
+run `gnuplot.sh` over the CSVs) — all three scripts now call `wspy-run --suite ... --benchmark ...`
+instead. Per-pass files keep their existing names (`<pass-name>.<csv|txt>` — the doc's original
+`metrics.csv` phrasing turned out not to fit today's reality of a multi-pass sweep producing more
+than one CSV; that's blocked on "Native multi-pass counter execution" below actually landing, not
+on this item); `wspy-run` adds `summary.txt` (concatenation of the non-CSV, non-`--tree` passes),
+`manifest.json` (a small run-level index of which passes ran and their status — not a per-process
+`--manifest`, which already exists per pass alongside it), and an empty `plots/` directory reserved
+for the future report generator (4.1/4.2) rather than populated now — folding `gnuplot.sh` itself
+into `wspy-run` was considered and deliberately deferred to that later report-generator work. A
+comma-separated profile list (e.g. `deep-cpu,tree-heavy`) composes more than one builtin profile's
+passes into a single invocation/run-directory, which is how the three migrated scripts get both a
+counter sweep and a `--tree` pass into one run. See `doc/ARTIFACT_CONTRACT.md`'s new "Unified
+output layout" section for the full `manifest.json` shape and `CLAUDE.md`'s `wspy-run` entry for
+the mechanics.
 | Idea | Phase | Why |
 | --- | --- | --- |
-| Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,plots/*.png,manifest.json}`) | 4.0 | cpu2017/phoronix/pbbsbench each invent their own file layout; publishing tools currently need suite-specific logic. |
+| Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s constant (e.g. `phoronix-test-suite` has a run-time-estimate command) | 4.1 | Today's 3600s (`tree-heavy`'s `PASS_TIMEOUTS`, `wspy-run`) is a blunt stand-in; the real constraint is capping process-record data volume for publishing, not workload runtime, so a workload-specific estimate would size it more accurately than one constant across every suite. |
 | Reproducibility bundle export (tarball: manifest + raw + derived per batch) | 4.1 | Depends on manifest/index existing; archival/re-analysis convenience, not foundational. |
 | Traceability links (summary row → manifest → raw CSV → plots → tree artifacts) | 4.1 | Same dependency; fold into the report generator once there's a normalized index to link from. |
 
@@ -552,17 +576,15 @@ above); all fourteen were item 1 of this list at the time they shipped and are d
 ordering below per this file's own "ideas already implemented are not listed" rule. Also since shipped
 (2026-07-10, `feature/gpu-device-select`): `--gpu-device=<idx>` override + multi-GPU enumeration ("AMD
 GPU track" — see that section above) — was item 1 of this list at the time it shipped, dropped for the
-same reason.
-That leaves roughly 1 row still tagged 4.0 across the inventory (one, "Shared plotting templates," was
-just re-phased to 4.1 above since its own rationale depended on the 4.1–4.2 normalized schema — see
-that row). The list below covers it, grouped and ordered by priority (design decisions first since they
-get more expensive to retrofit the longer they wait, heavier collection/report-layer work last). It is
-already a row in the inventory above — this is a suggested ordering, not a separate list to maintain by
-hand.
-1. Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,
-   plots/*.png,manifest.json}`) ("Run artifact foundation" track) — the largest remaining piece,
-   sequenced last here: nothing else in this list depends on it, but 4.1's report/publishing work
-   will, so it shouldn't slip past 4.0 entirely.
+same reason. Also since shipped (2026-07-10, `feature/unified-output-layout`): the unified output
+layout itself (`wspy-run --suite/--benchmark` — see "Run artifact foundation" above) — this was the
+largest remaining 4.0 item, explicitly sequenced last in this list; it's dropped for the same reason
+the others above are.
+That leaves 0 rows tagged 4.0 across the inventory (one, "Shared plotting templates," was re-phased to
+4.1 above since its own rationale depended on the 4.1–4.2 normalized schema — see that row). The
+priority-ordered list this section used to carry is gone along with the last item on it; a future
+consolidated pass should re-derive a 4.1 ordering from the inventory's `4.1`-tagged rows rather than
+extending this now-empty list by hand.
 
 Also a real (pre-existing, not newly introduced) gap surfaced but deliberately not fixed while building
 the tests above: `--per-core` combined with any counter group produces a CSV header with only the

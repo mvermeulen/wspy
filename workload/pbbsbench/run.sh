@@ -1,20 +1,38 @@
 #!/bin/bash
 PBBSBENCH=${PBBSBENCH:="/home/mev/source/pbbsbench"}
 WSPY=${WSPY:="/home/mev/source/wspy/wspy"}
+WSPY_RUN=${WSPY_RUN:="/home/mev/source/wspy/wspy-run"}
+BENCHMARK=${BENCHMARK:="all-small"}
+OUTROOT=${OUTROOT:="."}
+# Resolve to an absolute path before `cd ${PBBSBENCH}` below, which otherwise
+# permanently changes the shell's cwd -- a relative OUTROOT (the default ".")
+# would then be interpreted against $PBBSBENCH instead of the directory this
+# script was invoked from.
+OUTROOT="$(cd "$OUTROOT" && pwd)"
 
-LOGDIR=`pwd`/`date '+%Y%m%d-%H%M'`
-mkdir -p $LOGDIR
+# One directory for this run: <OUTROOT>/pbbsbench/<BENCHMARK>/<RUN_ID>, via
+# wspy-run's unified output layout (INVESTIGATION_4.0.md "Run artifact
+# foundation"). Computed here so the raw baseline run below lands in the same
+# directory as the instrumented passes.
+STAMP="$(date -u +%Y%m%dT%H%M%S)"
+NS="$(date -u +%N)"
+RUN_ID="${STAMP}.${NS:0:3}-$$"
+RUNDIR="${OUTROOT}/pbbsbench/${BENCHMARK}/${RUN_ID}"
+mkdir -p "$RUNDIR"
 
 cd ${PBBSBENCH}
 
-./runall -small 1> ${LOGDIR}/bench.out 2> ${LOGDIR}/bench.err
-${WSPY} -o ${LOGDIR}/systemtime.csv --csv --interval 1 --no-rusage --no-software --system --no-ipc ./runall -small  2>&1 | tee bench.out
-${WSPY} -o ${LOGDIR}/software.branch.txt --rusage --software --branch --no-ipc ./runall -small 
-${WSPY} -o ${LOGDIR}/ipc.topdown.txt --ipc --topdown2 --no-rusage --no-software ./runall -small 
-${WSPY} -o ${LOGDIR}/l2.float.txt --cache2 --float --no-rusage --no-software ./runall -small 
-${WSPY} -o ${LOGDIR}/amdtopdown.csv --csv --interval 1 --topdown --no-rusage --no-software --no-ipc ./runall -small 
-${WSPY} -o ${LOGDIR}/frontend.txt --topdown-frontend --no-ipc --no-software --no-rusage ./runall -small 
-${WSPY} -o ${LOGDIR}/opcache.txt --topdown-optlb --no-ipc --no-software --no-rusage ./runall -small 
-${WSPY} -o ${LOGDIR}/treerun.txt --tree process.tree.txt --tree-cmdline --software --no-ipc ./runall -small
-cd ${LOGDIR}
-cat software.branch.txt ipc.topdown.txt l2.float.txt opcache.txt frontend.txt > amdtopdown.txt
+# uninstrumented baseline run, for comparison against the instrumented passes below
+./runall -small 1> "${RUNDIR}/bench.out" 2> "${RUNDIR}/bench.err"
+
+# deep-cpu,tree-heavy is the same 8-pass sweep (software/branch, ipc/topdown,
+# cache/float, topdown csv, frontend, opcache, --tree) this script used to
+# hand-roll as 8 separate $WSPY invocations. Only the --tree pass carries a
+# timeout (3600s, wspy-run's tree-heavy default) -- not because it runs
+# slower, but because an hour of process-tree records is already more than
+# is practical to publish/browse. This script never bounded any pass before,
+# so the tree pass capping out at 3600s here is a new behavior, not just a
+# migration of existing behavior -- the counter passes remain unbounded.
+"$WSPY_RUN" --wspy "$WSPY" --suite pbbsbench --benchmark "$BENCHMARK" \
+    --run-id "$RUN_ID" -o "$OUTROOT" --run-index "${OUTROOT}/pbbsbench/run-index.jsonl" \
+    deep-cpu,tree-heavy -- ./runall -small

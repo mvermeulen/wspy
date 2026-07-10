@@ -5,13 +5,20 @@ TESTNAME=${TESTNAME:="503.bwaves_r"}
 SPECDIR=${SPECDIR:="/home/mev/cpu2017"}
 SPECCONFIG=${SPECCONFIG:="mev-aocc-7840.cfg"}
 WSPY=${WSPY:="/home/mev/source/wspy/wspy"}
+WSPY_RUN=${WSPY_RUN:="/home/mev/source/wspy/wspy-run"}
+OUTROOT=${OUTROOT:="."}
 
-if [ ! -d $TESTNAME ]; then
-    mkdir $TESTNAME
-fi
-
-cd $TESTNAME
-wspy_logdir=`pwd`
+# One directory for this whole invocation: <OUTROOT>/cpu2017/<TESTNAME>/<RUN_ID>,
+# via wspy-run's unified output layout (INVESTIGATION_4.0.md "Run artifact
+# foundation" -- suite/benchmark/run_id/{...,manifest.json}). The run id is
+# computed here, not left to wspy-run's own default, so the build log below
+# and the gnuplot step at the end can both find the directory without
+# scraping wspy-run's stderr for it.
+STAMP="$(date -u +%Y%m%dT%H%M%S)"
+NS="$(date -u +%N)"
+RUN_ID="${STAMP}.${NS:0:3}-$$"
+RUNDIR="${OUTROOT}/cpu2017/${TESTNAME}/${RUN_ID}"
+mkdir -p "$RUNDIR"
 
 pushd $SPECDIR
 source shrc
@@ -19,20 +26,24 @@ ulimit -s unlimited
 popd
 
 # build
-runcpu --config ${SPECCONFIG} --action=build --tune base ${TESTNAME} 2>&1 | tee amd.${TESTNAME}.build.out
+(cd "$RUNDIR" && runcpu --config ${SPECCONFIG} --action=build --tune base ${TESTNAME} 2>&1 | tee amd.${TESTNAME}.build.out)
 
 if [ $(grep -c Intel /proc/cpuinfo) -gt 0 ]; then
     echo "Intel not supported"
     exit 0
 else
-    $WSPY -o systemtime.csv --csv --interval 1 --no-rusage --no-software --system --no-ipc runcpu --config ${SPECCONFIG} --action=validate --tune base --iterations 3 $TESTNAME 2>&1 | tee amd.${TESTNAME}.out    
-    $WSPY -o software.branch.txt --rusage --software --branch --no-ipc runcpu --config ${SPECCONFIG} --action=validate --tune base --iterations 3 $TESTNAME 2>&1 | tee amd.${TESTNAME}.out2
-    $WSPY -o ipc.topdown.txt --ipc --topdown2 --no-rusage --no-software runcpu --config ${SPECCONFIG} --action=validate --tune base --iterations 3 $TESTNAME
-    $WSPY -o l2.float.txt --cache2 --float --no-rusage --no-software runcpu --config ${SPECCONFIG} --action=validate --tune base --iterations 3 $TESTNAME
-    $WSPY -o amdtopdown.csv --csv --interval 1 --topdown --no-rusage --no-software --no-ipc runcpu --config ${SPECCONFIG} --action=validate --tune base --iterations 3 $TESTNAME
-    $WSPY -o frontend.txt --topdown-frontend --no-ipc --no-software --no-rusage runcpu --config ${SPECCONFIG} --action=validate --tune base --iterations 3 $TESTNAME
-    $WSPY -o opcache.txt --topdown-optlb --no-ipc --no-software --no-rusage runcpu --config ${SPECCONFIG} --action=validate --tune base --iterations 3 $TESTNAME    
-    timeout 3600 $WSPY -o treerun.txt --tree process.tree.txt --tree-cmdline --software --no-ipc runcpu --config ${SPECCONFIG} --action=validate --tune base --iterations 3 $TESTNAME
-    cat software.branch.txt ipc.topdown.txt l2.float.txt opcache.txt frontend.txt > amdtopdown.txt
-    /home/mev/source/wspy/workload/phoronix/gnuplot.sh
+    # deep-cpu,tree-heavy is the same 8-pass sweep (software/branch, ipc/topdown,
+    # cache/float, topdown csv, frontend, opcache, --tree) this script used to
+    # hand-roll as 8 separate $WSPY invocations; wspy-run runs them all into
+    # $RUNDIR. Only the --tree pass carries a timeout (3600s, wspy-run's
+    # tree-heavy default) -- not because it runs slower than the others, but
+    # because an hour of process-tree records is already more than is
+    # practical to publish/browse. The counter passes have no such cap and
+    # are fine to run long if a slow benchmark's iterations take a while.
+    "$WSPY_RUN" --wspy "$WSPY" --suite cpu2017 --benchmark "$TESTNAME" \
+        --run-id "$RUN_ID" -o "$OUTROOT" --run-index "${OUTROOT}/cpu2017/run-index.jsonl" \
+        deep-cpu,tree-heavy -- \
+        runcpu --config ${SPECCONFIG} --action=validate --tune base --iterations 3 $TESTNAME \
+        2>&1 | tee "${RUNDIR}/amd.${TESTNAME}.out"
+    (cd "$RUNDIR" && /home/mev/source/wspy/workload/phoronix/gnuplot.sh)
 fi

@@ -2,28 +2,42 @@
 #
 # Run a phoronix test suite test..
 TESTNAME=${TESTNAME:="coremark"}
+WSPY=${WSPY:="/home/mev/source/wspy/wspy"}
+WSPY_RUN=${WSPY_RUN:="/home/mev/source/wspy/wspy-run"}
+OUTROOT=${OUTROOT:="."}
 
-if [ ! -d $TESTNAME ]; then
-    mkdir $TESTNAME
-fi
+# One directory for this run: <OUTROOT>/phoronix/<TESTNAME>/<RUN_ID>, via
+# wspy-run's unified output layout (INVESTIGATION_4.0.md "Run artifact
+# foundation"). Computed here, not left to wspy-run's own default, so the
+# gnuplot step at the end can find it without scraping wspy-run's stderr.
+STAMP="$(date -u +%Y%m%dT%H%M%S)"
+NS="$(date -u +%N)"
+RUN_ID="${STAMP}.${NS:0:3}-$$"
 
-cd $TESTNAME
+RUN_INDEX="${OUTROOT}/phoronix/run-index.jsonl"
+
 if [ $(grep -c Intel /proc/cpuinfo) -gt 0 ]; then
-    /home/mev/source/wspy/wspy -o software.branch.txt --rusage --software --branch --no-ipc phoronix-test-suite batch-run $TESTNAME 2>&1 | tee intel.${TESTNAME}.out
-    /home/mev/source/wspy/wspy -o topdown.txt --topdown2 --no-rusage --no-software --no-ipc phoronix-test-suite batch-run $TESTNAME
-    /home/mev/source/wspy/wspy -o ipc.l2.txt --ipc --cache2 --no-rusage --no-software phoronix-test-suite batch-run $TESTNAME
-    /home/mev/source/wspy/wspy -o backend.txt --no-ipc --no-rusage --topdown-backend phoronix-test-suite batch-run $TESTNAME
-    cat software.branch.txt topdown.txt ipc.l2.txt backend.txt > inteltopdown.txt
+    # software/branch, topdown, ipc/l2, backend -- Intel doesn't have the
+    # AMD-specific opcache/frontend/l3 groups deep-cpu also sweeps. No --tree
+    # pass in this profile, so no timeout (matches this script's original
+    # behavior -- it never bounded the Intel passes either).
+    "$WSPY_RUN" --wspy "$WSPY" --suite phoronix --benchmark "$TESTNAME" \
+        --run-id "$RUN_ID" -o "$OUTROOT" --run-index "$RUN_INDEX" \
+        deep-cpu-intel -- \
+        phoronix-test-suite batch-run $TESTNAME
 else
-    /home/mev/source/wspy/wspy -o systemtime.csv --csv --interval 1 --no-rusage --no-software --system --no-ipc phoronix-test-suite batch-run $TESTNAME 2>&1 | tee amd.${TESTNAME}.out    
-    /home/mev/source/wspy/wspy -o software.branch.txt --rusage --software --branch --no-ipc phoronix-test-suite batch-run $TESTNAME 2>&1 | tee amd.${TESTNAME}.out2
-    /home/mev/source/wspy/wspy -o ipc.topdown.txt --ipc --topdown2 --no-rusage --no-software phoronix-test-suite batch-run $TESTNAME
-    /home/mev/source/wspy/wspy -o l2.float.txt --cache2 --float --no-rusage --no-software phoronix-test-suite batch-run $TESTNAME
-    /home/mev/source/wspy/wspy -o amdtopdown.csv --csv --interval 1 --topdown --no-rusage --no-software --no-ipc phoronix-test-suite batch-run $TESTNAME
-    /home/mev/source/wspy/wspy -o frontend.txt --topdown-frontend --no-ipc --no-software --no-rusage phoronix-test-suite batch-run $TESTNAME
-    /home/mev/source/wspy/wspy -o opcache.txt --topdown-optlb --no-ipc --no-software --no-rusage phoronix-test-suite batch-run $TESTNAME    
-    timeout 3600 /home/mev/source/wspy/wspy -o treerun.txt --tree process.tree.txt --tree-cmdline --software --no-ipc phoronix-test-suite batch-run $TESTNAME
-    cat software.branch.txt ipc.topdown.txt l2.float.txt opcache.txt frontend.txt > amdtopdown.txt
-    /home/mev/source/wspy/workload/phoronix/gnuplot.sh
+    # deep-cpu,tree-heavy is the same 8-pass sweep (software/branch,
+    # ipc/topdown, cache/float, topdown csv, frontend, opcache, --tree) this
+    # script used to hand-roll as 8 separate $WSPY invocations. Only the
+    # --tree pass carries a timeout (3600s, wspy-run's tree-heavy default) --
+    # not because it runs slower, but because an hour of process-tree records
+    # is already more than is practical to publish/browse. The counter passes
+    # have no such cap -- some phoronix tests legitimately take a while, and
+    # that's fine to just wait out.
+    "$WSPY_RUN" --wspy "$WSPY" --suite phoronix --benchmark "$TESTNAME" \
+        --run-id "$RUN_ID" -o "$OUTROOT" --run-index "$RUN_INDEX" \
+        deep-cpu,tree-heavy -- \
+        phoronix-test-suite batch-run $TESTNAME
+    RUNDIR="${OUTROOT}/phoronix/${TESTNAME}/${RUN_ID}"
+    (cd "$RUNDIR" && /home/mev/source/wspy/workload/phoronix/gnuplot.sh)
 fi
-cd ..
