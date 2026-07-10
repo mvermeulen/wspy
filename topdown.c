@@ -1881,12 +1881,24 @@ void print_software(struct counter_group *cgroup,enum output_format oformat){
   int i;
   struct counter_info *task_info = find_ci_label(cgroup,"task-clock");
   double task_time = (double) task_info->value / 1000000000.0;
-  (void)cgroup;
-  (void)oformat;
-  struct counter_info *cinfo;
+
   if (oformat == PRINT_CSV_HEADER){
+    for (i=0;i<cgroup->ncounters;i++)
+      fprintf(outfile,"%s,",cgroup->cinfo[i].label);
     return;
   }
+
+  // This used to print the annotated normal-format dump below unconditionally,
+  // even under --csv -- since it never checked csvflag/oformat for the value
+  // row (only the header case above did), a "# .../sec" annotated multi-line
+  // block landed in the middle of what should have been one comma-separated
+  // CSV row, corrupting it. See CLAUDE.md's "CSV vs. human output" contract.
+  if (csvflag){
+    for (i=0;i<cgroup->ncounters;i++)
+      fprintf(outfile,"%lu,",cgroup->cinfo[i].value);
+    return;
+  }
+
   for (i=0;i<cgroup->ncounters;i++){
     fprintf(outfile,"%-20s %-14lu",cgroup->cinfo[i].label,cgroup->cinfo[i].value);
     if (!strcmp(cgroup->cinfo[i].label,"task-clock") ||
@@ -1895,7 +1907,7 @@ void print_software(struct counter_group *cgroup,enum output_format oformat){
 	     (double) cgroup->cinfo[i].value / 1000000000.0);
     } else {
       fprintf(outfile," # %4.3f/sec",cgroup->cinfo[i].value / task_time);
-	     
+
     }
     fprintf(outfile,"\n");
   }
@@ -1988,6 +2000,8 @@ void print_metrics(struct counter_group *counter_group_list,enum output_format o
       print_l3cache(cgroup,oformat);      
     } else if (cgroup->mask & COUNTER_OPCACHE){
       print_opcache(cgroup,oformat);
+    } else if (cgroup->mask & COUNTER_MEMORY){
+      print_memory(cgroup,oformat);
     } else if (cgroup->mask & (COUNTER_DCACHE|COUNTER_ICACHE|COUNTER_TLB)){
       if (cgroup->mask & COUNTER_DCACHE) print_dcache(cgroup,oformat);
       if (cgroup->mask & COUNTER_ICACHE) print_icache(cgroup,oformat);
