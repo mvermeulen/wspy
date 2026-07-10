@@ -23,6 +23,7 @@
 #include "error.h"
 #include "wspy.h"
 #include "coverage.h"
+#include "ptrace_arch.h"
 #if AMDGPU
 #include "amd_sysfs.h"
 extern int gpu_busy_requested;
@@ -315,7 +316,7 @@ char *ptrace_read_null_terminated_string(pid_t pid,long addr){
 void ptrace_loop(void){
   pid_t pid;
   int status;
-  // (i removed) use large type to match regs.orig_rax on x86_64
+  // (i removed) use large type to match the syscall-number field's width across arches
   long long last_syscall = 0;
   int syscall_entry = 0;
   unsigned long data;
@@ -323,7 +324,7 @@ void ptrace_loop(void){
   char stat_name[128];
   struct stat statbuf;
   FILE *stat_file;
-  struct user_regs_struct regs;
+  wspy_regs_t regs;
   struct rusage rusage;
   double elapsed;
   char *filename;
@@ -468,15 +469,15 @@ void ptrace_loop(void){
 	continue;
       } else if (WSTOPSIG(status) == (SIGTRAP | 0x80)){
 	// stopped because of a system call
-	ptrace(PTRACE_GETREGS,pid,0,&regs);
-        if (last_syscall != (long long)regs.orig_rax){
+	ptrace_getregs(pid,&regs);
+        if (last_syscall != PTRACE_SYSCALL_NUM(regs)){
 	  syscall_entry = 1;
 	} else {
 	  syscall_entry = (1-syscall_entry);
 	}
-	last_syscall = regs.orig_rax;
+	last_syscall = PTRACE_SYSCALL_NUM(regs);
 	if (tree_open && (syscall_entry == 0) && (last_syscall == SYS_openat)){
-	  filename = ptrace_read_null_terminated_string(pid, regs.rsi);
+	  filename = ptrace_read_null_terminated_string(pid, PTRACE_SYSCALL_ARG2(regs));
 	  fprintf(treefile,"%5.3f %d open %s\n",elapsed,pid,filename);
 	}
 	ptrace(PTRACE_SYSCALL,pid,NULL,NULL,NULL);

@@ -86,7 +86,7 @@ run_index.o: run_index.h manifest.h wspy.h cpu_info.h error.h json_util.h proven
 coverage.o: coverage.h wspy.h cpu_info.h
 provenance.o: provenance.h
 proctree.o: error.h
-topdown.o: error.h wspy.h cpu_info.h coverage.h
+topdown.o: error.h wspy.h cpu_info.h coverage.h ptrace_arch.h
 validate.o: json_reader.h manifest.h provenance.h
 ledger.o: json_reader.h
 
