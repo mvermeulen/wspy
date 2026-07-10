@@ -15,7 +15,9 @@ machines — treat it as a small, pragmatic C codebase rather than a polished li
 - `make` — builds `wspy`, `cpu_info`, `proctree`, `wspy-validate`, `wspy-ledger` (default, no GPU support)
 - `make AMDGPU=1 [ROCM_DIR=/path/to/rocm]` — builds with AMD GPU support, also builds `amd_smi`, `amd_sysfs`. If `ROCM_DIR` isn't given, the Makefile auto-detects it by checking for `amd_smi/amdsmi.h` under `/opt/rocm` (the traditional ROCm install location) then `/usr` (where distro packages like Debian/Ubuntu's `rocm-smi-lib` install it), preferring `/opt/rocm` if both exist
 - `make test` — builds and runs `test_wspy`, `test_proctree`, `test_validate`, `test_ledger`, and `test_ibs` (unit-style tests; `test_wspy.c` `#include`s `wspy.c` directly with `TEST_WSPY`/`AMDGPU=0` defined to stub out `main()` and disable GPU code — the `test_wspy` Makefile target always compiles its own objects with `-DAMDGPU=0`, independent of whatever the top-level `AMDGPU` value is, so it can't pick up a mismatched GPU-enabled `topdown.o` from the same build tree; `test_validate.c` and `test_ledger.c` follow the same `#include "validate.c"`/`#include "ledger.c"` + `-DTEST_VALIDATE`/`-DTEST_LEDGER` pattern to reach each tool's static check functions; `test_ibs.c` similarly `#include`s `ibs.c` directly (no `TEST_IBS` macro needed since `ibs.c` has no `main()` to stub) and builds a fake `/tmp/test_ibs_sysfs/{ibs_fetch,ibs_op}/...` directory tree to exercise `ibs_probe_at()`'s sysfs-scanning logic without depending on real IBS hardware)
-- `./run_tests.sh` — full test script: builds, runs unit tests, then integration-smoke-tests the real `wspy`/`proctree` binaries (CSV output, `--tree` output, network interface naming, GPU flag warnings when built without `AMDGPU=1`, `wspy-run` profile launching), and additionally exercises the AMDGPU build if ROCm headers are found under `/opt/rocm` or `/usr`
+- `./run_tests.sh` — full test script: builds, runs unit tests, then integration-smoke-tests the real `wspy`/`proctree` binaries (CSV output, `--tree` output, network interface naming, GPU flag warnings when built without `AMDGPU=1`, `wspy-run` profile launching), runs `tests/golden_output.sh` and `tests/capability_matrix.sh` (see below), and additionally exercises the AMDGPU build if ROCm headers are found under `/opt/rocm` or `/usr` (re-running those same two `tests/*.sh` scripts against that build too)
+- `tests/golden_output.sh` — golden output-contract tests (`INVESTIGATION_4.0.md`'s "Testing and documentation" track): pins the current, intentional shape of `wspy`'s output without needing root/perf access — exact-match CSV headers for the base/rusage columns and, vendor-gated via `./cpu_info`, every AMD raw-event counter group; a regex check for `--system`'s host-specific network-interface columns; a vendor-neutral generic check (CSV header/value column counts must match) run across the full flag matrix; a handful of always-present normal-output summary-line checks; and a `--tree` line-grammar/`ptrace-summary`-footer consistency check at a small, readable scale (`run_tests.sh` keeps its own larger 2000-process version as a stress/integrity test, not a format-contract one). Can be run standalone once `wspy`/`cpu_info` are built.
+- `tests/capability_matrix.sh` — capability-matrix smoke tests (same `INVESTIGATION_4.0.md` track): runs ~25 flag-bundle combinations (one per counter group, GPU flags, per-core/interval/tree modifiers, manifest/run-index/`--capabilities`, a kitchen-sink combo, and `--exit-with-child`'s two expected exit codes) and asserts each exits as expected, never prints `fatal error`, and shows no crash indication — the graceful-degradation contract. Auto-detects CPU vendor (`./cpu_info`) and GPU build (whether `--gpu-busy` warns "GPU support not built") and reports both, since neither axis is switchable from a single host/build; `run_tests.sh` calls it once per build it produces so both ends of the GPU-build axis get covered in one pass. Known gap (documented in-script, not fixed): `--per-core` combined with any counter group produces a CSV header with only the base/coverage columns while each per-core row still appends that group's values, so the `per-core-topdown` bundle deliberately doesn't assert CSV column-count matching — see the comment there.
 - `./test_amd_smi.sh` — focused smoke test for the `amd_smi` module (requires `AMDGPU=1` build)
 - `make clean` — remove `.o`/backup files; `make clobber` — also remove built binaries
 - No root required for `./cpu_info` (CPU detection only). Perf counters and `--tree` (ptrace) require root, or `CAP_SYS_PTRACE` + `perf_event_paranoid <= 1` — use `scripts/setup_perf.sh` to check/adjust `nmi_watchdog` and `perf_event_paranoid` sysctls.
@@ -44,9 +46,12 @@ feature/behavior changes, especially anything tracked in `INVESTIGATION_4.0.md`'
   `gh pr create` (origin is already `github.com/mvermeulen/wspy`). Merge through GitHub once it's
   ready — don't merge feature branches into `master` locally and push `master` directly.
 - **Before opening the PR:** run `./run_tests.sh` (and `./test_amd_smi.sh` if the change touches GPU
-  code) — the branch should be in a state that passes the existing test suite, and CSV column-order
-  contracts in particular (see "CSV vs. human output" below) should be checked by hand since they
-  aren't all covered by `run_tests.sh` yet.
+  code) — the branch should be in a state that passes the existing test suite. `run_tests.sh` now
+  includes `tests/golden_output.sh`'s CSV column-order/summary-fragment/tree-format checks and
+  `tests/capability_matrix.sh`'s flag-bundle graceful-degradation checks (see "Build & Test" above),
+  so most "CSV vs. human output" contract regressions (see below) are caught automatically; extend
+  those two files' tables when a change adds/reorders/removes a column rather than relying on manual
+  checking alone.
 - **Scope:** keep a feature branch to one inventory idea where practical; large phase-sized efforts
   (e.g. all of "Run artifact foundation") should still land as a series of small merged PRs rather
   than one long-lived branch, to avoid the drift and merge pain of a big-bang branch.
@@ -123,7 +128,16 @@ When built without `AMDGPU=1`, these flags are still recognized by the option pa
 **CSV vs. human output:** every `print_*` function switches on `enum output_format` (`PRINT_NORMAL`,
 `PRINT_CSV`, `PRINT_CSV_HEADER`). When adding a column, the header case and value case must be added
 together and stay in the same order — `run_tests.sh` checks exact CSV column ordering (e.g.
-`elapsed,utime,stime,gpu_busy,ipc`), so verify column position when adding new metrics.
+`elapsed,utime,stime,gpu_busy,ipc`), so verify column position when adding new metrics. Two related
+pitfalls `tests/golden_output.sh`'s generic column-count check (and manual review) should catch: the
+`PRINT_CSV` value row must emit exactly the columns declared in `PRINT_CSV_HEADER` with **every field
+comma-terminated** (a bare `fprintf(outfile,"%4.1f",x)` with no trailing comma silently fuses into the
+next field instead of erroring), and it must do so **unconditionally** — gating the value row behind
+`if (some_counter_value)` (rather than only gating on vendor/group applicability) means a
+permission-denied run silently drops every column in that row while the header still claims them. Both
+classes of bug shipped in this codebase before being caught by writing `tests/golden_output.sh` itself
+(see that commit's history for the concrete cases: `--software --csv`, `--topdown-frontend`,
+`--topdown-optlb`).
 
 ## Common edits
 
