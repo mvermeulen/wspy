@@ -362,9 +362,17 @@ group's values — a real gap, but one needing `wspy.c`'s `aflag`/per-core setup
 re-architected rather than a single `print_*()` fix (see `tests/capability_matrix.sh`'s
 `per-core-topdown` bundle comment).
 
+Shipped (2026-07-10): artifact contract doc + troubleshooting runbook (`doc/ARTIFACT_CONTRACT.md`,
+linked from `README.md`'s "Other contents"). Documents the manifest/run-index/CSV/tree-file shapes,
+the SemVer contract behind `MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION`, the
+"degrade-don't-fail" pattern shared by `coverage.c`/`provenance.c`/GPU-flag handling, how
+`wspy-validate`'s per-run gate, `counter_coverage`, and `wspy-ledger`'s suite-level status relate
+without being interchangeable, and a symptom-first troubleshooting runbook (partial counter
+coverage, `nmi_watchdog`, `--tree`'s `exit_status.known: false`, GPU-not-built warnings,
+`--per-core`'s documented CSV column-count mismatch, `wspy-validate`/`wspy-ledger` false negatives).
+
 | Idea | Phase | Why |
 | --- | --- | --- |
-| Artifact contract doc + troubleshooting runbook | 4.0 | Needs to exist before external scripts start depending on the new manifest/layout shape. |
 | Schema compatibility/migration tests + reproducibility/idempotency tests | 4.1 | Depends on the schema versioning (4.0) having something to test compatibility against. |
 | Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster output) | 4.1 | Write once the features it documents (confidence envelope, phases) exist in 4.0. |
 | Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead guardrails | 4.2 | Needs deterministic micro-workloads and the stats/index infrastructure (4.1) to compare against. |
@@ -487,33 +495,32 @@ robustness" above), capability-driven IBS probing (2026-07-10, `ibs.c` — see "
 ingest (2026-07-10, `ledger.c` — see "Portability and robustness" above), and golden output-contract
 tests + capability-matrix smoke tests (2026-07-10, `tests/golden_output.sh`/`tests/capability_matrix.sh`
 — see "Testing and documentation" above, including the five output-contract bugs and one crash that
-building them surfaced and fixed); all ten were item 1 of this list at the time they shipped and are
-dropped from the ordering below per this file's own "ideas already implemented are not listed" rule.
-That leaves roughly 6 rows still tagged 4.0 across the inventory (one, "Shared plotting templates," was
+building them surfaced and fixed), and the artifact contract doc + troubleshooting runbook
+(2026-07-10, `doc/ARTIFACT_CONTRACT.md` — see "Testing and documentation" above); all eleven were item
+1 of this list at the time they shipped and are dropped from the ordering below per this file's own
+"ideas already implemented are not listed" rule.
+That leaves roughly 5 rows still tagged 4.0 across the inventory (one, "Shared plotting templates," was
 just re-phased to 4.1 above since its own rationale depended on the 4.1–4.2 normalized schema — see
 that row). The list below covers all of them except that one, grouped and ordered by priority (design
 decisions first since they get more expensive to retrofit the longer they wait, heavier collection/
 report-layer work last). All are already rows in the inventory above — this is a suggested ordering,
 not a separate list to maintain by hand.
-1. Artifact contract doc + troubleshooting runbook ("Testing and documentation" track) — write this
-   before more external tooling (report generators, `workload/*/run_test.sh` migrations) starts
-   depending on the manifest/run-index shape by convention instead of by documented contract.
-2. Collector-plugin architecture design decision (wspy core / perf stat / trace-cmd / GPU tools behind
+1. Collector-plugin architecture design decision (wspy core / perf stat / trace-cmd / GPU tools behind
    one manifest+normalization path) ("Portability and robustness" track) — only the *decision* (does
    the schema assume one collector or many?) is 4.0 work; implementation is 4.2+. Cheap to decide now,
    expensive to retrofit once more schema/normalization work (items above, plus 4.1's canonical
    metrics schema) is built on top of an unexamined assumption.
-3. Counter-fit preflight ("will this profile multiplex heavily?" + suggested downgrades)
+2. Counter-fit preflight ("will this profile multiplex heavily?" + suggested downgrades)
    ("Existing-capability extensions" track) — builds directly on availability/NMI-watchdog handling
    and `coverage.c` that already exist at runtime; this just surfaces the same fit information before
    a run instead of after.
-4. Interval (`--interval`) → automatic phase-boundary detection (warmup/steady/degraded)
+3. Interval (`--interval`) → automatic phase-boundary detection (warmup/steady/degraded)
    ("Existing-capability extensions" track) — basic marker detection can land now and is a named
    prerequisite for phase-aware topdown (4.2) and phase-aware IBS.
-5. `--gpu-device=<idx>` override + multi-GPU enumeration ("AMD GPU track") — isolated, self-contained
+4. `--gpu-device=<idx>` override + multi-GPU enumeration ("AMD GPU track") — isolated, self-contained
    follow-on to the `card1` path-scan fix already shipped; doesn't block or get blocked by anything
    else in this list.
-6. Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,
+5. Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,
    plots/*.png,manifest.json}`) ("Run artifact foundation" track) — the largest remaining piece,
    sequenced last here: nothing else in this list depends on it, but 4.1's report/publishing work
    will, so it shouldn't slip past 4.0 entirely.
