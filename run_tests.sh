@@ -231,6 +231,28 @@ else
 fi
 echo "  wspy --capabilities: OK"
 
+# AMD IBS capability probing (--capabilities also reports ibs_fetch/ibs_op;
+# gracefully "not supported" on non-AMD hosts or kernels without IBS, so this
+# only checks the report is present and well-formed, not that IBS itself is
+# available on whatever machine runs this).
+echo "Testing wspy --capabilities IBS probing..."
+if ! echo "$CAPS_OUT" | grep -qE "^IBS capability report: (supported|not supported)$"; then
+    echo "FAIL: --capabilities did not print an IBS capability report line"
+    echo "$CAPS_OUT"
+    exit 1
+fi
+if ! echo "$CAPS_OUT" | grep -qE "^  ibs_fetch +(available|not present)"; then
+    echo "FAIL: --capabilities did not report ibs_fetch status"
+    echo "$CAPS_OUT"
+    exit 1
+fi
+if ! echo "$CAPS_OUT" | grep -qE "^  ibs_op +(available|not present)"; then
+    echo "FAIL: --capabilities did not report ibs_op status"
+    echo "$CAPS_OUT"
+    exit 1
+fi
+echo "  wspy --capabilities IBS probing: OK"
+
 # Counters that fail to open (e.g. no perf access) must degrade gracefully
 # rather than aborting the whole run -- this is the other half of coverage
 # reporting: a real run's output says what it could and couldn't measure

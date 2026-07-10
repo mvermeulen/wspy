@@ -31,6 +31,7 @@ test_proctree
 test_wspy
 test_validate
 test_ledger
+test_ibs
 libwspy_profiler.so
 test_hip_init
 test_hip_kernel
