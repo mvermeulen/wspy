@@ -1081,29 +1081,27 @@ static double confidence_ratio(struct counter_info *cinfo){
 
 void print_ipc(struct counter_group *cgroup,enum output_format oformat){
   int i;
-  unsigned long cpu_cycles=0,scaled_cpu_cycles=0;
+  unsigned long cpu_cycles=0;
   unsigned long instructions=0;
-  unsigned long branches=0;
-  unsigned long branch_misses=0;
   double elapsed;
-  double scale;
   if (oformat == PRINT_CSV_HEADER){
     fprintf(outfile,"ipc,");
     return;
   }
   elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
-    start_time.tv_sec - start_time.tv_nsec / 1000000000.0;  
+    start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
 
   for (i=0;i<cgroup->ncounters;i++){
-    if (!strcmp(cgroup->cinfo[i].label,"cpu-cycles")){
+    // time_running == 0 means this counter was never scheduled (perf_event_open
+    // failed, e.g. EACCES) -- .value is 0 in that case too, so skip the
+    // time_enabled/time_running scaling rather than computing 0.0*0/0 (NaN) and
+    // converting it to unsigned long, which is undefined behavior (previously
+    // manifested as printing a garbage cycle/instruction count and a
+    // deceptively plausible IPC ratio instead of 0/nothing).
+    if (!strcmp(cgroup->cinfo[i].label,"cpu-cycles") && cgroup->cinfo[i].time_running){
       cpu_cycles = (double) cgroup->cinfo[i].value * cgroup->cinfo[i].time_enabled / cgroup->cinfo[i].time_running;
-      scaled_cpu_cycles = (double) cpu_cycles * (double) cgroup->cinfo[i].time_enabled / (double) cgroup->cinfo[i].time_running;
-    } else if (!strcmp(cgroup->cinfo[i].label,"instructions")){
+    } else if (!strcmp(cgroup->cinfo[i].label,"instructions") && cgroup->cinfo[i].time_running){
       instructions = (double) cgroup->cinfo[i].value * cgroup->cinfo[i].time_enabled / cgroup->cinfo[i].time_running;
-    } else if (!strcmp(cgroup->cinfo[i].label,"branches")){
-      branches = (double) cgroup->cinfo[i].value * cgroup->cinfo[i].time_enabled / cgroup->cinfo[i].time_running;
-    } else if (!strcmp(cgroup->cinfo[i].label,"branch-misses")){
-      branch_misses = (double) cgroup->cinfo[i].value * cgroup->cinfo[i].time_enabled / cgroup->cinfo[i].time_running;
     }
   }
 

@@ -174,6 +174,17 @@ static void check_csv_row_sanity(struct report *r,char **header,int header_n,
     if (!parse_numeric_field(val,&num,&is_pct)) continue;
     (*values_checked)++;
 
+    // Must run before any bounds comparison, named or generic: NaN/Inf
+    // compare false against every "<"/">" bound (a NaN column value would
+    // otherwise silently pass a named sanity_bounds[] entry, e.g. "ipc",
+    // since "NaN < min || NaN > max" is always false in C -- only the
+    // generic fallback below used to check isnan()/isinf(), so a column
+    // with its own named bound skipped that catch-all entirely).
+    if (isnan(num) || isinf(num)){
+      add_check(r,SEV_FAIL,"sanity: row %d column '%s' = %s is not a finite number",row_number,name,val);
+      continue;
+    }
+
     if (is_pct){
       if (num < 0 || num > PERCENT_SANITY_MAX)
         add_check(r,SEV_FAIL,"sanity: row %d column '%s' = %s%% outside plausible range [0,%.0f]",
@@ -191,9 +202,7 @@ static void check_csv_row_sanity(struct report *r,char **header,int header_n,
     }
     if (k < (int)NUM_SANITY_BOUNDS) continue;
 
-    if (isnan(num) || isinf(num))
-      add_check(r,SEV_FAIL,"sanity: row %d column '%s' = %s is not a finite number",row_number,name,val);
-    else if (num < 0)
+    if (num < 0)
       add_check(r,SEV_FAIL,"sanity: row %d column '%s' = %s is negative",row_number,name,val);
     else if (num > 1e12)
       add_check(r,SEV_FAIL,"sanity: row %d column '%s' = %s is implausibly large",row_number,name,val);
