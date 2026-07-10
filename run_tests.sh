@@ -529,6 +529,13 @@ else
     exit 1
 fi
 
+if ./wspy --gpu-device=0 -- /bin/true 2>&1 | grep -q "GPU support not built"; then
+    echo "  --gpu-device warning: OK"
+else
+    echo "FAIL: --gpu-device should warn when built without AMDGPU"
+    exit 1
+fi
+
 # Golden output-contract tests + capability-matrix smoke tests
 # (INVESTIGATION_4.0.md "Testing and documentation" track): formalized,
 # broader versions of the CSV-column-order/GPU-build-vs-not checks above.

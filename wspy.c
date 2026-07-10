@@ -48,6 +48,7 @@ int exit_with_child_flag = 0;
 int gpu_smi_requested = 0; /* legacy */
 int gpu_busy_requested = 0;
 int gpu_metrics_requested = 0;
+int gpu_device_index = -1; /* -1 = auto-select (lowest-numbered sysfs card / SMI device 0) */
 #endif
 
 char *outfile_path = NULL;
@@ -89,6 +90,7 @@ int parse_options(int argc,char *const argv[]){
     { "gpu-smi", no_argument, 0, 48 },
     { "gpu-busy", no_argument, 0, 49 },
     { "gpu-metrics", no_argument, 0, 50 },
+    { "gpu-device", required_argument, 0, 64 },
     { "ibs-basic", no_argument, 0, 56 },
     { "ibs-memory-deep", no_argument, 0, 57 },
     { "ibs-maxcnt", required_argument, 0, 58 },
@@ -339,6 +341,17 @@ int parse_options(int argc,char *const argv[]){
     case 63: // --no-phase-detect
       phase_flag = 0;
       break;
+    case 64: // --gpu-device
+#if AMDGPU
+      if ((sscanf(optarg,"%d",&value) == 1) && value >= 0){
+	gpu_device_index = value;
+      } else {
+	warning("invalid argument to --gpu-device: %s, ignored\n",optarg);
+      }
+#else
+      warning("GPU support not built (rebuild with AMDGPU=1): --gpu-device ignored\n");
+#endif
+      break;
     case 31: // --tree
       if ((treefile = fopen(optarg,"w")) == NULL){
 	warning("unable to open tree file: %s, ignored\n",optarg);
@@ -443,6 +456,16 @@ static int run_capabilities_probe(void){
   ibs = ibs_probe();
   print_ibs_capability_report(&ibs);
 
+#if AMDGPU
+  // GPU device enumeration -- lists every AMD card/device this host can
+  // see, independent of whether --gpu-busy/--gpu-metrics/--gpu-smi were
+  // given, so --gpu-device=<idx> can be chosen from the printed indices.
+  amd_sysfs_print_capability_report(outfile);
+  amd_smi_initialize(-1);
+  amd_smi_print_capability_report(outfile);
+  amd_smi_finalize();
+#endif
+
   if (oflag) fclose(outfile);
   return 0;
 }
@@ -544,6 +567,9 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t--gpu-smi                 - get gpu information from smi interface\n"
       "\t--gpu-busy                - read instantaneous GPU busy percent (sysfs)\n"
       "\t--gpu-metrics             - read detailed GPU metrics (sysfs)\n"
+      "\t--gpu-device=<idx>        - select AMD GPU device <idx> for the above (default:\n"
+      "\t                            lowest-numbered card / SMI device 0); see the device\n"
+      "\t                            list printed by --capabilities on multi-GPU hosts\n"
 #endif
 	    ,argv[0]);
   }
@@ -558,13 +584,13 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   if (system_mask & SYSTEM_GPU){
     /* Only invoke SMI APIs when explicitly requested */
     if (gpu_smi_requested){
-      amd_smi_initialize();
+      amd_smi_initialize(gpu_device_index);
       amd_smi_metrics();
       amd_smi_memory();
     }
     /* Initialize sysfs GPU interfaces if requested */
     if (gpu_busy_requested || gpu_metrics_requested) {
-      amd_sysfs_initialize();
+      amd_sysfs_initialize(gpu_device_index);
       if (gpu_busy_requested) {
         int busy = amd_sysfs_gpu_busy_percent();
         debug("initial gpu busy percent: %d\n", busy);

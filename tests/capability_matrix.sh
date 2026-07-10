@@ -147,6 +147,11 @@ run_bundle "gpu-busy"    0 --no-ipc --gpu-busy    -- /bin/true
 run_bundle "gpu-metrics" 0 --no-ipc --gpu-metrics -- /bin/true
 run_bundle "gpu-smi"     0 --no-ipc --gpu-smi     -- /bin/true
 run_bundle "gpu-all-with-system" 0 --csv --no-ipc --system --gpu-busy --gpu-metrics --gpu-smi -- /bin/true
+# --gpu-device selects among multiple AMD cards for the bundles above; an
+# out-of-range index (999) must degrade gracefully (no sysfs/SMI data for that
+# run) rather than fatal, same contract as a permission-denied counter.
+run_bundle "gpu-device-select"      0 --no-ipc --gpu-device=0   --gpu-busy -- /bin/true
+run_bundle "gpu-device-out-of-range" 0 --no-ipc --gpu-device=999 --gpu-busy -- /bin/true
 
 echo ""
 echo "=== Modifier bundles (per-core, interval, tree variants) ==="
