@@ -197,14 +197,30 @@ Shipped since the last consolidated pass: capability-driven IBS probing (`ibs.c`
 not a hardcoded field list), so it doesn't hardcode which format fields/caps exist -- both vary by
 kernel version and CPU generation (Zen4 vs Zen5 caps already differ on this project's own hardware).
 Wired into `wspy --capabilities`, which now prints an IBS capability report (PMU type, format fields,
-caps) alongside the existing counter capability report. Deliberately discovery-only -- it doesn't
-build `perf_event_attr` configs or open IBS counters itself, and per this file's own "ideas already
-implemented are not listed" rule the row is dropped. See `CLAUDE.md`'s `ibs.c` entry for the full
-behavior; this was item 1 of the "next up after the minimal slice" list below.
+caps) alongside the existing counter capability report. This was item 1 of the "next up after the
+minimal slice" list below.
+
+Also shipped (2026-07-10, same day): `ibs-basic`/`ibs-memory-deep` collection profiles plus sampling
+skew/quality annotations (`ibs.c`'s `ibs_build_fetch_event()`/`ibs_build_op_event()`/
+`ibs_counter_group()`, `topdown.c`'s `print_ibs()`, `wspy.c`'s `--ibs-basic`/`--ibs-memory-deep`/
+`--ibs-maxcnt`/`--ibs-ldlat`/`--ibs-fetchlat`, `wspy-run`'s `ibs-basic`/`ibs-memory-deep` builtin
+profiles) — both items shipped together since the skew annotations only mean something once the
+profiles that trigger them exist, per this list's own sequencing note below. `ibs-basic` opens
+`ibs_fetch`/`ibs_op` as ordinary counting events (perf's "stat" mode, not sampling/mmap capture, so it
+reuses the same `perf_event_open()`+`read()` path every other counter in this tree uses);
+`ibs-memory-deep` additionally requests `l3missonly`+`ldlat` filtering on `ibs_op` (and
+`l3missonly`+`fetchlat` on `ibs_fetch` where exposed) and opens a second, always-unfiltered `ibs_op`
+counter as a baseline. Config bits are assembled by parsing each format field's sysfs `location` string
+at runtime (e.g. `"config1:0-11"`), not hardcoded offsets, so a kernel/CPU that places a field
+differently still works. Because l3missonly/ldlat filtering is documented to skew the effective IBS
+sampling period, that skew is now visible in output rather than only in a code comment: CSV gets
+`ibs_op_unfiltered`/`ibs_op_accepted_ratio` (the filtered/unfiltered count ratio) plus
+`ibs_l3missonly`/`ibs_ldlat_threshold`/`ibs_fetchlat_threshold`, and a filter requested by the profile
+but unsupported by the running kernel/CPU prints an explicit warning instead of silently collecting
+unfiltered data under a "deep" label. See `CLAUDE.md`'s `ibs.c` entry for the full behavior. Per this
+file's own "ideas already implemented are not listed" rule both rows are dropped.
 | Idea | Phase | Why |
 | --- | --- | --- |
-| `ibs-basic` / `ibs-memory-deep` collection profiles | 4.0 | Thin layer on top of the capability probe (now shipped, `ibs.c`) and the profile-launcher work already in 4.0. |
-| Sampling skew/quality annotations (`l3missonly`, `ldlat`, `fetchlat`, accepted-vs-filtered) | 4.0 | L3-miss-only filtering is known to skew sampling period; must be visible in output, not just in code comments. |
 | Zen-family preset packs (`zen-portable`, `zen4plus-deep`) | 4.1 | Convenience layer now that capability probing exists (`ibs.c`); not needed for correctness. |
 | PMU-capability-aware comparability warnings | 4.1 | Depends on the general comparability-scoring work (4.2) or at minimum the provenance capture (4.0). |
 | IBS-derived memory-path bottleneck decomposition (combine with topdown/cache) | 4.2 | Depends on both IBS memory-source classes and the topdown hierarchy existing. |
@@ -347,8 +363,9 @@ What appears confirmed from current Linux perf/PMU behavior for AMD Family 1Ah (
 Caveat: if upstream kernel/perf exposes new Zen5-specific generic mappings or PMU caps, update
 presets and coverage logic without changing the report schema.
 
-→ Inventory rows: "Zen5 / IBS" track, all five remaining rows above (capability-driven IBS probing
-shipped, `ibs.c`).
+→ Inventory rows: "Zen5 / IBS" track, the three remaining rows above (capability-driven IBS probing,
+`ibs-basic`/`ibs-memory-deep` collection profiles, and sampling skew/quality annotations all shipped,
+`ibs.c`).
 
 ### Topdown deep-dive
 Advancements worth adopting, in priority order for `wspy` specifically:
@@ -419,8 +436,8 @@ Six items unlock nearly everything else and are independently shippable in rough
 Everything else currently tagged 4.0 (validation checks, coverage ledger, IBS profiles, `ptrace`
 macro extraction, plotting templates, golden tests) can slip to a 4.0.x follow-on without blocking
 downstream phases, since nothing in 4.1+ depends on them specifically. (Validation checks, the
-coverage ledger, and the `ptrace` macro extraction have all since shipped — see "Run artifact
-foundation"/"Portability and robustness" above and the "Next up" list below.)
+coverage ledger, the `ptrace` macro extraction, and the IBS profiles have all since shipped — see "Run
+artifact foundation"/"Portability and robustness"/"Zen5 / IBS" above and the "Next up" list below.)
 
 ### Next up after the minimal slice
 All six items from the minimal foundation slice are shipped (2026-07-08), plus environment/provenance
@@ -431,49 +448,46 @@ above), the `rusage` CSV/normal output mismatch fix (2026-07-09, `print_usage()`
 (2026-07-09, `wspy-validate`/`validate.c`/`json_reader.c` — see "Run artifact foundation" above), and
 the coverage ledger (2026-07-09, `wspy-ledger`/`ledger.c` — see "Run artifact foundation" above),
 arch-neutral `ptrace` register-access macros (2026-07-09, `ptrace_arch.h` — see "Portability and
-robustness" above), and capability-driven IBS probing (2026-07-10, `ibs.c` — see "Zen5 / IBS" above);
-all seven were item 1 of this list at the time they shipped and are dropped from the ordering below
-per this file's own "ideas already implemented are not listed" rule. That leaves roughly 10 rows
-still tagged 4.0 across the inventory (one, "Shared plotting templates," was just re-phased to 4.1
-above since its own rationale depended on the 4.1–4.2 normalized schema — see that row). The list
-below covers all of them except that one, grouped and ordered by priority (confirmed bug fixes and
-cheap high-trust/regression-guard wins first, design decisions next since they get more expensive to
-retrofit the longer they wait, heavier collection/report-layer work last). All are already rows in
-the inventory above — this is a suggested ordering, not a separate list to maintain by hand.
-1. `ibs-basic` / `ibs-memory-deep` collection profiles, plus sampling skew/quality annotations
-   (`l3missonly`, `ldlat`, `fetchlat`, accepted-vs-filtered) ("Zen5 / IBS" track) — both are thin
-   layers directly on top of the capability probe (now shipped, `ibs.c`) and the profile-launcher
-   work already shipped (`wspy-run`); do them together since the skew annotations only mean something
-   once the profiles that trigger them exist.
-2. Run-index schema validation on ingest, warn on mismatched `RUN_INDEX_SCHEMA_VERSION`
+robustness" above), capability-driven IBS probing (2026-07-10, `ibs.c` — see "Zen5 / IBS" above), and
+`ibs-basic`/`ibs-memory-deep` collection profiles plus sampling skew/quality annotations (2026-07-10,
+same day, `ibs.c`/`topdown.c`/`wspy.c`/`wspy-run` — see "Zen5 / IBS" above); all eight were item 1 of
+this list at the time they shipped and are dropped from the ordering below per this file's own "ideas
+already implemented are not listed" rule. That leaves roughly 8 rows still tagged 4.0 across the
+inventory (one, "Shared plotting templates," was just re-phased to 4.1 above since its own rationale
+depended on the 4.1–4.2 normalized schema — see that row). The list below covers all of them except
+that one, grouped and ordered by priority (confirmed bug fixes and cheap high-trust/regression-guard
+wins first, design decisions next since they get more expensive to retrofit the longer they wait,
+heavier collection/report-layer work last). All are already rows in the inventory above — this is a
+suggested ordering, not a separate list to maintain by hand.
+1. Run-index schema validation on ingest, warn on mismatched `RUN_INDEX_SCHEMA_VERSION`
    ("Portability and robustness" track) — closes the loop `wspy-validate` left open: it already warns
    on a `MANIFEST_SCHEMA_VERSION` mismatch, but the run-index (JSONL) side still has no reader
    anywhere in the tree. (`wspy-ledger` now reads the run index, but for workload-coverage matching,
    not schema-version checking — this row is still open.)
-3. Golden output-contract tests (CSV header/order, summary fragments, tree format) + capability-matrix
+2. Golden output-contract tests (CSV header/order, summary fragments, tree format) + capability-matrix
    smoke tests (CPU vendor/family × GPU build × key option bundles) ("Testing and documentation"
    track) — cheapest regression guard available, and increasingly worth having given how many CSV
-   columns have shifted this cycle (`rusage`, coverage, confidence/sanity); `run_tests.sh` already has
-   informal versions of both, this formalizes them.
-4. Artifact contract doc + troubleshooting runbook ("Testing and documentation" track) — write this
+   columns have shifted this cycle (`rusage`, coverage, confidence/sanity, IBS); `run_tests.sh` already
+   has informal versions of both, this formalizes them.
+3. Artifact contract doc + troubleshooting runbook ("Testing and documentation" track) — write this
    before more external tooling (report generators, `workload/*/run_test.sh` migrations) starts
    depending on the manifest/run-index shape by convention instead of by documented contract.
-5. Collector-plugin architecture design decision (wspy core / perf stat / trace-cmd / GPU tools behind
+4. Collector-plugin architecture design decision (wspy core / perf stat / trace-cmd / GPU tools behind
    one manifest+normalization path) ("Portability and robustness" track) — only the *decision* (does
    the schema assume one collector or many?) is 4.0 work; implementation is 4.2+. Cheap to decide now,
    expensive to retrofit once more schema/normalization work (items above, plus 4.1's canonical
    metrics schema) is built on top of an unexamined assumption.
-6. Counter-fit preflight ("will this profile multiplex heavily?" + suggested downgrades)
+5. Counter-fit preflight ("will this profile multiplex heavily?" + suggested downgrades)
    ("Existing-capability extensions" track) — builds directly on availability/NMI-watchdog handling
    and `coverage.c` that already exist at runtime; this just surfaces the same fit information before
    a run instead of after.
-7. Interval (`--interval`) → automatic phase-boundary detection (warmup/steady/degraded)
+6. Interval (`--interval`) → automatic phase-boundary detection (warmup/steady/degraded)
    ("Existing-capability extensions" track) — basic marker detection can land now and is a named
    prerequisite for phase-aware topdown (4.2) and phase-aware IBS.
-8. `--gpu-device=<idx>` override + multi-GPU enumeration ("AMD GPU track") — isolated, self-contained
+7. `--gpu-device=<idx>` override + multi-GPU enumeration ("AMD GPU track") — isolated, self-contained
    follow-on to the `card1` path-scan fix already shipped; doesn't block or get blocked by anything
    else in this list.
-9. Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,
+8. Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,
    plots/*.png,manifest.json}`) ("Run artifact foundation" track) — the largest remaining piece,
    sequenced last here: nothing else in this list depends on it, but 4.1's report/publishing work
    will, so it shouldn't slip past 4.0 entirely.

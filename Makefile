@@ -85,7 +85,7 @@ manifest.o: manifest.h wspy.h cpu_info.h error.h json_util.h provenance.h
 run_index.o: run_index.h manifest.h wspy.h cpu_info.h error.h json_util.h provenance.h
 coverage.o: coverage.h wspy.h cpu_info.h
 provenance.o: provenance.h
-ibs.o: ibs.h wspy.h cpu_info.h
+ibs.o: ibs.h wspy.h cpu_info.h error.h
 proctree.o: error.h
 topdown.o: error.h wspy.h cpu_info.h coverage.h ptrace_arch.h
 validate.o: json_reader.h manifest.h provenance.h
@@ -118,8 +118,8 @@ test_validate: test_validate.c validate.c json_reader.c json_reader.h manifest.h
 test_ledger: test_ledger.c ledger.c json_reader.c json_reader.h
 	$(CC) -o test_ledger $(CFLAGS) -DTEST_LEDGER test_ledger.c json_reader.c
 
-test_ibs: test_ibs.c ibs.c ibs.h
-	$(CC) -o test_ibs $(CFLAGS) test_ibs.c
+test_ibs: test_ibs.c ibs.c ibs.h error.c error.h
+	$(CC) -o test_ibs $(CFLAGS) test_ibs.c error.c
 
 test: test_wspy test_proctree test_validate test_ledger test_ibs
 	./test_wspy

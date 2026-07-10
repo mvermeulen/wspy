@@ -84,6 +84,11 @@ int parse_options(int argc,char *const argv[]){
     { "gpu-smi", no_argument, 0, 48 },
     { "gpu-busy", no_argument, 0, 49 },
     { "gpu-metrics", no_argument, 0, 50 },
+    { "ibs-basic", no_argument, 0, 56 },
+    { "ibs-memory-deep", no_argument, 0, 57 },
+    { "ibs-maxcnt", required_argument, 0, 58 },
+    { "ibs-ldlat", required_argument, 0, 59 },
+    { "ibs-fetchlat", required_argument, 0, 60 },
     { "icache", no_argument, 0, 12 },
     { "no-icache", no_argument, 0, 13 },
     { "interval", required_argument, 0, 34 },
@@ -288,6 +293,35 @@ int parse_options(int argc,char *const argv[]){
     case 55: // --exit-with-child
       exit_with_child_flag = 1;
       break;
+    case 56: // --ibs-basic
+      counter_mask |= COUNTER_IBS;
+      ibs_collection_profile = IBS_PROFILE_BASIC;
+      break;
+    case 57: // --ibs-memory-deep
+      counter_mask |= COUNTER_IBS;
+      ibs_collection_profile = IBS_PROFILE_MEMORY_DEEP;
+      break;
+    case 58: // --ibs-maxcnt
+      if ((sscanf(optarg,"%d",&value) == 1) && value > 0){
+	ibs_params.maxcnt = (unsigned int)value;
+      } else {
+	warning("invalid argument to --ibs-maxcnt: %s, ignored\n",optarg);
+      }
+      break;
+    case 59: // --ibs-ldlat
+      if ((sscanf(optarg,"%d",&value) == 1) && value > 0){
+	ibs_params.ldlat_threshold = (unsigned int)value;
+      } else {
+	warning("invalid argument to --ibs-ldlat: %s, ignored\n",optarg);
+      }
+      break;
+    case 60: // --ibs-fetchlat
+      if ((sscanf(optarg,"%d",&value) == 1) && value > 0){
+	ibs_params.fetchlat_threshold = (unsigned int)value;
+      } else {
+	warning("invalid argument to --ibs-fetchlat: %s, ignored\n",optarg);
+      }
+      break;
     case 31: // --tree
       if ((treefile = fopen(optarg,"w")) == NULL){
 	warning("unable to open tree file: %s, ignored\n",optarg);
@@ -439,6 +473,12 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t--topdown-frontend        - topdown related to fe\n"
 	    "\t--topdown-backend         - topdown related to be\n"
 	    "\t--topdown-optlb           - topdown related to opcache, dtlb\n"
+	    "\t--ibs-basic               - AMD IBS: unfiltered ibs_fetch/ibs_op sample counts\n"
+	    "\t--ibs-memory-deep         - AMD IBS: ibs_op with l3missonly+ldlat filtering (skews\n"
+	    "\t                            sampling period -- see output annotations/docs)\n"
+	    "\t--ibs-maxcnt <n>          - override IBS sampling interval (maxcnt format field)\n"
+	    "\t--ibs-ldlat <n>           - override ibs-memory-deep load-latency threshold (cycles)\n"
+	    "\t--ibs-fetchlat <n>        - override ibs-memory-deep fetch-latency threshold (cycles)\n"
 #if AMDGPU
 	    "\t--gpu-smi                 - get gpu information from smi interface\n"
       "\t--gpu-busy                - read instantaneous GPU busy percent (sysfs)\n"
@@ -494,6 +534,16 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   // software counters are only system-wide
   if (counter_mask & COUNTER_SOFTWARE){
     if ((cgroup = software_counter_group("software"))){
+      cgroup->next = cpu_info->systemwide_counters;
+      cpu_info->systemwide_counters = cgroup;
+    }
+  }
+
+  // AMD IBS collection profiles are only system-wide -- IBS is a
+  // machine-wide dynamic PMU, not a per-core countable event the way cache/
+  // branch raw events are, so --per-core has no natural meaning here.
+  if (counter_mask & COUNTER_IBS){
+    if ((cgroup = ibs_counter_group("ibs",ibs_collection_profile,&ibs_params))){
       cgroup->next = cpu_info->systemwide_counters;
       cpu_info->systemwide_counters = cgroup;
     }
