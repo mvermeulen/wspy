@@ -340,10 +340,30 @@ shipped with no reader anywhere in the tree ever checking it.
 | Optional live TUI (run progress, interval metrics, throttling/skew warnings) | 4.3 | Nice-to-have; CLI-first model stays primary. |
 
 ### Testing and documentation
+Shipped (2026-07-10): golden output-contract tests + capability-matrix smoke tests
+(`tests/golden_output.sh`, `tests/capability_matrix.sh`, wired into `run_tests.sh`) — see `CLAUDE.md`'s
+"Build & Test" section for what each covers. Building the golden CSV-header/column-count checks
+surfaced five real, independent output-contract bugs that shipped alongside the tests themselves (all
+pre-existing, none introduced by this pass): `--cache3` fataled the whole run instead of gracefully
+skipping when `/sys/devices/amd_l3/type` was absent (contradicting this file's/`CLAUDE.md`'s own
+documented behavior); `--dcache`/`--icache`/`--tlb` combined with the default `--ipc` produced a
+duplicate `ipc` CSV column instead of their own (a stray `counter_mask` bit leaking into
+`print_metrics()`'s dispatch chain); `--software --csv` was corrupted (the value row never checked
+`csvflag`, so the human-readable multi-line dump landed mid-row); `--memory` measured its counters but
+never printed them anywhere (an implemented `print_memory()` was simply never wired into the dispatch
+chain); and `--topdown-frontend`/`--topdown-optlb --csv` produced malformed rows (missing trailing
+commas fusing fields together) that also silently dropped every column under permission-denied
+conditions, the same class of bug fixed for `--topdown-backend`'s premature/duplicate header branch.
+The capability-matrix smoke tests separately caught `--tree-vmsize` crashing on any use (a long option
+registered and documented in `--help` with no corresponding `case` in `parse_options()` at all).
+Documented but intentionally *not* fixed in this pass: `--per-core` combined with any counter group
+produces a CSV header with only the base/coverage columns while each per-core row still appends that
+group's values — a real gap, but one needing `wspy.c`'s `aflag`/per-core setup-and-print flow
+re-architected rather than a single `print_*()` fix (see `tests/capability_matrix.sh`'s
+`per-core-topdown` bundle comment).
+
 | Idea | Phase | Why |
 | --- | --- | --- |
-| Golden output-contract tests (CSV header/order, summary fragments, tree format) | 4.0 | Cheapest regression guard; `run_tests.sh` already checks CSV column order for existing fields — extend the same pattern as new fields land. |
-| Capability-matrix smoke tests (CPU vendor/family × GPU build × key option bundles, graceful-degradation paths) | 4.0 | `run_tests.sh` already does a version of this (AMDGPU-build vs not); formalize it as new tracks add more axes. |
 | Artifact contract doc + troubleshooting runbook | 4.0 | Needs to exist before external scripts start depending on the new manifest/layout shape. |
 | Schema compatibility/migration tests + reproducibility/idempotency tests | 4.1 | Depends on the schema versioning (4.0) having something to test compatibility against. |
 | Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster output) | 4.1 | Write once the features it documents (confidence envelope, phases) exist in 4.0. |
@@ -417,7 +437,7 @@ bugs (`card1` hardcode, `ptrace` x86_64-only access), and land the cheapest trus
 "Portability" rows, the AMD GPU path-scan fix, and the topdown/IBS confidence work are tagged 4.0.
 
 **This phase was originally scoped large** — roughly 25-30 inventory rows when first drafted. The
-minimal foundation slice (6 rows) has since shipped in full, and roughly 10 4.0-tagged rows remain
+minimal foundation slice (6 rows) has since shipped in full, and roughly 8 4.0-tagged rows remain
 open (see "Next up after the minimal slice" for the current priority order across all of them).
 
 ### Phase 4.1 — automation
@@ -448,8 +468,9 @@ Six items unlock nearly everything else and are independently shippable in rough
 Everything else currently tagged 4.0 (validation checks, coverage ledger, IBS profiles, `ptrace`
 macro extraction, plotting templates, golden tests) can slip to a 4.0.x follow-on without blocking
 downstream phases, since nothing in 4.1+ depends on them specifically. (Validation checks, the
-coverage ledger, the `ptrace` macro extraction, and the IBS profiles have all since shipped — see "Run
-artifact foundation"/"Portability and robustness"/"Zen5 / IBS" above and the "Next up" list below.)
+coverage ledger, the `ptrace` macro extraction, the IBS profiles, and the golden output-contract/
+capability-matrix tests have all since shipped — see "Run artifact foundation"/"Portability and
+robustness"/"Zen5 / IBS"/"Testing and documentation" above and the "Next up" list below.)
 
 ### Next up after the minimal slice
 All six items from the minimal foundation slice are shipped (2026-07-08), plus environment/provenance
@@ -462,43 +483,47 @@ the coverage ledger (2026-07-09, `wspy-ledger`/`ledger.c` — see "Run artifact 
 arch-neutral `ptrace` register-access macros (2026-07-09, `ptrace_arch.h` — see "Portability and
 robustness" above), capability-driven IBS probing (2026-07-10, `ibs.c` — see "Zen5 / IBS" above), and
 `ibs-basic`/`ibs-memory-deep` collection profiles plus sampling skew/quality annotations (2026-07-10,
-`ibs.c`/`topdown.c`/`wspy.c`/`wspy-run` — see "Zen5 / IBS" above), and run-index schema validation on
-ingest (2026-07-10, `ledger.c` — see "Portability and robustness" above); all nine were item 1 of
-this list at the time they shipped and are dropped from the ordering below per this file's own "ideas
-already implemented are not listed" rule. That leaves roughly 7 rows still tagged 4.0 across the
-inventory (one, "Shared plotting templates," was just re-phased to 4.1 above since its own rationale
-depended on the 4.1–4.2 normalized schema — see that row). The list below covers all of them except
-that one, grouped and ordered by priority (confirmed bug fixes and cheap high-trust/regression-guard
-wins first, design decisions next since they get more expensive to retrofit the longer they wait,
-heavier collection/report-layer work last). All are already rows in the inventory above — this is a
-suggested ordering, not a separate list to maintain by hand.
-1. Golden output-contract tests (CSV header/order, summary fragments, tree format) + capability-matrix
-   smoke tests (CPU vendor/family × GPU build × key option bundles) ("Testing and documentation"
-   track) — cheapest regression guard available, and increasingly worth having given how many CSV
-   columns have shifted this cycle (`rusage`, coverage, confidence/sanity, IBS); `run_tests.sh` already
-   has informal versions of both, this formalizes them.
-2. Artifact contract doc + troubleshooting runbook ("Testing and documentation" track) — write this
+`ibs.c`/`topdown.c`/`wspy.c`/`wspy-run` — see "Zen5 / IBS" above), run-index schema validation on
+ingest (2026-07-10, `ledger.c` — see "Portability and robustness" above), and golden output-contract
+tests + capability-matrix smoke tests (2026-07-10, `tests/golden_output.sh`/`tests/capability_matrix.sh`
+— see "Testing and documentation" above, including the five output-contract bugs and one crash that
+building them surfaced and fixed); all ten were item 1 of this list at the time they shipped and are
+dropped from the ordering below per this file's own "ideas already implemented are not listed" rule.
+That leaves roughly 6 rows still tagged 4.0 across the inventory (one, "Shared plotting templates," was
+just re-phased to 4.1 above since its own rationale depended on the 4.1–4.2 normalized schema — see
+that row). The list below covers all of them except that one, grouped and ordered by priority (design
+decisions first since they get more expensive to retrofit the longer they wait, heavier collection/
+report-layer work last). All are already rows in the inventory above — this is a suggested ordering,
+not a separate list to maintain by hand.
+1. Artifact contract doc + troubleshooting runbook ("Testing and documentation" track) — write this
    before more external tooling (report generators, `workload/*/run_test.sh` migrations) starts
    depending on the manifest/run-index shape by convention instead of by documented contract.
-3. Collector-plugin architecture design decision (wspy core / perf stat / trace-cmd / GPU tools behind
+2. Collector-plugin architecture design decision (wspy core / perf stat / trace-cmd / GPU tools behind
    one manifest+normalization path) ("Portability and robustness" track) — only the *decision* (does
    the schema assume one collector or many?) is 4.0 work; implementation is 4.2+. Cheap to decide now,
    expensive to retrofit once more schema/normalization work (items above, plus 4.1's canonical
    metrics schema) is built on top of an unexamined assumption.
-4. Counter-fit preflight ("will this profile multiplex heavily?" + suggested downgrades)
+3. Counter-fit preflight ("will this profile multiplex heavily?" + suggested downgrades)
    ("Existing-capability extensions" track) — builds directly on availability/NMI-watchdog handling
    and `coverage.c` that already exist at runtime; this just surfaces the same fit information before
    a run instead of after.
-5. Interval (`--interval`) → automatic phase-boundary detection (warmup/steady/degraded)
+4. Interval (`--interval`) → automatic phase-boundary detection (warmup/steady/degraded)
    ("Existing-capability extensions" track) — basic marker detection can land now and is a named
    prerequisite for phase-aware topdown (4.2) and phase-aware IBS.
-6. `--gpu-device=<idx>` override + multi-GPU enumeration ("AMD GPU track") — isolated, self-contained
+5. `--gpu-device=<idx>` override + multi-GPU enumeration ("AMD GPU track") — isolated, self-contained
    follow-on to the `card1` path-scan fix already shipped; doesn't block or get blocked by anything
    else in this list.
-7. Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,
+6. Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,
    plots/*.png,manifest.json}`) ("Run artifact foundation" track) — the largest remaining piece,
    sequenced last here: nothing else in this list depends on it, but 4.1's report/publishing work
    will, so it shouldn't slip past 4.0 entirely.
+
+Also a real (pre-existing, not newly introduced) gap surfaced but deliberately not fixed while building
+the tests above: `--per-core` combined with any counter group produces a CSV header with only the
+base/coverage columns while each per-core row still appends that group's values. Needs `wspy.c`'s
+`aflag`/per-core setup-and-print flow re-architected, not a single `print_*()` fix — not added as its
+own numbered item above since it hasn't been triaged into a phase yet, but flagged here so it isn't
+lost; see `tests/capability_matrix.sh`'s `per-core-topdown` bundle comment for the concrete symptom.
 
 ## Open questions for prioritization
 Each carries a recommendation; treat these as the current default, not a closed decision — flag if

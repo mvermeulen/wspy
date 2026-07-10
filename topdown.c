@@ -167,7 +167,12 @@ unsigned long parse_amd_event(char *description){
 	// the value encodes the name of the type field...
 	debug("checking for %s\n",val);
 	if (stat(val,&statbuf) ==-1){
-	  fatal("%s not found, is the perf module for this device loaded in the kernel?\n");
+	  // setup_raw_events() already masks out events whose "requires" path
+	  // is missing before calling this parser (see mask_unavailable_raw_events),
+	  // so reaching here means the path vanished between that check and now --
+	  // degrade gracefully (as documented in CLAUDE.md: "silently skipped if
+	  // absent") rather than aborting the whole run over one optional counter.
+	  warning("%s not found, is the perf module for this device loaded in the kernel?\n",val);
 	}
       } else {
 	fatal("unimplemented %s in parse_amd_event\n",name);
@@ -179,6 +184,33 @@ unsigned long parse_amd_event(char *description){
   return result.config;
 };
 
+// Some raw events (currently just AMD's L3 lookup-state events) only exist
+// when a particular sysfs path is present (e.g. /sys/devices/amd_l3/type --
+// not every Zen generation/kernel registers this PMU). If this run actually
+// requested such an event (events[i].use & counter_mask) but its "requires="
+// path is missing, clear .use so raw_counter_group()'s "events[i].use & mask"
+// filtering excludes it from the group automatically instead of building a
+// counter for it -- CLAUDE.md documents this as "silently skipped if
+// absent", not a fatal error. Gated by counter_mask (not run unconditionally
+// over the whole table) so hosts missing the sysfs path don't get warned on
+// every run, only ones that actually asked for the affected counter group.
+static int raw_event_requires_available(struct raw_event *ev){
+  char *req = strstr(ev->description,"requires=");
+  if (!req) return 1;
+  req += strlen("requires=");
+  char path[256];
+  size_t len = strcspn(req,",\n");
+  if (len >= sizeof(path)) len = sizeof(path)-1;
+  memcpy(path,req,len);
+  path[len] = '\0';
+  struct stat statbuf;
+  if (stat(path,&statbuf) == -1){
+    warning("%s not found, %s unavailable on this kernel/CPU (skipped)\n",path,ev->name);
+    return 0;
+  }
+  return 1;
+}
+
 int setup_raw_events(void){
   unsigned int i;
   struct raw_event *events;
@@ -188,9 +220,14 @@ int setup_raw_events(void){
     events = amd_raw_events;
     num_events = sizeof(amd_raw_events)/sizeof(amd_raw_events[0]);
     for (i=0;i<num_events;i++){
-      if (events[i].use & counter_mask)
+      if (events[i].use & counter_mask){
+	if (!raw_event_requires_available(&events[i])){
+	  events[i].use = 0;
+	  continue;
+	}
 	events[i].raw.config = parse_amd_event(events[i].description);
-    }    
+      }
+    }
     break;
   case VENDOR_INTEL:
     events = intel_raw_events;
@@ -658,8 +695,12 @@ struct counter_group *raw_counter_group(char *name,unsigned int mask){
   for (i=0;i<(unsigned int)num_events;i++){
     if (events[i].use & mask) num_counters++;
   }
-  
-  struct counter_group *cgroup = calloc(1,sizeof(struct counter_group));  
+  // e.g. COUNTER_TOPDOWN_BE has no matching entries in amd_raw_events[] --
+  // without this, an empty group still got linked in and printed, claiming
+  // CSV header columns whose value row then had nothing to contribute.
+  if (num_counters == 0) return NULL;
+
+  struct counter_group *cgroup = calloc(1,sizeof(struct counter_group));
   cgroup->label = strdup(name);
   cgroup->type_id = PERF_TYPE_RAW;
   cgroup->ncounters = num_counters;
@@ -689,7 +730,14 @@ void setup_counter_groups(struct counter_group **counter_group_list){
 
   // note: These get pushed onto a linked list, so last listed is first printed
   if (counter_mask & (COUNTER_DCACHE|COUNTER_ICACHE|COUNTER_TLB)){
-    if ((cgroup = cache_counter_group("cache",counter_mask))){
+    // Pass only the DCACHE/ICACHE/TLB bits, not the raw global counter_mask --
+    // cgroup->mask is later tested against COUNTER_IPC/COUNTER_TOPDOWN/etc in
+    // print_metrics()'s dispatch chain, and COUNTER_IPC is checked before this
+    // group's own bits, so leaking the full counter_mask in here (e.g. IPC's
+    // bit, which is on by default) misrouted the group to print_ipc() instead
+    // of print_dcache()/print_icache()/print_dtlb()/print_itlb(), producing a
+    // duplicate "ipc" CSV column instead of e.g. "L1-dcache miss".
+    if ((cgroup = cache_counter_group("cache",counter_mask & (COUNTER_DCACHE|COUNTER_ICACHE|COUNTER_TLB)))){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;
     }
@@ -1340,8 +1388,14 @@ void print_topdown_be(struct counter_group *cgroup,enum output_format oformat,in
   
   struct counter_info *cinfo;
 
+  // The CSV header is always exactly these 5 columns regardless of vendor or
+  // whether the underlying counters were actually measured (permission
+  // denied, etc.) -- previously this branch was missing its trailing comma
+  // (merging into the next group's header, e.g. "store_boundcounters_
+  // measured") and a second, unreachable copy with the correct comma lived
+  // below, dead behind the CSV_HEADER case already having returned here.
   if (oformat == PRINT_CSV_HEADER){
-    fprintf(outfile,"l1_bound,l2_bound,l3_bound,dram_bound,store_bound");
+    fprintf(outfile,"l1_bound,l2_bound,l3_bound,dram_bound,store_bound,");
     return;
   }
 
@@ -1349,9 +1403,9 @@ void print_topdown_be(struct counter_group *cgroup,enum output_format oformat,in
   case VENDOR_INTEL:
     if ((cinfo = find_ci_label(cgroup,"cpu-cycles"))) cpu_cycles = cinfo->value;
     if ((cinfo = find_ci_label(cgroup,"exe_activity.bound_on_loads"))) load_stall = cinfo->value;
-    if ((cinfo = find_ci_label(cgroup,"exe_activity.bound_on_stores"))) store_stall = cinfo->value;    
+    if ((cinfo = find_ci_label(cgroup,"exe_activity.bound_on_stores"))) store_stall = cinfo->value;
     if ((cinfo = find_ci_label(cgroup,"memory_activity.stalls_l1d_miss"))) l1_miss = cinfo->value;
-    if ((cinfo = find_ci_label(cgroup,"memory_activity.stalls_l2_miss"))) l2_miss = cinfo->value;    
+    if ((cinfo = find_ci_label(cgroup,"memory_activity.stalls_l2_miss"))) l2_miss = cinfo->value;
     if ((cinfo = find_ci_label(cgroup,"memory_activity.stalls_l3_miss"))) l3_miss = cinfo->value;
     break;
   case VENDOR_AMD:
@@ -1360,34 +1414,36 @@ void print_topdown_be(struct counter_group *cgroup,enum output_format oformat,in
     return;
   }
 
-  if (cpu_cycles){
-    switch(oformat){
-    case PRINT_CSV_HEADER:
-      fprintf(outfile,"l1_bound,l2_bound,l3_bound,dram_bound,store_bound\n");
-      break;
-    case PRINT_CSV:
-      fprintf(outfile,"%4.1f,%4.1f,%4.1f,%4.1f,%4.1f,",
-	      (double) (load_stall > l1_miss)?(load_stall - l1_miss)*100.0/cpu_cycles:0,
-	      (double) (l1_miss - l2_miss)*100.0/cpu_cycles,
-	      (double) (l2_miss - l3_miss)*100.0/cpu_cycles,
-	      (double) l3_miss*100.0/cpu_cycles,
-	      (double) store_stall*100.0/cpu_cycles);
-      break;
-    case PRINT_NORMAL:
-      fprintf(outfile,"cpu-cycles           %-14lu # %4.1f%% memory latency\n",
-	      cpu_cycles,(double) (load_stall+store_stall)*100.0/cpu_cycles);
-      fprintf(outfile,"load stalls          %-14lu # %4.1f%% l1 bound\n",
-	      load_stall,(load_stall>l1_miss)?(load_stall - l1_miss)*100.0/cpu_cycles:0);
-      fprintf(outfile,"l1 miss              %-14lu # %4.1f%% l2 bound\n",
-	      l1_miss,(double) (l1_miss - l2_miss)*100.0/cpu_cycles);
-      fprintf(outfile,"l2 miss              %-14lu # %4.1f%% l3 bound\n",
-	      l2_miss,(double) (l2_miss - l3_miss)*100.0/cpu_cycles);      
-      fprintf(outfile,"l3 miss              %-14lu # %4.1f%% dram bound\n",
-	      l3_miss,(double) l3_miss*100.0/cpu_cycles);
-      fprintf(outfile,"store_stalls         %-14lu # %4.1f%% store bound\n",
-	      store_stall,(double) store_stall*100.0/cpu_cycles);      
-      break;
-    }
+  // Always emit the 5 value columns (possibly nan/inf if cpu_cycles is 0,
+  // e.g. counters unavailable this run) rather than gating on "if
+  // (cpu_cycles)" -- gating meant a permission-denied run silently dropped
+  // all 5 CSV columns while the header still claimed them, a header/value
+  // column-count mismatch on top of the missing-comma bug above.
+  switch(oformat){
+  case PRINT_CSV_HEADER:
+    break;
+  case PRINT_CSV:
+    fprintf(outfile,"%4.1f,%4.1f,%4.1f,%4.1f,%4.1f,",
+	    (double) (load_stall > l1_miss)?(load_stall - l1_miss)*100.0/cpu_cycles:0,
+	    (double) (l1_miss - l2_miss)*100.0/cpu_cycles,
+	    (double) (l2_miss - l3_miss)*100.0/cpu_cycles,
+	    (double) l3_miss*100.0/cpu_cycles,
+	    (double) store_stall*100.0/cpu_cycles);
+    break;
+  case PRINT_NORMAL:
+    fprintf(outfile,"cpu-cycles           %-14lu # %4.1f%% memory latency\n",
+	    cpu_cycles,(double) (load_stall+store_stall)*100.0/cpu_cycles);
+    fprintf(outfile,"load stalls          %-14lu # %4.1f%% l1 bound\n",
+	    load_stall,(load_stall>l1_miss)?(load_stall - l1_miss)*100.0/cpu_cycles:0);
+    fprintf(outfile,"l1 miss              %-14lu # %4.1f%% l2 bound\n",
+	    l1_miss,(double) (l1_miss - l2_miss)*100.0/cpu_cycles);
+    fprintf(outfile,"l2 miss              %-14lu # %4.1f%% l3 bound\n",
+	    l2_miss,(double) (l2_miss - l3_miss)*100.0/cpu_cycles);
+    fprintf(outfile,"l3 miss              %-14lu # %4.1f%% dram bound\n",
+	    l3_miss,(double) l3_miss*100.0/cpu_cycles);
+    fprintf(outfile,"store_stalls         %-14lu # %4.1f%% store bound\n",
+	    store_stall,(double) store_stall*100.0/cpu_cycles);
+    break;
   }
 }
 
@@ -1422,34 +1478,39 @@ void print_topdown_fe(struct counter_group *cgroup,enum output_format oformat,in
     return;
   }
 
-  if (instructions){
-    switch(oformat){
-    case PRINT_CSV_HEADER:
-      fprintf(outfile,"icache,itlb1,itlb2,tlbflush\n");
-      break;
-    case PRINT_CSV:
-      if (icache_access)
-	fprintf(outfile,"%4.1f,",(double) icache_miss / icache_access*100);
-      else
-	fprintf(outfile,"0.0");
-      fprintf(outfile,"%4.3f",(double) (itlb1 + itlb2)*1000.0 / instructions);
-      fprintf(outfile,"%4.3f",(double) itlb2*1000.0 / instructions);
-      fprintf(outfile,"%4.3f",(double) tlb_flush*1000.0 / instructions);
-      break;
-    case PRINT_NORMAL:
-      fprintf(outfile,"instructions         %-14lu #\n",instructions);
-      fprintf(outfile,"icache               %-14lu # %4.3f icache per 1000 inst\n",
-	      icache_access,(double) icache_access * 1000 / instructions);
-      fprintf(outfile,"icache miss          %-14lu # %4.1f%% icache miss rate\n",
-	      icache_miss,(double) icache_miss / icache_access*100.0);
-      fprintf(outfile,"l1 iTLB miss         %-14lu # %4.3f L1 iTLB per 1000 inst\n",
-	      itlb1+itlb2,(double) (itlb1+itlb2)*1000/instructions);
-      fprintf(outfile,"l2 iTLB miss         %-14lu # %4.3f L2 iTLB per 1000 inst\n",
-	      itlb2,(double) itlb2*1000/instructions);
-      fprintf(outfile,"tlb flush            %-14lu # %4.3f TLB flush per 1000 inst\n",
-	      tlb_flush,(double) tlb_flush*1000/instructions);      
-      break;
-    }
+  // Always emit all 4 CSV value columns, comma-terminated, regardless of
+  // whether `instructions` is 0 (e.g. permission denied this run) -- this
+  // previously (a) gated the whole value row behind "if (instructions)",
+  // dropping all 4 columns under degraded permissions while the header still
+  // claimed them, and (b) even when instructions was nonzero, 3 of the 4
+  // %4.3f fields and the "0.0" fallback had no trailing comma at all, so a
+  // real (root) run produced a corrupted, unparseable CSV row (fields fused
+  // together, e.g. "18.21.2340.5670.089").
+  switch(oformat){
+  case PRINT_CSV_HEADER:
+    break;
+  case PRINT_CSV:
+    if (icache_access)
+      fprintf(outfile,"%4.1f,",(double) icache_miss / icache_access*100);
+    else
+      fprintf(outfile,"0.0,");
+    fprintf(outfile,"%4.3f,",(double) (itlb1 + itlb2)*1000.0 / instructions);
+    fprintf(outfile,"%4.3f,",(double) itlb2*1000.0 / instructions);
+    fprintf(outfile,"%4.3f,",(double) tlb_flush*1000.0 / instructions);
+    break;
+  case PRINT_NORMAL:
+    fprintf(outfile,"instructions         %-14lu #\n",instructions);
+    fprintf(outfile,"icache               %-14lu # %4.3f icache per 1000 inst\n",
+	    icache_access,(double) icache_access * 1000 / instructions);
+    fprintf(outfile,"icache miss          %-14lu # %4.1f%% icache miss rate\n",
+	    icache_miss,(double) icache_miss / icache_access*100.0);
+    fprintf(outfile,"l1 iTLB miss         %-14lu # %4.3f L1 iTLB per 1000 inst\n",
+	    itlb1+itlb2,(double) (itlb1+itlb2)*1000/instructions);
+    fprintf(outfile,"l2 iTLB miss         %-14lu # %4.3f L2 iTLB per 1000 inst\n",
+	    itlb2,(double) itlb2*1000/instructions);
+    fprintf(outfile,"tlb flush            %-14lu # %4.3f TLB flush per 1000 inst\n",
+	    tlb_flush,(double) tlb_flush*1000/instructions);
+    break;
   }
 }
 
@@ -1482,31 +1543,32 @@ void print_topdown_op(struct counter_group *cgroup,enum output_format oformat,in
     return;
   }
 
-  if (instructions){
-    switch(oformat){
-    case PRINT_CSV_HEADER:
-      fprintf(outfile,"opcache,dtlb1,dtlb2\n");
-      break;
-    case PRINT_CSV:
-      if (opcache_access)
-	fprintf(outfile,"%4.1f,",(double) opcache_miss / opcache_access*100);
-      else
-	fprintf(outfile,"0.0");
-      fprintf(outfile,"%4.3f",(double) dtlb1*1000.0 / instructions);
-      fprintf(outfile,"%4.3f",(double) dtlb2*1000.0 / instructions);
-      break;
-    case PRINT_NORMAL:
-      fprintf(outfile,"instructions         %-14lu #\n",instructions);
-      fprintf(outfile,"opcache              %-14lu # %4.3f opcache per 1000 inst\n",
-	      opcache_access,(double) opcache_access * 1000 / instructions);
-      fprintf(outfile,"opcache miss         %-14lu # %4.1f%% opcache miss rate\n",
-	      opcache_miss,(double) opcache_miss / opcache_access*100.0);
-      fprintf(outfile,"l1 dTLB miss         %-14lu # %4.3f L1 dTLB per 1000 inst\n",
-	      dtlb1,(double) dtlb1*1000/instructions);
-      fprintf(outfile,"l2 dTLB miss         %-14lu # %4.3f L2 dTLB per 1000 inst\n",
-	      dtlb2,(double) dtlb2*1000/instructions);
-      break;
-    }
+  // See print_topdown_fe()'s comment above -- same two bugs applied here:
+  // gating the whole value row behind "if (instructions)" dropped all 3 CSV
+  // columns under degraded permissions, and the un-terminated "0.0"/%4.3f
+  // fields fused together into a corrupted CSV row even on a real run.
+  switch(oformat){
+  case PRINT_CSV_HEADER:
+    break;
+  case PRINT_CSV:
+    if (opcache_access)
+      fprintf(outfile,"%4.1f,",(double) opcache_miss / opcache_access*100);
+    else
+      fprintf(outfile,"0.0,");
+    fprintf(outfile,"%4.3f,",(double) dtlb1*1000.0 / instructions);
+    fprintf(outfile,"%4.3f,",(double) dtlb2*1000.0 / instructions);
+    break;
+  case PRINT_NORMAL:
+    fprintf(outfile,"instructions         %-14lu #\n",instructions);
+    fprintf(outfile,"opcache              %-14lu # %4.3f opcache per 1000 inst\n",
+	    opcache_access,(double) opcache_access * 1000 / instructions);
+    fprintf(outfile,"opcache miss         %-14lu # %4.1f%% opcache miss rate\n",
+	    opcache_miss,(double) opcache_miss / opcache_access*100.0);
+    fprintf(outfile,"l1 dTLB miss         %-14lu # %4.3f L1 dTLB per 1000 inst\n",
+	    dtlb1,(double) dtlb1*1000/instructions);
+    fprintf(outfile,"l2 dTLB miss         %-14lu # %4.3f L2 dTLB per 1000 inst\n",
+	    dtlb2,(double) dtlb2*1000/instructions);
+    break;
   }
 }
 
@@ -1837,12 +1899,24 @@ void print_software(struct counter_group *cgroup,enum output_format oformat){
   int i;
   struct counter_info *task_info = find_ci_label(cgroup,"task-clock");
   double task_time = (double) task_info->value / 1000000000.0;
-  (void)cgroup;
-  (void)oformat;
-  struct counter_info *cinfo;
+
   if (oformat == PRINT_CSV_HEADER){
+    for (i=0;i<cgroup->ncounters;i++)
+      fprintf(outfile,"%s,",cgroup->cinfo[i].label);
     return;
   }
+
+  // This used to print the annotated normal-format dump below unconditionally,
+  // even under --csv -- since it never checked csvflag/oformat for the value
+  // row (only the header case above did), a "# .../sec" annotated multi-line
+  // block landed in the middle of what should have been one comma-separated
+  // CSV row, corrupting it. See CLAUDE.md's "CSV vs. human output" contract.
+  if (csvflag){
+    for (i=0;i<cgroup->ncounters;i++)
+      fprintf(outfile,"%lu,",cgroup->cinfo[i].value);
+    return;
+  }
+
   for (i=0;i<cgroup->ncounters;i++){
     fprintf(outfile,"%-20s %-14lu",cgroup->cinfo[i].label,cgroup->cinfo[i].value);
     if (!strcmp(cgroup->cinfo[i].label,"task-clock") ||
@@ -1851,7 +1925,7 @@ void print_software(struct counter_group *cgroup,enum output_format oformat){
 	     (double) cgroup->cinfo[i].value / 1000000000.0);
     } else {
       fprintf(outfile," # %4.3f/sec",cgroup->cinfo[i].value / task_time);
-	     
+
     }
     fprintf(outfile,"\n");
   }
@@ -1944,6 +2018,8 @@ void print_metrics(struct counter_group *counter_group_list,enum output_format o
       print_l3cache(cgroup,oformat);      
     } else if (cgroup->mask & COUNTER_OPCACHE){
       print_opcache(cgroup,oformat);
+    } else if (cgroup->mask & COUNTER_MEMORY){
+      print_memory(cgroup,oformat);
     } else if (cgroup->mask & (COUNTER_DCACHE|COUNTER_ICACHE|COUNTER_TLB)){
       if (cgroup->mask & COUNTER_DCACHE) print_dcache(cgroup,oformat);
       if (cgroup->mask & COUNTER_ICACHE) print_icache(cgroup,oformat);

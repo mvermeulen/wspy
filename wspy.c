@@ -35,6 +35,7 @@ int interval = 0;
 int treeflag = 0;
 int tree_cmdline = 0;
 int tree_open = 0;
+int tree_vmsize = 0;
 int trace_syscall = 0;
 int versionflag = 0;
 int capabilitiesflag = 0;
@@ -359,6 +360,16 @@ int parse_options(int argc,char *const argv[]){
     case 38:
       tree_open = 1;
       trace_syscall = 1;
+      break;
+    case 41: // --tree-vmsize
+      // Registered as a long option (and documented in --help) but never had
+      // a case here at all -- any use of --tree-vmsize fell through to
+      // `default: return 1;` below, which parse_options()'s caller turns
+      // into a fatal "usage: ..." error, i.e. this flag could not be used
+      // for anything without crashing the whole run. tree_vmsize itself
+      // isn't consumed anywhere yet (unlike tree_open/tree_cmdline above),
+      // so this stops the crash but doesn't yet add vmsize to --tree output.
+      tree_vmsize = 1;
       break;
     default:
       return 1;
