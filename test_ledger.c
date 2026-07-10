@@ -88,15 +88,20 @@ static void test_load_workload_list(void){
   printf("PASS: load_workload_list\n");
 }
 
-static void write_run_index_record(FILE *fp,const char *run_id,const char *start_time,
-                                    const char *cmd,int exit_known,int exit_code){
-  fprintf(fp,"{\"run_id\":\"%s\",\"start_time\":\"%s\",\"command\":[\"wspy\",\"--\",\"%s\"],",
-          run_id,start_time,cmd);
+static void write_run_index_record_v(FILE *fp,const char *run_id,const char *start_time,
+                                      const char *cmd,int exit_known,int exit_code,const char *schema_version){
+  fprintf(fp,"{\"schema_version\":\"%s\",\"run_id\":\"%s\",\"start_time\":\"%s\",\"command\":[\"wspy\",\"--\",\"%s\"],",
+          schema_version,run_id,start_time,cmd);
   if (exit_known)
     fprintf(fp,"\"exit_status\":{\"known\":true,\"exited\":true,\"exit_code\":%d,\"signaled\":false,\"term_signal\":null}}\n",
             exit_code);
   else
     fprintf(fp,"\"exit_status\":{\"known\":false,\"exited\":null,\"exit_code\":null,\"signaled\":null,\"term_signal\":null}}\n");
+}
+
+static void write_run_index_record(FILE *fp,const char *run_id,const char *start_time,
+                                    const char *cmd,int exit_known,int exit_code){
+  write_run_index_record_v(fp,run_id,start_time,cmd,exit_known,exit_code,RUN_INDEX_SCHEMA_VERSION);
 }
 
 static void test_process_run_index_file(void){
@@ -203,12 +208,73 @@ static void test_malformed_record_skipped(void){
   printf("PASS: malformed run-index record skipped\n");
 }
 
+static void test_schema_version_mismatch_warns(void){
+  const char *index_path = "/tmp/test_ledger_index5.jsonl";
+  const char *list_path = "/tmp/test_ledger_list6.txt";
+  struct ledger_entry *entries;
+  int n;
+  FILE *fp;
+
+  printf("Testing mismatched RUN_INDEX_SCHEMA_VERSION warns but still processes records...\n");
+
+  write_file(list_path,"500.perlbench_r\n");
+
+  fp = fopen(index_path,"w");
+  assert(fp != NULL);
+  write_run_index_record_v(fp,"run1","2026-07-01T00:00:00.000Z","runcpu 500.perlbench_r",1,0,"2.0.0");
+  fclose(fp);
+
+  entries = load_workload_list(list_path,&n);
+  assert(entries != NULL && n == 1);
+  /* A major-version mismatch is a warning (to stderr), not a processing
+   * failure -- the record still counts, same as validate.c's
+   * check_schema_version() only WARNs on manifests. */
+  assert(process_run_index_file(index_path,entries,n) == 1);
+  assert(entry_status(&entries[0]) == LEDGER_DONE);
+
+  free(entries);
+  remove(index_path);
+  remove(list_path);
+  printf("PASS: mismatched schema version warns but still processes records\n");
+}
+
+static void test_schema_version_missing_field(void){
+  const char *index_path = "/tmp/test_ledger_index6.jsonl";
+  const char *list_path = "/tmp/test_ledger_list7.txt";
+  struct ledger_entry *entries;
+  int n;
+  FILE *fp;
+
+  printf("Testing missing schema_version field warns but still processes records...\n");
+
+  write_file(list_path,"500.perlbench_r\n");
+
+  fp = fopen(index_path,"w");
+  assert(fp != NULL);
+  fprintf(fp,"{\"run_id\":\"run1\",\"start_time\":\"2026-07-01T00:00:00.000Z\","
+             "\"command\":[\"wspy\",\"--\",\"runcpu 500.perlbench_r\"],"
+             "\"exit_status\":{\"known\":true,\"exited\":true,\"exit_code\":0,\"signaled\":false,\"term_signal\":null}}\n");
+  fclose(fp);
+
+  entries = load_workload_list(list_path,&n);
+  assert(entries != NULL && n == 1);
+  assert(process_run_index_file(index_path,entries,n) == 1);
+  assert(entry_status(&entries[0]) == LEDGER_DONE);
+
+  free(entries);
+  remove(index_path);
+  remove(list_path);
+  printf("PASS: missing schema_version field warns but still processes records\n");
+}
+
 int main(void){
   test_parse_ledger_line();
   test_load_workload_list();
   test_process_run_index_file();
   test_annotation_overrides_inference();
   test_malformed_record_skipped();
+  test_schema_version_mismatch_warns();
+  test_schema_version_missing_field();
 
   printf("\nAll test_ledger tests passed.\n");
   return 0;

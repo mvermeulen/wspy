@@ -89,7 +89,7 @@ ibs.o: ibs.h wspy.h cpu_info.h error.h
 proctree.o: error.h
 topdown.o: error.h wspy.h cpu_info.h coverage.h ptrace_arch.h
 validate.o: json_reader.h manifest.h provenance.h
-ledger.o: json_reader.h
+ledger.o: json_reader.h run_index.h manifest.h
 
 # Always built GPU-disabled (test_wspy.c forces AMDGPU=0 to stub out main() and
 # skip GPU code), using its own objects so it never picks up a topdown.o/system.o
@@ -115,7 +115,7 @@ test_proctree: test_proctree.c proctree.c error.h error.o
 test_validate: test_validate.c validate.c json_reader.c json_reader.h manifest.h
 	$(CC) -o test_validate $(CFLAGS) -DTEST_VALIDATE test_validate.c json_reader.c -lm
 
-test_ledger: test_ledger.c ledger.c json_reader.c json_reader.h
+test_ledger: test_ledger.c ledger.c json_reader.c json_reader.h run_index.h manifest.h
 	$(CC) -o test_ledger $(CFLAGS) -DTEST_LEDGER test_ledger.c json_reader.c
 
 test_ibs: test_ibs.c ibs.c ibs.h error.c error.h

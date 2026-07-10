@@ -73,6 +73,10 @@ citing line numbers. This pass re-checked the load-bearing claims directly:
   true — `wspy-ledger`/`ledger.c` shipped, see "Run artifact foundation" above. It's a second
   run-index reader alongside `wspy-validate`, though it still doesn't check `RUN_INDEX_SCHEMA_VERSION`
   itself, so the "Portability and robustness" gap above stands.)
+  (Superseded 2026-07-10: the "Portability and robustness" gap just referenced is now closed —
+  `wspy-ledger` checks each run-index record's `schema_version` against `RUN_INDEX_SCHEMA_VERSION`
+  and warns on a major-version mismatch or missing field, same as `wspy-validate` does for manifests.
+  See "Portability and robustness" above.)
   Building `wspy-run` also surfaced a real, previously-unknown bug: `wspy`'s own process exit code
   never reflects the launched command's success — see the new "Portability and robustness" row
   ("Propagate child exit status...").
@@ -303,9 +307,17 @@ of the existing (working, x86_64) logic — the `__aarch64__` branch is unverifi
 documented arm64 ptrace/syscall-ABI conventions, not a tested ARM64 backend. See `CLAUDE.md`'s
 `ptrace_arch.h` entry for the full behavior; this was item 1 of the "next up after the minimal
 slice" list below.
+
+Also shipped since that pass: run-index schema validation on ingest (2026-07-10, `ledger.c`) —
+`wspy-ledger` now checks each run-index record's `schema_version` field against
+`RUN_INDEX_SCHEMA_VERSION` and warns (once per distinct mismatched version, per file, to stderr) on
+a major-version difference or a missing field entirely, mirroring `validate.c`'s
+`check_schema_version()` for manifests (WARN, not FAIL — a run-index reader is meant to tolerate
+minor/patch schema drift, same as `wspy-validate` tolerates it for manifests). This closes the gap
+this file previously called out: the write side (`RUN_INDEX_SCHEMA_VERSION` in `run_index.h`) had
+shipped with no reader anywhere in the tree ever checking it.
 | Idea | Phase | Why |
 | --- | --- | --- |
-| Run-index schema validation on ingest, warn on mismatched `RUN_INDEX_SCHEMA_VERSION` | 4.0 | The write side shipped (`RUN_INDEX_SCHEMA_VERSION`, SemVer, in `run_index.h`), and the manifest half of this is now covered by `wspy-validate` (`validate.c`'s `check_schema_version()` warns on a `MANIFEST_SCHEMA_VERSION` major-version mismatch, see "Run artifact foundation"). The run-index (JSONL) side still has no reader anywhere in the tree (`wspy-ledger` reads it for workload matching but doesn't check `RUN_INDEX_SCHEMA_VERSION`), so a version bump still has no consumer that would notice a mismatch. |
 | Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`) | 4.1 | Actual ARM64 `cpu_info` support; the `ptrace` macro extraction it depended on has since shipped (`ptrace_arch.h`), but `cpu_info.c`'s `__cpuid()`/`<cpuid.h>` use is a separate, still-open x86_64-only blocker this row covers. |
 | Native multi-pass counter execution (`--passes=ipc,topdown,cache,software`, internal N-run loop, merged manifest/CSV) | 4.1 | Confirmed real pain: `workload/phoronix/run_test.sh` already launches the same command up to 8 times by hand to dodge multiplexing. Depends on the profile launcher (4.0) to define what a "pass" is. |
 | Low-overhead tracing alternative to `ptrace` (`ftrace` tracepoints or minimal eBPF) for `--tree`/`--tree-open` | 4.2 | `ptrace` context-switches on every syscall entry/exit, which skews the very counters being measured for I/O-heavy or fork-heavy workloads — but this is a substantial new backend, correctly sequenced after the cheaper wins above. |
@@ -450,44 +462,40 @@ the coverage ledger (2026-07-09, `wspy-ledger`/`ledger.c` — see "Run artifact 
 arch-neutral `ptrace` register-access macros (2026-07-09, `ptrace_arch.h` — see "Portability and
 robustness" above), capability-driven IBS probing (2026-07-10, `ibs.c` — see "Zen5 / IBS" above), and
 `ibs-basic`/`ibs-memory-deep` collection profiles plus sampling skew/quality annotations (2026-07-10,
-same day, `ibs.c`/`topdown.c`/`wspy.c`/`wspy-run` — see "Zen5 / IBS" above); all eight were item 1 of
+`ibs.c`/`topdown.c`/`wspy.c`/`wspy-run` — see "Zen5 / IBS" above), and run-index schema validation on
+ingest (2026-07-10, `ledger.c` — see "Portability and robustness" above); all nine were item 1 of
 this list at the time they shipped and are dropped from the ordering below per this file's own "ideas
-already implemented are not listed" rule. That leaves roughly 8 rows still tagged 4.0 across the
+already implemented are not listed" rule. That leaves roughly 7 rows still tagged 4.0 across the
 inventory (one, "Shared plotting templates," was just re-phased to 4.1 above since its own rationale
 depended on the 4.1–4.2 normalized schema — see that row). The list below covers all of them except
 that one, grouped and ordered by priority (confirmed bug fixes and cheap high-trust/regression-guard
 wins first, design decisions next since they get more expensive to retrofit the longer they wait,
 heavier collection/report-layer work last). All are already rows in the inventory above — this is a
 suggested ordering, not a separate list to maintain by hand.
-1. Run-index schema validation on ingest, warn on mismatched `RUN_INDEX_SCHEMA_VERSION`
-   ("Portability and robustness" track) — closes the loop `wspy-validate` left open: it already warns
-   on a `MANIFEST_SCHEMA_VERSION` mismatch, but the run-index (JSONL) side still has no reader
-   anywhere in the tree. (`wspy-ledger` now reads the run index, but for workload-coverage matching,
-   not schema-version checking — this row is still open.)
-2. Golden output-contract tests (CSV header/order, summary fragments, tree format) + capability-matrix
+1. Golden output-contract tests (CSV header/order, summary fragments, tree format) + capability-matrix
    smoke tests (CPU vendor/family × GPU build × key option bundles) ("Testing and documentation"
    track) — cheapest regression guard available, and increasingly worth having given how many CSV
    columns have shifted this cycle (`rusage`, coverage, confidence/sanity, IBS); `run_tests.sh` already
    has informal versions of both, this formalizes them.
-3. Artifact contract doc + troubleshooting runbook ("Testing and documentation" track) — write this
+2. Artifact contract doc + troubleshooting runbook ("Testing and documentation" track) — write this
    before more external tooling (report generators, `workload/*/run_test.sh` migrations) starts
    depending on the manifest/run-index shape by convention instead of by documented contract.
-4. Collector-plugin architecture design decision (wspy core / perf stat / trace-cmd / GPU tools behind
+3. Collector-plugin architecture design decision (wspy core / perf stat / trace-cmd / GPU tools behind
    one manifest+normalization path) ("Portability and robustness" track) — only the *decision* (does
    the schema assume one collector or many?) is 4.0 work; implementation is 4.2+. Cheap to decide now,
    expensive to retrofit once more schema/normalization work (items above, plus 4.1's canonical
    metrics schema) is built on top of an unexamined assumption.
-5. Counter-fit preflight ("will this profile multiplex heavily?" + suggested downgrades)
+4. Counter-fit preflight ("will this profile multiplex heavily?" + suggested downgrades)
    ("Existing-capability extensions" track) — builds directly on availability/NMI-watchdog handling
    and `coverage.c` that already exist at runtime; this just surfaces the same fit information before
    a run instead of after.
-6. Interval (`--interval`) → automatic phase-boundary detection (warmup/steady/degraded)
+5. Interval (`--interval`) → automatic phase-boundary detection (warmup/steady/degraded)
    ("Existing-capability extensions" track) — basic marker detection can land now and is a named
    prerequisite for phase-aware topdown (4.2) and phase-aware IBS.
-7. `--gpu-device=<idx>` override + multi-GPU enumeration ("AMD GPU track") — isolated, self-contained
+6. `--gpu-device=<idx>` override + multi-GPU enumeration ("AMD GPU track") — isolated, self-contained
    follow-on to the `card1` path-scan fix already shipped; doesn't block or get blocked by anything
    else in this list.
-8. Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,
+7. Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,
    plots/*.png,manifest.json}`) ("Run artifact foundation" track) — the largest remaining piece,
    sequenced last here: nothing else in this list depends on it, but 4.1's report/publishing work
    will, so it shouldn't slip past 4.0 entirely.

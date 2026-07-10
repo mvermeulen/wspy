@@ -31,6 +31,7 @@
 #include <strings.h>
 #include <getopt.h>
 #include "json_reader.h"
+#include "run_index.h"
 
 enum ledger_status { LEDGER_DONE, LEDGER_SKIPPED, LEDGER_UNSUPPORTED, LEDGER_NEEDS_TOOL_SUPPORT };
 
@@ -213,6 +214,37 @@ static int record_succeeded(const struct json_value *record){
   return (int)json_get_number(es,"exit_code",-1) == 0;
 }
 
+/* Checks a run-index record's "schema_version" against RUN_INDEX_SCHEMA_VERSION
+ * (INVESTIGATION_4.0.md's "run-index schema validation on ingest" item --
+ * the write side has been versioned since run_index.c shipped, but nothing
+ * read it back and noticed a mismatch until now). Only warns on a MAJOR
+ * version difference, mirroring validate.c's check_schema_version() for
+ * manifests: a MINOR/PATCH bump only adds fields, which this reader already
+ * tolerates via json_reader.h's default-on-missing-key accessors. Each
+ * distinct mismatched (or missing) version is warned about once per file,
+ * not once per record, since a file's records typically share one version. */
+#define MAX_WARNED_SCHEMA_VERSIONS 16
+static void check_record_schema_version(const struct json_value *record,const char *path,
+                                         char warned_versions[][16],int *nwarned_versions,int *warned_missing){
+  const char *version = json_get_string(record,"schema_version",NULL);
+  int j;
+
+  if (!version){
+    if (!*warned_missing){
+      fprintf(stderr,"wspy-ledger: %s: run index records have no schema_version field "
+                      "-- may predate run-index versioning or not be a wspy run index\n",path);
+      *warned_missing = 1;
+    }
+    return;
+  }
+  if (atoi(version) == atoi(RUN_INDEX_SCHEMA_VERSION)) return;
+  for (j = 0; j < *nwarned_versions; j++) if (!strcmp(warned_versions[j],version)) return;
+  fprintf(stderr,"wspy-ledger: %s: run index records use schema version %s, which has a "
+                  "different major version than this tool understands (%s)\n",
+          path,version,RUN_INDEX_SCHEMA_VERSION);
+  if (*nwarned_versions < MAX_WARNED_SCHEMA_VERSIONS) snprintf(warned_versions[(*nwarned_versions)++],16,"%s",version);
+}
+
 /* Scans one run-index (JSONL) file, updating every ledger_entry whose name
  * matches a record's command line. Returns the number of records parsed,
  * or -1 if the file could not be read. Malformed lines are logged to
@@ -223,6 +255,8 @@ static int process_run_index_file(const char *path,struct ledger_entry *entries,
   char *buf;
   char **lines;
   int nlines,i,j,records_read = 0;
+  char warned_versions[MAX_WARNED_SCHEMA_VERSIONS][16];
+  int nwarned_versions = 0,warned_missing = 0;
 
   buf = read_whole_file(path,&size);
   if (!buf){
@@ -240,6 +274,7 @@ static int process_run_index_file(const char *path,struct ledger_entry *entries,
       continue;
     }
     records_read++;
+    check_record_schema_version(root,path,warned_versions,&nwarned_versions,&warned_missing);
     run_id = json_get_string(root,"run_id","?");
     start_time = json_get_string(root,"start_time","");
 
