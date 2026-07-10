@@ -215,6 +215,15 @@ assert_csv_columns_match "ibs-memory-deep" --ibs-memory-deep
 assert_csv_columns_match "kitchen-sink-combined" \
   --topdown --topdown-frontend --topdown-backend --topdown-optlb \
   --branch --dcache --icache --tlb --opcache --float --memory --software --system
+# --per-core used to be the one documented exception to this check (see
+# doc/ARTIFACT_CONTRACT.md's former "known gap" note and
+# tests/capability_matrix.sh's per-core-topdown bundle comment): the header
+# only ever had base/coverage columns while per-core rows appended a group's
+# columns as unheaded extras. wspy.c's per_core_csv now emits one row per
+# active core (tagged with a "core" column) whose columns match the header,
+# so this combination is checked here like any other flag bundle.
+assert_csv_columns_match "per-core-topdown" --no-ipc --per-core --topdown
+assert_csv_columns_match "per-core-software" --no-ipc --per-core --software
 
 echo ""
 echo "=== Normal (human-readable) output summary-fragment contract ==="

@@ -171,13 +171,20 @@ document format), so the contract here is behavioral rather than a version numbe
   `elapsed,utime,stime,gpu_busy,ipc,...`) — a new column must go through the same "header case and
   value case added together, in the same position" discipline `CLAUDE.md` documents under "CSV vs.
   human output", or the golden tests will fail.
-- `--per-core` is a **known, documented gap**: combined with any counter group, the CSV header shows
-  only the base/coverage columns while each per-core data row still appends that group's values —
-  i.e. header and row column counts intentionally mismatch in this one case today. Don't build a
-  strict "header count == row count" validator against `--per-core` output without special-casing
-  it; `tests/capability_matrix.sh`'s `per-core-topdown` bundle comment has the concrete example, and
-  `wspy-validate`'s CSV-row-count check (`validate.c`) will legitimately flag this combination as a
-  `FAIL` today — that's expected, not a bug in `wspy-validate`.
+- `--per-core` produces **one CSV row per active core** (a leading `core` column identifies which
+  one), not the single aggregate row every other flag combination produces — `aflag` routes every
+  counter group named in the run's flags onto each core's own counters rather than a single
+  systemwide set, so a single row has no natural place to put them. The base/rusage/system/gpu
+  columns and the coverage counts repeat identically on every core's row (they're process/system
+  scalars, not per-core), same idiom as `--interval`'s repeated per-tick columns. Header and row
+  column counts match like any other combination now (`tests/golden_output.sh`'s
+  `per-core-topdown`/`per-core-software` `assert_csv_columns_match` cases). One exception:
+  `--per-core` combined with `--interval` keeps the *old* single-row-per-tick shape, column-count
+  mismatch included — `timer_callback()` (the periodic-tick reader) only ever reads
+  `cpu_info->systemwide_counters`, never per-core counters, so it can't produce the new shape either;
+  see `wspy.c`'s `per_core_csv` comment and `tests/capability_matrix.sh`'s `interval-per-core` bundle
+  comment. `wspy-validate`'s CSV-row-count check (`validate.c`) will legitimately flag *that*
+  combination as a `FAIL` — not a bug in `wspy-validate`, and not fixed by this item.
 - Percent-valued cells are plain text with a trailing `%` (e.g. `"26.61%"`), not a normalized 0–1
   fraction, and system-wide load/CPU percentages are allowed to exceed 100% when aggregated across
   cores — don't assume `<= 100` when parsing.
@@ -394,8 +401,10 @@ Symptom-first; each entry names the underlying cause and where to look/what to r
 
 ### CSV output looks corrupted (fields fused together, wrong column count)
 
-- **First check:** is this `--per-core` combined with a counter group? That's the one documented,
-  known mismatch (see "CSV output" above) — not a new bug.
+- **First check:** is this `--per-core` combined with `--interval`? That's the one remaining
+  documented mismatch (see "CSV output" above) — not a new bug. Plain `--per-core` plus a counter
+  group (no `--interval`) now produces one matched-column row per core; a mismatch there is a new
+  bug, not the known gap.
 - **Otherwise:** this is exactly the class of bug `tests/golden_output.sh` exists to catch (missing
   trailing comma on a value field, or a value row gated behind a condition the header isn't gated
   behind). Run `./run_tests.sh` (or `tests/golden_output.sh` standalone) against the flags that
@@ -414,8 +423,9 @@ Symptom-first; each entry names the underlying cause and where to look/what to r
   referenced paths in sync (`output_files[].path` stores whatever path was given on the command
   line, absolute or relative — relative paths break if you move the manifest without moving the CWD
   context it was written from).
-- **`--per-core` CSV row/column mismatch:** expected today, see "CSV output" above — not a
-  real defect, and there's no per-run flag to suppress this specific check yet.
+- **`--per-core` + `--interval` CSV row/column mismatch:** expected today, see "CSV output" above —
+  not a real defect, and there's no per-run flag to suppress this specific check yet. Plain
+  `--per-core` without `--interval` no longer mismatches.
 - **Sanity-bound failure on a real, correct extreme value:** the generic bound (`0` to `1e12`,
   finite) or the specific `ipc` bound (`0`–`32`) may be genuinely too tight for an unusual workload
   or measurement. Extend `sanity_bounds[]` in `validate.c` rather than treating the manifest as bad,
