@@ -279,9 +279,19 @@ still open.
 | Fold into general environment-comparability scoring (power cap, memory clock, thermal state, driver version) | 4.2 | No separate "GPU comparability score" needed — this is the general provenance/comparability item (Reproducibility track) applied to GPU fields; keep one scoring mechanism, not two. |
 
 ### Existing-capability extensions
+Shipped since the last consolidated pass (2026-07-10, `preflight.c`/`preflight.h`): counter-fit
+preflight — `preflight_evaluate()` estimates, from the counter groups a `counter_mask` would request,
+whether they'll fit in the available general-purpose hardware PMU counter slots without multiplexing,
+before any `perf_event_open()` calls are made. `wspy.c:main()` runs it automatically before every real
+run (silent when the fit is fine, a stderr warning with suggested downgrades — largest contributor(s)
+first, via a `COUNTER_*` → `--no-<flag>` hint table — otherwise), including an explicit tip to stop the
+NMI watchdog (`scripts/setup_perf.sh` or `sudo sysctl -w kernel.nmi_watchdog=0`) when that's what's
+reserving the slot that would otherwise make it fit; the same check is also available standalone via
+`wspy --preflight [<counter flags>]`, which needs no root/perf access since it's pure arithmetic over
+the event tables. Per this file's own "ideas already implemented are not listed" rule the row is
+dropped; see `CLAUDE.md`'s `preflight.c`/`preflight.h` entry for the full behavior.
 | Idea | Phase | Why |
 | --- | --- | --- |
-| Counter-fit preflight ("will this profile multiplex heavily?") + suggested downgrades | 4.0 | Availability/NMI-watchdog handling already exists at runtime; this surfaces fit quality *before* a run instead of discovering it after. |
 | Interval (`--interval`) → automatic phase-boundary detection (warmup/steady/degraded) | 4.0 | Prerequisite for phase-aware topdown (Topdown track, 4.2) and phase-aware IBS; basic marker detection can land now. |
 | Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries | 4.1 | Report-layer addition on data `--per-core` already collects. |
 | `proctree` → JSON/Graphviz export + run-to-run tree diff | 4.1 | Tree capture already exists; today's consumption is text-only. |
@@ -507,26 +517,23 @@ tests + capability-matrix smoke tests (2026-07-10, `tests/golden_output.sh`/`tes
 building them surfaced and fixed), and the artifact contract doc + troubleshooting runbook
 (2026-07-10, `doc/ARTIFACT_CONTRACT.md` — see "Testing and documentation" above), and the
 collector-plugin architecture design decision (2026-07-10, PR #20, `manifest.h`/`run_index.h`'s new
-`collector` field — see "Portability and robustness" above); all twelve were item 1 of this list at
-the time they shipped and are dropped from the ordering below per this file's own "ideas already
-implemented are not listed" rule.
-That leaves roughly 4 rows still tagged 4.0 across the inventory (one, "Shared plotting templates," was
+`collector` field — see "Portability and robustness" above), and counter-fit preflight (2026-07-10,
+`preflight.c`/`preflight.h` — see "Existing-capability extensions" above); all thirteen were item 1 of
+this list at the time they shipped and are dropped from the ordering below per this file's own "ideas
+already implemented are not listed" rule.
+That leaves roughly 3 rows still tagged 4.0 across the inventory (one, "Shared plotting templates," was
 just re-phased to 4.1 above since its own rationale depended on the 4.1–4.2 normalized schema — see
 that row). The list below covers all of them except that one, grouped and ordered by priority (design
 decisions first since they get more expensive to retrofit the longer they wait, heavier collection/
 report-layer work last). All are already rows in the inventory above — this is a suggested ordering,
 not a separate list to maintain by hand.
-1. Counter-fit preflight ("will this profile multiplex heavily?" + suggested downgrades)
-   ("Existing-capability extensions" track) — builds directly on availability/NMI-watchdog handling
-   and `coverage.c` that already exist at runtime; this just surfaces the same fit information before
-   a run instead of after.
-2. Interval (`--interval`) → automatic phase-boundary detection (warmup/steady/degraded)
+1. Interval (`--interval`) → automatic phase-boundary detection (warmup/steady/degraded)
    ("Existing-capability extensions" track) — basic marker detection can land now and is a named
    prerequisite for phase-aware topdown (4.2) and phase-aware IBS.
-3. `--gpu-device=<idx>` override + multi-GPU enumeration ("AMD GPU track") — isolated, self-contained
+2. `--gpu-device=<idx>` override + multi-GPU enumeration ("AMD GPU track") — isolated, self-contained
    follow-on to the `card1` path-scan fix already shipped; doesn't block or get blocked by anything
    else in this list.
-4. Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,
+3. Unified output layout (`suite/benchmark/run_id/{metrics.csv,summary.txt,process.tree.txt,
    plots/*.png,manifest.json}`) ("Run artifact foundation" track) — the largest remaining piece,
    sequenced last here: nothing else in this list depends on it, but 4.1's report/publishing work
    will, so it shouldn't slip past 4.0 entirely.

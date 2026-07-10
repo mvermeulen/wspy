@@ -114,6 +114,21 @@ void test_wspy_parse_options() {
     }
     assert(capabilitiesflag == 1);
 
+    // Test 7: --preflight also needs no workload command
+    reset_wspy_globals();
+    capabilitiesflag = 0; // still set from Test 6 -- reset_wspy_globals() doesn't clear it
+    preflightflag = 0;
+    char *argv7[] = {"wspy", "--preflight", "--topdown", NULL};
+    int argc7 = 3;
+    optind = 1;
+
+    if (parse_options(argc7, argv7) != 4) {
+        fprintf(stderr, "FAIL: parse_options should return the preflight sentinel\n");
+        exit(1);
+    }
+    assert(preflightflag == 1);
+    assert((counter_mask & COUNTER_TOPDOWN) != 0);
+
     printf("PASS: wspy parse_options\n");
 }
 
@@ -223,6 +238,122 @@ static char *slurp_file(const char *path) {
     buf[size] = '\0';
     fclose(fp);
     return buf;
+}
+
+void test_preflight() {
+    struct counter_group g_branch, g_ipc, g_l3, g_soft, g_cache;
+    struct counter_info ci_branch[8], ci_ipc[2], ci_l3[1], ci_soft[1], ci_cache[2];
+    struct preflight_result pf;
+    int saved_nmi;
+    int i;
+    const char *tmp_out = "/tmp/test_wspy_preflight.txt";
+    char *contents;
+
+    printf("Testing counter-fit preflight...\n");
+
+    saved_nmi = nmi_running;
+    nmi_running = 0;
+
+    // "ipc": 2 core general-purpose PMU counters
+    memset(ci_ipc, 0, sizeof(ci_ipc));
+    ci_ipc[0].device_type = PERF_TYPE_RAW;
+    ci_ipc[1].device_type = PERF_TYPE_RAW;
+    memset(&g_ipc, 0, sizeof(g_ipc));
+    g_ipc.label = "ipc";
+    g_ipc.type_id = PERF_TYPE_RAW;
+    g_ipc.ncounters = 2;
+    g_ipc.cinfo = ci_ipc;
+    g_ipc.mask = COUNTER_IPC;
+
+    // "l3 cache": uncore (device_type PERF_TYPE_L3, topdown.c's escape hatch
+    // inside a PERF_TYPE_RAW group) -- must NOT count against the core
+    // general-purpose budget.
+    memset(ci_l3, 0, sizeof(ci_l3));
+    ci_l3[0].device_type = PERF_TYPE_L3;
+    memset(&g_l3, 0, sizeof(g_l3));
+    g_l3.label = "l3 cache";
+    g_l3.type_id = PERF_TYPE_RAW;
+    g_l3.ncounters = 1;
+    g_l3.cinfo = ci_l3;
+    g_l3.mask = COUNTER_L3CACHE;
+
+    // "software": PERF_TYPE_SOFTWARE has its own separate budget, also
+    // must not count.
+    memset(ci_soft, 0, sizeof(ci_soft));
+    memset(&g_soft, 0, sizeof(g_soft));
+    g_soft.label = "software";
+    g_soft.type_id = PERF_TYPE_SOFTWARE;
+    g_soft.ncounters = 1;
+    g_soft.cinfo = ci_soft;
+    g_soft.mask = COUNTER_SOFTWARE;
+
+    // "cache": PERF_TYPE_HW_CACHE, 2 core counters
+    memset(ci_cache, 0, sizeof(ci_cache));
+    memset(&g_cache, 0, sizeof(g_cache));
+    g_cache.label = "cache";
+    g_cache.type_id = PERF_TYPE_HW_CACHE;
+    g_cache.ncounters = 2;
+    g_cache.cinfo = ci_cache;
+    g_cache.mask = COUNTER_DCACHE|COUNTER_ICACHE;
+
+    g_ipc.next = &g_l3;
+    g_l3.next = &g_soft;
+    g_soft.next = &g_cache;
+    g_cache.next = NULL;
+
+    pf = preflight_evaluate_groups(&g_ipc);
+    assert(pf.requested == 4); // 2 ipc + 2 cache; l3 and software excluded
+    assert(pf.available == 6); // nmi watchdog not running
+    assert(pf.nmi_watchdog_active == 0);
+    assert(pf.fits == 1);
+    preflight_result_free(&pf);
+
+    // "branch": 8 more core counters pushes the total to 12, over the
+    // 6-slot budget.
+    memset(ci_branch, 0, sizeof(ci_branch));
+    for (i=0;i<8;i++) ci_branch[i].device_type = PERF_TYPE_RAW;
+    memset(&g_branch, 0, sizeof(g_branch));
+    g_branch.label = "branch";
+    g_branch.type_id = PERF_TYPE_RAW;
+    g_branch.ncounters = 8;
+    g_branch.cinfo = ci_branch;
+    g_branch.mask = COUNTER_BRANCH;
+    g_branch.next = &g_ipc;
+
+    pf = preflight_evaluate_groups(&g_branch);
+    assert(pf.requested == 12);
+    assert(pf.fits == 0);
+    assert(pf.groups != NULL);
+    // largest contributor listed first
+    assert(!strcmp(pf.groups->label, "branch"));
+    assert(pf.groups->count == 8);
+
+    outfile = fopen(tmp_out, "w");
+    if (!outfile) { fprintf(stderr, "FAIL: could not open temp file\n"); exit(1); }
+    print_preflight_report(&pf);
+    fclose(outfile);
+
+    contents = slurp_file(tmp_out);
+    assert(contents != NULL);
+    assert(strstr(contents, "WILL MULTIPLEX") != NULL);
+    assert(strstr(contents, "drop branch") != NULL);
+    assert(strstr(contents, "--no-branch") != NULL);
+    free(contents);
+    remove(tmp_out);
+    outfile = NULL;
+
+    preflight_result_free(&pf);
+
+    // NMI watchdog active reserves 1 slot: 6 -> 5
+    nmi_running = 1;
+    pf = preflight_evaluate_groups(&g_ipc); // 2 ipc + 2 cache = 4, still fits
+    assert(pf.available == 5);
+    assert(pf.nmi_watchdog_active == 1);
+    assert(pf.fits == 1);
+    preflight_result_free(&pf);
+
+    nmi_running = saved_nmi;
+    printf("PASS: counter-fit preflight\n");
 }
 
 void test_write_manifest() {
@@ -562,6 +693,7 @@ int main(int argc, char **argv) {
     test_write_manifest();
     test_append_run_index();
     test_coverage();
+    test_preflight();
     test_provenance();
     test_topdown_confidence();
     return 0;
