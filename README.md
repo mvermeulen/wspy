@@ -129,6 +129,9 @@ A workload's name is matched as a substring against each run-index record's comm
 
 ## Other contents
 
+* `doc/ARTIFACT_CONTRACT.md` - the manifest/run-index/CSV/tree-file format contract (what's
+  guaranteed to stay stable, how schema versioning works) plus a troubleshooting runbook for common
+  partial-coverage, GPU, and validation issues
 * `scripts/setup_perf.sh` - checks/adjusts `nmi_watchdog` and `perf_event_paranoid` for running
   perf counters as a non-root user
 * `workload/` - driver scripts for exercising wspy against external benchmark suites (SPEC
