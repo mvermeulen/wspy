@@ -390,11 +390,12 @@ Symptom-first; each entry names the underlying cause and where to look/what to r
   (so scripts don't break switching between builds) but each prints
   `"GPU support not built (rebuild with AMDGPU=1): --gpu-<flag> ignored"` and contributes no data.
   Rebuild with `make AMDGPU=1` (see `CLAUDE.md`'s "Build & Test").
-- **Built with `AMDGPU=1`, still no data / wrong GPU:** `amd_sysfs_initialize()` scans
-  `/sys/class/drm/card*/device/vendor` for the lowest-numbered AMD (`0x1002`) card. On a multi-GPU
-  machine, this could be the wrong GPU if you have more than one AMD card — per-device selection
-  (`--gpu-device=<idx>`) isn't built yet (see `INVESTIGATION_4.0.md`'s AMD GPU track). If no AMD
-  card is found at all, `--gpu-busy`/`--gpu-metrics` warn and read zero rather than erroring.
+- **Built with `AMDGPU=1`, still no data / wrong GPU:** `amd_sysfs_initialize()` defaults to the
+  lowest-numbered AMD (`0x1002`) card under `/sys/class/drm/card*/device/vendor` when no device is
+  selected. On a multi-GPU machine this could be the wrong GPU if you have more than one AMD card —
+  pass `--gpu-device=<idx>` to select a specific card/device by index (see the device list printed by
+  `wspy --capabilities` on multi-GPU hosts, and `CLAUDE.md`'s GPU support notes). If no AMD card is
+  found at all, `--gpu-busy`/`--gpu-metrics` warn and read zero rather than erroring.
 - **`--gpu-smi` specifically fails to build/link:** confirm `ROCM_DIR/include/amd_smi/amdsmi.h` and
   `-lamd_smi` actually exist under the ROCm install the Makefile auto-detected (`/opt/rocm` preferred
   over `/usr`) — pass `ROCM_DIR=<path>` explicitly if auto-detection picked the wrong one.

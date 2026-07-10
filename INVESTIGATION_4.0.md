@@ -1,25 +1,32 @@
 # wspy Investigation 4.0
 
-Date: 2026-07-10 (cleanup pass — pivot from a running changelog to a forward-looking backlog)
-Status: **4.0's data/metadata foundation is substantially built (manifest, run index, validation,
-coverage, provenance, profile-driven launcher, unified output layout). Its publishing/reporting
-deliverable — what "Success criteria for a 4.0 kickoff" below actually measures — has not started.**
-See "What remains before 4.0 is complete."
+Date: 2026-07-10 (scope pass — defer publishing/reporting to 4.1, done thoroughly there rather than
+as a 4.0 stub; see "Success criteria for a 4.0 kickoff" and "What remains before 4.0 is complete")
+Status: **4.0's data/metadata foundation is built (manifest, run index, validation, coverage,
+provenance, profile-driven launcher, unified output layout, output-contract test suite). What's left
+is hand-testing that foundation against real hardware/installs — see "What remains before 4.0 is
+complete" and "Recommended hand testing before closing out 4.0."**
 
 ## Purpose
 This document captures ideas for a round of improvements focused on making benchmark collection,
 organization, and publication easier and more repeatable.
 
 ## Success criteria for a 4.0 kickoff
-This is the bar 4.0 is measured against — not "how many inventory rows shipped." It hasn't changed
-since 4.0 was first scoped, and it's still the right bar:
+4.0's bar, now that reporting is explicitly out of scope for it (see below):
 - A newcomer can run one benchmark suite and produce publish-ready structured artifacts without
-  editing scripts.
+  editing scripts. **Met** (see "What shipped in 4.0"), pending the real-install validation tracked
+  in "What remains before 4.0 is complete."
+
+Two criteria that were part of 4.0's original bar are **deliberately deferred to 4.1, not dropped**:
 - A summary page can be regenerated from data only (no manual copy/paste).
 - Every published benchmark row can be traced back to command line, environment, and raw artifacts.
 
-The first criterion is largely met (see "What shipped in 4.0"). The second and third are **not**:
-no summary/report generator exists yet, so there is no "page" or "row" to trace anything back to.
+Rationale: building a minimal report/summary generator now, then rebuilding it properly once the 4.1
+normalized-store work (schema + indexed queries) lands, is duplicated effort for no real benefit —
+nothing downstream depends on a 4.0-era stub existing first. Better to do the reporting layer once,
+thoroughly, as 4.1 Tier 1-2 already scopes it (canonical schema, summary table generator, HTML report,
+traceability links). 4.0 ships the foundation those depend on (manifest/run-index/validation/coverage/
+provenance); 4.1 turns it into the actual page/row a person reads.
 
 ## How to use this document
 - "What shipped in 4.0" is a pointer list, not a feature log — `CLAUDE.md` documents each module's
@@ -85,22 +92,16 @@ still keeps the old, separately-caused mismatch (`timer_callback()` never reads 
 see `wspy.c`'s `per_core_csv` comment and `doc/ARTIFACT_CONTRACT.md`'s CSV section).
 
 ## What remains before 4.0 is complete
-1. **A minimal summary/report generator.** Nothing in the "Publishing, reporting, UI" backlog (see
-   4.1 priorities) has been started — this is the direct cause of success criteria 2 and 3 not being
-   met. Doesn't need to be the full HTML bundle (that's 4.1 scope); a script that reads one or more
-   `--run-index` files plus their unified-layout run directories and emits a summary table (even
-   plain text or CSV) with a link/path back to each run's `manifest.json`/raw CSV/`process.tree.txt`
-   would satisfy both remaining criteria at minimum scope.
-2. **Validate criterion 1 against real installs.** "Newcomer can run one suite without editing
+1. **Validate criterion 1 against real installs.** "Newcomer can run one suite without editing
    scripts" is believed met (the three `workload/*` scripts now call `wspy-run --suite/--benchmark`),
    but has only been exercised with `sleep 1` stand-ins in this environment — `runcpu`,
    `phoronix-test-suite`, and pbbsbench's `runall` aren't installed here. See "Recommended hand
-   testing" below.
-3. **A 4.0 release manifest**, once 1-2 land: a short, structured summary of what actually shipped —
-   final schema versions, module list, known carried-forward gaps — the way a run's own
-   `--manifest` records what a `wspy` invocation did. Where it lives (a `CHANGELOG.md` entry, a
-   dedicated `RELEASE_4.0.md`, or a section here) is undecided; "What shipped in 4.0" above is
-   functioning as a running draft of it until then.
+   testing" below — this is now the main remaining work before 4.0 ships.
+2. **A 4.0 release manifest**, once 1 lands: a short, structured summary of what actually shipped —
+   final schema versions, module list, known carried-forward gaps (including the reporting deferral
+   to 4.1 above) — the way a run's own `--manifest` records what a `wspy` invocation did. Where it
+   lives (a `CHANGELOG.md` entry, a dedicated `RELEASE_4.0.md`, or a section here) is undecided; "What
+   shipped in 4.0" above is functioning as a running draft of it until then.
 
 ## Recommended hand testing before closing out 4.0
 Everything below requires real hardware, root/perf access, or third-party installs this environment
@@ -191,9 +192,9 @@ tiers; items within a tier are independently startable.
 1. Canonical metrics schema + normalized store (SQLite and/or Parquet) — almost everything below
    (stats, comparison matrix, HTML report, summary generator, feature normalization) wants queryable
    data instead of re-scanning CSV/JSONL by hand. Keep raw files; add this as a second, derived layer.
-2. Summary table generator (min/max/median/mean/stddev/outlier flags) from indexed data — the direct
-   precursor to closing 4.0's "summary regenerated from data only" gap (see "What remains"); can
-   start against the run index directly and layer onto #1 once it exists.
+2. Summary table generator (min/max/median/mean/stddev/outlier flags) from indexed data — closes the
+   "summary page regenerated from data only" criterion deferred from 4.0 (see "Success criteria for a
+   4.0 kickoff"); can start against the run index directly and layer onto #1 once it exists.
 3. Native multi-pass counter execution (`--passes=ipc,topdown,cache,software`, internal N-run loop,
    merged manifest/CSV) — confirmed real pain: `workload/phoronix/run_test.sh` used to launch the
    same command up to 8 times by hand to dodge multiplexing; `wspy-run`'s profile launcher defines
@@ -206,7 +207,9 @@ tiers; items within a tier are independently startable.
 6. Historical run index browser/search.
 7. Shared plotting templates — replace `workload/phoronix/gnuplot.sh`'s per-suite script with one
    normalized-schema pipeline once #1 exists.
-8. Traceability links (summary row → manifest → raw CSV → plots → tree artifacts).
+8. Traceability links (summary row → manifest → raw CSV → plots → tree artifacts) — closes the
+   "every published row traces back to command/environment/artifacts" criterion deferred from 4.0
+   (see "Success criteria for a 4.0 kickoff").
 
 **Tier 3 — stats/confidence layer:**
 9. Repeatability policy + confidence metadata (mean, stddev, CV, CI) as default output.
