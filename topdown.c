@@ -167,7 +167,12 @@ unsigned long parse_amd_event(char *description){
 	// the value encodes the name of the type field...
 	debug("checking for %s\n",val);
 	if (stat(val,&statbuf) ==-1){
-	  fatal("%s not found, is the perf module for this device loaded in the kernel?\n");
+	  // setup_raw_events() already masks out events whose "requires" path
+	  // is missing before calling this parser (see mask_unavailable_raw_events),
+	  // so reaching here means the path vanished between that check and now --
+	  // degrade gracefully (as documented in CLAUDE.md: "silently skipped if
+	  // absent") rather than aborting the whole run over one optional counter.
+	  warning("%s not found, is the perf module for this device loaded in the kernel?\n",val);
 	}
       } else {
 	fatal("unimplemented %s in parse_amd_event\n",name);
@@ -179,6 +184,33 @@ unsigned long parse_amd_event(char *description){
   return result.config;
 };
 
+// Some raw events (currently just AMD's L3 lookup-state events) only exist
+// when a particular sysfs path is present (e.g. /sys/devices/amd_l3/type --
+// not every Zen generation/kernel registers this PMU). If this run actually
+// requested such an event (events[i].use & counter_mask) but its "requires="
+// path is missing, clear .use so raw_counter_group()'s "events[i].use & mask"
+// filtering excludes it from the group automatically instead of building a
+// counter for it -- CLAUDE.md documents this as "silently skipped if
+// absent", not a fatal error. Gated by counter_mask (not run unconditionally
+// over the whole table) so hosts missing the sysfs path don't get warned on
+// every run, only ones that actually asked for the affected counter group.
+static int raw_event_requires_available(struct raw_event *ev){
+  char *req = strstr(ev->description,"requires=");
+  if (!req) return 1;
+  req += strlen("requires=");
+  char path[256];
+  size_t len = strcspn(req,",\n");
+  if (len >= sizeof(path)) len = sizeof(path)-1;
+  memcpy(path,req,len);
+  path[len] = '\0';
+  struct stat statbuf;
+  if (stat(path,&statbuf) == -1){
+    warning("%s not found, %s unavailable on this kernel/CPU (skipped)\n",path,ev->name);
+    return 0;
+  }
+  return 1;
+}
+
 int setup_raw_events(void){
   unsigned int i;
   struct raw_event *events;
@@ -188,9 +220,14 @@ int setup_raw_events(void){
     events = amd_raw_events;
     num_events = sizeof(amd_raw_events)/sizeof(amd_raw_events[0]);
     for (i=0;i<num_events;i++){
-      if (events[i].use & counter_mask)
+      if (events[i].use & counter_mask){
+	if (!raw_event_requires_available(&events[i])){
+	  events[i].use = 0;
+	  continue;
+	}
 	events[i].raw.config = parse_amd_event(events[i].description);
-    }    
+      }
+    }
     break;
   case VENDOR_INTEL:
     events = intel_raw_events;
@@ -689,7 +726,14 @@ void setup_counter_groups(struct counter_group **counter_group_list){
 
   // note: These get pushed onto a linked list, so last listed is first printed
   if (counter_mask & (COUNTER_DCACHE|COUNTER_ICACHE|COUNTER_TLB)){
-    if ((cgroup = cache_counter_group("cache",counter_mask))){
+    // Pass only the DCACHE/ICACHE/TLB bits, not the raw global counter_mask --
+    // cgroup->mask is later tested against COUNTER_IPC/COUNTER_TOPDOWN/etc in
+    // print_metrics()'s dispatch chain, and COUNTER_IPC is checked before this
+    // group's own bits, so leaking the full counter_mask in here (e.g. IPC's
+    // bit, which is on by default) misrouted the group to print_ipc() instead
+    // of print_dcache()/print_icache()/print_dtlb()/print_itlb(), producing a
+    // duplicate "ipc" CSV column instead of e.g. "L1-dcache miss".
+    if ((cgroup = cache_counter_group("cache",counter_mask & (COUNTER_DCACHE|COUNTER_ICACHE|COUNTER_TLB)))){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;
     }
