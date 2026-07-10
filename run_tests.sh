@@ -9,7 +9,7 @@ make test
 
 echo ""
 echo "=== Building wspy and proctree ==="
-make wspy proctree wspy-validate
+make wspy proctree wspy-validate wspy-ledger
 
 echo ""
 echo "=== Running Integration Tests ==="
@@ -174,6 +174,47 @@ for expected in \
 done
 echo "  run index output: OK"
 rm test_run_index.jsonl
+
+# wspy-ledger: coverage ledger generated from a run index
+echo "Testing wspy-ledger on a mix of done/skipped/needs-tool-support/unsupported workloads..."
+rm -f test_ledger_index.jsonl
+./wspy --no-ipc --run-index test_ledger_index.jsonl -- /bin/echo done-workload > /dev/null
+./wspy --no-ipc --run-index test_ledger_index.jsonl -- /bin/sh -c 'exit 1' -- needs-tool-support-workload > /dev/null || true
+cat > test_ledger_list.txt <<'LEDGER_LIST'
+done-workload
+needs-tool-support-workload
+skipped-workload
+unsupported-workload	unsupported	docker based
+LEDGER_LIST
+if ! ./wspy-ledger --run-index test_ledger_index.jsonl test_ledger_list.txt > test_ledger.out; then
+    echo "FAIL: wspy-ledger should exit 0 without --strict"
+    cat test_ledger.out
+    exit 1
+fi
+for expected in \
+    'done-workload +done' \
+    'needs-tool-support-workload +needs-tool-support' \
+    'skipped-workload +skipped' \
+    'unsupported-workload +unsupported +docker based' \
+    '4 workload\(s\): 1 done, 1 skipped, 1 unsupported, 1 needs-tool-support'; do
+    if ! grep -qE "$expected" test_ledger.out; then
+        echo "FAIL: wspy-ledger output missing expected content: $expected"
+        cat test_ledger.out
+        exit 1
+    fi
+done
+if ./wspy-ledger --run-index test_ledger_index.jsonl --strict test_ledger_list.txt > /dev/null; then
+    echo "FAIL: wspy-ledger --strict should exit non-zero when workloads are skipped/needs-tool-support"
+    exit 1
+fi
+CSV_OUT=$(./wspy-ledger --run-index test_ledger_index.jsonl --csv test_ledger_list.txt)
+if ! echo "$CSV_OUT" | head -1 | grep -q '^name,status,runs_matched,runs_succeeded,last_run_id,last_start_time,note$'; then
+    echo "FAIL: wspy-ledger --csv header did not match"
+    echo "$CSV_OUT"
+    exit 1
+fi
+rm test_ledger_index.jsonl test_ledger_list.txt test_ledger.out
+echo "  wspy-ledger: OK"
 
 # Counter capability discovery + coverage reporting
 echo "Testing wspy --capabilities (no workload command needed)..."

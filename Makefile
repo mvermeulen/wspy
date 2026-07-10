@@ -23,9 +23,9 @@ LIBS += -L$(ROCM_LIB) -lamd_smi
 endif
 
 ifdef AMDGPU
-all:	wspy cpu_info proctree wspy-validate amd_smi amd_sysfs
+all:	wspy cpu_info proctree wspy-validate wspy-ledger amd_smi amd_sysfs
 else
-all:	wspy cpu_info proctree wspy-validate
+all:	wspy cpu_info proctree wspy-validate wspy-ledger
 endif
 
 wspy:	wspy.o topdown.o error.o system.o json_util.o manifest.o run_index.o coverage.o provenance.o cpu_info.c cpu_info.h
@@ -40,6 +40,9 @@ proctree:	proctree.o error.o
 
 wspy-validate:	validate.o json_reader.o
 	$(CC) -o wspy-validate $(CFLAGS) validate.o json_reader.o -lm
+
+wspy-ledger:	ledger.o json_reader.o
+	$(CC) -o wspy-ledger $(CFLAGS) ledger.o json_reader.o
 
 cpu_info:	cpu_info.c error.o cpu_info.h
 	$(CC) -o cpu_info $(CFLAGS) -DTEST_CPU_INFO cpu_info.c error.o
@@ -69,7 +72,7 @@ clean:
 	-rm *~ *.o *.bak
 
 clobber:	clean
-	-rm wspy cpu_info amd_smi amd_sysfs proctree wspy-validate test_hip_init test_hip_kernel test_proctree test_wspy test_validate libwspy_profiler.so
+	-rm wspy cpu_info amd_smi amd_sysfs proctree wspy-validate wspy-ledger test_hip_init test_hip_kernel test_proctree test_wspy test_validate test_ledger libwspy_profiler.so
 
 # DO NOT DELETE
 
@@ -85,6 +88,7 @@ provenance.o: provenance.h
 proctree.o: error.h
 topdown.o: error.h wspy.h cpu_info.h coverage.h
 validate.o: json_reader.h manifest.h provenance.h
+ledger.o: json_reader.h
 
 # Always built GPU-disabled (test_wspy.c forces AMDGPU=0 to stub out main() and
 # skip GPU code), using its own objects so it never picks up a topdown.o/system.o
@@ -109,7 +113,11 @@ test_proctree: test_proctree.c proctree.c error.h error.o
 test_validate: test_validate.c validate.c json_reader.c json_reader.h manifest.h
 	$(CC) -o test_validate $(CFLAGS) -DTEST_VALIDATE test_validate.c json_reader.c -lm
 
-test: test_wspy test_proctree test_validate
+test_ledger: test_ledger.c ledger.c json_reader.c json_reader.h
+	$(CC) -o test_ledger $(CFLAGS) -DTEST_LEDGER test_ledger.c json_reader.c
+
+test: test_wspy test_proctree test_validate test_ledger
 	./test_wspy
 	./test_proctree
 	./test_validate
+	./test_ledger

@@ -10,7 +10,7 @@ easy to pull onto different machines; listed as public in case it's otherwise us
 ## Building
 
 ```
-make                          # builds wspy, cpu_info, proctree (no GPU support)
+make                          # builds wspy, cpu_info, proctree, wspy-validate, wspy-ledger (no GPU support)
 make AMDGPU=1                 # also builds amd_smi, amd_sysfs (needs ROCm; auto-detects /opt/rocm or /usr)
 make AMDGPU=1 ROCM_DIR=<path> # point at a non-default ROCm install
 make test                     # build and run the unit tests
@@ -98,6 +98,34 @@ pass list instead (`<pass-name> <wspy-flags...>` per line) — see `./wspy-run -
 full option list and config-file format. Each pass writes to
 `<outdir>/<prefix><pass-name>.<csv|txt>`; `--manifest-dir`/`--run-index` pass those `wspy` flags
 through per pass.
+
+## wspy-ledger: coverage ledger
+
+`wspy-ledger` generates a "coverage ledger" for a suite of workloads (e.g. a SPEC CPU2017 or
+Phoronix benchmark list) directly from a shared `--run-index` file, replacing the kind of
+hand-maintained "what's still missing" tracking that `workload/phoronix/phoronix.tests.txt`
+does today. Give it a workload list (one name per line) and one or more run-index files, and it
+reports each workload's status:
+
+* `done` - at least one matching run in the index exited cleanly
+* `skipped` - no matching run found at all
+* `needs-tool-support` - matching run(s) exist but none succeeded, or the workload is annotated
+  as such in the workload list
+* `unsupported` - annotated as such in the workload list (e.g. a workload known not to build,
+  or that needs a GPU-enabled wspy build unavailable here)
+
+A workload's name is matched as a substring against each run-index record's command line.
+
+```
+./wspy-ledger --run-index results/index.jsonl workloads.txt
+./wspy-ledger --run-index results/index.jsonl --csv workloads.txt   # machine-readable
+./wspy-ledger --run-index results/index.jsonl --strict workloads.txt  # nonzero exit if
+                                                                        # anything's outstanding
+```
+
+`workloads.txt` is one workload name per line; append a tab-separated `unsupported` or
+`needs-tool-support` plus a free-text note to override inference for a specific workload. See
+`./wspy-ledger --help` for the full option list.
 
 ## Other contents
 
