@@ -32,6 +32,7 @@ test_wspy
 test_validate
 test_ledger
 test_ibs
+test_phase
 libwspy_profiler.so
 test_hip_init
 test_hip_kernel

@@ -25,6 +25,7 @@
 #include "coverage.h"
 #include "ptrace_arch.h"
 #include "ibs.h"
+#include "phase.h"
 #if AMDGPU
 #include "amd_sysfs.h"
 extern int gpu_busy_requested;
@@ -2053,6 +2054,16 @@ void timer_callback(int signum){
 
   if (csvflag){
     fprintf(outfile,"%4.1f,",elapsed);
+  }
+
+  if (phase_state.enabled){
+    enum wspy_phase phase = phase_detector_update(&phase_state,
+      phase_current_ipc(cpu_info->systemwide_counters),elapsed);
+    if (csvflag){
+      fprintf(outfile,"%s,",phase_name(phase));
+    } else {
+      fprintf(outfile,"phase                %s\n",phase_name(phase));
+    }
   }
 
   if (sflag){

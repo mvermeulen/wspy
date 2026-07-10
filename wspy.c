@@ -25,6 +25,7 @@
 #include "provenance.h"
 #include "ibs.h"
 #include "preflight.h"
+#include "phase.h"
 
 int aflag = 0;
 int oflag = 0;
@@ -33,6 +34,7 @@ int vflag = 0;
 int xflag = 1;
 int csvflag = 0;
 int interval = 0;
+int phase_flag = 1;
 int treeflag = 0;
 int tree_cmdline = 0;
 int tree_open = 0;
@@ -100,9 +102,11 @@ int parse_options(int argc,char *const argv[]){
     { "manifest", required_argument, 0, 52 },
     { "memory", no_argument, 0, 16 },
     { "no-memory", no_argument, 0, 17 },
-    { "opcache", no_argument, 0, 18 }, 
+    { "opcache", no_argument, 0, 18 },
     { "no-opcache", no_argument, 0, 19 },
     { "per-core", no_argument, 0, 20 },
+    { "phase-detect", no_argument, 0, 62 },
+    { "no-phase-detect", no_argument, 0, 63 },
     { "preflight", no_argument, 0, 61 },
     { "run-index", required_argument, 0, 53 },
     { "rusage", no_argument, 0, 21 },
@@ -329,6 +333,12 @@ int parse_options(int argc,char *const argv[]){
     case 61: // --preflight
       preflightflag = 1;
       break;
+    case 62: // --phase-detect
+      phase_flag = 1;
+      break;
+    case 63: // --no-phase-detect
+      phase_flag = 0;
+      break;
     case 31: // --tree
       if ((treefile = fopen(optarg,"w")) == NULL){
 	warning("unable to open tree file: %s, ignored\n",optarg);
@@ -470,6 +480,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   int status;
   struct rusage rusage;
   struct counter_group *cgroup;
+  enum wspy_phase final_phase = PHASE_WARMUP;
   outfile = stdout;
   num_procs = get_nprocs();
   clocks_per_second = sysconf(_SC_CLK_TCK);
@@ -501,6 +512,8 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t--run-index <file>        - append a JSON run-index record to <file>\n"
 	    "\t--exit-with-child         - exit with the launched command's exit status\n"
 	    "\t--interval <sec>          - read every <sec> seconds\n"
+	    "\t--no-phase-detect         - disable automatic phase (warmup/steady/degraded)\n"
+	    "\t                            detection on --interval samples (on by default)\n"
 	    "\t--verbose or -v           - print verbose information\n"
 	    "\t--system                  - system-wide metrics (load, cpu, gpu, network)\n"
 	    "\n"
@@ -625,10 +638,16 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 
   signal(SIGINT,SIG_IGN);
 
+  // interval automatic phase-boundary detection (warmup/steady/degraded);
+  // see phase.h. .enabled is decided once here from the flags/counter_mask
+  // that are now final, and read directly (not re-derived) by every tick.
+  phase_detector_init(&phase_state,phase_detect_is_available());
+
   // create CSV headers
   if (csvflag){
     if (interval){
       fprintf(outfile,"time,");
+      if (phase_state.enabled) fprintf(outfile,"phase,");
     }
     if (sflag) print_system(PRINT_CSV_HEADER);
     if (!interval && xflag) print_usage(NULL,PRINT_CSV_HEADER);
@@ -694,13 +713,23 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   }
   read_counters(cpu_info->systemwide_counters,1);
 
+  // classify this final (tail) interval tick the same way timer_callback()
+  // classifies every periodic one, so the last row/print reflects it too
+  if (phase_state.enabled){
+    double phase_elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
+      start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
+    final_phase = phase_detector_update(&phase_state,
+      phase_current_ipc(cpu_info->systemwide_counters),phase_elapsed);
+  }
+
   if (csvflag){
     if (interval){
       double elapsed;
-  
+
       elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
-	start_time.tv_sec - start_time.tv_nsec / 1000000000.0;    
+	start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
       fprintf(outfile,"%4.1f,",elapsed);
+      if (phase_state.enabled) fprintf(outfile,"%s,",phase_name(final_phase));
     }
     if (sflag) print_system(PRINT_CSV);
     if (xflag && !interval) print_usage(&rusage,PRINT_CSV);
@@ -737,8 +766,10 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   } else {
     if (sflag) print_system(PRINT_NORMAL);
     if (xflag) print_usage(&rusage,PRINT_NORMAL);
+    if (phase_state.enabled) fprintf(outfile,"phase                %s\n",phase_name(final_phase));
     print_metrics(cpu_info->systemwide_counters,PRINT_NORMAL);
     print_counter_coverage(PRINT_NORMAL);
+    if (phase_state.enabled) phase_print_boundaries(&phase_state);
 #if AMDGPU
     if (!sflag && gpu_busy_requested){
       int busy_final = amd_sysfs_gpu_busy_percent();
