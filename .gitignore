@@ -11,6 +11,7 @@ proctree
 gpu_smi
 amd_smi
 wspy-validate
+wspy-ledger
 
 # Backup files
 *.bak
@@ -29,6 +30,7 @@ amd_sysfs
 test_proctree
 test_wspy
 test_validate
+test_ledger
 libwspy_profiler.so
 test_hip_init
 test_hip_kernel
