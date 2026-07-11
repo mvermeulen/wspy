@@ -318,11 +318,23 @@ topdown/IBS attribution, static-site publishing, and a lower-overhead tracing ba
 19. Collector-plugin implementation (perf stat / trace-cmd / GPU tools as collectors behind the
     `collector` field, normalization path) — the schema seam shipped in 4.0; this is the actual
     implementation of wrapping a non-wspy collector.
+20. Core/thread affinity control (`--affinity=all|thread=<id>|domain=<id>|cpuset=<c0,c1,...>`) — pin
+    the launched workload to a selected set of logical CPUs via `sched_setaffinity()` on the forked
+    child before `execve` in `topdown.c`'s `launch_child()`: `all` (default, every visible thread —
+    today's implicit behavior), `thread=<id>` (that single thread, letting a caller deliberately avoid
+    its SMT sibling), `domain=<id>` (every thread on one core-complex/CCD), and `cpuset=<c0,c1,...>`
+    (explicit enumerated core list — the general form the others are shorthand for). `thread=`/
+    `domain=` need core topology data (SMT sibling pairs, CCD/core-complex grouping) that
+    `cpu_info.c`'s `struct cpu_core_info` doesn't capture yet — parsing
+    `/sys/devices/system/cpu/cpu*/topology/{core_id,core_siblings,package_id}` (plus, for AMD CCD
+    grouping, cache-topology or `cpuid` leaf data) is a real prerequisite here, not a detail to defer
+    silently. The resolved core list should also be recorded in `--manifest`/`--run-index` so a run's
+    placement is part of its provenance rather than only implicit in how it was launched.
 
 **Tier 7 — testing:**
-20. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
+21. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
     guardrails — needs deterministic micro-workloads and 4.1's stats/index infrastructure.
-21. Contributor guide for adding a collector/metric/schema bump safely.
+22. Contributor guide for adding a collector/metric/schema bump safely.
 
 ## 4.3 priorities
 Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
