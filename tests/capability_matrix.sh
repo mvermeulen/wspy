@@ -126,6 +126,52 @@ $(echo "$out" | tail -5)"
   fi
 }
 
+# run_expected_fatal_bundle <label> <expected_exit_code> <flags...> -- <workload...>
+# For the small set of bundles that are *supposed* to be rejected outright
+# (--passes' incompatibility checks, wspy.c) -- unlike run_bundle() above,
+# this asserts a "fatal error" WAS printed (a clear, deliberate usage
+# rejection) rather than treating any fatal-error text as a failure; it still
+# checks for a crash indication, since a deliberate rejection should never
+# also look like one.
+run_expected_fatal_bundle() {
+  local label="$1"; shift
+  local expect_exit="$1"; shift
+  local flags=()
+  while [ "$1" != "--" ]; do
+    flags+=("$1"); shift
+  done
+  shift # consume "--"
+  local workload=("$@")
+  CHECKS=$((CHECKS + 1))
+
+  local out rc
+  out=$("$WSPY" "${flags[@]}" -- "${workload[@]}" 2>&1)
+  rc=$?
+
+  local bundle_ok=1
+  if [ "$rc" != "$expect_exit" ]; then
+    fail "bundle [$label]: exit code $rc, expected $expect_exit
+  flags: ${flags[*]}
+  output: $out"
+    bundle_ok=0
+  fi
+  if ! echo "$out" | grep -qi "fatal error"; then
+    fail "bundle [$label]: expected a fatal error rejecting this flag combination, got none
+  flags: ${flags[*]}
+  output: $out"
+    bundle_ok=0
+  fi
+  if echo "$out" | grep -qiE "segmentation fault|core dumped|assertion.*failed"; then
+    fail "bundle [$label]: crash indication in output
+  flags: ${flags[*]}"
+    bundle_ok=0
+  fi
+
+  if [ "$bundle_ok" = "1" ]; then
+    echo "  bundle [$label]: OK (exit=$rc, rejected as expected)"
+  fi
+}
+
 echo ""
 echo "=== Counter-group bundles (--no-ipc baseline + one group at a time) ==="
 run_bundle "no-counters"           0 --no-ipc                       -- /bin/true
@@ -200,6 +246,26 @@ echo "=== Kitchen-sink bundle (most counter groups + system + rusage at once) ==
 run_bundle "kitchen-sink" 0 --csv --topdown --topdown-frontend --topdown-backend --topdown-optlb \
   --branch --dcache --icache --tlb --cache1 --cache2 --cache3 --opcache --float --memory --software \
   --system --gpu-busy --gpu-metrics --gpu-smi -- /bin/true
+
+echo ""
+echo "=== Native multi-pass counter execution (--passes) ==="
+# A multi-group request that (on most hosts) exceeds the general-purpose PMU
+# budget in a single pass: wspy internally re-launches the workload once per
+# automatically-sized pass and merges the result into one CSV row/manifest --
+# the graceful-degradation contract here is the same as every other bundle
+# (exit 0, no fatal error, matching CSV column counts), it just now spans N
+# child re-executions instead of one.
+run_bundle "passes-multi-group" 0 --csv --no-ipc \
+  --passes=ipc,topdown,cache2,cache3,branch,memory,tlb,opcache,software -- /bin/true
+# --passes' merge semantics only cover the aggregate case -- each of these is
+# an intentional fatal incompatibility (see wspy.c's incompatibility checks),
+# not a graceful-degradation case, so a nonzero exit *with* a fatal error is
+# the expected/correct outcome here (run_expected_fatal_bundle, not
+# run_bundle -- see its comment above).
+run_expected_fatal_bundle "passes-interval-incompatible" 1 --no-ipc --passes=ipc --interval 1 -- /bin/true
+run_expected_fatal_bundle "passes-per-core-incompatible" 1 --no-ipc --passes=ipc --per-core -- /bin/true
+run_expected_fatal_bundle "passes-tree-incompatible"     1 --no-ipc --passes=ipc --tree "$TREE_OUT" -- /bin/true
+run_expected_fatal_bundle "passes-ibs-incompatible"      1 --no-ipc --passes=ipc --ibs-basic -- /bin/true
 
 echo ""
 echo "=== --exit-with-child: the one bundle where a nonzero exit is correct ==="

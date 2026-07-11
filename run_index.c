@@ -136,6 +136,19 @@ int append_run_index(const char *path,const struct manifest_info *info){
   fprintf(fp,"\"counter_coverage\":{\"requested\":%d,\"measured\":%d},",
 	  info->counters_requested,info->counters_measured);
 
+  /* Native multi-pass counter execution (--passes=<list>, multipass.h):
+   * leaner than the manifest's "passes" array (counts only, no timing/exit
+   * status -- same asymmetry as counter_coverage/environment_coverage
+   * above, which are also counts-only projections of manifest detail).
+   * Empty for a normal (non---passes) run. */
+  fprintf(fp,"\"passes\":[");
+  for (i = 0; i < info->npasses; i++){
+    if (i) fprintf(fp,",");
+    fprintf(fp,"{\"counter_mask\":\"0x%x\",\"counters_requested\":%d,\"counters_measured\":%d}",
+	    info->passes[i].counter_mask,info->passes[i].counters_requested,info->passes[i].counters_measured);
+  }
+  fprintf(fp,"],");
+
   fprintf(fp,"\"output_files\":{\"output_path\":");
   json_write_string_or_null(fp,info->output_path);
   fprintf(fp,",\"tree_output_path\":");

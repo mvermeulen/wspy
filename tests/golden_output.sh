@@ -182,6 +182,13 @@ if [ "$vendor" = "AMD" ]; then
   assert_csv_header "cache1-not-yet-implemented"         --no-ipc --cache1          -- "${BASE}counters_measured,counters_requested,"
   assert_csv_header "ibs-basic"        --no-ipc --ibs-basic       -- "${BASE}ibs_fetch,ibs_op,counters_measured,counters_requested,"
   assert_csv_header "ibs-memory-deep"  --no-ipc --ibs-memory-deep -- "${BASE}ibs_fetch,ibs_op,ibs_op_unfiltered,ibs_op_accepted_ratio,ibs_l3missonly,ibs_ldlat_threshold,ibs_fetchlat_threshold,counters_measured,counters_requested,"
+  # Native multi-pass counter execution (--passes): ipc(3 counters)+cache2(6)
+  # combined (9) exceeds the 6-slot budget, so this splits into exactly 2
+  # passes (neither individually multiplexes) -- base/rusage columns once,
+  # then each pass's own group columns concatenated in pass order via
+  # print_metrics(), same column labels ("ipc"/"l2miss") as the single-pass
+  # bundles above since it's the same print_metrics() call underneath.
+  assert_csv_header "passes-ipc-cache2" --no-ipc --passes=ipc,cache2 -- "${BASE}ipc,l2miss,counters_measured,counters_requested,"
 else
   echo ""
   echo "SKIP: AMD-specific exact-header golden cases (host vendor: $vendor)"

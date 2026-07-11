@@ -198,10 +198,18 @@ scaling correctness fix. Ordered in dependency tiers; items within a tier are in
    "summary page regenerated from data only" criterion deferred from 4.0 (see "Success criteria for a
    4.0 kickoff"). Built against #1 (already shipped) rather than the run index directly, since the
    normalized store already solved the CSV-shape-independent parsing this needed.
-3. Native multi-pass counter execution (`--passes=ipc,topdown,cache,software`, internal N-run loop,
-   merged manifest/CSV) — confirmed real pain: `workload/phoronix/run_test.sh` used to launch the
-   same command up to 8 times by hand to dodge multiplexing; `wspy-run`'s profile launcher defines
-   what a "pass" is, this makes it native instead of N separate processes.
+3. ~~Native multi-pass counter execution (`--passes=ipc,topdown,cache,software`, internal N-run
+   loop, merged manifest/CSV)~~ — **shipped.** `wspy --passes=<list>`/`multipass.c` (see
+   `CLAUDE.md` and `doc/ARTIFACT_CONTRACT.md`'s manifest/run-index "passes" field notes) takes a
+   comma-separated union of counter-group names and automatically bin-packs them into N
+   automatically-sized passes using `preflight.c`'s existing PMU-slot-budget arithmetic (no
+   hand-curated bundle table), re-launching the workload once per pass and merging the result into
+   one CSV row/manifest/run-index record — confirmed real pain: `workload/phoronix/run_test.sh`
+   used to launch the same command up to 8 times by hand to dodge multiplexing, and `wspy-run`'s
+   builtin profiles (`deep-cpu` et al.) still do the equivalent today via N separate `wspy`
+   processes. V1 scope is aggregate-only (`--interval`/`--per-core`/`--tree`/IBS/GPU all fatal
+   against `--passes`); `wspy-run`'s own profiles are unchanged by this and still shell out
+   N times — collapsing them onto `--passes` is a documented follow-up, not part of this item.
 4. **Correctness:** scale multiplexed counter values by `time_running`/`time_enabled` in
    `read_counters()` (`topdown.c`) — today only the confidence envelope accounts for multiplexing
    (`multiplex-aware confidence`, shipped in 4.0); the raw counter *value* itself is never
@@ -418,9 +426,8 @@ Each carries a recommendation; treat these as the current default, not a closed 
   publishing/report-layer work has landed yet. Recommendation: static-first through 4.2, keep an
   optional Grafana-style backend as a 4.3 nice-to-have. Non-goal: don't let the interactive-backend
   question block the 4.1/4.2 HTML report and static-site work.
-- **Should `wspy` natively handle multi-pass execution?** Its precondition is met (the profile
-  launcher, `wspy-run`, defines what a "pass" is); the feature itself (`--passes=...`, internal N-run
-  loop, merged manifest/CSV) hasn't been built. Recommendation: yes, in 4.1 (see Tier 1 above).
+- **Should `wspy` natively handle multi-pass execution? — resolved.** Yes, shipped in 4.1 Tier 1
+  item 3 above (`wspy --passes=<list>`/`multipass.c`).
 - **Is ARM64/AArch64 support a priority for 4.x?** Still open. Mechanical prep shipped
   (`ptrace_arch.h`'s `__aarch64__` branch, unverified/untested), but `cpu_info.c`'s `__cpuid()` use
   is still x86_64-only and full ARM64 validation hasn't happened. Recommendation unchanged: defer

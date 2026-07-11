@@ -19,6 +19,7 @@
 #include "run_index.h"
 #include "coverage.h"
 #include "provenance.h"
+#include "multipass.h"
 
 // Helper to reset globals for wspy
 void reset_wspy_globals() {
@@ -354,6 +355,149 @@ void test_preflight() {
 
     nmi_running = saved_nmi;
     printf("PASS: counter-fit preflight\n");
+}
+
+// Ground-truth counts below (AMD raw-event table, nmi_running=0, 6-slot
+// budget) were confirmed by calling preflight_evaluate() directly against
+// these exact masks before writing these assertions -- see the "Native
+// multi-pass counter execution" feature's implementation notes, not
+// re-derived here to keep this test focused on multipass_plan_build()'s own
+// bin-packing behavior rather than re-testing preflight.c's arithmetic.
+void test_multipass() {
+    struct cpu_info fake_cpu;
+    struct cpu_info *saved_cpu_info;
+    int saved_nmi;
+    unsigned int bit;
+    struct multipass_plan plan;
+
+    printf("Testing native multi-pass counter execution (--passes)...\n");
+
+    // multipass_lookup_group_name(): pure name->bit lookup, no cpu_info needed.
+    assert(multipass_lookup_group_name("ipc", &bit) == 1 && bit == COUNTER_IPC);
+    assert(multipass_lookup_group_name("topdown-optlb", &bit) == 1 && bit == COUNTER_TOPDOWN_OP);
+    assert(multipass_lookup_group_name("software", &bit) == 1 && bit == COUNTER_SOFTWARE);
+    assert(multipass_lookup_group_name("bogus", &bit) == 0);
+
+    saved_cpu_info = cpu_info;
+    memset(&fake_cpu, 0, sizeof(fake_cpu));
+    fake_cpu.vendor = VENDOR_AMD;
+    cpu_info = &fake_cpu;
+    saved_nmi = nmi_running;
+    nmi_running = 0;
+
+    // A small request that fits in one pass (ipc alone: 3 counters <= 6).
+    plan = multipass_plan_build(COUNTER_IPC);
+    assert(plan.npasses == 1);
+    assert(plan.pass_mask[0] == COUNTER_IPC);
+    multipass_plan_free(&plan);
+
+    // ipc(3) + branch(6) = 9 > 6 combined -- needs 2 passes, neither of
+    // which individually multiplexes (verified: ipc alone=3, branch alone=6,
+    // both <= 6). Table order (wspy.h's COUNTER_* bit order) puts ipc
+    // before branch, so pass 1 should be ipc alone and pass 2 branch alone.
+    plan = multipass_plan_build(COUNTER_IPC|COUNTER_BRANCH);
+    assert(plan.npasses == 2);
+    assert(plan.pass_mask[0] == COUNTER_IPC);
+    assert(plan.pass_mask[1] == COUNTER_BRANCH);
+    multipass_plan_free(&plan);
+
+    // dcache+icache share one underlying "instructions" counter
+    // (cache_events[], topdown.c) -- combined cost is 5, not the naive
+    // per-group sum of 3+3=6, and either way both land in the same pass
+    // here (5 <= 6). Exercises multipass_plan_build() re-evaluating the
+    // real tentative combined mask via preflight_evaluate() rather than
+    // summing independently-computed per-bit costs.
+    plan = multipass_plan_build(COUNTER_DCACHE|COUNTER_ICACHE);
+    assert(plan.npasses == 1);
+    assert(plan.pass_mask[0] == (COUNTER_DCACHE|COUNTER_ICACHE));
+    multipass_plan_free(&plan);
+
+    // Software counters (PERF_TYPE_SOFTWARE) never compete for the
+    // general-purpose PMU budget setup_counter_groups() doesn't even build
+    // a group for COUNTER_SOFTWARE by itself -- cache2 alone fits exactly
+    // at the 6-slot budget, and software must fold into that same pass
+    // rather than triggering a wasteful extra re-execution of the workload.
+    plan = multipass_plan_build(COUNTER_L2CACHE|COUNTER_SOFTWARE);
+    assert(plan.npasses == 1);
+    assert(plan.pass_mask[0] == (COUNTER_L2CACHE|COUNTER_SOFTWARE));
+    multipass_plan_free(&plan);
+
+    // Software requested entirely alone still gets exactly one (trivial)
+    // pass, without needing any preflight_evaluate() call to decide that.
+    plan = multipass_plan_build(COUNTER_SOFTWARE);
+    assert(plan.npasses == 1);
+    assert(plan.pass_mask[0] == COUNTER_SOFTWARE);
+    multipass_plan_free(&plan);
+
+    // topdown2 alone already requests 12 counters, more than fit (6) --
+    // still gets exactly one (multiplexing) pass rather than looping or
+    // blocking the whole feature.
+    plan = multipass_plan_build(COUNTER_TOPDOWN2);
+    assert(plan.npasses == 1);
+    assert(plan.pass_mask[0] == COUNTER_TOPDOWN2);
+    multipass_plan_free(&plan);
+
+    // branch alone (6 counters) fits the normal 6-slot budget exactly, but
+    // not the NMI-watchdog-shrunk 5-slot budget -- still gets its own pass
+    // (oversized-single-group path via a shrunk budget, not a naturally
+    // oversized group like topdown2 above).
+    nmi_running = 1;
+    plan = multipass_plan_build(COUNTER_BRANCH);
+    assert(plan.npasses == 1);
+    assert(plan.pass_mask[0] == COUNTER_BRANCH);
+    multipass_plan_free(&plan);
+    nmi_running = 0;
+
+    // A 3-group request that doesn't fit as a whole (dcache+icache+tlb ==
+    // 9 combined, budget 6) must still partition into passes covering the
+    // exact requested mask, with no bit duplicated across passes.
+    {
+        unsigned int requested = COUNTER_DCACHE|COUNTER_ICACHE|COUNTER_TLB;
+        unsigned int union_mask = 0;
+        int i;
+
+        plan = multipass_plan_build(requested);
+        assert(plan.npasses >= 2);
+        for (i = 0; i < plan.npasses; i++){
+            assert((union_mask & plan.pass_mask[i]) == 0); // no bit reused across passes
+            union_mask |= plan.pass_mask[i];
+        }
+        assert(union_mask == requested);
+        multipass_plan_free(&plan);
+    }
+
+    nmi_running = saved_nmi;
+    cpu_info = saved_cpu_info;
+
+    // close_counters(): real fds (from pipe(), so close() is meaningfully
+    // exercised), assert every one becomes -1 and intel_group_id resets.
+    {
+        struct counter_group cgroup;
+        struct counter_info cinfo[2];
+        int fds[2];
+
+        assert(pipe(fds) == 0);
+        memset(cinfo, 0, sizeof(cinfo));
+        cinfo[0].fd = fds[0];
+        cinfo[0].label = "read-end";
+        close(fds[1]);
+        assert(pipe(fds) == 0);
+        cinfo[1].fd = fds[0];
+        cinfo[1].label = "read-end-2";
+        close(fds[1]);
+
+        memset(&cgroup, 0, sizeof(cgroup));
+        cgroup.label = "test";
+        cgroup.ncounters = 2;
+        cgroup.cinfo = cinfo;
+        cgroup.next = NULL;
+
+        close_counters(&cgroup);
+        assert(cinfo[0].fd == -1);
+        assert(cinfo[1].fd == -1);
+    }
+
+    printf("PASS: native multi-pass counter execution\n");
 }
 
 void test_write_manifest() {
@@ -699,6 +843,7 @@ int main(int argc, char **argv) {
     test_append_run_index();
     test_coverage();
     test_preflight();
+    test_multipass();
     test_provenance();
     test_topdown_confidence();
     return 0;

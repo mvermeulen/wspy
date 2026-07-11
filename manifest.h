@@ -18,7 +18,7 @@
  * breaks existing readers, MINOR when a field is added in a backward
  * compatible way, PATCH for fixes that don't change the shape. Consumers
  * should warn (not silently misparse) on an unrecognized MAJOR version. */
-#define MANIFEST_SCHEMA_VERSION "1.3.0"
+#define MANIFEST_SCHEMA_VERSION "1.4.0"
 
 /* One counter that setup_counters() (topdown.c) tried and failed to open via
  * perf_event_open, as recorded by coverage.c. Kept as its own small struct
@@ -36,6 +36,21 @@ struct manifest_exit_status {
   int exit_code;   /* valid if known && exited                             */
   int signaled;    /* 1 if the child was terminated by a signal            */
   int term_signal; /* valid if known && signaled                           */
+};
+
+/* One pass of a --passes=<list> (native multi-pass counter execution,
+ * multipass.h) run: that pass's own counter_mask subset, its own
+ * per-pass delta of coverage_requested/measured (not the running total),
+ * and its own timing/exit status from its own separate re-execution of the
+ * workload. A normal (non---passes) run has manifest_info.npasses == 0 and
+ * never populates this. */
+struct manifest_pass_info {
+  unsigned int counter_mask;
+  int counters_requested;
+  int counters_measured;
+  struct timespec start_time;
+  struct timespec finish_time;
+  struct manifest_exit_status exit_status;
 };
 
 struct manifest_info {
@@ -69,6 +84,14 @@ struct manifest_info {
   int counters_measured;
   int counters_unavailable_count;
   const struct manifest_counter_gap *counters_unavailable; /* array, length counters_unavailable_count */
+  /* Native multi-pass counter execution (--passes=<list>, multipass.h): 0/NULL
+   * for a normal run. counter_mask above is the union of every pass's mask
+   * when npasses > 0; counters_requested/measured above are still the
+   * running totals across all passes (coverage_reset() runs once, not per
+   * pass), so this array exists purely for per-pass audit detail, not to
+   * recompute those top-level fields. */
+  int npasses;
+  const struct manifest_pass_info *passes; /* array, length npasses */
   /* Environment/provenance capture (see provenance.h): best-effort host
    * facts beyond the always-present host{} block below (virtualization
    * role, microcode, BIOS, governor, memory, toolchain). Populate via

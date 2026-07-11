@@ -26,6 +26,7 @@
 #include "ibs.h"
 #include "preflight.h"
 #include "phase.h"
+#include "multipass.h"
 
 int aflag = 0;
 int oflag = 0;
@@ -44,6 +45,8 @@ int versionflag = 0;
 int capabilitiesflag = 0;
 int preflightflag = 0;
 int exit_with_child_flag = 0;
+int multipass_flag = 0;
+unsigned int passes_requested_mask = 0;
 #if AMDGPU
 int gpu_smi_requested = 0; /* legacy */
 int gpu_busy_requested = 0;
@@ -106,6 +109,7 @@ int parse_options(int argc,char *const argv[]){
     { "no-memory", no_argument, 0, 17 },
     { "opcache", no_argument, 0, 18 },
     { "no-opcache", no_argument, 0, 19 },
+    { "passes", required_argument, 0, 65 },
     { "per-core", no_argument, 0, 20 },
     { "phase-detect", no_argument, 0, 62 },
     { "no-phase-detect", no_argument, 0, 63 },
@@ -352,6 +356,25 @@ int parse_options(int argc,char *const argv[]){
       warning("GPU support not built (rebuild with AMDGPU=1): --gpu-device ignored\n");
 #endif
       break;
+    case 65: { // --passes
+      char *copy = strdup(optarg);
+      char *tok,*saveptr;
+      unsigned int bit;
+
+      multipass_flag = 1;
+      passes_requested_mask = 0;
+      for (tok = strtok_r(copy,",",&saveptr); tok; tok = strtok_r(NULL,",",&saveptr)){
+	if (!multipass_lookup_group_name(tok,&bit)){
+	  fatal("--passes: unrecognized counter group name '%s' (see --help for the valid list)\n",tok);
+	}
+	passes_requested_mask |= bit;
+      }
+      free(copy);
+      if (passes_requested_mask == 0){
+	fatal("--passes: at least one counter group name is required\n");
+      }
+      break;
+    }
     case 31: // --tree
       if ((treefile = fopen(optarg,"w")) == NULL){
 	warning("unable to open tree file: %s, ignored\n",optarg);
@@ -494,6 +517,253 @@ static int run_preflight_probe(void){
   return 0;
 }
 
+// Populates every struct manifest_info field common to a single-pass run
+// (main()'s own tail) and a --passes run (run_multipass()'s tail) -- every
+// field except counter_mask (differs: the single mask vs. the union of all
+// passes) and npasses/passes (only set for --passes). Both callers read
+// this from the same globals at the point each considers "the run"
+// finished -- run_multipass() restores those globals to its primary pass's
+// values before calling this, so from here on both paths are identical.
+static void populate_manifest_common(struct manifest_info *minfo){
+  struct manifest_counter_gap *gaps = NULL;
+  struct coverage_entry *ce;
+  int ngaps = 0;
+
+  minfo->collector = "wspy";
+  minfo->start_time = start_time;
+  minfo->finish_time = finish_time;
+  minfo->argc = command_line_argc;
+  minfo->argv = command_line_argv;
+  /* child_exit_known etc. are populated either above (non-tree, wait4()) or
+   * by ptrace_loop() itself (--tree mode) -- or, for a --passes run, by
+   * run_multipass() restoring them to its primary pass's values. */
+  minfo->exit_status.known = child_exit_known;
+  minfo->exit_status.exited = child_exited;
+  minfo->exit_status.exit_code = child_exit_code;
+  minfo->exit_status.signaled = child_signaled;
+  minfo->exit_status.term_signal = child_term_signal;
+  minfo->aflag = aflag;
+  minfo->sflag = sflag;
+  minfo->csvflag = csvflag;
+  minfo->treeflag = treeflag;
+  minfo->interval = interval;
+  minfo->output_path = oflag ? outfile_path : NULL;
+  minfo->tree_output_path = treeflag ? tree_output_path : NULL;
+  minfo->manifest_path = manifest_path;
+  minfo->counters_requested = coverage_requested;
+  minfo->counters_measured = coverage_measured;
+  for (ce = coverage_entries; ce; ce = ce->next) if (!ce->available) ngaps++;
+  if (ngaps){
+    gaps = calloc(ngaps,sizeof(struct manifest_counter_gap));
+    ngaps = 0;
+    for (ce = coverage_entries; ce; ce = ce->next){
+      if (!ce->available){
+	gaps[ngaps].group_label = ce->group_label;
+	gaps[ngaps].counter_label = ce->counter_label;
+	gaps[ngaps].open_errno = ce->open_errno;
+	ngaps++;
+      }
+    }
+  }
+  minfo->counters_unavailable_count = ngaps;
+  minfo->counters_unavailable = gaps;
+  provenance_collect(&minfo->provenance);
+}
+
+// --exit-with-child's return-code logic, shared between main()'s single-pass
+// tail and run_multipass()'s tail -- both read child_exit_known/etc. from
+// their own "primary" execution (see populate_manifest_common()).
+static int exit_code_epilogue(void){
+  if (exit_with_child_flag){
+    if (!child_exit_known){
+      warning("--exit-with-child: child exit status not observed, exiting 0\n");
+      return 0;
+    }
+    if (child_signaled){
+      // conventional shell exit-code encoding for death-by-signal
+      return 128 + child_term_signal;
+    }
+    return child_exit_code;
+  }
+  return 0;
+}
+
+// Native multi-pass counter execution (wspy --passes=<list>): re-launches
+// the workload once per pass in a multipass_plan_build() plan, each pass
+// requesting only the counter groups that fit the available hardware PMU
+// budget, and merges the result into one CSV/manifest/run-index record
+// instead of requiring N separate wspy invocations (wspy-run's builtin
+// profiles automate that externally today by shelling out N times; this
+// moves the same "run N times, once per counter-group subset that fits"
+// strategy inside wspy itself). Called from main() once counter_mask/aflag/
+// etc. are final and cpu_info/raw events are already set up.
+//
+// V1 scope is aggregate-only: --interval/--per-core/--tree/IBS/GPU are all
+// fatal'd against --passes in main() before this is ever reached, so this
+// function doesn't need any of their logic (phase detection, per-core rows,
+// ptrace, GPU columns).
+//
+// Each pass is a genuinely separate re-execution of the workload (its own
+// fork/exec, its own start/finish time, its own rusage/exit status) -- there
+// is no single canonical "elapsed"/rusage/exit status across N runs, so
+// pass 0 is treated as "primary": its rusage/start_time/finish_time/exit
+// status become the merged row's base columns and the manifest's top-level
+// exit_status, exactly as if it were the only pass. Every pass's own timing/
+// exit status/coverage delta is still recorded in the manifest's "passes"
+// array for full audit; a pass whose exit status differs from pass 0's
+// produces a warning (not fatal -- real non-determinism across
+// re-executions is a legitimate signal worth surfacing, not a reason to
+// discard an otherwise useful run).
+static int run_multipass(char *const envp[]){
+  struct multipass_plan plan;
+  struct counter_group **pass_lists;
+  struct manifest_pass_info *mpasses;
+  struct rusage rusage,primary_rusage;
+  struct timespec primary_start,primary_finish;
+  struct manifest_exit_status primary_exit;
+  int p,status;
+
+  plan = multipass_plan_build(passes_requested_mask);
+  pass_lists = calloc(plan.npasses,sizeof(struct counter_group *));
+  mpasses = calloc(plan.npasses,sizeof(struct manifest_pass_info));
+
+  // Phase A: build every pass's counter_group list up front (cheap, no
+  // privileges) -- same save/swap/restore counter_mask idiom
+  // preflight_evaluate() already uses to build a throwaway list for an
+  // arbitrary mask without disturbing the real one.
+  for (p = 0; p < plan.npasses; p++){
+    unsigned int saved_mask = counter_mask;
+    struct counter_group *cgroup;
+
+    counter_mask = plan.pass_mask[p];
+    setup_counter_groups(&pass_lists[p]);
+    counter_mask = saved_mask;
+    // setup_counter_groups() never handles COUNTER_SOFTWARE itself (see
+    // main()'s single-pass path) -- replicate that per pass exactly.
+    if (plan.pass_mask[p] & COUNTER_SOFTWARE){
+      if ((cgroup = software_counter_group("software"))){
+	cgroup->next = pass_lists[p];
+	pass_lists[p] = cgroup;
+      }
+    }
+  }
+
+  signal(SIGINT,SIG_IGN);
+
+  // Phase B: CSV header -- base columns once, then each pass's group
+  // columns in sequence. print_metrics() dispatches purely off
+  // cgroup->mask, so calling it once per pass just concatenates that
+  // pass's columns; no two passes can emit the same column name since the
+  // bin-packer never duplicates a bit across passes.
+  if (csvflag){
+    if (sflag) print_system(PRINT_CSV_HEADER);
+    if (xflag) print_usage(NULL,PRINT_CSV_HEADER);
+    for (p = 0; p < plan.npasses; p++) print_metrics(pass_lists[p],PRINT_CSV_HEADER);
+    print_counter_coverage(PRINT_CSV_HEADER);
+    fprintf(outfile,"\n");
+  }
+
+  // Phase C: execute each pass in turn -- the only part that needs a live
+  // child.
+  for (p = 0; p < plan.npasses; p++){
+    int req0 = coverage_requested,meas0 = coverage_measured;
+
+    setup_counters(pass_lists[p]);
+    start_counters(pass_lists[p]);
+
+    // let the counters run for two seconds before the measurement window
+    // starts, same as a single-pass run -- see the comment at the
+    // equivalent sleep(2) in main().
+    sleep(2);
+    if (p == 0 && sflag) read_system();
+    clock_gettime(CLOCK_REALTIME,&start_time);
+    if (launch_child(command_line_argc,command_line_argv,envp)){
+      fatal("unable to launch %s (pass %d/%d)\n",command_line_argv[0],p+1,plan.npasses);
+    }
+    write(child_pipe[1],"start\n",6);
+    wait4(child_pid,&status,0,&rusage);
+    close(child_pipe[1]);
+    child_exit_known = 1;
+    child_exited = WIFEXITED(status) ? 1 : 0;
+    if (child_exited) child_exit_code = WEXITSTATUS(status);
+    child_signaled = WIFSIGNALED(status) ? 1 : 0;
+    if (child_signaled) child_term_signal = WTERMSIG(status);
+    is_still_running = 0;
+    clock_gettime(CLOCK_REALTIME,&finish_time);
+    if (p == 0) read_system();
+
+    read_counters(pass_lists[p],1);
+    close_counters(pass_lists[p]); // MUST run before the next pass's setup_counters()
+
+    mpasses[p].counter_mask = plan.pass_mask[p];
+    mpasses[p].counters_requested = coverage_requested - req0;
+    mpasses[p].counters_measured = coverage_measured - meas0;
+    mpasses[p].start_time = start_time;
+    mpasses[p].finish_time = finish_time;
+    mpasses[p].exit_status.known = child_exit_known;
+    mpasses[p].exit_status.exited = child_exited;
+    mpasses[p].exit_status.exit_code = child_exit_code;
+    mpasses[p].exit_status.signaled = child_signaled;
+    mpasses[p].exit_status.term_signal = child_term_signal;
+
+    if (p == 0){
+      primary_rusage = rusage;
+      primary_start = start_time;
+      primary_finish = finish_time;
+      primary_exit = mpasses[0].exit_status;
+    } else if (memcmp(&mpasses[p].exit_status,&primary_exit,sizeof(primary_exit)) != 0){
+      warning("--passes: pass %d exit status differs from pass 1 (mask 0x%x vs 0x%x) -- "
+	      "workload may be non-deterministic across re-executions\n",
+	      p+1,plan.pass_mask[p],plan.pass_mask[0]);
+    }
+  }
+
+  // Restore the globals every downstream consumer reads (print_usage(),
+  // populate_manifest_common(), exit_code_epilogue()) to the primary pass's
+  // values, so they run completely unmodified as if "the run" were pass 0.
+  start_time = primary_start;
+  finish_time = primary_finish;
+  rusage = primary_rusage;
+  child_exit_known = primary_exit.known;
+  child_exited = primary_exit.exited;
+  child_exit_code = primary_exit.exit_code;
+  child_signaled = primary_exit.signaled;
+  child_term_signal = primary_exit.term_signal;
+
+  // Phase D: CSV/human value row.
+  if (csvflag){
+    if (sflag) print_system(PRINT_CSV);
+    if (xflag) print_usage(&rusage,PRINT_CSV);
+    for (p = 0; p < plan.npasses; p++) print_metrics(pass_lists[p],PRINT_CSV);
+    print_counter_coverage(PRINT_CSV);
+    fprintf(outfile,"\n");
+  } else {
+    if (sflag) print_system(PRINT_NORMAL);
+    if (xflag) print_usage(&rusage,PRINT_NORMAL);
+    for (p = 0; p < plan.npasses; p++){
+      fprintf(outfile,"##### pass %2d (mask 0x%x) #####################\n",p,plan.pass_mask[p]);
+      print_metrics(pass_lists[p],PRINT_NORMAL);
+    }
+    print_counter_coverage(PRINT_NORMAL);
+  }
+
+  if (oflag) fclose(outfile);
+
+  if (manifest_path || run_index_path){
+    struct manifest_info minfo;
+    memset(&minfo,0,sizeof(minfo));
+    populate_manifest_common(&minfo);
+    minfo.counter_mask = passes_requested_mask;
+    minfo.npasses = plan.npasses;
+    minfo.passes = mpasses;
+    if (manifest_path) write_manifest(manifest_path,&minfo);
+    if (run_index_path) append_run_index(run_index_path,&minfo);
+    free((void *)minfo.counters_unavailable);
+  }
+
+  return exit_code_epilogue();
+}
+
 #ifndef TEST_WSPY
 int main(int argc,char *const argv[],char *const envp[]){
 #else
@@ -536,6 +806,13 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t--manifest <file>         - write a JSON run manifest to <file>\n"
 	    "\t--run-index <file>        - append a JSON run-index record to <file>\n"
 	    "\t--exit-with-child         - exit with the launched command's exit status\n"
+	    "\t--passes=<list>           - re-launch the workload once per automatically-sized\n"
+	    "\t                            pass covering the comma-separated counter group\n"
+	    "\t                            names in <list> (e.g. ipc,topdown,cache2,software),\n"
+	    "\t                            merging the result into one CSV/manifest -- avoids\n"
+	    "\t                            multiplexing when <list> exceeds the available\n"
+	    "\t                            hardware PMU slots. Incompatible with --interval,\n"
+	    "\t                            --per-core, --tree, --ibs-*, --gpu-*.\n"
 	    "\t--interval <sec>          - read every <sec> seconds\n"
 	    "\t--no-phase-detect         - disable automatic phase (warmup/steady/degraded)\n"
 	    "\t                            detection on --interval samples (on by default)\n"
@@ -576,6 +853,26 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    ,argv[0]);
   }
 
+  // --passes' merge semantics only cover the common aggregate case; each of
+  // these has either no well-defined multi-pass merge (periodic ticks/cores
+  // across separately-timed re-executions of the child) or its own separate
+  // collection/budget model already (IBS, GPU). Fail loudly rather than
+  // silently ignoring the incompatible flag or producing a misleading result.
+  if (multipass_flag){
+    if (interval)
+      fatal("--passes is incompatible with --interval (no defined multi-pass merge semantics for periodic ticks)\n");
+    if (aflag)
+      fatal("--passes is incompatible with --per-core/-a (per-core x per-pass grid not supported)\n");
+    if (treeflag)
+      fatal("--passes is incompatible with --tree (ptrace child-tracing model conflicts with re-executing the child N times)\n");
+    if (counter_mask & COUNTER_IBS)
+      fatal("--passes is incompatible with --ibs-basic/--ibs-memory-deep (IBS has its own separate system-wide budget)\n");
+#if AMDGPU
+    if (gpu_smi_requested || gpu_busy_requested || gpu_metrics_requested)
+      fatal("--passes is incompatible with --gpu-smi/--gpu-busy/--gpu-metrics\n");
+#endif
+  }
+
   if (inventory_cpu() != 0){
     fatal("unable to query CPU information\n");
   }
@@ -608,6 +905,15 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   setup_raw_events();
 
   coverage_reset();
+
+  // Native multi-pass counter execution (--passes=<list>): re-launches the
+  // workload once per automatically-sized pass and merges the result into
+  // one CSV/manifest -- see multipass.h and run_multipass() below. A single
+  // early-return branch, so the rest of this single-pass main() is
+  // untouched (aside from the incompatibility checks above).
+  if (multipass_flag){
+    return run_multipass(envp);
+  }
 
   // Counter-fit preflight: estimate whether the requested counter groups
   // will fit in the available general-purpose hardware PMU slots without
@@ -920,53 +1226,12 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 
   if (manifest_path || run_index_path){
     struct manifest_info minfo;
-    struct manifest_counter_gap *gaps = NULL;
-    struct coverage_entry *ce;
-    int ngaps = 0;
     memset(&minfo,0,sizeof(minfo));
-    minfo.collector = "wspy";
-    minfo.start_time = start_time;
-    minfo.finish_time = finish_time;
-    minfo.argc = command_line_argc;
-    minfo.argv = command_line_argv;
-    /* child_exit_known etc. are populated either above (non-tree, wait4())
-     * or by ptrace_loop() itself when the root child's exit/signal event
-     * comes through its own wait loop (--tree mode). */
-    minfo.exit_status.known = child_exit_known;
-    minfo.exit_status.exited = child_exited;
-    minfo.exit_status.exit_code = child_exit_code;
-    minfo.exit_status.signaled = child_signaled;
-    minfo.exit_status.term_signal = child_term_signal;
+    populate_manifest_common(&minfo);
     minfo.counter_mask = counter_mask;
-    minfo.aflag = aflag;
-    minfo.sflag = sflag;
-    minfo.csvflag = csvflag;
-    minfo.treeflag = treeflag;
-    minfo.interval = interval;
-    minfo.output_path = oflag ? outfile_path : NULL;
-    minfo.tree_output_path = treeflag ? tree_output_path : NULL;
-    minfo.manifest_path = manifest_path;
-    minfo.counters_requested = coverage_requested;
-    minfo.counters_measured = coverage_measured;
-    for (ce = coverage_entries; ce; ce = ce->next) if (!ce->available) ngaps++;
-    if (ngaps){
-      gaps = calloc(ngaps,sizeof(struct manifest_counter_gap));
-      ngaps = 0;
-      for (ce = coverage_entries; ce; ce = ce->next){
-	if (!ce->available){
-	  gaps[ngaps].group_label = ce->group_label;
-	  gaps[ngaps].counter_label = ce->counter_label;
-	  gaps[ngaps].open_errno = ce->open_errno;
-	  ngaps++;
-	}
-      }
-    }
-    minfo.counters_unavailable_count = ngaps;
-    minfo.counters_unavailable = gaps;
-    provenance_collect(&minfo.provenance);
     if (manifest_path) write_manifest(manifest_path,&minfo);
     if (run_index_path) append_run_index(run_index_path,&minfo);
-    free(gaps);
+    free((void *)minfo.counters_unavailable);
   }
 
 #if AMDGPU
@@ -976,17 +1241,5 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     amd_sysfs_finalize();
 #endif
 
-  if (exit_with_child_flag){
-    if (!child_exit_known){
-      warning("--exit-with-child: child exit status not observed, exiting 0\n");
-      return 0;
-    }
-    if (child_signaled){
-      // conventional shell exit-code encoding for death-by-signal
-      return 128 + child_term_signal;
-    }
-    return child_exit_code;
-  }
-
-  return 0;
+  return exit_code_epilogue();
 }

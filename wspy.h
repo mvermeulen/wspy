@@ -105,6 +105,7 @@ struct counter_group *software_counter_group(char *name);
 void setup_counters(struct counter_group *counter_group_list);
 void start_counters(struct counter_group *counter_group_list);
 void read_counters(struct counter_group *counter_group_list,int stop_counters);
+void close_counters(struct counter_group *counter_group_list);
 void print_usage(struct rusage *rusage,enum output_format oformat);
 void print_metrics(struct counter_group *counter_group_list,enum output_format oformat);
 struct counter_info *find_ci_label(struct counter_group *cgroup,char *label);

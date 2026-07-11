@@ -39,6 +39,11 @@ int dummy = 0;
 struct timespec start_time,finish_time;
 
 // Counter definitions for RAW performance counters
+// Outlives a single setup_counters() call -- set from the first successfully
+// opened Intel fd and reused as every subsequent counter's perf event-group
+// leader for the rest of the process, unless reset. close_counters() resets
+// this to -1 as part of per-pass teardown so a later pass's setup_counters()
+// doesn't pass a since-closed fd as group_fd.
 static int intel_group_id = -1;
 struct raw_event intel_raw_events[] = {
   { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_L2CACHE,{{0}} },
@@ -973,6 +978,34 @@ void read_counters(struct counter_group *counter_group_list,int stop_counters){
       }
     }
   }
+}
+
+// Closes every open fd in counter_group_list (setting .fd = -1) and resets
+// intel_group_id's shared-event-group-leader tracking. Nothing in this
+// codebase closed a counter fd before native multi-pass execution existed --
+// a single-pass wspy run just exits with its fds open, which the kernel
+// reclaims for free. For multi-pass this call is mandatory between passes:
+// this MUST run after a pass's final read_counters(list,1) and before the
+// NEXT pass's setup_counters(), or the closed-but-not-yet-reused fds keep
+// occupying PMU slots (the next pass's perf_event_open() calls fail or
+// silently multiplex) and, on Intel, that next pass's first
+// perf_event_open() would pass this pass's now-invalid leader fd as
+// group_fd. Does not free any struct counter_group/counter_info memory --
+// see read_counters()/preflight.h for the same "fds are the scarce
+// resource, memory isn't" split this codebase already applies elsewhere.
+void close_counters(struct counter_group *counter_group_list){
+  struct counter_group *cgroup;
+  int i;
+
+  for (cgroup = counter_group_list; cgroup; cgroup = cgroup->next){
+    for (i = 0; i < cgroup->ncounters; i++){
+      if (cgroup->cinfo[i].fd != -1){
+	close(cgroup->cinfo[i].fd);
+	cgroup->cinfo[i].fd = -1;
+      }
+    }
+  }
+  intel_group_id = -1;
 }
 
 int check_nmi_watchdog(void){
