@@ -24,9 +24,9 @@ LIBS += -L$(ROCM_LIB) -lamd_smi
 endif
 
 ifdef AMDGPU
-all:	wspy cpu_info proctree wspy-validate wspy-ledger wspy-store amd_smi amd_sysfs
+all:	wspy cpu_info proctree wspy-validate wspy-ledger wspy-store wspy-summary amd_smi amd_sysfs
 else
-all:	wspy cpu_info proctree wspy-validate wspy-ledger wspy-store
+all:	wspy cpu_info proctree wspy-validate wspy-ledger wspy-store wspy-summary
 endif
 
 wspy:	wspy.o topdown.o error.o system.o json_util.o manifest.o run_index.o coverage.o provenance.o ibs.o preflight.o phase.o cpu_info.c cpu_info.h
@@ -47,6 +47,9 @@ wspy-ledger:	ledger.o json_reader.o
 
 wspy-store:	store.o json_reader.o
 	$(CC) -o wspy-store $(CFLAGS) store.o json_reader.o $(STORE_LIBS)
+
+wspy-summary:	summary.o
+	$(CC) -o wspy-summary $(CFLAGS) summary.o $(STORE_LIBS) -lm
 
 cpu_info:	cpu_info.c error.o cpu_info.h
 	$(CC) -o cpu_info $(CFLAGS) -DTEST_CPU_INFO cpu_info.c error.o
@@ -76,7 +79,7 @@ clean:
 	-rm *~ *.o *.bak
 
 clobber:	clean
-	-rm wspy cpu_info amd_smi amd_sysfs proctree wspy-validate wspy-ledger wspy-store test_hip_init test_hip_kernel test_proctree test_wspy test_validate test_ledger test_ibs test_phase test_store libwspy_profiler.so
+	-rm wspy cpu_info amd_smi amd_sysfs proctree wspy-validate wspy-ledger wspy-store wspy-summary test_hip_init test_hip_kernel test_proctree test_wspy test_validate test_ledger test_ibs test_phase test_store test_summary libwspy_profiler.so
 
 # DO NOT DELETE
 
@@ -130,13 +133,16 @@ test_ledger: test_ledger.c ledger.c json_reader.c json_reader.h run_index.h mani
 test_store: test_store.c store.c json_reader.c json_reader.h run_index.h manifest.h
 	$(CC) -o test_store $(CFLAGS) -DTEST_STORE test_store.c json_reader.c $(STORE_LIBS)
 
+test_summary: test_summary.c summary.c
+	$(CC) -o test_summary $(CFLAGS) -DTEST_SUMMARY test_summary.c $(STORE_LIBS) -lm
+
 test_ibs: test_ibs.c ibs.c ibs.h error.c error.h
 	$(CC) -o test_ibs $(CFLAGS) test_ibs.c error.c
 
 test_phase: test_phase.c phase.c phase.h wspy.h cpu_info.h
 	$(CC) -o test_phase $(CFLAGS) test_phase.c -lm
 
-test: test_wspy test_proctree test_validate test_ledger test_ibs test_phase test_store
+test: test_wspy test_proctree test_validate test_ledger test_ibs test_phase test_store test_summary
 	./test_wspy
 	./test_proctree
 	./test_validate
@@ -144,3 +150,4 @@ test: test_wspy test_proctree test_validate test_ledger test_ibs test_phase test
 	./test_ibs
 	./test_phase
 	./test_store
+	./test_summary

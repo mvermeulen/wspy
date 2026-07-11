@@ -189,9 +189,15 @@ scaling correctness fix. Ordered in dependency tiers; items within a tier are in
    open. Left listed here rather than moved into a "What shipped in 4.1" section, since this doc's
    own convention (see "How to use this document") is to roll items up in bulk at phase completion,
    not one at a time.
-2. Summary table generator (min/max/median/mean/stddev/outlier flags) from indexed data — closes the
+2. ~~Summary table generator (min/max/median/mean/stddev/outlier flags) from indexed data~~ —
+   **shipped.** `wspy-summary`/`summary.c` (see `CLAUDE.md` and `doc/ARTIFACT_CONTRACT.md`'s "Summary
+   tables" section) queries `wspy-store`'s normalized store directly, averaging each contributing
+   run's rows down to one number per `(run,metric)` (collapsing `--interval` ticks/`--per-core` cores
+   transparently) and reporting min/max/mean/median/stddev plus a z-score outlier flag across those
+   per-run values, grouped by workload command (or `--group-by hostname|cpu_vendor`) — closing the
    "summary page regenerated from data only" criterion deferred from 4.0 (see "Success criteria for a
-   4.0 kickoff"); can start against the run index directly and layer onto #1 once it exists.
+   4.0 kickoff"). Built against #1 (already shipped) rather than the run index directly, since the
+   normalized store already solved the CSV-shape-independent parsing this needed.
 3. Native multi-pass counter execution (`--passes=ipc,topdown,cache,software`, internal N-run loop,
    merged manifest/CSV) — confirmed real pain: `workload/phoronix/run_test.sh` used to launch the
    same command up to 8 times by hand to dodge multiplexing; `wspy-run`'s profile launcher defines

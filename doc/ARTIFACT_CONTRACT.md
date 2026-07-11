@@ -294,6 +294,39 @@ the pattern to follow when adding the next one. This is `wspy-store`'s first rea
 migration/compatibility testing across the whole tool is still `INVESTIGATION_4.0.md`'s 4.1 Tier 9
 "Schema compatibility/migration tests" item.
 
+## Summary tables (`wspy-summary --db <path>`)
+
+`wspy-summary` is a read-only query tool over the normalized store above — it never writes to
+`--db`, and it produces nothing persisted; running it again is exactly how a summary table is meant
+to be "regenerated from data only" (`INVESTIGATION_4.0.md`'s 4.1 Tier 1 "summary table generator"
+item, closing the "a summary page can be regenerated from data only" criterion deferred from 4.0).
+
+**What it computes:** for each contributing run, a metric's `metric_values` rows are first averaged
+(`AVG(value)`) down to one number for that run — a no-op for the common single-row aggregate CSV
+shape, and the right collapse for a `--interval` run's ticks or a `--per-core` run's cores, without
+the tool needing to know which shape produced the data. Those per-run numbers are then grouped into
+`(group, metric)` buckets — `group` is workload command by default, or `hostname`/`cpu_vendor` via
+`--group-by` — and each bucket gets min/max/mean/median/stddev (sample, `n-1` denominator; 0 for
+`n<2` rather than undefined) plus a z-score outlier flag per run (`--outlier-stddev`, default 2.0;
+only evaluated for buckets with `n>=3` and nonzero stddev, since flagging is meaningless with fewer
+samples). `--command`/`--hostname` filter which runs contribute; `--metric` (repeatable) filters
+which metrics are reported. A bucket with fewer contributing runs than `--min-runs` is skipped
+(counted, not fatal — the usual degrade-don't-fail idiom); `--strict` exits 1 if any bucket was
+skipped this way, or if nothing matched at all.
+
+**Schema compatibility:** opens the database read-only and requires `PRAGMA user_version >= 2` (the
+schema version `metric_values` was introduced at — see "Normalized store" above); an older database
+has nothing to summarize and is refused with a clear message rather than silently reporting zero
+rows. A *newer* schema version than this tool was built against is still accepted — `store.c`'s own
+MINOR-vs-MAJOR versioning convention never removes or renames a column on a MINOR bump, only adds
+one, so the columns `wspy-summary` reads keep working forward.
+
+**Output:** a flat table (human or `--csv`), one row per `(group, metric)` bucket, with the
+statistics above plus an `outlier_run_ids` column (semicolon-separated) naming which runs were
+flagged, so a surprising number in the table is traceable back to a specific run — the same
+traceability instinct `INVESTIGATION_4.0.md`'s Tier 2 "Traceability links" item (still open) will
+eventually wire all the way through to raw artifacts.
+
 ## CSV output (`-o <file> --csv` or `--csv` to stdout)
 
 Not schema-versioned (it's driven directly by `counter_mask`/`aflag`/`sflag`/etc., not a separate

@@ -13,6 +13,7 @@ amd_smi
 wspy-validate
 wspy-ledger
 wspy-store
+wspy-summary
 
 # Backup files
 *.bak
@@ -35,6 +36,7 @@ test_ledger
 test_ibs
 test_phase
 test_store
+test_summary
 libwspy_profiler.so
 test_hip_init
 test_hip_kernel
