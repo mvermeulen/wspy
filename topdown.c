@@ -2100,6 +2100,8 @@ void timer_callback(int signum){
     }
   }
 #endif
+  print_counter_coverage(csvflag?PRINT_CSV:PRINT_NORMAL);
+
   if (csvflag) fprintf(outfile,"\n");
 
   if (is_still_running){
