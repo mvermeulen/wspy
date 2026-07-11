@@ -48,7 +48,7 @@ from `wspy --version` (which is just `WSPY_VERSION_MAJOR.MINOR`, the tool's own 
 The manifest and run index are versioned **independently** (`MANIFEST_SCHEMA_VERSION` vs.
 `RUN_INDEX_SCHEMA_VERSION`) — the run index is a leaner, line-oriented projection of a run, not the
 manifest itself, and its shape evolves on its own schedule. Current versions as of this writing:
-manifest `1.3.0`, run index `1.3.0` (check `manifest.h`/`run_index.h` for the authoritative current
+manifest `1.4.0`, run index `1.4.0` (check `manifest.h`/`run_index.h` for the authoritative current
 values — this doc is not the source of truth for the version number itself, only for the contract
 around how it's used).
 
@@ -64,7 +64,7 @@ One JSON object, written once at the end of a run (`manifest.c:write_manifest()`
 
 ```
 {
-  "schema_version": "1.3.0",
+  "schema_version": "1.4.0",
   "collector": "wspy",
   "wspy_version": "4.0",
   "generated_at": "<ISO-8601 timestamp>",
@@ -83,6 +83,7 @@ One JSON object, written once at the end of a run (`manifest.c:write_manifest()`
   "options": { "counter_mask": "0x3", "per_core": false, "system": false,
                "csv": true, "tree": false, "interval_seconds": 0 },
   "counter_coverage": { "requested": 4, "measured": 4, "unavailable": [] },
+  "passes": [],
   "output_files": [
     { "kind": "output", "path": "results/run.csv" },
     { "kind": "tree", "path": "results/run.tree" },
@@ -120,6 +121,29 @@ Field notes:
   `{ "group": ..., "counter": ..., "errno": N, "reason": "<strerror(N)>" }`. A nonzero list here
   does **not** by itself mean the run is bad — it means some counters degraded gracefully (see
   "Degrade, don't fail"). Common causes are covered in "Troubleshooting" below.
+- `passes` is populated only for a native multi-pass counter execution run (`wspy --passes=<list>`,
+  `multipass.h`/`multipass.c`, `INVESTIGATION_4.0.md`'s 4.1 Tier 1 "Native multi-pass counter
+  execution" item) — `[]` for a normal run, otherwise one entry per automatically-sized pass:
+  ```
+  "passes": [
+    { "counter_mask": "0x1", "counters_requested": 3, "counters_measured": 3,
+      "start_time": "...", "finish_time": "...",
+      "exit_status": { "known": true, "exited": true, "exit_code": 0, "signaled": false, "term_signal": null } },
+    { "counter_mask": "0x400", "counters_requested": 6, "counters_measured": 6, ... }
+  ]
+  ```
+  `--passes` re-launches the workload once per pass (a genuinely separate re-execution each time),
+  so there's no single canonical elapsed time/rusage/exit status across all of them the way a normal
+  run has — the top-level `timing`/`exit_status` fields instead reflect pass 0 ("primary") only,
+  exactly as if it were the only pass, while every pass's own timing and exit status stay here for
+  full audit. A pass whose exit status differs from pass 0's isn't itself a failure (`wspy.c` logs a
+  warning, not an error) — real non-determinism across re-executions of "the same" command is a
+  legitimate signal worth surfacing, not a reason to discard an otherwise-useful run. The top-level
+  `options.counter_mask` for a `--passes` run is the **union** of every pass's mask (still truthful
+  to its normal "what this run collected" meaning); top-level `counter_coverage.requested`/`measured`
+  are still the running totals across all passes, since `coverage_reset()` runs once before the pass
+  loop begins, not per pass — this array's own `counters_requested`/`counters_measured` are each
+  pass's individual delta, for per-pass audit, not a second way to recompute those top-level totals.
 - `output_files` only lists files that were actually requested this run (an entry is present only
   if the corresponding path was given: `-o`, `--tree <file>`, or the manifest's own path). A run
   with no `-o` (stdout output) and no `--tree` produces an `output_files` array with just the
@@ -140,7 +164,7 @@ Per-record shape (same information as the manifest, projected leaner — no `out
 details beyond the three path strings, no per-field environment gap list, just counts):
 
 ```
-{"schema_version":"1.3.0","run_id":"20260710T153000.123-48213","collector":"wspy","wspy_version":"4.0",
+{"schema_version":"1.4.0","run_id":"20260710T153000.123-48213","collector":"wspy","wspy_version":"4.0",
  "hostname":"...","cpu_vendor":"...","cpu_family":25,"cpu_model":97,
  "environment":{...same field set as manifest's "environment"...},
  "environment_coverage":{"captured":9,"probed":9},
@@ -149,6 +173,7 @@ details beyond the three path strings, no per-field environment gap list, just c
  "exit_status":{"known":true,"exited":true,"exit_code":0,"signaled":false,"term_signal":null},
  "options":{"counter_mask":"0x3","per_core":false,"system":false,"csv":true,"tree":false,"interval_seconds":0},
  "counter_coverage":{"requested":4,"measured":4},
+ "passes":[],
  "output_files":{"output_path":"results/run.csv","tree_output_path":null,"manifest_path":"results/run.manifest.json"}}
 ```
 
@@ -163,6 +188,10 @@ details beyond the three path strings, no per-field environment gap list, just c
   lines with an unrecognized `schema_version` MAJOR rather than aborting the whole scan — one stale
   record from an old `wspy` build shouldn't block reading the rest of the file. `ledger.c` already
   does this; follow the same pattern in new tooling.
+- `passes` mirrors the manifest's own `passes` array (see above) but leaner — counts only
+  (`counter_mask`, `counters_requested`, `counters_measured`), no per-pass timing/exit status — the
+  same "counts here, detail in the manifest" split already used for `counter_coverage`/
+  `environment_coverage`. `[]` for a normal (non-`--passes`) run.
 
 ## Normalized store (`wspy-store --db <path>`)
 

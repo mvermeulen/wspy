@@ -11,6 +11,29 @@
 #include "error.h"
 #include "json_util.h"
 
+/* Writes the known/exited/exit_code/signaled/term_signal fields of one
+ * manifest_exit_status as JSON object members (no enclosing braces -- the
+ * caller writes those, since the top-level "exit_status" block and each
+ * "passes[]" entry's own exit_status use different surrounding indent).
+ * indent is the per-line leading whitespace, matching whichever block this
+ * is nested inside. */
+static void write_exit_status_fields(FILE *fp,const struct manifest_exit_status *es,const char *indent){
+  fprintf(fp,"%s\"known\": %s,\n",indent,es->known ? "true" : "false");
+  if (es->known){
+    fprintf(fp,"%s\"exited\": %s,\n",indent,es->exited ? "true" : "false");
+    if (es->exited) fprintf(fp,"%s\"exit_code\": %d,\n",indent,es->exit_code);
+    else fprintf(fp,"%s\"exit_code\": null,\n",indent);
+    fprintf(fp,"%s\"signaled\": %s,\n",indent,es->signaled ? "true" : "false");
+    if (es->signaled) fprintf(fp,"%s\"term_signal\": %d\n",indent,es->term_signal);
+    else fprintf(fp,"%s\"term_signal\": null\n",indent);
+  } else {
+    fprintf(fp,"%s\"exited\": null,\n",indent);
+    fprintf(fp,"%s\"exit_code\": null,\n",indent);
+    fprintf(fp,"%s\"signaled\": null,\n",indent);
+    fprintf(fp,"%s\"term_signal\": null\n",indent);
+  }
+}
+
 /* Writes one environment field as "name": <value-or-null>, where a string
  * field is a quoted JSON string and a numeric field (memory_total_kb) is a
  * bare JSON number -- the caller passes as_number to select which. */
@@ -116,20 +139,7 @@ int write_manifest(const char *path,const struct manifest_info *info){
   fprintf(fp,"  },\n");
 
   fprintf(fp,"  \"exit_status\": {\n");
-  fprintf(fp,"    \"known\": %s,\n",info->exit_status.known ? "true" : "false");
-  if (info->exit_status.known){
-    fprintf(fp,"    \"exited\": %s,\n",info->exit_status.exited ? "true" : "false");
-    if (info->exit_status.exited) fprintf(fp,"    \"exit_code\": %d,\n",info->exit_status.exit_code);
-    else fprintf(fp,"    \"exit_code\": null,\n");
-    fprintf(fp,"    \"signaled\": %s,\n",info->exit_status.signaled ? "true" : "false");
-    if (info->exit_status.signaled) fprintf(fp,"    \"term_signal\": %d\n",info->exit_status.term_signal);
-    else fprintf(fp,"    \"term_signal\": null\n");
-  } else {
-    fprintf(fp,"    \"exited\": null,\n");
-    fprintf(fp,"    \"exit_code\": null,\n");
-    fprintf(fp,"    \"signaled\": null,\n");
-    fprintf(fp,"    \"term_signal\": null\n");
-  }
+  write_exit_status_fields(fp,&info->exit_status,"    ");
   fprintf(fp,"  },\n");
 
   fprintf(fp,"  \"host\": {\n");
@@ -175,6 +185,26 @@ int write_manifest(const char *path,const struct manifest_info *info){
   }
   fprintf(fp,"%s    ]\n",info->counters_unavailable_count ? "\n" : "");
   fprintf(fp,"  },\n");
+
+  fprintf(fp,"  \"passes\": [\n");
+  for (i = 0; i < info->npasses; i++){
+    const struct manifest_pass_info *mp = &info->passes[i];
+    char pass_start_buf[40],pass_finish_buf[40];
+
+    format_iso8601(&mp->start_time,pass_start_buf,sizeof(pass_start_buf));
+    format_iso8601(&mp->finish_time,pass_finish_buf,sizeof(pass_finish_buf));
+    fprintf(fp,"%s    {\n",i ? ",\n" : "");
+    fprintf(fp,"      \"counter_mask\": \"0x%x\",\n",mp->counter_mask);
+    fprintf(fp,"      \"counters_requested\": %d,\n",mp->counters_requested);
+    fprintf(fp,"      \"counters_measured\": %d,\n",mp->counters_measured);
+    fprintf(fp,"      \"start_time\": \"%s\",\n",pass_start_buf);
+    fprintf(fp,"      \"finish_time\": \"%s\",\n",pass_finish_buf);
+    fprintf(fp,"      \"exit_status\": {\n");
+    write_exit_status_fields(fp,&mp->exit_status,"        ");
+    fprintf(fp,"      }\n");
+    fprintf(fp,"    }");
+  }
+  fprintf(fp,"%s  ],\n",info->npasses ? "\n" : "");
 
   fprintf(fp,"  \"output_files\": [\n");
   if (info->output_path){
