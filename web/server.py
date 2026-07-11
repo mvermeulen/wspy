@@ -1,23 +1,32 @@
 #!/usr/bin/env python3
 """
-wspy web launcher + report browser -- thin end-to-end slice (INVESTIGATION_4.0.md
-4.1 Tier 2, item 6).
+wspy web launcher + report browser (INVESTIGATION_4.0.md 4.1 Tier 2, items 6-7).
 
-One fixed configuration only: the "amdtopdown" pass wspy-run's deep-cpu/deep-gpu
-profiles already use --
+Two launchers on one page:
 
-    wspy --csv --interval 1 --topdown --no-rusage --no-software --no-ipc
+- Item 6, the fixed-configuration slice: always runs the "amdtopdown" pass
+  wspy-run's deep-cpu/deep-gpu profiles already use --
 
--- followed by workload/phoronix/gnuplot.sh's amdtopdown.csv -> amdtopdown.png
-plot block. No preset picker, no configuration/option checklist: that's #8,
-built on top of this slice later. This process is a thin client: every run it
-launches is exactly the wspy/gnuplot command lines a user could type by hand,
-and it shows both before running them. It keeps no state beyond the run
-directories it writes -- the report browser reads CSV/manifest/PNG straight
-off disk, no database.
+      wspy --csv --interval 1 --topdown --no-rusage --no-software --no-ipc
+
+  -- followed by workload/phoronix/gnuplot.sh's amdtopdown.csv -> amdtopdown.png
+  plot block. No preset picker, no configuration/option checklist.
+- Item 7, the wspy-run profile launcher: a thin form over wspy-run's own
+  existing surface (builtin profile(s) + suite/benchmark/workload), so real
+  varied runs exist to browse before #8's curation studio is built. Mirrors
+  workload/phoronix/run_test.sh's own pattern -- call wspy-run, then
+  best-effort run gnuplot.sh only if the chosen profile produced
+  amdtopdown.csv.
+
+Both are thin clients: every run launches exactly the command line(s) a user
+could type by hand, shown before running them. No preset/configuration/option
+checklist yet for either (that's #9), no wspy-validate/wspy-store/wspy-summary
+coverage (also #9). The report browser keeps no state of its own -- it reads
+whatever landed in a run directory straight off disk, dispatching on whether
+wspy-run's own run-level manifest.json is present.
 
 Usage:
-    web/server.py [--host HOST] [--port PORT] [--wspy PATH]
+    web/server.py [--host HOST] [--port PORT] [--wspy PATH] [--wspy-run PATH]
                    [--gnuplot-script PATH] [--output-root DIR]
 
 Stdlib only, by design (see CLAUDE.md's web/ entry for the reasoning).
@@ -41,7 +50,7 @@ from urllib.parse import urlsplit, parse_qs
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
-# The one fixed configuration this slice knows about -- matches wspy-run's
+# The one fixed configuration item 6 knows about -- matches wspy-run's
 # deep-cpu/deep-gpu "amdtopdown" pass exactly (wspy-run, load_builtin_profile()).
 WSPY_FIXED_ARGS = ["--csv", "--interval", "1", "--topdown",
                     "--no-rusage", "--no-software", "--no-ipc"]
@@ -51,7 +60,23 @@ PNG_NAME = "amdtopdown.png"
 LOG_NAME = "launch.log"
 ARTIFACT_FILES = (CSV_NAME, MANIFEST_NAME, PNG_NAME, LOG_NAME)
 
+# wspy-run's own unified-layout artifacts (item 7) -- see wspy-run's
+# generate_summary()/generate_manifest(). RUN_MANIFEST_NAME's presence in a
+# run directory is what distinguishes an item-7 (wspy-run) report from an
+# item-6 (fixed-config) one -- the two never collide since item 6 never
+# writes a bare "manifest.json" (its own manifest is amdtopdown.manifest.json).
+RUN_MANIFEST_NAME = "manifest.json"
+SUMMARY_NAME = "summary.txt"
+TOPLEVEL_MARKER_FILES = ARTIFACT_FILES + (RUN_MANIFEST_NAME, SUMMARY_NAME)
+
+# wspy-run's own builtin profile catalog (wspy-run, BUILTIN_PROFILES) --
+# offered as a datalist in the UI; wspy-run itself is still the source of
+# truth and rejects anything else, so this list is a convenience, not a gate.
+BUILTIN_PROFILES = ("quick", "deep-cpu", "deep-cpu-intel", "deep-gpu",
+                     "tree-heavy", "ibs-basic", "ibs-memory-deep")
+
 NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+PROFILE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # ---------------------------------------------------------------------------
 # Run registry: in-memory only, purely to relay a run's live log lines to an
@@ -124,6 +149,18 @@ def build_gnuplot_argv(gnuplot_script):
     return ["bash", gnuplot_script]
 
 
+def valid_profile_spec(spec):
+    tokens = spec.split(",")
+    return bool(tokens) and all(PROFILE_TOKEN_RE.match(t) for t in tokens)
+
+
+def build_wspy_run_argv(wspy_run_bin, wspy_bin, output_root, suite, benchmark,
+                         run_id, profile, workload_argv):
+    return ([wspy_run_bin, "--wspy", wspy_bin, "-o", output_root,
+              "--suite", suite, "--benchmark", benchmark, "--run-id", run_id,
+              profile, "--"] + workload_argv)
+
+
 def shell_preview(argv, cwd=None):
     s = shlex.join(argv)
     if cwd:
@@ -191,6 +228,69 @@ def execute_run(state, wspy_bin, gnuplot_script, rundir, workload_argv):
     state.finish(status, None)
 
 
+def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile, workload_argv):
+    """Item 7: invoke wspy-run itself (rather than wspy directly) for one of
+    its builtin profiles, then -- mirroring workload/phoronix/run_test.sh's
+    own hand-written pattern -- best-effort run gnuplot.sh afterward only if
+    the chosen profile actually produced amdtopdown.csv (true for deep-cpu/
+    deep-gpu, false for e.g. deep-cpu-intel/quick/tree-heavy/ibs-*)."""
+    log_path = os.path.join(rundir, LOG_NAME)
+    logf = open(log_path, "w")
+
+    def emit(line):
+        logf.write(line + "\n")
+        logf.flush()
+        state.append(line)
+
+    wspy_run_argv = build_wspy_run_argv(cfg["wspy_run_bin"], cfg["wspy_bin"],
+                                         cfg["output_root"], suite, benchmark,
+                                         run_id, profile, workload_argv)
+    emit("$ " + shell_preview(wspy_run_argv))
+    try:
+        proc = subprocess.Popen(wspy_run_argv, cwd=REPO_ROOT,
+                                 stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT,
+                                 text=True, bufsize=1)
+    except OSError as e:
+        emit(f"[error] failed to launch wspy-run ({cfg['wspy_run_bin']}): {e}")
+        logf.close()
+        state.finish("error", None)
+        return
+
+    for line in proc.stdout:
+        emit(line.rstrip("\n"))
+    wspy_run_rc = proc.wait()
+    emit(f"[wspy-run exited {wspy_run_rc}]")
+
+    csv_path = os.path.join(rundir, CSV_NAME)
+    has_topdown_csv = os.path.exists(csv_path) and os.path.getsize(csv_path) > 0
+
+    if not has_topdown_csv:
+        emit("[skipping gnuplot: chosen profile did not produce amdtopdown.csv]")
+        logf.close()
+        state.finish("done" if wspy_run_rc == 0 else "error", None)
+        return
+
+    gnuplot_argv = build_gnuplot_argv(cfg["gnuplot_script"])
+    emit("$ " + shell_preview(gnuplot_argv, cwd=rundir))
+    try:
+        proc = subprocess.Popen(gnuplot_argv, cwd=rundir,
+                                 stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT,
+                                 text=True, bufsize=1)
+        for line in proc.stdout:
+            emit(line.rstrip("\n"))
+        gnuplot_rc = proc.wait()
+        emit(f"[gnuplot exited {gnuplot_rc}]")
+    except OSError as e:
+        emit(f"[error] failed to launch gnuplot script ({cfg['gnuplot_script']}): {e}")
+        gnuplot_rc = 1
+
+    logf.close()
+    status = "done" if wspy_run_rc == 0 and gnuplot_rc == 0 else "error"
+    state.finish(status, None)
+
+
 # ---------------------------------------------------------------------------
 # Report discovery -- scans OUTPUT_ROOT for suite/benchmark/run_id
 # directories holding at least one known artifact, newest first. This is
@@ -213,7 +313,7 @@ def discover_reports(output_root, limit=50):
                 run_dir = os.path.join(bench_dir, run_id)
                 if not os.path.isdir(run_dir):
                     continue
-                if not any(os.path.exists(os.path.join(run_dir, f)) for f in ARTIFACT_FILES):
+                if not any(os.path.exists(os.path.join(run_dir, f)) for f in TOPLEVEL_MARKER_FILES):
                     continue
                 mtime = os.path.getmtime(run_dir)
                 reports.append({
@@ -239,6 +339,32 @@ def read_manifest_workload(manifest_path):
     return None
 
 
+def read_run_manifest(run_manifest_path):
+    """Parse wspy-run's own run-level manifest.json (wspy-run's
+    generate_manifest() -- a different, simpler shape than a per-pass
+    --manifest: top-level command is a bare argv array, not {"argv": [...]},
+    and passes[] lists name/output/manifest/status for each pass wspy-run ran."""
+    try:
+        with open(run_manifest_path) as f:
+            data = json.load(f)
+        if not isinstance(data.get("passes"), list):
+            return None
+        return data
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+
+
+def guess_content_type(filename):
+    ext = os.path.splitext(filename)[1].lower()
+    return {
+        ".csv": "text/csv",
+        ".json": "application/json",
+        ".png": "image/png",
+        ".txt": "text/plain",
+        ".log": "text/plain",
+    }.get(ext, "application/octet-stream")
+
+
 # ---------------------------------------------------------------------------
 # HTML rendering
 # ---------------------------------------------------------------------------
@@ -254,7 +380,7 @@ def page(title, body):
 </body></html>"""
 
 
-def render_index(output_root, prefill, wspy_bin, gnuplot_script):
+def render_index(output_root, prefill, wspy_bin, wspy_run_bin, gnuplot_script):
     reports = discover_reports(output_root)
     rows = []
     for r in reports:
@@ -276,9 +402,14 @@ def render_index(output_root, prefill, wspy_bin, gnuplot_script):
     w_suite = html.escape(prefill.get("suite", "manual"))
     w_benchmark = html.escape(prefill.get("benchmark", ""))
 
+    p_workload = html.escape(prefill.get("profile_workload", ""))
+    p_suite = html.escape(prefill.get("profile_suite", "manual"))
+    p_benchmark = html.escape(prefill.get("profile_benchmark", ""))
+    profile_options = "".join(f'<option value="{html.escape(p)}">' for p in BUILTIN_PROFILES)
+
     body = f"""
 <section class="panel">
-  <h1>Launcher</h1>
+  <h1>Launcher: fixed configuration</h1>
   <p class="config-label">Configuration: <code>amdtopdown</code>
      (fixed for this slice &mdash; the preset/configuration picker lands here later)</p>
   <form id="run-form" data-output-root="{html.escape(output_root)}"
@@ -310,6 +441,46 @@ def render_index(output_root, prefill, wspy_bin, gnuplot_script):
   <p id="run-result"></p>
 </section>
 <section class="panel">
+  <h1>Launcher: wspy-run profile</h1>
+  <p class="config-label">Runs a named <code>wspy-run</code> profile (or comma-composed list) against
+     a workload &mdash; no ad-hoc counter/option checklist yet, just <code>wspy-run</code>'s own
+     existing presets.</p>
+  <form id="profile-run-form" data-output-root="{html.escape(output_root)}"
+        data-wspy="{html.escape(wspy_bin)}" data-wspy-run="{html.escape(wspy_run_bin)}"
+        data-gnuplot="{html.escape(gnuplot_script)}">
+    <label>Profile(s) <span class="muted">(comma-separated, e.g. <code>deep-cpu,tree-heavy</code>)</span>
+      <input type="text" id="p_profile" name="profile" list="profile-list"
+             placeholder="e.g. deep-cpu" required>
+      <datalist id="profile-list">{profile_options}</datalist>
+    </label>
+    <label>Workload command
+      <input type="text" id="p_workload" name="workload" value="{p_workload}"
+             placeholder="e.g. sleep 5" required>
+    </label>
+    <div class="row">
+      <label>Suite
+        <input type="text" id="p_suite" name="suite" value="{p_suite}">
+      </label>
+      <label>Benchmark
+        <input type="text" id="p_benchmark" name="benchmark" value="{p_benchmark}"
+               placeholder="(defaults to workload's program name)">
+      </label>
+      <label>Run id
+        <input type="text" id="p_run_id" name="run_id" placeholder="(auto)">
+      </label>
+    </div>
+    <fieldset class="preview">
+      <legend>Command about to run (copy/paste-able)</legend>
+      <pre id="p-preview-wspy"></pre>
+      <p class="muted">gnuplot.sh runs afterward, best-effort, only if the chosen profile produces
+         amdtopdown.csv (e.g. deep-cpu/deep-gpu).</p>
+    </fieldset>
+    <button type="submit" id="p-run-button">Run</button>
+  </form>
+  <pre id="p-live-output" class="live-output" hidden></pre>
+  <p id="p-run-result"></p>
+</section>
+<section class="panel">
   <h2>Recent reports</h2>
   {reports_html}
 </section>
@@ -323,6 +494,18 @@ def render_report(output_root, suite, benchmark, run_id):
     if not os.path.isdir(rundir):
         return None
 
+    # A wspy-run-produced run directory (item 7) always carries wspy-run's
+    # own manifest.json (generate_manifest(), unconditional for the unified
+    # --suite/--benchmark layout); item 6's fixed-config path never writes a
+    # bare "manifest.json" (its own is amdtopdown.manifest.json), so this is
+    # an unambiguous discriminator between the two report shapes.
+    run_manifest = read_run_manifest(os.path.join(rundir, RUN_MANIFEST_NAME))
+    if run_manifest is not None:
+        return render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest)
+    return render_fixed_report(rundir, suite, benchmark, run_id)
+
+
+def render_fixed_report(rundir, suite, benchmark, run_id):
     csv_path = os.path.join(rundir, CSV_NAME)
     manifest_path = os.path.join(rundir, MANIFEST_NAME)
     png_path = os.path.join(rundir, PNG_NAME)
@@ -360,6 +543,95 @@ def render_report(output_root, suite, benchmark, run_id):
     if os.path.exists(log_path):
         parts.append(f'<li><a href="{base}/{LOG_NAME}">{LOG_NAME}</a> (launch log)</li>')
     parts.append("</ul>")
+
+    body = "<section class=\"panel\">" + "".join(parts) + "</section>"
+    return page(f"wspy report: {benchmark}/{run_id}", body)
+
+
+def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
+    base = f"/files/{suite}/{benchmark}/{run_id}"
+    workload = run_manifest.get("command") or None
+    workload_str = shlex.join(workload) if workload else None
+
+    parts = [f"<h1>Report: {html.escape(suite)} / {html.escape(benchmark)} / {html.escape(run_id)}</h1>",
+             '<p class="muted">Produced by the wspy-run profile launcher (item 7).</p>']
+
+    if workload_str:
+        parts.append(f"<p>Workload: <code>{html.escape(workload_str)}</code></p>")
+        # No structured record of which profile(s) produced this run yet
+        # (that's #16, structured configuration provenance) -- prefill the
+        # profile launcher's workload/suite/benchmark and leave the profile
+        # field for the user to re-pick.
+        rerun_url = ("/?" +
+                     "profile_workload=" + _urlescape(workload_str) +
+                     "&profile_suite=" + _urlescape(suite) +
+                     "&profile_benchmark=" + _urlescape(benchmark))
+        parts.append(f'<p><a href="{rerun_url}">Customize &amp; run again</a> '
+                      f'<span class="muted">(re-pick the profile; workload/suite/benchmark are prefilled)</span></p>')
+    else:
+        parts.append('<p class="muted">No workload command recorded in manifest.json.</p>')
+
+    accounted_for = {RUN_MANIFEST_NAME}
+
+    parts.append("<h2>Passes</h2><ul class=\"artifacts\">")
+    for p in run_manifest.get("passes", []):
+        name = p.get("name", "?")
+        output = p.get("output")
+        pass_manifest = p.get("manifest")
+        status = p.get("status", "?")
+        status_class = "" if status == "ok" else ' class="muted"'
+        parts.append(f"<li><strong>{html.escape(name)}</strong> "
+                      f"<span{status_class}>[{html.escape(status)}]</span><br>")
+        if output:
+            accounted_for.add(output)
+            output_path = os.path.join(rundir, output)
+            if output.endswith(".png") and os.path.isfile(output_path):
+                parts.append(f'<img class="plot" src="{base}/{_urlescape(output)}" alt="{html.escape(name)}">')
+            elif os.path.isfile(output_path):
+                parts.append(f'<a href="{base}/{_urlescape(output)}">{html.escape(output)}</a>')
+            else:
+                parts.append(f'<span class="muted">{html.escape(output)} (missing)</span>')
+        if pass_manifest:
+            accounted_for.add(pass_manifest)
+            if os.path.isfile(os.path.join(rundir, pass_manifest)):
+                parts.append(f' &middot; <a href="{base}/{_urlescape(pass_manifest)}">manifest</a>')
+        parts.append("</li>")
+    parts.append("</ul>")
+
+    parts.append("<h2>Run-level artifacts</h2><ul class=\"artifacts\">")
+    if os.path.isfile(os.path.join(rundir, SUMMARY_NAME)):
+        accounted_for.add(SUMMARY_NAME)
+        parts.append(f'<li><a href="{base}/{SUMMARY_NAME}">{SUMMARY_NAME}</a> '
+                      f'(concatenated non-CSV pass output)</li>')
+    parts.append(f'<li><a href="{base}/{RUN_MANIFEST_NAME}">{RUN_MANIFEST_NAME}</a> (wspy-run run manifest)</li>')
+    if os.path.isfile(os.path.join(rundir, LOG_NAME)):
+        accounted_for.add(LOG_NAME)
+        parts.append(f'<li><a href="{base}/{LOG_NAME}">{LOG_NAME}</a> (launch log)</li>')
+    parts.append("</ul>")
+
+    # Anything else regular file sitting in the run directory that no pass
+    # claimed -- concretely, gnuplot.sh's own systemtime.png (produced
+    # whenever systemtime.csv is present, alongside amdtopdown.png) plus our
+    # own post-hoc amdtopdown.png/csv/manifest from item 6's plot step,
+    # neither of which wspy-run's own passes[] list knows about. Scanned
+    # rather than hardcoded so a different profile's gnuplot output, or a
+    # future #12 plotting-template addition, shows up automatically.
+    try:
+        extra = sorted(
+            f for f in os.listdir(rundir)
+            if f not in accounted_for and os.path.isfile(os.path.join(rundir, f))
+        )
+    except OSError:
+        extra = []
+    if extra:
+        parts.append("<h2>Other artifacts</h2><ul class=\"artifacts\">")
+        for f in extra:
+            if f.endswith(".png"):
+                parts.append(f'<li>{html.escape(f)}:<br>'
+                              f'<img class="plot" src="{base}/{_urlescape(f)}" alt="{html.escape(f)}"></li>')
+            else:
+                parts.append(f'<li><a href="{base}/{_urlescape(f)}">{html.escape(f)}</a></li>')
+        parts.append("</ul>")
 
     body = "<section class=\"panel\">" + "".join(parts) + "</section>"
     return page(f"wspy report: {benchmark}/{run_id}", body)
@@ -404,9 +676,12 @@ class Handler(BaseHTTPRequestHandler):
         cfg = self.server.wspy_cfg
 
         if path == "/":
-            prefill = {k: v[0] for k, v in qs.items() if k in ("workload", "suite", "benchmark")}
+            prefill_keys = ("workload", "suite", "benchmark",
+                             "profile_workload", "profile_suite", "profile_benchmark")
+            prefill = {k: v[0] for k, v in qs.items() if k in prefill_keys}
             self._send(200, render_index(cfg["output_root"], prefill,
-                                          cfg["wspy_bin"], cfg["gnuplot_script"]))
+                                          cfg["wspy_bin"], cfg["wspy_run_bin"],
+                                          cfg["gnuplot_script"]))
             return
 
         if path.startswith("/static/"):
@@ -441,7 +716,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlsplit(self.path)
-        if parsed.path != "/api/run":
+        if parsed.path not in ("/api/run", "/api/run-profile"):
             self._send(404, "not found")
             return
         cfg = self.server.wspy_cfg
@@ -451,7 +726,10 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._send_json(400, {"error": "invalid JSON body"})
             return
-        self._start_run(cfg, body)
+        if parsed.path == "/api/run":
+            self._start_run(cfg, body)
+        else:
+            self._start_profile_run(cfg, body)
 
     def _serve_static(self, rel):
         if not valid_segment(rel):
@@ -468,24 +746,20 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, f.read(), content_type=ctype)
 
     def _serve_artifact(self, output_root, suite, benchmark, run_id, filename):
-        if not all(valid_segment(x) for x in (suite, benchmark, run_id)):
+        # No fixed filename whitelist: wspy-run's chosen profile determines
+        # what lands in a run directory (systemtime.csv, process.tree.txt,
+        # ibs.csv, ...), so any single path segment that both passes
+        # valid_segment() (no "/", no "..") and actually exists inside this
+        # specific, already-validated run directory is safe to serve.
+        if not all(valid_segment(x) for x in (suite, benchmark, run_id, filename)):
             self._send(400, "invalid path")
-            return
-        if filename not in ARTIFACT_FILES:
-            self._send(404, "not found")
             return
         path = os.path.join(output_root, suite, benchmark, run_id, filename)
         if not os.path.isfile(path):
             self._send(404, "not found")
             return
-        ctype = {
-            CSV_NAME: "text/csv",
-            MANIFEST_NAME: "application/json",
-            PNG_NAME: "image/png",
-            LOG_NAME: "text/plain",
-        }[filename]
         with open(path, "rb") as f:
-            self._send(200, f.read(), content_type=ctype)
+            self._send(200, f.read(), content_type=guess_content_type(filename))
 
     def _start_run(self, cfg, body):
         workload_str = (body.get("workload") or "").strip()
@@ -537,6 +811,63 @@ class Handler(BaseHTTPRequestHandler):
             "gnuplot_command": shell_preview(gnuplot_argv, cwd=rundir),
         })
 
+    def _start_profile_run(self, cfg, body):
+        profile = (body.get("profile") or "").strip()
+        if not profile or not valid_profile_spec(profile):
+            self._send_json(400, {"error": "profile is required and must be a comma-separated list "
+                                            "of letters/digits/'-'/'_' (e.g. deep-cpu or "
+                                            "deep-cpu,tree-heavy)"})
+            return
+
+        workload_str = (body.get("workload") or "").strip()
+        if not workload_str:
+            self._send_json(400, {"error": "workload command is required"})
+            return
+        try:
+            workload_argv = shlex.split(workload_str)
+        except ValueError as e:
+            self._send_json(400, {"error": f"could not parse workload command: {e}"})
+            return
+        if not workload_argv:
+            self._send_json(400, {"error": "workload command is required"})
+            return
+
+        suite = (body.get("suite") or "manual").strip()
+        benchmark = (body.get("benchmark") or "").strip() or default_benchmark_from_workload(workload_argv)
+        run_id = (body.get("run_id") or "").strip() or make_run_id()
+
+        if not all(valid_segment(x) for x in (suite, benchmark, run_id)):
+            self._send_json(400, {"error": "suite/benchmark/run_id must be non-empty and "
+                                            "contain only letters, digits, '.', '_', '-'"})
+            return
+
+        rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+        if os.path.exists(rundir):
+            self._send_json(409, {"error": f"run directory already exists: {rundir}"})
+            return
+        os.makedirs(rundir)
+
+        key = run_key(suite, benchmark, run_id)
+        state = RunState(rundir)
+        with RUNS_LOCK:
+            RUNS[key] = state
+
+        wspy_run_argv = build_wspy_run_argv(cfg["wspy_run_bin"], cfg["wspy_bin"],
+                                             cfg["output_root"], suite, benchmark,
+                                             run_id, profile, workload_argv)
+
+        t = threading.Thread(target=execute_profile_run, args=(
+            state, cfg, rundir, suite, benchmark, run_id, profile, workload_argv,
+        ), daemon=True)
+        t.start()
+
+        self._send_json(202, {
+            "suite": suite, "benchmark": benchmark, "run_id": run_id,
+            "events_url": f"/api/run/{suite}/{benchmark}/{run_id}/events",
+            "report_url": f"/report/{suite}/{benchmark}/{run_id}",
+            "wspy_run_command": shell_preview(wspy_run_argv),
+        })
+
     def _stream_events(self, suite, benchmark, run_id):
         key = run_key(suite, benchmark, run_id)
         with RUNS_LOCK:
@@ -586,6 +917,8 @@ def main():
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--wspy", default=os.path.join(REPO_ROOT, "wspy"),
                      help="path to the wspy binary (default: repo root's ./wspy)")
+    ap.add_argument("--wspy-run", default=os.path.join(REPO_ROOT, "wspy-run"),
+                     help="path to the wspy-run script (default: repo root's ./wspy-run)")
     ap.add_argument("--gnuplot-script",
                      default=os.path.join(REPO_ROOT, "workload", "phoronix", "gnuplot.sh"),
                      help="path to the amdtopdown.csv -> amdtopdown.png plot script")
@@ -600,12 +933,15 @@ def main():
     if not os.path.isfile(args.wspy):
         print(f"warning: wspy binary not found at {args.wspy} (build it with `make` first; "
               f"runs will fail until it exists)", file=sys.stderr)
+    if not os.path.isfile(args.wspy_run):
+        print(f"warning: wspy-run not found at {args.wspy_run}", file=sys.stderr)
     if not os.path.isfile(args.gnuplot_script):
         print(f"warning: gnuplot script not found at {args.gnuplot_script}", file=sys.stderr)
 
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.wspy_cfg = {
         "wspy_bin": os.path.abspath(args.wspy),
+        "wspy_run_bin": os.path.abspath(args.wspy_run),
         "gnuplot_script": os.path.abspath(args.gnuplot_script),
         "output_root": output_root,
     }

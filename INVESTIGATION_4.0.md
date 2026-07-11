@@ -198,17 +198,20 @@ direct `wspy` command lines instead.** This isn't a new rule invented for the we
 fatal-combination behavior the real CLI already has (`--passes`, which is what `wspy-run`'s profiles
 bin-pack onto, rejects `--interval`/`--per-core`/`--tree`/IBS/GPU flags outright; see `CLAUDE.md`'s
 `wspy.c` entry). The mockup's "customize a checkbox → separate command lines with an explanatory note"
-fallback (4.1 item #8) is this rule, discovered bottom-up from the real constraints before being named
+fallback (4.1 item #9) is this rule, discovered bottom-up from the real constraints before being named
 top-down here. Worth treating as the general rule going forward rather than a fact specific to
 counters/tree/interval, since it will recur every time a new configuration or option is added.
 
 Implications:
-- **Web launcher (#8):** read as *presets first* — named shortcuts that populate a configuration+
-  option checklist — with a live indicator of whether the current selection still matches a named
-  preset or has been customized (and therefore will run as separate `wspy` lines). The checklist
-  itself, not the preset layer, is the actual list of configurations+options; presets are just quick
-  starting points into it, matching this hierarchy exactly.
-- **Reports (#15/#16, new):** a report today only records a flat command line and flag set. Recording
+- **Web launcher (#9, with #7 as its first cut):** read as *presets first* — named shortcuts that
+  populate a configuration+option checklist — with a live indicator of whether the current selection
+  still matches a named preset or has been customized (and therefore will run as separate `wspy`
+  lines). The checklist itself, not the preset layer, is the actual list of configurations+options;
+  presets are just quick starting points into it, matching this hierarchy exactly. #7's `wspy-run`
+  profile launcher is the presets-only slice of this — no checklist yet, no customization, just
+  `wspy-run`'s existing named profiles — so it inherits this framing directly rather than inventing a
+  separate one.
+- **Reports (#16/#17, new):** a report today only records a flat command line and flag set. Recording
   the preset/configuration/option choice as structured data — not something re-derived by re-parsing
   argv — lets a report say "this was `deep-cpu`, with the TLB group swapped for L3" in the same
   vocabulary the launcher uses, and lets a "customize & run again" action restore exactly that state
@@ -224,9 +227,10 @@ prioritization" — but this is the vocabulary to design against as 4.1's web wo
 same thing. There is real leeway to adjust existing options/commands toward this if it produces a
 cleaner architecture — this isn't a constraint to preserve backward compatibility around at all costs.
 
-→ Informs 4.1's #6 (thin end-to-end slice), #8 (web launcher — presets expanding to
-configurations+options), #15 (structured configuration provenance), and #16 (report ↔ configuration
-linkage + customize-and-rerun). Also
+→ Informs 4.1's #6 (thin end-to-end slice), #7 (wspy-run profile launcher — presets only, no
+checklist yet), #9 (the fully general web launcher — presets expanding to configurations+options),
+#16 (structured configuration provenance), and #17 (report ↔ configuration linkage +
+customize-and-rerun). Also
 background for any future `wspy-run` profile-format refactor.
 
 ## 4.1 priorities
@@ -313,24 +317,24 @@ show that command line, not hide it); every report should be reconstructible fro
 normalized data plus the raw artifacts already on disk — no server-side state that isn't also
 derivable from files already being produced.
 
-5. Design/mockup pass for the web interface, done deliberately *before* building #6-13 below — the
+5. Design/mockup pass for the web interface, done deliberately *before* building #6-14 below — the
    "step back" this reorg calls for. Covers both halves: wireframes/mockups for the input side (how
-   to organize forms across more than just `wspy-run` — see #8) and the output side (a single-run
-   report page, a compare-two-or-more-runs view, and a historical index/search view — see #7/#10).
+   to organize forms across more than just `wspy-run` — see #9) and the output side (a single-run
+   report page, a compare-two-or-more-runs view, and a historical index/search view — see #8/#11).
    Explicitly evaluate static-file-only rendering (works from `file://` or any static host, no
-   backend process) against a thin dynamic backend, since that choice shapes #7's report studio, #8's
-   launcher, and #9's export format all at once. Deliverable is throwaway mockups plus a short
-   writeup of the chosen direction and open tradeoffs, not production code — expect #6-13 to be
+   backend process) against a thin dynamic backend, since that choice shapes #8's report studio, #9's
+   launcher, and #10's export format all at once. Deliverable is throwaway mockups plus a short
+   writeup of the chosen direction and open tradeoffs, not production code — expect #6-14 to be
    revised once feedback lands. First pass of mockups produced 2026-07-11 (see chat/session record);
    treat those as a starting point for discussion, not a final layout. Feedback round 1 (same day)
-   converged on: per-tool tabs at the top level (#8) with a *multi-select* capability checklist inside
+   converged on: per-tool tabs at the top level (#9) with a *multi-select* capability checklist inside
    the Run tab rather than mutually-exclusive presets — counters/tree/interval/GPU/IBS are each
    independently toggleable with their own sub-customization, composing into one `wspy-run
    --profile a,b,c` invocation where the CLI already supports that and falling back to separate
    command lines (with an inline explanation) where it doesn't yet; a reserved, disabled row for
    future `/proc` extras (4.2 Tier 3) so that expansion has a natural slot without pre-building it;
    defaults-on toggle chips for manifest/run-index/store-ingest instead of opt-in checkboxes; and a
-   local-vs-shared deployment toggle answering #12 directly (local executes with live output, shared
+   local-vs-shared deployment toggle answering #13 directly (local executes with live output, shared
    stays copy-only). That round also surfaced a real gap worth tracking: `wspy-run --profile` only
    accepts its own named, pre-baked profiles, so a custom counter selection or `--interval` sampling
    can't be composed with tree/GPU/IBS into a single invocation the way two named profiles can — the
@@ -344,7 +348,7 @@ derivable from files already being produced.
    already use (`wspy --csv --interval 1 --topdown --no-rusage --no-software --no-ipc`), paired with
    `workload/phoronix/gnuplot.sh`'s existing `amdtopdown.csv` → `amdtopdown.png` plot block, reused
    as-is (cwd'd into the run directory, not parameterized). The launcher (`GET /`) has no preset
-   picker or configuration/option checklist yet — one fixed selection, wired into the position #8's
+   picker or configuration/option checklist yet — one fixed selection, wired into the position #9's
    real picker will occupy later — runs locally with live output (SSE-streamed to the page and mirrored
    to a `launch.log`), and shows both the literal `wspy` and `gnuplot.sh` command lines before running
    them, copy/paste-able, never a paraphrase. Each run writes into
@@ -361,16 +365,38 @@ derivable from files already being produced.
    run produced a valid 1280×960 PNG via a real `gnuplot` install, and a deliberately-broken gnuplot
    path exercised the partial-artifact degrade path (CSV/manifest present, report shows "not
    generated" for the plot) cleanly. Not yet covered, by design: a real preset/configuration/option
-   checklist (#8), curation/reordering/commentary (#7), publish export (#9), and `wspy-store`
-   ingestion — #7-#9 generalize this slice's pieces rather than starting from zero, per this item's
+   checklist (#9), curation/reordering/commentary (#8), publish export (#10), and `wspy-store`
+   ingestion — #7-#10 generalize this slice's pieces rather than starting from zero, per this item's
    original scoping.
-7. Report review + curation studio (supersedes the original "HTML report bundle" framing — same item
+7. Web-based `wspy-run` profile launcher — a deliberately cut-down first slice of #9, inserted ahead
+   of #8's curation studio because curation needs a portfolio of real, varied reports to curate
+   *against*, and #6's single fixed configuration doesn't provide that. Scope is exactly `wspy-run`'s
+   own existing surface — pick a builtin profile (or comma-composed list: `quick`, `deep-cpu`,
+   `deep-cpu-intel`, `deep-gpu`, `tree-heavy`, `ibs-basic`, `ibs-memory-deep`) plus suite/benchmark/
+   workload command, run it, browse the result — and nothing past that: no ad-hoc counter/option
+   checklist (that's #9's job once the preset/configuration/option vocabulary above is actually
+   built out), no `wspy-validate`/`wspy-store`/`wspy-summary`/discovery-command coverage (also #9).
+   Mirrors `workload/phoronix/run_test.sh`'s own real, already-hand-rolled pattern rather than
+   inventing a new one: invoke `wspy-run --suite <suite> --benchmark <benchmark> <profile(s)> --
+   <workload>`, then, only if the resulting run directory contains `amdtopdown.csv` (i.e. the chosen
+   profile included that pass — true for `deep-cpu`/`deep-gpu`, false for `deep-cpu-intel`), `cd` into
+   it and best-effort run `gnuplot.sh` same as #6, silently skipping the plot step otherwise rather
+   than erroring against a profile that never produces that CSV. Command-line display/live-output
+   streaming/directory-per-run plumbing all reuse #6's, unchanged. The report browser generalizes
+   correspondingly: instead of #6's three hardcoded `amdtopdown.*` filenames, it reads `wspy-run`'s
+   own run-level `manifest.json` (already lists each pass's name/output/manifest/status — see
+   `CLAUDE.md`'s `wspy-run` entry) and renders whatever that profile actually produced — `summary.txt`,
+   per-pass outputs/manifests, `process.tree.txt` for a `tree-heavy` pass, `amdtopdown.png` when the
+   post-hoc plot step ran — falling back to #6's fixed-shape rendering for a report directory that has
+   no run-level manifest (i.e. one #6's own fixed-config path produced). Still no
+   selection/reordering/commentary/compare view — that stays #8's job once it exists.
+8. Report review + curation studio (supersedes the original "HTML report bundle" framing — same item
    number, sharpened after 4.1 feedback against a real precedent: an existing hand-built WordPress
    page per workload, e.g. a chart image + pasted raw-output block + hand-written commentary, repeated
    per configuration measured). Serves two purposes in one page: (a) **review** — examine every
    configuration a run collected and its artifacts, so nothing needs a separate viewer; (b)
    **curate** — select a subset, reorder it, and write commentary *per configuration* ("what does
-   this tell us"), not just one whole-report note, then hand it off to #9's export. A configuration
+   this tell us"), not just one whole-report note, then hand it off to #10's export. A configuration
    whose artifact is too large to include wholesale (a process tree is the concrete case) needs a
    choice of inclusion depth — none/summary/excerpt/full — not an all-or-nothing toggle, so a report
    can still ship with a large artifact represented by a derived summary or a truncated excerpt plus a
@@ -380,9 +406,9 @@ derivable from files already being produced.
    report), and a freeform text-only section with no artifact behind it at all needs to be addable too
    — matching the real page's narrative flow rather than a fixed template. Compare view (sweep
    multiple runs side by side) stays part of this item.
-8. Web-based run launcher + report browser — a thin web form over `wspy-run`'s option surface
+9. Web-based run launcher + report browser — a thin web form over `wspy-run`'s option surface
    (profile/suite/benchmark/workload command) that constructs and executes the command, then links
-   to the resulting output once it lands. Most valuable once #7's report studio exists to link
+   to the resulting output once it lands. Most valuable once #8's report studio exists to link
    to, but the launcher half itself has no hard dependency on Tier 1's normalized store and could
    ship early. Motivated directly by 4.0's release-testing experience — hand-typing long `wspy-run`
    invocations while validating flag combinations was real, repeated friction, and a form would make
@@ -398,61 +424,61 @@ derivable from files already being produced.
    around the preset/configuration/option hierarchy (see the deep-dive above): named preset shortcuts
    that populate a multi-select configuration+option checklist, with a live indicator of whether the
    current selection still matches a named preset or has been customized into separate-command-line
-   territory. #6's fixed single-configuration launcher is this item's starting point, not a separate
-   effort — generalize its command-display/local-execute plumbing into the real checklist rather than
-   rebuilding it.
-9. Publish-ready data export format — takes #7's curated block sequence (heading/image/preformatted/
-   commentary, per selected configuration) and renders it in more than one target format, not just a
-   bulk data dump:
-   - **WordPress block markup (Gutenberg comment format)** — the recommended default once a real
-     implementation exists. Pasting this into the WordPress block editor produces separately-editable
-     native blocks (a real heading block, a real image block, a real preformatted block, ...) instead
-     of one opaque blob, which is exactly what makes a report easy to keep tweaking *inside* WordPress
-     afterward rather than only by regenerating and re-pasting from here.
-   - **Self-contained inline-styled HTML** — for a WordPress "Custom HTML" block or any CMS that just
-     wants raw HTML; easiest to paste, hardest to edit again afterward. Kept as an option, not the
-     default, once the block format exists.
-   - **Markdown** — portable, for anywhere that takes it directly or as a conversion source.
-   Real images (gnuplot/chart output) need actual uploaded files for the WordPress/HTML formats to
-   reference — the mockup stands these in with a live chart preview and a placeholder path, which is a
-   real gap between mockup and implementation, not a detail to gloss over when this is built.
-10. Historical run index browser/search.
-11. Shared plotting templates — replace `workload/phoronix/gnuplot.sh`'s per-suite script with one
-    normalized-schema pipeline once #1 exists. This is what closes #9's real-image gap: the studio
-    (#7) and export (#9) currently stand in a placeholder for every chart because nothing yet
+   territory. #7's `wspy-run` profile launcher is this item's starting point, not a separate effort —
+   generalize its command-display/local-execute plumbing (itself inherited from #6) into the real
+   checklist rather than rebuilding it.
+10. Publish-ready data export format — takes #8's curated block sequence (heading/image/preformatted/
+    commentary, per selected configuration) and renders it in more than one target format, not just a
+    bulk data dump:
+    - **WordPress block markup (Gutenberg comment format)** — the recommended default once a real
+      implementation exists. Pasting this into the WordPress block editor produces separately-editable
+      native blocks (a real heading block, a real image block, a real preformatted block, ...) instead
+      of one opaque blob, which is exactly what makes a report easy to keep tweaking *inside* WordPress
+      afterward rather than only by regenerating and re-pasting from here.
+    - **Self-contained inline-styled HTML** — for a WordPress "Custom HTML" block or any CMS that just
+      wants raw HTML; easiest to paste, hardest to edit again afterward. Kept as an option, not the
+      default, once the block format exists.
+    - **Markdown** — portable, for anywhere that takes it directly or as a conversion source.
+    Real images (gnuplot/chart output) need actual uploaded files for the WordPress/HTML formats to
+    reference — the mockup stands these in with a live chart preview and a placeholder path, which is a
+    real gap between mockup and implementation, not a detail to gloss over when this is built.
+11. Historical run index browser/search.
+12. Shared plotting templates — replace `workload/phoronix/gnuplot.sh`'s per-suite script with one
+    normalized-schema pipeline once #1 exists. This is what closes #10's real-image gap: the studio
+    (#8) and export (#10) currently stand in a placeholder for every chart because nothing yet
     generates the actual `plots/*.png` a real report would reference — this item is that generator,
-    not a separate concern from the reporting work above. #6's slice deliberately keeps calling
-    `gnuplot.sh` as-is rather than pre-empting this generalization.
-12. Deployment/hosting design note — answer, for both a person browsing their own local run output
-    and a team publishing to a shared site: does #7/#10 need to run anywhere besides `localhost`, is a
+    not a separate concern from the reporting work above. #6's slice and #7's `wspy-run` launcher
+    deliberately keep calling `gnuplot.sh` as-is rather than pre-empting this generalization.
+13. Deployment/hosting design note — answer, for both a person browsing their own local run output
+    and a team publishing to a shared site: does #8/#11 need to run anywhere besides `localhost`, is a
     static site (generated files, no server process) sufficient, and if not, what's the smallest
-    backend that covers both cases? Feeds #5's mockup pass directly and should land before #8's
+    backend that covers both cases? Feeds #5's mockup pass directly and should land before #9's
     launcher decides how it invokes `wspy-run` (local subprocess vs. something that only makes sense
     on a single machine).
-13. Traceability links (summary row → manifest → raw CSV → plots → tree artifacts) — closes the
+14. Traceability links (summary row → manifest → raw CSV → plots → tree artifacts) — closes the
     "every published row traces back to command/environment/artifacts" criterion deferred from 4.0
     (see "Success criteria for a 4.0 kickoff").
-14. Report commentary/annotation — free-text notes saved alongside a report (session-local in the
+15. Report commentary/annotation — free-text notes saved alongside a report (session-local in the
     mockup; a real implementation needs a place to persist it — most naturally the normalized store
     from #1, keyed to the run — so it survives a report being regenerated). Scoped *per configuration*
-    ("what does this tell us," attached to that configuration's block in #7) plus one overview note for
+    ("what does this tell us," attached to that configuration's block in #8) plus one overview note for
     the report as a whole — not a single global field — matching the real precedent's pattern of
     commentary interspersed between each chart/output block rather than one summary at the end.
     Speculative/lower priority within this tier; flagged explicitly as forward-looking by 4.1 feedback
     rather than a firm requirement. Future extension, not in scope now: an optional local-LLM-drafted
     starting point generated from a configuration's own metrics, which the user edits rather than
     writes from scratch — shown in the mockup as a visibly disabled affordance, not a real integration.
-15. Structured configuration provenance — record a run's preset/configuration/option choices (see the
+16. Structured configuration provenance — record a run's preset/configuration/option choices (see the
     deep-dive above) as structured data in `manifest.h`/`run_index.h`, not just the flat command line
-    and flag set already captured. This is what lets #7/#10's reports render "how this was run" in the
-    same vocabulary the launcher uses, and lets #16's "customize & run again" restore exact launcher
+    and flag set already captured. This is what lets #8/#11's reports render "how this was run" in the
+    same vocabulary the launcher uses, and lets #17's "customize & run again" restore exact launcher
     state from a report instead of re-parsing argv. A real schema change (bump
     `MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION`), not only a UI concern.
-16. Browse-reports: relate each report's artifacts back to the preset/configuration/option choices
-    that produced it (via #15), and add a "customize & run again" action that returns to the launcher
+17. Browse-reports: relate each report's artifacts back to the preset/configuration/option choices
+    that produced it (via #16), and add a "customize & run again" action that returns to the launcher
     pre-filled from the report rather than from scratch. The mockup demonstrates this in-session
     (capturing the launcher's live state into each simulated run and restoring it on demand); the real
-    version depends on #15 actually persisting that state somewhere reports can read it back from.
+    version depends on #16 actually persisting that state somewhere reports can read it back from.
 
 ## 4.2 priorities
 Goal: everything originally scoped for 4.1 beyond Tier 1 (shipped) and Tier 2 (now 4.1's
@@ -572,13 +598,13 @@ topdown/IBS attribution, static-site publishing, and a lower-overhead tracing ba
 **Tier 3 — publishing/reporting expansion, needs 4.1's report studio:**
 
 8. Static-site publishing pipeline (per-benchmark + suite + cross-suite pages from templates). Distinct
-   from 4.1 #7's per-run studio, not a replacement for it: the studio is where one report gets
+   from 4.1 #8's per-run studio, not a replacement for it: the studio is where one report gets
    curated by a person; this is what turns *many* already-curated (or un-curated, template-driven)
-   reports into a browsable site. Likely consumes the same export formats #9 (4.1) produces rather
+   reports into a browsable site. Likely consumes the same export formats #10 (4.1) produces rather
    than inventing a fourth.
-9. Characterization badges + similarity panels in reports — a new block type in 4.1 #7's studio once
+9. Characterization badges + similarity panels in reports — a new block type in 4.1 #8's studio once
    4.2 #18's archetype scorecard exists to draw a badge from, not a separate report surface.
-10. Interactive tree/timeline drill-down, GPU phase overlays — the interactive counterpart to 4.1 #7's
+10. Interactive tree/timeline drill-down, GPU phase overlays — the interactive counterpart to 4.1 #8's
     static inclusion-depth mechanism (none/summary/excerpt/full) for the tree/interval blocks
     specifically; that mechanism stays the right default for a published, non-interactive report even
     once this exists.
@@ -654,7 +680,7 @@ Each carries a recommendation; treat these as the current default, not a closed 
 - **Should `wspy-run`'s builtin profiles be refactored to be declaratively defined (as
   configurations+options) instead of today's hardcoded `PASS_NAMES`/`PASS_FLAGS` bash arrays in
   `load_builtin_profile()`?** New, opened by the preset/configuration/option deep-dive above.
-  Recommendation: not yet — let the web UI's preset/configuration/option model (4.1 #8) stabilize
+  Recommendation: not yet — let the web UI's preset/configuration/option model (4.1 #9) stabilize
   against real feedback first, then decide whether `wspy-run` itself should be rebuilt on the same
   vocabulary. Premature to commit to a CLI/`wspy-run` restructure before the vocabulary has been used
   for anything real; there's real leeway to make this change later if it produces a cleaner
