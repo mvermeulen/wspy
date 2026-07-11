@@ -337,43 +337,33 @@ derivable from files already being produced.
    mockup's fallback is separate command lines per capability; the real fix would be teaching
    `wspy-run` to accept an ad-hoc flags-based pass alongside named profiles, which isn't scoped as its
    own backlog item yet.
-6. **Thin end-to-end slice through the launcher and report browser, one fixed configuration** —
-   before generalizing #7-#9 to the full preset/configuration/option surface, prove the whole
-   launch → run → artifact → browse → edit pipeline end to end against a single, already-well-worn
-   configuration rather than building the general form first: the `amdtopdown` pass `wspy-run`'s
-   `deep-cpu`/`deep-gpu` profiles already use (`wspy --csv --interval 1 --topdown --no-rusage
-   --no-software --no-ipc`), paired with `workload/phoronix/gnuplot.sh`'s existing
-   `amdtopdown.csv` → `amdtopdown.png` plot block — the chart that's often the first one in a
-   hand-built report page (see #7's WordPress precedent). Reuse `gnuplot.sh`'s `png` terminal as-is;
-   this slice isn't the place to also settle a jpg-vs-png question. Deliberately narrow, matching
-   this tier's own "step back before building" instinct (#5):
-   - **Launcher:** no preset picker, no configuration/option checklist, no customization — one fixed
-     selection standing in for this single configuration, but wired into the *position* the real
-     preset picker (#8) will occupy later rather than bypassing it, so #8's generalization slots in
-     without a rearchitecture. Runs via #5's already-settled local-execute path (a local subprocess,
-     live output), and — per this tier's design principle that a form submission should map to a
-     command line a user could type by hand, and show it rather than hide it — displays, and lets a
-     user copy/paste, both commands it's about to run in sequence: the `wspy` invocation and the
-     follow-on `gnuplot` invocation that turns the resulting CSV into the image. This is the first
-     place that principle has to cover a short pipeline instead of one command, which #8's later
-     preset-composed invocations will need too.
-   - **Execution:** each launch writes into its own output directory, reusing 4.0's unified-output-
-     layout naming convention (`wspy-run --suite/--benchmark`'s `<outdir>/<suite>/<benchmark>/
-     <run-id>/` shape) even though `wspy-run` itself isn't invoked here — there's exactly one pass
-     and no profile to select, so this calls `wspy` directly, but the directory shape is already the
-     established convention and there's no reason to invent a second one. The directory ends up
-     holding the raw CSV, `--manifest`'s JSON, and the gnuplot-produced image.
-   - **Report browser:** pick up one such directory as a "report" — list its artifacts (CSV linked,
-     image rendered inline, manifest linked), find it without having to know the path by heart, and
-     offer a link back to the launcher that restores this configuration for editing. No
-     curation/reordering/commentary (#7's job once it exists) and no `wspy-store` ingestion — this
-     slice reads the CSV/manifest directly off disk, per the tier's design principle that a report
-     should be reconstructible from raw artifacts already on disk without needing extra server-side
-     state.
-
-   Once this works end to end, #7-#9 generalize each piece rather than starting from zero: the one
-   fixed configuration becomes the real checklist, the one hardcoded `gnuplot.sh` call becomes #11's
-   template pipeline, and the one-report-directory view becomes #7's full curation studio.
+6. ~~**Thin end-to-end slice through the launcher and report browser, one fixed configuration**~~ —
+   **shipped.** `web/server.py` (stdlib-only Python, see `CLAUDE.md`'s `web/` entry) proves the whole
+   launch → run → artifact → browse → edit pipeline end to end against the one already-well-worn
+   configuration this item scoped: the `amdtopdown` pass `wspy-run`'s `deep-cpu`/`deep-gpu` profiles
+   already use (`wspy --csv --interval 1 --topdown --no-rusage --no-software --no-ipc`), paired with
+   `workload/phoronix/gnuplot.sh`'s existing `amdtopdown.csv` → `amdtopdown.png` plot block, reused
+   as-is (cwd'd into the run directory, not parameterized). The launcher (`GET /`) has no preset
+   picker or configuration/option checklist yet — one fixed selection, wired into the position #8's
+   real picker will occupy later — runs locally with live output (SSE-streamed to the page and mirrored
+   to a `launch.log`), and shows both the literal `wspy` and `gnuplot.sh` command lines before running
+   them, copy/paste-able, never a paraphrase. Each run writes into
+   `<output-root>/<suite>/<benchmark>/<run-id>/`, the same unified-output-layout shape
+   `wspy-run --suite/--benchmark` uses (reused even though `wspy-run` itself isn't invoked, since
+   there's exactly one pass and no profile to select), ending up with whatever subset of
+   `amdtopdown.csv`/`amdtopdown.manifest.json`/`amdtopdown.png`/`launch.log` a (possibly partial or
+   failed) run actually produced. The report browser (`GET /report/<suite>/<benchmark>/<run_id>`)
+   reads that directory straight off disk (CSV linked, image rendered inline, manifest linked) —
+   no `wspy-store` ingestion, no server-owned state — and offers a "customize & run again" link back
+   to the launcher, prefilled from the manifest's own recorded workload command; a homepage listing of
+   discovered run directories (newest first) means a report never has to be found by knowing its path
+   by heart. Confirmed end to end on real hardware (AMD, this repo's dev machine): a `sleep`-workload
+   run produced a valid 1280×960 PNG via a real `gnuplot` install, and a deliberately-broken gnuplot
+   path exercised the partial-artifact degrade path (CSV/manifest present, report shows "not
+   generated" for the plot) cleanly. Not yet covered, by design: a real preset/configuration/option
+   checklist (#8), curation/reordering/commentary (#7), publish export (#9), and `wspy-store`
+   ingestion — #7-#9 generalize this slice's pieces rather than starting from zero, per this item's
+   original scoping.
 7. Report review + curation studio (supersedes the original "HTML report bundle" framing — same item
    number, sharpened after 4.1 feedback against a real precedent: an existing hand-built WordPress
    page per workload, e.g. a chart image + pasted raw-output block + hand-written commentary, repeated
