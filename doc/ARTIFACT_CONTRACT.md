@@ -47,7 +47,7 @@ from `wspy --version` (which is just `WSPY_VERSION_MAJOR.MINOR`, the tool's own 
 The manifest and run index are versioned **independently** (`MANIFEST_SCHEMA_VERSION` vs.
 `RUN_INDEX_SCHEMA_VERSION`) — the run index is a leaner, line-oriented projection of a run, not the
 manifest itself, and its shape evolves on its own schedule. Current versions as of this writing:
-manifest `1.2.0`, run index `1.2.0` (check `manifest.h`/`run_index.h` for the authoritative current
+manifest `1.3.0`, run index `1.3.0` (check `manifest.h`/`run_index.h` for the authoritative current
 values — this doc is not the source of truth for the version number itself, only for the contract
 around how it's used).
 
@@ -63,7 +63,8 @@ One JSON object, written once at the end of a run (`manifest.c:write_manifest()`
 
 ```
 {
-  "schema_version": "1.2.0",
+  "schema_version": "1.3.0",
+  "collector": "wspy",
   "wspy_version": "4.0",
   "generated_at": "<ISO-8601 timestamp>",
   "command": { "argv": ["<workload argv[0]>", "..."] },
@@ -91,6 +92,10 @@ One JSON object, written once at the end of a run (`manifest.c:write_manifest()`
 
 Field notes:
 
+- `collector` identifies which tool produced this record; always `"wspy"` today — it's a schema seam
+  for a future non-`wspy` collector (e.g. wrapping `perf stat` or a GPU-specific tool behind the same
+  manifest/run-index shape), not a currently-configurable field. A reader can safely ignore it until
+  a non-`"wspy"` value actually appears.
 - `command.argv` is the **workload's** command line (what came after `--`), not `wspy`'s own
   argv. It's the only place a manifest records what was actually run — `wspy`'s own flags are in
   `options`, which is a summary (`counter_mask` as a hex bitmask, not a decoded flag list), not a
@@ -134,7 +139,7 @@ Per-record shape (same information as the manifest, projected leaner — no `out
 details beyond the three path strings, no per-field environment gap list, just counts):
 
 ```
-{"schema_version":"1.2.0","run_id":"20260710T153000.123-48213","wspy_version":"4.0",
+{"schema_version":"1.3.0","run_id":"20260710T153000.123-48213","collector":"wspy","wspy_version":"4.0",
  "hostname":"...","cpu_vendor":"...","cpu_family":25,"cpu_model":97,
  "environment":{...same field set as manifest's "environment"...},
  "environment_coverage":{"captured":9,"probed":9},

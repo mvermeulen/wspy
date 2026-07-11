@@ -1,11 +1,14 @@
 # wspy Investigation 4.0
 
-Date: 2026-07-10 (scope pass — defer publishing/reporting to 4.1, done thoroughly there rather than
-as a 4.0 stub; see "Success criteria for a 4.0 kickoff" and "What remains before 4.0 is complete")
-Status: **4.0's data/metadata foundation is built (manifest, run index, validation, coverage,
-provenance, profile-driven launcher, unified output layout, output-contract test suite). What's left
-is hand-testing that foundation against real hardware/installs — see "What remains before 4.0 is
-complete" and "Recommended hand testing before closing out 4.0."**
+Date: 2026-07-11 (4.0 released as `v4.0` — see the GitHub release notes for the published version of
+"What shipped in 4.0" below)
+Status: **4.0 is complete and released.** The data/metadata foundation (manifest, run index,
+validation, coverage, provenance, profile-driven launcher, unified output layout, output-contract
+test suite) shipped and has been hand-tested: full counter matrix confirmed on real AMD/Intel
+hardware, `workload/*/run_test.sh` run end to end against real suite installs, and the NMI-watchdog/
+`preflight.c` downgrade-suggestion path exercised for real. A handful of hand-testing items
+(real-hardware IBS, real-hardware GPU, `wspy-validate`/`wspy-ledger` at accumulated scale) weren't
+covered this round; see "Known gaps carried into 4.1" — none block the 4.0 release.
 
 ## Purpose
 This document captures ideas for a round of improvements focused on making benchmark collection,
@@ -14,8 +17,9 @@ organization, and publication easier and more repeatable.
 ## Success criteria for a 4.0 kickoff
 4.0's bar, now that reporting is explicitly out of scope for it (see below):
 - A newcomer can run one benchmark suite and produce publish-ready structured artifacts without
-  editing scripts. **Met** (see "What shipped in 4.0"), pending the real-install validation tracked
-  in "What remains before 4.0 is complete."
+  editing scripts. **Met and validated** — real-install hand testing confirmed the three
+  `workload/*/run_test.sh` scripts run end to end via `wspy-run --suite/--benchmark` against real
+  suite installs (see "What shipped in 4.0").
 
 Two criteria that were part of 4.0's original bar are **deliberately deferred to 4.1, not dropped**:
 - A summary page can be regenerated from data only (no manual copy/paste).
@@ -31,8 +35,9 @@ provenance); 4.1 turns it into the actual page/row a person reads.
 ## How to use this document
 - "What shipped in 4.0" is a pointer list, not a feature log — `CLAUDE.md` documents each module's
   actual behavior in detail; `git log` has history. Don't restate mechanism here, link to it.
-- "What remains before 4.0 is complete" is the current single source of truth for open 4.0 work.
-  When something on that list ships, delete the line — don't leave superseded narrative behind it.
+- 4.0 is done; open work now lives in "4.1 / 4.2 / 4.3 priorities" below, not in this document's own
+  status section. "Known gaps carried into 4.1" lists the specific hand-testing coverage 4.0 shipped
+  without — not a blocker list, just a pointer so it isn't silently forgotten.
 - "4.1 / 4.2 / 4.3 priorities" are ordered backlogs, one per phase, grouped into dependency tiers
   (earlier tiers unlock later ones within the same phase). This replaces the old per-track inventory
   tables — don't re-introduce a parallel table; add or reorder an item in these lists instead.
@@ -91,44 +96,25 @@ row column counts now match like any other flag combination; `--per-core` combin
 still keeps the old, separately-caused mismatch (`timer_callback()` never reads per-core counters —
 see `wspy.c`'s `per_core_csv` comment and `doc/ARTIFACT_CONTRACT.md`'s CSV section).
 
-## What remains before 4.0 is complete
-1. **Validate criterion 1 against real installs.** "Newcomer can run one suite without editing
-   scripts" is believed met (the three `workload/*` scripts now call `wspy-run --suite/--benchmark`),
-   but has only been exercised with `sleep 1` stand-ins in this environment — `runcpu`,
-   `phoronix-test-suite`, and pbbsbench's `runall` aren't installed here. See "Recommended hand
-   testing" below — this is now the main remaining work before 4.0 ships.
-2. **A 4.0 release manifest**, once 1 lands: a short, structured summary of what actually shipped —
-   final schema versions, module list, known carried-forward gaps (including the reporting deferral
-   to 4.1 above) — the way a run's own `--manifest` records what a `wspy` invocation did. Where it
-   lives (a `CHANGELOG.md` entry, a dedicated `RELEASE_4.0.md`, or a section here) is undecided; "What
-   shipped in 4.0" above is functioning as a running draft of it until then.
-
-## Recommended hand testing before closing out 4.0
-Everything below requires real hardware, root/perf access, or third-party installs this environment
-doesn't have, so it hasn't been exercised beyond synthetic/unit-test coverage:
-- Run the full counter matrix as root (or `CAP_SYS_PTRACE` + `perf_event_paranoid <= 1`) on real AMD
-  Zen4 and Zen5 hardware and on Intel (including a hybrid Atom+Core part) to confirm full counter
-  coverage rather than the permission-denied degradation this environment always sees.
-- Run `workload/cpu2017/run_test.sh`, `workload/phoronix/run_test.sh`, and
-  `workload/pbbsbench/run.sh` end to end against real `runcpu`/`phoronix-test-suite`/`runall`
-  installs — confirm the unified output layout, `--run-index` accumulation, the `deep-cpu-intel`
-  Intel branch, and the `--tree` pass's 3600s timeout all behave as intended at realistic (not
-  `sleep 1`) runtimes and process-fork volumes.
+## Known gaps carried into 4.1
+4.0 shipped and its hand-testing pass confirmed the full counter matrix on real AMD/Intel hardware,
+`workload/*/run_test.sh` end to end against real suite installs, and the NMI-watchdog/`preflight.c`
+downgrade path. The following items from that same hand-testing pass weren't covered this round —
+carried forward as follow-up validation, not release blockers:
 - Exercise `--ibs-basic`/`--ibs-memory-deep` against real `ibs_fetch`/`ibs_op` PMUs on Zen4/Zen5
   hardware — `test_ibs.c` only drives `ibs_probe_at()` against a synthetic fake sysfs tree, never
   real IBS counters or real filtering behavior.
 - Exercise `--gpu-busy`/`--gpu-metrics`/`--gpu-smi`/`--gpu-device=<idx>` on an `AMDGPU=1` build
   against real AMD GPU hardware, ideally a multi-GPU host, to confirm device enumeration/selection
   and metric correctness beyond what `./run_tests.sh`'s ROCm-header-gated build check covers.
-- Toggle the NMI watchdog (`scripts/setup_perf.sh`) and request a counter combination that
-  genuinely doesn't fit, to confirm `preflight.c`'s suggested downgrades are actually accurate and
-  helpful in practice, not just synthetically triggered.
 - Run `wspy-validate`/`wspy-ledger` against a real run-index file accumulated over many genuine runs
   (not `test_ledger.c`/`test_validate.c`'s small synthetic fixtures) to sanity-check behavior at
   realistic scale and with real-world messiness (interrupted runs, mixed schema versions over time).
 - Run `--tree`/`--tree-cmdline`/`--tree-vmsize` against a genuinely fork-heavy real workload (e.g.
   `make -j`, a SPEC benchmark) beyond `run_tests.sh`'s synthetic ~2000-process stress test, to sanity
-  check ptrace overhead and `proctree` reconstruction under realistic timing.
+  check ptrace overhead and `proctree` reconstruction under realistic timing. (A real `deep-cpu,
+  tree-heavy` phoronix/coremark run during 4.0's release testing recorded 494 fork events cleanly,
+  a useful data point but not a substitute for a genuinely large fork-heavy workload.)
 
 ## Track deep-dives
 

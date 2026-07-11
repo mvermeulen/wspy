@@ -1,4 +1,4 @@
-# wspy 3.0
+# wspy 4.0
 
 wspy - a workload spy
 
@@ -47,7 +47,16 @@ Some of the more commonly used options:
   * `-o <file>` - send output to a file instead of stdout
   * `--csv` - CSV output instead of human-readable
   * `--interval <sec>` - print a snapshot every `<sec>` seconds while the child runs
+  * `--no-phase-detect` - disable automatic warmup/steady/degraded phase detection on
+    `--interval` samples (a `phase` CSV column + boundary summary are on by default)
   * `--verbose` / `-v` - verbose diagnostics (repeat for more detail)
+* Run artifacts (reproducibility metadata, independent of each other)
+  * `--manifest <file>` - write a JSON run manifest (command line, timestamps, exit status,
+    host/CPU info, counter coverage, provenance, output files produced)
+  * `--run-index <file>` - append a compact JSON Lines record for this run to a shared file,
+    so tooling can query "all runs" by scanning one file
+  * `--exit-with-child` - exit with the launched command's own exit status (or 128+signal),
+    instead of wspy's default of always exiting 0 regardless of the child
 * Process info
   * `--rusage` / `-r` - report `getrusage(2)` info (on by default)
   * `--per-core` / `-a` - report performance counters per-core instead of system-wide
@@ -68,10 +77,20 @@ Some of the more commonly used options:
   * `--branch` / `-b`, `--dcache`, `--icache`, `--cache1`, `--cache2` / `-c`, `--cache3`,
     `--tlb`, `--memory`, `--opcache`, `--float` - individual hardware counter groups
   * `--software` - software counters (page faults, context switches, ...)
+* AMD IBS (Instruction-Based Sampling; AMD-only, system-wide)
+  * `--ibs-basic` - unfiltered `ibs_fetch`/`ibs_op` sample counts
+  * `--ibs-memory-deep` - `ibs_op` with L3-miss-only + load-latency filtering for memory-path
+    analysis (skews the effective sampling period — see the run's own output for the
+    skew/quality annotations)
+  * `--ibs-maxcnt <n>`, `--ibs-ldlat <n>`, `--ibs-fetchlat <n>` - override the built-in
+    default sampling/filter thresholds
 * AMD GPU metrics (only available when built with `AMDGPU=1`)
   * `--gpu-smi` - GPU info via ROCm's `amd_smi` library
   * `--gpu-busy` - instantaneous GPU busy percent, read from sysfs
   * `--gpu-metrics` - detailed GPU metrics (temperature, activity, power, clock), read from sysfs
+  * `--gpu-device=<idx>` - select a specific AMD GPU device by index for the above, on
+    multi-GPU hosts (default: lowest-numbered card / SMI device 0); see `--capabilities`
+    for the enumerated device list
 
 Examples:
 
@@ -81,6 +100,8 @@ sudo ./wspy --csv --topdown -- myapp arg1   # CSV output with topdown counters
 sudo ./wspy --tree tree.out -- myapp        # record the process tree while myapp runs
 ./proctree tree.out                         # display the tree recorded above
 sudo ./wspy --system --gpu-busy -- myapp    # system + GPU metrics (needs AMDGPU=1 build)
+sudo ./wspy --manifest run.json --run-index index.jsonl -- myapp
+                                             # write reproducibility metadata alongside output
 ```
 
 ## wspy-run: profile-driven launcher
@@ -95,15 +116,46 @@ command lines every time (see `workload/*/run_test.sh` for what that used to loo
 ./wspy-run -o results/503.bwaves --run-index results/index.jsonl deep-cpu -- \
     runcpu --config mev-aocc.cfg --action=validate --tune base 503.bwaves_r
 ./wspy-run --dry-run -c my-passes.conf -- sleep 1        # preview a custom pass list
+
+# Unified output layout: one directory per run (<outdir>/<suite>/<benchmark>/<run-id>/),
+# with a run-level manifest.json, summary.txt, and reserved plots/ dir alongside each pass's
+# own output. Composing two builtin profiles with a comma runs both in the same run directory.
+./wspy-run --suite phoronix --benchmark coremark -o results --run-index results/phoronix/index.jsonl \
+    deep-cpu,tree-heavy -- phoronix-test-suite batch-run coremark
 ```
 
-Builtin profiles: `quick` (one fast IPC+system pass), `deep-cpu` (the multi-pass counter sweep
-used for topdown characterization), `deep-gpu` (`deep-cpu` plus GPU busy/metrics passes), and
-`tree-heavy` (a single `--tree` pass with full command-line capture). `-c <file>` loads a custom
-pass list instead (`<pass-name> <wspy-flags...>` per line) — see `./wspy-run --help` for the
-full option list and config-file format. Each pass writes to
-`<outdir>/<prefix><pass-name>.<csv|txt>`; `--manifest-dir`/`--run-index` pass those `wspy` flags
-through per pass.
+Builtin profiles: `quick` (one fast IPC+system pass), `deep-cpu` (the multi-pass AMD counter sweep
+used for topdown characterization), `deep-cpu-intel` (the shorter Intel-only equivalent — Intel
+lacks `deep-cpu`'s AMD-specific opcache/frontend/L3 groups), `deep-gpu` (`deep-cpu` plus GPU
+busy/metrics passes), `tree-heavy` (a single `--tree` pass with full command-line capture, capped
+at a 3600s timeout since an hour of process-tree records is already more than practical to
+publish), and `ibs-basic`/`ibs-memory-deep` (single-pass AMD IBS collection, see the IBS flags
+above). `-c <file>` loads a custom pass list instead (`<pass-name> <wspy-flags...>` per line), and
+a comma-separated profile list (e.g. `deep-cpu,tree-heavy`) composes more than one builtin
+profile's passes into a single invocation — see `./wspy-run --help` for the full option list and
+config-file format. Each pass writes to `<outdir>/<prefix><pass-name>.<csv|txt>` by default, or
+into the unified per-run directory layout above when `--suite`/`--benchmark` are given (see
+`doc/ARTIFACT_CONTRACT.md`'s "Unified output layout" section for the full directory contents);
+`--manifest-dir`/`--run-index` pass those `wspy` flags through per pass either way.
+
+## wspy-validate: pre-publish quality checks
+
+`wspy-validate` runs basic sanity checks against one or more `--manifest`-produced manifest files,
+so a bad run (permission-denied counters, a truncated CSV, a nonzero exit) is caught before it's
+published rather than after. Each check is independent, so one failure doesn't hide the others:
+manifest schema version recognized, every listed output file present and non-empty, CSV column
+counts match the header on every row, workload exit status, counter coverage (partial coverage is
+a warning, not a failure — that's `coverage.c`'s designed-in graceful degradation), and a sanity
+range on numeric CSV columns (looser for `%`-suffixed multi-core aggregate columns).
+
+```
+./wspy-validate run.manifest.json                 # human report, [PASS]/[WARN]/[FAIL] per check
+./wspy-validate --strict *.manifest.json           # any WARN also fails the exit status
+./wspy-validate -q *.manifest.json                 # only print manifests with a FAIL
+```
+
+Exits 0 only if every manifest had zero failures (`--strict` also fails on any warning). See
+`./wspy-validate --help` for the full option list.
 
 ## wspy-ledger: coverage ledger
 

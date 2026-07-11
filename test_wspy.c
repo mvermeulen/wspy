@@ -407,7 +407,12 @@ void test_write_manifest() {
     // Schema version must be present and match the SemVer constant exactly --
     // downstream tooling depends on this field to detect shape changes.
     assert(strstr(contents, "\"schema_version\": \"" MANIFEST_SCHEMA_VERSION "\"") != NULL);
-    assert(strstr(contents, "\"wspy_version\": \"3.0\"") != NULL);
+    {
+      char expected_version[32];
+      snprintf(expected_version,sizeof(expected_version),
+        "\"wspy_version\": \"%d.%d\"",WSPY_VERSION_MAJOR,WSPY_VERSION_MINOR);
+      assert(strstr(contents,expected_version) != NULL);
+    }
     assert(strstr(contents, "\"argv\": [\"sleep\", \"1\"]") != NULL);
     assert(strstr(contents, "\"known\": true") != NULL);
     assert(strstr(contents, "\"exit_code\": 0") != NULL);
