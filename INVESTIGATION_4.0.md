@@ -479,6 +479,12 @@ derivable from files already being produced.
     pre-filled from the report rather than from scratch. The mockup demonstrates this in-session
     (capturing the launcher's live state into each simulated run and restoring it on demand); the real
     version depends on #16 actually persisting that state somewhere reports can read it back from.
+18. Estimated runtime display in the `wspy-run` profile launcher (#7) — once benchmark is selected,
+    show an estimated runtime for the run before it's launched. `phoronix-test-suite` reportedly has
+    a run-time-estimate command that could source this for Phoronix benchmarks specifically (the same
+    command #23 in the 4.2 "testing/docs" tier proposes using to size `--tree`'s pass timeout); not
+    yet scoped for other suites (`cpu2017`, `pbbsbench`) or for arbitrary workload commands, which
+    have no equivalent estimator today.
 
 ## 4.2 priorities
 Goal: everything originally scoped for 4.1 beyond Tier 1 (shipped) and Tier 2 (now 4.1's
