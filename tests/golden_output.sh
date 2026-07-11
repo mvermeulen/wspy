@@ -226,6 +226,52 @@ assert_csv_columns_match "per-core-topdown" --no-ipc --per-core --topdown
 assert_csv_columns_match "per-core-software" --no-ipc --per-core --software
 
 echo ""
+echo "=== CSV interval periodic-row column-count contract (vendor-neutral) ==="
+# assert_csv_interval_rows_match checks EVERY row of a multi-tick --interval
+# run against the header's column count, not just the header and the final
+# (tail) row assert_csv_columns_match above checks. wspy.c's tail row and
+# topdown.c:timer_callback()'s periodic-tick row are two separate print call
+# sites that must independently stay in sync with the CSV header; a bug
+# shipped where timer_callback() never called print_counter_coverage(), so
+# every periodic row was missing the trailing counters_measured/
+# counters_requested columns while the header and the one tail row both had
+# them -- assert_csv_columns_match couldn't catch this because it only ever
+# looks at the last row, and capability_matrix.sh's "interval" bundle uses
+# `sleep 1` against `--interval 1`, too short for the alarm-driven tick to
+# fire even once before the child exits.
+assert_csv_interval_rows_match() {
+  local label="$1"; shift
+  local sleep_s="$1"; shift
+  CHECKS=$((CHECKS + 1))
+  local out header hcols nrows bad
+  out=$("$WSPY" --csv --interval 1 "$@" -- sleep "$sleep_s" 2>/dev/null)
+  header=$(echo "$out" | head -1)
+  hcols=$(echo "$header" | tr ',' '\n' | wc -l)
+  nrows=0
+  bad=""
+  while IFS= read -r row; do
+    [ -z "$row" ] && continue
+    nrows=$((nrows + 1))
+    local vcols
+    vcols=$(echo "$row" | tr ',' '\n' | wc -l)
+    if [ "$vcols" != "$hcols" ]; then
+      bad="row $nrows has $vcols column(s), expected $hcols: $row"
+      break
+    fi
+  done < <(echo "$out" | tail -n +2)
+  if [ -z "$header" ] || [ "$nrows" -lt 2 ] || [ -n "$bad" ]; then
+    fail "csv interval row column count [$label]: flags='$*' rows=$nrows ${bad:-(fewer than 2 data rows -- periodic tick never fired)}
+  full output:
+$out"
+  else
+    echo "  csv interval row column count [$label]: OK ($hcols columns, $nrows rows)"
+  fi
+}
+assert_csv_interval_rows_match "topdown" 3 --topdown --no-rusage --no-software --no-ipc
+assert_csv_interval_rows_match "system"  3 --system --no-rusage --no-software --no-ipc
+assert_csv_interval_rows_match "default-ipc" 3
+
+echo ""
 echo "=== Normal (human-readable) output summary-fragment contract ==="
 # These lines are printed unconditionally by print_usage()/print_system()
 # regardless of perf permissions (they come from getrusage()/rusage/proc,
