@@ -241,39 +241,55 @@ scaling correctness fix. Ordered in dependency tiers; items within a tier are in
     containerized environments.
 22. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
 23. `proctree` → JSON/Graphviz export + run-to-run tree diff.
+24. `proctree`/tree-file robustness against out-of-order fork/exit ptrace events —
+    `run_tests.sh`'s 2000-process tree stress test intermittently reports `exit for unknown pid`
+    (observed once during the `wspy-store` branch's testing, not reproducible across 3 isolated
+    reruns of the same stress test — load-dependent flake, not a deterministic failure). Root cause
+    is a real kernel-level race, not a `wait4()` bug: `ptrace_loop()` (`topdown.c`) writes tree-file
+    lines in whatever order the kernel delivers ptrace stops across the traced process *and* every
+    child it auto-attaches to via `PTRACE_O_TRACEFORK`/`TRACECLONE`/`TRACEVFORK`; a short-lived child
+    (e.g. `/bin/true`) can run and hit its own exit stop before the *parent's* `PTRACE_EVENT_FORK`
+    stop — which is what records the parent→child edge — is dequeued and written, so under high
+    fork-rate/scheduling pressure an `exit` line can legitimately land in the tree file before its
+    `fork` line. The fix belongs in the reader, not the writer: make `proctree.c`'s reconstruction
+    tolerate an `exit` for a not-yet-seen pid (e.g. a two-pass parse, or buffering unresolved exits
+    keyed by pid and reconciling them once/if a later `root`/`fork` line establishes that pid)
+    instead of assuming strict single-pass ordering. `run_tests.sh`'s own stress-test `awk` integrity
+    checker encodes the same strict-ordering assumption and should be relaxed (or made two-pass)
+    alongside `proctree.c`, so a legitimate kernel race doesn't get flagged as a correctness bug.
 
 **Tier 6 — GPU track:**
 
-24. ROCm SMI + sysfs fusion layer (one stream, source precedence, per-metric validity flags) —
+25. ROCm SMI + sysfs fusion layer (one stream, source precedence, per-metric validity flags) —
     merges the two existing independent GPU paths (`amd_smi.c`, `amd_sysfs.c`).
-25. Same manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory
+26. Same manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory
     activity) — reuses 4.0 foundation work rather than a parallel GPU-only pipeline.
 
 **Tier 7 — characterization prerequisites:**
 
-26. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
+27. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
     switch/I-O) — needs #1's normalized schema to draw features from.
-27. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
+28. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
     stability) + confidence + top-2 alternatives.
 
 **Tier 8 — portability:**
 
-28. Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`) —
+29. Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`) —
     actual ARM64 `cpu_info` support; `cpu_info.c`'s `__cpuid()`/`<cpuid.h>` use is the remaining
     x86_64-only blocker (the `ptrace` side of ARM64 prep already shipped, see `ptrace_arch.h`).
 
 **Tier 9 — testing/docs and small cleanups (track alongside the schema work above):**
 
-29. Schema compatibility/migration tests + reproducibility/idempotency tests.
-30. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
+30. Schema compatibility/migration tests + reproducibility/idempotency tests.
+31. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
     output).
-31. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
-32. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
+32. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
+33. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
     constant (e.g. `phoronix-test-suite` reportedly has a run-time-estimate command) — today's
     constant is a blunt stand-in; the real constraint is capping process-record data volume for
     publishing, not workload runtime, so a per-workload estimate would size it more accurately than
     one constant across every suite.
-33. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
+34. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
     that catches the class of drift found during the v4.0 release audit: `doc/ARTIFACT_CONTRACT.md`'s
     schema-version examples had silently fallen behind `MANIFEST_SCHEMA_VERSION`/
     `RUN_INDEX_SCHEMA_VERSION` (quoting 1.2.0 against an actual 1.3.0, plus an entirely undocumented
@@ -282,7 +298,7 @@ scaling correctness fix. Ordered in dependency tiers; items within a tier are in
     it). Concretely: grep-based checks that doc-quoted schema versions and the documented tool/flag
     list match the actual header constants and `Makefile` binary list, so this doesn't require a
     manual audit at every release again.
-34. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
+35. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
     `MINOR`, grep for stale version-string references across docs, run the full test matrix including
     the `AMDGPU=1` variant, tag, label every merged PR since the last tag, draft release notes from
     the merged-PR list) as a repeatable script or documented checklist instead of redoing it by hand,
