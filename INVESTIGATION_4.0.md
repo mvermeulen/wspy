@@ -176,15 +176,19 @@ scaling correctness fix. Ordered in dependency tiers; items within a tier are in
 
 **Tier 1 — foundational, unlocks most of the rest of 4.1:**
 
-1. Canonical metrics schema + normalized store (SQLite and/or Parquet) — almost everything below
-   (stats, comparison matrix, HTML report, summary generator, feature normalization) wants queryable
-   data instead of re-scanning CSV/JSONL by hand. Keep raw files; add this as a second, derived layer.
-   **Phase 1 shipped:** `wspy-store`/`store.c` (SQLite; see `CLAUDE.md` and `doc/ARTIFACT_CONTRACT.md`'s
-   "Normalized store" section) ingests run metadata (`--run-index` records plus best-effort manifest
-   enrichment) into a queryable, idempotent run catalog. Still open, and why this item stays listed
-   rather than moving to "What shipped": parsing per-run CSV output into a queryable metric-value
-   table (IPC, topdown, cache numbers) — the actual piece #2/#11-13/#26-27 below need and don't have
-   yet.
+1. ~~Canonical metrics schema + normalized store (SQLite and/or Parquet)~~ — **shipped.**
+   `wspy-store`/`store.c` (SQLite; see `CLAUDE.md` and `doc/ARTIFACT_CONTRACT.md`'s "Normalized
+   store" section) ingests run metadata (`--run-index` records plus best-effort manifest enrichment)
+   into a queryable, idempotent run catalog, **and** parses each run's CSV output into a queryable
+   long/tall `metric_values` table (IPC, topdown, cache numbers, with dimension columns for
+   `--interval`/`--per-core`/phase) — the actual piece #2/#11-13/#26-27 below need to draw stats and
+   comparisons from. Keeps raw CSV/JSONL files untouched; this is purely a derived, rebuildable
+   second layer, as originally scoped. Parquet was addressed as a downstream export
+   (`duckdb store.db -c "COPY ... TO 'x.parquet'"`), not a second format `wspy-store` itself writes —
+   see the doc section's "Why SQLite, not Parquet" for the reasoning; nothing about that is still
+   open. Left listed here rather than moved into a "What shipped in 4.1" section, since this doc's
+   own convention (see "How to use this document") is to roll items up in bulk at phase completion,
+   not one at a time.
 2. Summary table generator (min/max/median/mean/stddev/outlier flags) from indexed data — closes the
    "summary page regenerated from data only" criterion deferred from 4.0 (see "Success criteria for a
    4.0 kickoff"); can start against the run index directly and layer onto #1 once it exists.
