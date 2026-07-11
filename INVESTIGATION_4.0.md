@@ -196,66 +196,88 @@ scaling correctness fix. Ordered in dependency tiers; items within a tier are in
 **Tier 2 — reporting/UI on top of Tier 1's data shapes:**
 5. HTML report bundle (summary, bottlenecks, tree, top counters, links to raw artifacts) + compare
    view.
-6. Publish-ready data export format.
-7. Historical run index browser/search.
-8. Shared plotting templates — replace `workload/phoronix/gnuplot.sh`'s per-suite script with one
+6. Web-based run launcher + report browser — a thin web form over `wspy-run`'s option surface
+   (profile/suite/benchmark/workload command) that constructs and executes the command, then links
+   to the resulting output once it lands. Most valuable once #5's HTML report bundle exists to link
+   to, but the launcher half itself has no hard dependency on Tier 1's normalized store and could
+   ship early. Motivated directly by 4.0's release-testing experience — hand-typing long `wspy-run`
+   invocations while validating flag combinations was real, repeated friction, and a form would make
+   the real-hardware hand-testing gaps carried into 4.1 (IBS, GPU, `wspy-validate`/`wspy-ledger` at
+   scale — see "Known gaps carried into 4.1") faster to iterate on too.
+7. Publish-ready data export format.
+8. Historical run index browser/search.
+9. Shared plotting templates — replace `workload/phoronix/gnuplot.sh`'s per-suite script with one
    normalized-schema pipeline once #1 exists.
-9. Traceability links (summary row → manifest → raw CSV → plots → tree artifacts) — closes the
-   "every published row traces back to command/environment/artifacts" criterion deferred from 4.0
-   (see "Success criteria for a 4.0 kickoff").
+10. Traceability links (summary row → manifest → raw CSV → plots → tree artifacts) — closes the
+    "every published row traces back to command/environment/artifacts" criterion deferred from 4.0
+    (see "Success criteria for a 4.0 kickoff").
 
 **Tier 3 — stats/confidence layer:**
-10. Repeatability policy + confidence metadata (mean, stddev, CV, CI) as default output.
-11. Outlier/threshold engine (per-metric, global + suite-local).
-12. Comparison matrix mode (sweep compiler/kernel/governor/SMT/VM-native) — builds on the
+11. Repeatability policy + confidence metadata (mean, stddev, CV, CI) as default output.
+12. Outlier/threshold engine (per-metric, global + suite-local).
+13. Comparison matrix mode (sweep compiler/kernel/governor/SMT/VM-native) — builds on the
     profile-driven launcher; a declarative sweep runner, not new collection logic.
 
 **Tier 4 — topdown/IBS refinement:**
-13. Hierarchical (parent→child) topdown schema + explicit raw-vs-contention-adjusted denominators +
+14. Hierarchical (parent→child) topdown schema + explicit raw-vs-contention-adjusted denominators +
     formula/version metadata.
-14. Core-class-aware topdown (hybrid Intel Atom+Core; weighted aggregate) — depends on per-core
-    collection (`--per-core`, shipped) plus #13.
-15. Zen-family preset packs (`zen-portable`, `zen4plus-deep`) — convenience layer now that IBS
+15. Core-class-aware topdown (hybrid Intel Atom+Core; weighted aggregate) — depends on per-core
+    collection (`--per-core`, shipped) plus #14.
+16. Zen-family preset packs (`zen-portable`, `zen4plus-deep`) — convenience layer now that IBS
     capability probing exists.
-16. PMU-capability-aware comparability warnings.
+17. PMU-capability-aware comparability warnings.
 
 **Tier 5 — `/proc` and tree enrichment (independent, moderate value, low risk):**
-17. `/proc/<pid>/io` byte counters (read/write/cancelled-write bytes).
-18. `/proc/<pid>/schedstat` run-delay/timeslice capture.
-19. Memory footprint detail (`VmRSS`/`VmHWM`/anon-file-shmem split via `/proc/<pid>/status` or
+18. `/proc/<pid>/io` byte counters (read/write/cancelled-write bytes).
+19. `/proc/<pid>/schedstat` run-delay/timeslice capture.
+20. Memory footprint detail (`VmRSS`/`VmHWM`/anon-file-shmem split via `/proc/<pid>/status` or
     `smaps_rollup`).
-20. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
+21. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
     containerized environments.
-21. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
-22. `proctree` → JSON/Graphviz export + run-to-run tree diff.
+22. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
+23. `proctree` → JSON/Graphviz export + run-to-run tree diff.
 
 **Tier 6 — GPU track:**
-23. ROCm SMI + sysfs fusion layer (one stream, source precedence, per-metric validity flags) —
+24. ROCm SMI + sysfs fusion layer (one stream, source precedence, per-metric validity flags) —
     merges the two existing independent GPU paths (`amd_smi.c`, `amd_sysfs.c`).
-24. Same manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory
+25. Same manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory
     activity) — reuses 4.0 foundation work rather than a parallel GPU-only pipeline.
 
 **Tier 7 — characterization prerequisites:**
-25. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
+26. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
     switch/I-O) — needs #1's normalized schema to draw features from.
-26. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
+27. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
     stability) + confidence + top-2 alternatives.
 
 **Tier 8 — portability:**
-27. Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`) —
+28. Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`) —
     actual ARM64 `cpu_info` support; `cpu_info.c`'s `__cpuid()`/`<cpuid.h>` use is the remaining
     x86_64-only blocker (the `ptrace` side of ARM64 prep already shipped, see `ptrace_arch.h`).
 
 **Tier 9 — testing/docs and small cleanups (track alongside the schema work above):**
-28. Schema compatibility/migration tests + reproducibility/idempotency tests.
-29. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
+29. Schema compatibility/migration tests + reproducibility/idempotency tests.
+30. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
     output).
-30. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
-31. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
+31. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
+32. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
     constant (e.g. `phoronix-test-suite` reportedly has a run-time-estimate command) — today's
     constant is a blunt stand-in; the real constraint is capping process-record data volume for
     publishing, not workload runtime, so a per-workload estimate would size it more accurately than
     one constant across every suite.
+33. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
+    that catches the class of drift found during the v4.0 release audit: `doc/ARTIFACT_CONTRACT.md`'s
+    schema-version examples had silently fallen behind `MANIFEST_SCHEMA_VERSION`/
+    `RUN_INDEX_SCHEMA_VERSION` (quoting 1.2.0 against an actual 1.3.0, plus an entirely undocumented
+    `collector` field), and `README.md` was missing a whole tool's section (`wspy-validate` had been
+    built and usable since 4.0 landed but had no README coverage until the v4.0 release audit added
+    it). Concretely: grep-based checks that doc-quoted schema versions and the documented tool/flag
+    list match the actual header constants and `Makefile` binary list, so this doesn't require a
+    manual audit at every release again.
+34. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
+    `MINOR`, grep for stale version-string references across docs, run the full test matrix including
+    the `AMDGPU=1` variant, tag, label every merged PR since the last tag, draft release notes from
+    the merged-PR list) as a repeatable script or documented checklist instead of redoing it by hand,
+    since 4.1/4.2/4.3 will each need this same sequence again.
 
 ## 4.2 priorities
 Goal: use the normalized store built in 4.1 for regression detection, clustering, phase-aware
