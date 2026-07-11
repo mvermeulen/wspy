@@ -5,6 +5,8 @@
 #include <errno.h>
 #include <getopt.h>
 #include <sys/wait.h>
+#include <fcntl.h>
+#include <stdint.h>
 
 // Define TEST_WSPY to allow including wspy.c without main()
 #define TEST_WSPY 1
@@ -466,6 +468,25 @@ void test_multipass() {
         multipass_plan_free(&plan);
     }
 
+    // multipass_plan_build_multiplexed() (--passes --multiplex): always
+    // exactly one pass covering the whole requested mask, even when
+    // multipass_plan_build() would have split it into 2+ passes above.
+    {
+        unsigned int requested = COUNTER_DCACHE|COUNTER_ICACHE|COUNTER_TLB;
+
+        plan = multipass_plan_build_multiplexed(requested);
+        assert(plan.npasses == 1);
+        assert(plan.pass_mask[0] == requested);
+        multipass_plan_free(&plan);
+
+        // A request that comfortably fits still collapses to one pass --
+        // --multiplex isn't "only when it wouldn't fit anyway".
+        plan = multipass_plan_build_multiplexed(COUNTER_IPC);
+        assert(plan.npasses == 1);
+        assert(plan.pass_mask[0] == COUNTER_IPC);
+        multipass_plan_free(&plan);
+    }
+
     nmi_running = saved_nmi;
     cpu_info = saved_cpu_info;
 
@@ -836,6 +857,89 @@ void test_topdown_confidence(void) {
     printf("PASS: topdown confidence envelope + sanity checks\n");
 }
 
+// Mirrors read_counters()'s own local "struct read_format" (topdown.c) --
+// perf's PERF_FORMAT_TOTAL_TIME_ENABLED|PERF_FORMAT_TOTAL_TIME_RUNNING read
+// layout. Not shared via a header since it's private to read_counters();
+// this test writes raw bytes of this exact shape to a fake fd to drive it
+// without needing a real perf_event fd.
+struct test_read_format { uint64_t value, time_enabled, time_running, id; };
+
+static void write_fake_perf_read(int fd, uint64_t value, uint64_t time_enabled, uint64_t time_running) {
+    struct test_read_format rf = { value, time_enabled, time_running, 0 };
+    ssize_t n;
+    assert(lseek(fd, 0, SEEK_SET) == 0);
+    n = write(fd, &rf, sizeof(rf));
+    assert(n == (ssize_t) sizeof(rf));
+    assert(lseek(fd, 0, SEEK_SET) == 0);
+}
+
+// INVESTIGATION_4.0.md 4.1 Tier 1 #4: a counter multiplexed off the PMU for
+// part of a window must have its raw count extrapolated to the full window,
+// not just its confidence flagged. Drives read_counters() against a real
+// fd (a temp file standing in for a perf_event fd -- read_counters() only
+// ever calls plain read() on it) across two simulated --interval ticks to
+// confirm .value ends up scaled by *that tick's* running/enabled delta,
+// not the ratio accumulated since the run started.
+void test_read_counters_multiplex_scaling(void) {
+    struct counter_group cgroup;
+    struct counter_info cinfo[1];
+    char tmpl[] = "/tmp/test_wspy_readctr_XXXXXX";
+    int fd;
+
+    printf("Testing read_counters() multiplex scaling...\n");
+
+    fd = mkstemp(tmpl);
+    assert(fd != -1);
+    unlink(tmpl);
+
+    memset(&cinfo, 0, sizeof(cinfo));
+    cinfo[0].label = "test";
+    cinfo[0].fd = fd;
+
+    memset(&cgroup, 0, sizeof(cgroup));
+    cgroup.label = "test-group";
+    cgroup.ncounters = 1;
+    cgroup.cinfo = cinfo;
+
+    // Tick 1: cumulative since counter open -- value=1000000, only half the
+    // enabled window was actually scheduled (50% multiplexed) -> expect the
+    // raw count doubled to estimate the full window.
+    write_fake_perf_read(fd, 1000000, 1000000, 500000);
+    read_counters(&cgroup, 0);
+    assert(cinfo[0].value == 2000000);
+    assert(cinfo[0].time_running == 500000);
+    assert(cinfo[0].time_enabled == 1000000);
+
+    // Tick 2: cumulative value=1300000 (raw delta 300000 since tick 1),
+    // cumulative running=700000 (delta 200000 this tick),
+    // cumulative enabled=2000000 (delta 1000000 this tick) -- a much worse
+    // 20% multiplex ratio *this tick*, even though the ratio since the run
+    // started (700000/2000000=35%) differs. The scaled value must reflect
+    // this tick's own ratio, not the cumulative-since-start one.
+    write_fake_perf_read(fd, 1300000, 2000000, 700000);
+    read_counters(&cgroup, 0);
+    assert(cinfo[0].value == 1500000); // 300000 * (1000000/200000)
+    assert(cinfo[0].time_running == 200000);
+    assert(cinfo[0].time_enabled == 1000000);
+
+    // Tick 3: fully scheduled this tick (running delta == enabled delta) --
+    // passes the raw delta through unscaled.
+    write_fake_perf_read(fd, 1400000, 2100000, 800000);
+    read_counters(&cgroup, 0);
+    assert(cinfo[0].value == 100000);
+
+    // Tick 4: never scheduled at all this tick (running delta == 0) -- must
+    // not divide by zero, and the raw delta should be 0 (a counter that was
+    // never running couldn't have counted any events).
+    write_fake_perf_read(fd, 1400000, 2200000, 800000);
+    read_counters(&cgroup, 0);
+    assert(cinfo[0].value == 0);
+    assert(cinfo[0].time_running == 0);
+
+    close(fd);
+    printf("PASS: read_counters() multiplex scaling\n");
+}
+
 int main(int argc, char **argv) {
     printf("Running Wspy Test Suite...\n");
     test_wspy_parse_options();
@@ -846,5 +950,6 @@ int main(int argc, char **argv) {
     test_multipass();
     test_provenance();
     test_topdown_confidence();
+    test_read_counters_multiplex_scaling();
     return 0;
 }

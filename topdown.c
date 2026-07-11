@@ -954,13 +954,46 @@ void read_counters(struct counter_group *counter_group_list,int stop_counters){
 	  error("unable to read %s counter %s, errno=%d - %s\n",
 		cgroup->label,cgroup->cinfo[i].label,errno,strerror(errno));
 	} else {
+	  unsigned long raw_delta;
+	  unsigned long running_delta;
+	  unsigned long enabled_delta;
+
 	  cgroup->cinfo[i].prev_read = cgroup->cinfo[i].last_read;
 	  cgroup->cinfo[i].last_read = rf.value;
 	  // save only the delta since this was last read...
-	  cgroup->cinfo[i].value = rf.value - cgroup->cinfo[i].prev_read;
-	  cgroup->cinfo[i].time_running = rf.time_running;
-	  cgroup->cinfo[i].time_enabled = rf.time_enabled;
-	  // TODO: add scaling for performance counters...
+	  raw_delta = rf.value - cgroup->cinfo[i].prev_read;
+
+	  // perf's PERF_FORMAT_TOTAL_TIME_ENABLED/RUNNING report cumulative
+	  // ns since the counter was opened, not a per-read delta -- track
+	  // the previous cumulative reading ourselves (mirroring
+	  // prev_read/last_read above) so a multi-tick (--interval) run
+	  // scales each tick by *that tick's* multiplex ratio rather than
+	  // the ratio since the run started.
+	  running_delta = rf.time_running - cgroup->cinfo[i].last_time_running;
+	  enabled_delta = rf.time_enabled - cgroup->cinfo[i].last_time_enabled;
+	  cgroup->cinfo[i].last_time_running = rf.time_running;
+	  cgroup->cinfo[i].last_time_enabled = rf.time_enabled;
+
+	  // Correctness fix (INVESTIGATION_4.0.md 4.1 Tier 1 #4): when a
+	  // counter was multiplexed off the PMU for part of this window,
+	  // the raw count only reflects what happened while it *was*
+	  // scheduled -- extrapolate to the full window instead of
+	  // silently undercounting. running_delta==0 means the counter
+	  // wasn't scheduled at all this window (raw_delta is 0 too in
+	  // that case), and running_delta>=enabled_delta means it wasn't
+	  // multiplexed -- both cases pass the raw delta through unscaled.
+	  if (running_delta > 0 && running_delta < enabled_delta){
+	    cgroup->cinfo[i].value = (unsigned long)
+	      ((double) raw_delta * (double) enabled_delta / (double) running_delta + 0.5);
+	  } else {
+	    cgroup->cinfo[i].value = raw_delta;
+	  }
+	  // time_running/time_enabled are now this read's *delta*, used by
+	  // confidence_ratio()/phase_current_ipc() to report/gate on this
+	  // window's scheduling ratio -- not the scaling above, which is
+	  // already baked into .value by this point.
+	  cgroup->cinfo[i].time_running = running_delta;
+	  cgroup->cinfo[i].time_enabled = enabled_delta;
 
 	  if (stop_counters){
 	    status = ioctl(cgroup->cinfo[i].fd,PERF_EVENT_IOC_DISABLE,0);
@@ -1125,17 +1158,16 @@ void print_ipc(struct counter_group *cgroup,enum output_format oformat){
   elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
     start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
 
+  // read_counters() already scales .value by the counter's multiplex ratio
+  // (this-window time_enabled/time_running) as it reads it, so a counter
+  // that was never scheduled at all (perf_event_open failed, e.g. EACCES,
+  // or it was multiplexed off the PMU for this entire window) simply reads
+  // back as 0 here -- no separate scaling or zero-guard needed.
   for (i=0;i<cgroup->ncounters;i++){
-    // time_running == 0 means this counter was never scheduled (perf_event_open
-    // failed, e.g. EACCES) -- .value is 0 in that case too, so skip the
-    // time_enabled/time_running scaling rather than computing 0.0*0/0 (NaN) and
-    // converting it to unsigned long, which is undefined behavior (previously
-    // manifested as printing a garbage cycle/instruction count and a
-    // deceptively plausible IPC ratio instead of 0/nothing).
-    if (!strcmp(cgroup->cinfo[i].label,"cpu-cycles") && cgroup->cinfo[i].time_running){
-      cpu_cycles = (double) cgroup->cinfo[i].value * cgroup->cinfo[i].time_enabled / cgroup->cinfo[i].time_running;
-    } else if (!strcmp(cgroup->cinfo[i].label,"instructions") && cgroup->cinfo[i].time_running){
-      instructions = (double) cgroup->cinfo[i].value * cgroup->cinfo[i].time_enabled / cgroup->cinfo[i].time_running;
+    if (!strcmp(cgroup->cinfo[i].label,"cpu-cycles")){
+      cpu_cycles = cgroup->cinfo[i].value;
+    } else if (!strcmp(cgroup->cinfo[i].label,"instructions")){
+      instructions = cgroup->cinfo[i].value;
     }
   }
 

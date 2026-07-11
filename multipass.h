@@ -67,6 +67,21 @@ struct multipass_plan {
  * calls, safe to run before any workload launches. */
 struct multipass_plan multipass_plan_build(unsigned int requested_mask);
 
+/* --multiplex variant: always a single pass covering every bit in
+ * requested_mask, relying on the kernel to multiplex counters that don't
+ * fit the general-purpose hardware PMU budget rather than bin-packing them
+ * into N separate re-executions of the workload. Only correct to offer as
+ * an alternative to multipass_plan_build() now that read_counters()
+ * (topdown.c) scales a multiplexed counter's value by its
+ * time_running/time_enabled ratio instead of silently undercounting it
+ * (INVESTIGATION_4.0.md 4.1 Tier 1 #4) -- the trade-off is precision (more
+ * multiplexing means a lower per-counter confidence_ratio(), not wrong
+ * values) for a single workload execution instead of N. Still routed
+ * through preflight_evaluate()/preflight_warn_if_tight() so a tight fit
+ * warns the same way a single overflowing bin-packed pass already does.
+ * Pure computation, same as multipass_plan_build(). */
+struct multipass_plan multipass_plan_build_multiplexed(unsigned int requested_mask);
+
 /* Frees plan->pass_mask. Does not need to be called before process exit
  * (this codebase never frees counter_group lists either -- see
  * preflight.h) but is provided for tests that build/discard many plans. */

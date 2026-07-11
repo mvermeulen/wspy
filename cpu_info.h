@@ -51,8 +51,10 @@ struct counter_info {
   unsigned long int value;
   unsigned long int last_read;
   unsigned long int prev_read;
-  unsigned long int time_running;
-  unsigned long int time_enabled;
+  unsigned long int time_running;   // this read's time_running *delta* (see read_counters())
+  unsigned long int time_enabled;   // this read's time_enabled *delta* (see read_counters())
+  unsigned long int last_time_running; // cumulative time_running as of the previous read
+  unsigned long int last_time_enabled; // cumulative time_enabled as of the previous read
 };
 
 // CPU counter tables

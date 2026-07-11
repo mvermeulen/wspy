@@ -69,7 +69,6 @@ static void phase_commit_transition(struct phase_detector *pd,enum wspy_phase to
 double phase_current_ipc(struct counter_group *counter_group_list){
   struct counter_group *cgroup;
   struct counter_info *cycles = NULL,*instructions = NULL;
-  double scaled_cycles,scaled_instructions;
 
   for (cgroup = counter_group_list; cgroup; cgroup = cgroup->next){
     if (!(cgroup->mask & COUNTER_IPC)) continue;
@@ -78,12 +77,13 @@ double phase_current_ipc(struct counter_group *counter_group_list){
     if (cycles && instructions) break;
   }
   if (!cycles || !instructions) return -1.0;
+  // time_running == 0 means this tick's counter was never scheduled on the
+  // PMU at all -- no usable sample. read_counters() already scaled .value
+  // by the multiplex ratio as it read it, so no rescaling belongs here;
+  // redoing it would double-count the correction.
   if (cycles->time_running == 0 || instructions->time_running == 0) return -1.0;
-
-  scaled_cycles = (double) cycles->value * cycles->time_enabled / cycles->time_running;
-  scaled_instructions = (double) instructions->value * instructions->time_enabled / instructions->time_running;
-  if (scaled_cycles <= 0.0) return -1.0;
-  return scaled_instructions / scaled_cycles;
+  if (cycles->value == 0) return -1.0;
+  return (double) instructions->value / (double) cycles->value;
 }
 
 enum wspy_phase phase_detector_update(struct phase_detector *pd,double ipc,double elapsed_seconds){
