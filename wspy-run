@@ -41,20 +41,26 @@ Runs a sequence of predefined wspy passes ("a profile") against a single
 workload command, collapsing the repeated multi-invocation wspy command
 lines historically hand-written in workload/*/run_test.sh into one entry
 point. Each pass is a separate wspy invocation with its own flag set,
-writing to its own output file (native single-process multi-pass execution
-is tracked separately, see INVESTIGATION_4.0.md).
+writing to its own output file; where a profile's passes are just a sweep
+of non-interval counter groups (e.g. deep-cpu/deep-gpu's CPU portion), one
+pass instead uses wspy's own native multi-pass counter execution
+(--passes=<list>) to cover several counter groups in a single wspy
+invocation -- --interval passes (periodic ticks) still get their own
+separate wspy invocation each, since --passes has no defined merge
+semantics for those.
 
 Builtin profiles:
   quick       one fast pass: ipc + system, human-readable output
-  deep-cpu    the multi-pass CPU counter sweep (software/branch, ipc/topdown,
-              cache/float, topdown csv, frontend, opcache) used for topdown
+  deep-cpu    systemtime/amdtopdown (--interval) plus one --passes sweep
+              covering software/branch/ipc/topdown2/cache2/float/
+              topdown-frontend/topdown-optlb, used for topdown
               characterization
   deep-cpu-intel  the Intel-only equivalent (software/branch, topdown, ipc/l2,
               backend) -- Intel doesn't have deep-cpu's AMD-specific opcache/
               frontend/l3 groups, so this is a separate, shorter sweep
-  deep-gpu    deep-cpu plus GPU busy/metrics passes (needs an AMDGPU=1 build
-              to collect real data; passes still run otherwise since wspy
-              itself just warns per pass and continues)
+  deep-gpu    deep-cpu plus GPU busy/metrics (--interval) passes (needs an
+              AMDGPU=1 build to collect real data; passes still run
+              otherwise since wspy itself just warns per pass and continues)
   tree-heavy  single --tree pass with full command-line capture, wrapped in a
               3600s timeout -- not because ptrace tracing itself is slower,
               but because an hour's worth of process-tree records is already
@@ -161,15 +167,25 @@ load_builtin_profile(){
       PASS_FLAGS=("--ipc --system --rusage")
       ;;
     deep-cpu)
-      PASS_NAMES=(systemtime software_branch ipc_topdown l2_float amdtopdown frontend opcache)
+      # The five non-interval counter passes this profile used to run as
+      # five separate wspy invocations (software_branch, ipc_topdown,
+      # l2_float, frontend, opcache) now collapse onto one native --passes
+      # invocation (wspy.c's run_multipass(), INVESTIGATION_4.0.md's 4.1
+      # Tier 1 "Native multi-pass counter execution" item) -- wspy itself
+      # bin-packs them into however many hardware-PMU-fitting sub-passes are
+      # needed and merges the result into one CSV/manifest record, instead
+      # of wspy-run gluing five separate output files together after the
+      # fact. systemtime/amdtopdown stay separate: --passes has no defined
+      # merge semantics for --interval's periodic ticks (each pass is a
+      # separately-timed re-execution of the workload), so those two keep
+      # their own wspy invocation same as before. No --csv here (matching
+      # the five passes it replaces) -- human-readable output still flows
+      # into summary.txt alongside systemtime/amdtopdown's own output.
+      PASS_NAMES=(systemtime counters amdtopdown)
       PASS_FLAGS=(
         "--csv --interval 1 --no-rusage --no-software --system --no-ipc"
-        "--rusage --software --branch --no-ipc"
-        "--ipc --topdown2 --no-rusage --no-software"
-        "--cache2 --float --no-rusage --no-software"
+        "--passes=software,branch,ipc,topdown2,cache2,float,topdown-frontend,topdown-optlb"
         "--csv --interval 1 --topdown --no-rusage --no-software --no-ipc"
-        "--topdown-frontend --no-ipc --no-software --no-rusage"
-        "--topdown-optlb --no-ipc --no-software --no-rusage"
       )
       ;;
     deep-cpu-intel)
@@ -182,15 +198,15 @@ load_builtin_profile(){
       )
       ;;
     deep-gpu)
-      PASS_NAMES=(systemtime software_branch ipc_topdown l2_float amdtopdown frontend opcache gpu_busy gpu_metrics)
+      # deep-cpu's CPU sweep, collapsed onto --passes the same way -- see the
+      # comment there -- plus the two GPU interval passes, which (like
+      # systemtime/amdtopdown) stay their own wspy invocation since --passes
+      # doesn't cover --interval.
+      PASS_NAMES=(systemtime counters amdtopdown gpu_busy gpu_metrics)
       PASS_FLAGS=(
         "--csv --interval 1 --no-rusage --no-software --system --no-ipc"
-        "--rusage --software --branch --no-ipc"
-        "--ipc --topdown2 --no-rusage --no-software"
-        "--cache2 --float --no-rusage --no-software"
+        "--passes=software,branch,ipc,topdown2,cache2,float,topdown-frontend,topdown-optlb"
         "--csv --interval 1 --topdown --no-rusage --no-software --no-ipc"
-        "--topdown-frontend --no-ipc --no-software --no-rusage"
-        "--topdown-optlb --no-ipc --no-software --no-rusage"
         "--csv --interval 1 --gpu-busy --no-ipc --no-rusage --no-software"
         "--csv --interval 1 --gpu-metrics --no-ipc --no-rusage --no-software"
       )
