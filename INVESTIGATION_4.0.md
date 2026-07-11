@@ -175,6 +175,7 @@ a real report generator, native multi-pass execution, `/proc` enrichment, and a 
 scaling correctness fix. Ordered in dependency tiers; items within a tier are independently startable.
 
 **Tier 1 — foundational, unlocks most of the rest of 4.1:**
+
 1. Canonical metrics schema + normalized store (SQLite and/or Parquet) — almost everything below
    (stats, comparison matrix, HTML report, summary generator, feature normalization) wants queryable
    data instead of re-scanning CSV/JSONL by hand. Keep raw files; add this as a second, derived layer.
@@ -194,6 +195,7 @@ scaling correctness fix. Ordered in dependency tiers; items within a tier are in
    worth doing before Tier 3's stats/comparison work builds on these numbers.
 
 **Tier 2 — reporting/UI on top of Tier 1's data shapes:**
+
 5. HTML report bundle (summary, bottlenecks, tree, top counters, links to raw artifacts) + compare
    view.
 6. Web-based run launcher + report browser — a thin web form over `wspy-run`'s option surface
@@ -213,12 +215,14 @@ scaling correctness fix. Ordered in dependency tiers; items within a tier are in
     (see "Success criteria for a 4.0 kickoff").
 
 **Tier 3 — stats/confidence layer:**
+
 11. Repeatability policy + confidence metadata (mean, stddev, CV, CI) as default output.
 12. Outlier/threshold engine (per-metric, global + suite-local).
 13. Comparison matrix mode (sweep compiler/kernel/governor/SMT/VM-native) — builds on the
     profile-driven launcher; a declarative sweep runner, not new collection logic.
 
 **Tier 4 — topdown/IBS refinement:**
+
 14. Hierarchical (parent→child) topdown schema + explicit raw-vs-contention-adjusted denominators +
     formula/version metadata.
 15. Core-class-aware topdown (hybrid Intel Atom+Core; weighted aggregate) — depends on per-core
@@ -228,6 +232,7 @@ scaling correctness fix. Ordered in dependency tiers; items within a tier are in
 17. PMU-capability-aware comparability warnings.
 
 **Tier 5 — `/proc` and tree enrichment (independent, moderate value, low risk):**
+
 18. `/proc/<pid>/io` byte counters (read/write/cancelled-write bytes).
 19. `/proc/<pid>/schedstat` run-delay/timeslice capture.
 20. Memory footprint detail (`VmRSS`/`VmHWM`/anon-file-shmem split via `/proc/<pid>/status` or
@@ -238,23 +243,27 @@ scaling correctness fix. Ordered in dependency tiers; items within a tier are in
 23. `proctree` → JSON/Graphviz export + run-to-run tree diff.
 
 **Tier 6 — GPU track:**
+
 24. ROCm SMI + sysfs fusion layer (one stream, source precedence, per-metric validity flags) —
     merges the two existing independent GPU paths (`amd_smi.c`, `amd_sysfs.c`).
 25. Same manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory
     activity) — reuses 4.0 foundation work rather than a parallel GPU-only pipeline.
 
 **Tier 7 — characterization prerequisites:**
+
 26. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
     switch/I-O) — needs #1's normalized schema to draw features from.
 27. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
     stability) + confidence + top-2 alternatives.
 
 **Tier 8 — portability:**
+
 28. Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`) —
     actual ARM64 `cpu_info` support; `cpu_info.c`'s `__cpuid()`/`<cpuid.h>` use is the remaining
     x86_64-only blocker (the `ptrace` side of ARM64 prep already shipped, see `ptrace_arch.h`).
 
 **Tier 9 — testing/docs and small cleanups (track alongside the schema work above):**
+
 29. Schema compatibility/migration tests + reproducibility/idempotency tests.
 30. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
     output).
@@ -284,6 +293,7 @@ Goal: use the normalized store built in 4.1 for regression detection, clustering
 topdown/IBS attribution, static-site publishing, and a lower-overhead tracing backend.
 
 **Tier 1 — needs 4.1's normalized store/history:**
+
 1. Baselines and regression/anomaly detection.
 2. Machine/environment comparability scoring — depends on provenance capture (shipped, `provenance.c`)
    existing across enough runs to score against.
@@ -292,16 +302,19 @@ topdown/IBS attribution, static-site publishing, and a lower-overhead tracing ba
    only when data coverage differs).
 
 **Tier 2 — topdown/attribution, needs 4.1's hierarchical schema + phase detection (shipped) + IBS:**
+
 5. Phase-aware topdown (warmup/steady/degraded segmentation, drift signal).
 6. Composite attribution (topdown + cache/TLB/IBS signals).
 7. IBS-derived memory-path bottleneck decomposition (combine with topdown/cache).
 
 **Tier 3 — publishing/reporting expansion, needs 4.1's HTML report:**
+
 8. Static-site publishing pipeline (per-benchmark + suite + cross-suite pages from templates).
 9. Characterization badges + similarity panels in reports.
 10. Interactive tree/timeline drill-down, GPU phase overlays.
 
 **Tier 4 — report-layer additions on data already collected in 4.0:**
+
 11. `--tree-open` → file-I/O topology summary (hot paths, open-failure rates, startup storms,
     process→file maps) — `tree_open`/`SYS_openat` capture already exists (`topdown.c:455`).
 12. System (`--system`) → per-interface network attribution, user/system/iowait/steal mix,
@@ -310,6 +323,7 @@ topdown/IBS attribution, static-site publishing, and a lower-overhead tracing ba
     `comm`-pattern role tagging).
 
 **Tier 5 — GPU deeper profiling:**
+
 14. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
     heavier, optional trace-rich profile, same "default vs debug profile" pattern as IBS.
 15. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) —
@@ -320,6 +334,7 @@ topdown/IBS attribution, static-site publishing, and a lower-overhead tracing ba
     driver version) — no separate "GPU comparability score" needed; one scoring mechanism, not two.
 
 **Tier 6 — infra:**
+
 18. Low-overhead tracing alternative to `ptrace` (`ftrace` tracepoints or minimal eBPF) for
     `--tree`/`--tree-open` — `ptrace` context-switches on every syscall entry/exit, which skews the
     very counters being measured for I/O-heavy or fork-heavy workloads.
@@ -340,6 +355,7 @@ topdown/IBS attribution, static-site publishing, and a lower-overhead tracing ba
     placement is part of its provenance rather than only implicit in how it was launched.
 
 **Tier 7 — testing:**
+
 21. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
     guardrails — needs deterministic micro-workloads and 4.1's stats/index infrastructure.
 22. Contributor guide for adding a collector/metric/schema bump safely.
