@@ -167,13 +167,15 @@ details beyond the three path strings, no per-field environment gap list, just c
 ## Normalized store (`wspy-store --db <path>`)
 
 `wspy-store` is not something `wspy` itself writes — it's a separate ingestion tool that reads one
-or more `--run-index` files (and, best-effort, the manifest each record points at) into a SQLite
-"run catalog." This is phase 1 of `INVESTIGATION_4.0.md`'s 4.1 Tier 1 "canonical metrics schema +
+or more `--run-index` files, and best-effort the manifest and CSV output each record points at,
+into a SQLite database. This is `INVESTIGATION_4.0.md`'s 4.1 Tier 1 "canonical metrics schema +
 normalized store" item: a queryable index of *which runs exist and what they are* (identity,
-timing, exit status, coverage counts, provenance). It does **not** yet parse per-run CSV output
-into a queryable metric-value table (IPC, topdown, cache numbers) — that's real follow-up work, not
-built here. Don't assume `wspy-store` already gives you queryable metric values; check whether the
-consumer you're building actually needs that layer before relying on this one.
+timing, exit status, coverage counts, provenance — the `runs` table and its child tables), **plus**
+a queryable long/tall table of the actual per-run *metric values* (IPC, topdown, cache numbers —
+`metric_values`) that a run's CSV output contains. The metric-value layer only exists for runs that
+were collected with `--csv` and whose output file is still readable from wherever `wspy-store` runs
+— see "Manifest enrichment and metric ingestion are best-effort and path-based" below for the same
+caveat that already applies to manifest enrichment.
 
 **Why SQLite, not Parquet:** the backlog item names both. SQLite is what `wspy-store` writes
 because it's a single well-supported C library (fits this codebase's "avoid heavy dependencies"
@@ -199,12 +201,48 @@ SQLite natively).
   `captured`/`probed` counts. Populated straight from the run-index record's own `environment`/
   `environment_coverage` objects — **not** manifest enrichment, since the run index already carries
   this in full.
+- `metric_values` — one row per (CSV data row × non-dimension column), the long/tall metric-value
+  fact table: `run_id` (FK), `row_index` (ordinal of the CSV data row), `tick_time`/`core`/`phase`
+  (dimensions — see below), `metric_name` (the CSV header cell verbatim, e.g. `"ipc"`, `"retire"`,
+  `"net eth0"`), `value` (parsed number, `NULL` if non-finite or unparseable), `is_percent` (cell had
+  a trailing `%`), `raw_text` (the original cell text, always kept — auditable even when `value` is
+  `NULL`). Indexed on `(run_id, metric_name)` for "give me this metric's series for this run" queries.
+  `runs.metrics_ingested`/`runs.metrics_row_count` record whether/how much this landed for a given run.
 - `store_meta` — small descriptive key/value table (e.g. `created_at`); **not** the schema
   compatibility gate (see below).
 - `ingest_sources` — one row per ingested file path, tracking the last byte offset/size
   successfully ingested, so re-running `wspy-store` against a growing (or unchanged) run-index file
   only does work proportional to what's new, not O(n²) over the file's lifetime. If a file's size
   drops below its last-recorded size (rotated/truncated), the next ingest rescans it from byte 0.
+  (This offset tracking applies to `--run-index` files only — each run's CSV output is small and
+  bounded, so it's simply fully re-parsed, and `metric_values` rows for that run replaced, on every
+  ingest of that run's record; see "Idempotency" below.)
+
+**CSV column classification, and why one code path covers every wspy CSV shape:** `ingest_csv_metrics()`
+never infers column identity from `--interval`/`--per-core`/etc. flags — it reads the CSV file's
+actual header row. A column named exactly `time` becomes `tick_time` (present only for `--interval`
+runs), `core` becomes `core` (present only for `--per-core` runs), `phase` becomes `phase` (present
+only when phase detection was active); every other non-empty-named header column becomes a metric.
+This is what lets the aggregate, `--interval`, `--per-core`, and `--interval`+`--per-core`
+(well-formed rows) shapes all ingest through the same logic with no per-mode special-casing.
+
+A data row whose column count doesn't match the header's is skipped **individually** (counted in
+the `wspy-store` summary line, not fatal), and parsing continues with the next row — deliberately
+more robust than stopping at the first mismatch, against two confirmed pre-existing `wspy` CSV bugs
+this ingester has to tolerate rather than get fooled by:
+- `--interval --gpu-smi`: every periodic tick row is short by the 4 `gpu_smi_*` columns
+  (`timer_callback()` never emits them — only the tail row, built by a separate code path, does).
+  Skipping bad rows individually still lets that correctly-shaped tail row through; stopping at the
+  first mismatch would have lost it too.
+- `--per-core --interval`: after the well-formed interval rows, `wspy.c` appends a separate,
+  unheaded block (one raw line per core, no header, a completely different column count) — each of
+  those lines individually mismatches the interval header and is skipped, exactly as if it were
+  unrelated garbage, never misattributed to a metric name it doesn't belong to.
+
+`nan`/`-nan`/`inf` cells — which `topdown.c`'s ratio/percent `print_*` functions (`print_ipc()`,
+`print_topdown_be()`, etc.) can legitimately emit on a zero divisor, confirmed empirically — parse
+fine via `strtod()` but are stored as `value = NULL` (so they're invisible to `AVG()`/`MIN()`/
+`MAX()` rather than poisoning them) while `raw_text` still preserves the literal `"-nan"` for audit.
 
 **Natural key and collision handling:** `run_id` is documented (`run_index.c`'s own comment, and
 above) as unique only *per host* — the natural key is `(hostname, run_id)`. If two records ever
@@ -218,19 +256,24 @@ counts it (`--strict` turns this into a nonzero exit). It does not attempt to me
 **Idempotency:** ingesting the same run-index file (or a file that has only grown since the last
 ingest) any number of times leaves the `runs` table with exactly one row per distinct
 `(hostname, run_id)` — records are upserted (`ON CONFLICT(hostname,run_id) DO UPDATE`), not
-appended.
+appended. `metric_values` rows for a run are deleted and reinserted on every (re-)ingest of that
+run's record, so re-ingesting never duplicates metric rows either.
 
-**Manifest enrichment is best-effort and path-based:** each record's `output_files.manifest_path`
-(if non-null) is read only if the file exists on disk at ingest time. Before trusting it,
-`wspy-store` cross-checks the manifest's `command.argv[0]`/`timing.start_time` against the
-run-index record's own `command[0]`/`start_time` — a fixed or reused output filename could
-otherwise point at a *different* run's manifest by the time it's ingested. A mismatch (or a missing/
-unreadable file) leaves `manifest_ingested = 0` and the host-detail columns `NULL`; it is never
-fatal. In the deployment this tool is named for — aggregating run-index files copied in from many
-hosts into one central `--db` — `manifest_path` is frequently a relative path from the originating
-host and won't resolve on the ingesting machine, so expect `manifest_ingested = 0` for most rows in
-that setup. That's expected degradation (matching this codebase's "measured vs unavailable" idiom
-used throughout `coverage.c`/`provenance.c`), not a bug to chase.
+**Manifest enrichment and metric ingestion are best-effort and path-based:** each record's
+`output_files.manifest_path`/`output_files.output_path` (if non-null) is only read if the file
+exists on disk at ingest time; metric ingestion additionally requires `options.csv` to have been
+true for that run (trusted from the run-index record itself, not sniffed from file content) and the
+file to be non-empty. Before trusting the manifest, `wspy-store` cross-checks its
+`command.argv[0]`/`timing.start_time` against the run-index record's own `command[0]`/`start_time`
+— a fixed or reused output filename could otherwise point at a *different* run's manifest by the
+time it's ingested. A mismatch (or a missing/unreadable file) leaves `manifest_ingested = 0` and the
+host-detail columns `NULL`; a missing/unreadable/empty/non-CSV output file leaves
+`metrics_ingested = 0` and no `metric_values` rows. Neither is ever fatal. In the deployment this
+tool is named for — aggregating run-index files copied in from many hosts into one central `--db`
+— both `manifest_path` and `output_path` are frequently relative paths from the originating host and
+won't resolve on the ingesting machine, so expect `manifest_ingested = 0`/`metrics_ingested = 0` for
+most rows in that setup. That's expected degradation (matching this codebase's "measured vs
+unavailable" idiom used throughout `coverage.c`/`provenance.c`), not a bug to chase.
 
 **Concurrency:** `wspy-store` opens the database with `PRAGMA journal_mode=WAL`, a 30-second
 `sqlite3_busy_timeout`, and `PRAGMA foreign_keys=ON`, so multiple concurrent `wspy-store`
@@ -242,9 +285,14 @@ it out-of-band instead, don't point `--db` directly at the network mount.
 **Schema versioning:** gated by `PRAGMA user_version`, not a table — checked immediately after
 `sqlite3_open()`, before any DDL/DML. A `wspy-store` build refuses to write to a database whose
 `user_version` is newer than the schema version it understands (exit 2), rather than silently
-misparsing it. There is no `ALTER TABLE`-based migration path yet; see `CLAUDE.md`'s "New
-normalized-store field" entry and `INVESTIGATION_4.0.md`'s 4.1 Tier 9 "Schema compatibility/
-migration tests" item.
+misparsing it. A database at an older recognized version is migrated in place: `ensure_schema()`
+runs either the fresh-database `SCHEMA_DDL` (`user_version == 0`) or exactly one version-specific
+`ALTER TABLE`/`CREATE TABLE IF NOT EXISTS` migration step per older version found (e.g.
+`MIGRATION_V1_TO_V2` adds `metric_values` and the two `runs.metrics_*` columns to a database created
+before this table existed), never both — see `CLAUDE.md`'s "New normalized-store field" entry for
+the pattern to follow when adding the next one. This is `wspy-store`'s first real migration; broader
+migration/compatibility testing across the whole tool is still `INVESTIGATION_4.0.md`'s 4.1 Tier 9
+"Schema compatibility/migration tests" item.
 
 ## CSV output (`-o <file> --csv` or `--csv` to stdout)
 

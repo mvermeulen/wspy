@@ -218,11 +218,11 @@ fi
 rm test_ledger_index.jsonl test_ledger_list.txt test_ledger.out
 echo "  wspy-ledger: OK"
 
-# wspy-store: normalized SQLite run catalog ingested from a run index +
-# manifest (INVESTIGATION_4.0.md's 4.1 "canonical metrics schema + normalized
-# store" item, phase 1)
+# wspy-store: normalized SQLite run catalog + per-run metric_values ingested
+# from a run index + manifest + CSV output (INVESTIGATION_4.0.md's 4.1
+# "canonical metrics schema + normalized store" item)
 echo "Testing wspy-store ingestion of a run index + manifest..."
-rm -f test_store_index.jsonl test_store_manifest.json test_store.db
+rm -f test_store_index.jsonl test_store_manifest.json test_store_output.csv test_store.db
 ./wspy --no-ipc --manifest test_store_manifest.json --run-index test_store_index.jsonl -- /bin/true > /dev/null
 if ! ./wspy-store --db test_store.db --run-index test_store_index.jsonl > test_store.out; then
     echo "FAIL: wspy-store should exit 0 on a clean ingest"
@@ -253,7 +253,46 @@ if command -v sqlite3 > /dev/null 2>&1; then
         exit 1
     fi
 fi
-rm -f test_store_index.jsonl test_store_manifest.json test_store.db test_store.out
+
+# A second run, this time with --csv, appended to the same run index and
+# re-ingested into the same database -- exercises metric_values ingestion,
+# which the --no-ipc-only run above never triggers (options.csv is false).
+./wspy --csv --topdown --run-index test_store_index.jsonl -o test_store_output.csv -- /bin/true > /dev/null
+if ! ./wspy-store --db test_store.db --run-index test_store_index.jsonl > test_store.out; then
+    echo "FAIL: wspy-store should exit 0 ingesting the second (--csv) run"
+    cat test_store.out
+    exit 1
+fi
+if ! grep -qE '1 metric-set\(s\) ingested, 0 skipped, 0 row\(s\) mismatched' test_store.out; then
+    echo "FAIL: wspy-store metric-set summary did not match for the --csv run"
+    cat test_store.out
+    exit 1
+fi
+if command -v sqlite3 > /dev/null 2>&1; then
+    RUN_COUNT=$(sqlite3 test_store.db "SELECT COUNT(*) FROM runs;")
+    if [ "$RUN_COUNT" != "2" ]; then
+        echo "FAIL: wspy-store: expected 2 rows in runs after ingesting the second run, got $RUN_COUNT"
+        exit 1
+    fi
+    METRICS_INGESTED=$(sqlite3 test_store.db "SELECT metrics_ingested FROM runs WHERE csv_flag=1;")
+    if [ "$METRICS_INGESTED" != "1" ]; then
+        echo "FAIL: wspy-store: metrics_ingested should be 1 for the --csv run"
+        exit 1
+    fi
+    IPC_COUNT=$(sqlite3 test_store.db "SELECT COUNT(*) FROM metric_values WHERE metric_name='ipc';")
+    if [ "$IPC_COUNT" != "1" ]; then
+        echo "FAIL: wspy-store: expected one 'ipc' metric_values row from the --csv run, got $IPC_COUNT"
+        exit 1
+    fi
+    # Re-ingesting again must not duplicate metric_values rows either.
+    ./wspy-store --db test_store.db --run-index test_store_index.jsonl > /dev/null
+    IPC_COUNT=$(sqlite3 test_store.db "SELECT COUNT(*) FROM metric_values WHERE metric_name='ipc';")
+    if [ "$IPC_COUNT" != "1" ]; then
+        echo "FAIL: wspy-store: metric_values re-ingest should be idempotent, got $IPC_COUNT 'ipc' rows"
+        exit 1
+    fi
+fi
+rm -f test_store_index.jsonl test_store_manifest.json test_store_output.csv test_store.db test_store.out
 echo "  wspy-store: OK"
 
 # Counter capability discovery + coverage reporting

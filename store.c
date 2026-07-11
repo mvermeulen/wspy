@@ -1,10 +1,11 @@
 /*
  * store.c - wspy-store: ingests --run-index (JSONL) files, and best-effort
- * enriches each record from the manifest.json it points at, into a
- * normalized SQLite "run catalog" -- INVESTIGATION_4.0.md's 4.1 Tier-1
- * "Canonical metrics schema + normalized store" item, phase 1 (run
- * metadata; per-run CSV metric values are a deliberately deferred follow
- * up, see doc/ARTIFACT_CONTRACT.md's "Normalized store" section).
+ * enriches each record from the manifest.json/CSV output it points at,
+ * into a normalized SQLite "run catalog" plus a per-run metric-value
+ * table -- INVESTIGATION_4.0.md's 4.1 Tier-1 "Canonical metrics schema +
+ * normalized store" item (both halves: run metadata, and the CSV metric
+ * values that make the run metadata actually useful for stats/comparison
+ * work -- see doc/ARTIFACT_CONTRACT.md's "Normalized store" section).
  *
  * Like ledger.c/validate.c, this reads JSON via json_reader.h's
  * tolerant-default accessors and never aborts a whole file over one
@@ -18,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <getopt.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -26,7 +28,7 @@
 #include "run_index.h"
 #include "manifest.h"
 
-#define STORE_SCHEMA_VERSION 1
+#define STORE_SCHEMA_VERSION 2
 
 static int now_iso8601(char *buf,size_t bufsize);
 
@@ -77,6 +79,8 @@ static const char *SCHEMA_DDL =
   "  num_cores INTEGER,"
   "  num_cores_available INTEGER,"
   "  is_hybrid INTEGER,"
+  "  metrics_ingested INTEGER NOT NULL DEFAULT 0,"
+  "  metrics_row_count INTEGER,"
   "  source_run_index_path TEXT NOT NULL,"
   "  ingested_at TEXT NOT NULL,"
   "  UNIQUE(hostname, run_id)"
@@ -104,7 +108,46 @@ static const char *SCHEMA_DDL =
   "  libc_version TEXT,"
   "  captured_count INTEGER,"
   "  probed_count INTEGER"
-  ");";
+  ");"
+  "CREATE TABLE IF NOT EXISTS metric_values ("
+  "  id INTEGER PRIMARY KEY,"
+  "  run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,"
+  "  row_index INTEGER NOT NULL,"
+  "  tick_time REAL,"
+  "  core INTEGER,"
+  "  phase TEXT,"
+  "  metric_name TEXT NOT NULL,"
+  "  value REAL,"
+  "  is_percent INTEGER NOT NULL DEFAULT 0,"
+  "  raw_text TEXT NOT NULL"
+  ");"
+  "CREATE INDEX IF NOT EXISTS idx_metric_values_run_metric ON metric_values(run_id,metric_name);";
+
+/* Applied when an existing database is found at STORE_SCHEMA_VERSION 1
+ * (the shape wspy-store originally shipped with, before metric_values
+ * existed) -- INVESTIGATION_4.0.md's 4.1 Tier 9 "schema
+ * compatibility/migration tests" item's first real instance, rather than
+ * a second "no migration path yet" caveat. Safe to run exactly once
+ * (ensure_schema() only reaches this at user_version==1); the ADD COLUMN
+ * statements would error on a second run, which is why it's strictly
+ * version-gated rather than using IF NOT EXISTS the way SCHEMA_DDL's
+ * fresh-database path can. */
+static const char *MIGRATION_V1_TO_V2 =
+  "ALTER TABLE runs ADD COLUMN metrics_ingested INTEGER NOT NULL DEFAULT 0;"
+  "ALTER TABLE runs ADD COLUMN metrics_row_count INTEGER;"
+  "CREATE TABLE IF NOT EXISTS metric_values ("
+  "  id INTEGER PRIMARY KEY,"
+  "  run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,"
+  "  row_index INTEGER NOT NULL,"
+  "  tick_time REAL,"
+  "  core INTEGER,"
+  "  phase TEXT,"
+  "  metric_name TEXT NOT NULL,"
+  "  value REAL,"
+  "  is_percent INTEGER NOT NULL DEFAULT 0,"
+  "  raw_text TEXT NOT NULL"
+  ");"
+  "CREATE INDEX IF NOT EXISTS idx_metric_values_run_metric ON metric_values(run_id,metric_name);";
 
 struct store_stats {
   int records_seen;
@@ -116,6 +159,9 @@ struct store_stats {
   int manifests_enriched;
   int manifests_skipped;
   int manifests_mismatched;
+  int metrics_ingested;
+  int metrics_skipped;
+  int metrics_row_mismatches;
 };
 
 static char *read_whole_file_from(const char *path,long offset,long *size_out){
@@ -190,17 +236,11 @@ static int ensure_schema(sqlite3 *db){
     return -1;
   }
 
-  if (sqlite3_exec(db,SCHEMA_DDL,NULL,NULL,&errmsg) != SQLITE_OK){
-    fprintf(stderr,"wspy-store: schema creation failed: %s\n",errmsg ? errmsg : "unknown error");
-    sqlite3_free(errmsg);
-    return -1;
-  }
+  if (user_version == STORE_SCHEMA_VERSION) return 0; /* already current, nothing to do */
 
   if (user_version == 0){
-    char pragma[64];
-    snprintf(pragma,sizeof(pragma),"PRAGMA user_version = %d;",STORE_SCHEMA_VERSION);
-    if (sqlite3_exec(db,pragma,NULL,NULL,&errmsg) != SQLITE_OK){
-      fprintf(stderr,"wspy-store: unable to set schema version: %s\n",errmsg ? errmsg : "unknown error");
+    if (sqlite3_exec(db,SCHEMA_DDL,NULL,NULL,&errmsg) != SQLITE_OK){
+      fprintf(stderr,"wspy-store: schema creation failed: %s\n",errmsg ? errmsg : "unknown error");
       sqlite3_free(errmsg);
       return -1;
     }
@@ -214,6 +254,25 @@ static int ensure_schema(sqlite3 *db){
         sqlite3_step(meta_stmt);
         sqlite3_finalize(meta_stmt);
       }
+    }
+  } else if (user_version == 1){
+    fprintf(stderr,"wspy-store: migrating database from schema version 1 to %d "
+                    "(adding metric_values)\n",STORE_SCHEMA_VERSION);
+    if (sqlite3_exec(db,MIGRATION_V1_TO_V2,NULL,NULL,&errmsg) != SQLITE_OK){
+      fprintf(stderr,"wspy-store: migration to schema version %d failed: %s\n",
+              STORE_SCHEMA_VERSION,errmsg ? errmsg : "unknown error");
+      sqlite3_free(errmsg);
+      return -1;
+    }
+  }
+
+  {
+    char pragma[64];
+    snprintf(pragma,sizeof(pragma),"PRAGMA user_version = %d;",STORE_SCHEMA_VERSION);
+    if (sqlite3_exec(db,pragma,NULL,NULL,&errmsg) != SQLITE_OK){
+      fprintf(stderr,"wspy-store: unable to set schema version: %s\n",errmsg ? errmsg : "unknown error");
+      sqlite3_free(errmsg);
+      return -1;
     }
   }
   return 0;
@@ -397,6 +456,164 @@ static void enrich_from_manifest(sqlite3 *db,sqlite3_int64 run_row_id,const char
   json_free(root);
 }
 
+/* CSV cell parsing, mirrored verbatim from validate.c's split_csv_line()/
+ * parse_numeric_field() rather than reimplemented -- same file format
+ * (wspy's own CSV writer never quotes a field, always trailing-comma-
+ * terminates a row), so the same rules apply: a cell is "numeric" iff
+ * strtod() consumes the whole string, optionally followed by exactly one
+ * trailing '%'. strtod() itself already accepts "nan"/"-nan"/"inf" (glibc)
+ * -- topdown.c's print_ipc()/print_topdown_be()/etc. can legitimately
+ * emit those on a zero divisor (confirmed empirically), so the caller
+ * checks isnan()/isinf() and stores NULL for value while keeping raw_text
+ * for audit, rather than rejecting the cell outright. */
+#define MAX_CSV_FIELDS 1024
+
+static int split_csv_line(char *line,char **fields,int max_fields){
+  int n = 0;
+  char *p = line;
+
+  if (*p == '\0') return 0;
+  fields[n++] = p;
+  while (*p && n < max_fields){
+    if (*p == ','){
+      *p = '\0';
+      fields[n++] = p + 1;
+    }
+    p++;
+  }
+  return n;
+}
+
+static int parse_numeric_field(const char *s,double *out,int *is_percent){
+  char *end;
+
+  if (!s || !*s) return 0;
+  *out = strtod(s,&end);
+  if (end == s) return 0;
+  if (*end == '\0'){ *is_percent = 0; return 1; }
+  if (*end == '%' && end[1] == '\0'){ *is_percent = 1; return 1; }
+  return 0;
+}
+
+/* Parses one wspy CSV output file into metric_values rows. Column
+ * *identity* always comes from the actual header row, never inferred
+ * from run-index flags (a column named exactly "time"/"core"/"phase" is
+ * a dimension, every other non-empty-named column is a metric) -- this
+ * is what lets one code path cover the aggregate, --interval, --per-core,
+ * and --interval+--per-core (well-formed rows) shapes without special-
+ * casing any of them.
+ *
+ * Per-row, not per-file, column-count checking: a data row whose field
+ * count doesn't match the header's is skipped (counted, not fatal) and
+ * parsing continues with the next row. This recovers strictly more real
+ * data than stopping at the first mismatch would, against two confirmed
+ * wspy CSV bugs neither of which this function's job is to fix: every
+ * --interval --gpu-smi periodic tick is short by 4 columns (only the
+ * tail row is correctly shaped -- skipping bad rows still lets the good
+ * tail row through) and --per-core --interval appends a trailing,
+ * unheaded, differently-shaped block after the well-formed interval rows
+ * (each of those lines individually mismatches the header and is
+ * skipped, same as if it were random garbage). */
+static void ingest_csv_metrics(sqlite3 *db,sqlite3_int64 run_row_id,const char *csv_path,
+                                struct store_stats *stats){
+  long size;
+  char *buf;
+  char **lines;
+  int nlines,i,j;
+  long consumed;
+  char *header_fields[MAX_CSV_FIELDS];
+  int header_n;
+  int time_col = -1,core_col = -1,phase_col = -1;
+  int rows_ingested = 0;
+  sqlite3_stmt *del,*ins;
+
+  buf = read_whole_file_from(csv_path,0,&size);
+  if (!buf || size == 0){
+    free(buf);
+    stats->metrics_skipped++;
+    return;
+  }
+  lines = split_complete_lines(buf,&nlines,&consumed);
+  if (nlines < 1){
+    free(lines);
+    free(buf);
+    stats->metrics_skipped++;
+    return;
+  }
+
+  header_n = split_csv_line(lines[0],header_fields,MAX_CSV_FIELDS);
+  for (j = 0; j < header_n; j++){
+    if (!strcmp(header_fields[j],"time")) time_col = j;
+    else if (!strcmp(header_fields[j],"core")) core_col = j;
+    else if (!strcmp(header_fields[j],"phase")) phase_col = j;
+  }
+
+  if (sqlite3_prepare_v2(db,"DELETE FROM metric_values WHERE run_id=?;",-1,&del,NULL) == SQLITE_OK){
+    sqlite3_bind_int64(del,1,run_row_id);
+    sqlite3_step(del);
+    sqlite3_finalize(del);
+  }
+
+  if (sqlite3_prepare_v2(db,
+        "INSERT INTO metric_values (run_id,row_index,tick_time,core,phase,metric_name,value,"
+        "is_percent,raw_text) VALUES (?,?,?,?,?,?,?,?,?);",-1,&ins,NULL) != SQLITE_OK){
+    free(lines);
+    free(buf);
+    stats->metrics_skipped++;
+    return;
+  }
+
+  for (i = 1; i < nlines; i++){
+    char *row_fields[MAX_CSV_FIELDS];
+    int row_n = split_csv_line(lines[i],row_fields,MAX_CSV_FIELDS);
+    double tick_time_val,core_val,num;
+    int have_tick = 0,have_core = 0,is_pct;
+    const char *phase_val = NULL;
+
+    if (row_n != header_n){
+      stats->metrics_row_mismatches++;
+      continue;
+    }
+
+    if (time_col >= 0) have_tick = parse_numeric_field(row_fields[time_col],&tick_time_val,&is_pct);
+    if (core_col >= 0) have_core = parse_numeric_field(row_fields[core_col],&core_val,&is_pct);
+    if (phase_col >= 0 && *row_fields[phase_col]) phase_val = row_fields[phase_col];
+
+    for (j = 0; j < header_n; j++){
+      if (j == time_col || j == core_col || j == phase_col) continue;
+      if (!*header_fields[j]) continue; /* trailing empty header cell from wspy's own trailing comma */
+      if (!parse_numeric_field(row_fields[j],&num,&is_pct)) continue; /* non-numeric cell, skip */
+
+      sqlite3_bind_int64(ins,1,run_row_id);
+      sqlite3_bind_int(ins,2,i - 1);
+      if (have_tick) sqlite3_bind_double(ins,3,tick_time_val); else sqlite3_bind_null(ins,3);
+      if (have_core) sqlite3_bind_int(ins,4,(int)core_val); else sqlite3_bind_null(ins,4);
+      bind_text_or_null(ins,5,phase_val);
+      sqlite3_bind_text(ins,6,header_fields[j],-1,SQLITE_TRANSIENT);
+      if (isnan(num) || isinf(num)) sqlite3_bind_null(ins,7);
+      else sqlite3_bind_double(ins,7,num);
+      sqlite3_bind_int(ins,8,is_pct);
+      sqlite3_bind_text(ins,9,row_fields[j],-1,SQLITE_TRANSIENT);
+      sqlite3_step(ins);
+      sqlite3_reset(ins);
+    }
+    rows_ingested++;
+  }
+  sqlite3_finalize(ins);
+
+  if (sqlite3_prepare_v2(db,"UPDATE runs SET metrics_ingested=1,metrics_row_count=? WHERE id=?;",
+                         -1,&ins,NULL) == SQLITE_OK){
+    sqlite3_bind_int(ins,1,rows_ingested);
+    sqlite3_bind_int64(ins,2,run_row_id);
+    sqlite3_step(ins);
+    sqlite3_finalize(ins);
+  }
+  stats->metrics_ingested++;
+
+  free(lines);
+  free(buf);
+}
+
 static int now_iso8601(char *buf,size_t bufsize){
   time_t t = time(NULL);
   struct tm tm_utc;
@@ -412,7 +629,7 @@ static int now_iso8601(char *buf,size_t bufsize){
  * genuine re-ingest of the same run, and the existing row is left alone
  * rather than silently merged with unrelated data. */
 static void upsert_run(sqlite3 *db,const struct json_value *record,const char *source_path,
-                        int enrich_manifest,struct store_stats *stats){
+                        int enrich_manifest,int ingest_metrics,struct store_stats *stats){
   const char *hostname = json_get_string(record,"hostname",NULL);
   const char *run_id = json_get_string(record,"run_id",NULL);
   const struct json_value *cmd = json_object_get(record,"command");
@@ -556,6 +773,18 @@ static void upsert_run(sqlite3 *db,const struct json_value *record,const char *s
   } else {
     stats->manifests_skipped++;
   }
+
+  if (ingest_metrics){
+    int csv_flag = options ? json_get_bool(options,"csv",0) : 0;
+    const char *output_path = outfiles ? json_get_string(outfiles,"output_path",NULL) : NULL;
+    struct stat st;
+    if (csv_flag && output_path && stat(output_path,&st) == 0 && st.st_size > 0)
+      ingest_csv_metrics(db,run_row_id,output_path,stats);
+    else
+      stats->metrics_skipped++;
+  } else {
+    stats->metrics_skipped++;
+  }
 }
 
 static long get_source_offset(sqlite3 *db,const char *path){
@@ -602,7 +831,8 @@ static void set_source_offset(sqlite3 *db,const char *path,long offset,long size
  * recorded for it in ingest_sources (if any) so repeated invocations
  * against a growing file only do work proportional to what's new.
  * Returns 0 on success, -1 if the file could not be read at all. */
-static int ingest_run_index_file(sqlite3 *db,const char *path,int enrich_manifest,struct store_stats *stats){
+static int ingest_run_index_file(sqlite3 *db,const char *path,int enrich_manifest,int ingest_metrics,
+                                  struct store_stats *stats){
   long start_offset,file_size,consumed;
   char *buf;
   char **lines;
@@ -635,7 +865,7 @@ static int ingest_run_index_file(sqlite3 *db,const char *path,int enrich_manifes
     }
     stats->records_seen++;
     if (check_schema_major_mismatch(root,path,&schema_warned)) stats->schema_mismatch_warned = 1;
-    upsert_run(db,root,path,enrich_manifest,stats);
+    upsert_run(db,root,path,enrich_manifest,ingest_metrics,stats);
     json_free(root);
   }
   sqlite3_exec(db,"COMMIT;",NULL,NULL,NULL);
@@ -653,21 +883,24 @@ static void usage(const char *prog){
     "Usage: %s --db <path> --run-index <file> [--run-index <file> ...] [options]\n"
     "\n"
     "Ingests one or more --run-index (JSONL) files into a normalized SQLite\n"
-    "\"run catalog\" -- INVESTIGATION_4.0.md's 4.1 \"canonical metrics schema +\n"
-    "normalized store\" item, phase 1 (run metadata; per-run CSV metric\n"
-    "values are a separate, deferred follow up).\n"
+    "\"run catalog\" plus a per-run metric_values table parsed from each\n"
+    "run's CSV output -- INVESTIGATION_4.0.md's 4.1 \"canonical metrics\n"
+    "schema + normalized store\" item.\n"
     "\n"
     "Records are upserted keyed on (hostname,run_id); re-running against the\n"
     "same or a grown run-index file is safe and will not duplicate rows.\n"
     "Each record's output_files.manifest_path (if present and readable) is\n"
     "also read for a handful of host fields the run index itself doesn't\n"
-    "carry -- best-effort, since that path often won't resolve when\n"
-    "aggregating run-index files copied in from other hosts.\n"
+    "carry, and output_files.output_path's CSV (if options.csv was true and\n"
+    "the file is present) is parsed into metric_values -- both best-effort,\n"
+    "since these paths often won't resolve when aggregating run-index files\n"
+    "copied in from other hosts.\n"
     "\n"
     "Options:\n"
     "  --db <path>          SQLite database to create/update (required)\n"
     "  --run-index <file>   run-index (JSONL) file to ingest; may be repeated\n"
     "  --no-manifest-enrich skip the best-effort per-record manifest.json read\n"
+    "  --no-metrics-ingest  skip parsing each record's CSV output into metric_values\n"
     "  -q, --quiet          only print the final summary line\n"
     "  -s, --strict         exit non-zero if any record was malformed, had a\n"
     "                       schema major-version mismatch, or collided with\n"
@@ -684,7 +917,7 @@ int main(int argc,char **argv){
   const char *db_path = NULL;
   const char *run_index_paths[64];
   int nrun_index = 0;
-  int quiet = 0,strict = 0,enrich_manifest = 1;
+  int quiet = 0,strict = 0,enrich_manifest = 1,ingest_metrics = 1;
   sqlite3 *db;
   struct store_stats stats;
   int i,rc = 0;
@@ -694,6 +927,7 @@ int main(int argc,char **argv){
     { "db",                 required_argument, 0, 'd' },
     { "run-index",          required_argument, 0, 'r' },
     { "no-manifest-enrich", no_argument,       0, 'M' },
+    { "no-metrics-ingest",  no_argument,       0, 'C' },
     { "quiet",              no_argument,       0, 'q' },
     { "strict",             no_argument,       0, 's' },
     { "help",               no_argument,       0, 'h' },
@@ -713,6 +947,7 @@ int main(int argc,char **argv){
       run_index_paths[nrun_index++] = optarg;
       break;
     case 'M': enrich_manifest = 0; break;
+    case 'C': ingest_metrics = 0; break;
     case 'q': quiet = 1; break;
     case 's': strict = 1; break;
     case 'h': usage(argv[0]); return 0;
@@ -734,13 +969,15 @@ int main(int argc,char **argv){
   if (!db) return 2;
 
   for (i = 0; i < nrun_index; i++){
-    if (ingest_run_index_file(db,run_index_paths[i],enrich_manifest,&stats) < 0) rc = 2;
+    if (ingest_run_index_file(db,run_index_paths[i],enrich_manifest,ingest_metrics,&stats) < 0) rc = 2;
     if (!quiet)
       printf("%s: %d record(s): %d new, %d updated, %d malformed, %d collision(s); "
-             "%d manifest(s) enriched, %d skipped, %d mismatched\n",
+             "%d manifest(s) enriched, %d skipped, %d mismatched; "
+             "%d metric-set(s) ingested, %d skipped, %d row(s) mismatched\n",
              run_index_paths[i],stats.records_seen,stats.records_new,stats.records_updated,
              stats.records_malformed,stats.records_collision,
-             stats.manifests_enriched,stats.manifests_skipped,stats.manifests_mismatched);
+             stats.manifests_enriched,stats.manifests_skipped,stats.manifests_mismatched,
+             stats.metrics_ingested,stats.metrics_skipped,stats.metrics_row_mismatches);
   }
 
   if (sqlite3_prepare_v2(db,"SELECT COUNT(*) FROM runs;",-1,&count_stmt,NULL) == SQLITE_OK){
