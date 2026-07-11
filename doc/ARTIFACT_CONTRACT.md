@@ -19,6 +19,7 @@ type below.
 | Main output | `-o <file>` (or stdout) | CSV (`--csv`) or human-readable text | not versioned — see "CSV output" below |
 | Tree file | `--tree <file>` | line-oriented, 4 line kinds | not versioned — grammar is small and append-only |
 | Run-directory manifest | `wspy-run --suite/--benchmark` | one JSON object, one per run directory | `layout_version` (`wspy-run`'s own generator, not a C header) |
+| Normalized store | `wspy-store --db <path>` | SQLite database (derived, not written by `wspy` itself) | `PRAGMA user_version` (`store.c`'s `STORE_SCHEMA_VERSION`) |
 
 A single `wspy` run can produce any subset of these: `--manifest` and `--run-index` are independent
 (a run can use either, neither, or both), and the main output always exists (stdout if `-o` isn't
@@ -162,6 +163,88 @@ details beyond the three path strings, no per-field environment gap list, just c
   lines with an unrecognized `schema_version` MAJOR rather than aborting the whole scan — one stale
   record from an old `wspy` build shouldn't block reading the rest of the file. `ledger.c` already
   does this; follow the same pattern in new tooling.
+
+## Normalized store (`wspy-store --db <path>`)
+
+`wspy-store` is not something `wspy` itself writes — it's a separate ingestion tool that reads one
+or more `--run-index` files (and, best-effort, the manifest each record points at) into a SQLite
+"run catalog." This is phase 1 of `INVESTIGATION_4.0.md`'s 4.1 Tier 1 "canonical metrics schema +
+normalized store" item: a queryable index of *which runs exist and what they are* (identity,
+timing, exit status, coverage counts, provenance). It does **not** yet parse per-run CSV output
+into a queryable metric-value table (IPC, topdown, cache numbers) — that's real follow-up work, not
+built here. Don't assume `wspy-store` already gives you queryable metric values; check whether the
+consumer you're building actually needs that layer before relying on this one.
+
+**Why SQLite, not Parquet:** the backlog item names both. SQLite is what `wspy-store` writes
+because it's a single well-supported C library (fits this codebase's "avoid heavy dependencies"
+posture — ROCm is the only other external dependency, and only behind `AMDGPU=1`) and the write
+pattern (`wspy-store` upserting one run at a time) is OLTP-shaped, not the batch-columnar-scan shape
+Parquet is built for. Parquet has no practical C writer without adopting Apache Arrow/Parquet-C++,
+so it isn't something `wspy-store` produces directly — if you need a Parquet copy for pandas/Arrow
+tooling, export it downstream (e.g. `duckdb store.db -c "COPY runs TO 'runs.parquet'"`; DuckDB reads
+SQLite natively).
+
+**Schema** (`store.c`'s `SCHEMA_DDL`):
+
+- `runs` — one row per run, surrogate `id` PK, natural key `UNIQUE(hostname, run_id)`. Most columns
+  are a direct projection of the run-index record's fields (same names, `snake_case`); `counter_mask`
+  is kept both as the original hex string (`"0x3"`) and pre-parsed into `counter_mask_int` (plain
+  integer) so SQL bit-test queries (`counter_mask_int & 0x4`) work without a hex-parsing UDF.
+  `kernel_release`/`num_cores`/`num_cores_available`/`is_hybrid` are populated only via manifest
+  enrichment (see below) — they're `NULL` until `manifest_ingested = 1`.
+- `run_command_args` — one row per `argv` element, `(run_id, arg_index)` PK, so the full command
+  line is queryable/joinable rather than only the denormalized `runs.command` (argv[0] only, for
+  display).
+- `run_environment` — one row per run, all 12 provenance fields plus `environment_coverage`'s
+  `captured`/`probed` counts. Populated straight from the run-index record's own `environment`/
+  `environment_coverage` objects — **not** manifest enrichment, since the run index already carries
+  this in full.
+- `store_meta` — small descriptive key/value table (e.g. `created_at`); **not** the schema
+  compatibility gate (see below).
+- `ingest_sources` — one row per ingested file path, tracking the last byte offset/size
+  successfully ingested, so re-running `wspy-store` against a growing (or unchanged) run-index file
+  only does work proportional to what's new, not O(n²) over the file's lifetime. If a file's size
+  drops below its last-recorded size (rotated/truncated), the next ingest rescans it from byte 0.
+
+**Natural key and collision handling:** `run_id` is documented (`run_index.c`'s own comment, and
+above) as unique only *per host* — the natural key is `(hostname, run_id)`. If two records ever
+present the same `(hostname, run_id)` with a materially different `start_time`/`command` (a real
+risk for containers sharing a host's UTS namespace with easily-duplicated low-numbered PIDs), that's
+a **collision**, not a re-ingest of the same run: `wspy-store` detects this by comparing against the
+existing row before applying an upsert, logs a warning, leaves the existing row untouched, and
+counts it (`--strict` turns this into a nonzero exit). It does not attempt to merge or pick a
+"winner."
+
+**Idempotency:** ingesting the same run-index file (or a file that has only grown since the last
+ingest) any number of times leaves the `runs` table with exactly one row per distinct
+`(hostname, run_id)` — records are upserted (`ON CONFLICT(hostname,run_id) DO UPDATE`), not
+appended.
+
+**Manifest enrichment is best-effort and path-based:** each record's `output_files.manifest_path`
+(if non-null) is read only if the file exists on disk at ingest time. Before trusting it,
+`wspy-store` cross-checks the manifest's `command.argv[0]`/`timing.start_time` against the
+run-index record's own `command[0]`/`start_time` — a fixed or reused output filename could
+otherwise point at a *different* run's manifest by the time it's ingested. A mismatch (or a missing/
+unreadable file) leaves `manifest_ingested = 0` and the host-detail columns `NULL`; it is never
+fatal. In the deployment this tool is named for — aggregating run-index files copied in from many
+hosts into one central `--db` — `manifest_path` is frequently a relative path from the originating
+host and won't resolve on the ingesting machine, so expect `manifest_ingested = 0` for most rows in
+that setup. That's expected degradation (matching this codebase's "measured vs unavailable" idiom
+used throughout `coverage.c`/`provenance.c`), not a bug to chase.
+
+**Concurrency:** `wspy-store` opens the database with `PRAGMA journal_mode=WAL`, a 30-second
+`sqlite3_busy_timeout`, and `PRAGMA foreign_keys=ON`, so multiple concurrent `wspy-store`
+invocations against the same `--db` (e.g. from a cron job or CI matrix) serialize rather than fail
+outright. **WAL mode is unsafe over NFS** (per SQLite's own documentation) — if `--db` will ever
+point at a network filesystem for multi-host aggregation, keep the database on local disk and sync
+it out-of-band instead, don't point `--db` directly at the network mount.
+
+**Schema versioning:** gated by `PRAGMA user_version`, not a table — checked immediately after
+`sqlite3_open()`, before any DDL/DML. A `wspy-store` build refuses to write to a database whose
+`user_version` is newer than the schema version it understands (exit 2), rather than silently
+misparsing it. There is no `ALTER TABLE`-based migration path yet; see `CLAUDE.md`'s "New
+normalized-store field" entry and `INVESTIGATION_4.0.md`'s 4.1 Tier 9 "Schema compatibility/
+migration tests" item.
 
 ## CSV output (`-o <file> --csv` or `--csv` to stdout)
 
