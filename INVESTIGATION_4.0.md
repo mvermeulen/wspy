@@ -368,16 +368,16 @@ derivable from files already being produced.
    checklist (#9), curation/reordering/commentary (#8), publish export (#10), and `wspy-store`
    ingestion — #7-#10 generalize this slice's pieces rather than starting from zero, per this item's
    original scoping.
-7. Web-based `wspy-run` profile launcher — a deliberately cut-down first slice of #9, inserted ahead
-   of #8's curation studio because curation needs a portfolio of real, varied reports to curate
-   *against*, and #6's single fixed configuration doesn't provide that. Scope is exactly `wspy-run`'s
-   own existing surface — pick a builtin profile (or comma-composed list: `quick`, `deep-cpu`,
-   `deep-cpu-intel`, `deep-gpu`, `tree-heavy`, `ibs-basic`, `ibs-memory-deep`) plus suite/benchmark/
-   workload command, run it, browse the result — and nothing past that: no ad-hoc counter/option
-   checklist (that's #9's job once the preset/configuration/option vocabulary above is actually
-   built out), no `wspy-validate`/`wspy-store`/`wspy-summary`/discovery-command coverage (also #9).
-   Mirrors `workload/phoronix/run_test.sh`'s own real, already-hand-rolled pattern rather than
-   inventing a new one: invoke `wspy-run --suite <suite> --benchmark <benchmark> <profile(s)> --
+7. ~~Web-based `wspy-run` profile launcher~~ — **shipped.** A deliberately cut-down first slice of #9,
+   inserted ahead of #8's curation studio because curation needs a portfolio of real, varied reports
+   to curate *against*, and #6's single fixed configuration doesn't provide that. Scope is exactly
+   `wspy-run`'s own existing surface — pick a builtin profile (or comma-composed list: `quick`,
+   `deep-cpu`, `deep-cpu-intel`, `deep-gpu`, `tree-heavy`, `ibs-basic`, `ibs-memory-deep`) plus
+   suite/benchmark/workload command, run it, browse the result — and nothing past that: no ad-hoc
+   counter/option checklist (that's #9's job once the preset/configuration/option vocabulary above is
+   actually built out), no `wspy-validate`/`wspy-store`/`wspy-summary`/discovery-command coverage
+   (also #9). Mirrors `workload/phoronix/run_test.sh`'s own real, already-hand-rolled pattern rather
+   than inventing a new one: invoke `wspy-run --suite <suite> --benchmark <benchmark> <profile(s)> --
    <workload>`, then, only if the resulting run directory contains `amdtopdown.csv` (i.e. the chosen
    profile included that pass — true for `deep-cpu`/`deep-gpu`, false for `deep-cpu-intel`), `cd` into
    it and best-effort run `gnuplot.sh` same as #6, silently skipping the plot step otherwise rather
@@ -390,6 +390,19 @@ derivable from files already being produced.
    post-hoc plot step ran — falling back to #6's fixed-shape rendering for a report directory that has
    no run-level manifest (i.e. one #6's own fixed-config path produced). Still no
    selection/reordering/commentary/compare view — that stays #8's job once it exists.
+   Confirmed end to end on real hardware (AMD, this repo's dev machine) across four cases: the
+   `quick` profile (no `amdtopdown.csv`, plot step correctly skipped); `deep-cpu` with gnuplot
+   missing (CSV/manifests present, plot step failed and was reported without aborting the run —
+   report degrades to no PNG entry, same as #6's own broken-gnuplot path); `deep-cpu` re-run after
+   installing gnuplot (real 1280×960 `amdtopdown.png`/`systemtime.png` produced and rendered inline,
+   the latter picked up as an unclaimed file rather than a named pass); and a comma-composed
+   `deep-cpu-intel,tree-heavy` profile, chosen only to exercise comma-composition and the `--tree`
+   pass's rendering with a profile other than `deep-cpu` — `deep-cpu-intel`'s flags are vendor-neutral
+   and resolved against this machine's real AMD event tables (`wspy-run` doesn't gate profiles by
+   detected CPU vendor), so this ran cleanly but didn't exercise anything Intel-specific (5 passes
+   including the `--tree` pass, all rendered correctly, gnuplot correctly skipped since neither
+   sub-profile produces `amdtopdown.csv`). All four runs also appeared correctly on the homepage
+   listing.
 8. Report review + curation studio (supersedes the original "HTML report bundle" framing — same item
    number, sharpened after 4.1 feedback against a real precedent: an existing hand-built WordPress
    page per workload, e.g. a chart image + pasted raw-output block + hand-written commentary, repeated
