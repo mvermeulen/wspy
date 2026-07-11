@@ -100,6 +100,26 @@ struct multipass_plan multipass_plan_build(unsigned int requested_mask){
   return plan;
 }
 
+struct multipass_plan multipass_plan_build_multiplexed(unsigned int requested_mask){
+  struct multipass_plan plan;
+  struct preflight_result pf;
+
+  memset(&plan,0,sizeof(plan));
+  plan.pass_mask = calloc(1,sizeof(unsigned int));
+  plan.pass_mask[0] = requested_mask;
+  plan.npasses = 1;
+
+  pf = preflight_evaluate(requested_mask);
+  if (!pf.fits){
+    warning("--passes --multiplex: requested counter groups (0x%x) exceed the general-purpose "
+            "hardware PMU budget -- this run will multiplex\n",requested_mask);
+    preflight_warn_if_tight(&pf);
+  }
+  preflight_result_free(&pf);
+
+  return plan;
+}
+
 void multipass_plan_free(struct multipass_plan *plan){
   free(plan->pass_mask);
   plan->pass_mask = NULL;

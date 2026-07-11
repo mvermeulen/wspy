@@ -210,13 +210,33 @@ scaling correctness fix. Ordered in dependency tiers; items within a tier are in
    processes. V1 scope is aggregate-only (`--interval`/`--per-core`/`--tree`/IBS/GPU all fatal
    against `--passes`); `wspy-run`'s own profiles are unchanged by this and still shell out
    N times — collapsing them onto `--passes` is a documented follow-up, not part of this item.
-4. **Correctness:** scale multiplexed counter values by `time_running`/`time_enabled` in
-   `read_counters()` (`topdown.c`) — today only the confidence envelope accounts for multiplexing
-   (`multiplex-aware confidence`, shipped in 4.0); the raw counter *value* itself is never
-   extrapolated to the full interval, so any run where PMU slots are oversubscribed (more groups
-   requested than `preflight.c`'s counter-fit budget, or the NMI watchdog eating a slot) silently
-   undercounts absolute values, not just their confidence. A correctness fix, not new capability —
-   worth doing before Tier 3's stats/comparison work builds on these numbers.
+4. ~~**Correctness:** scale multiplexed counter values by `time_running`/`time_enabled` in
+   `read_counters()`~~ — **shipped.** `read_counters()` (`topdown.c`) now tracks each counter's
+   previous cumulative `time_running`/`time_enabled` (`last_time_running`/`last_time_enabled`,
+   `cpu_info.h`) and scales that read's raw delta by *this window's* multiplex ratio
+   (`enabled_delta/running_delta`) before storing it in `.value` — previously only the confidence
+   envelope (`multiplex-aware confidence`, shipped in 4.0) accounted for multiplexing; the raw
+   counter value itself was never extrapolated, so an oversubscribed run (more groups requested than
+   `preflight.c`'s counter-fit budget, or the NMI watchdog eating a slot) silently undercounted
+   absolute values, not just their confidence. Fixed at the source in `read_counters()`, so every
+   consumer (topdown/cache/branch/tlb formulas, not just IPC) benefits automatically; the two sites
+   that used to do this scaling themselves ad hoc (`print_ipc()` in `topdown.c`, `phase_current_ipc()`
+   in `phase.c`) were simplified to just read the now-pre-scaled `.value` directly, since redoing the
+   scaling there would double-count it. `time_running`/`time_enabled` on `struct counter_info` are
+   correspondingly now *this read's delta* rather than cumulative-since-start, which also makes
+   `confidence_ratio()`/phase detection's per-tick "was this counter scheduled at all" checks reflect
+   that tick specifically instead of the ratio accumulated since the run started. Covered by
+   `test_read_counters_multiplex_scaling` (`test_wspy.c`), which drives `read_counters()` against a
+   real fd (a temp file standing in for a perf_event fd) across several simulated ticks.
+   Also shipped alongside: `--multiplex` (`wspy.c`/`multipass.c`), an opt-in modifier to `--passes`
+   that collapses every requested counter group into a single pass instead of bin-packing N passes,
+   relying on the kernel's own PMU multiplexing plus the correctness fix above to keep the resulting
+   values right — trading precision (heavier multiplexing means lower per-counter
+   `confidence_ratio()`) for one workload execution instead of several. Not the default: bin-packing
+   into fully-scheduled passes remains more precise when re-executing the workload N times is
+   affordable. `multipass_plan_build_multiplexed()` is the one-pass counterpart to
+   `multipass_plan_build()`; `--multiplex` given without `--passes` is fatal, since it has no meaning
+   on its own.
 
 **Tier 2 — reporting/UI on top of Tier 1's data shapes:**
 

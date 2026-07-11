@@ -257,6 +257,13 @@ echo "=== Native multi-pass counter execution (--passes) ==="
 # child re-executions instead of one.
 run_bundle "passes-multi-group" 0 --csv --no-ipc \
   --passes=ipc,topdown,cache2,cache3,branch,memory,tlb,opcache,software -- /bin/true
+# --multiplex: same request, but collapsed into a single (likely
+# multiplexed) pass instead of bin-packed into N -- still graceful
+# degradation (exit 0, no fatal error, matching CSV column counts), now
+# relying on read_counters()'s time_running/time_enabled scaling
+# (INVESTIGATION_4.0.md 4.1 Tier 1 #4) to keep the values correct.
+run_bundle "passes-multiplex" 0 --csv --no-ipc \
+  --passes=ipc,topdown,cache2,cache3,branch,memory,tlb,opcache,software --multiplex -- /bin/true
 # --passes' merge semantics only cover the aggregate case -- each of these is
 # an intentional fatal incompatibility (see wspy.c's incompatibility checks),
 # not a graceful-degradation case, so a nonzero exit *with* a fatal error is
@@ -266,6 +273,10 @@ run_expected_fatal_bundle "passes-interval-incompatible" 1 --no-ipc --passes=ipc
 run_expected_fatal_bundle "passes-per-core-incompatible" 1 --no-ipc --passes=ipc --per-core -- /bin/true
 run_expected_fatal_bundle "passes-tree-incompatible"     1 --no-ipc --passes=ipc --tree "$TREE_OUT" -- /bin/true
 run_expected_fatal_bundle "passes-ibs-incompatible"      1 --no-ipc --passes=ipc --ibs-basic -- /bin/true
+# --multiplex only means something alongside --passes -- without it, it's
+# rejected the same way the other --passes-only modifiers would be if they
+# had no other meaning (mirrors the checks just above).
+run_expected_fatal_bundle "multiplex-without-passes-incompatible" 1 --no-ipc --multiplex -- /bin/true
 
 echo ""
 echo "=== --exit-with-child: the one bundle where a nonzero exit is correct ==="

@@ -189,6 +189,11 @@ if [ "$vendor" = "AMD" ]; then
   # print_metrics(), same column labels ("ipc"/"l2miss") as the single-pass
   # bundles above since it's the same print_metrics() call underneath.
   assert_csv_header "passes-ipc-cache2" --no-ipc --passes=ipc,cache2 -- "${BASE}ipc,l2miss,counters_measured,counters_requested,"
+  # --multiplex collapses the same request into a single pass instead of 2,
+  # but print_metrics() dispatches purely off the merged group list's own
+  # mask bits (fixed dispatch order), independent of how many passes built
+  # it -- same column shape as the bin-packed case above.
+  assert_csv_header "passes-ipc-cache2-multiplex" --no-ipc --passes=ipc,cache2 --multiplex -- "${BASE}ipc,l2miss,counters_measured,counters_requested,"
 else
   echo ""
   echo "SKIP: AMD-specific exact-header golden cases (host vendor: $vendor)"

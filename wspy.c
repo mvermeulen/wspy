@@ -47,6 +47,7 @@ int preflightflag = 0;
 int exit_with_child_flag = 0;
 int multipass_flag = 0;
 unsigned int passes_requested_mask = 0;
+int multiplex_flag = 0; // --multiplex: --passes opens all requested groups in one pass instead of bin-packing N
 #if AMDGPU
 int gpu_smi_requested = 0; /* legacy */
 int gpu_busy_requested = 0;
@@ -107,6 +108,8 @@ int parse_options(int argc,char *const argv[]){
     { "manifest", required_argument, 0, 52 },
     { "memory", no_argument, 0, 16 },
     { "no-memory", no_argument, 0, 17 },
+    { "multiplex", no_argument, 0, 66 },
+    { "no-multiplex", no_argument, 0, 67 },
     { "opcache", no_argument, 0, 18 },
     { "no-opcache", no_argument, 0, 19 },
     { "passes", required_argument, 0, 65 },
@@ -375,6 +378,12 @@ int parse_options(int argc,char *const argv[]){
       }
       break;
     }
+    case 66: // --multiplex
+      multiplex_flag = 1;
+      break;
+    case 67: // --no-multiplex
+      multiplex_flag = 0;
+      break;
     case 31: // --tree
       if ((treefile = fopen(optarg,"w")) == NULL){
 	warning("unable to open tree file: %s, ignored\n",optarg);
@@ -598,6 +607,15 @@ static int exit_code_epilogue(void){
 // strategy inside wspy itself). Called from main() once counter_mask/aflag/
 // etc. are final and cpu_info/raw events are already set up.
 //
+// --multiplex swaps the plan builder for multipass_plan_build_multiplexed(),
+// which always produces exactly one pass covering every requested group and
+// leans on the kernel's own PMU multiplexing plus read_counters()'s
+// time_running/time_enabled scaling (INVESTIGATION_4.0.md 4.1 Tier 1 #4) to
+// keep the values correct despite oversubscription -- one workload execution
+// instead of N, at the cost of lower per-counter confidence. Not the
+// default: bin-packing into fully-scheduled passes remains the more precise
+// choice when re-executing the workload N times is affordable.
+//
 // V1 scope is aggregate-only: --interval/--per-core/--tree/IBS/GPU are all
 // fatal'd against --passes in main() before this is ever reached, so this
 // function doesn't need any of their logic (phase detection, per-core rows,
@@ -623,7 +641,8 @@ static int run_multipass(char *const envp[]){
   struct manifest_exit_status primary_exit;
   int p,status;
 
-  plan = multipass_plan_build(passes_requested_mask);
+  plan = multiplex_flag ? multipass_plan_build_multiplexed(passes_requested_mask)
+                         : multipass_plan_build(passes_requested_mask);
   pass_lists = calloc(plan.npasses,sizeof(struct counter_group *));
   mpasses = calloc(plan.npasses,sizeof(struct manifest_pass_info));
 
@@ -813,6 +832,13 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t                            multiplexing when <list> exceeds the available\n"
 	    "\t                            hardware PMU slots. Incompatible with --interval,\n"
 	    "\t                            --per-core, --tree, --ibs-*, --gpu-*.\n"
+	    "\t--multiplex               - with --passes, open every requested counter group\n"
+	    "\t                            in a single pass instead of bin-packing N passes,\n"
+	    "\t                            relying on the kernel to multiplex and on wspy's\n"
+	    "\t                            own time_running/time_enabled scaling to keep the\n"
+	    "\t                            reported values correct. Trades some precision\n"
+	    "\t                            (more multiplexing = lower per-counter confidence)\n"
+	    "\t                            for a single workload execution. Off by default.\n"
 	    "\t--interval <sec>          - read every <sec> seconds\n"
 	    "\t--no-phase-detect         - disable automatic phase (warmup/steady/degraded)\n"
 	    "\t                            detection on --interval samples (on by default)\n"
@@ -871,6 +897,8 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     if (gpu_smi_requested || gpu_busy_requested || gpu_metrics_requested)
       fatal("--passes is incompatible with --gpu-smi/--gpu-busy/--gpu-metrics\n");
 #endif
+  } else if (multiplex_flag){
+    fatal("--multiplex only applies to --passes (it selects how --passes packs its requested counter groups)\n");
   }
 
   if (inventory_cpu() != 0){
