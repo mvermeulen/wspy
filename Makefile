@@ -4,6 +4,7 @@ PROG = wspy cpu_info amd_smi
 SRCS = wspy.c cpu_info.c error.c json_util.c json_reader.c manifest.c run_index.c coverage.c provenance.c ibs.c preflight.c phase.c proctree.c system.c topdown.c amd_smi.c amd_sysfs.c validate.c
 OBJS = wspy.o cpu_info.o error.o json_util.o json_reader.o manifest.o run_index.o coverage.o provenance.o ibs.o preflight.o phase.o proctree.o system.o topdown.o amd_smi.o
 LIBS = -lpthread -lm
+STORE_LIBS = -lsqlite3
 
 # ROCm/AMDGPU defaults (can be overridden on the make command line):
 #   make AMDGPU=1 ROCM_DIR=/path/to/rocm
@@ -23,9 +24,9 @@ LIBS += -L$(ROCM_LIB) -lamd_smi
 endif
 
 ifdef AMDGPU
-all:	wspy cpu_info proctree wspy-validate wspy-ledger amd_smi amd_sysfs
+all:	wspy cpu_info proctree wspy-validate wspy-ledger wspy-store amd_smi amd_sysfs
 else
-all:	wspy cpu_info proctree wspy-validate wspy-ledger
+all:	wspy cpu_info proctree wspy-validate wspy-ledger wspy-store
 endif
 
 wspy:	wspy.o topdown.o error.o system.o json_util.o manifest.o run_index.o coverage.o provenance.o ibs.o preflight.o phase.o cpu_info.c cpu_info.h
@@ -43,6 +44,9 @@ wspy-validate:	validate.o json_reader.o
 
 wspy-ledger:	ledger.o json_reader.o
 	$(CC) -o wspy-ledger $(CFLAGS) ledger.o json_reader.o
+
+wspy-store:	store.o json_reader.o
+	$(CC) -o wspy-store $(CFLAGS) store.o json_reader.o $(STORE_LIBS)
 
 cpu_info:	cpu_info.c error.o cpu_info.h
 	$(CC) -o cpu_info $(CFLAGS) -DTEST_CPU_INFO cpu_info.c error.o
@@ -72,7 +76,7 @@ clean:
 	-rm *~ *.o *.bak
 
 clobber:	clean
-	-rm wspy cpu_info amd_smi amd_sysfs proctree wspy-validate wspy-ledger test_hip_init test_hip_kernel test_proctree test_wspy test_validate test_ledger test_ibs test_phase libwspy_profiler.so
+	-rm wspy cpu_info amd_smi amd_sysfs proctree wspy-validate wspy-ledger wspy-store test_hip_init test_hip_kernel test_proctree test_wspy test_validate test_ledger test_ibs test_phase test_store libwspy_profiler.so
 
 # DO NOT DELETE
 
@@ -92,6 +96,7 @@ proctree.o: error.h
 topdown.o: error.h wspy.h cpu_info.h coverage.h ptrace_arch.h phase.h
 validate.o: json_reader.h manifest.h provenance.h
 ledger.o: json_reader.h run_index.h manifest.h
+store.o: json_reader.h run_index.h manifest.h
 
 # Always built GPU-disabled (test_wspy.c forces AMDGPU=0 to stub out main() and
 # skip GPU code), using its own objects so it never picks up a topdown.o/system.o
@@ -122,16 +127,20 @@ test_validate: test_validate.c validate.c json_reader.c json_reader.h manifest.h
 test_ledger: test_ledger.c ledger.c json_reader.c json_reader.h run_index.h manifest.h
 	$(CC) -o test_ledger $(CFLAGS) -DTEST_LEDGER test_ledger.c json_reader.c
 
+test_store: test_store.c store.c json_reader.c json_reader.h run_index.h manifest.h
+	$(CC) -o test_store $(CFLAGS) -DTEST_STORE test_store.c json_reader.c $(STORE_LIBS)
+
 test_ibs: test_ibs.c ibs.c ibs.h error.c error.h
 	$(CC) -o test_ibs $(CFLAGS) test_ibs.c error.c
 
 test_phase: test_phase.c phase.c phase.h wspy.h cpu_info.h
 	$(CC) -o test_phase $(CFLAGS) test_phase.c -lm
 
-test: test_wspy test_proctree test_validate test_ledger test_ibs test_phase
+test: test_wspy test_proctree test_validate test_ledger test_ibs test_phase test_store
 	./test_wspy
 	./test_proctree
 	./test_validate
 	./test_ledger
 	./test_ibs
 	./test_phase
+	./test_store

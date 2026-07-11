@@ -9,7 +9,7 @@ make test
 
 echo ""
 echo "=== Building wspy and proctree ==="
-make wspy proctree wspy-validate wspy-ledger
+make wspy proctree wspy-validate wspy-ledger wspy-store
 
 echo ""
 echo "=== Running Integration Tests ==="
@@ -217,6 +217,44 @@ if ! echo "$CSV_OUT" | head -1 | grep -q '^name,status,runs_matched,runs_succeed
 fi
 rm test_ledger_index.jsonl test_ledger_list.txt test_ledger.out
 echo "  wspy-ledger: OK"
+
+# wspy-store: normalized SQLite run catalog ingested from a run index +
+# manifest (INVESTIGATION_4.0.md's 4.1 "canonical metrics schema + normalized
+# store" item, phase 1)
+echo "Testing wspy-store ingestion of a run index + manifest..."
+rm -f test_store_index.jsonl test_store_manifest.json test_store.db
+./wspy --no-ipc --manifest test_store_manifest.json --run-index test_store_index.jsonl -- /bin/true > /dev/null
+if ! ./wspy-store --db test_store.db --run-index test_store_index.jsonl > test_store.out; then
+    echo "FAIL: wspy-store should exit 0 on a clean ingest"
+    cat test_store.out
+    exit 1
+fi
+if ! grep -qE '1 record\(s\): 1 new, 0 updated, 0 malformed, 0 collision\(s\)' test_store.out; then
+    echo "FAIL: wspy-store summary line did not match"
+    cat test_store.out
+    exit 1
+fi
+if command -v sqlite3 > /dev/null 2>&1; then
+    RUN_COUNT=$(sqlite3 test_store.db "SELECT COUNT(*) FROM runs;")
+    if [ "$RUN_COUNT" != "1" ]; then
+        echo "FAIL: wspy-store: expected 1 row in runs after first ingest, got $RUN_COUNT"
+        exit 1
+    fi
+    MANIFEST_INGESTED=$(sqlite3 test_store.db "SELECT manifest_ingested FROM runs;")
+    if [ "$MANIFEST_INGESTED" != "1" ]; then
+        echo "FAIL: wspy-store: manifest enrichment should have matched and applied"
+        exit 1
+    fi
+    # Re-ingesting the same (unchanged) run index must not duplicate the row.
+    ./wspy-store --db test_store.db --run-index test_store_index.jsonl > /dev/null
+    RUN_COUNT=$(sqlite3 test_store.db "SELECT COUNT(*) FROM runs;")
+    if [ "$RUN_COUNT" != "1" ]; then
+        echo "FAIL: wspy-store: re-ingest should be idempotent, got $RUN_COUNT rows"
+        exit 1
+    fi
+fi
+rm -f test_store_index.jsonl test_store_manifest.json test_store.db test_store.out
+echo "  wspy-store: OK"
 
 # Counter capability discovery + coverage reporting
 echo "Testing wspy --capabilities (no workload command needed)..."
