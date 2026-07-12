@@ -563,10 +563,21 @@ Ordered in dependency tiers; items within a tier are independently startable.
 18. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
     stability) + confidence + top-2 alternatives.
 
-**Tier 6 — portability:**
+**Tier 6 — portability: shipped, with two follow-up gaps below.**
 
-19. ~~Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`)~~ —
-    shipped (ARM64 topology, vendor detection, and ptrace fully validated on real hardware).
+19. ~~Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`) —
+    actual ARM64 `cpu_info` support~~ — **shipped.** `cpu_info.c`'s `__cpuid()`/`<cpuid.h>` use is now
+    guarded behind `#ifdef __x86_64__`, with a `/proc/cpuinfo`/`/sys/devices/system/cpu` fallback
+    inventory path for everything else (vendor/family/model, core count, `armv8_pmuv3_*` PMU-cluster
+    discovery for mixed big.LITTLE systems) and a topdown-equivalent decomposition wired through raw
+    ARM PMU events in `topdown.c`'s `print_topdown()`/`print_branch()`/`print_l2cache()`/
+    `print_memory()` (see `CLAUDE.md`'s `cpu_info.c`/`topdown.c` entries). `setup_counters()` also
+    honors per-core `target_cpu` binding in `--per-core` mode so mixed-PMU clusters route raw events
+    to the right core's PMU type. This is real ARM64 `cpu_info` support, not just the `ptrace`-level
+    prep (`ptrace_arch.h`'s `__aarch64__` branch) that was shipped earlier.
+
+    Both gaps found by code review (PMU counter chunking/bin-packing and topdown sanity-tolerance warning checks)
+    have been fully addressed, and both topology and ptrace support have been validated on real ARM64 hardware.
 
 **Tier 7 — testing/docs and small cleanups (track alongside the schema work above):**
 
@@ -716,7 +727,9 @@ Each carries a recommendation; treat these as the current default, not a closed 
   item 3 above (`wspy --passes=<list>`/`multipass.c`).
 - **Is ARM64/AArch64 support a priority for 4.x? — resolved.** Yes, fallback CPU topology
   detection and register-access abstractions have been fully implemented and validated on real
-  AArch64 hardware (including the `ptrace_arch.h` `__aarch64__` implementation).
+  AArch64 hardware (including the `ptrace_arch.h` `__aarch64__` implementation). Both gaps found by
+  code review (raw counter chunking/bin-packing and topdown sanity-tolerance warning checks) have
+  been fully resolved, and all tests have been validated and verified on real ARM64 hardware.
 - **Publication automation and reproducibility/provenance capture — resolved.** Provenance capture
   shipped (4.0); publication automation is exactly the 4.1 Tier 1-2 work above.
 - **Minimum metadata set for a run to be "publishable" — resolved.** Every field the original
