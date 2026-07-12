@@ -563,11 +563,43 @@ Ordered in dependency tiers; items within a tier are independently startable.
 18. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
     stability) + confidence + top-2 alternatives.
 
-**Tier 6 — portability:**
+**Tier 6 — portability: shipped, with two follow-up gaps below.**
 
-19. Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`) —
-    actual ARM64 `cpu_info` support; `cpu_info.c`'s `__cpuid()`/`<cpuid.h>` use is the remaining
-    x86_64-only blocker (the `ptrace` side of ARM64 prep already shipped, see `ptrace_arch.h`).
+19. ~~Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`) —
+    actual ARM64 `cpu_info` support~~ — **shipped.** `cpu_info.c`'s `__cpuid()`/`<cpuid.h>` use is now
+    guarded behind `#ifdef __x86_64__`, with a `/proc/cpuinfo`/`/sys/devices/system/cpu` fallback
+    inventory path for everything else (vendor/family/model, core count, `armv8_pmuv3_*` PMU-cluster
+    discovery for mixed big.LITTLE systems) and a topdown-equivalent decomposition wired through raw
+    ARM PMU events in `topdown.c`'s `print_topdown()`/`print_branch()`/`print_l2cache()`/
+    `print_memory()` (see `CLAUDE.md`'s `cpu_info.c`/`topdown.c` entries). `setup_counters()` also
+    honors per-core `target_cpu` binding in `--per-core` mode so mixed-PMU clusters route raw events
+    to the right core's PMU type. This is real ARM64 `cpu_info` support, not just the `ptrace`-level
+    prep (`ptrace_arch.h`'s `__aarch64__` branch) that shipped earlier.
+
+    Two gaps found by code review, not by hardware testing — no real ARM64 host has run any of this
+    yet; `tests/arm_topdown_microbench.sh` self-skips off ARM, and `test_wspy.c`'s two new ARM tests
+    (`test_arm_topdown_equivalence`, `test_arm_pmu_report`) exercise `print_topdown()`/
+    `print_cpu_pmu_report()` against hand-built fake `cpu_info`/`counter_info` fixtures, never real
+    perf events:
+    - `raw_counter_group()`'s bin-packing of raw events into perf groups no larger than the available
+      general-purpose PMU slots (`is_group_leader`, chunked every `available_counters` counters) is
+      AMD-only — the ARM branch never sets it. `setup_counters()`'s non-Intel group-id bookkeeping
+      only starts a *new* perf group when `is_group_leader` is set, so on ARM every raw counter opened
+      in a single run — across every requested group, not just one — joins the one perf group
+      established by the very first counter opened, with no size cap. A plain `--topdown` run alone
+      already requests 7 raw events (5 topdown + the default 2-counter `--ipc`) against a PMU that
+      commonly implements 6 general-purpose counters, before `--branch`/cache/memory add more on top.
+      Needs the same per-`available_counters` chunking AMD already has, not a new mechanism.
+    - The level-1 decomposition's `sanity_pct` check (`retire+frontend+backend+speculate` should sum
+      to ~100% of slots) doesn't hold by construction for ARM's formulation: `slots` is defined as
+      `op_retired + stall_slot`, and since `stall_slot ≈ stall_slot_frontend + stall_slot_backend`,
+      `retire+frontend+backend` alone already sums to ~100%; `speculation` (`op_spec - op_retired`) is
+      an independent, overlapping signal layered on top rather than a fourth partition of the same
+      slots the way Intel/AMD's "bad speculation" topdown category is. `test_arm_topdown_equivalence`
+      (`test_wspy.c`) documents a 110% sum as the *expected* result for its fixture — meaning a real
+      ARM `--topdown` run will trip the `TOPDOWN_SANITY_TOLERANCE_PCT` warning by design, not because
+      anything is actually wrong. Needs either excluding ARM from this check or reworking what
+      "sanity" means for its formulation before this reaches a real user.
 
 **Tier 7 — testing/docs and small cleanups (track alongside the schema work above):**
 
@@ -715,10 +747,19 @@ Each carries a recommendation; treat these as the current default, not a closed 
   input-form/report-browser layer specifically, ahead of this broader static-site question.
 - **Should `wspy` natively handle multi-pass execution? — resolved.** Yes, shipped in 4.1 Tier 1
   item 3 above (`wspy --passes=<list>`/`multipass.c`).
-- **Is ARM64/AArch64 support a priority for 4.x?** Still open. Mechanical prep shipped
-  (`ptrace_arch.h`'s `__aarch64__` branch, unverified/untested), but `cpu_info.c`'s `__cpuid()` use
-  is still x86_64-only and full ARM64 validation hasn't happened. Recommendation unchanged: defer
-  unless a concrete ARM64 machine makes it urgent sooner (4.2 Tier 6).
+- **Is ARM64/AArch64 support a priority for 4.x?** Partially resolved. 4.2 Tier 6's fallback
+  topology/counter item has shipped — `cpu_info.c` now inventories non-x86_64 hosts via `/proc/
+  cpuinfo`/sysfs (including `armv8_pmuv3_*` PMU-cluster discovery for mixed big.LITTLE systems) and
+  `topdown.c` wires a topdown-equivalent decomposition through ARM raw PMU events, so this is no
+  longer only the ptrace-level prep (`ptrace_arch.h`'s `__aarch64__` branch, itself still unverified
+  on real hardware) that shipped earlier. Still open: no real ARM64 machine has run any of it yet
+  (`tests/arm_topdown_microbench.sh` self-skips off ARM; `test_wspy.c`'s ARM coverage is synthetic
+  fixtures, not real perf events), and code review surfaced two concrete gaps that should be fixed
+  before real-hardware validation is worth attempting: raw counter groups aren't chunked to the
+  PMU's slot budget on ARM the way they are on AMD, and the topdown sanity-check invariant doesn't
+  hold for ARM's decomposition by construction (both detailed in 4.2 Tier 6, item 19).
+  Recommendation: fix those two first, then validate on a real ARM64 host rather than deferring
+  further — at this point a real machine would surface actionable bugs, not just "does it build."
 - **Publication automation and reproducibility/provenance capture — resolved.** Provenance capture
   shipped (4.0); publication automation is exactly the 4.1 Tier 1-2 work above.
 - **Minimum metadata set for a run to be "publishable" — resolved.** Every field the original
