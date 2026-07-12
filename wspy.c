@@ -69,6 +69,20 @@ int clocks_per_second;
 int command_line_argc;
 char **command_line_argv;
 
+static void bind_core_counter_groups(struct counter_group *list,int cpu,unsigned int pmu_type){
+  struct counter_group *cgroup;
+  int i;
+
+  for (cgroup = list; cgroup; cgroup = cgroup->next){
+    cgroup->target_cpu = cpu;
+    for (i=0;i<cgroup->ncounters;i++){
+      if (cgroup->type_id == PERF_TYPE_RAW && cgroup->cinfo[i].device_type == PERF_TYPE_RAW){
+        cgroup->cinfo[i].device_type = pmu_type;
+      }
+    }
+  }
+}
+
 int parse_options(int argc,char *const argv[]){
   FILE *fp;
   int opt;
@@ -484,6 +498,7 @@ static int run_capabilities_probe(void){
   setup_counters(cpu_info->systemwide_counters);
 
   print_capability_report();
+  print_cpu_pmu_report(outfile);
 
   ibs = ibs_probe();
   print_ibs_capability_report(&ibs);
@@ -959,8 +974,13 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   if (aflag){
     for (i=0;i<cpu_info->num_cores;i++){
       if (cpu_info->coreinfo[i].is_available &&
-	  ((cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN)||(cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN5)||(cpu_info->coreinfo[i].vendor == CORE_INTEL_CORE))){
+    ((cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN)||
+     (cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN5)||
+     (cpu_info->coreinfo[i].vendor == CORE_INTEL_CORE)||
+     (cpu_info->coreinfo[i].vendor == CORE_ARM_GENERIC))){
 	setup_counter_groups(&cpu_info->coreinfo[i].core_specific_counters);
+  bind_core_counter_groups(cpu_info->coreinfo[i].core_specific_counters,
+         i,cpu_info->coreinfo[i].pmu_type);
       }
     }
   } else {

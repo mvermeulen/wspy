@@ -8,10 +8,12 @@
 #endif
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
 #include <sched.h>
 #include <unistd.h>
 #include <sys/sysinfo.h>
 #include <sys/stat.h>
+#include <linux/perf_event.h>
 #include "cpu_info.h"
 #include "error.h"
 
@@ -107,6 +109,128 @@ static int read_cpuinfo_dec_field(const char *field,unsigned int *value){
   }
   fclose(fp);
   return -1;
+}
+
+static int read_u32_file(const char *path,unsigned int *value){
+  FILE *fp;
+  unsigned int tmp;
+
+  fp = fopen(path,"r");
+  if (!fp) return -1;
+  if (fscanf(fp,"%u",&tmp) != 1){
+    fclose(fp);
+    return -1;
+  }
+  fclose(fp);
+  *value = tmp;
+  return 0;
+}
+
+static void mark_cpus_for_pmu(const char *cpulist,unsigned int pmu_type,int pmu_cluster){
+  const char *p = cpulist;
+
+  while (*p){
+    char *endptr;
+    long low = strtol(p,&endptr,10);
+    long high = low;
+
+    if (endptr == p) break;
+    p = endptr;
+    if (*p == '-'){
+      p++;
+      high = strtol(p,&endptr,10);
+      if (endptr == p) break;
+      p = endptr;
+    }
+
+    if (low < 0) low = 0;
+    if (high >= (long)cpu_info->num_cores) high = (long)cpu_info->num_cores - 1;
+    while (low <= high){
+      cpu_info->coreinfo[low].pmu_type = pmu_type;
+      cpu_info->coreinfo[low].pmu_cluster = pmu_cluster;
+      low++;
+    }
+
+    if (*p == ',') p++;
+    while (*p == ' ' || *p == '\t') p++;
+  }
+}
+
+static void discover_arm_pmu_topology(void){
+  DIR *dir;
+  struct dirent *de;
+  unsigned int cluster_count = 0;
+  int i;
+
+  for (i=0;i<cpu_info->num_cores;i++){
+    cpu_info->coreinfo[i].pmu_type = PERF_TYPE_RAW;
+    cpu_info->coreinfo[i].pmu_cluster = -1;
+  }
+
+  dir = opendir("/sys/bus/event_source/devices");
+  if (!dir){
+    warning("unable to read PMU topology from /sys/bus/event_source/devices\n");
+    return;
+  }
+
+  while ((de = readdir(dir)) != NULL){
+    char path[512];
+    char cpus_path[512];
+    char cpus[256];
+    unsigned int pmu_type;
+    FILE *fp;
+
+    if (strncmp(de->d_name,"armv8_pmuv3_",12) != 0) continue;
+
+    snprintf(path,sizeof(path),"/sys/bus/event_source/devices/%s/type",de->d_name);
+    if (read_u32_file(path,&pmu_type) != 0) continue;
+
+    snprintf(cpus_path,sizeof(cpus_path),"/sys/bus/event_source/devices/%s/cpus",de->d_name);
+    fp = fopen(cpus_path,"r");
+    if (!fp) continue;
+    if (!fgets(cpus,sizeof(cpus),fp)){
+      fclose(fp);
+      continue;
+    }
+    fclose(fp);
+
+    mark_cpus_for_pmu(cpus,pmu_type,(int)cluster_count);
+    cluster_count++;
+  }
+
+  closedir(dir);
+  cpu_info->num_pmu_clusters = cluster_count;
+}
+
+void print_cpu_pmu_report(FILE *fp){
+  int cluster;
+  int i;
+
+  if (!cpu_info || cpu_info->vendor != VENDOR_ARM) return;
+
+  fprintf(fp,"ARM PMU topology: %u cluster(s)\n",cpu_info->num_pmu_clusters);
+  for (cluster = 0; cluster < (int)cpu_info->num_pmu_clusters; cluster++){
+    int printed = 0;
+    unsigned int pmu_type = PERF_TYPE_RAW;
+    fprintf(fp,"  cluster %d: cpus ",cluster);
+    for (i=0;i<cpu_info->num_cores;i++){
+      if (cpu_info->coreinfo[i].pmu_cluster != cluster) continue;
+      if (!printed){
+        pmu_type = cpu_info->coreinfo[i].pmu_type;
+      } else {
+        fprintf(fp,",");
+      }
+      fprintf(fp,"%d",i);
+      printed = 1;
+    }
+    if (!printed){
+      fprintf(fp,"(none)");
+    }
+    fprintf(fp," (pmu_type=%u)\n",pmu_type);
+  }
+  if (cpu_info->mixed_pmu_types){
+    fprintf(fp,"  note: available cores span multiple PMU types (big.LITTLE)\n");
+  }
 }
 
 int inventory_cpu(void){
@@ -229,6 +353,12 @@ int inventory_cpu(void){
     }
     cpu_info->coreinfo[i].is_available = 0;
     cpu_info->coreinfo[i].is_counter_started = 0;
+    cpu_info->coreinfo[i].pmu_type = PERF_TYPE_RAW;
+    cpu_info->coreinfo[i].pmu_cluster = -1;
+  }
+
+  if (cpu_info->vendor == VENDOR_ARM){
+    discover_arm_pmu_topology();
   }
   // fix up hybrid cores for Raptor Lake and Alder Lake
   if (cpu_info->vendor == VENDOR_INTEL &&
@@ -270,6 +400,21 @@ int inventory_cpu(void){
     if (CPU_ISSET(i,&set)){
       cpu_info->coreinfo[i].is_available = 1;
       cpu_info->num_cores_available++;
+    }
+  }
+
+  if (cpu_info->vendor == VENDOR_ARM){
+    unsigned int first_type = 0;
+    int have_first = 0;
+    for (i=0;i<cpu_info->num_cores;i++){
+      if (!cpu_info->coreinfo[i].is_available) continue;
+      if (!have_first){
+        first_type = cpu_info->coreinfo[i].pmu_type;
+        have_first = 1;
+      } else if (cpu_info->coreinfo[i].pmu_type != first_type){
+        cpu_info->mixed_pmu_types = 1;
+        break;
+      }
     }
   }
   
@@ -326,7 +471,16 @@ int main(void){
       printf("??");
       break;
     }
+    if (cpu_info->vendor == VENDOR_ARM){
+      printf(" (pmu_type=%u,cluster=%d)",
+             cpu_info->coreinfo[i].pmu_type,
+             cpu_info->coreinfo[i].pmu_cluster);
+    }
     printf("\n");
+  }
+
+  if (cpu_info->vendor == VENDOR_ARM){
+    print_cpu_pmu_report(stdout);
   }
 }
 #endif

@@ -383,6 +383,17 @@ if ! echo "$DEGRADE_OUT" | grep -q "counters_measured,counters_requested"; then
 fi
 echo "  graceful degradation on unavailable counters: OK"
 
+# ARM topdown-equivalent sanity checks (gracefully skip on non-ARM hosts or
+# when perf counters are unavailable).
+if [ -x ./tests/arm_topdown_microbench.sh ]; then
+    echo "Testing ARM topdown microbench sanity checks..."
+    if ! ./tests/arm_topdown_microbench.sh; then
+        echo "FAIL: ARM topdown microbench sanity checks failed"
+        exit 1
+    fi
+    echo "  ARM topdown microbench sanity checks: OK"
+fi
+
 # wspy-run profile launcher
 echo "Testing wspy-run --list..."
 if ! ./wspy-run --list | grep -q "^quick:"; then

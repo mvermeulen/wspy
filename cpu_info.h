@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <linux/perf_event.h>
 
 // cpu_info holds the root of information kept about a processor
@@ -15,6 +16,8 @@ struct cpu_info {
   unsigned int model;
   unsigned int num_cores;
   unsigned int num_cores_available;
+  unsigned int num_pmu_clusters;
+  unsigned int mixed_pmu_types:1;          // available cores span >1 PMU type (big.LITTLE)
   unsigned int is_hybrid:1;                  // Intel hybrid CPU with mixed cores
   struct cpu_core_info *coreinfo;
   struct counter_group *systemwide_counters; // In memory information for cores
@@ -25,6 +28,7 @@ struct counter_group {
   char *label;
   enum perf_type_id type_id;
   int ncounters;
+  int target_cpu;         // -1 for process-wide counting, >=0 for per-cpu counting
   unsigned int mask;
   struct counter_info *cinfo;
   struct counter_group *next;
@@ -124,6 +128,8 @@ struct cpu_core_info {
   enum cpu_core_type vendor;
   unsigned int is_available: 1;
   unsigned int is_counter_started: 1;
+  unsigned int pmu_type;      // perf PMU type id for this core (PERF_TYPE_RAW if unknown)
+  int pmu_cluster;            // ARM PMU cluster index, -1 when not applicable
   unsigned long int td_instructions;
   unsigned long int td_cycles;
   unsigned long int td_slots;
@@ -136,3 +142,5 @@ struct cpu_core_info {
   int ncounters;
   struct counter_info *counters;
 };
+
+void print_cpu_pmu_report(FILE *fp);
