@@ -462,27 +462,28 @@ derivable from files already being produced.
    grid against two real runs. Not yet covered, by design: #10's actual export formats (this item
    produces the curated block sequence #10 will read, not the WordPress/HTML/Markdown rendering
    itself), and compare view has no curation/annotation layer of its own.
-9. Web-based run launcher + report browser — a thin web form over `wspy-run`'s option surface
-   (profile/suite/benchmark/workload command) that constructs and executes the command, then links
-   to the resulting output once it lands. Most valuable once #8's report studio exists to link
-   to, but the launcher half itself has no hard dependency on Tier 1's normalized store and could
-   ship early. Motivated directly by 4.0's release-testing experience — hand-typing long `wspy-run`
-   invocations while validating flag combinations was real, repeated friction, and a form would make
-   the real-hardware hand-testing gaps carried into 4.1 (IBS, GPU, `wspy-validate`/`wspy-ledger` at
-   scale — see "Known gaps carried into 4.1") faster to iterate on too. Scope is broader than
-   `wspy-run` alone: the same form-based UI should also cover `wspy-validate` (manifest quality
-   checks), `wspy-store`/`wspy-summary` (ingest + query the normalized store), and discovery-only
-   commands (`wspy --capabilities`, `wspy --preflight`) that have no run to launch, just a report to
-   render. #5's mockup pass should settle the layout question (one unified form with a
-   command-type selector vs. per-tool tabs vs. a task-first wizard) before this is built — whichever
-   shape wins, it stays a thin wrapper that assembles/runs/shows the equivalent CLI invocation rather
-   than reimplementing logic that already lives in the C tools. Organize the Run tab specifically
-   around the preset/configuration/option hierarchy (see the deep-dive above): named preset shortcuts
-   that populate a multi-select configuration+option checklist, with a live indicator of whether the
-   current selection still matches a named preset or has been customized into separate-command-line
-   territory. #7's `wspy-run` profile launcher is this item's starting point, not a separate effort —
-   generalize its command-display/local-execute plumbing (itself inherited from #6) into the real
-   checklist rather than rebuilding it.
+9. ~~Web-based run launcher + report browser generalization~~ — **shipped.** Landed as four tabs on
+   `web/server.py`'s `GET /` (`.tab-btn`/`.tab-panel`, client-side switching, no server round-trip) —
+   Run, Validate, Store & Summary, Discovery — settling #5's mockup-pass layout question (per-tool
+   tabs) directly. The Run tab is organized around the preset/configuration/option hierarchy the
+   deep-dive above calls for: a preset dropdown (`BUILTIN_PROFILES`, routing through #7's existing
+   `wspy-run` path unchanged and atomic — selecting one disables the checklist) alongside a real
+   five-configuration checklist (process tree, performance counters, system metrics, GPU metrics, AMD
+   IBS, plus a sixth disabled "/proc extras" row reserved for 4.2 Tier 3) that composes directly into
+   `wspy` command lines — `build_configuration_passes()` is the one place checklist state becomes
+   flags, shared by the preview endpoint and the real executor so the shown command line is never a
+   paraphrase. This also resolved the concrete gap #5's feedback round flagged (`wspy-run --profile`
+   couldn't compose an ad-hoc counter/interval selection with tree/GPU/IBS in one invocation): a
+   multi-group, no-interval counter selection now bin-packs via native `--passes` instead of going
+   through `wspy-run` at all. Custom runs write a `wspy-run`-shaped `manifest.json`/`summary.txt` so
+   #7/#8's existing report/curation/compare pages render them with no new code path. Toggle chips for
+   manifest/run-index/store-ingest are default-on, per #5's feedback. Validate/Store & Summary/
+   Discovery tabs wrap `wspy-validate`, `wspy-store`+`wspy-summary`, and `wspy --capabilities`/
+   `--preflight` respectively, all synchronous (no run directory, no SSE, nothing to browse to). Not
+   yet covered, by design: **#16** structured configuration provenance (so "customize & run again"
+   still can't restore exact preset/checklist state, only workload/suite/benchmark — the same
+   limitation #6/#7 already had), **#13** local-vs-shared deployment toggle (no design note exists
+   yet — #13 itself is still open), and **#18** estimated-runtime display.
 10. Publish-ready data export format — takes #8's curated block sequence (heading/image/preformatted/
     commentary, per selected configuration) and renders it in more than one target format, not just a
     bulk data dump:
