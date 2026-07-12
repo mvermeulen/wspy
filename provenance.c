@@ -7,7 +7,9 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#ifdef __x86_64__
 #include <cpuid.h>
+#endif
 #include <sys/sysinfo.h>
 #ifdef __GLIBC__
 #include <gnu/libc-version.h>
@@ -54,6 +56,7 @@ static void collect_sysfs_field(struct provenance_field *f,const char *path){
 }
 
 static void collect_virt_role(struct provenance_info *info){
+#ifdef __x86_64__
   unsigned int eax,ebx,ecx,edx;
 
   __cpuid(1,eax,ebx,ecx,edx);
@@ -73,6 +76,27 @@ static void collect_virt_role(struct provenance_info *info){
     field_set_str(&info->virt_role,"host");
     field_set_unavailable(&info->hypervisor_vendor,"not applicable (host, not a guest)");
   }
+#else
+  FILE *fp;
+  char line[256];
+  int is_guest = 0;
+
+  fp = fopen("/proc/cpuinfo","r");
+  if (fp){
+    while (fgets(line,sizeof(line),fp)){
+      if (strstr(line,"hypervisor")){
+        is_guest = 1;
+        break;
+      }
+    }
+    fclose(fp);
+  }
+
+  if (is_guest) field_set_str(&info->virt_role,"guest");
+  else field_set_str(&info->virt_role,"host");
+  field_set_unavailable(&info->hypervisor_vendor,
+                        "hypervisor vendor detection via cpuid is unavailable on non-x86");
+#endif
 }
 
 static void collect_microcode(struct provenance_field *f){

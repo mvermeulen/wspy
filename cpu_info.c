@@ -3,7 +3,9 @@
  */
 #define _GNU_SOURCE
 #include <stdio.h>
+#ifdef __x86_64__
 #include <cpuid.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <sched.h>
@@ -19,19 +21,107 @@ const char *cpu_vendor_name(enum cpu_vendor vendor){
   switch (vendor){
   case VENDOR_AMD: return "AMD";
   case VENDOR_INTEL: return "Intel";
+  case VENDOR_ARM: return "ARM";
   default: return "unknown";
   }
 }
 
+static int parse_cpu_list_count(const char *value){
+  int total = 0;
+  const char *p = value;
+
+  while (*p){
+    char *endptr;
+    long low = strtol(p,&endptr,10);
+    long high = low;
+
+    if (endptr == p) break;
+    p = endptr;
+    if (*p == '-'){
+      p++;
+      high = strtol(p,&endptr,10);
+      if (endptr == p) break;
+      p = endptr;
+    }
+    if (high >= low && low >= 0) total += (int)(high - low + 1);
+    if (*p == ',') p++;
+    while (*p == ' ' || *p == '\t') p++;
+  }
+
+  return total;
+}
+
+static int read_cpu_list_count(const char *path){
+  FILE *fp;
+  char buf[256];
+
+  fp = fopen(path,"r");
+  if (!fp) return -1;
+  if (!fgets(buf,sizeof(buf),fp)){
+    fclose(fp);
+    return -1;
+  }
+  fclose(fp);
+  return parse_cpu_list_count(buf);
+}
+
+static int read_cpuinfo_hex_field(const char *field,unsigned int *value){
+  FILE *fp;
+  char line[256];
+  size_t field_len = strlen(field);
+
+  fp = fopen("/proc/cpuinfo","r");
+  if (!fp) return -1;
+  while (fgets(line,sizeof(line),fp)){
+    if (!strncmp(line,field,field_len)){
+      char *colon = strchr(line,':');
+      if (!colon) continue;
+      colon++;
+      while (*colon == ' ' || *colon == '\t') colon++;
+      *value = (unsigned int)strtoul(colon,NULL,0);
+      fclose(fp);
+      return 0;
+    }
+  }
+  fclose(fp);
+  return -1;
+}
+
+static int read_cpuinfo_dec_field(const char *field,unsigned int *value){
+  FILE *fp;
+  char line[256];
+  size_t field_len = strlen(field);
+
+  fp = fopen("/proc/cpuinfo","r");
+  if (!fp) return -1;
+  while (fgets(line,sizeof(line),fp)){
+    if (!strncmp(line,field,field_len)){
+      char *colon = strchr(line,':');
+      if (!colon) continue;
+      colon++;
+      while (*colon == ' ' || *colon == '\t') colon++;
+      *value = (unsigned int)strtoul(colon,NULL,10);
+      fclose(fp);
+      return 0;
+    }
+  }
+  fclose(fp);
+  return -1;
+}
+
 int inventory_cpu(void){
+#ifdef __x86_64__
   unsigned int eax,ebx,ecx,edx;
+#endif
   int i;
   int nwarn = 0;
   struct stat statbuf;
   FILE *fp;
+  int core_count = -1;
 
   cpu_info = calloc(1,sizeof(struct cpu_info));
 
+#ifdef __x86_64__
   // vendor string
   union cpuid0_vendor {
     struct { unsigned int ebx, edx, ecx; };
@@ -74,15 +164,38 @@ int inventory_cpu(void){
   cpu_info->model = ((cpuid_1.family==0x6)||(cpuid_1.family==0xf))?
     (cpuid_1.emodel<<4) + cpuid_1.model:
     cpuid_1.model;
+#else
+#ifdef __aarch64__
+  cpu_info->vendor = VENDOR_ARM;
+#else
+  cpu_info->vendor = VENDOR_UNKNOWN;
+#endif
+  if (read_cpuinfo_hex_field("CPU implementer",&cpu_info->family) == -1){
+    if (read_cpuinfo_dec_field("CPU architecture",&cpu_info->family) == -1){
+      cpu_info->family = 0;
+      warning("unable to determine CPU family from /proc/cpuinfo\n");
+    }
+  }
+  if (read_cpuinfo_hex_field("CPU part",&cpu_info->model) == -1){
+    cpu_info->model = 0;
+    warning("unable to determine CPU model from /proc/cpuinfo\n");
+  }
+#endif
 
-  // number of cores
-  cpu_info->num_cores = get_nprocs();
+  // number of cores (prefer sysfs topology fallbacks before libc helpers)
+  core_count = read_cpu_list_count("/sys/devices/system/cpu/present");
+  if (core_count <= 0) core_count = read_cpu_list_count("/sys/devices/system/cpu/online");
+  if (core_count <= 0) core_count = get_nprocs();
+
+  cpu_info->num_cores = core_count;
   cpu_info->coreinfo = calloc(cpu_info->num_cores,
 			      sizeof(struct cpu_core_info));
 
   // specify the core type
   for (i=0;i<cpu_info->num_cores;i++){
-    if (cpu_info->vendor == VENDOR_AMD){
+    if (cpu_info->vendor == VENDOR_ARM){
+      cpu_info->coreinfo[i].vendor = CORE_ARM_GENERIC;
+    } else if (cpu_info->vendor == VENDOR_AMD){
       if ((cpu_info->family == 0x17) || (cpu_info->family == 0x19)){
 	// Zen
 	cpu_info->coreinfo[i].vendor = CORE_AMD_ZEN;
@@ -111,6 +224,8 @@ int inventory_cpu(void){
 	}
 	nwarn++;
       }
+    } else {
+      cpu_info->coreinfo[i].vendor = CORE_UNKNOWN;
     }
     cpu_info->coreinfo[i].is_available = 0;
     cpu_info->coreinfo[i].is_counter_started = 0;
@@ -174,6 +289,9 @@ int main(void){
   case VENDOR_INTEL:
     printf("\tIntel family %x model %x\n",cpu_info->family,cpu_info->model);
     break;
+  case VENDOR_ARM:
+    printf("\tARM family %x model %x\n",cpu_info->family,cpu_info->model);
+    break;
   default:
     printf("Unknown CPU\n");
     return 0;
@@ -183,6 +301,9 @@ int main(void){
     printf("\t   ");
     printf("%c %d ",(cpu_info->coreinfo[i].is_available)?'*':' ',i);
     switch(cpu_info->coreinfo[i].vendor){
+    case CORE_ARM_GENERIC:
+      printf("ARM");
+      break;
     case CORE_AMD_ZEN:
       printf("Zen");
       break;

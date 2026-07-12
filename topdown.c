@@ -117,6 +117,17 @@ struct raw_event amd_raw_events[] = {
   { "ls_l1_d_tlb_miss.all_l2_miss","event=0x45,umask=0xf0",PERF_TYPE_RAW,COUNTER_TOPDOWN_OP,{{0}}},
 };
 
+struct raw_event arm_raw_events[] = {
+  { "instructions","event=0x08",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_L2CACHE,{{0}} },
+  { "cpu-cycles","event=0x11",PERF_TYPE_RAW,COUNTER_IPC,{{0}} },
+  { "branch-instructions","event=0x21",PERF_TYPE_RAW,COUNTER_BRANCH,{{0}} },
+  { "branch-misses","event=0x10",PERF_TYPE_RAW,COUNTER_BRANCH,{{0}} },
+  { "l2d_cache","event=0x16",PERF_TYPE_RAW,COUNTER_L2CACHE,{{0}} },
+  { "l2d_cache_refill","event=0x17",PERF_TYPE_RAW,COUNTER_L2CACHE,{{0}} },
+  { "memory-accesses","event=0x13",PERF_TYPE_RAW,COUNTER_MEMORY,{{0}} },
+  { "bus-accesses","event=0x19",PERF_TYPE_RAW,COUNTER_MEMORY,{{0}} },
+};
+
 unsigned long parse_intel_event(char *description){
   char *desc = strdup(description);
   char *name,*val;
@@ -190,6 +201,32 @@ unsigned long parse_amd_event(char *description){
   return result.config;
 };
 
+unsigned long parse_arm_event(char *description){
+  char *desc = strdup(description);
+  char *name,*val;
+  unsigned long value;
+  unsigned long config = 0;
+
+  for (name = strtok(desc,",\n");name;name = strtok(NULL,",\n")){
+    if ((val = strchr(name,'=')) != NULL){
+      *val = 0;
+      val++;
+      value = strtoul(val,NULL,16);
+
+      if (!strcmp(name,"event") || !strcmp(name,"config")){
+        config = value;
+      } else if (!strcmp(name,"period")){
+        // accepted in perf-list style strings; ignored for perf_event_open config
+      } else {
+        fatal("unimplemented %s in parse_arm_event\n",name);
+      }
+    }
+  }
+
+  debug2("parse_event(\"%s\") = %lx\n",description,config);
+  return config;
+};
+
 // Some raw events (currently just AMD's L3 lookup-state events) only exist
 // when a particular sysfs path is present (e.g. /sys/devices/amd_l3/type --
 // not every Zen generation/kernel registers this PMU). If this run actually
@@ -222,6 +259,14 @@ int setup_raw_events(void){
   struct raw_event *events;
   unsigned int num_events;
   switch(cpu_info->vendor){
+  case VENDOR_ARM:
+    events = arm_raw_events;
+    num_events = sizeof(arm_raw_events)/sizeof(arm_raw_events[0]);
+    for (i=0;i<num_events;i++){
+      if (events[i].use & counter_mask)
+        events[i].raw.config = parse_arm_event(events[i].description);
+    }
+    break;
   case VENDOR_AMD:
     events = amd_raw_events;
     num_events = sizeof(amd_raw_events)/sizeof(amd_raw_events[0]);
@@ -685,6 +730,10 @@ struct counter_group *raw_counter_group(char *name,unsigned int mask){
   struct raw_event *events;
   unsigned int num_events;
   switch(cpu_info->vendor){
+  case VENDOR_ARM:
+    events = arm_raw_events;
+    num_events = sizeof(arm_raw_events)/sizeof(arm_raw_events[0]);
+    break;
   case VENDOR_AMD:
     events = amd_raw_events;
     num_events = sizeof(amd_raw_events)/sizeof(amd_raw_events[0]);
@@ -1655,6 +1704,12 @@ void print_branch(struct counter_group *cgroup,enum output_format oformat){
   if ((cinfo = find_ci_label(cgroup,"cpu-cycles")))
     cpu_cycles = cinfo->value;
   switch (cpu_info->vendor){
+  case VENDOR_ARM:
+    if ((cinfo = find_ci_label(cgroup,"branch-instructions")))
+      branches = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"branch-misses")))
+      branch_miss = cinfo->value;
+    break;
   case VENDOR_AMD:
     if ((cinfo = find_ci_label(cgroup,"branch-instructions")))
       branches = cinfo->value;
@@ -1711,6 +1766,18 @@ void print_l2cache(struct counter_group *cgroup,enum output_format oformat){
     instructions = cinfo->value;
 
   switch(cpu_info->vendor){
+  case VENDOR_ARM:
+    if ((cinfo = find_ci_label(cgroup,"l2d_cache"))) l2_access = cinfo->value;
+    if ((cinfo = find_ci_label(cgroup,"l2d_cache_refill"))) l2_miss = cinfo->value;
+    if (csvflag){
+      fprintf(outfile,"%4.2f%%,",(double) l2_miss / l2_access * 100.0);
+    } else {
+      fprintf(outfile,"l2 access            %-14lu # %4.3f l2 access per 1000 inst\n",
+	      l2_access,(double) l2_access / instructions*1000.0);
+      fprintf(outfile,"l2 miss              %-14lu # %4.2f%% l2 miss\n",
+	      l2_miss, (double) l2_miss / l2_access * 100.0);
+    }
+    break;
   case VENDOR_INTEL:
     if ((cinfo = find_ci_label(cgroup,"l2_request.all"))) l2_access = cinfo->value;
     if ((cinfo = find_ci_label(cgroup,"l2_request.miss"))) l2_miss = cinfo->value;
@@ -1798,6 +1865,8 @@ void print_memory(struct counter_group *cgroup,enum output_format oformat){
   unsigned long data_cache_remote=0;
   unsigned long prefetch_local=0;
   unsigned long prefetch_remote=0;
+  unsigned long memory_accesses=0;
+  unsigned long bus_accesses=0;
   struct counter_info *cinfo;
   double elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
     start_time.tv_sec - start_time.tv_nsec / 1000000000.0;    
@@ -1808,6 +1877,12 @@ void print_memory(struct counter_group *cgroup,enum output_format oformat){
   }  
 
   switch(cpu_info->vendor){
+  case VENDOR_ARM:
+    if (cinfo = find_ci_label(cgroup,"memory-accesses"))
+      memory_accesses = cinfo->value;
+    if (cinfo = find_ci_label(cgroup,"bus-accesses"))
+      bus_accesses = cinfo->value;
+    break;
   case VENDOR_INTEL:
     break;
   case VENDOR_AMD:
@@ -1825,14 +1900,26 @@ void print_memory(struct counter_group *cgroup,enum output_format oformat){
   }
 
   if (csvflag){
-    fprintf(outfile,"%4.1f,",(double) (data_cache_local+data_cache_remote+prefetch_local+prefetch_remote)*64.0/1024/1024/elapsed);
+    if (cpu_info->vendor == VENDOR_ARM){
+      fprintf(outfile,"%4.1f,",(double) memory_accesses*64.0/1024/1024/elapsed);
+    } else {
+      fprintf(outfile,"%4.1f,",(double) (data_cache_local+data_cache_remote+prefetch_local+prefetch_remote)*64.0/1024/1024/elapsed);
+    }
   } else {
-    fprintf(outfile,"local bandwidth      %-14lu # %4.1f MB/s\n",
-	    data_cache_local+prefetch_local,
-	    (double)(data_cache_local+prefetch_local)*64.0/1024.0/1024.0/elapsed);
-    fprintf(outfile,"remote bandwidth     %-14lu # %4.1f MB/s\n",
-	    data_cache_remote+prefetch_remote,
-	    (double)(data_cache_remote+prefetch_remote)*64.0/1024.0/1024.0/elapsed);
+    if (cpu_info->vendor == VENDOR_ARM){
+      fprintf(outfile,"memory accesses      %-14lu #\n",memory_accesses);
+      fprintf(outfile,"bus accesses         %-14lu #\n",bus_accesses);
+      fprintf(outfile,"estimated bandwidth  %-14lu # %4.1f MB/s\n",
+	      memory_accesses,
+	      (double) memory_accesses*64.0/1024.0/1024.0/elapsed);
+    } else {
+      fprintf(outfile,"local bandwidth      %-14lu # %4.1f MB/s\n",
+	      data_cache_local+prefetch_local,
+	      (double)(data_cache_local+prefetch_local)*64.0/1024.0/1024.0/elapsed);
+      fprintf(outfile,"remote bandwidth     %-14lu # %4.1f MB/s\n",
+	      data_cache_remote+prefetch_remote,
+	      (double)(data_cache_remote+prefetch_remote)*64.0/1024.0/1024.0/elapsed);
+    }
   }  
 }
 
