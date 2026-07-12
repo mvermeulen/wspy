@@ -79,6 +79,231 @@ NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 PROFILE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # ---------------------------------------------------------------------------
+# Item 9 (INVESTIGATION_4.0.md): the configuration/option checklist that
+# generalizes item 7's preset-only wspy-run launcher into the real
+# preset/configuration/option hierarchy the "deep-dive" section describes.
+# A "configuration" here is one of the doc's own examples (a process tree, an
+# interval measurement of performance counters, an interval measurement of
+# other system metrics, an overall performance-counters measurement, an
+# overall system measurement) plus the mockup feedback's explicit GPU/IBS
+# extensions -- five independently toggleable rows, each with its own
+# sub-options, each becoming its own separate `wspy` invocation/pass (mirrors
+# wspy-run's own one-pass-per-configuration shape, just assembled from
+# checklist state instead of a hardcoded PASS_NAMES/PASS_FLAGS pair).
+#
+# Deliberately NOT attempted: decomposing a named preset (BUILTIN_PROFILES)
+# into equivalent checklist state, or detecting "this checklist state happens
+# to equal preset X". The deep-dive's own rule is that a preset names a
+# configuration+option combination wspy-run already knows how to run -- the
+# moment it's customized it leaves that space and becomes direct wspy command
+# lines -- so presets stay atomic (picked from a dropdown, run via wspy-run
+# exactly as item 7 already did) and are simply mutually exclusive with the
+# checklist rather than reverse-engineered from it. That keeps the "live
+# indicator" honest and simple: a preset is selected, or the checklist is in
+# play -- never a fuzzy "close enough" match.
+# ---------------------------------------------------------------------------
+
+# (group name, default_on) -- default_on groups (ipc/software) need an
+# explicit --no-<name> when left unchecked; the rest need an explicit
+# --<name> when checked. Mirrors wspy.h's COUNTER_* set and is also the exact
+# token vocabulary multipass.c's multipass_group_names[] uses for
+# --passes=<list>, so the same list drives both the plain-flags and
+# --passes-bin-packed branches below without a second table to keep in sync.
+ALL_GROUPS = [
+    ("ipc", True),
+    ("topdown", False),
+    ("topdown2", False),
+    ("topdown-frontend", False),
+    ("topdown-backend", False),
+    ("topdown-optlb", False),
+    ("branch", False),
+    ("cache1", False),
+    ("cache2", False),
+    ("cache3", False),
+    ("dcache", False),
+    ("icache", False),
+    ("tlb", False),
+    ("memory", False),
+    ("opcache", False),
+    ("software", True),
+    ("float", False),
+]
+GROUP_NAMES = [name for name, _ in ALL_GROUPS]
+GROUP_NAME_SET = set(GROUP_NAMES)
+GROUP_DEFAULT_ON = {name for name, default_on in ALL_GROUPS if default_on}
+
+
+def counter_group_flags(requested_groups):
+    """Whitelist-filters requested_groups against ALL_GROUPS and returns
+    (flags, selected_set) -- flags is the minimal --<name>/--no-<name> list
+    needed to reach exactly that selection from wspy's own defaults (ipc and
+    software on, everything else off), in ALL_GROUPS' fixed order so the
+    result is deterministic regardless of the client's array order."""
+    selected = {g for g in (requested_groups or []) if g in GROUP_NAME_SET}
+    flags = []
+    for name, default_on in ALL_GROUPS:
+        if name in selected and not default_on:
+            flags.append(f"--{name}")
+        elif name not in selected and default_on:
+            flags.append(f"--no-{name}")
+    return flags, selected
+
+
+def parse_optional_int(value, lo, hi):
+    """Returns an int in [lo,hi] parsed from value, or None if value is
+    blank/absent -- the checklist's numeric fields (interval seconds, IBS
+    thresholds, ...) are all optional, and "not given" is meaningfully
+    different from 0."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        n = int(s)
+    except ValueError:
+        return None
+    if n < lo or n > hi:
+        return None
+    return n
+
+
+def build_configuration_passes(rundir, checklist):
+    """The one place checklist state (see the item-9 comment above) becomes
+    real wspy flags -- used identically by the preview endpoint and the real
+    executor, so a preview is never a paraphrase of what actually runs.
+    Returns a list of {"name","flags","csv","timeout"} dicts, in the fixed
+    tree/counters/system/gpu/ibs order, one per *enabled and non-empty*
+    configuration (an enabled configuration with nothing meaningful selected,
+    e.g. "counters" with no groups checked, is silently skipped rather than
+    producing a no-op wspy invocation)."""
+    checklist = checklist or {}
+    passes = []
+
+    tree = checklist.get("tree") or {}
+    if tree.get("enabled"):
+        flags = ["--tree", os.path.join(rundir, "process.tree.txt")]
+        if tree.get("cmdline"):
+            flags.append("--tree-cmdline")
+        if tree.get("open"):
+            flags.append("--tree-open")
+        if tree.get("vmsize"):
+            flags.append("--tree-vmsize")
+        flags.append("--software" if tree.get("software", True) else "--no-software")
+        flags.append("--no-ipc")
+        timeout = parse_optional_int(tree.get("timeout_secs"), 1, 86400)
+        passes.append({"name": "tree", "flags": flags, "csv": False, "timeout": timeout})
+
+    counters = checklist.get("counters") or {}
+    if counters.get("enabled"):
+        group_flags, selected = counter_group_flags(counters.get("groups"))
+        if selected:
+            interval = parse_optional_int(counters.get("interval_secs"), 1, 3600)
+            per_core = bool(counters.get("per_core")) and interval is not None
+            rusage_on = bool(counters.get("rusage"))
+            csv = bool(counters.get("csv", True))
+            # --passes rejects --interval/--per-core outright (wspy.c, see
+            # CLAUDE.md's wspy.c entry) -- so interval mode always uses plain
+            # flags (potentially multiplexed by the kernel across >1 group,
+            # same as any ordinary wspy invocation would be); aggregate mode
+            # only needs --passes' bin-packing once >=2 groups are requested,
+            # since a single group never multiplexes against itself.
+            if interval is None and len(selected) >= 2:
+                ordered = [n for n in GROUP_NAMES if n in selected]
+                flags = [f"--passes={','.join(ordered)}"]
+            else:
+                flags = list(group_flags)
+                if interval is not None:
+                    flags += ["--interval", str(interval)]
+                if per_core:
+                    flags.append("--per-core")
+            flags.append("--rusage" if rusage_on else "--no-rusage")
+            if csv:
+                flags.append("--csv")
+            # Reuse the well-known "amdtopdown" name (and therefore the
+            # gnuplot.sh plot step every other launcher already triggers off
+            # of) for exactly the case that name always meant elsewhere in
+            # this codebase: an interval, CSV, topdown-only sweep.
+            name = "amdtopdown" if (interval is not None and csv and selected == {"topdown"}) else "counters"
+            passes.append({"name": name, "flags": flags, "csv": csv, "timeout": None})
+
+    system = checklist.get("system") or {}
+    if system.get("enabled"):
+        interval = parse_optional_int(system.get("interval_secs"), 1, 3600)
+        csv = bool(system.get("csv", True))
+        flags = ["--system", "--no-ipc", "--no-rusage", "--no-software"]
+        if interval is not None:
+            flags += ["--interval", str(interval)]
+        if csv:
+            flags.append("--csv")
+        # Same reasoning as "amdtopdown" above -- gnuplot.sh looks for this
+        # literal filename to add its secondary systemtime.png plot.
+        name = "systemtime" if (interval is not None and csv) else "system"
+        passes.append({"name": name, "flags": flags, "csv": csv, "timeout": None})
+
+    gpu = checklist.get("gpu") or {}
+    if gpu.get("enabled"):
+        backend_flags = []
+        if gpu.get("busy"):
+            backend_flags.append("--gpu-busy")
+        if gpu.get("metrics"):
+            backend_flags.append("--gpu-metrics")
+        if gpu.get("smi"):
+            backend_flags.append("--gpu-smi")
+        if backend_flags:
+            flags = list(backend_flags)
+            device = parse_optional_int(gpu.get("device"), 0, 63)
+            if device is not None:
+                flags += ["--gpu-device", str(device)]
+            interval = parse_optional_int(gpu.get("interval_secs"), 1, 3600)
+            if interval is not None:
+                flags += ["--interval", str(interval)]
+            flags += ["--no-ipc", "--no-rusage", "--no-software"]
+            csv = bool(gpu.get("csv", True))
+            if csv:
+                flags.append("--csv")
+            passes.append({"name": "gpu", "flags": flags, "csv": csv, "timeout": None})
+
+    ibs = checklist.get("ibs") or {}
+    if ibs.get("enabled"):
+        profile = ibs.get("profile") if ibs.get("profile") in ("basic", "memory-deep") else "basic"
+        flags = ["--ibs-basic" if profile == "basic" else "--ibs-memory-deep", "--no-ipc"]
+        maxcnt = parse_optional_int(ibs.get("maxcnt"), 1, 10 ** 9)
+        ldlat = parse_optional_int(ibs.get("ldlat"), 0, 10 ** 6)
+        fetchlat = parse_optional_int(ibs.get("fetchlat"), 0, 10 ** 6)
+        if maxcnt is not None:
+            flags += ["--ibs-maxcnt", str(maxcnt)]
+        if ldlat is not None:
+            flags += ["--ibs-ldlat", str(ldlat)]
+        if fetchlat is not None:
+            flags += ["--ibs-fetchlat", str(fetchlat)]
+        csv = bool(ibs.get("csv", True))
+        if csv:
+            flags.append("--csv")
+        passes.append({"name": "ibs", "flags": flags, "csv": csv, "timeout": None})
+
+    return passes
+
+
+def build_pass_argv(wspy_bin, rundir, p, manifest_on, run_index_path):
+    """Full argv for one configuration pass, minus the trailing `-- <workload
+    argv>` (appended by the caller, which also decides whether to prefix a
+    `timeout <secs>` wrapper) -- mirrors wspy-run's own run_pass() shape:
+    <pass-name>.<csv|txt> for output, <pass-name>.manifest.json alongside it
+    when manifest recording is on."""
+    ext = "csv" if p["csv"] else "txt"
+    outfile = os.path.join(rundir, f'{p["name"]}.{ext}')
+    argv = [wspy_bin] + p["flags"] + ["-o", outfile]
+    manifest_path = None
+    if manifest_on:
+        manifest_path = os.path.join(rundir, f'{p["name"]}.manifest.json')
+        argv += ["--manifest", manifest_path]
+    if run_index_path:
+        argv += ["--run-index", run_index_path]
+    return argv, outfile, manifest_path
+
+
+# ---------------------------------------------------------------------------
 # Run registry: in-memory only, purely to relay a run's live log lines to an
 # SSE stream while it's in flight. Nothing here is authoritative -- once a
 # run finishes, the report page reads its directory off disk like any other,
@@ -155,10 +380,18 @@ def valid_profile_spec(spec):
 
 
 def build_wspy_run_argv(wspy_run_bin, wspy_bin, output_root, suite, benchmark,
-                         run_id, profile, workload_argv):
-    return ([wspy_run_bin, "--wspy", wspy_bin, "-o", output_root,
-              "--suite", suite, "--benchmark", benchmark, "--run-id", run_id,
-              profile, "--"] + workload_argv)
+                         run_id, profile, workload_argv, run_index_path=None):
+    # wspy-run always writes each pass's manifest into the run directory once
+    # --suite/--benchmark select the unified layout (MANIFEST_DIR defaults to
+    # RUNROOT unconditionally there's no flag to opt back out) -- so unlike
+    # the custom checklist path, there's no "manifest off" toggle to thread
+    # through here; only --run-index is actually optional.
+    argv = [wspy_run_bin, "--wspy", wspy_bin, "-o", output_root,
+            "--suite", suite, "--benchmark", benchmark, "--run-id", run_id]
+    if run_index_path:
+        argv += ["--run-index", run_index_path]
+    argv += [profile, "--"] + workload_argv
+    return argv
 
 
 def shell_preview(argv, cwd=None):
@@ -228,12 +461,40 @@ def execute_run(state, wspy_bin, gnuplot_script, rundir, workload_argv):
     state.finish(status, None)
 
 
-def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile, workload_argv):
+def run_store_ingest_besteffort(emit, cfg, run_index_path):
+    """Best-effort trailing step shared by every run path (item 9's
+    defaults-on "ingest into store" toggle chip): re-runs wspy-store against
+    the shared run-index file so the normalized store (Tier 1, store.c) stays
+    current without a separate manual step. Never fails the run itself --
+    same degrade-don't-fail idiom as the gnuplot step above."""
+    if not run_index_path:
+        emit("[skipping store ingest: run index was not recorded for this run]")
+        return
+    argv = [cfg["wspy_store_bin"], "--db", cfg["store_db"], "--run-index", run_index_path]
+    emit("$ " + shell_preview(argv))
+    try:
+        proc = subprocess.Popen(argv, cwd=REPO_ROOT,
+                                 stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT,
+                                 text=True, bufsize=1)
+        for line in proc.stdout:
+            emit(line.rstrip("\n"))
+        rc = proc.wait()
+        emit(f"[wspy-store exited {rc}]")
+    except OSError as e:
+        emit(f"[error] failed to launch wspy-store ({cfg['wspy_store_bin']}): {e}")
+
+
+def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
+                         workload_argv, run_index_path=None, store_ingest=False):
     """Item 7: invoke wspy-run itself (rather than wspy directly) for one of
     its builtin profiles, then -- mirroring workload/phoronix/run_test.sh's
     own hand-written pattern -- best-effort run gnuplot.sh afterward only if
     the chosen profile actually produced amdtopdown.csv (true for deep-cpu/
-    deep-gpu, false for e.g. deep-cpu-intel/quick/tree-heavy/ibs-*)."""
+    deep-gpu, false for e.g. deep-cpu-intel/quick/tree-heavy/ibs-*). Item 9
+    adds the optional trailing run-index/store-ingest steps (the "preset"
+    side of the Run tab's toggle chips); manifest recording has no toggle
+    here since wspy-run's own unified layout always writes one per pass."""
     log_path = os.path.join(rundir, LOG_NAME)
     logf = open(log_path, "w")
 
@@ -244,7 +505,8 @@ def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile, w
 
     wspy_run_argv = build_wspy_run_argv(cfg["wspy_run_bin"], cfg["wspy_bin"],
                                          cfg["output_root"], suite, benchmark,
-                                         run_id, profile, workload_argv)
+                                         run_id, profile, workload_argv,
+                                         run_index_path=run_index_path)
     emit("$ " + shell_preview(wspy_run_argv))
     try:
         proc = subprocess.Popen(wspy_run_argv, cwd=REPO_ROOT,
@@ -265,29 +527,163 @@ def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile, w
     csv_path = os.path.join(rundir, CSV_NAME)
     has_topdown_csv = os.path.exists(csv_path) and os.path.getsize(csv_path) > 0
 
+    gnuplot_rc = 0
     if not has_topdown_csv:
         emit("[skipping gnuplot: chosen profile did not produce amdtopdown.csv]")
-        logf.close()
-        state.finish("done" if wspy_run_rc == 0 else "error", None)
-        return
+    else:
+        gnuplot_argv = build_gnuplot_argv(cfg["gnuplot_script"])
+        emit("$ " + shell_preview(gnuplot_argv, cwd=rundir))
+        try:
+            proc = subprocess.Popen(gnuplot_argv, cwd=rundir,
+                                     stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT,
+                                     text=True, bufsize=1)
+            for line in proc.stdout:
+                emit(line.rstrip("\n"))
+            gnuplot_rc = proc.wait()
+            emit(f"[gnuplot exited {gnuplot_rc}]")
+        except OSError as e:
+            emit(f"[error] failed to launch gnuplot script ({cfg['gnuplot_script']}): {e}")
+            gnuplot_rc = 1
 
-    gnuplot_argv = build_gnuplot_argv(cfg["gnuplot_script"])
-    emit("$ " + shell_preview(gnuplot_argv, cwd=rundir))
-    try:
-        proc = subprocess.Popen(gnuplot_argv, cwd=rundir,
-                                 stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT,
-                                 text=True, bufsize=1)
-        for line in proc.stdout:
-            emit(line.rstrip("\n"))
-        gnuplot_rc = proc.wait()
-        emit(f"[gnuplot exited {gnuplot_rc}]")
-    except OSError as e:
-        emit(f"[error] failed to launch gnuplot script ({cfg['gnuplot_script']}): {e}")
-        gnuplot_rc = 1
+    if store_ingest:
+        run_store_ingest_besteffort(emit, cfg, run_index_path)
 
     logf.close()
     status = "done" if wspy_run_rc == 0 and gnuplot_rc == 0 else "error"
+    state.finish(status, None)
+
+
+def write_custom_run_manifest(rundir, suite, benchmark, run_id, workload_argv, pass_records):
+    """Same shape as wspy-run's own generate_manifest() (see wspy-run's
+    comment there) -- writing the identical layout_version/suite/benchmark/
+    run_id/command/passes[] fields means render_wspy_run_report() renders a
+    checklist-driven custom run exactly like a wspy-run profile run, with no
+    extra branching needed in the report layer for item 9's new run shape."""
+    data = {
+        "layout_version": "1.0.0",
+        "suite": suite,
+        "benchmark": benchmark,
+        "run_id": run_id,
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "command": workload_argv,
+        "passes": [
+            {"name": p["name"], "output": p["output"], "manifest": p["manifest"], "status": p["status"]}
+            for p in pass_records
+        ],
+    }
+    with open(os.path.join(rundir, RUN_MANIFEST_NAME), "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+
+
+def write_custom_run_summary(rundir, pass_records):
+    """Mirrors wspy-run's generate_summary(): concatenates every non-CSV,
+    non-tree pass's text output into one summary.txt."""
+    chunks = []
+    for p in pass_records:
+        if p["output"].endswith(".csv") or p["kind"] == "tree":
+            continue
+        path = os.path.join(rundir, p["output"])
+        try:
+            with open(path) as f:
+                content = f.read()
+        except OSError:
+            continue
+        chunks.append(f"=== {p['name']} ===\n{content}\n")
+    if not chunks:
+        return
+    with open(os.path.join(rundir, SUMMARY_NAME), "w") as f:
+        f.write("".join(chunks))
+
+
+def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_argv,
+                        checklist, manifest_on, run_index_path, store_ingest):
+    """Item 9's "customized away from a preset" path: runs each enabled
+    configuration (see build_configuration_passes()) as its own sequential
+    wspy invocation into this run directory -- the direct-command-lines
+    fallback the deep-dive's own rule calls for once a preset's checklist has
+    been touched. Ends by writing a wspy-run-shaped manifest.json/summary.txt
+    (see write_custom_run_manifest()/write_custom_run_summary() above) so the
+    existing report/curation/compare machinery needs no new code path."""
+    log_path = os.path.join(rundir, LOG_NAME)
+    logf = open(log_path, "w")
+
+    def emit(line):
+        logf.write(line + "\n")
+        logf.flush()
+        state.append(line)
+
+    passes = build_configuration_passes(rundir, checklist)
+    if not passes:
+        emit("[error] no configuration was enabled (or every enabled configuration had "
+             "nothing selected within it) -- nothing to run")
+        logf.close()
+        state.finish("error", None)
+        return
+
+    pass_records = []
+    any_failed = False
+    for p in passes:
+        argv, outfile, manifest_path = build_pass_argv(cfg["wspy_bin"], rundir, p,
+                                                         manifest_on, run_index_path)
+        full_argv = argv + ["--"] + workload_argv
+        if p["timeout"]:
+            full_argv = ["timeout", str(p["timeout"])] + full_argv
+        emit(f"[{p['name']}] $ " + shell_preview(full_argv))
+        try:
+            proc = subprocess.Popen(full_argv, cwd=REPO_ROOT,
+                                     stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT,
+                                     text=True, bufsize=1)
+            for line in proc.stdout:
+                emit(line.rstrip("\n"))
+            rc = proc.wait()
+        except OSError as e:
+            emit(f"[error] failed to launch wspy for pass '{p['name']}' ({cfg['wspy_bin']}): {e}")
+            rc = 1
+        status = "ok" if rc == 0 else "wspy-error"
+        any_failed = any_failed or rc != 0
+        emit(f"[{p['name']}] exited {rc} -> {os.path.basename(outfile)}")
+        pass_records.append({
+            "name": p["name"],
+            "output": os.path.basename(outfile),
+            "manifest": os.path.basename(manifest_path) if manifest_path else None,
+            "status": status,
+            "kind": "tree" if p["name"] == "tree" else "other",
+        })
+
+    csv_path = os.path.join(rundir, CSV_NAME)
+    has_topdown_csv = os.path.exists(csv_path) and os.path.getsize(csv_path) > 0
+    gnuplot_rc = 0
+    if not has_topdown_csv:
+        emit("[skipping gnuplot: no pass produced amdtopdown.csv "
+             "(enable 'Performance counters' with only 'topdown' checked, at an interval, for that)]")
+    else:
+        gnuplot_argv = build_gnuplot_argv(cfg["gnuplot_script"])
+        emit("$ " + shell_preview(gnuplot_argv, cwd=rundir))
+        try:
+            proc = subprocess.Popen(gnuplot_argv, cwd=rundir,
+                                     stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT,
+                                     text=True, bufsize=1)
+            for line in proc.stdout:
+                emit(line.rstrip("\n"))
+            gnuplot_rc = proc.wait()
+            emit(f"[gnuplot exited {gnuplot_rc}]")
+        except OSError as e:
+            emit(f"[error] failed to launch gnuplot script ({cfg['gnuplot_script']}): {e}")
+            gnuplot_rc = 1
+
+    write_custom_run_summary(rundir, pass_records)
+    write_custom_run_manifest(rundir, suite, benchmark, run_id, workload_argv, pass_records)
+    emit(f"[wrote {RUN_MANIFEST_NAME}]")
+
+    if store_ingest:
+        run_store_ingest_besteffort(emit, cfg, run_index_path)
+
+    logf.close()
+    status = "done" if not any_failed and gnuplot_rc == 0 else "error"
     state.finish(status, None)
 
 
@@ -322,6 +718,46 @@ def discover_reports(output_root, limit=50):
                 })
     reports.sort(key=lambda r: r["mtime"], reverse=True)
     return reports[:limit]
+
+
+def discover_manifest_paths(output_root, limit=100):
+    """Every *.manifest.json (per-pass) or bare manifest.json (wspy-run's own
+    run-level index -- not a wspy-validate target itself, but harmless to
+    list; validate.c just reports schema_version/passes-shaped files as a
+    parse failure like any other malformed input) under output_root, newest
+    first -- offered as "+ add" chips on the Validate tab so a manifest can
+    be picked without typing its path by hand."""
+    found = []
+    if not os.path.isdir(output_root):
+        return found
+    for dirpath, _dirnames, filenames in os.walk(output_root):
+        for f in filenames:
+            if f.endswith(".manifest.json") or f == RUN_MANIFEST_NAME:
+                path = os.path.join(dirpath, f)
+                try:
+                    mtime = os.path.getmtime(path)
+                except OSError:
+                    continue
+                found.append({"path": path, "rel": os.path.relpath(path, output_root), "mtime": mtime})
+    found.sort(key=lambda r: r["mtime"], reverse=True)
+    return found[:limit]
+
+
+def run_sync(argv, cwd=None, timeout=120):
+    """Runs a short-lived discovery/report command (wspy --capabilities,
+    wspy-validate, wspy-store, wspy-summary) to completion and captures its
+    combined output -- unlike a launched workload, none of these have
+    unbounded runtime or need live streaming, so a plain synchronous
+    subprocess call (no RunState/SSE machinery) is the right amount of
+    plumbing. Returns (returncode_or_None, output_text, timed_out)."""
+    try:
+        proc = subprocess.run(argv, cwd=cwd, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True, timeout=timeout)
+        return proc.returncode, proc.stdout, False
+    except subprocess.TimeoutExpired as e:
+        return None, (e.stdout or ""), True
+    except OSError as e:
+        return None, f"[error] failed to launch {argv[0]}: {e}", False
 
 
 def read_manifest_workload(manifest_path):
@@ -613,7 +1049,261 @@ def page(title, body):
 </body></html>"""
 
 
-def render_index(output_root, prefill, wspy_bin, wspy_run_bin, gnuplot_script):
+def render_group_checkboxes(id_prefix, checked_by_default=()):
+    return "".join(
+        f'<label class="group-check"><input type="checkbox" id="{id_prefix}_{name}" value="{name}"'
+        f'{" checked" if name in checked_by_default else ""}> <code>{name}</code></label>'
+        for name in GROUP_NAMES
+    )
+
+
+def render_run_tab(prefill, cfg):
+    w_workload = html.escape(prefill.get("workload", ""))
+    w_suite = html.escape(prefill.get("suite", "manual"))
+    w_benchmark = html.escape(prefill.get("benchmark", ""))
+    preset_options = "".join(f'<option value="{html.escape(p)}">{html.escape(p)}</option>'
+                              for p in BUILTIN_PROFILES)
+    counters_groups_html = render_group_checkboxes("counters", checked_by_default=("topdown",))
+
+    return f"""
+<section class="panel">
+  <h1>Run</h1>
+  <p class="config-label">Pick a named <code>wspy-run</code> preset, or build a custom run from the
+     configuration checklist below. Per the preset/configuration/option hierarchy
+     (<code>INVESTIGATION_4.0.md</code>): a preset is atomic -- picking one runs it exactly as
+     <code>wspy-run</code> defines it and the checklist below is ignored; set preset back to
+     "(custom)" to compose configurations directly instead. Each enabled configuration below becomes
+     its own separate <code>wspy</code> invocation into the same run directory.</p>
+  <form id="run-form">
+    <label>Workload command
+      <input type="text" id="workload" name="workload" value="{w_workload}"
+             placeholder="e.g. sleep 5" required>
+    </label>
+    <div class="row">
+      <label>Suite
+        <input type="text" id="suite" name="suite" value="{w_suite}">
+      </label>
+      <label>Benchmark
+        <input type="text" id="benchmark" name="benchmark" value="{w_benchmark}"
+               placeholder="(defaults to workload's program name)">
+      </label>
+      <label>Run id
+        <input type="text" id="run_id" name="run_id" placeholder="(auto)">
+      </label>
+    </div>
+
+    <label>Preset
+      <select id="preset">
+        <option value="">(custom &mdash; use the checklist below)</option>
+        {preset_options}
+      </select>
+    </label>
+    <p id="mode-indicator" class="mode-indicator"></p>
+
+    <div id="checklist">
+      <div class="config-card" data-config="tree">
+        <label class="config-toggle"><input type="checkbox" id="tree_enabled"> <strong>Process tree</strong></label>
+        <div class="config-options">
+          <label><input type="checkbox" id="tree_cmdline"> full command lines <code>--tree-cmdline</code></label>
+          <label><input type="checkbox" id="tree_open"> record <code>open()</code> calls <code>--tree-open</code></label>
+          <label><input type="checkbox" id="tree_vmsize"> vmsize samples <code>--tree-vmsize</code></label>
+          <label><input type="checkbox" id="tree_software" checked> software counters too <code>--software</code></label>
+          <label>Timeout seconds <input type="text" id="tree_timeout" placeholder="(none)"></label>
+        </div>
+      </div>
+
+      <div class="config-card" data-config="counters">
+        <label class="config-toggle"><input type="checkbox" id="counters_enabled"> <strong>Performance counters</strong></label>
+        <div class="config-options">
+          <div class="group-grid">{counters_groups_html}</div>
+          <div class="row">
+            <label>Interval seconds <input type="text" id="counters_interval" placeholder="(aggregate)"></label>
+            <label class="inline-check"><input type="checkbox" id="counters_per_core"> per-core (interval only)</label>
+            <label class="inline-check"><input type="checkbox" id="counters_rusage"> include rusage</label>
+            <label class="inline-check"><input type="checkbox" id="counters_csv" checked> CSV output</label>
+          </div>
+          <p class="muted">2+ groups with no interval given automatically bin-pack via native
+             multi-pass execution (<code>--passes</code>, wspy's own PMU-fit arithmetic); giving an
+             interval always uses plain flags for a single re-execution (per-core available then;
+             <code>--passes</code> rejects <code>--interval</code>/<code>--per-core</code> outright).</p>
+        </div>
+      </div>
+
+      <div class="config-card" data-config="system">
+        <label class="config-toggle"><input type="checkbox" id="system_enabled"> <strong>System metrics</strong></label>
+        <div class="config-options">
+          <label>Interval seconds <input type="text" id="system_interval" placeholder="(aggregate)"></label>
+          <label class="inline-check"><input type="checkbox" id="system_csv" checked> CSV output</label>
+        </div>
+      </div>
+
+      <div class="config-card" data-config="gpu">
+        <label class="config-toggle"><input type="checkbox" id="gpu_enabled"> <strong>GPU metrics</strong>
+          <span class="muted">(needs an AMDGPU=1 build; otherwise wspy warns and continues)</span></label>
+        <div class="config-options">
+          <label class="inline-check"><input type="checkbox" id="gpu_busy"> busy % <code>--gpu-busy</code></label>
+          <label class="inline-check"><input type="checkbox" id="gpu_metrics"> extended metrics <code>--gpu-metrics</code></label>
+          <label class="inline-check"><input type="checkbox" id="gpu_smi"> ROCm SMI <code>--gpu-smi</code></label>
+          <div class="row">
+            <label>Device index <input type="text" id="gpu_device" placeholder="(default)"></label>
+            <label>Interval seconds <input type="text" id="gpu_interval" placeholder="(aggregate)"></label>
+            <label class="inline-check"><input type="checkbox" id="gpu_csv" checked> CSV output</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="config-card" data-config="ibs">
+        <label class="config-toggle"><input type="checkbox" id="ibs_enabled"> <strong>AMD IBS</strong>
+          <span class="muted">(AMD only)</span></label>
+        <div class="config-options">
+          <label>Profile
+            <select id="ibs_profile">
+              <option value="basic">basic (unfiltered ibs_fetch+ibs_op)</option>
+              <option value="memory-deep">memory-deep (l3missonly+ldlat filtering)</option>
+            </select>
+          </label>
+          <div class="row">
+            <label><code>--ibs-maxcnt</code> <input type="text" id="ibs_maxcnt" placeholder="(default)"></label>
+            <label><code>--ibs-ldlat</code> <input type="text" id="ibs_ldlat" placeholder="(default)"></label>
+            <label><code>--ibs-fetchlat</code> <input type="text" id="ibs_fetchlat" placeholder="(default)"></label>
+          </div>
+        </div>
+      </div>
+
+      <div class="config-card config-reserved">
+        <label class="config-toggle"><input type="checkbox" disabled> <strong>/proc extras</strong>
+          <span class="muted">(reserved for 4.2 Tier 3 &mdash; not implemented yet)</span></label>
+      </div>
+    </div>
+
+    <div class="chips">
+      <label class="chip"><input type="checkbox" id="toggle_manifest" checked> Write manifest</label>
+      <label class="chip"><input type="checkbox" id="toggle_run_index" checked> Append to run index</label>
+      <label class="chip"><input type="checkbox" id="toggle_store_ingest" checked> Ingest into store after run</label>
+    </div>
+
+    <fieldset class="preview">
+      <legend>Command(s) about to run (copy/paste-able)</legend>
+      <pre id="preview">(fill in a workload command above)</pre>
+      <p id="preview-notes" class="muted"></p>
+    </fieldset>
+    <button type="submit" id="run-button">Run</button>
+  </form>
+  <pre id="live-output" class="live-output" hidden></pre>
+  <p id="run-result"></p>
+</section>
+"""
+
+
+def render_validate_tab(cfg):
+    manifests = discover_manifest_paths(cfg["output_root"])
+    chips = "".join(
+        f'<button type="button" class="add-manifest-chip" data-path="{html.escape(m["path"])}">'
+        f'+ {html.escape(m["rel"])}</button>'
+        for m in manifests
+    ) or '<span class="muted">no manifests found under the output root yet</span>'
+    return f"""
+<section class="panel">
+  <h1>Validate</h1>
+  <p class="config-label">Runs <code>wspy-validate</code> against one or more manifests: required
+     output files present, output CSV well-formed and non-empty, workload exit status, counter
+     coverage, sanity ranges on numeric CSV columns.</p>
+  <div class="add-buttons">{chips}</div>
+  <label>Manifest path(s), one per line
+    <textarea id="validate-paths" rows="4" placeholder="/path/to/run.manifest.json"></textarea>
+  </label>
+  <div class="chips">
+    <label class="chip"><input type="checkbox" id="validate-strict"> --strict</label>
+    <label class="chip"><input type="checkbox" id="validate-quiet"> --quiet</label>
+  </div>
+  <button type="button" id="validate-run">Run wspy-validate</button>
+  <pre id="validate-cmdline" class="muted" hidden></pre>
+  <pre id="validate-output" class="live-output" hidden></pre>
+</section>
+"""
+
+
+def render_store_tab(cfg):
+    db = html.escape(cfg["store_db"])
+    run_index = html.escape(cfg["run_index_file"])
+    return f"""
+<section class="panel">
+  <h1>Store &amp; Summary</h1>
+  <p class="config-label">Ingest <code>--run-index</code> file(s) into the normalized store
+     (<code>wspy-store</code>), then query it for a min/max/mean/median/stddev/outlier-flag summary
+     table grouped by workload command, hostname, or CPU vendor (<code>wspy-summary</code>).</p>
+
+  <h2>Ingest</h2>
+  <div class="row">
+    <label>Database path <input type="text" id="store-db" value="{db}"></label>
+    <label>Run-index file(s), one per line
+      <textarea id="store-run-index" rows="2">{run_index}</textarea>
+    </label>
+  </div>
+  <div class="chips">
+    <label class="chip"><input type="checkbox" id="store-no-manifest-enrich"> skip manifest enrich</label>
+    <label class="chip"><input type="checkbox" id="store-no-metrics-ingest"> skip CSV metrics ingest</label>
+    <label class="chip"><input type="checkbox" id="store-strict"> --strict</label>
+  </div>
+  <button type="button" id="store-ingest-run">Run wspy-store</button>
+  <pre id="store-ingest-cmdline" class="muted" hidden></pre>
+  <pre id="store-ingest-output" class="live-output" hidden></pre>
+
+  <h2>Summary query</h2>
+  <div class="row">
+    <label>Database path <input type="text" id="summary-db" value="{db}"></label>
+    <label>Command filter <input type="text" id="summary-command" placeholder="(substring, optional)"></label>
+    <label>Hostname filter <input type="text" id="summary-hostname" placeholder="(optional)"></label>
+  </div>
+  <div class="row">
+    <label>Metric filter(s), comma-separated <input type="text" id="summary-metrics" placeholder="(all)"></label>
+    <label>Group by
+      <select id="summary-group-by">
+        <option value="command">command</option>
+        <option value="hostname">hostname</option>
+        <option value="cpu_vendor">cpu_vendor</option>
+      </select>
+    </label>
+  </div>
+  <div class="row">
+    <label>Outlier stddev <input type="text" id="summary-outlier" placeholder="2.0"></label>
+    <label>Min runs <input type="text" id="summary-min-runs" placeholder="1"></label>
+    <label class="chip"><input type="checkbox" id="summary-csv"> CSV output</label>
+    <label class="chip"><input type="checkbox" id="summary-strict"> --strict</label>
+  </div>
+  <button type="button" id="summary-run">Run wspy-summary</button>
+  <pre id="summary-cmdline" class="muted" hidden></pre>
+  <pre id="summary-output" class="live-output" hidden></pre>
+</section>
+"""
+
+
+def render_discovery_tab():
+    preflight_groups_html = render_group_checkboxes("preflight", checked_by_default=("ipc",))
+    return f"""
+<section class="panel">
+  <h1>Discovery</h1>
+  <p class="config-label">Discovery-only commands &mdash; no workload, just a report.
+     <code>wspy --capabilities</code> probes what this host/kernel/build actually supports;
+     <code>wspy --preflight</code> checks whether a chosen counter selection fits the available
+     hardware PMU budget without multiplexing.</p>
+
+  <h2>Capabilities</h2>
+  <button type="button" id="capabilities-run">Run wspy --capabilities</button>
+  <pre id="capabilities-cmdline" class="muted" hidden></pre>
+  <pre id="capabilities-output" class="live-output" hidden></pre>
+
+  <h2>Preflight</h2>
+  <div class="group-grid">{preflight_groups_html}</div>
+  <button type="button" id="preflight-run">Run wspy --preflight</button>
+  <pre id="preflight-cmdline" class="muted" hidden></pre>
+  <pre id="preflight-output" class="live-output" hidden></pre>
+</section>
+"""
+
+
+def render_index(cfg, prefill):
+    output_root = cfg["output_root"]
     reports = discover_reports(output_root)
     rows = []
     for r in reports:
@@ -636,88 +1326,17 @@ def render_index(output_root, prefill, wspy_bin, wspy_run_bin, gnuplot_script):
         "</form>" if rows else "<p class=\"muted\">No runs yet.</p>"
     )
 
-    w_workload = html.escape(prefill.get("workload", ""))
-    w_suite = html.escape(prefill.get("suite", "manual"))
-    w_benchmark = html.escape(prefill.get("benchmark", ""))
-
-    p_workload = html.escape(prefill.get("profile_workload", ""))
-    p_suite = html.escape(prefill.get("profile_suite", "manual"))
-    p_benchmark = html.escape(prefill.get("profile_benchmark", ""))
-    profile_options = "".join(f'<option value="{html.escape(p)}">' for p in BUILTIN_PROFILES)
-
     body = f"""
-<section class="panel">
-  <h1>Launcher: fixed configuration</h1>
-  <p class="config-label">Configuration: <code>amdtopdown</code>
-     (fixed for this slice &mdash; the preset/configuration picker lands here later)</p>
-  <form id="run-form" data-output-root="{html.escape(output_root)}"
-        data-wspy="{html.escape(wspy_bin)}" data-gnuplot="{html.escape(gnuplot_script)}">
-    <label>Workload command
-      <input type="text" id="workload" name="workload" value="{w_workload}"
-             placeholder="e.g. sleep 5" required>
-    </label>
-    <div class="row">
-      <label>Suite
-        <input type="text" id="suite" name="suite" value="{w_suite}">
-      </label>
-      <label>Benchmark
-        <input type="text" id="benchmark" name="benchmark" value="{w_benchmark}"
-               placeholder="(defaults to workload's program name)">
-      </label>
-      <label>Run id
-        <input type="text" id="run_id" name="run_id" placeholder="(auto)">
-      </label>
-    </div>
-    <fieldset class="preview">
-      <legend>Commands about to run (copy/paste-able)</legend>
-      <pre id="preview-wspy"></pre>
-      <pre id="preview-gnuplot"></pre>
-    </fieldset>
-    <button type="submit" id="run-button">Run</button>
-  </form>
-  <pre id="live-output" class="live-output" hidden></pre>
-  <p id="run-result"></p>
-</section>
-<section class="panel">
-  <h1>Launcher: wspy-run profile</h1>
-  <p class="config-label">Runs a named <code>wspy-run</code> profile (or comma-composed list) against
-     a workload &mdash; no ad-hoc counter/option checklist yet, just <code>wspy-run</code>'s own
-     existing presets.</p>
-  <form id="profile-run-form" data-output-root="{html.escape(output_root)}"
-        data-wspy="{html.escape(wspy_bin)}" data-wspy-run="{html.escape(wspy_run_bin)}"
-        data-gnuplot="{html.escape(gnuplot_script)}">
-    <label>Profile(s) <span class="muted">(comma-separated, e.g. <code>deep-cpu,tree-heavy</code>)</span>
-      <input type="text" id="p_profile" name="profile" list="profile-list"
-             placeholder="e.g. deep-cpu" required>
-      <datalist id="profile-list">{profile_options}</datalist>
-    </label>
-    <label>Workload command
-      <input type="text" id="p_workload" name="workload" value="{p_workload}"
-             placeholder="e.g. sleep 5" required>
-    </label>
-    <div class="row">
-      <label>Suite
-        <input type="text" id="p_suite" name="suite" value="{p_suite}">
-      </label>
-      <label>Benchmark
-        <input type="text" id="p_benchmark" name="benchmark" value="{p_benchmark}"
-               placeholder="(defaults to workload's program name)">
-      </label>
-      <label>Run id
-        <input type="text" id="p_run_id" name="run_id" placeholder="(auto)">
-      </label>
-    </div>
-    <fieldset class="preview">
-      <legend>Command about to run (copy/paste-able)</legend>
-      <pre id="p-preview-wspy"></pre>
-      <p class="muted">gnuplot.sh runs afterward, best-effort, only if the chosen profile produces
-         amdtopdown.csv (e.g. deep-cpu/deep-gpu).</p>
-    </fieldset>
-    <button type="submit" id="p-run-button">Run</button>
-  </form>
-  <pre id="p-live-output" class="live-output" hidden></pre>
-  <p id="p-run-result"></p>
-</section>
+<nav class="tabs">
+  <button type="button" class="tab-btn active" data-tab="run">Run</button>
+  <button type="button" class="tab-btn" data-tab="validate">Validate</button>
+  <button type="button" class="tab-btn" data-tab="store">Store &amp; Summary</button>
+  <button type="button" class="tab-btn" data-tab="discovery">Discovery</button>
+</nav>
+<div class="tab-panel" id="tab-run">{render_run_tab(prefill, cfg)}</div>
+<div class="tab-panel" id="tab-validate" hidden>{render_validate_tab(cfg)}</div>
+<div class="tab-panel" id="tab-store" hidden>{render_store_tab(cfg)}</div>
+<div class="tab-panel" id="tab-discovery" hidden>{render_discovery_tab()}</div>
 <section class="panel">
   <h2>Recent reports</h2>
   {reports_html}
@@ -1160,12 +1779,20 @@ class Handler(BaseHTTPRequestHandler):
         cfg = self.server.wspy_cfg
 
         if path == "/":
-            prefill_keys = ("workload", "suite", "benchmark",
-                             "profile_workload", "profile_suite", "profile_benchmark")
-            prefill = {k: v[0] for k, v in qs.items() if k in prefill_keys}
-            self._send(200, render_index(cfg["output_root"], prefill,
-                                          cfg["wspy_bin"], cfg["wspy_run_bin"],
-                                          cfg["gnuplot_script"]))
+            # profile_workload/profile_suite/profile_benchmark are legacy
+            # aliases from when the Run/wspy-run-profile forms were separate
+            # (item 7); "customize & run again" on an older report may still
+            # link with them, so they're accepted as synonyms rather than
+            # broken by item 9's single-form merge.
+            prefill = {}
+            for key, aliases in (("workload", ("workload", "profile_workload")),
+                                  ("suite", ("suite", "profile_suite")),
+                                  ("benchmark", ("benchmark", "profile_benchmark"))):
+                for alias in aliases:
+                    if alias in qs:
+                        prefill[key] = qs[alias][0]
+                        break
+            self._send(200, render_index(cfg, prefill))
             return
 
         if path.startswith("/static/"):
@@ -1239,7 +1866,19 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        if parsed.path not in ("/api/run", "/api/run-profile"):
+        POST_HANDLERS = {
+            "/api/run": self._start_run,
+            "/api/run-profile": self._start_profile_run,
+            "/api/run-custom": self._start_custom_run,
+            "/api/preview": self._preview,
+            "/api/discovery/capabilities": self._discovery_capabilities,
+            "/api/discovery/preflight": self._discovery_preflight,
+            "/api/discovery/validate": self._discovery_validate,
+            "/api/discovery/store-ingest": self._discovery_store_ingest,
+            "/api/discovery/summary": self._discovery_summary,
+        }
+        handler = POST_HANDLERS.get(parsed.path)
+        if handler is None:
             self._send(404, "not found")
             return
         length = int(self.headers.get("Content-Length", "0"))
@@ -1248,10 +1887,7 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._send_json(400, {"error": "invalid JSON body"})
             return
-        if parsed.path == "/api/run":
-            self._start_run(cfg, body)
-        else:
-            self._start_profile_run(cfg, body)
+        handler(cfg, body)
 
     def _serve_static(self, rel):
         if not valid_segment(rel):
@@ -1283,27 +1919,45 @@ class Handler(BaseHTTPRequestHandler):
         with open(path, "rb") as f:
             self._send(200, f.read(), content_type=guess_content_type(filename))
 
-    def _start_run(self, cfg, body):
+    @staticmethod
+    def _parse_workload_and_ids(body):
+        """Shared workload/suite/benchmark/run_id parsing + validation for
+        every run-starting endpoint. Returns (workload_argv, suite, benchmark,
+        run_id, error_dict) -- error_dict is None on success."""
         workload_str = (body.get("workload") or "").strip()
         if not workload_str:
-            self._send_json(400, {"error": "workload command is required"})
-            return
+            return None, None, None, None, {"error": "workload command is required"}
         try:
             workload_argv = shlex.split(workload_str)
         except ValueError as e:
-            self._send_json(400, {"error": f"could not parse workload command: {e}"})
-            return
+            return None, None, None, None, {"error": f"could not parse workload command: {e}"}
         if not workload_argv:
-            self._send_json(400, {"error": "workload command is required"})
-            return
+            return None, None, None, None, {"error": "workload command is required"}
 
         suite = (body.get("suite") or "manual").strip()
         benchmark = (body.get("benchmark") or "").strip() or default_benchmark_from_workload(workload_argv)
         run_id = (body.get("run_id") or "").strip() or make_run_id()
-
         if not all(valid_segment(x) for x in (suite, benchmark, run_id)):
-            self._send_json(400, {"error": "suite/benchmark/run_id must be non-empty and "
-                                            "contain only letters, digits, '.', '_', '-'"})
+            return None, None, None, None, {"error": "suite/benchmark/run_id must be non-empty and "
+                                                       "contain only letters, digits, '.', '_', '-'"}
+        return workload_argv, suite, benchmark, run_id, None
+
+    @staticmethod
+    def _parse_toggles(cfg, body):
+        """The Run tab's defaults-on toggle chips (manifest/run-index/store-
+        ingest -- item 9's mockup-feedback item, see INVESTIGATION_4.0.md
+        line ~336). Returns (manifest_on, run_index_path_or_None, store_ingest)."""
+        toggles = body.get("toggles") or {}
+        manifest_on = bool(toggles.get("manifest", True))
+        run_index_on = bool(toggles.get("run_index", True))
+        store_ingest = bool(toggles.get("store_ingest", True)) and run_index_on
+        run_index_path = cfg["run_index_file"] if run_index_on else None
+        return manifest_on, run_index_path, store_ingest
+
+    def _start_run(self, cfg, body):
+        workload_argv, suite, benchmark, run_id, err = self._parse_workload_and_ids(body)
+        if err:
+            self._send_json(400, err)
             return
 
         rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
@@ -1341,27 +1995,11 @@ class Handler(BaseHTTPRequestHandler):
                                             "deep-cpu,tree-heavy)"})
             return
 
-        workload_str = (body.get("workload") or "").strip()
-        if not workload_str:
-            self._send_json(400, {"error": "workload command is required"})
+        workload_argv, suite, benchmark, run_id, err = self._parse_workload_and_ids(body)
+        if err:
+            self._send_json(400, err)
             return
-        try:
-            workload_argv = shlex.split(workload_str)
-        except ValueError as e:
-            self._send_json(400, {"error": f"could not parse workload command: {e}"})
-            return
-        if not workload_argv:
-            self._send_json(400, {"error": "workload command is required"})
-            return
-
-        suite = (body.get("suite") or "manual").strip()
-        benchmark = (body.get("benchmark") or "").strip() or default_benchmark_from_workload(workload_argv)
-        run_id = (body.get("run_id") or "").strip() or make_run_id()
-
-        if not all(valid_segment(x) for x in (suite, benchmark, run_id)):
-            self._send_json(400, {"error": "suite/benchmark/run_id must be non-empty and "
-                                            "contain only letters, digits, '.', '_', '-'"})
-            return
+        _manifest_on, run_index_path, store_ingest = self._parse_toggles(cfg, body)
 
         rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
         if os.path.exists(rundir):
@@ -1376,10 +2014,12 @@ class Handler(BaseHTTPRequestHandler):
 
         wspy_run_argv = build_wspy_run_argv(cfg["wspy_run_bin"], cfg["wspy_bin"],
                                              cfg["output_root"], suite, benchmark,
-                                             run_id, profile, workload_argv)
+                                             run_id, profile, workload_argv,
+                                             run_index_path=run_index_path)
 
         t = threading.Thread(target=execute_profile_run, args=(
             state, cfg, rundir, suite, benchmark, run_id, profile, workload_argv,
+            run_index_path, store_ingest,
         ), daemon=True)
         t.start()
 
@@ -1389,6 +2029,212 @@ class Handler(BaseHTTPRequestHandler):
             "report_url": f"/report/{suite}/{benchmark}/{run_id}",
             "wspy_run_command": shell_preview(wspy_run_argv),
         })
+
+    def _start_custom_run(self, cfg, body):
+        """Item 9's checklist-driven fallback (see build_configuration_passes()/
+        execute_custom_run()): runs whatever configurations are enabled in
+        body["checklist"] as separate sequential wspy invocations."""
+        workload_argv, suite, benchmark, run_id, err = self._parse_workload_and_ids(body)
+        if err:
+            self._send_json(400, err)
+            return
+        checklist = body.get("checklist") or {}
+        manifest_on, run_index_path, store_ingest = self._parse_toggles(cfg, body)
+
+        rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+        if os.path.exists(rundir):
+            self._send_json(409, {"error": f"run directory already exists: {rundir}"})
+            return
+
+        passes = build_configuration_passes(rundir, checklist)
+        if not passes:
+            self._send_json(400, {"error": "no configuration is enabled (or every enabled "
+                                            "configuration has nothing selected within it)"})
+            return
+
+        os.makedirs(rundir)
+        key = run_key(suite, benchmark, run_id)
+        state = RunState(rundir)
+        with RUNS_LOCK:
+            RUNS[key] = state
+
+        command_lines = []
+        for p in passes:
+            argv, _outfile, _manifest_path = build_pass_argv(cfg["wspy_bin"], rundir, p,
+                                                               manifest_on, run_index_path)
+            full_argv = argv + ["--"] + workload_argv
+            if p["timeout"]:
+                full_argv = ["timeout", str(p["timeout"])] + full_argv
+            command_lines.append(shell_preview(full_argv))
+
+        t = threading.Thread(target=execute_custom_run, args=(
+            state, cfg, rundir, suite, benchmark, run_id, workload_argv,
+            checklist, manifest_on, run_index_path, store_ingest,
+        ), daemon=True)
+        t.start()
+
+        self._send_json(202, {
+            "suite": suite, "benchmark": benchmark, "run_id": run_id,
+            "events_url": f"/api/run/{suite}/{benchmark}/{run_id}/events",
+            "report_url": f"/report/{suite}/{benchmark}/{run_id}",
+            "commands": command_lines,
+        })
+
+    def _preview(self, cfg, body):
+        """Source of truth for the Run tab's command-line preview -- shares
+        build_wspy_run_argv()/build_configuration_passes()/build_pass_argv()
+        with the real execute_*_run() paths, so what's shown here is never a
+        paraphrase of what /api/run-profile or /api/run-custom will actually
+        run. Tolerant of blank workload/suite/benchmark/run_id (placeholder
+        text stands in), since this fires on every keystroke while the form
+        is still being filled in -- it never touches the filesystem."""
+        workload_str = (body.get("workload") or "").strip()
+        workload_argv = shlex.split(workload_str) if workload_str else ["<workload command>"]
+        suite = (body.get("suite") or "").strip() or "manual"
+        benchmark = (body.get("benchmark") or "").strip() or "<benchmark>"
+        run_id = (body.get("run_id") or "").strip() or "<auto>"
+        _manifest_on, run_index_path, _store_ingest = self._parse_toggles(cfg, body)
+        rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+
+        preset = (body.get("preset") or "").strip()
+        if preset:
+            if not valid_profile_spec(preset):
+                self._send_json(400, {"error": "invalid preset spec"})
+                return
+            argv = build_wspy_run_argv(cfg["wspy_run_bin"], cfg["wspy_bin"], cfg["output_root"],
+                                        suite, benchmark, run_id, preset, workload_argv,
+                                        run_index_path=run_index_path)
+            self._send_json(200, {"mode": "preset", "lines": [shell_preview(argv)], "notes": []})
+            return
+
+        checklist = body.get("checklist") or {}
+        try:
+            passes = build_configuration_passes(rundir, checklist)
+        except (TypeError, ValueError):
+            self._send_json(400, {"error": "invalid checklist"})
+            return
+
+        notes = []
+        lines = []
+        if not passes:
+            notes.append("No configuration enabled yet -- check one below to build a custom run.")
+        for p in passes:
+            argv, outfile, _manifest_path = build_pass_argv(cfg["wspy_bin"], rundir, p,
+                                                              _manifest_on, run_index_path)
+            full_argv = argv + ["--"] + workload_argv
+            if p["timeout"]:
+                full_argv = ["timeout", str(p["timeout"])] + full_argv
+            lines.append(shell_preview(full_argv))
+            if "--passes=" in " ".join(p["flags"]):
+                notes.append(f"'{p['name']}' uses native multi-pass execution (--passes) to bin-pack "
+                              f"its groups into as few re-executions of the workload as fit the PMU budget.")
+        if any(p["name"] == "amdtopdown" for p in passes):
+            notes.append("gnuplot.sh will run afterward, best-effort, to render amdtopdown.png"
+                          + (" and systemtime.png" if any(p["name"] == "systemtime" for p in passes) else "")
+                          + ".")
+        self._send_json(200, {"mode": "custom", "lines": lines, "notes": notes})
+
+    # -----------------------------------------------------------------
+    # Discovery tab family (item 9): wspy-validate, wspy-store/wspy-summary,
+    # wspy --capabilities/--preflight. All synchronous (run_sync()) -- none
+    # of these launch a workload, so there's no unbounded runtime to stream
+    # live and no run directory/report page involved; the result is just
+    # rendered straight into the calling tab.
+    # -----------------------------------------------------------------
+
+    def _discovery_capabilities(self, cfg, body):
+        argv = [cfg["wspy_bin"], "--capabilities"]
+        rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=60)
+        self._send_json(200, {"command": shell_preview(argv), "exit_code": rc,
+                               "output": output, "timed_out": timed_out})
+
+    def _discovery_preflight(self, cfg, body):
+        group_flags, selected = counter_group_flags(body.get("groups"))
+        if not selected:
+            self._send_json(400, {"error": "select at least one counter group to preflight-check"})
+            return
+        argv = [cfg["wspy_bin"], "--preflight"] + group_flags
+        rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=30)
+        self._send_json(200, {"command": shell_preview(argv), "exit_code": rc,
+                               "output": output, "timed_out": timed_out})
+
+    def _discovery_validate(self, cfg, body):
+        paths = [p.strip() for p in (body.get("paths") or []) if isinstance(p, str) and p.strip()]
+        if not paths:
+            self._send_json(400, {"error": "at least one manifest path is required"})
+            return
+        missing = [p for p in paths if not os.path.isfile(p)]
+        if missing:
+            self._send_json(400, {"error": "manifest file(s) not found: " + ", ".join(missing)})
+            return
+        argv = [cfg["wspy_validate_bin"]]
+        if body.get("strict"):
+            argv.append("--strict")
+        if body.get("quiet"):
+            argv.append("--quiet")
+        argv += paths
+        rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=60)
+        self._send_json(200, {"command": shell_preview(argv), "exit_code": rc,
+                               "output": output, "timed_out": timed_out})
+
+    def _discovery_store_ingest(self, cfg, body):
+        db = (body.get("db") or "").strip() or cfg["store_db"]
+        run_index_paths = [p.strip() for p in (body.get("run_index") or []) if isinstance(p, str) and p.strip()]
+        if not run_index_paths:
+            run_index_paths = [cfg["run_index_file"]]
+        argv = [cfg["wspy_store_bin"], "--db", db]
+        for p in run_index_paths:
+            argv += ["--run-index", p]
+        if body.get("no_manifest_enrich"):
+            argv.append("--no-manifest-enrich")
+        if body.get("no_metrics_ingest"):
+            argv.append("--no-metrics-ingest")
+        if body.get("strict"):
+            argv.append("--strict")
+        rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=180)
+        self._send_json(200, {"command": shell_preview(argv), "exit_code": rc,
+                               "output": output, "timed_out": timed_out})
+
+    def _discovery_summary(self, cfg, body):
+        db = (body.get("db") or "").strip() or cfg["store_db"]
+        argv = [cfg["wspy_summary_bin"], "--db", db]
+        command_filter = (body.get("command") or "").strip()
+        if command_filter:
+            argv += ["--command", command_filter]
+        hostname_filter = (body.get("hostname") or "").strip()
+        if hostname_filter:
+            argv += ["--hostname", hostname_filter]
+        for m in (body.get("metrics") or []):
+            if isinstance(m, str) and m.strip():
+                argv += ["--metric", m.strip()]
+        group_by = body.get("group_by") or "command"
+        if group_by not in ("command", "hostname", "cpu_vendor"):
+            self._send_json(400, {"error": "group_by must be command, hostname, or cpu_vendor"})
+            return
+        argv += ["--group-by", group_by]
+        # outlier-stddev is a float CLI option; parse_optional_int() (used
+        # for min_runs below) is int-only, so validate/format it separately.
+        outlier_raw = body.get("outlier_stddev")
+        if outlier_raw not in (None, ""):
+            try:
+                argv += ["--outlier-stddev", str(float(outlier_raw))]
+            except (TypeError, ValueError):
+                self._send_json(400, {"error": "invalid outlier_stddev"})
+                return
+        min_runs = parse_optional_int(body.get("min_runs"), 1, 100000)
+        if body.get("min_runs") not in (None, "") and min_runs is None:
+            self._send_json(400, {"error": "invalid min_runs"})
+            return
+        if min_runs is not None:
+            argv += ["--min-runs", str(min_runs)]
+        csv = bool(body.get("csv"))
+        if csv:
+            argv.append("--csv")
+        if body.get("strict"):
+            argv.append("--strict")
+        rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=60)
+        self._send_json(200, {"command": shell_preview(argv), "exit_code": rc,
+                               "output": output, "timed_out": timed_out, "csv": csv})
 
     def _stream_events(self, suite, benchmark, run_id):
         key = run_key(suite, benchmark, run_id)
@@ -1447,10 +2293,26 @@ def main():
     ap.add_argument("--output-root", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs"),
                      help="directory root for <suite>/<benchmark>/<run-id>/ run output "
                           "(default: web/runs)")
+    ap.add_argument("--wspy-validate", default=os.path.join(REPO_ROOT, "wspy-validate"),
+                     help="path to the wspy-validate binary (default: repo root's ./wspy-validate)")
+    ap.add_argument("--wspy-store", default=os.path.join(REPO_ROOT, "wspy-store"),
+                     help="path to the wspy-store binary (default: repo root's ./wspy-store)")
+    ap.add_argument("--wspy-summary", default=os.path.join(REPO_ROOT, "wspy-summary"),
+                     help="path to the wspy-summary binary (default: repo root's ./wspy-summary)")
+    ap.add_argument("--run-index-file",
+                     help="shared --run-index file every launched run appends to when the "
+                          "'record run index' toggle chip is on (default: <output-root>/run_index.jsonl)")
+    ap.add_argument("--store-db",
+                     help="normalized-store database used by the Store & Summary tab and the "
+                          "Run tab's 'ingest into store' toggle chip (default: <output-root>/store.db)")
     args = ap.parse_args()
 
     output_root = os.path.abspath(args.output_root)
     os.makedirs(output_root, exist_ok=True)
+    run_index_file = os.path.abspath(args.run_index_file) if args.run_index_file else \
+        os.path.join(output_root, "run_index.jsonl")
+    store_db = os.path.abspath(args.store_db) if args.store_db else \
+        os.path.join(output_root, "store.db")
 
     if not os.path.isfile(args.wspy):
         print(f"warning: wspy binary not found at {args.wspy} (build it with `make` first; "
@@ -1459,6 +2321,12 @@ def main():
         print(f"warning: wspy-run not found at {args.wspy_run}", file=sys.stderr)
     if not os.path.isfile(args.gnuplot_script):
         print(f"warning: gnuplot script not found at {args.gnuplot_script}", file=sys.stderr)
+    for label, path in (("wspy-validate", args.wspy_validate), ("wspy-store", args.wspy_store),
+                         ("wspy-summary", args.wspy_summary)):
+        if not os.path.isfile(path):
+            print(f"warning: {label} not found at {path} (the Validate/Store & Summary tab "
+                  f"will fail until it's built -- see CLAUDE.md's Build & Test section)",
+                  file=sys.stderr)
 
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.wspy_cfg = {
@@ -1466,6 +2334,11 @@ def main():
         "wspy_run_bin": os.path.abspath(args.wspy_run),
         "gnuplot_script": os.path.abspath(args.gnuplot_script),
         "output_root": output_root,
+        "wspy_validate_bin": os.path.abspath(args.wspy_validate),
+        "wspy_store_bin": os.path.abspath(args.wspy_store),
+        "wspy_summary_bin": os.path.abspath(args.wspy_summary),
+        "run_index_file": run_index_file,
+        "store_db": store_db,
     }
     print(f"wspy web launcher listening on http://{args.host}:{args.port}  "
           f"(output root: {output_root})")
