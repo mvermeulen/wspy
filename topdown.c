@@ -1634,20 +1634,13 @@ void print_topdown_fe(struct counter_group *cgroup,enum output_format oformat,in
     return;
   }
 
-  switch(cpu_info->vendor){
-  case VENDOR_INTEL:
-    return;
-    break;
-  case VENDOR_AMD:
+  if (cpu_info->vendor == VENDOR_AMD){
     if ((cinfo = find_ci_label(cgroup,"instructions"))) instructions = cinfo->value;
     if ((cinfo = find_ci_label(cgroup,"ic_tag_hit_miss.instruction_cache_miss"))) icache_miss = cinfo->value;
     if ((cinfo = find_ci_label(cgroup,"ic_tag_hit_miss.instruction_cache_accesses"))) icache_access = cinfo->value;
     if ((cinfo = find_ci_label(cgroup,"bp_l1_tlb_miss_l2_tlb_hit"))) itlb1 = cinfo->value;
     if ((cinfo = find_ci_label(cgroup,"bp_l1_tlb_miss_l2_tlb_miss.all"))) itlb2 = cinfo->value;
     if ((cinfo = find_ci_label(cgroup,"ls_tlb_flush.all"))) tlb_flush = cinfo->value;
-    break;
-  default:
-    return;
   }
 
   // Always emit all 4 CSV value columns, comma-terminated, regardless of
@@ -1671,17 +1664,19 @@ void print_topdown_fe(struct counter_group *cgroup,enum output_format oformat,in
     fprintf(outfile,"%4.3f,",(double) tlb_flush*1000.0 / instructions);
     break;
   case PRINT_NORMAL:
-    fprintf(outfile,"instructions         %-14lu #\n",instructions);
-    fprintf(outfile,"icache               %-14lu # %4.3f icache per 1000 inst\n",
-	    icache_access,(double) icache_access * 1000 / instructions);
-    fprintf(outfile,"icache miss          %-14lu # %4.1f%% icache miss rate\n",
-	    icache_miss,(double) icache_miss / icache_access*100.0);
-    fprintf(outfile,"l1 iTLB miss         %-14lu # %4.3f L1 iTLB per 1000 inst\n",
-	    itlb1+itlb2,(double) (itlb1+itlb2)*1000/instructions);
-    fprintf(outfile,"l2 iTLB miss         %-14lu # %4.3f L2 iTLB per 1000 inst\n",
-	    itlb2,(double) itlb2*1000/instructions);
-    fprintf(outfile,"tlb flush            %-14lu # %4.3f TLB flush per 1000 inst\n",
-	    tlb_flush,(double) tlb_flush*1000/instructions);
+    if (cpu_info->vendor == VENDOR_AMD) {
+      fprintf(outfile,"instructions         %-14lu #\n",instructions);
+      fprintf(outfile,"icache               %-14lu # %4.3f icache per 1000 inst\n",
+	      icache_access,(double) icache_access * 1000 / instructions);
+      fprintf(outfile,"icache miss          %-14lu # %4.1f%% icache miss rate\n",
+	      icache_miss,(double) icache_miss / icache_access*100.0);
+      fprintf(outfile,"l1 iTLB miss         %-14lu # %4.3f L1 iTLB per 1000 inst\n",
+	      itlb1+itlb2,(double) (itlb1+itlb2)*1000/instructions);
+      fprintf(outfile,"l2 iTLB miss         %-14lu # %4.3f L2 iTLB per 1000 inst\n",
+	      itlb2,(double) itlb2*1000/instructions);
+      fprintf(outfile,"tlb flush            %-14lu # %4.3f TLB flush per 1000 inst\n",
+	      tlb_flush,(double) tlb_flush*1000/instructions);
+    }
     break;
   }
 }
@@ -1700,19 +1695,12 @@ void print_topdown_op(struct counter_group *cgroup,enum output_format oformat,in
     return;
   }
 
-  switch(cpu_info->vendor){
-  case VENDOR_INTEL:
-    return;
-    break;
-  case VENDOR_AMD:
+  if (cpu_info->vendor == VENDOR_AMD){
     if ((cinfo = find_ci_label(cgroup,"instructions"))) instructions = cinfo->value;
     if ((cinfo = find_ci_label(cgroup,"op_cache_hit_miss.all_op_cache_accesses"))) opcache_access = cinfo->value;
     if ((cinfo = find_ci_label(cgroup,"op_cache_hit_miss.op_cache_miss"))) opcache_miss = cinfo->value;
     if ((cinfo = find_ci_label(cgroup,"ls_l1_d_tlb_miss.all"))) dtlb1 = cinfo->value;
     if ((cinfo = find_ci_label(cgroup,"ls_l1_d_tlb_miss.all_l2_miss"))) dtlb2 = cinfo->value;
-    break;
-  default:
-    return;
   }
 
   // See print_topdown_fe()'s comment above -- same two bugs applied here:
@@ -1731,15 +1719,17 @@ void print_topdown_op(struct counter_group *cgroup,enum output_format oformat,in
     fprintf(outfile,"%4.3f,",(double) dtlb2*1000.0 / instructions);
     break;
   case PRINT_NORMAL:
-    fprintf(outfile,"instructions         %-14lu #\n",instructions);
-    fprintf(outfile,"opcache              %-14lu # %4.3f opcache per 1000 inst\n",
-	    opcache_access,(double) opcache_access * 1000 / instructions);
-    fprintf(outfile,"opcache miss         %-14lu # %4.1f%% opcache miss rate\n",
-	    opcache_miss,(double) opcache_miss / opcache_access*100.0);
-    fprintf(outfile,"l1 dTLB miss         %-14lu # %4.3f L1 dTLB per 1000 inst\n",
-	    dtlb1,(double) dtlb1*1000/instructions);
-    fprintf(outfile,"l2 dTLB miss         %-14lu # %4.3f L2 dTLB per 1000 inst\n",
-	    dtlb2,(double) dtlb2*1000/instructions);
+    if (cpu_info->vendor == VENDOR_AMD) {
+      fprintf(outfile,"instructions         %-14lu #\n",instructions);
+      fprintf(outfile,"opcache              %-14lu # %4.3f opcache per 1000 inst\n",
+	      opcache_access,(double) opcache_access * 1000 / instructions);
+      fprintf(outfile,"opcache miss         %-14lu # %4.1f%% opcache miss rate\n",
+	      opcache_miss,(double) opcache_miss / opcache_access*100.0);
+      fprintf(outfile,"l1 dTLB miss         %-14lu # %4.3f L1 dTLB per 1000 inst\n",
+	      dtlb1,(double) dtlb1*1000/instructions);
+      fprintf(outfile,"l2 dTLB miss         %-14lu # %4.3f L2 dTLB per 1000 inst\n",
+	      dtlb2,(double) dtlb2*1000/instructions);
+    }
     break;
   }
 }

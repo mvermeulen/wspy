@@ -40,6 +40,8 @@ if [ -x ./cpu_info ]; then
     vendor="AMD"
   elif ./cpu_info 2>/dev/null | grep -q '^	Intel'; then
     vendor="Intel"
+  elif ./cpu_info 2>/dev/null | grep -q '^	ARM'; then
+    vendor="ARM"
   fi
 fi
 echo "Detected CPU vendor: $vendor"

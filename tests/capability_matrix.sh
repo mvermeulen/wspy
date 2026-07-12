@@ -50,6 +50,8 @@ if [ -x ./cpu_info ]; then
     vendor="AMD"
   elif ./cpu_info 2>/dev/null | grep -q '^	Intel'; then
     vendor="Intel"
+  elif ./cpu_info 2>/dev/null | grep -q '^	ARM'; then
+    vendor="ARM"
   fi
 fi
 
@@ -283,11 +285,11 @@ echo "=== --exit-with-child: the one bundle where a nonzero exit is correct ==="
 run_bundle "exit-with-child-success" 0 --no-ipc --exit-with-child -- /bin/true
 run_bundle "exit-with-child-failure" 1 --no-ipc --exit-with-child -- /bin/false
 
-if [ "$vendor" != "AMD" ] && [ "$vendor" != "Intel" ]; then
+if [ "$vendor" != "AMD" ] && [ "$vendor" != "Intel" ] && [ "$vendor" != "ARM" ]; then
   echo ""
   echo "NOTE: CPU vendor detected as '$vendor' -- vendor-specific raw-event"
   echo "bundles above ran, but their pass/fail only confirms graceful"
-  echo "degradation, not that any AMD/Intel-specific counter actually"
+  echo "degradation, not that any AMD/Intel/ARM-specific counter actually"
   echo "measured anything (see tests/golden_output.sh for vendor-gated"
   echo "exact-value contract checks)."
 fi
