@@ -15,6 +15,7 @@ make AMDGPU=1                 # also builds amd_smi, amd_sysfs (needs ROCm; auto
 make AMDGPU=1 ROCM_DIR=<path> # point at a non-default ROCm install
 make test                     # build and run the unit tests
 ./run_tests.sh                # build + run unit tests + integration smoke tests
+./tests/arm_topdown_microbench.sh # ARM-only topdown-equivalent sanity check (skips elsewhere)
 make clean                    # remove object files
 make clobber                  # also remove built binaries
 ```
@@ -73,10 +74,21 @@ Some of the more commonly used options:
 * Performance counters (combine as needed; `--ipc` is on by default)
   * `--ipc` / `-i` - instructions-per-cycle
   * `--topdown` / `-t`, `--topdown2`, `--topdown-frontend`, `--topdown-backend`, `--topdown-optlb`
-    - Intel/AMD topdown methodology counters at various levels
+    - Intel/AMD topdown methodology counters at various levels; on ARM, `--topdown`
+      reports a topdown-equivalent decomposition from ARM PMU raw events
   * `--branch` / `-b`, `--dcache`, `--icache`, `--cache1`, `--cache2` / `-c`, `--cache3`,
     `--tlb`, `--memory`, `--opcache`, `--float` - individual hardware counter groups
   * `--software` - software counters (page faults, context switches, ...)
+
+ARM notes:
+
+* On ARM hosts with multiple PMU device types (for example, big.LITTLE clusters exposing
+  different `armv8_pmuv3_*` devices), `wspy --capabilities` prints an ARM PMU topology report
+  with cluster-to-CPU mapping.
+* Per-core mode (`--per-core`) binds each core's raw events to that core's PMU type, so mixed-PMU
+  systems can collect ARM PMU groups without cross-cluster type mismatches.
+* Process-wide (`--topdown` without `--per-core`) ARM raw counters can be sensitive to task
+  migration across PMU clusters; for cluster-specific runs, use `--per-core` or pin affinity.
 * AMD IBS (Instruction-Based Sampling; AMD-only, system-wide)
   * `--ibs-basic` - unfiltered `ibs_fetch`/`ibs_op` sample counts
   * `--ibs-memory-deep` - `ibs_op` with L3-miss-only + load-latency filtering for memory-path

@@ -857,6 +857,109 @@ void test_topdown_confidence(void) {
     printf("PASS: topdown confidence envelope + sanity checks\n");
 }
 
+void test_arm_topdown_equivalence(void) {
+    struct cpu_info fake_cpu;
+    struct cpu_info *saved_cpu_info;
+    struct counter_group cgroup;
+    struct counter_info cinfo[8];
+    char *contents;
+    const char *tmp_out = "/tmp/test_wspy_arm_topdown.txt";
+
+    printf("Testing ARM topdown-equivalent decomposition...\n");
+
+    saved_cpu_info = cpu_info;
+    memset(&fake_cpu, 0, sizeof(fake_cpu));
+    fake_cpu.vendor = VENDOR_ARM;
+    cpu_info = &fake_cpu;
+
+    memset(cinfo, 0, sizeof(cinfo));
+    cinfo[0].label = "op_retired";
+    cinfo[0].value = 600000; cinfo[0].time_enabled = 1000000; cinfo[0].time_running = 1000000;
+    cinfo[1].label = "stall_slot";
+    cinfo[1].value = 400000; cinfo[1].time_enabled = 1000000; cinfo[1].time_running = 1000000;
+    cinfo[2].label = "stall_slot_frontend";
+    cinfo[2].value = 150000; cinfo[2].time_enabled = 1000000; cinfo[2].time_running = 1000000;
+    cinfo[3].label = "stall_slot_backend";
+    cinfo[3].value = 250000; cinfo[3].time_enabled = 1000000; cinfo[3].time_running = 1000000;
+    cinfo[4].label = "op_spec";
+    cinfo[4].value = 700000; cinfo[4].time_enabled = 1000000; cinfo[4].time_running = 1000000;
+    cinfo[5].label = "stall_backend_mem";
+    cinfo[5].value = 100000;
+    cinfo[6].label = "stall_frontend";
+    cinfo[6].value = 120000;
+    cinfo[7].label = "br_mis_pred_retired";
+    cinfo[7].value = 40000;
+
+    memset(&cgroup, 0, sizeof(cgroup));
+    cgroup.label = "topdown";
+    cgroup.ncounters = 8;
+    cgroup.cinfo = cinfo;
+    cgroup.mask = COUNTER_TOPDOWN;
+
+    outfile = fopen(tmp_out, "w");
+    if (!outfile) { fprintf(stderr, "FAIL: could not open temp file\n"); exit(1); }
+    print_topdown(&cgroup, PRINT_CSV, COUNTER_TOPDOWN);
+    fclose(outfile);
+
+    contents = slurp_file(tmp_out);
+    assert(contents != NULL);
+    // slots = op_retired + stall_slot = 1,000,000
+    assert(strstr(contents, "60.0,") != NULL); // retire
+    assert(strstr(contents, "15.0,") != NULL); // frontend
+    assert(strstr(contents, "25.0,") != NULL); // backend
+    assert(strstr(contents, "10.0,") != NULL); // speculate = (op_spec-op_retired)/slots
+    assert(strstr(contents, "110.0,") != NULL); // sanity intentionally highlights overlap risk
+    free(contents);
+
+    remove(tmp_out);
+    outfile = NULL;
+    cpu_info = saved_cpu_info;
+
+    printf("PASS: ARM topdown-equivalent decomposition\n");
+}
+
+void test_arm_pmu_report(void) {
+    struct cpu_info fake_cpu;
+    struct cpu_info *saved_cpu_info;
+    struct cpu_core_info coreinfo[4];
+    char *contents;
+    const char *tmp_out = "/tmp/test_wspy_arm_pmu_report.txt";
+
+    printf("Testing ARM PMU topology report...\n");
+
+    saved_cpu_info = cpu_info;
+    memset(&fake_cpu, 0, sizeof(fake_cpu));
+    memset(coreinfo, 0, sizeof(coreinfo));
+    fake_cpu.vendor = VENDOR_ARM;
+    fake_cpu.num_cores = 4;
+    fake_cpu.num_pmu_clusters = 2;
+    fake_cpu.mixed_pmu_types = 1;
+    fake_cpu.coreinfo = coreinfo;
+    coreinfo[0].pmu_cluster = 0; coreinfo[0].pmu_type = 10;
+    coreinfo[1].pmu_cluster = 0; coreinfo[1].pmu_type = 10;
+    coreinfo[2].pmu_cluster = 1; coreinfo[2].pmu_type = 11;
+    coreinfo[3].pmu_cluster = 1; coreinfo[3].pmu_type = 11;
+    cpu_info = &fake_cpu;
+
+    outfile = fopen(tmp_out, "w");
+    if (!outfile) { fprintf(stderr, "FAIL: could not open temp file\n"); exit(1); }
+    print_cpu_pmu_report(outfile);
+    fclose(outfile);
+
+    contents = slurp_file(tmp_out);
+    assert(contents != NULL);
+    assert(strstr(contents, "ARM PMU topology: 2 cluster(s)") != NULL);
+    assert(strstr(contents, "cluster 0: cpus 0,1 (pmu_type=10)") != NULL);
+    assert(strstr(contents, "cluster 1: cpus 2,3 (pmu_type=11)") != NULL);
+    assert(strstr(contents, "multiple PMU types") != NULL);
+    free(contents);
+    remove(tmp_out);
+    outfile = NULL;
+    cpu_info = saved_cpu_info;
+
+    printf("PASS: ARM PMU topology report\n");
+}
+
 // Mirrors read_counters()'s own local "struct read_format" (topdown.c) --
 // perf's PERF_FORMAT_TOTAL_TIME_ENABLED|PERF_FORMAT_TOTAL_TIME_RUNNING read
 // layout. Not shared via a header since it's private to read_counters();
@@ -950,6 +1053,8 @@ int main(int argc, char **argv) {
     test_multipass();
     test_provenance();
     test_topdown_confidence();
+    test_arm_topdown_equivalence();
+    test_arm_pmu_report();
     test_read_counters_multiplex_scaling();
     return 0;
 }
