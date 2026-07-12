@@ -542,6 +542,26 @@ derivable from files already being produced.
     command #23 in the 4.2 "testing/docs" tier proposes using to size `--tree`'s pass timeout); not
     yet scoped for other suites (`cpu2017`, `pbbsbench`) or for arbitrary workload commands, which
     have no equivalent estimator today.
+19. Deeper Phoronix Test Suite awareness in the web UI — not needed for 4.1's release, flagged as a
+    future backlog item since most real wspy testing in practice runs through Phoronix specifically
+    (`workload/phoronix/`), so some suite-specific knowledge on top of the general-purpose launcher is
+    likely worth it eventually. Rough shape, to be refined when actually scoped:
+    - A "Phoronix" tab to browse/filter the suite's installed vs. not-yet-installed tests and surface
+      their attributes (description, last-updated date, typical run time, ...) so a test can be chosen
+      — and, if not installed, installed — without leaving the web UI or knowing `phoronix-test-suite`
+      CLI incantations by heart.
+    - Reduce redundant typing in the Run tab: today the "workload command," "suite," and "benchmark"
+      fields are filled in by hand even when the workload is a Phoronix test, where the suite/benchmark
+      are already implied by the test name. Run directories are already unique, but embedding the
+      benchmark name more directly (they're already namespaced by suite/benchmark, see `wspy-run`'s
+      unified output layout) would make Phoronix-sourced runs easier to recognize at a glance in the
+      homepage listing/#11's historical browser.
+    - Locate where a Phoronix test actually ran/logged on disk (its own results/log directory, separate
+      from wspy's own run directory) and surface/link to it from the report page — particularly useful
+      for troubleshooting when a benchmark run fails and the wspy-side artifacts alone don't explain why.
+    - Likely other Phoronix-specific conveniences once this is actually scoped; the general idea is a
+      dedicated future item for deeper Phoronix-particular knowledge in the web UI, layered on top of
+      (not replacing) the suite-agnostic launcher #9 already ships.
 
 ## 4.2 priorities
 Goal: everything originally scoped for 4.1 beyond Tier 1 (shipped) and Tier 2 (now 4.1's
