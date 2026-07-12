@@ -403,22 +403,65 @@ derivable from files already being produced.
    including the `--tree` pass, all rendered correctly, gnuplot correctly skipped since neither
    sub-profile produces `amdtopdown.csv`). All four runs also appeared correctly on the homepage
    listing.
-8. Report review + curation studio (supersedes the original "HTML report bundle" framing — same item
-   number, sharpened after 4.1 feedback against a real precedent: an existing hand-built WordPress
-   page per workload, e.g. a chart image + pasted raw-output block + hand-written commentary, repeated
-   per configuration measured). Serves two purposes in one page: (a) **review** — examine every
-   configuration a run collected and its artifacts, so nothing needs a separate viewer; (b)
-   **curate** — select a subset, reorder it, and write commentary *per configuration* ("what does
-   this tell us"), not just one whole-report note, then hand it off to #10's export. A configuration
-   whose artifact is too large to include wholesale (a process tree is the concrete case) needs a
-   choice of inclusion depth — none/summary/excerpt/full — not an all-or-nothing toggle, so a report
-   can still ship with a large artifact represented by a derived summary or a truncated excerpt plus a
-   pointer to the full file. A report is a sequence of block *instances*, not one block per
-   configuration type: the same type can appear more than once under its own title (the real
-   precedent page has separate "AMD results"/"Intel results" performance-counter sections in one
-   report), and a freeform text-only section with no artifact behind it at all needs to be addable too
-   — matching the real page's narrative flow rather than a fixed template. Compare view (sweep
-   multiple runs side by side) stays part of this item.
+8. ~~Report review + curation studio~~ — **shipped** (supersedes the original "HTML report bundle"
+   framing — same item number, sharpened after 4.1 feedback against a real precedent: an existing
+   hand-built WordPress page per workload, e.g. a chart image + pasted raw-output block + hand-written
+   commentary, repeated per configuration measured). Serves two purposes in one page: (a) **review** —
+   examine every configuration a run collected and its artifacts, so nothing needs a separate viewer;
+   (b) **curate** — select a subset, reorder it, and write commentary *per configuration* ("what does
+   this tell us"), not just one whole-report note, then hand it off to #10's export (not yet built —
+   #10 is the next consumer of this item's block-sequence output, not part of this item's own scope).
+   `web/server.py`'s new `/studio/<suite>/<benchmark>/<run_id>` page (`render_studio()`) is the studio:
+   a single server-rendered HTML form (no JS, matching the tier's stdlib-only/no-build-step design
+   principle) listing every artifact `collect_run_files()` finds in the run directory — wspy-run's own
+   passes when a run-level `manifest.json` exists, item 6's fixed `amdtopdown.*` shape otherwise, plus
+   anything else sitting in the directory unclaimed by either — as "+ add" buttons, alongside a
+   "+ freeform section" button for a commentary-only block with no artifact behind it at all. Adding an
+   artifact more than once is allowed (each addition is its own block instance with its own id), which
+   is what lets the same underlying file back two differently-titled sections the way the real
+   precedent page's separate "AMD results"/"Intel results" sections do. Each block instance carries a
+   title, an **inclusion depth** — `none`/`summary`/`excerpt`/`full`, the generalized single control the
+   spec called for rather than a separate all-or-nothing toggle; `none` excludes it from the curated
+   view without deleting it from the studio — and a commentary field, plus move-up/move-down/remove
+   buttons. `render_block_content()` implements depth uniformly across every text-shaped artifact (CSV,
+   `.txt`/`.log`, JSON), not just the process-tree case the spec called out concretely: `summary` is a
+   short peek (line/byte count, first few lines, JSON top-level keys); `excerpt` is the first N lines
+   (N user-configurable per block, default 40) with a "showing X of Y lines" note and a link to the full
+   file; `full` embeds the whole thing (capped at 5MB inline — past that it degrades to a link rather
+   than handing the browser a pathologically large `<pre>`). Images only offer `none`/`full` (no
+   meaningful partial rendering of a PNG); a file that doesn't decode as UTF-8 degrades to a link-only
+   render regardless of requested depth rather than failing the page. State persists to
+   `<rundir>/curation.json` (`load_curation()`/`save_curation()`) — one more file the run directory
+   holds, not server-owned memory, matching every other artifact in this tier. The whole editor is one
+   `<form>`: every submit button (move/remove/add/save) carries an `op` value naming its action, but all
+   of the form's other fields — every existing block's title/depth/commentary — ride along on the same
+   POST, so `apply_studio_post()` reconstructs the full block list from the submission before applying
+   that one op and re-saving; clicking "move up" on one block never discards an unsaved edit typed into
+   another block's commentary field. POST redirects (303) back to the same GET so a page refresh never
+   resubmits. The report page (`render_report()`, both shapes) grows a "curated view" section
+   (`render_curated_section()`) above the existing raw artifact listing whenever `curation.json` has at
+   least one included (depth != `none`) block, rendering each block's title/commentary/depth-limited
+   content in curated order; the raw listing collapses into a `<details>` underneath once there's a
+   curated view to lead with, and stays open (as before) when there isn't. A "Curate this report" /
+   "Edit curation" link is always present either way. **Compare view** (`GET /compare?r=<suite>/
+   <benchmark>/<run_id>&r=...`, `render_compare()`) is the other half of this item: pick 2+ runs from the
+   homepage's report table (now wrapped in a checkbox form posting to `/compare`, no JS needed — plain
+   HTML `GET` with repeated `r` params) and see them side by side, one column per run, one row per
+   filename (the union of `collect_run_files()` across all selected runs) — images render as inline
+   thumbnails, everything else as a link with its byte size, and a missing file in one run's column
+   shows `—` rather than breaking the grid. Deliberately raw/filename-aligned rather than curation-aware
+   — comparing actual artifacts across runs is useful whether or not either run has been curated yet,
+   and block-level alignment (matching curated titles across runs) isn't attempted here. Exercised
+   against three real wspy-run report directories already on disk from item 7's own hardware testing
+   (`web/runs/phoronix/{coremark,stockfish,c-ray}/...`, produced by real `deep-cpu` runs on this repo's
+   AMD dev machine) via scripted form submissions that replay real browser semantics (fetch the current
+   studio page, round-trip every existing hidden/text/select/textarea field plus one new `op`, exactly
+   what a browser's own submit does) — added/reordered/depth-changed/annotated blocks across both a
+   wspy-run-shaped and a synthetic item-6-fixed-shaped run directory, confirmed the curated view and
+   collapsed raw-artifact `<details>` render correctly on the report page, and confirmed the compare
+   grid against two real runs. Not yet covered, by design: #10's actual export formats (this item
+   produces the curated block sequence #10 will read, not the WordPress/HTML/Markdown rendering
+   itself), and compare view has no curation/annotation layer of its own.
 9. Web-based run launcher + report browser — a thin web form over `wspy-run`'s option surface
    (profile/suite/benchmark/workload command) that constructs and executes the command, then links
    to the resulting output once it lands. Most valuable once #8's report studio exists to link

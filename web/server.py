@@ -366,6 +366,239 @@ def guess_content_type(filename):
 
 
 # ---------------------------------------------------------------------------
+# Curation studio (item 8, INVESTIGATION_4.0.md): review every artifact a run
+# collected on one page and curate a subset of it -- select, reorder, and
+# annotate per configuration -- into a block sequence that #10's export will
+# later consume. State lives in <rundir>/curation.json, one more file the run
+# directory holds alongside the artifacts it curates; nothing server-owned
+# that isn't reconstructible from disk, same principle #6/#7 already follow.
+#
+# A block is either "artifact" (backed by one file already in the run
+# directory -- the same file can back more than one block instance, each
+# under its own title, e.g. separate "AMD results"/"Intel results" sections
+# built from the same counters.txt) or "freeform" (commentary only, no
+# artifact). "depth" is the single inclusion control per the spec's own
+# framing ("not just an all-or-nothing toggle"): "none" excludes the block
+# from the curated/exported view (it stays in the studio, not deleted);
+# images and freeform text only support none/full (there's no meaningful
+# partial rendering of either); csv/text/json also support summary (a short
+# peek) and excerpt (first N lines, N user-configurable) for artifacts too
+# large to sensibly ship in full -- a process tree is the concrete case the
+# spec calls out, but the same logic applies uniformly to any text-shaped
+# artifact rather than special-casing tree files specifically.
+# ---------------------------------------------------------------------------
+
+CURATION_NAME = "curation.json"
+CURATION_SCHEMA_VERSION = "1.0"
+DEFAULT_EXCERPT_LINES = 40
+MAX_INLINE_BYTES = 5 * 1024 * 1024  # don't embed a pathologically large file even at depth=full
+
+DEPTH_OPTIONS_BY_KIND = {
+    "image": ("none", "full"),
+    "csv": ("none", "summary", "excerpt", "full"),
+    "text": ("none", "summary", "excerpt", "full"),
+    "json": ("none", "summary", "excerpt", "full"),
+    "binary": ("none", "full"),
+    "freeform": ("none", "full"),
+}
+
+
+def guess_kind(filename):
+    ext = os.path.splitext(filename)[1].lower()
+    if ext == ".png":
+        return "image"
+    if ext == ".csv":
+        return "csv"
+    if ext == ".json":
+        return "json"
+    # Unknown extensions are tentatively "text"; read_text_safely() downgrades
+    # to a link-only render if the file doesn't actually decode as UTF-8,
+    # rather than requiring every candidate file to be read just to list it.
+    return "text"
+
+
+def allowed_depths(block):
+    if block.get("kind") == "freeform":
+        return DEPTH_OPTIONS_BY_KIND["freeform"]
+    return DEPTH_OPTIONS_BY_KIND.get(block.get("source_kind"), ("none", "full"))
+
+
+def new_block(kind, source_file=None, source_kind=None, title=None):
+    depths = DEPTH_OPTIONS_BY_KIND["freeform"] if kind == "freeform" else \
+        DEPTH_OPTIONS_BY_KIND.get(source_kind, ("none", "full"))
+    return {
+        "id": secrets.token_hex(4),
+        "kind": kind,  # "artifact" | "freeform"
+        "source_file": source_file,
+        "source_kind": source_kind,
+        "title": title or (source_file or "New section"),
+        "depth": "full" if "full" in depths else depths[-1],
+        "excerpt_lines": DEFAULT_EXCERPT_LINES,
+        "commentary": "",
+    }
+
+
+def collect_run_files(rundir):
+    """Every file in a run directory worth offering as a block source, in a
+    sensible default order -- wspy-run's own passes (name-labeled) first when
+    a run-level manifest exists, else item 6's fixed amdtopdown.* shape, then
+    curation.json/wspy-run's own manifest/log, then anything else sitting in
+    the directory that neither claims (mirrors render_wspy_run_report's own
+    "Other artifacts" scan, generalized for reuse here)."""
+    run_manifest = read_run_manifest(os.path.join(rundir, RUN_MANIFEST_NAME))
+    seen = set()
+    items = []
+
+    def add(filename, label):
+        if not filename or filename in seen:
+            return
+        if not os.path.isfile(os.path.join(rundir, filename)):
+            return
+        seen.add(filename)
+        items.append({"filename": filename, "kind": guess_kind(filename), "label": label})
+
+    if run_manifest is not None:
+        for p in run_manifest.get("passes", []):
+            name = p.get("name", "?")
+            if p.get("output"):
+                add(p["output"], f"{name}: {p['output']}")
+            if p.get("manifest"):
+                add(p["manifest"], f"{name}: manifest")
+        add(SUMMARY_NAME, "summary (concatenated pass output)")
+        add(RUN_MANIFEST_NAME, "wspy-run run manifest")
+        add(LOG_NAME, "launch log")
+    else:
+        add(PNG_NAME, "topdown plot")
+        add(CSV_NAME, "amdtopdown.csv")
+        add(MANIFEST_NAME, "manifest")
+        add(LOG_NAME, "launch log")
+
+    try:
+        extras = sorted(
+            f for f in os.listdir(rundir)
+            if f not in seen and f != CURATION_NAME and os.path.isfile(os.path.join(rundir, f))
+        )
+    except OSError:
+        extras = []
+    for f in extras:
+        add(f, f)
+
+    return items
+
+
+def load_curation(rundir):
+    try:
+        with open(os.path.join(rundir, CURATION_NAME)) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data.get("blocks"), list):
+        return None
+    return data
+
+
+def save_curation(rundir, data):
+    data["schema_version"] = CURATION_SCHEMA_VERSION
+    data["updated"] = datetime.now(timezone.utc).isoformat()
+    data.setdefault("created", data["updated"])
+    path = os.path.join(rundir, CURATION_NAME)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def read_text_safely(path):
+    """Returns (text, size) if the file decodes as UTF-8, else (None, size)
+    so callers can fall back to a link-only render for binary artifacts."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            raw = f.read()
+    except OSError:
+        return None, 0
+    try:
+        return raw.decode("utf-8"), size
+    except UnicodeDecodeError:
+        return None, size
+
+
+def render_block_content(rundir, base_url, block):
+    """Renders one block's artifact at its chosen depth. Empty string at
+    depth=none or for a freeform block (whose only content is its own
+    commentary, rendered by the caller, not here)."""
+    depth = block.get("depth", "none")
+    if depth == "none" or block.get("kind") == "freeform":
+        return ""
+
+    filename = block.get("source_file")
+    if not filename:
+        return '<p class="muted">(missing source)</p>'
+    path = os.path.join(rundir, filename)
+    if not os.path.isfile(path):
+        return f'<p class="muted">{html.escape(filename)} not found</p>'
+    url = f"{base_url}/{_urlescape(filename)}"
+    kind = block.get("source_kind")
+
+    if kind == "image":
+        return f'<img class="plot" src="{url}" alt="{html.escape(filename)}">' if depth == "full" else ""
+
+    text, size = read_text_safely(path)
+    if text is None:
+        return (f'<p class="muted"><a href="{url}">{html.escape(filename)}</a> '
+                f'({size} bytes, binary &mdash; linked, not embedded)</p>')
+
+    lines = text.splitlines()
+    n = len(lines)
+    full_link = f'<p class="muted"><a href="{url}">full file</a></p>'
+
+    if depth == "summary":
+        peek = "\n".join(lines[:3])
+        extra = f" &middot; {len(lines[0].split(','))} columns" if kind == "csv" and n else ""
+        if kind == "json":
+            try:
+                obj = json.loads(text)
+                if isinstance(obj, dict):
+                    extra = " &middot; keys: " + ", ".join(list(obj.keys())[:12])
+            except ValueError:
+                pass
+        return (f'<p class="muted">{n} lines &middot; {size} bytes{extra}</p>'
+                f'<pre>{html.escape(peek)}</pre>{full_link}')
+
+    if depth == "excerpt":
+        excerpt_n = block.get("excerpt_lines") or DEFAULT_EXCERPT_LINES
+        shown = "\n".join(lines[:excerpt_n])
+        note = (f'<p class="muted">showing first {min(excerpt_n, n)} of {n} lines &middot; '
+                f'<a href="{url}">full file</a></p>') if n > excerpt_n else ""
+        return f'<pre>{html.escape(shown)}</pre>{note}'
+
+    # depth == "full"
+    if size > MAX_INLINE_BYTES:
+        return (f'<p class="muted">{size} bytes, too large to embed inline &mdash; '
+                f'<a href="{url}">full file</a></p>')
+    return f'<pre>{html.escape(text)}</pre>'
+
+
+def render_curated_section(rundir, base_url, suite, benchmark, run_id):
+    curation = load_curation(rundir)
+    if not curation:
+        return ""
+    included = [b for b in curation.get("blocks", []) if b.get("depth", "none") != "none"]
+    if not included:
+        return ""
+    parts = ["<h2>Curated view</h2>"]
+    for b in included:
+        parts.append('<div class="block">')
+        parts.append(f"<h3>{html.escape(b.get('title') or '(untitled)')}</h3>")
+        if b.get("commentary"):
+            parts.append(f'<p class="commentary">{html.escape(b["commentary"])}</p>')
+        parts.append(render_block_content(rundir, base_url, b))
+        parts.append("</div>")
+    return "".join(parts)
+
+
+# ---------------------------------------------------------------------------
 # HTML rendering
 # ---------------------------------------------------------------------------
 
@@ -386,16 +619,21 @@ def render_index(output_root, prefill, wspy_bin, wspy_run_bin, gnuplot_script):
     for r in reports:
         ts = datetime.fromtimestamp(r["mtime"]).strftime("%Y-%m-%d %H:%M:%S")
         url = f"/report/{r['suite']}/{r['benchmark']}/{r['run_id']}"
+        key = f"{r['suite']}/{r['benchmark']}/{r['run_id']}"
         rows.append(
-            f"<tr><td>{html.escape(ts)}</td>"
+            f'<tr><td><input type="checkbox" name="r" value="{html.escape(key)}"></td>'
+            f"<td>{html.escape(ts)}</td>"
             f"<td>{html.escape(r['suite'])}</td>"
             f"<td>{html.escape(r['benchmark'])}</td>"
             f"<td><a href=\"{html.escape(url)}\">{html.escape(r['run_id'])}</a></td></tr>"
         )
     reports_html = (
-        "<table class=\"reports\"><thead><tr><th>when</th><th>suite</th>"
+        '<form method="get" action="/compare">'
+        "<table class=\"reports\"><thead><tr><th></th><th>when</th><th>suite</th>"
         "<th>benchmark</th><th>run</th></tr></thead><tbody>" + "".join(rows) +
-        "</tbody></table>" if rows else "<p class=\"muted\">No runs yet.</p>"
+        "</tbody></table>"
+        '<button type="submit">Compare selected</button>'
+        "</form>" if rows else "<p class=\"muted\">No runs yet.</p>"
     )
 
     w_workload = html.escape(prefill.get("workload", ""))
@@ -489,6 +727,161 @@ def render_index(output_root, prefill, wspy_bin, wspy_run_bin, gnuplot_script):
     return page("wspy web launcher", body)
 
 
+def apply_studio_post(rundir, form):
+    """Reconstructs the block list from a studio form submission (in DOM/
+    submission order, which is the current on-page order) and applies the one
+    op the clicked submit button carries. Every submit button lives inside
+    the same <form> as every block's editable fields, so a reorder/add/
+    delete click also persists whatever title/depth/commentary edits were
+    pending on the other blocks -- there's no separate "save" step to forget."""
+    ids = form.get("id", [])
+    kinds = form.get("kind", [])
+    source_files = form.get("source_file", [])
+    source_kinds = form.get("source_kind", [])
+    titles = form.get("title", [])
+    depths = form.get("depth", [])
+    excerpt_lines = form.get("excerpt_lines", [])
+    commentaries = form.get("commentary", [])
+    op = (form.get("op", [""])[0] or "save")
+
+    blocks = []
+    for i in range(len(ids)):
+        try:
+            excerpt_n = max(1, min(5000, int(excerpt_lines[i])))
+        except (IndexError, ValueError):
+            excerpt_n = DEFAULT_EXCERPT_LINES
+        blocks.append({
+            "id": ids[i],
+            "kind": kinds[i] if i < len(kinds) else "artifact",
+            "source_file": (source_files[i] if i < len(source_files) else "") or None,
+            "source_kind": (source_kinds[i] if i < len(source_kinds) else "") or None,
+            "title": titles[i] if i < len(titles) else "",
+            "depth": depths[i] if i < len(depths) else "none",
+            "excerpt_lines": excerpt_n,
+            "commentary": commentaries[i] if i < len(commentaries) else "",
+        })
+
+    if op.startswith("up:") or op.startswith("down:"):
+        bid = op.split(":", 1)[1]
+        idx = next((j for j, b in enumerate(blocks) if b["id"] == bid), None)
+        if idx is not None:
+            other = idx - 1 if op.startswith("up:") else idx + 1
+            if 0 <= other < len(blocks):
+                blocks[idx], blocks[other] = blocks[other], blocks[idx]
+    elif op.startswith("delete:"):
+        bid = op.split(":", 1)[1]
+        blocks = [b for b in blocks if b["id"] != bid]
+    elif op.startswith("add:"):
+        _, src_kind, filename = op.split(":", 2)
+        available_names = {item["filename"] for item in collect_run_files(rundir)}
+        if filename in available_names:
+            blocks.append(new_block("artifact", source_file=filename, source_kind=src_kind, title=filename))
+    elif op == "add-freeform":
+        blocks.append(new_block("freeform", title="New section"))
+
+    for b in blocks:
+        allowed = allowed_depths(b)
+        if b["depth"] not in allowed:
+            b["depth"] = allowed[-1] if allowed else "none"
+
+    save_curation(rundir, {"blocks": blocks})
+
+
+def _studio_link_and_curated(rundir, base_url, suite, benchmark, run_id, raw_html):
+    """Shared tail assembly for both report shapes: the curated block
+    sequence (when curation.json has at least one included block) plus the
+    studio link, with the raw artifact listing collapsed underneath via
+    <details> once a curated view exists to lead with -- open by default
+    when there's no curation yet, since the raw listing is then the only
+    content this report has."""
+    studio_url = f"/studio/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    curated_html = render_curated_section(rundir, base_url, suite, benchmark, run_id)
+    if curated_html:
+        return (f'<p><a href="{studio_url}">Edit curation</a></p>'
+                f'{curated_html}'
+                f'<details><summary>Raw artifacts</summary>{raw_html}</details>')
+    return (f'<p><a href="{studio_url}">Curate this report</a> '
+            f'<span class="muted">(select/reorder/annotate the artifacts below)</span></p>'
+            f'{raw_html}')
+
+
+def render_studio(rundir, suite, benchmark, run_id):
+    curation = load_curation(rundir) or {"blocks": []}
+    blocks = curation.get("blocks", [])
+    available = collect_run_files(rundir)
+    action = f"/studio/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+
+    cards = []
+    if not blocks:
+        cards.append('<p class="muted">No blocks yet &mdash; add one of the artifacts below, '
+                      'or a freeform section, to start curating.</p>')
+    for i, b in enumerate(blocks):
+        depths = allowed_depths(b)
+        depth_opts = "".join(
+            f'<option value="{d}"{" selected" if d == b.get("depth") else ""}>{d}</option>'
+            for d in depths
+        )
+        source_note = (f'<span class="muted">source: {html.escape(b["source_file"])} '
+                        f'({html.escape(b.get("source_kind") or "?")})</span>'
+                        if b.get("kind") == "artifact" else '<span class="muted">freeform section</span>')
+        show_excerpt = "excerpt" in depths
+        cards.append(f"""
+<div class="block-card">
+  <input type="hidden" name="id" value="{html.escape(b['id'])}">
+  <input type="hidden" name="kind" value="{html.escape(b.get('kind', 'artifact'))}">
+  <input type="hidden" name="source_file" value="{html.escape(b.get('source_file') or '')}">
+  <input type="hidden" name="source_kind" value="{html.escape(b.get('source_kind') or '')}">
+  <div class="block-card-head">
+    <label>Title
+      <input type="text" name="title" value="{html.escape(b.get('title') or '')}">
+    </label>
+    {source_note}
+    <div class="block-card-ops">
+      <button type="submit" name="op" value="up:{html.escape(b['id'])}"{' disabled' if i == 0 else ''}>Move up</button>
+      <button type="submit" name="op" value="down:{html.escape(b['id'])}"{' disabled' if i == len(blocks) - 1 else ''}>Move down</button>
+      <button type="submit" name="op" value="delete:{html.escape(b['id'])}" class="danger">Remove</button>
+    </div>
+  </div>
+  <div class="row">
+    <label>Inclusion depth
+      <select name="depth">{depth_opts}</select>
+    </label>
+    <label{' class="hidden-field"' if not show_excerpt else ''}>Excerpt lines
+      <input type="text" name="excerpt_lines" value="{b.get('excerpt_lines', DEFAULT_EXCERPT_LINES)}">
+    </label>
+  </div>
+  <label>Commentary <span class="muted">(what does this configuration tell us?)</span>
+    <textarea name="commentary" rows="3">{html.escape(b.get('commentary') or '')}</textarea>
+  </label>
+</div>""")
+
+    add_buttons = "".join(
+        f'<button type="submit" name="op" value="add:{html.escape(item["kind"])}:{html.escape(item["filename"])}">'
+        f'+ {html.escape(item["label"])}</button>'
+        for item in available
+    )
+
+    body = f"""
+<section class="panel">
+  <h1>Curation studio: {html.escape(suite)} / {html.escape(benchmark)} / {html.escape(run_id)}</h1>
+  <p class="config-label">Select, reorder, and annotate this run's artifacts into a curated block
+     sequence. Changes save when you click any button below (moving/removing/adding a block also
+     saves any edits you've made to the others).</p>
+  <p><a href="/report/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}">Back to report</a></p>
+  <form method="post" action="{action}">
+    <div class="block-list">{"".join(cards)}</div>
+    <fieldset class="preview">
+      <legend>Add a block</legend>
+      <div class="add-buttons">{add_buttons or '<span class="muted">no artifacts found in this run directory</span>'}</div>
+      <button type="submit" name="op" value="add-freeform">+ Freeform section (no artifact)</button>
+    </fieldset>
+    <button type="submit" name="op" value="save" class="primary">Save</button>
+  </form>
+</section>
+"""
+    return page(f"curation studio: {benchmark}/{run_id}", body)
+
+
 def render_report(output_root, suite, benchmark, run_id):
     rundir = os.path.join(output_root, suite, benchmark, run_id)
     if not os.path.isdir(rundir):
@@ -527,22 +920,24 @@ def render_fixed_report(rundir, suite, benchmark, run_id):
     else:
         parts.append('<p class="muted">No manifest found; can\'t restore workload command.</p>')
 
-    parts.append("<h2>Artifacts</h2><ul class=\"artifacts\">")
+    raw = ["<h2>Artifacts</h2><ul class=\"artifacts\">"]
     if os.path.exists(png_path):
-        parts.append(f'<li>Topdown plot:<br><img class="plot" src="{base}/{PNG_NAME}" alt="amdtopdown plot"></li>')
+        raw.append(f'<li>Topdown plot:<br><img class="plot" src="{base}/{PNG_NAME}" alt="amdtopdown plot"></li>')
     else:
-        parts.append('<li class="muted">amdtopdown.png not generated</li>')
+        raw.append('<li class="muted">amdtopdown.png not generated</li>')
     if os.path.exists(csv_path):
-        parts.append(f'<li><a href="{base}/{CSV_NAME}">{CSV_NAME}</a> (raw CSV)</li>')
+        raw.append(f'<li><a href="{base}/{CSV_NAME}">{CSV_NAME}</a> (raw CSV)</li>')
     else:
-        parts.append('<li class="muted">amdtopdown.csv missing</li>')
+        raw.append('<li class="muted">amdtopdown.csv missing</li>')
     if os.path.exists(manifest_path):
-        parts.append(f'<li><a href="{base}/{MANIFEST_NAME}">{MANIFEST_NAME}</a> (raw manifest)</li>')
+        raw.append(f'<li><a href="{base}/{MANIFEST_NAME}">{MANIFEST_NAME}</a> (raw manifest)</li>')
     else:
-        parts.append('<li class="muted">amdtopdown.manifest.json missing</li>')
+        raw.append('<li class="muted">amdtopdown.manifest.json missing</li>')
     if os.path.exists(log_path):
-        parts.append(f'<li><a href="{base}/{LOG_NAME}">{LOG_NAME}</a> (launch log)</li>')
-    parts.append("</ul>")
+        raw.append(f'<li><a href="{base}/{LOG_NAME}">{LOG_NAME}</a> (launch log)</li>')
+    raw.append("</ul>")
+
+    parts.append(_studio_link_and_curated(rundir, base, suite, benchmark, run_id, "".join(raw)))
 
     body = "<section class=\"panel\">" + "".join(parts) + "</section>"
     return page(f"wspy report: {benchmark}/{run_id}", body)
@@ -572,42 +967,43 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
         parts.append('<p class="muted">No workload command recorded in manifest.json.</p>')
 
     accounted_for = {RUN_MANIFEST_NAME}
+    raw = []
 
-    parts.append("<h2>Passes</h2><ul class=\"artifacts\">")
+    raw.append("<h2>Passes</h2><ul class=\"artifacts\">")
     for p in run_manifest.get("passes", []):
         name = p.get("name", "?")
         output = p.get("output")
         pass_manifest = p.get("manifest")
         status = p.get("status", "?")
         status_class = "" if status == "ok" else ' class="muted"'
-        parts.append(f"<li><strong>{html.escape(name)}</strong> "
-                      f"<span{status_class}>[{html.escape(status)}]</span><br>")
+        raw.append(f"<li><strong>{html.escape(name)}</strong> "
+                   f"<span{status_class}>[{html.escape(status)}]</span><br>")
         if output:
             accounted_for.add(output)
             output_path = os.path.join(rundir, output)
             if output.endswith(".png") and os.path.isfile(output_path):
-                parts.append(f'<img class="plot" src="{base}/{_urlescape(output)}" alt="{html.escape(name)}">')
+                raw.append(f'<img class="plot" src="{base}/{_urlescape(output)}" alt="{html.escape(name)}">')
             elif os.path.isfile(output_path):
-                parts.append(f'<a href="{base}/{_urlescape(output)}">{html.escape(output)}</a>')
+                raw.append(f'<a href="{base}/{_urlescape(output)}">{html.escape(output)}</a>')
             else:
-                parts.append(f'<span class="muted">{html.escape(output)} (missing)</span>')
+                raw.append(f'<span class="muted">{html.escape(output)} (missing)</span>')
         if pass_manifest:
             accounted_for.add(pass_manifest)
             if os.path.isfile(os.path.join(rundir, pass_manifest)):
-                parts.append(f' &middot; <a href="{base}/{_urlescape(pass_manifest)}">manifest</a>')
-        parts.append("</li>")
-    parts.append("</ul>")
+                raw.append(f' &middot; <a href="{base}/{_urlescape(pass_manifest)}">manifest</a>')
+        raw.append("</li>")
+    raw.append("</ul>")
 
-    parts.append("<h2>Run-level artifacts</h2><ul class=\"artifacts\">")
+    raw.append("<h2>Run-level artifacts</h2><ul class=\"artifacts\">")
     if os.path.isfile(os.path.join(rundir, SUMMARY_NAME)):
         accounted_for.add(SUMMARY_NAME)
-        parts.append(f'<li><a href="{base}/{SUMMARY_NAME}">{SUMMARY_NAME}</a> '
-                      f'(concatenated non-CSV pass output)</li>')
-    parts.append(f'<li><a href="{base}/{RUN_MANIFEST_NAME}">{RUN_MANIFEST_NAME}</a> (wspy-run run manifest)</li>')
+        raw.append(f'<li><a href="{base}/{SUMMARY_NAME}">{SUMMARY_NAME}</a> '
+                   f'(concatenated non-CSV pass output)</li>')
+    raw.append(f'<li><a href="{base}/{RUN_MANIFEST_NAME}">{RUN_MANIFEST_NAME}</a> (wspy-run run manifest)</li>')
     if os.path.isfile(os.path.join(rundir, LOG_NAME)):
         accounted_for.add(LOG_NAME)
-        parts.append(f'<li><a href="{base}/{LOG_NAME}">{LOG_NAME}</a> (launch log)</li>')
-    parts.append("</ul>")
+        raw.append(f'<li><a href="{base}/{LOG_NAME}">{LOG_NAME}</a> (launch log)</li>')
+    raw.append("</ul>")
 
     # Anything else regular file sitting in the run directory that no pass
     # claimed -- concretely, gnuplot.sh's own systemtime.png (produced
@@ -616,6 +1012,7 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
     # neither of which wspy-run's own passes[] list knows about. Scanned
     # rather than hardcoded so a different profile's gnuplot output, or a
     # future #12 plotting-template addition, shows up automatically.
+    accounted_for.add(CURATION_NAME)
     try:
         extra = sorted(
             f for f in os.listdir(rundir)
@@ -624,14 +1021,16 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
     except OSError:
         extra = []
     if extra:
-        parts.append("<h2>Other artifacts</h2><ul class=\"artifacts\">")
+        raw.append("<h2>Other artifacts</h2><ul class=\"artifacts\">")
         for f in extra:
             if f.endswith(".png"):
-                parts.append(f'<li>{html.escape(f)}:<br>'
-                              f'<img class="plot" src="{base}/{_urlescape(f)}" alt="{html.escape(f)}"></li>')
+                raw.append(f'<li>{html.escape(f)}:<br>'
+                          f'<img class="plot" src="{base}/{_urlescape(f)}" alt="{html.escape(f)}"></li>')
             else:
-                parts.append(f'<li><a href="{base}/{_urlescape(f)}">{html.escape(f)}</a></li>')
-        parts.append("</ul>")
+                raw.append(f'<li><a href="{base}/{_urlescape(f)}">{html.escape(f)}</a></li>')
+        raw.append("</ul>")
+
+    parts.append(_studio_link_and_curated(rundir, base, suite, benchmark, run_id, "".join(raw)))
 
     body = "<section class=\"panel\">" + "".join(parts) + "</section>"
     return page(f"wspy report: {benchmark}/{run_id}", body)
@@ -640,6 +1039,91 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
 def _urlescape(s):
     from urllib.parse import quote
     return quote(s, safe="")
+
+
+def render_compare(output_root, keys):
+    """Item 8's compare view: sweep 2+ runs side by side. Deliberately raw
+    (not curation-aware) and filename-aligned rather than block-aligned --
+    curation is a per-run editorial layer (title/commentary/depth), while
+    this view's job is spotting differences across runs' actual artifacts,
+    which works whether or not either run has been curated yet."""
+    runs = []
+    seen = set()
+    for key in keys:
+        segs = key.split("/")
+        if len(segs) != 3 or not all(valid_segment(s) for s in segs) or key in seen:
+            continue
+        seen.add(key)
+        suite, benchmark, run_id = segs
+        rundir = os.path.join(output_root, suite, benchmark, run_id)
+        if not os.path.isdir(rundir):
+            continue
+        runs.append({"suite": suite, "benchmark": benchmark, "run_id": run_id, "rundir": rundir})
+
+    if len(runs) < 2:
+        body = ('<section class="panel"><h1>Compare runs</h1>'
+                '<p class="muted">Select at least two runs from the homepage report list to '
+                'compare them side by side.</p><p><a href="/">Back to launcher</a></p></section>')
+        return page("wspy compare", body)
+
+    for r in runs:
+        r["base"] = f"/files/{r['suite']}/{r['benchmark']}/{r['run_id']}"
+        r["files"] = {item["filename"]: item for item in collect_run_files(r["rundir"])}
+        run_manifest = read_run_manifest(os.path.join(r["rundir"], RUN_MANIFEST_NAME))
+        if run_manifest is not None:
+            workload = run_manifest.get("command") or None
+        else:
+            workload = read_manifest_workload(os.path.join(r["rundir"], MANIFEST_NAME))
+        r["workload_str"] = shlex.join(workload) if workload else None
+
+    filenames = []
+    filenames_seen = set()
+    for r in runs:
+        for item in collect_run_files(r["rundir"]):
+            if item["filename"] not in filenames_seen:
+                filenames_seen.add(item["filename"])
+                filenames.append(item["filename"])
+
+    header_cells = "".join(
+        f'<th><a href="/report/{_urlescape(r["suite"])}/{_urlescape(r["benchmark"])}/{_urlescape(r["run_id"])}">'
+        f'{html.escape(r["suite"])}/{html.escape(r["benchmark"])}<br>{html.escape(r["run_id"])}</a>'
+        f'{"<br><code>" + html.escape(r["workload_str"]) + "</code>" if r["workload_str"] else ""}</th>'
+        for r in runs
+    )
+
+    rows = []
+    for filename in filenames:
+        cells = []
+        for r in runs:
+            item = r["files"].get(filename)
+            if item is None:
+                cells.append('<td class="muted">&mdash;</td>')
+                continue
+            url = f'{r["base"]}/{_urlescape(filename)}'
+            if item["kind"] == "image":
+                cells.append(f'<td><img class="plot compare-plot" src="{url}" alt="{html.escape(filename)}"></td>')
+            else:
+                try:
+                    size = os.path.getsize(os.path.join(r["rundir"], filename))
+                except OSError:
+                    size = None
+                size_note = f' <span class="muted">({size} bytes)</span>' if size is not None else ""
+                cells.append(f'<td><a href="{url}">{html.escape(filename)}</a>{size_note}</td>')
+        rows.append(f'<tr><th class="row-label">{html.escape(filename)}</th>{"".join(cells)}</tr>')
+
+    body = f"""
+<section class="panel">
+  <h1>Compare {len(runs)} runs</h1>
+  <p><a href="/">Back to launcher</a></p>
+  <div class="compare-scroll">
+    <table class="compare">
+      <thead><tr><th></th>{header_cells}</tr></thead>
+      <tbody>{"".join(rows)}</tbody>
+    </table>
+  </div>
+</section>
+"""
+    return page("wspy compare", body)
 
 
 # ---------------------------------------------------------------------------
@@ -701,6 +1185,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, out)
             return
 
+        m = re.match(r"^/studio/([^/]+)/([^/]+)/([^/]+)$", path)
+        if m:
+            suite, benchmark, run_id = m.groups()
+            if not all(valid_segment(x) for x in (suite, benchmark, run_id)):
+                self._send(400, "invalid path")
+                return
+            rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+            if not os.path.isdir(rundir):
+                self._send(404, "no such report")
+                return
+            self._send(200, render_studio(rundir, suite, benchmark, run_id))
+            return
+
+        if path == "/compare":
+            keys = qs.get("r", [])
+            self._send(200, render_compare(cfg["output_root"], keys))
+            return
+
         m = re.match(r"^/files/([^/]+)/([^/]+)/([^/]+)/([^/]+)$", path)
         if m:
             suite, benchmark, run_id, filename = m.groups()
@@ -716,10 +1218,30 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlsplit(self.path)
+        cfg = self.server.wspy_cfg
+
+        m = re.match(r"^/studio/([^/]+)/([^/]+)/([^/]+)$", parsed.path)
+        if m:
+            suite, benchmark, run_id = m.groups()
+            if not all(valid_segment(x) for x in (suite, benchmark, run_id)):
+                self._send(400, "invalid path")
+                return
+            rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+            if not os.path.isdir(rundir):
+                self._send(404, "no such report")
+                return
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length).decode("utf-8", errors="replace")
+            form = parse_qs(raw, keep_blank_values=True)
+            apply_studio_post(rundir, form)
+            self.send_response(303)
+            self.send_header("Location", f"/studio/{suite}/{benchmark}/{run_id}")
+            self.end_headers()
+            return
+
         if parsed.path not in ("/api/run", "/api/run-profile"):
             self._send(404, "not found")
             return
-        cfg = self.server.wspy_cfg
         length = int(self.headers.get("Content-Length", "0"))
         try:
             body = json.loads(self.rfile.read(length) or b"{}")
