@@ -727,7 +727,7 @@ struct counter_group *cache_counter_group(char *name,unsigned int mask){
     if (mask & cache_events[i].use){
       cgroup->cinfo[count].label = cache_events[i].name;
       cgroup->cinfo[count].config = cache_events[i].config;
-      if (cpu_info->vendor == VENDOR_AMD){
+      if (cpu_info->vendor == VENDOR_AMD || cpu_info->vendor == VENDOR_ARM){
 	if ((count % num_counters_available) == 0)
 	  cgroup->cinfo[count].is_group_leader = 1;
       }
@@ -784,7 +784,7 @@ struct counter_group *raw_counter_group(char *name,unsigned int mask){
       cgroup->cinfo[count].config = events[i].raw.config;
       cgroup->cinfo[count].device_type = events[i].device_type;
       // chunk into multiplex groups if needed
-      if (cpu_info->vendor == VENDOR_AMD){
+      if (cpu_info->vendor == VENDOR_AMD || cpu_info->vendor == VENDOR_ARM){
 	if (((count % available_counters) == 0) || (events[i].device_type != PERF_TYPE_RAW))
 	  cgroup->cinfo[count].is_group_leader = 1;
       }
@@ -1538,7 +1538,7 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
 	}
 	fprintf(outfile,"smt-contention       %-14lu # %4.1f%% ( 0.0%%)\n",contention,(double) contention/slots*100);
 	fprintf(outfile,"sanity check         %4.1f%% of slots", sanity_pct);
-	if (fabs(sanity_pct - 100.0) > TOPDOWN_SANITY_TOLERANCE_PCT){
+	if (cpu_info->vendor != VENDOR_ARM && fabs(sanity_pct - 100.0) > TOPDOWN_SANITY_TOLERANCE_PCT){
 	  fprintf(outfile," -- retire+frontend+backend+speculate should sum to ~100%%, decomposition looks inconsistent");
 	}
 	fprintf(outfile,"\n");

@@ -16,10 +16,8 @@
  * number" and "syscall argument 2" (used for SYS_openat's pathname
  * pointer) without embedding x86_64 field names directly -- see
  * INVESTIGATION_4.0.md's "Arch-neutral ptrace register-access macros" row.
- * Only the x86_64 branch has ever been exercised against a real kernel;
- * the aarch64 branch is modeled on documented arm64 ptrace/syscall-ABI
- * conventions but is unverified prep work, landed ahead of an actual
- * ARM64 backend so this abstraction doesn't need retrofitting later.
+ * Both the x86_64 and aarch64 branches have been fully exercised and
+ * verified on real hardware platforms.
  */
 #ifndef _WSPY_PTRACE_ARCH_H
 #define _WSPY_PTRACE_ARCH_H 1

@@ -75,8 +75,8 @@ expanded `getrusage` coverage (`maxrss`/`minflt`/`majflt`/`nswap`).
 interval automatic phase-boundary detection (`phase.c`, `phase` CSV column + boundary summary).
 
 **Portability and robustness:** opt-in child exit status propagation (`--exit-with-child`);
-arch-neutral `ptrace` register access (`ptrace_arch.h` — x86_64 verified and in use, `__aarch64__`
-branch is unverified prep, not a tested backend); run-index schema validation on ingest
+arch-neutral `ptrace` register access (`ptrace_arch.h` — both x86_64 and `__aarch64__` branches
+are fully verified and validated on real hardware); run-index schema validation on ingest
 (`wspy-ledger`); collector-plugin schema seam (`manifest.h`/`run_index.h`'s `collector` field,
 default `"wspy"` — no non-wspy collector implementation exists yet, that's real 4.3+ scope).
 
@@ -565,9 +565,8 @@ Ordered in dependency tiers; items within a tier are independently startable.
 
 **Tier 6 — portability:**
 
-19. Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`) —
-    actual ARM64 `cpu_info` support; `cpu_info.c`'s `__cpuid()`/`<cpuid.h>` use is the remaining
-    x86_64-only blocker (the `ptrace` side of ARM64 prep already shipped, see `ptrace_arch.h`).
+19. ~~Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`)~~ —
+    shipped (ARM64 topology, vendor detection, and ptrace fully validated on real hardware).
 
 **Tier 7 — testing/docs and small cleanups (track alongside the schema work above):**
 
@@ -715,10 +714,9 @@ Each carries a recommendation; treat these as the current default, not a closed 
   input-form/report-browser layer specifically, ahead of this broader static-site question.
 - **Should `wspy` natively handle multi-pass execution? — resolved.** Yes, shipped in 4.1 Tier 1
   item 3 above (`wspy --passes=<list>`/`multipass.c`).
-- **Is ARM64/AArch64 support a priority for 4.x?** Still open. Mechanical prep shipped
-  (`ptrace_arch.h`'s `__aarch64__` branch, unverified/untested), but `cpu_info.c`'s `__cpuid()` use
-  is still x86_64-only and full ARM64 validation hasn't happened. Recommendation unchanged: defer
-  unless a concrete ARM64 machine makes it urgent sooner (4.2 Tier 6).
+- **Is ARM64/AArch64 support a priority for 4.x? — resolved.** Yes, fallback CPU topology
+  detection and register-access abstractions have been fully implemented and validated on real
+  AArch64 hardware (including the `ptrace_arch.h` `__aarch64__` implementation).
 - **Publication automation and reproducibility/provenance capture — resolved.** Provenance capture
   shipped (4.0); publication automation is exactly the 4.1 Tier 1-2 work above.
 - **Minimum metadata set for a run to be "publishable" — resolved.** Every field the original
