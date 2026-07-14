@@ -4,6 +4,7 @@
 TESTNAME=${TESTNAME:="coremark"}
 WSPY=${WSPY:="/home/mev/source/wspy/wspy"}
 WSPY_RUN=${WSPY_RUN:="/home/mev/source/wspy/wspy-run"}
+WSPY_PLOT=${WSPY_PLOT:="/home/mev/source/wspy/wspy-plot"}
 OUTROOT=${OUTROOT:="."}
 
 # One directory for this run: <OUTROOT>/phoronix/<TESTNAME>/<RUN_ID>, via
@@ -39,5 +40,9 @@ else
         deep-cpu,tree-heavy -- \
         phoronix-test-suite batch-run $TESTNAME
     RUNDIR="${OUTROOT}/phoronix/${TESTNAME}/${RUN_ID}"
-    (cd "$RUNDIR" && /home/mev/source/wspy/workload/phoronix/gnuplot.sh)
+    # Renders every *.csv in $RUNDIR that has a "time" column against the
+    # shared plot templates (wspy-plot, INVESTIGATION_4.0.md 4.1 Tier 2 item
+    # 12), replacing the old gnuplot.sh's two hardcoded filenames -- output
+    # lands in $RUNDIR/plots/, wspy-run's own unified-output-layout convention.
+    "$WSPY_PLOT" --rundir "$RUNDIR"
 fi

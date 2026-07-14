@@ -9,7 +9,7 @@ make test
 
 echo ""
 echo "=== Building wspy and proctree ==="
-make wspy proctree wspy-validate wspy-ledger wspy-store
+make wspy proctree wspy-validate wspy-ledger wspy-store wspy-plot
 
 echo ""
 echo "=== Running Integration Tests ==="
@@ -294,6 +294,39 @@ if command -v sqlite3 > /dev/null 2>&1; then
 fi
 rm -f test_store_index.jsonl test_store_manifest.json test_store_output.csv test_store.db test_store.out
 echo "  wspy-store: OK"
+
+# wspy-plot: shared plotting templates (INVESTIGATION_4.0.md 4.1 Tier 2 item
+# 12), replacing workload/phoronix/gnuplot.sh. Template-matching logic itself
+# is covered by test_plot.c's unit tests; this integration check only needs
+# to confirm the CLI plumbing (directory scanning, --out-dir creation) works
+# against a real synthetic CSV. Actually invoking gnuplot needs the binary
+# installed, so that part gracefully skips (not fails) when it isn't --
+# matching tests/arm_topdown_microbench.sh's own self-skip precedent.
+echo "Testing wspy-plot --list-templates..."
+if ! ./wspy-plot --list-templates | grep -q "^  topdown "; then
+    echo "FAIL: wspy-plot --list-templates did not list the topdown template"
+    exit 1
+fi
+echo "  wspy-plot --list-templates: OK"
+
+mkdir -p test_plot_rundir
+printf 'time,retire,frontend,backend,speculate,\n 1.0,25.0,25.0,25.0,25.0,\n 2.0,30.0,20.0,30.0,20.0,\n' \
+    > test_plot_rundir/amdtopdown.csv
+if command -v gnuplot > /dev/null 2>&1; then
+    echo "Testing wspy-plot --rundir against a real gnuplot..."
+    if ! ./wspy-plot --rundir test_plot_rundir --quiet; then
+        echo "FAIL: wspy-plot --rundir should exit 0 when gnuplot successfully renders a match"
+        exit 1
+    fi
+    if [ ! -s test_plot_rundir/plots/amdtopdown.topdown.png ]; then
+        echo "FAIL: wspy-plot did not render plots/amdtopdown.topdown.png"
+        exit 1
+    fi
+    echo "  wspy-plot --rundir (real gnuplot): OK"
+else
+    echo "  skipping wspy-plot --rundir rendering check (gnuplot not installed)"
+fi
+rm -rf test_plot_rundir
 
 # Counter capability discovery + coverage reporting
 echo "Testing wspy --capabilities (no workload command needed)..."

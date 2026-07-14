@@ -9,14 +9,15 @@ Two launchers on one page:
 
       wspy --csv --interval 1 --topdown --no-rusage --no-software --no-ipc
 
-  -- followed by workload/phoronix/gnuplot.sh's amdtopdown.csv -> amdtopdown.png
-  plot block. No preset picker, no configuration/option checklist.
+  -- followed by wspy-plot (item 12's shared plotting templates,
+  workload/phoronix/gnuplot.sh's generalized replacement) rendering
+  <rundir>/plots/*.png. No preset picker, no configuration/option checklist.
 - Item 7, the wspy-run profile launcher: a thin form over wspy-run's own
   existing surface (builtin profile(s) + suite/benchmark/workload), so real
   varied runs exist to browse before #8's curation studio is built. Mirrors
   workload/phoronix/run_test.sh's own pattern -- call wspy-run, then
-  best-effort run gnuplot.sh only if the chosen profile produced
-  amdtopdown.csv.
+  best-effort run wspy-plot over the whole run directory, whatever CSVs the
+  chosen profile produced.
 
 Both are thin clients: every run launches exactly the command line(s) a user
 could type by hand, shown before running them. No preset/configuration/option
@@ -27,7 +28,7 @@ wspy-run's own run-level manifest.json is present.
 
 Usage:
     web/server.py [--host HOST] [--port PORT] [--wspy PATH] [--wspy-run PATH]
-                   [--gnuplot-script PATH] [--output-root DIR]
+                   [--wspy-plot PATH] [--output-root DIR]
 
 Stdlib only, by design (see CLAUDE.md's web/ entry for the reasoning).
 """
@@ -56,8 +57,10 @@ WSPY_FIXED_ARGS = ["--csv", "--interval", "1", "--topdown",
                     "--no-rusage", "--no-software", "--no-ipc"]
 CSV_NAME = "amdtopdown.csv"
 MANIFEST_NAME = "amdtopdown.manifest.json"
-PNG_NAME = "amdtopdown.png"
+PNG_NAME = "amdtopdown.png"  # legacy root-level plot name from the retired gnuplot.sh; old
+                              # reports on disk from before item 12 may still have one there.
 LOG_NAME = "launch.log"
+PLOTS_DIR_NAME = "plots"      # wspy-plot's own output directory (item 12), relative to a run dir
 ARTIFACT_FILES = (CSV_NAME, MANIFEST_NAME, PNG_NAME, LOG_NAME)
 
 # wspy-run's own unified-layout artifacts (item 7) -- see wspy-run's
@@ -220,10 +223,12 @@ def build_configuration_passes(rundir, checklist):
             flags.append("--rusage" if rusage_on else "--no-rusage")
             if csv:
                 flags.append("--csv")
-            # Reuse the well-known "amdtopdown" name (and therefore the
-            # gnuplot.sh plot step every other launcher already triggers off
-            # of) for exactly the case that name always meant elsewhere in
-            # this codebase: an interval, CSV, topdown-only sweep.
+            # Reuse the well-known "amdtopdown" name for exactly the case
+            # that name always meant elsewhere in this codebase: an
+            # interval, CSV, topdown-only sweep. wspy-plot (item 12) matches
+            # templates against a CSV's header, not its filename, so this
+            # naming is now just continuity with older reports, not a
+            # requirement for plotting to fire.
             name = "amdtopdown" if (interval is not None and csv and selected == {"topdown"}) else "counters"
             passes.append({"name": name, "flags": flags, "csv": csv, "timeout": None})
 
@@ -236,8 +241,8 @@ def build_configuration_passes(rundir, checklist):
             flags += ["--interval", str(interval)]
         if csv:
             flags.append("--csv")
-        # Same reasoning as "amdtopdown" above -- gnuplot.sh looks for this
-        # literal filename to add its secondary systemtime.png plot.
+        # Same reasoning as "amdtopdown" above -- kept for continuity with
+        # older reports, not because wspy-plot needs this literal filename.
         name = "systemtime" if (interval is not None and csv) else "system"
         passes.append({"name": name, "flags": flags, "csv": csv, "timeout": None})
 
@@ -342,6 +347,18 @@ def valid_segment(s):
     return bool(s) and bool(NAME_RE.match(s)) and s not in (".", "..")
 
 
+def valid_relpath(s):
+    """Like valid_segment(), but allows one or more "/"-separated
+    components (e.g. "plots/amdtopdown.topdown.png", item 12's plot PNGs
+    living one directory level under a run dir) -- every component must
+    still individually pass valid_segment(), so "..", a leading/trailing/
+    doubled "/", and any character outside NAME_RE's whitelist are all
+    rejected the same as they always were for a single segment."""
+    if not s or s.startswith("/") or s.endswith("/") or "//" in s:
+        return False
+    return all(valid_segment(part) for part in s.split("/"))
+
+
 def make_run_id():
     # Same shape as wspy-run's own <timestamp>.<ms>-<suffix> run ids (see
     # run_index.c's format_run_id()), but this server is long-running so a
@@ -370,8 +387,28 @@ def build_wspy_argv(wspy_bin, rundir, workload_argv):
             ["-o", csv_path, "--manifest", manifest_path, "--"] + workload_argv)
 
 
-def build_gnuplot_argv(gnuplot_script):
-    return ["bash", gnuplot_script]
+def build_plot_argv(wspy_plot_bin, rundir):
+    """wspy-plot (item 12, "shared plotting templates") over the whole run
+    directory: it scans every *.csv itself and matches each against the
+    shared template table, so -- unlike the old gnuplot.sh, which only knew
+    two literal filenames -- this one command line covers any counter-group
+    combination a run happened to produce, with no "did this produce
+    amdtopdown.csv?" gate needed before calling it."""
+    return [wspy_plot_bin, "--rundir", rundir, "--quiet"]
+
+
+def list_plot_pngs(rundir):
+    """Every *.png wspy-plot wrote into <rundir>/plots/, as filenames
+    relative to rundir (e.g. "plots/amdtopdown.topdown.png") -- the shape
+    collect_run_files()/render_wspy_run_report()'s "other artifacts" scan
+    and render_fixed_report() all offer plot images in."""
+    plots_dir = os.path.join(rundir, PLOTS_DIR_NAME)
+    try:
+        names = sorted(f for f in os.listdir(plots_dir)
+                        if f.endswith(".png") and os.path.isfile(os.path.join(plots_dir, f)))
+    except OSError:
+        return []
+    return [f"{PLOTS_DIR_NAME}/{f}" for f in names]
 
 
 def valid_profile_spec(spec):
@@ -405,7 +442,7 @@ def shell_preview(argv, cwd=None):
 # Run execution
 # ---------------------------------------------------------------------------
 
-def execute_run(state, wspy_bin, gnuplot_script, rundir, workload_argv):
+def execute_run(state, wspy_bin, wspy_plot_bin, rundir, workload_argv):
     log_path = os.path.join(rundir, LOG_NAME)
     logf = open(log_path, "w")
 
@@ -436,28 +473,28 @@ def execute_run(state, wspy_bin, gnuplot_script, rundir, workload_argv):
     ok = wspy_rc == 0 and os.path.exists(csv_path) and os.path.getsize(csv_path) > 0
 
     if not ok:
-        emit("[skipping gnuplot: no usable CSV output]")
+        emit("[skipping plot generation: no usable CSV output]")
         logf.close()
         state.finish("error", None)
         return
 
-    gnuplot_argv = build_gnuplot_argv(gnuplot_script)
-    emit("$ " + shell_preview(gnuplot_argv, cwd=rundir))
+    plot_argv = build_plot_argv(wspy_plot_bin, rundir)
+    emit("$ " + shell_preview(plot_argv))
     try:
-        proc = subprocess.Popen(gnuplot_argv, cwd=rundir,
+        proc = subprocess.Popen(plot_argv, cwd=REPO_ROOT,
                                  stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT,
                                  text=True, bufsize=1)
         for line in proc.stdout:
             emit(line.rstrip("\n"))
-        gnuplot_rc = proc.wait()
-        emit(f"[gnuplot exited {gnuplot_rc}]")
+        plot_rc = proc.wait()
+        emit(f"[wspy-plot exited {plot_rc}]")
     except OSError as e:
-        emit(f"[error] failed to launch gnuplot script ({gnuplot_script}): {e}")
-        gnuplot_rc = 1
+        emit(f"[error] failed to launch wspy-plot ({wspy_plot_bin}): {e}")
+        plot_rc = 1
 
     logf.close()
-    status = "done" if gnuplot_rc == 0 else "error"
+    status = "done" if plot_rc == 0 else "error"
     state.finish(status, None)
 
 
@@ -466,7 +503,7 @@ def run_store_ingest_besteffort(emit, cfg, run_index_path):
     defaults-on "ingest into store" toggle chip): re-runs wspy-store against
     the shared run-index file so the normalized store (Tier 1, store.c) stays
     current without a separate manual step. Never fails the run itself --
-    same degrade-don't-fail idiom as the gnuplot step above."""
+    same degrade-don't-fail idiom as the plot generation step above."""
     if not run_index_path:
         emit("[skipping store ingest: run index was not recorded for this run]")
         return
@@ -489,12 +526,15 @@ def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
                          workload_argv, run_index_path=None, store_ingest=False):
     """Item 7: invoke wspy-run itself (rather than wspy directly) for one of
     its builtin profiles, then -- mirroring workload/phoronix/run_test.sh's
-    own hand-written pattern -- best-effort run gnuplot.sh afterward only if
-    the chosen profile actually produced amdtopdown.csv (true for deep-cpu/
-    deep-gpu, false for e.g. deep-cpu-intel/quick/tree-heavy/ibs-*). Item 9
-    adds the optional trailing run-index/store-ingest steps (the "preset"
-    side of the Run tab's toggle chips); manifest recording has no toggle
-    here since wspy-run's own unified layout always writes one per pass."""
+    own hand-written pattern -- best-effort run wspy-plot (item 12) over the
+    whole run directory afterward. Unlike the old gnuplot.sh, wspy-plot
+    matches its shared templates against whatever CSV(s) the chosen profile
+    actually produced, so there's no "did this profile make amdtopdown.csv?"
+    gate needed first -- deep-cpu-intel/quick/tree-heavy/ibs-* now get
+    whatever plots their own CSVs support instead of none. Item 9 adds the
+    optional trailing run-index/store-ingest steps (the "preset" side of the
+    Run tab's toggle chips); manifest recording has no toggle here since
+    wspy-run's own unified layout always writes one per pass."""
     log_path = os.path.join(rundir, LOG_NAME)
     logf = open(log_path, "w")
 
@@ -524,33 +564,26 @@ def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
     wspy_run_rc = proc.wait()
     emit(f"[wspy-run exited {wspy_run_rc}]")
 
-    csv_path = os.path.join(rundir, CSV_NAME)
-    has_topdown_csv = os.path.exists(csv_path) and os.path.getsize(csv_path) > 0
-
-    gnuplot_rc = 0
-    if not has_topdown_csv:
-        emit("[skipping gnuplot: chosen profile did not produce amdtopdown.csv]")
-    else:
-        gnuplot_argv = build_gnuplot_argv(cfg["gnuplot_script"])
-        emit("$ " + shell_preview(gnuplot_argv, cwd=rundir))
-        try:
-            proc = subprocess.Popen(gnuplot_argv, cwd=rundir,
-                                     stdout=subprocess.PIPE,
-                                     stderr=subprocess.STDOUT,
-                                     text=True, bufsize=1)
-            for line in proc.stdout:
-                emit(line.rstrip("\n"))
-            gnuplot_rc = proc.wait()
-            emit(f"[gnuplot exited {gnuplot_rc}]")
-        except OSError as e:
-            emit(f"[error] failed to launch gnuplot script ({cfg['gnuplot_script']}): {e}")
-            gnuplot_rc = 1
+    plot_argv = build_plot_argv(cfg["wspy_plot_bin"], rundir)
+    emit("$ " + shell_preview(plot_argv))
+    try:
+        proc = subprocess.Popen(plot_argv, cwd=REPO_ROOT,
+                                 stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT,
+                                 text=True, bufsize=1)
+        for line in proc.stdout:
+            emit(line.rstrip("\n"))
+        plot_rc = proc.wait()
+        emit(f"[wspy-plot exited {plot_rc}]")
+    except OSError as e:
+        emit(f"[error] failed to launch wspy-plot ({cfg['wspy_plot_bin']}): {e}")
+        plot_rc = 1
 
     if store_ingest:
         run_store_ingest_besteffort(emit, cfg, run_index_path)
 
     logf.close()
-    status = "done" if wspy_run_rc == 0 and gnuplot_rc == 0 else "error"
+    status = "done" if wspy_run_rc == 0 and plot_rc == 0 else "error"
     state.finish(status, None)
 
 
@@ -653,27 +686,20 @@ def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_ar
             "kind": "tree" if p["name"] == "tree" else "other",
         })
 
-    csv_path = os.path.join(rundir, CSV_NAME)
-    has_topdown_csv = os.path.exists(csv_path) and os.path.getsize(csv_path) > 0
-    gnuplot_rc = 0
-    if not has_topdown_csv:
-        emit("[skipping gnuplot: no pass produced amdtopdown.csv "
-             "(enable 'Performance counters' with only 'topdown' checked, at an interval, for that)]")
-    else:
-        gnuplot_argv = build_gnuplot_argv(cfg["gnuplot_script"])
-        emit("$ " + shell_preview(gnuplot_argv, cwd=rundir))
-        try:
-            proc = subprocess.Popen(gnuplot_argv, cwd=rundir,
-                                     stdout=subprocess.PIPE,
-                                     stderr=subprocess.STDOUT,
-                                     text=True, bufsize=1)
-            for line in proc.stdout:
-                emit(line.rstrip("\n"))
-            gnuplot_rc = proc.wait()
-            emit(f"[gnuplot exited {gnuplot_rc}]")
-        except OSError as e:
-            emit(f"[error] failed to launch gnuplot script ({cfg['gnuplot_script']}): {e}")
-            gnuplot_rc = 1
+    plot_argv = build_plot_argv(cfg["wspy_plot_bin"], rundir)
+    emit("$ " + shell_preview(plot_argv))
+    try:
+        proc = subprocess.Popen(plot_argv, cwd=REPO_ROOT,
+                                 stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT,
+                                 text=True, bufsize=1)
+        for line in proc.stdout:
+            emit(line.rstrip("\n"))
+        plot_rc = proc.wait()
+        emit(f"[wspy-plot exited {plot_rc}]")
+    except OSError as e:
+        emit(f"[error] failed to launch wspy-plot ({cfg['wspy_plot_bin']}): {e}")
+        plot_rc = 1
 
     write_custom_run_summary(rundir, pass_records)
     write_custom_run_manifest(rundir, suite, benchmark, run_id, workload_argv, pass_records)
@@ -683,7 +709,7 @@ def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_ar
         run_store_ingest_besteffort(emit, cfg, run_index_path)
 
     logf.close()
-    status = "done" if not any_failed and gnuplot_rc == 0 else "error"
+    status = "done" if not any_failed and plot_rc == 0 else "error"
     state.finish(status, None)
 
 
@@ -1060,6 +1086,9 @@ def collect_run_files(rundir):
         extras = []
     for f in extras:
         add(f, f)
+
+    for f in list_plot_pngs(rundir):
+        add(f, f"plot: {os.path.basename(f)}")
 
     return items
 
@@ -2029,10 +2058,17 @@ def render_fixed_report(rundir, suite, benchmark, run_id):
         parts.append('<p class="muted">No manifest found; can\'t restore workload command.</p>')
 
     raw = ["<h2>Artifacts</h2><ul class=\"artifacts\">"]
+    plot_pngs = list_plot_pngs(rundir)
     if os.path.exists(png_path):
-        raw.append(f'<li>Topdown plot:<br><img class="plot" src="{base}/{PNG_NAME}" alt="amdtopdown plot"></li>')
+        # Legacy root-level plot from a run predating item 12 (the retired
+        # gnuplot.sh wrote directly into rundir, not rundir/plots/).
+        plot_pngs = [PNG_NAME] + plot_pngs
+    if plot_pngs:
+        for f in plot_pngs:
+            raw.append(f'<li>Plot ({html.escape(f)}):<br>'
+                       f'<img class="plot" src="{base}/{_urlescape(f)}" alt="{html.escape(f)}"></li>')
     else:
-        raw.append('<li class="muted">amdtopdown.png not generated</li>')
+        raw.append('<li class="muted">no plots generated</li>')
     if os.path.exists(csv_path):
         raw.append(f'<li><a href="{base}/{CSV_NAME}">{CSV_NAME}</a> (raw CSV)</li>')
     else:
@@ -2114,12 +2150,10 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
     raw.append("</ul>")
 
     # Anything else regular file sitting in the run directory that no pass
-    # claimed -- concretely, gnuplot.sh's own systemtime.png (produced
-    # whenever systemtime.csv is present, alongside amdtopdown.png) plus our
-    # own post-hoc amdtopdown.png/csv/manifest from item 6's plot step,
+    # claimed, plus every *.png wspy-plot (item 12) wrote into plots/ --
     # neither of which wspy-run's own passes[] list knows about. Scanned
-    # rather than hardcoded so a different profile's gnuplot output, or a
-    # future #12 plotting-template addition, shows up automatically.
+    # rather than hardcoded so any counter-group combination's plots show up
+    # automatically, whatever templates happened to match.
     accounted_for.add(CURATION_NAME)
     try:
         extra = sorted(
@@ -2128,6 +2162,7 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
         )
     except OSError:
         extra = []
+    extra += list_plot_pngs(rundir)
     if extra:
         raw.append("<h2>Other artifacts</h2><ul class=\"artifacts\">")
         for f in extra:
@@ -2146,7 +2181,12 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
 
 def _urlescape(s):
     from urllib.parse import quote
-    return quote(s, safe="")
+    # safe="/" so a relative filename like "plots/foo.png" (item 12's plot
+    # PNGs, one directory level under a run dir) keeps its literal "/" as a
+    # path separator -- nothing on the receiving end (do_GET's routing
+    # below) unquotes the path, so a %2F here would arrive as a literal,
+    # unmatchable "%2F" in the filename instead of a directory separator.
+    return quote(s, safe="/")
 
 
 def render_compare(output_root, keys):
@@ -2366,7 +2406,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, render_history(cfg, qs))
             return
 
-        m = re.match(r"^/files/([^/]+)/([^/]+)/([^/]+)/([^/]+)$", path)
+        m = re.match(r"^/files/([^/]+)/([^/]+)/([^/]+)/(.+)$", path)
         if m:
             suite, benchmark, run_id, filename = m.groups()
             self._serve_artifact(cfg["output_root"], suite, benchmark, run_id, filename)
@@ -2442,13 +2482,15 @@ class Handler(BaseHTTPRequestHandler):
     def _serve_artifact(self, output_root, suite, benchmark, run_id, filename):
         # No fixed filename whitelist: wspy-run's chosen profile determines
         # what lands in a run directory (systemtime.csv, process.tree.txt,
-        # ibs.csv, ...), so any single path segment that both passes
-        # valid_segment() (no "/", no "..") and actually exists inside this
-        # specific, already-validated run directory is safe to serve.
-        if not all(valid_segment(x) for x in (suite, benchmark, run_id, filename)):
+        # ibs.csv, ...), so any path that both passes valid_relpath() (no
+        # "..", no leading/trailing/doubled "/", every component filesystem-
+        # safe) and actually exists inside this specific, already-validated
+        # run directory is safe to serve. filename may be one level nested
+        # (e.g. "plots/amdtopdown.topdown.png", item 12's plot PNGs).
+        if not all(valid_segment(x) for x in (suite, benchmark, run_id)) or not valid_relpath(filename):
             self._send(400, "invalid path")
             return
-        path = os.path.join(output_root, suite, benchmark, run_id, filename)
+        path = os.path.join(output_root, suite, benchmark, run_id, *filename.split("/"))
         if not os.path.isfile(path):
             self._send(404, "not found")
             return
@@ -2508,10 +2550,10 @@ class Handler(BaseHTTPRequestHandler):
             RUNS[key] = state
 
         wspy_argv = build_wspy_argv(cfg["wspy_bin"], rundir, workload_argv)
-        gnuplot_argv = build_gnuplot_argv(cfg["gnuplot_script"])
+        plot_argv = build_plot_argv(cfg["wspy_plot_bin"], rundir)
 
         t = threading.Thread(target=execute_run, args=(
-            state, cfg["wspy_bin"], cfg["gnuplot_script"], rundir, workload_argv,
+            state, cfg["wspy_bin"], cfg["wspy_plot_bin"], rundir, workload_argv,
         ), daemon=True)
         t.start()
 
@@ -2520,7 +2562,7 @@ class Handler(BaseHTTPRequestHandler):
             "events_url": f"/api/run/{suite}/{benchmark}/{run_id}/events",
             "report_url": f"/report/{suite}/{benchmark}/{run_id}",
             "wspy_command": shell_preview(wspy_argv),
-            "gnuplot_command": shell_preview(gnuplot_argv, cwd=rundir),
+            "plot_command": shell_preview(plot_argv),
         })
 
     def _start_profile_run(self, cfg, body):
@@ -2664,10 +2706,10 @@ class Handler(BaseHTTPRequestHandler):
             if "--passes=" in " ".join(p["flags"]):
                 notes.append(f"'{p['name']}' uses native multi-pass execution (--passes) to bin-pack "
                               f"its groups into as few re-executions of the workload as fit the PMU budget.")
-        if any(p["name"] == "amdtopdown" for p in passes):
-            notes.append("gnuplot.sh will run afterward, best-effort, to render amdtopdown.png"
-                          + (" and systemtime.png" if any(p["name"] == "systemtime" for p in passes) else "")
-                          + ".")
+        if passes:
+            notes.append("wspy-plot will run afterward, best-effort, matching every CSV this run "
+                          "produces against the shared plot templates (see CLAUDE.md's plot.c entry) "
+                          "and writing whatever fires into plots/.")
         self._send_json(200, {"mode": "custom", "lines": lines, "notes": notes})
 
     # -----------------------------------------------------------------
@@ -2823,9 +2865,9 @@ def main():
                      help="path to the wspy binary (default: repo root's ./wspy)")
     ap.add_argument("--wspy-run", default=os.path.join(REPO_ROOT, "wspy-run"),
                      help="path to the wspy-run script (default: repo root's ./wspy-run)")
-    ap.add_argument("--gnuplot-script",
-                     default=os.path.join(REPO_ROOT, "workload", "phoronix", "gnuplot.sh"),
-                     help="path to the amdtopdown.csv -> amdtopdown.png plot script")
+    ap.add_argument("--wspy-plot", default=os.path.join(REPO_ROOT, "wspy-plot"),
+                     help="path to the wspy-plot binary (item 12's shared plotting templates; "
+                          "default: repo root's ./wspy-plot)")
     ap.add_argument("--output-root", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs"),
                      help="directory root for <suite>/<benchmark>/<run-id>/ run output "
                           "(default: web/runs)")
@@ -2855,20 +2897,22 @@ def main():
               f"runs will fail until it exists)", file=sys.stderr)
     if not os.path.isfile(args.wspy_run):
         print(f"warning: wspy-run not found at {args.wspy_run}", file=sys.stderr)
-    if not os.path.isfile(args.gnuplot_script):
-        print(f"warning: gnuplot script not found at {args.gnuplot_script}", file=sys.stderr)
     for label, path in (("wspy-validate", args.wspy_validate), ("wspy-store", args.wspy_store),
                          ("wspy-summary", args.wspy_summary)):
         if not os.path.isfile(path):
             print(f"warning: {label} not found at {path} (the Validate/Store & Summary tab "
                   f"will fail until it's built -- see CLAUDE.md's Build & Test section)",
                   file=sys.stderr)
+    if not os.path.isfile(args.wspy_plot):
+        print(f"warning: wspy-plot not found at {args.wspy_plot} (best-effort plot generation "
+              f"after a run will fail until it's built -- see CLAUDE.md's Build & Test section)",
+              file=sys.stderr)
 
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.wspy_cfg = {
         "wspy_bin": os.path.abspath(args.wspy),
         "wspy_run_bin": os.path.abspath(args.wspy_run),
-        "gnuplot_script": os.path.abspath(args.gnuplot_script),
+        "wspy_plot_bin": os.path.abspath(args.wspy_plot),
         "output_root": output_root,
         "wspy_validate_bin": os.path.abspath(args.wspy_validate),
         "wspy_store_bin": os.path.abspath(args.wspy_store),

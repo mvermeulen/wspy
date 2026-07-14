@@ -523,12 +523,25 @@ derivable from files already being produced.
     ingestion is only an opt-in toggle chip and this page should cover every run regardless. Result
     rows reuse the homepage's "select rows, compare selected" pattern into `/compare`. See
     `CLAUDE.md`'s `web/` entry for the full breakdown.
-12. Shared plotting templates — replace `workload/phoronix/gnuplot.sh`'s per-suite script with one
-    normalized-schema pipeline once #1 exists. This is what closes #10's real-image gap: the studio
-    (#8) and export (#10) currently stand in a placeholder for every chart because nothing yet
-    generates the actual `plots/*.png` a real report would reference — this item is that generator,
-    not a separate concern from the reporting work above. #6's slice and #7's `wspy-run` launcher
-    deliberately keep calling `gnuplot.sh` as-is rather than pre-empting this generalization.
+12. ~~Shared plotting templates~~ — **shipped.** `wspy-plot` (`plot.c`) replaces
+    `workload/phoronix/gnuplot.sh`'s per-suite script (retired) with a normalized-schema pipeline built
+    on #1's own column-identity convention (a column named exactly `time`/`core`/`phase` is a
+    dimension, everything else is a metric) rather than on `store.c`'s actual database, so it works
+    directly against a run directory's CSVs without requiring store ingestion first. A small built-in
+    template table (`--list-templates`) matches a CSV's *header* against each counter group's known
+    metric columns (topdown, memory-boundedness, cache-miss, system-cpu, ipc, branch-miss, float),
+    firing once enough of a template's candidate columns are present regardless of position or which
+    flags produced them; any metric columns no template claims still get one generic fallback plot, so
+    an unfamiliar counter-group combination produces something rather than nothing. Only a CSV with a
+    `time` column (produced with `--interval`) is a time series to chart at all. `wspy-plot --rundir
+    <dir>` scans every `*.csv` in a run directory and writes matched plots into `<dir>/plots/`
+    (`wspy-run`'s previously-empty reserved directory) via a generated gnuplot script — this is what
+    closes #10's real-image gap: the studio (#8) and export (#10) can now reference a real chart for
+    any run, not just the fixed `amdtopdown`/`systemtime` shape. `web/server.py`'s item 6/7/9 run
+    executors and `workload/phoronix/run_test.sh`/`workload/cpu2017/run_test.sh` all call `wspy-plot`
+    unconditionally (best-effort) after a run instead of gating on whether `amdtopdown.csv` exists,
+    since template matching makes that gate unnecessary. See `CLAUDE.md`'s `plot.c` entry for the full
+    breakdown.
 13. Deployment/hosting design note — answer, for both a person browsing their own local run output
     and a team publishing to a shared site: does #8/#11 need to run anywhere besides `localhost`, is a
     static site (generated files, no server process) sufficient, and if not, what's the smallest
