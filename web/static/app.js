@@ -86,6 +86,40 @@
     };
   }
 
+  // Custom plots (item 12's wspy-plot --plot/--only-custom exposed in the
+  // UI): a repeatable list of {name, columns} rows built up client-side,
+  // independent of preset vs. custom mode above -- wspy-plot always runs
+  // after any run, whichever launched it, so this section is never
+  // disabled by updateModeUI() the way the checklist is.
+  function addCustomPlotRow() {
+    var container = byId("custom-plots-list");
+    if (!container) return;
+    var row = document.createElement("div");
+    row.className = "row custom-plot-row";
+    row.innerHTML =
+      '<label>Plot name <input type="text" class="cp-name" placeholder="e.g. my-counters"></label>' +
+      '<label>Columns (comma-separated CSV header names) ' +
+      '<input type="text" class="cp-columns" placeholder="e.g. retire,ipc"></label>' +
+      '<button type="button" class="cp-remove">remove</button>';
+    row.querySelector(".cp-remove").addEventListener("click", function () {
+      row.remove();
+      schedulePreview();
+    });
+    container.appendChild(row);
+  }
+
+  function buildCustomPlots() {
+    var rows = document.querySelectorAll("#custom-plots-list .custom-plot-row");
+    var result = [];
+    rows.forEach(function (row) {
+      var name = row.querySelector(".cp-name").value.trim();
+      var columns = row.querySelector(".cp-columns").value.split(",")
+        .map(function (s) { return s.trim(); }).filter(Boolean);
+      if (name || columns.length) result.push({ name: name, columns: columns });
+    });
+    return result;
+  }
+
   function checklistInputs() {
     return document.querySelectorAll(
       "#checklist .config-card:not(.config-reserved) input, " +
@@ -118,6 +152,38 @@
     previewTimer = setTimeout(refreshPreview, 150);
   }
 
+  // Reflects the server's autofit_checklist_for_custom_plots() result back
+  // into the actual checkboxes/fields -- so "auto-enabled the dcache group"
+  // isn't just a sentence in the notes area while the checkbox still looks
+  // unchecked. Setting .checked/.value directly (not via a synthesized
+  // "change" event) doesn't re-trigger schedulePreview(), so this can't
+  // loop against the very preview request that produced it.
+  function applyResolvedChecklist(resolved) {
+    if (!resolved) return;
+    var counters = resolved.counters || {};
+    if (counters.enabled) {
+      var ce = byId("counters_enabled");
+      if (ce) ce.checked = true;
+    }
+    (counters.groups || []).forEach(function (name) {
+      var el = byId("counters_" + name);
+      if (el) el.checked = true;
+    });
+    if (counters.interval_secs) {
+      var ci = byId("counters_interval");
+      if (ci && !ci.value) ci.value = counters.interval_secs;
+    }
+    var system = resolved.system || {};
+    if (system.enabled) {
+      var se = byId("system_enabled");
+      if (se) se.checked = true;
+    }
+    if (system.interval_secs) {
+      var si = byId("system_interval");
+      if (si && !si.value) si.value = system.interval_secs;
+    }
+  }
+
   function refreshPreview() {
     var pre = byId("preview");
     var notesEl = byId("preview-notes");
@@ -131,6 +197,8 @@
       preset: preset,
       checklist: buildChecklist(),
       toggles: buildToggles(),
+      custom_plots: buildCustomPlots(),
+      only_custom: getChecked("only_custom"),
     };
     fetch("/api/preview", {
       method: "POST",
@@ -148,6 +216,7 @@
         pre.textContent = lines.length ? lines.map(function (l) { return "$ " + l; }).join("\n")
           : "(nothing will run yet)";
         if (notesEl) notesEl.textContent = (data.notes || []).join(" ");
+        applyResolvedChecklist(data.resolved_checklist);
       })
       .catch(function () { /* transient -- next keystroke will retry */ });
   }
@@ -159,12 +228,19 @@
     var liveOutput = byId("live-output");
     var runButton = byId("run-button");
     var runResult = byId("run-result");
+    var addPlotBtn = byId("add-custom-plot");
 
     form.addEventListener("input", schedulePreview);
     form.addEventListener("change", schedulePreview);
     if (presetEl) {
       presetEl.addEventListener("change", function () {
         updateModeUI();
+        schedulePreview();
+      });
+    }
+    if (addPlotBtn) {
+      addPlotBtn.addEventListener("click", function () {
+        addCustomPlotRow();
         schedulePreview();
       });
     }
@@ -189,6 +265,8 @@
           benchmark: getValue("benchmark"),
           run_id: getValue("run_id"),
           toggles: buildToggles(),
+          custom_plots: buildCustomPlots(),
+          only_custom: getChecked("only_custom"),
         };
       } else {
         endpoint = "/api/run-custom";
@@ -199,6 +277,8 @@
           run_id: getValue("run_id"),
           checklist: buildChecklist(),
           toggles: buildToggles(),
+          custom_plots: buildCustomPlots(),
+          only_custom: getChecked("only_custom"),
         };
       }
 

@@ -14,6 +14,7 @@ wspy-validate
 wspy-ledger
 wspy-store
 wspy-summary
+wspy-plot
 
 # Backup files
 *.bak
@@ -37,6 +38,7 @@ test_ibs
 test_phase
 test_store
 test_summary
+test_plot
 libwspy_profiler.so
 test_hip_init
 test_hip_kernel
