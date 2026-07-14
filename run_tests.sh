@@ -669,7 +669,7 @@ if [ -e "/opt/rocm/include/amd_smi/amdsmi.h" ] || [ -e "/usr/include/amd_smi/amd
 
         # Test standalone GPU busy (CSV)
         echo "Testing standalone GPU busy CSV output..."
-        OUTPUT=$(./wspy --gpu-busy --csv -- sleep 0.1 2>&1 | head -1)
+        OUTPUT=$(./wspy --gpu-busy --csv -- sleep 0.1 2>/dev/null | head -1)
         if echo "$OUTPUT" | grep -q "elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,gpu_busy,ipc"; then
             echo "  Standalone GPU busy CSV column order: OK"
         else
@@ -697,7 +697,7 @@ if [ -e "/opt/rocm/include/amd_smi/amdsmi.h" ] || [ -e "/usr/include/amd_smi/amd
         fi
         
         # Test standalone GPU metrics (CSV)
-        OUTPUT=$(./wspy --gpu-metrics --csv -- sleep 0.1 2>&1 | head -1)
+        OUTPUT=$(./wspy --gpu-metrics --csv -- sleep 0.1 2>/dev/null | head -1)
         if echo "$OUTPUT" | grep -q "elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,gpu_temp,gpu_activity,gpu_power,gpu_freq,ipc"; then
             echo "  GPU metrics CSV column order: OK"
         else
@@ -759,7 +759,7 @@ if [ -e "/opt/rocm/include/amd_smi/amdsmi.h" ] || [ -e "/usr/include/amd_smi/amd
         fi
         
         # Test standalone GPU metrics (CSV)
-        OUTPUT=$(./wspy --gpu-metrics --csv -- sleep 0.1 2>&1 | head -1)
+        OUTPUT=$(./wspy --gpu-metrics --csv -- sleep 0.1 2>/dev/null | head -1)
         if echo "$OUTPUT" | grep -q "elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,gpu_temp,gpu_activity,gpu_power,gpu_freq,ipc"; then
             echo "  GPU metrics CSV column order: OK"
         else
@@ -778,7 +778,7 @@ if [ -e "/opt/rocm/include/amd_smi/amdsmi.h" ] || [ -e "/usr/include/amd_smi/amd
         fi
         
         # Test GPU metrics values are numeric
-        OUTPUT=$(./wspy --gpu-metrics --csv -- sleep 0.1 2>&1 | tail -1)
+        OUTPUT=$(./wspy --gpu-metrics --csv -- sleep 0.1 2>/dev/null | tail -1)
         TEMP=$(echo "$OUTPUT" | cut -d',' -f4)
         ACTIVITY=$(echo "$OUTPUT" | cut -d',' -f5)
         POWER=$(echo "$OUTPUT" | cut -d',' -f6)
