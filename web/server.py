@@ -281,15 +281,14 @@ def autofit_checklist_for_custom_plots(checklist, custom_plots):
 # Best-effort column coverage per BUILTIN_PROFILES entry -- which CSV
 # columns actually land in a *time-series* (--interval) CSV wspy-plot can
 # chart at all, derived by hand from wspy-run's own load_builtin_profile()
-# PASS_FLAGS. Unlike the checklist path above, a preset can't be auto-fixed
-# (the deep-dive's own rule: presets stay atomic, never decomposed or
-# edited) -- this is only ever used to *warn*, not to change what runs. A
-# convenience hint, not the enforcement point; wspy-run's own PASS_FLAGS
-# remain authoritative, so keep this in sync by hand if a builtin profile's
-# passes change. Most profiles' passes never use --interval at all (multi-
-# pass/aggregate/no-CSV), so they produce nothing wspy-plot can chart
+# PASS_FLAGS. A convenience hint, not the enforcement point; wspy-run's own
+# PASS_FLAGS remain authoritative, so keep this in sync by hand if a builtin
+# profile's passes change. Most profiles' passes never use --interval at all
+# (multi-pass/aggregate/no-CSV), so they produce nothing wspy-plot can chart
 # regardless of which counter groups they collect -- only deep-cpu/deep-gpu
-# have any --interval passes today.
+# have any --interval passes today. build_supplementary_plot_passes() below
+# uses this table to find what a preset's own passes are missing, not just to
+# warn about it.
 PROFILE_PLOTTABLE_COLUMNS = {
     "quick": set(),
     "deep-cpu": SYSTEM_COLUMN_NAMES | {"net *",
@@ -304,27 +303,56 @@ PROFILE_PLOTTABLE_COLUMNS = {
 }
 
 
-def check_preset_custom_plot_coverage(profile_spec, custom_plots):
-    """Warning-only counterpart to autofit_checklist_for_custom_plots() for
-    preset mode: profile_spec may comma-compose more than one builtin
-    profile (wspy-run's own convention), so coverage is the union across
-    every token. Returns a list of warning notes (empty if every requested
-    column is covered, or if custom_plots is empty)."""
+def build_supplementary_plot_passes(rundir, profile_spec, custom_plots):
+    """Preset-mode counterpart to autofit_checklist_for_custom_plots(): a
+    preset's own wspy-run passes stay atomic (the deep-dive's own rule --
+    never decomposed or edited), but a custom plot asking for column(s) none
+    of the preset's passes will ever produce (per PROFILE_PLOTTABLE_COLUMNS)
+    would otherwise just warn and leave wspy-plot with no time series to
+    chart. Instead, resolve exactly the missing column(s) the same way
+    autofit_checklist_for_custom_plots() would (against an empty checklist,
+    so nothing the preset already covers is duplicated), and turn the result
+    into one or two extra, ordinary `wspy` passes -- named with a
+    'plotdata-' prefix so they can never collide with a builtin profile's own
+    pass filenames (e.g. deep-cpu's 'amdtopdown.csv'). These run alongside
+    wspy-run's own invocation, not instead of it, and land in the same run
+    directory, so wspy-plot's whole-directory CSV scan (and
+    render_wspy_run_report()'s "Other artifacts" listing) picks them up with
+    no further plumbing. profile_spec may comma-compose more than one
+    builtin profile (wspy-run's own convention), so coverage is the union
+    across every token. Returns (passes, notes) -- passes is empty (with a
+    plain per-column warning note, same wording as before) when a missing
+    column doesn't resolve to any known group; notes is empty entirely if
+    every requested column is already covered or custom_plots is empty."""
     if not custom_plots:
-        return []
+        return [], []
     covered = set()
     for token in (profile_spec or "").split(","):
         covered |= PROFILE_PLOTTABLE_COLUMNS.get(token.strip(), set())
-    notes = []
+    missing = set()
     for cp in custom_plots:
-        missing = [c for c in cp.get("columns", [])
-                   if not (c in covered or (c.startswith("net ") and "net *" in covered))]
-        if missing:
-            notes.append(f"warning: preset '{profile_spec}' likely won't produce column(s) "
-                         f"{', '.join(missing)} needed by custom plot '{cp.get('name')}' -- most "
-                         f"presets' passes are aggregate-only (no --interval), so there's no time "
-                         f"series for wspy-plot to chart from them regardless of counter selection")
-    return notes
+        for c in cp.get("columns", []):
+            if not (c in covered or (c.startswith("net ") and "net *" in covered)):
+                missing.add(c)
+    if not missing:
+        return [], []
+
+    synthetic = [{"name": "_missing", "columns": sorted(missing)}]
+    checklist, autofit_notes = autofit_checklist_for_custom_plots({}, synthetic)
+    passes = build_configuration_passes(rundir, checklist)
+    for p in passes:
+        p["name"] = "plotdata-" + p["name"]
+
+    notes = []
+    if passes:
+        notes.append(f"note: preset '{profile_spec}' doesn't collect column(s) "
+                      f"{', '.join(sorted(missing))} needed by your custom plot(s) -- added "
+                      f"supplementary pass(es) {', '.join(p['name'] for p in passes)} alongside "
+                      f"the preset to collect them")
+    for note in autofit_notes:
+        if note.startswith("column(s) "):
+            notes.append("warning: " + note)
+    return passes, notes
 
 
 def parse_optional_int(value, lo, hi):
@@ -712,7 +740,8 @@ def run_store_ingest_besteffort(emit, cfg, run_index_path):
 
 def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
                          workload_argv, run_index_path=None, store_ingest=False,
-                         custom_plots=None, only_custom=False, preset_notes=None):
+                         custom_plots=None, only_custom=False, preset_notes=None,
+                         supp_passes=None, manifest_on=False):
     """Item 7: invoke wspy-run itself (rather than wspy directly) for one of
     its builtin profiles, then -- mirroring workload/phoronix/run_test.sh's
     own hand-written pattern -- best-effort run wspy-plot (item 12) over the
@@ -722,8 +751,19 @@ def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
     gate needed first -- deep-cpu-intel/quick/tree-heavy/ibs-* now get
     whatever plots their own CSVs support instead of none. Item 9 adds the
     optional trailing run-index/store-ingest steps (the "preset" side of the
-    Run tab's toggle chips); manifest recording has no toggle here since
-    wspy-run's own unified layout always writes one per pass."""
+    Run tab's toggle chips); manifest recording has no toggle here for
+    wspy-run's own passes, since its unified layout always writes one per
+    pass regardless -- but it does apply to supp_passes below, which are
+    plain `wspy` invocations like any custom-mode pass.
+
+    supp_passes (build_supplementary_plot_passes()) are extra, ordinary
+    `wspy` passes run after wspy-run's own invocation finishes and before
+    wspy-plot, purely to collect column(s) a custom plot needs that the
+    preset's own passes don't produce -- wspy-run's own invocation is never
+    modified, so the preset itself stays atomic. A supplementary pass
+    failing doesn't fail the run (same degrade-don't-fail idiom as the
+    wspy-plot step below); its CSV/manifest just won't exist for wspy-plot
+    or the report to find."""
     log_path = os.path.join(rundir, LOG_NAME)
     logf = open(log_path, "w")
 
@@ -755,6 +795,27 @@ def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
         emit(line.rstrip("\n"))
     wspy_run_rc = proc.wait()
     emit(f"[wspy-run exited {wspy_run_rc}]")
+
+    for p in (supp_passes or []):
+        argv, outfile, _manifest_path = build_pass_argv(cfg["wspy_bin"], rundir, p,
+                                                          manifest_on, run_index_path)
+        full_argv = argv + ["--"] + workload_argv
+        if p["timeout"]:
+            full_argv = ["timeout", str(p["timeout"])] + full_argv
+        emit(f"[{p['name']}] $ " + shell_preview(full_argv))
+        try:
+            supp_proc = subprocess.Popen(full_argv, cwd=REPO_ROOT,
+                                          stdout=subprocess.PIPE,
+                                          stderr=subprocess.STDOUT,
+                                          text=True, bufsize=1)
+            for line in supp_proc.stdout:
+                emit(line.rstrip("\n"))
+            supp_rc = supp_proc.wait()
+        except OSError as e:
+            emit(f"[error] failed to launch wspy for supplementary pass "
+                 f"'{p['name']}' ({cfg['wspy_bin']}): {e}")
+            supp_rc = 1
+        emit(f"[{p['name']}] exited {supp_rc} -> {os.path.basename(outfile)}")
 
     plot_argv = build_plot_argv(cfg["wspy_plot_bin"], rundir, custom_plots, only_custom)
     emit("$ " + shell_preview(plot_argv))
@@ -2835,7 +2896,7 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             self._send_json(400, err)
             return
-        _manifest_on, run_index_path, store_ingest = self._parse_toggles(cfg, body)
+        manifest_on, run_index_path, store_ingest = self._parse_toggles(cfg, body)
         custom_plots, only_custom, err = self._parse_custom_plots(body)
         if err:
             self._send_json(400, err)
@@ -2856,11 +2917,12 @@ class Handler(BaseHTTPRequestHandler):
                                              cfg["output_root"], suite, benchmark,
                                              run_id, profile, workload_argv,
                                              run_index_path=run_index_path)
-        preset_notes = check_preset_custom_plot_coverage(profile, custom_plots)
+        supp_passes, preset_notes = build_supplementary_plot_passes(rundir, profile, custom_plots)
 
         t = threading.Thread(target=execute_profile_run, args=(
             state, cfg, rundir, suite, benchmark, run_id, profile, workload_argv,
             run_index_path, store_ingest, custom_plots, only_custom, preset_notes,
+            supp_passes, manifest_on,
         ), daemon=True)
         t.start()
 
@@ -2958,9 +3020,17 @@ class Handler(BaseHTTPRequestHandler):
             argv = build_wspy_run_argv(cfg["wspy_run_bin"], cfg["wspy_bin"], cfg["output_root"],
                                         suite, benchmark, run_id, preset, workload_argv,
                                         run_index_path=run_index_path)
-            preset_notes = check_preset_custom_plot_coverage(preset, custom_plots)
-            self._send_json(200, {"mode": "preset", "lines": [shell_preview(argv), shell_preview(plot_argv)],
-                                   "notes": preset_notes})
+            supp_passes, preset_notes = build_supplementary_plot_passes(rundir, preset, custom_plots)
+            lines = [shell_preview(argv)]
+            for p in supp_passes:
+                pargv, _outfile, _manifest_path = build_pass_argv(cfg["wspy_bin"], rundir, p,
+                                                                    _manifest_on, run_index_path)
+                full_pargv = pargv + ["--"] + workload_argv
+                if p["timeout"]:
+                    full_pargv = ["timeout", str(p["timeout"])] + full_pargv
+                lines.append(shell_preview(full_pargv))
+            lines.append(shell_preview(plot_argv))
+            self._send_json(200, {"mode": "preset", "lines": lines, "notes": preset_notes})
             return
 
         checklist = body.get("checklist") or {}
