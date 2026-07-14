@@ -48,28 +48,39 @@ struct plot_template {
   const char *ylabel;
   const char *metrics[MAX_TEMPLATE_METRICS]; /* candidate metric column names, preferred plot order */
   int min_match;                              /* how many of metrics[] must be present to fire */
+  const char *style;                          /* gnuplot "with" style, e.g. "points" or "lines" */
 };
 
 /* Column names below are the literal wspy CSV header text for each counter
  * group (topdown.c's print_*() CSV-header cases) -- see CLAUDE.md's "CSV vs.
  * human output" section for why header text, not position, is load-bearing
  * here. Kept intentionally small: one template per counter group that's
- * meaningful as a time series, not an exhaustive catalog of every column. */
+ * meaningful as a time series, not an exhaustive catalog of every column.
+ *
+ * style is "points" for every hardware-performance-counter template,
+ * matching gnuplot.sh's own topdown plot -- it never gave a "with" clause,
+ * so gnuplot's default data style (points) applied, and per-tick counter
+ * values read better as discrete samples than as an implied-continuous
+ * line. "system-cpu" stays "lines", matching gnuplot.sh's systemtime.csv
+ * plot (which did say "with lines" explicitly) -- it's a /proc/stat system
+ * metric, not a hardware performance counter. The remaining generic/
+ * network-io/custom matches (built below, not in this table) also default
+ * to "lines" since they're not counter-specific either. */
 static const struct plot_template templates[] = {
   { "topdown", "Topdown Breakdown", "% of pipeline slots",
-    { "retire","frontend","backend","speculate" }, 2 },
+    { "retire","frontend","backend","speculate" }, 2, "points" },
   { "memory-bound", "Memory Boundedness", "% of cycles",
-    { "l1_bound","l2_bound","l3_bound","dram_bound","store_bound" }, 2 },
+    { "l1_bound","l2_bound","l3_bound","dram_bound","store_bound" }, 2, "points" },
   { "cache-miss", "Cache Miss Rates", "miss rate (%)",
-    { "L1-dcache miss","L1-icache miss","iTLB miss","dTLB miss","opcache miss" }, 1 },
+    { "L1-dcache miss","L1-icache miss","iTLB miss","dTLB miss","opcache miss" }, 1, "points" },
   { "system-cpu", "System CPU Time", "% of interval",
-    { "cpu","idle","iowait","irq" }, 2 },
+    { "cpu","idle","iowait","irq" }, 2, "lines" },
   { "ipc", "Instructions per Cycle", "IPC",
-    { "ipc" }, 1 },
+    { "ipc" }, 1, "points" },
   { "branch-miss", "Branch Miss Rate", "miss rate (%)",
-    { "branch miss" }, 1 },
+    { "branch miss" }, 1, "points" },
   { "float", "Float Instruction Mix", "% of instructions",
-    { "float" }, 1 },
+    { "float" }, 1, "points" },
 };
 static const int ntemplates = sizeof(templates) / sizeof(templates[0]);
 
@@ -81,6 +92,7 @@ struct plot_match {
   char name[64];
   char title[128];
   char ylabel[64];
+  const char *style;   /* gnuplot "with" style; always "lines" outside match_templates() */
   int time_col;
   int cols[MAX_CSV_FIELDS];
   int ncols;
@@ -139,6 +151,7 @@ static int match_templates(char * const *header_fields,int header_n,int time_col
     snprintf(pm->name,sizeof(pm->name),"%s",tmpl->name);
     snprintf(pm->title,sizeof(pm->title),"%s",tmpl->title);
     snprintf(pm->ylabel,sizeof(pm->ylabel),"%s",tmpl->ylabel);
+    pm->style = tmpl->style;
     pm->time_col = time_col;
     pm->ncols = nfound;
     for (i = 0; i < nfound; i++){
@@ -190,6 +203,7 @@ static int add_network_fallback_match(char * const *header_fields,int header_n,
   snprintf(pm->name,sizeof(pm->name),"network-io");
   snprintf(pm->title,sizeof(pm->title),"Network I/O");
   snprintf(pm->ylabel,sizeof(pm->ylabel),"bytes");
+  pm->style = "lines";
   pm->time_col = time_col;
   return n + 1;
 }
@@ -221,6 +235,7 @@ static int add_fallback_match(char * const *header_fields,int header_n,
   snprintf(pm->name,sizeof(pm->name),"metrics");
   snprintf(pm->title,sizeof(pm->title),"Other Metrics");
   snprintf(pm->ylabel,sizeof(pm->ylabel),"value");
+  pm->style = "lines";
   pm->time_col = time_col;
   return n + 1;
 }
@@ -307,6 +322,7 @@ static int add_custom_plot_match(char * const *header_fields,int header_n,int ti
   snprintf(pm->name,sizeof(pm->name),"%s",spec->name);
   snprintf(pm->title,sizeof(pm->title),"%s",spec->name);
   snprintf(pm->ylabel,sizeof(pm->ylabel),"value");
+  pm->style = "lines";
   pm->time_col = time_col;
   return n + 1;
 }
@@ -353,7 +369,7 @@ static int render_match(const char *csv_path,const struct plot_match *pm,const c
   fprintf(gp,"plot ");
   for (i = 0; i < pm->ncols; i++){
     if (i) fprintf(gp,", ");
-    fprintf(gp,"'%s' using %d:%d with lines",csv_path,pm->time_col + 1,pm->cols[i] + 1);
+    fprintf(gp,"'%s' using %d:%d with %s",csv_path,pm->time_col + 1,pm->cols[i] + 1,pm->style);
   }
   fprintf(gp,"\n");
   rc = pclose(gp);
