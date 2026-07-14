@@ -74,7 +74,7 @@ form .row {
 }
 form .row label { flex: 1; }
 
-input[type="text"] {
+input[type="text"], input[type="date"], select {
   display: block;
   width: 100%;
   margin-top: 0.25rem;
@@ -85,6 +85,18 @@ input[type="text"] {
   color: var(--fg);
   font-size: 0.95rem;
 }
+
+.history-filters .row {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+.history-filters .row label { flex: 1; min-width: 160px; }
+
+.status-ok { color: #1a7f37; font-weight: 600; }
+.status-failed { color: #cf222e; font-weight: 600; }
+.status-unknown { color: var(--muted); }
 
 fieldset.preview {
   border: 1px solid var(--border);
