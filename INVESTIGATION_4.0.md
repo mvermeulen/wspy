@@ -545,8 +545,12 @@ derivable from files already being produced.
     matter for a given interval report but don't share a scale with any built-in template's grouping
     (mixing them into the generic fallback would otherwise flatten the smaller-magnitude ones to an
     indistinguishable line, confirmed empirically doing exactly this against a real `--system` run);
-    `--only-custom` renders exactly the given `--plot` spec(s) and nothing else, for full control. See
-    `CLAUDE.md`'s `plot.c` entry for the full breakdown.
+    `--only-custom` renders exactly the given `--plot` spec(s) and nothing else, for full control. The
+    Run tab's "Custom plots" section (`web/server.py`/`app.js`) exposes both flags directly: pick and
+    choose multiple named plots for one workload launch, some default (the built-in templates, still
+    additive unless "only render these" is checked) and some custom (specific counters of interest),
+    without needing to re-run `wspy-plot` by hand afterward. See `CLAUDE.md`'s `plot.c` and item 9
+    entries for the full breakdown.
 13. Deployment/hosting design note — answer, for both a person browsing their own local run output
     and a team publishing to a shared site: does #8/#11 need to run anywhere besides `localhost`, is a
     static site (generated files, no server process) sufficient, and if not, what's the smallest

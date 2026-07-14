@@ -387,14 +387,26 @@ def build_wspy_argv(wspy_bin, rundir, workload_argv):
             ["-o", csv_path, "--manifest", manifest_path, "--"] + workload_argv)
 
 
-def build_plot_argv(wspy_plot_bin, rundir):
+def build_plot_argv(wspy_plot_bin, rundir, custom_plots=None, only_custom=False):
     """wspy-plot (item 12, "shared plotting templates") over the whole run
     directory: it scans every *.csv itself and matches each against the
     shared template table, so -- unlike the old gnuplot.sh, which only knew
     two literal filenames -- this one command line covers any counter-group
     combination a run happened to produce, with no "did this produce
-    amdtopdown.csv?" gate needed before calling it."""
-    return [wspy_plot_bin, "--rundir", rundir, "--quiet"]
+    amdtopdown.csv?" gate needed before calling it.
+
+    custom_plots (the Run tab's "Custom plots" section, validated by
+    _parse_custom_plots()) becomes one --plot NAME=col1,col2,... per entry
+    -- wspy-plot's own escape hatch for grouping specific counters onto one
+    plot regardless of the built-in templates' groupings; only_custom adds
+    --only-custom, which renders exactly those spec(s) and skips every
+    built-in template and fallback plot."""
+    argv = [wspy_plot_bin, "--rundir", rundir, "--quiet"]
+    for cp in (custom_plots or []):
+        argv += ["--plot", f"{cp['name']}={','.join(cp['columns'])}"]
+    if only_custom:
+        argv.append("--only-custom")
+    return argv
 
 
 def list_plot_pngs(rundir):
@@ -442,7 +454,8 @@ def shell_preview(argv, cwd=None):
 # Run execution
 # ---------------------------------------------------------------------------
 
-def execute_run(state, wspy_bin, wspy_plot_bin, rundir, workload_argv):
+def execute_run(state, wspy_bin, wspy_plot_bin, rundir, workload_argv,
+                 custom_plots=None, only_custom=False):
     log_path = os.path.join(rundir, LOG_NAME)
     logf = open(log_path, "w")
 
@@ -478,7 +491,7 @@ def execute_run(state, wspy_bin, wspy_plot_bin, rundir, workload_argv):
         state.finish("error", None)
         return
 
-    plot_argv = build_plot_argv(wspy_plot_bin, rundir)
+    plot_argv = build_plot_argv(wspy_plot_bin, rundir, custom_plots, only_custom)
     emit("$ " + shell_preview(plot_argv))
     try:
         proc = subprocess.Popen(plot_argv, cwd=REPO_ROOT,
@@ -523,7 +536,8 @@ def run_store_ingest_besteffort(emit, cfg, run_index_path):
 
 
 def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
-                         workload_argv, run_index_path=None, store_ingest=False):
+                         workload_argv, run_index_path=None, store_ingest=False,
+                         custom_plots=None, only_custom=False):
     """Item 7: invoke wspy-run itself (rather than wspy directly) for one of
     its builtin profiles, then -- mirroring workload/phoronix/run_test.sh's
     own hand-written pattern -- best-effort run wspy-plot (item 12) over the
@@ -564,7 +578,7 @@ def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
     wspy_run_rc = proc.wait()
     emit(f"[wspy-run exited {wspy_run_rc}]")
 
-    plot_argv = build_plot_argv(cfg["wspy_plot_bin"], rundir)
+    plot_argv = build_plot_argv(cfg["wspy_plot_bin"], rundir, custom_plots, only_custom)
     emit("$ " + shell_preview(plot_argv))
     try:
         proc = subprocess.Popen(plot_argv, cwd=REPO_ROOT,
@@ -631,7 +645,8 @@ def write_custom_run_summary(rundir, pass_records):
 
 
 def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_argv,
-                        checklist, manifest_on, run_index_path, store_ingest):
+                        checklist, manifest_on, run_index_path, store_ingest,
+                        custom_plots=None, only_custom=False):
     """Item 9's "customized away from a preset" path: runs each enabled
     configuration (see build_configuration_passes()) as its own sequential
     wspy invocation into this run directory -- the direct-command-lines
@@ -686,7 +701,7 @@ def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_ar
             "kind": "tree" if p["name"] == "tree" else "other",
         })
 
-    plot_argv = build_plot_argv(cfg["wspy_plot_bin"], rundir)
+    plot_argv = build_plot_argv(cfg["wspy_plot_bin"], rundir, custom_plots, only_custom)
     emit("$ " + shell_preview(plot_argv))
     try:
         proc = subprocess.Popen(plot_argv, cwd=REPO_ROOT,
@@ -1560,6 +1575,25 @@ def render_run_tab(prefill, cfg):
       <div class="config-card config-reserved">
         <label class="config-toggle"><input type="checkbox" disabled> <strong>/proc extras</strong>
           <span class="muted">(reserved for 4.2 Tier 3 &mdash; not implemented yet)</span></label>
+      </div>
+    </div>
+
+    <div class="config-card" id="custom-plots-card">
+      <label class="config-toggle"><strong>Custom plots</strong>
+        <span class="muted">(runs regardless of preset vs. custom above)</span></label>
+      <div class="config-options">
+        <p class="muted">Group specific CSV columns onto a plot of their own, alongside the
+           default plot templates &mdash; useful when a counter you care about doesn't share a
+           scale with any built-in grouping (<code>wspy-plot --list-templates</code> lists those).
+           Column names are the literal CSV header text a counter group produces (e.g. topdown's
+           <code>retire,frontend,backend,speculate</code>; see <code>CLAUDE.md</code>'s
+           <code>plot.c</code> entry for more).</p>
+        <div id="custom-plots-list"></div>
+        <div class="add-buttons">
+          <button type="button" id="add-custom-plot">+ add custom plot</button>
+        </div>
+        <label class="inline-check"><input type="checkbox" id="only_custom">
+          Only render these custom plots (skip the built-in templates)</label>
       </div>
     </div>
 
@@ -2532,6 +2566,44 @@ class Handler(BaseHTTPRequestHandler):
         run_index_path = cfg["run_index_file"] if run_index_on else None
         return manifest_on, run_index_path, store_ingest
 
+    @staticmethod
+    def _parse_custom_plots(body):
+        """The Run tab's "Custom plots" section (item 12's wspy-plot --plot/
+        --only-custom exposed in the UI): validates body["custom_plots"] (a
+        list of {"name","columns"}) and body["only_custom"], mirroring
+        wspy-plot's own --plot NAME=col1,col2,... validation so a malformed
+        spec is rejected here (400) rather than only surfacing as wspy-plot's
+        own exit-2 deep inside a background run. Returns (custom_plots,
+        only_custom, error_dict) -- error_dict is None on success. A row the
+        user hasn't finished filling in (blank name or no columns) is
+        silently dropped rather than treated as an error, since the UI's "+
+        add custom plot" button starts a row empty."""
+        raw = body.get("custom_plots") or []
+        if not isinstance(raw, list):
+            return None, False, {"error": "custom_plots must be a list"}
+        custom_plots = []
+        for item in raw:
+            if not isinstance(item, dict):
+                return None, False, {"error": "each custom_plots entry must be an object"}
+            name = str(item.get("name") or "").strip()
+            columns = [c.strip() for c in (item.get("columns") or [])
+                       if isinstance(c, str) and c.strip()]
+            if not name and not columns:
+                continue
+            if not name or not columns:
+                return None, False, {"error": "each custom plot needs both a name and at least one column"}
+            if not NAME_RE.match(name):
+                return None, False, {"error": f"custom plot name '{name}' must contain only "
+                                               "letters, digits, '.', '_', '-'"}
+            if any("," in c for c in columns):
+                return None, False, {"error": f"custom plot '{name}': column names cannot contain a comma"}
+            custom_plots.append({"name": name, "columns": columns})
+        only_custom = bool(body.get("only_custom"))
+        if only_custom and not custom_plots:
+            return None, False, {"error": "\"only render custom plots\" requires at least one "
+                                           "custom plot with a name and columns"}
+        return custom_plots, only_custom, None
+
     def _start_run(self, cfg, body):
         workload_argv, suite, benchmark, run_id, err = self._parse_workload_and_ids(body)
         if err:
@@ -2578,6 +2650,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, err)
             return
         _manifest_on, run_index_path, store_ingest = self._parse_toggles(cfg, body)
+        custom_plots, only_custom, err = self._parse_custom_plots(body)
+        if err:
+            self._send_json(400, err)
+            return
 
         rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
         if os.path.exists(rundir):
@@ -2597,7 +2673,7 @@ class Handler(BaseHTTPRequestHandler):
 
         t = threading.Thread(target=execute_profile_run, args=(
             state, cfg, rundir, suite, benchmark, run_id, profile, workload_argv,
-            run_index_path, store_ingest,
+            run_index_path, store_ingest, custom_plots, only_custom,
         ), daemon=True)
         t.start()
 
@@ -2618,6 +2694,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         checklist = body.get("checklist") or {}
         manifest_on, run_index_path, store_ingest = self._parse_toggles(cfg, body)
+        custom_plots, only_custom, err = self._parse_custom_plots(body)
+        if err:
+            self._send_json(400, err)
+            return
 
         rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
         if os.path.exists(rundir):
@@ -2648,6 +2728,7 @@ class Handler(BaseHTTPRequestHandler):
         t = threading.Thread(target=execute_custom_run, args=(
             state, cfg, rundir, suite, benchmark, run_id, workload_argv,
             checklist, manifest_on, run_index_path, store_ingest,
+            custom_plots, only_custom,
         ), daemon=True)
         t.start()
 
@@ -2672,7 +2753,12 @@ class Handler(BaseHTTPRequestHandler):
         benchmark = (body.get("benchmark") or "").strip() or "<benchmark>"
         run_id = (body.get("run_id") or "").strip() or "<auto>"
         _manifest_on, run_index_path, _store_ingest = self._parse_toggles(cfg, body)
+        custom_plots, only_custom, err = self._parse_custom_plots(body)
+        if err:
+            self._send_json(400, err)
+            return
         rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+        plot_argv = build_plot_argv(cfg["wspy_plot_bin"], rundir, custom_plots, only_custom)
 
         preset = (body.get("preset") or "").strip()
         if preset:
@@ -2682,7 +2768,8 @@ class Handler(BaseHTTPRequestHandler):
             argv = build_wspy_run_argv(cfg["wspy_run_bin"], cfg["wspy_bin"], cfg["output_root"],
                                         suite, benchmark, run_id, preset, workload_argv,
                                         run_index_path=run_index_path)
-            self._send_json(200, {"mode": "preset", "lines": [shell_preview(argv)], "notes": []})
+            self._send_json(200, {"mode": "preset", "lines": [shell_preview(argv), shell_preview(plot_argv)],
+                                   "notes": []})
             return
 
         checklist = body.get("checklist") or {}
@@ -2707,6 +2794,7 @@ class Handler(BaseHTTPRequestHandler):
                 notes.append(f"'{p['name']}' uses native multi-pass execution (--passes) to bin-pack "
                               f"its groups into as few re-executions of the workload as fit the PMU budget.")
         if passes:
+            lines.append(shell_preview(plot_argv))
             notes.append("wspy-plot will run afterward, best-effort, matching every CSV this run "
                           "produces against the shared plot templates (see CLAUDE.md's plot.c entry) "
                           "and writing whatever fires into plots/.")

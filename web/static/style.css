@@ -322,6 +322,15 @@ button.primary { font-weight: 600; }
 }
 .group-check input[type="checkbox"] { margin: 0; }
 
+.custom-plot-row { align-items: flex-end; }
+.custom-plot-row .cp-remove {
+  flex: 0 0 auto;
+  margin-bottom: 0.75rem;
+  background: #cf222e;
+  padding: 0.4rem 0.8rem;
+  font-size: 0.85rem;
+}
+
 .chips {
   display: flex;
   flex-wrap: wrap;
