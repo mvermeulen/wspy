@@ -484,21 +484,32 @@ derivable from files already being produced.
    still can't restore exact preset/checklist state, only workload/suite/benchmark — the same
    limitation #6/#7 already had), **#13** local-vs-shared deployment toggle (no design note exists
    yet — #13 itself is still open), and **#18** estimated-runtime display.
-10. Publish-ready data export format — takes #8's curated block sequence (heading/image/preformatted/
-    commentary, per selected configuration) and renders it in more than one target format, not just a
-    bulk data dump:
-    - **WordPress block markup (Gutenberg comment format)** — the recommended default once a real
-      implementation exists. Pasting this into the WordPress block editor produces separately-editable
-      native blocks (a real heading block, a real image block, a real preformatted block, ...) instead
-      of one opaque blob, which is exactly what makes a report easy to keep tweaking *inside* WordPress
-      afterward rather than only by regenerating and re-pasting from here.
-    - **Self-contained inline-styled HTML** — for a WordPress "Custom HTML" block or any CMS that just
-      wants raw HTML; easiest to paste, hardest to edit again afterward. Kept as an option, not the
-      default, once the block format exists.
-    - **Markdown** — portable, for anywhere that takes it directly or as a conversion source.
-    Real images (gnuplot/chart output) need actual uploaded files for the WordPress/HTML formats to
-    reference — the mockup stands these in with a live chart preview and a placeholder path, which is a
-    real gap between mockup and implementation, not a detail to gloss over when this is built.
+10. ~~Publish-ready data export format~~ — **shipped.** `GET /export/<suite>/<benchmark>/<run_id>`
+    (`render_export_page()`, linked from the report page and the curation studio once `curation.json`
+    has at least one included block) renders #8's curated block sequence into three target formats,
+    switchable via `?format=` tabs with no server round-trip cost (each is computed on request, nothing
+    cached):
+    - **WordPress block markup (Gutenberg comment format)** — the default. `render_export_wordpress()`
+      wraps each block's title/commentary/content in real `<!-- wp:heading -->`/`<!-- wp:paragraph -->`/
+      `<!-- wp:image -->`/`<!-- wp:preformatted -->` comment pairs (`_wp_block()`), so pasting it into the
+      WordPress block editor produces separately-editable native blocks instead of one opaque blob.
+    - **Self-contained inline-styled HTML** (`render_export_html()`) — a standalone document with every
+      style attribute inline, for a "Custom HTML" block or any CMS that just wants raw markup.
+    - **Markdown** (`render_export_markdown()`) — heading/image/fenced-code per block, portable to
+      anywhere that takes it directly or as a conversion source.
+    All three are thin wrappers over one shared `export_block_content()`, which mirrors #8's own
+    `render_block_content()` depth handling (summary/excerpt/full) but returns structured data (image
+    URL / preformatted text / a plain-text note) instead of an HTML string, so no rendering logic is
+    tripled across formats. `GET .../download?format=...` sends the same content with a
+    `Content-Disposition: attachment` header and format-appropriate extension (`.html`/`.html`/`.md`);
+    the on-page view is a plain `<textarea readonly>` (select-all-and-copy, no clipboard JS needed).
+    Real images still aren't uploaded anywhere by this item — an image block exports as a URL pointing
+    back at this server's own `/files/...` endpoint, which only resolves while the server keeps running
+    at that address. That gap (flagged in the original scoping as "a real gap between mockup and
+    implementation, not a detail to gloss over") is surfaced explicitly: the export page prints a visible
+    note whenever an image block is included, telling the user to re-upload it to the target platform's
+    media library and swap in the resulting URL before publishing. Actually generating those images from
+    a normalized schema (rather than `gnuplot.sh`'s per-suite script) is #12, not this item.
 11. Historical run index browser/search.
 12. Shared plotting templates — replace `workload/phoronix/gnuplot.sh`'s per-suite script with one
     normalized-schema pipeline once #1 exists. This is what closes #10's real-image gap: the studio

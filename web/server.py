@@ -1035,6 +1035,222 @@ def render_curated_section(rundir, base_url, suite, benchmark, run_id):
 
 
 # ---------------------------------------------------------------------------
+# Publish-ready export (item 10, INVESTIGATION_4.0.md): renders #8's curated
+# block sequence into a format ready to paste elsewhere, rather than a bulk
+# data dump. Three targets, in the doc's own recommended-default order:
+#
+#   - WordPress block markup (Gutenberg comment format) -- the default, since
+#     pasting it into the block editor produces separately-editable native
+#     blocks (heading/image/preformatted/paragraph) instead of one opaque
+#     blob.
+#   - Self-contained inline-styled HTML -- for a "Custom HTML" block or any
+#     CMS that just wants raw markup; easiest to paste, hardest to edit again.
+#   - Markdown -- portable, for anywhere that takes it directly or as a
+#     conversion source.
+#
+# All three are thin wrappers over export_block_content(), which mirrors
+# render_block_content()'s depth handling (summary/excerpt/full) but returns
+# structured data (image URL, or preformatted text, or nothing, plus an
+# optional plain-text note) instead of an HTML string, since each format
+# spells out "image"/"preformatted text" differently. A curated image block
+# is exported as a URL pointing back at this server's /files/... endpoint --
+# real image *hosting* for WordPress/HTML is a documented gap (the doc's own
+# words: "a real gap between mockup and implementation, not a detail to gloss
+# over"), so the export page surfaces that explicitly rather than silently
+# producing a link that will 404 once this server stops running.
+# ---------------------------------------------------------------------------
+
+EXPORT_FORMATS = ("wordpress", "html", "markdown")
+EXPORT_FORMAT_LABELS = {
+    "wordpress": "WordPress blocks (Gutenberg)",
+    "html": "Self-contained HTML",
+    "markdown": "Markdown",
+}
+EXPORT_FORMAT_EXTENSIONS = {"wordpress": "html", "html": "html", "markdown": "md"}
+EXPORT_FORMAT_CONTENT_TYPES = {
+    "wordpress": "text/html; charset=utf-8",
+    "html": "text/html; charset=utf-8",
+    "markdown": "text/markdown; charset=utf-8",
+}
+
+
+def export_block_content(rundir, base_url, block):
+    """Structured form of one curated block's artifact content, shared by
+    every export renderer. Returns (content_kind, payload, note):
+
+      content_kind: "none" | "image" | "pre"
+      payload: absolute image URL (content_kind == "image"), or preformatted
+        text (content_kind == "pre"), else None
+      note: an optional plain-text annotation (line/byte counts, "too large
+        to embed", ...) for the renderer to show alongside the content --
+        always plain text, never HTML, so each format escapes it itself.
+    """
+    depth = block.get("depth", "none")
+    if depth == "none" or block.get("kind") == "freeform":
+        return "none", None, None
+
+    filename = block.get("source_file")
+    if not filename:
+        return "none", None, "(missing source)"
+    path = os.path.join(rundir, filename)
+    if not os.path.isfile(path):
+        return "none", None, f"{filename} not found"
+    url = f"{base_url}/{_urlescape(filename)}"
+    kind = block.get("source_kind")
+
+    if kind == "image":
+        return ("image", url, None) if depth == "full" else ("none", None, None)
+
+    text, size = read_text_safely(path)
+    if text is None:
+        return "none", None, f"{filename} ({size} bytes, binary -- not embedded, full file: {url})"
+
+    lines = text.splitlines()
+    n = len(lines)
+
+    if depth == "summary":
+        peek = "\n".join(lines[:3])
+        extra = f", {len(lines[0].split(','))} columns" if kind == "csv" and n else ""
+        return "pre", peek, f"{n} lines, {size} bytes{extra} -- full file: {url}"
+
+    if depth == "excerpt":
+        excerpt_n = block.get("excerpt_lines") or DEFAULT_EXCERPT_LINES
+        shown = "\n".join(lines[:excerpt_n])
+        note = (f"showing first {min(excerpt_n, n)} of {n} lines -- full file: {url}"
+                if n > excerpt_n else None)
+        return "pre", shown, note
+
+    # depth == "full"
+    if size > MAX_INLINE_BYTES:
+        return "none", None, f"{size} bytes, too large to embed -- full file: {url}"
+    return "pre", text, None
+
+
+def _export_blocks(rundir):
+    curation = load_curation(rundir)
+    if not curation:
+        return []
+    return [b for b in curation.get("blocks", []) if b.get("depth", "none") != "none"]
+
+
+def render_export_markdown(rundir, base_url, title, blocks):
+    parts = [f"# {title}\n"]
+    for b in blocks:
+        parts.append(f"## {b.get('title') or '(untitled)'}\n")
+        if b.get("commentary"):
+            parts.append(f"{b['commentary']}\n")
+        content_kind, payload, note = export_block_content(rundir, base_url, b)
+        if content_kind == "image":
+            parts.append(f"![{b.get('title') or ''}]({payload})\n")
+        elif content_kind == "pre":
+            fence = "````" if "```" in payload else "```"
+            parts.append(f"{fence}\n{payload}\n{fence}\n")
+        if note:
+            parts.append(f"*{note}*\n")
+    return "\n".join(parts) + "\n"
+
+
+def render_export_html(rundir, base_url, title, blocks):
+    body_parts = [f'<h1 style="font-family:sans-serif;">{html.escape(title)}</h1>']
+    for b in blocks:
+        body_parts.append(
+            f'<h2 style="font-family:sans-serif;margin-top:2em;">{html.escape(b.get("title") or "(untitled)")}</h2>')
+        if b.get("commentary"):
+            body_parts.append(
+                f'<p style="font-family:sans-serif;">{html.escape(b["commentary"])}</p>')
+        content_kind, payload, note = export_block_content(rundir, base_url, b)
+        if content_kind == "image":
+            body_parts.append(f'<img src="{payload}" alt="{html.escape(b.get("title") or "")}" '
+                               f'style="max-width:100%;height:auto;">')
+        elif content_kind == "pre":
+            body_parts.append(
+                f'<pre style="background:#f5f5f5;padding:12px;overflow-x:auto;'
+                f'font-family:monospace;font-size:0.9em;">{html.escape(payload)}</pre>')
+        if note:
+            body_parts.append(
+                f'<p style="color:#666;font-family:sans-serif;font-size:0.85em;">{html.escape(note)}</p>')
+    return ("<!doctype html><html><head><meta charset=\"utf-8\">"
+            f"<title>{html.escape(title)}</title></head>"
+            f'<body style="max-width:800px;margin:2em auto;">{"".join(body_parts)}</body></html>')
+
+
+def _wp_block(name, inner_html, attrs=None):
+    attrs_json = f" {json.dumps(attrs)}" if attrs else ""
+    return f"<!-- wp:{name}{attrs_json} -->\n{inner_html}\n<!-- /wp:{name} -->"
+
+
+def render_export_wordpress(rundir, base_url, title, blocks):
+    parts = [_wp_block("heading", f"<h1>{html.escape(title)}</h1>", {"level": 1})]
+    for b in blocks:
+        parts.append(_wp_block("heading", f'<h2>{html.escape(b.get("title") or "(untitled)")}</h2>',
+                                {"level": 2}))
+        if b.get("commentary"):
+            parts.append(_wp_block("paragraph", f'<p>{html.escape(b["commentary"])}</p>'))
+        content_kind, payload, note = export_block_content(rundir, base_url, b)
+        if content_kind == "image":
+            parts.append(_wp_block(
+                "image", f'<figure class="wp-block-image"><img src="{payload}" '
+                         f'alt="{html.escape(b.get("title") or "")}"/></figure>'))
+        elif content_kind == "pre":
+            parts.append(_wp_block(
+                "preformatted", f'<pre class="wp-block-preformatted">{html.escape(payload)}</pre>'))
+        if note:
+            parts.append(_wp_block("paragraph", f'<p><em>{html.escape(note)}</em></p>'))
+    return "\n\n".join(parts) + "\n"
+
+
+def render_export(rundir, base_url, title, fmt, blocks):
+    if fmt == "markdown":
+        return render_export_markdown(rundir, base_url, title, blocks)
+    if fmt == "html":
+        return render_export_html(rundir, base_url, title, blocks)
+    return render_export_wordpress(rundir, base_url, title, blocks)
+
+
+def render_export_page(rundir, base_url, suite, benchmark, run_id, fmt):
+    studio_url = f"/studio/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    title = f"{suite} / {benchmark} / {run_id}"
+    blocks = _export_blocks(rundir)
+
+    if not blocks:
+        body = (f'<section class="panel"><h1>Export: {html.escape(benchmark)}/{html.escape(run_id)}</h1>'
+                f'<p class="muted">No curated blocks yet &mdash; '
+                f'<a href="{studio_url}">curate this report</a> first, then come back here.</p></section>')
+        return page(f"export: {benchmark}/{run_id}", body)
+
+    rendered = render_export(rundir, base_url, title, fmt, blocks)
+    has_image = any(b.get("source_kind") == "image" and b.get("depth") == "full" for b in blocks)
+
+    nav = "".join(
+        f'<a class="tab-btn{" active" if f == fmt else ""}" href="?format={f}">{EXPORT_FORMAT_LABELS[f]}</a>'
+        for f in EXPORT_FORMATS
+    )
+    download_url = (f"/export/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}/download"
+                    f"?format={fmt}")
+    image_note = (
+        '<p class="muted">This export references an image by its URL on this server '
+        f'(<code>{base_url}</code>), which only resolves while this server keeps running at this '
+        'address. For WordPress or another CMS, re-upload the image to that platform\'s media '
+        'library first and swap in the resulting URL before publishing (see '
+        '<code>INVESTIGATION_4.0.md</code> item 10/12).</p>'
+    ) if has_image else ""
+
+    body = f"""
+<section class="panel">
+  <h1>Export: {html.escape(suite)} / {html.escape(benchmark)} / {html.escape(run_id)}</h1>
+  <p class="config-label">Renders this report's curated block sequence
+     (<a href="{studio_url}">edit curation</a>) into a format ready to paste elsewhere.</p>
+  <nav class="tabs">{nav}</nav>
+  {image_note}
+  <textarea readonly rows="28" style="width:100%;font-family:monospace;font-size:0.85em;"
+    >{html.escape(rendered)}</textarea>
+  <p><a href="{download_url}">Download as .{EXPORT_FORMAT_EXTENSIONS[fmt]}</a></p>
+</section>
+"""
+    return page(f"export: {benchmark}/{run_id}", body)
+
+
+# ---------------------------------------------------------------------------
 # HTML rendering
 # ---------------------------------------------------------------------------
 
@@ -1414,9 +1630,11 @@ def _studio_link_and_curated(rundir, base_url, suite, benchmark, run_id, raw_htm
     when there's no curation yet, since the raw listing is then the only
     content this report has."""
     studio_url = f"/studio/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    export_url = f"/export/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
     curated_html = render_curated_section(rundir, base_url, suite, benchmark, run_id)
     if curated_html:
-        return (f'<p><a href="{studio_url}">Edit curation</a></p>'
+        return (f'<p><a href="{studio_url}">Edit curation</a> &middot; '
+                f'<a href="{export_url}">Export</a></p>'
                 f'{curated_html}'
                 f'<details><summary>Raw artifacts</summary>{raw_html}</details>')
     return (f'<p><a href="{studio_url}">Curate this report</a> '
@@ -1486,7 +1704,8 @@ def render_studio(rundir, suite, benchmark, run_id):
   <p class="config-label">Select, reorder, and annotate this run's artifacts into a curated block
      sequence. Changes save when you click any button below (moving/removing/adding a block also
      saves any edits you've made to the others).</p>
-  <p><a href="/report/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}">Back to report</a></p>
+  <p><a href="/report/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}">Back to report</a>
+     &middot; <a href="/export/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}">Export</a></p>
   <form method="post" action="{action}">
     <div class="block-list">{"".join(cards)}</div>
     <fieldset class="preview">
@@ -1823,6 +2042,49 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, "no such report")
                 return
             self._send(200, render_studio(rundir, suite, benchmark, run_id))
+            return
+
+        m = re.match(r"^/export/([^/]+)/([^/]+)/([^/]+)/download$", path)
+        if m:
+            suite, benchmark, run_id = m.groups()
+            if not all(valid_segment(x) for x in (suite, benchmark, run_id)):
+                self._send(400, "invalid path")
+                return
+            rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+            if not os.path.isdir(rundir):
+                self._send(404, "no such report")
+                return
+            fmt = qs.get("format", ["wordpress"])[0]
+            if fmt not in EXPORT_FORMATS:
+                self._send(400, "invalid format")
+                return
+            blocks = _export_blocks(rundir)
+            if not blocks:
+                self._send(400, "no curated blocks to export")
+                return
+            base = f"/files/{suite}/{benchmark}/{run_id}"
+            title = f"{suite} / {benchmark} / {run_id}"
+            rendered = render_export(rundir, base, title, fmt, blocks)
+            filename = f"{benchmark}-{run_id}-{fmt}.{EXPORT_FORMAT_EXTENSIONS[fmt]}"
+            self._send(200, rendered, content_type=EXPORT_FORMAT_CONTENT_TYPES[fmt],
+                       headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+            return
+
+        m = re.match(r"^/export/([^/]+)/([^/]+)/([^/]+)$", path)
+        if m:
+            suite, benchmark, run_id = m.groups()
+            if not all(valid_segment(x) for x in (suite, benchmark, run_id)):
+                self._send(400, "invalid path")
+                return
+            rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+            if not os.path.isdir(rundir):
+                self._send(404, "no such report")
+                return
+            fmt = qs.get("format", ["wordpress"])[0]
+            if fmt not in EXPORT_FORMATS:
+                fmt = "wordpress"
+            base = f"/files/{suite}/{benchmark}/{run_id}"
+            self._send(200, render_export_page(rundir, base, suite, benchmark, run_id, fmt))
             return
 
         if path == "/compare":
