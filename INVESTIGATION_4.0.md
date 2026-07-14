@@ -510,7 +510,19 @@ derivable from files already being produced.
     note whenever an image block is included, telling the user to re-upload it to the target platform's
     media library and swap in the resulting URL before publishing. Actually generating those images from
     a normalized schema (rather than `gnuplot.sh`'s per-suite script) is #12, not this item.
-11. Historical run index browser/search.
+11. ~~Historical run index browser/search~~ — **shipped.** `GET /history` (`web/server.py`'s
+    `render_history()`) generalizes the homepage's `discover_reports()` list (newest-50, no
+    filtering) into a dedicated search/browse page over every run directory: filters on workload
+    command substring, suite/benchmark/hostname substring, exact CPU vendor/status, and a
+    start-date/end-date range, plus pagination — all plain query-string GET params, bookmarkable
+    and JS-free like `/compare`. `discover_run_history()` scans every run directory (no cap) and
+    `load_run_history_entry()` enriches each from whichever manifest shape is present — workload
+    and status (mirroring `wspy-validate`'s clean-exit definition) always available, hostname/
+    `cpu_vendor`/`start_time`/`elapsed_seconds` read from a representative per-process `--manifest`
+    when one exists — rather than querying `wspy-store`'s normalized `runs` table, since store
+    ingestion is only an opt-in toggle chip and this page should cover every run regardless. Result
+    rows reuse the homepage's "select rows, compare selected" pattern into `/compare`. See
+    `CLAUDE.md`'s `web/` entry for the full breakdown.
 12. Shared plotting templates — replace `workload/phoronix/gnuplot.sh`'s per-suite script with one
     normalized-schema pipeline once #1 exists. This is what closes #10's real-image gap: the studio
     (#8) and export (#10) currently stand in a placeholder for every chart because nothing yet

@@ -743,6 +743,148 @@ def discover_manifest_paths(output_root, limit=100):
     return found[:limit]
 
 
+# ---------------------------------------------------------------------------
+# Historical run index browser/search (item 11, INVESTIGATION_4.0.md 4.1 Tier
+# 2) -- discover_reports() above is the homepage's cheap, mtime-only recent
+# list; this is the fuller searchable index over every run directory. Reads
+# straight off disk (directory scan + each run's own manifest(s)), not
+# wspy-store's normalized `runs` table, since store ingestion is an opt-in
+# per-run toggle and this browser should cover every run whether or not that
+# toggle was on for it -- matching this tier's "no server-owned state that
+# isn't also derivable from files already being produced" design principle.
+# ---------------------------------------------------------------------------
+
+HISTORY_PAGE_SIZE = 25
+
+
+def read_json_file(path):
+    """Best-effort JSON load -- None on any I/O/parse failure rather than
+    raising, so one unreadable/malformed manifest degrades that one run's
+    metadata instead of breaking the whole history scan."""
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+
+
+def run_status_from_exit_status(exit_status):
+    """Mirrors wspy-validate's own "clean exit" definition (validate.c):
+    known+exited+exit_code==0 is ok, known+(signaled or nonzero) is failed,
+    not known at all is unknown -- never fatal to the browser either way."""
+    if not exit_status or not exit_status.get("known"):
+        return "unknown"
+    if exit_status.get("signaled"):
+        return "failed"
+    if exit_status.get("exited") and exit_status.get("exit_code") == 0:
+        return "ok"
+    return "failed"
+
+
+def run_status_from_passes(passes):
+    if not passes:
+        return "unknown"
+    return "ok" if all(p.get("status") == "ok" for p in passes) else "failed"
+
+
+def load_run_history_entry(output_root, suite, benchmark, run_id, mtime):
+    """Best-effort metadata for one run directory: workload command, overall
+    status, and (from a representative per-process manifest -- wspy-run's own
+    run-level manifest.json carries none of this) hostname/cpu_vendor/
+    start_time/elapsed_seconds. Every field degrades to None/"unknown"
+    independently rather than failing the whole entry, the same "measured vs
+    unavailable" idiom coverage.c/provenance.c use for a single run's own
+    fields, applied here across a run's identifying metadata instead."""
+    rundir = os.path.join(output_root, suite, benchmark, run_id)
+    run_manifest = read_run_manifest(os.path.join(rundir, RUN_MANIFEST_NAME))
+    host_manifest = None
+    if run_manifest is not None:
+        workload = run_manifest.get("command") or None
+        status = run_status_from_passes(run_manifest.get("passes"))
+        for p in run_manifest.get("passes", []):
+            pass_manifest = p.get("manifest")
+            if pass_manifest:
+                host_manifest = read_json_file(os.path.join(rundir, pass_manifest))
+                if host_manifest:
+                    break
+    else:
+        host_manifest = read_json_file(os.path.join(rundir, MANIFEST_NAME))
+        workload = (host_manifest.get("command", {}).get("argv") if host_manifest else None) or None
+        status = run_status_from_exit_status(host_manifest.get("exit_status") if host_manifest else None)
+
+    host = (host_manifest or {}).get("host") or {}
+    timing = (host_manifest or {}).get("timing") or {}
+
+    return {
+        "suite": suite, "benchmark": benchmark, "run_id": run_id, "mtime": mtime,
+        "workload_str": shlex.join(workload) if workload else None,
+        "status": status,
+        "hostname": host.get("hostname"),
+        "cpu_vendor": host.get("cpu_vendor"),
+        "start_time": timing.get("start_time"),
+        "elapsed_seconds": timing.get("elapsed_seconds"),
+    }
+
+
+def discover_run_history(output_root, filters, page=1, page_size=HISTORY_PAGE_SIZE):
+    """Every run directory under output_root (no 50-cap like
+    discover_reports() -- this view's whole point is searching further back
+    than the homepage's recent list), filtered and paginated server-side.
+    Returns (page_of_entries, total_matching)."""
+    entries = []
+    if os.path.isdir(output_root):
+        for suite in sorted(os.listdir(output_root)):
+            suite_dir = os.path.join(output_root, suite)
+            if not os.path.isdir(suite_dir):
+                continue
+            for benchmark in sorted(os.listdir(suite_dir)):
+                bench_dir = os.path.join(suite_dir, benchmark)
+                if not os.path.isdir(bench_dir):
+                    continue
+                for run_id in sorted(os.listdir(bench_dir)):
+                    run_dir = os.path.join(bench_dir, run_id)
+                    if not os.path.isdir(run_dir):
+                        continue
+                    if not any(os.path.exists(os.path.join(run_dir, f)) for f in TOPLEVEL_MARKER_FILES):
+                        continue
+                    mtime = os.path.getmtime(run_dir)
+                    entries.append(load_run_history_entry(output_root, suite, benchmark, run_id, mtime))
+
+    def matches(e):
+        if filters.get("q") and filters["q"] not in (e["workload_str"] or "").lower():
+            return False
+        if filters.get("suite") and filters["suite"] not in e["suite"].lower():
+            return False
+        if filters.get("benchmark") and filters["benchmark"] not in e["benchmark"].lower():
+            return False
+        if filters.get("hostname") and filters["hostname"] not in (e["hostname"] or "").lower():
+            return False
+        if filters.get("cpu_vendor") and filters["cpu_vendor"].lower() != (e["cpu_vendor"] or "").lower():
+            return False
+        if filters.get("status") and filters["status"] != e["status"]:
+            return False
+        date_key = (e["start_time"] or "")[:10]
+        if filters.get("date_from") and (not date_key or date_key < filters["date_from"]):
+            return False
+        if filters.get("date_to") and (not date_key or date_key > filters["date_to"]):
+            return False
+        return True
+
+    filtered = [e for e in entries if matches(e)]
+
+    def sort_key(e):
+        if e["start_time"]:
+            return e["start_time"]
+        return datetime.fromtimestamp(e["mtime"], tz=timezone.utc).isoformat()
+
+    filtered.sort(key=sort_key, reverse=True)
+
+    total = len(filtered)
+    page = max(1, page)
+    start = (page - 1) * page_size
+    return filtered[start:start + page_size], total
+
+
 def run_sync(argv, cwd=None, timeout=120):
     """Runs a short-lived discovery/report command (wspy --capabilities,
     wspy-validate, wspy-store, wspy-summary) to completion and captures its
@@ -1556,10 +1698,138 @@ def render_index(cfg, prefill):
 <section class="panel">
   <h2>Recent reports</h2>
   {reports_html}
+  <p><a href="/history">Browse &amp; search all runs &rarr;</a></p>
 </section>
 <script src="/static/app.js"></script>
 """
     return page("wspy web launcher", body)
+
+
+def render_history(cfg, qs):
+    """Item 11's dedicated page: search/filter/paginate over every run
+    directory (discover_run_history()), not just the homepage's 50-newest
+    quick list. Plain GET with query-string filters -- bookmarkable/
+    shareable and reloadable without resubmission, same pattern /compare
+    already uses, no JS required."""
+    output_root = cfg["output_root"]
+
+    def qparam(name):
+        return (qs.get(name, [""])[0] or "").strip()
+
+    filters = {
+        "q": qparam("q").lower(),
+        "suite": qparam("suite").lower(),
+        "benchmark": qparam("benchmark").lower(),
+        "hostname": qparam("hostname").lower(),
+        "cpu_vendor": qparam("cpu_vendor"),
+        "status": qparam("status"),
+        "date_from": qparam("date_from"),
+        "date_to": qparam("date_to"),
+    }
+    try:
+        page_num = max(1, int(qparam("page") or "1"))
+    except ValueError:
+        page_num = 1
+
+    results, total = discover_run_history(output_root, filters, page_num)
+
+    def field(name, label, kind="text"):
+        value = qparam(name)
+        return (f'<label>{html.escape(label)}<br>'
+                f'<input type="{kind}" name="{name}" value="{html.escape(value)}"></label>')
+
+    status_value = filters["status"]
+    status_options = "".join(
+        f'<option value="{v}"{" selected" if v == status_value else ""}>{l}</option>'
+        for v, l in (("", "any"), ("ok", "ok"), ("failed", "failed"), ("unknown", "unknown"))
+    )
+
+    filter_form = f"""
+<form method="get" action="/history" class="history-filters">
+  <div class="row">
+    {field("q", "Command contains")}
+    {field("suite", "Suite")}
+    {field("benchmark", "Benchmark")}
+  </div>
+  <div class="row">
+    {field("hostname", "Hostname contains")}
+    {field("cpu_vendor", "CPU vendor")}
+    <label>Status<br><select name="status">{status_options}</select></label>
+  </div>
+  <div class="row">
+    {field("date_from", "From date", kind="date")}
+    {field("date_to", "To date", kind="date")}
+  </div>
+  <button type="submit">Search</button>
+  <a href="/history">Clear filters</a>
+</form>
+"""
+
+    rows = []
+    for r in results:
+        ts = r["start_time"] or datetime.fromtimestamp(r["mtime"]).strftime("%Y-%m-%dT%H:%M:%S")
+        key = f"{r['suite']}/{r['benchmark']}/{r['run_id']}"
+        url = f"/report/{_urlescape(r['suite'])}/{_urlescape(r['benchmark'])}/{_urlescape(r['run_id'])}"
+        if r["workload_str"]:
+            shown = r["workload_str"] if len(r["workload_str"]) <= 60 else r["workload_str"][:60] + "…"
+            workload_cell = f'<code title="{html.escape(r["workload_str"])}">{html.escape(shown)}</code>'
+        else:
+            workload_cell = '<span class="muted">&mdash;</span>'
+        elapsed_cell = (f'{r["elapsed_seconds"]:.1f}s'
+                         if isinstance(r["elapsed_seconds"], (int, float)) else "—")
+        rows.append(
+            "<tr>"
+            f'<td><input type="checkbox" name="r" value="{html.escape(key)}"></td>'
+            f"<td>{html.escape(ts)}</td>"
+            f"<td>{html.escape(r['suite'])}</td>"
+            f"<td>{html.escape(r['benchmark'])}</td>"
+            f'<td><a href="{url}">{html.escape(r["run_id"])}</a></td>'
+            f"<td>{workload_cell}</td>"
+            f'<td><span class="status-{html.escape(r["status"])}">{html.escape(r["status"])}</span></td>'
+            f'<td>{html.escape(r["hostname"] or "—")}</td>'
+            f'<td>{html.escape(r["cpu_vendor"] or "—")}</td>'
+            f"<td>{elapsed_cell}</td>"
+            "</tr>"
+        )
+
+    table_html = (
+        '<form method="get" action="/compare">'
+        '<table class="reports history"><thead><tr><th></th><th>when</th><th>suite</th>'
+        "<th>benchmark</th><th>run</th><th>workload</th><th>status</th><th>host</th>"
+        "<th>vendor</th><th>elapsed</th></tr></thead><tbody>" + "".join(rows) +
+        "</tbody></table>"
+        '<button type="submit">Compare selected</button>'
+        "</form>"
+    ) if rows else '<p class="muted">No runs match these filters.</p>'
+
+    last_page = max(1, (total + HISTORY_PAGE_SIZE - 1) // HISTORY_PAGE_SIZE)
+
+    def page_link(p, label):
+        parts = [f"{k}={_urlescape(v)}" for k, v in filters.items() if v]
+        parts.append(f"page={p}")
+        return f'<a href="/history?{"&".join(parts)}">{label}</a>'
+
+    pagination = []
+    if page_num > 1:
+        pagination.append(page_link(page_num - 1, "&laquo; Prev"))
+    pagination.append(f"Page {page_num} of {last_page} ({total} runs)")
+    if page_num < last_page:
+        pagination.append(page_link(page_num + 1, "Next &raquo;"))
+
+    body = f"""
+<section class="panel">
+  <h1>Run history</h1>
+  <p class="config-label">Search and browse every collected run directory under the output root
+     (item 11, historical run index browser/search) &mdash; a directory/manifest scan, not a
+     dependency on <code>wspy-store</code> ingestion, so it covers every run whether or not that
+     toggle was on for it.</p>
+  {filter_form}
+  <p>{" &middot; ".join(pagination)}</p>
+  {table_html}
+  <p><a href="/">Back to launcher</a></p>
+</section>
+"""
+    return page("wspy run history", body)
 
 
 def apply_studio_post(rundir, form):
@@ -2090,6 +2360,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/compare":
             keys = qs.get("r", [])
             self._send(200, render_compare(cfg["output_root"], keys))
+            return
+
+        if path == "/history":
+            self._send(200, render_history(cfg, qs))
             return
 
         m = re.match(r"^/files/([^/]+)/([^/]+)/([^/]+)/([^/]+)$", path)
