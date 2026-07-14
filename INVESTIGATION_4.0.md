@@ -563,7 +563,47 @@ derivable from files already being produced.
     static site (generated files, no server process) sufficient, and if not, what's the smallest
     backend that covers both cases? Feeds #5's mockup pass directly and should land before #9's
     launcher decides how it invokes `wspy-run` (local subprocess vs. something that only makes sense
-    on a single machine).
+    on a single machine). Answered, driven by three concrete use cases beyond "launch one run and
+    watch it stream": (a) using the web UI to create a series of **jobs**, each describing one
+    intended benchmark run, without launching it immediately; (b) processing a queue of such jobs from
+    the command line, independent of the web UI being open or even running, so a batch can be queued
+    once and worked off later/unattended; (c) copying a job to a second machine that also has wspy
+    checked out, and processing it there instead — i.e. a job must be **portable**, not tied to the
+    machine that created it.
+    - A **job** is a spec-only JSON file — the same preset/checklist configuration + workload command +
+      suite/benchmark identity #9's Run tab already builds an argv from (`build_configuration_passes()`
+      / the preset-vs-custom split), captured *before* any run directory or output exists, not a
+      pre-staged run directory with a placeholder manifest. This keeps a queued-but-not-yet-run job out
+      of #11's history browser and #8's report listings entirely, and keeps the job file itself trivial
+      to copy. It's the natural companion to #16's structured configuration provenance: #16 records
+      *what already ran*; a job records *what should run*, ideally in close to the same shape so the
+      two don't drift into separate vocabularies.
+    - Portability requires a job file to carry no reference to the machine that created it — no
+      absolute `--output-root`, no path into that machine's `--run-index`/`store.db`. #9's Run tab
+      becomes a job *creator* as well as a job *runner*: submitting the form can enqueue a job instead
+      of launching immediately. A destination machine drops the copied file into its own local jobs
+      directory and works it against its own independent output tree — there is no shared/synced state
+      between machines, by design.
+    - A new standalone CLI tool, `wspy-queue` (alongside `wspy-run`, not a mode of `web/server.py`),
+      scans a jobs directory and processes pending jobs **strictly serially** — matches every existing
+      assumption in this codebase that a `wspy` run has exclusive use of the machine's hardware PMU
+      counters (`preflight.c`/`coverage.c`'s multiplexing math already treats counter contention as a
+      single-process concern); no `--parallel` option. Each job moves through a minimal
+      `pending → running → done`/`failed` lifecycle with no silent auto-retry on failure (matching the
+      degrade-don't-fail-but-don't-hide-it convention `coverage.c`/`validate.c` already use elsewhere) —
+      a failed job stays failed until a human re-queues it. `wspy-queue` must work fully headless: no
+      dependency on `web/server.py` being up, so it can run via cron or an interactive SSH session on a
+      machine with no browser/web server involved at all. This settles the "smallest backend" question
+      for *execution*: no persistent server process is required at all — the web UI is purely optional,
+      for creating/browsing jobs and reports, never required for a job to actually run. #8/#11 (browsing
+      curated reports / historical search) can still be a thin server (or later, a static-site export)
+      layered on top, since neither depends on how a run was launched.
+    - This is also the concrete driving use case behind #19's rough "read a Phoronix article, inventory
+      its benchmarks, and create jobs for whichever haven't been run yet" idea: "already run" there is
+      answered by matching a candidate benchmark name against `wspy-store`'s normalized `runs` table (or
+      the run-index directly) using the same substring-matching approach `ledger.c` already implements
+      for suite-level workload coverage, not a new completion-tracker bolted onto the job file itself.
+      See #19's own entry for the current (still speculative/future) scope of that connection.
 14. Traceability links (summary row → manifest → raw CSV → plots → tree artifacts) — closes the
     "every published row traces back to command/environment/artifacts" criterion deferred from 4.0
     (see "Success criteria for a 4.0 kickoff").
@@ -611,6 +651,15 @@ derivable from files already being produced.
     - Locate where a Phoronix test actually ran/logged on disk (its own results/log directory, separate
       from wspy's own run directory) and surface/link to it from the report page — particularly useful
       for troubleshooting when a benchmark run fails and the wspy-side artifacts alone don't explain why.
+    - Reading a Phoronix benchmark *article* (not just the locally-installed suite) and inventorying the
+      benchmarks it lists, so that whichever ones haven't been run yet get jobs created for them, and
+      once every benchmark from that article has a completed run, an uplevel report can be generated
+      referencing the article alongside pointers to each benchmark's run(s). Now builds on #13's
+      job/queue mechanism rather than needing its own separate execution/dedup design: this becomes
+      "parse the article, diff its benchmark list against the store/run-index the same way `ledger.c`
+      already diffs a workload list for suite-level coverage, emit a job file per gap, let `wspy-queue`
+      work them off," plus a small article-level report generator once #13's job states show every job
+      for that article as `done`.
     - Likely other Phoronix-specific conveniences once this is actually scoped; the general idea is a
       dedicated future item for deeper Phoronix-particular knowledge in the web UI, layered on top of
       (not replacing) the suite-agnostic launcher #9 already ships.
