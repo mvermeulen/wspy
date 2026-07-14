@@ -413,6 +413,97 @@ char *ptrace_read_null_terminated_string(pid_t pid,long addr){
   return bufptr;
 }
 
+/* ptrace(2) documents that, with PTRACE_O_TRACEFORK/CLONE/VFORK set, the
+ * tracer cannot assume any particular order between a parent's
+ * PTRACE_EVENT_FORK stop (naming the new child) and that child's own
+ * initial SIGSTOP -- under heavy concurrent fork()+exit() (many
+ * near-simultaneous short-lived children), this single-threaded wait4()
+ * loop can reap a child's own PTRACE_EVENT_EXIT stop before its parent's
+ * fork-stop naming it, which would otherwise write this file's "exit"
+ * block for a pid with no preceding "fork" line naming it -- confirmed via
+ * run_tests.sh's tree-stress integrity check under a 2000-process burst.
+ * ptrace_pid_table[] defers a not-yet-known pid's "comm"/"cmdline"/"exit"
+ * block until its "fork" line is written, so the file's own line order
+ * always has "fork" before "exit" for the same pid regardless of which
+ * ptrace stop the kernel happened to deliver first. */
+#define PTRACE_PID_TABLE_BUCKETS 4093
+
+struct ptrace_pid_entry {
+  pid_t pid;
+  int known;
+  char *pending_exit;   // buffered "comm"/"cmdline"/"exit" block text, or NULL
+  struct ptrace_pid_entry *next;
+};
+
+static struct ptrace_pid_entry *ptrace_pid_table[PTRACE_PID_TABLE_BUCKETS];
+
+static struct ptrace_pid_entry *ptrace_pid_lookup(pid_t pid,int create){
+  unsigned int bucket = ((unsigned int)pid) % PTRACE_PID_TABLE_BUCKETS;
+  struct ptrace_pid_entry *e;
+
+  for (e = ptrace_pid_table[bucket]; e; e = e->next)
+    if (e->pid == pid) return e;
+  if (!create) return NULL;
+  e = calloc(1,sizeof(*e));
+  e->pid = pid;
+  e->next = ptrace_pid_table[bucket];
+  ptrace_pid_table[bucket] = e;
+  return e;
+}
+
+/* True once pid's own "fork" (or "root") line has been written to the
+ * tree file. */
+static int ptrace_pid_is_known(pid_t pid){
+  struct ptrace_pid_entry *e = ptrace_pid_lookup(pid,0);
+  return e && e->known;
+}
+
+/* Marks pid known -- called right after writing its "root"/"fork" line --
+ * and, if an exit block was deferred waiting for exactly this, flushes it
+ * now so it lands immediately after that line, preserving causal order in
+ * the file regardless of ptrace stop delivery order. */
+static void ptrace_pid_mark_known(pid_t pid){
+  struct ptrace_pid_entry *e = ptrace_pid_lookup(pid,1);
+  e->known = 1;
+  if (e->pending_exit){
+    fputs(e->pending_exit,treefile);
+    fflush(treefile);
+    free(e->pending_exit);
+    e->pending_exit = NULL;
+  }
+}
+
+/* Defers text (an already-formatted "comm"/"cmdline"/"exit" block, one
+ * fputs()-ready blob) for a not-yet-known pid until its "fork" line
+ * arrives. Takes ownership of text -- caller must not free it. */
+static void ptrace_pid_defer_exit(pid_t pid,char *text){
+  struct ptrace_pid_entry *e = ptrace_pid_lookup(pid,1);
+  free(e->pending_exit); // one exit block per pid in practice, but don't leak if it somehow recurs
+  e->pending_exit = text;
+}
+
+/* Releases the table at the end of a --tree run. Any pid whose "fork"
+ * line never arrived at all (a genuine lost event, not just reordering --
+ * not expected in practice) still gets its buffered exit block flushed
+ * here rather than silently discarded, matching this codebase's
+ * degrade-don't-fail idiom. */
+static void ptrace_pid_table_flush_and_free(void){
+  int i;
+  struct ptrace_pid_entry *e,*next;
+
+  for (i = 0; i < PTRACE_PID_TABLE_BUCKETS; i++){
+    for (e = ptrace_pid_table[i]; e; e = next){
+      next = e->next;
+      if (e->pending_exit){
+        fputs(e->pending_exit,treefile);
+        free(e->pending_exit);
+      }
+      free(e);
+    }
+    ptrace_pid_table[i] = NULL;
+  }
+}
+
 // loop through and handle ptrace events
 void ptrace_loop(void){
   pid_t pid;
@@ -434,6 +525,11 @@ void ptrace_loop(void){
   unsigned long long exit_events = 0;
   unsigned long long unknown_traps = 0;
   unsigned long long wait_eintr = 0;
+  char *exit_block;
+  size_t exit_block_size;
+  FILE *exit_out;
+
+  ptrace_pid_mark_known(child_pid); // the "root" line for this pid was already written before ptrace_loop() was called
 
 #ifdef __WALL
   wait_flags |= __WALL;
@@ -512,32 +608,39 @@ void ptrace_loop(void){
 	  ptrace(PTRACE_GETEVENTMSG,pid,NULL,&data);
 	  fprintf(treefile,"%5.3f %d fork %lu\n",elapsed,pid,data);
 	  fflush(treefile);
+	  ptrace_pid_mark_known((pid_t)data); // flushes data's deferred exit block, if any, right after this line
 	  debug2("   clone/fork/vfork - pid=%d\n",data);
 	  break;
 	case PTRACE_EVENT_EXIT:
     exit_events++;
 	  ptrace(PTRACE_GETEVENTMSG,pid,NULL,&data);
+	  // Buffered via open_memstream() rather than written straight to treefile:
+	  // if this pid's own "fork" line hasn't been written yet (a documented
+	  // ptrace race under concurrent fork()+exit() -- see ptrace_pid_table's
+	  // comment above), this whole block is deferred until it has, instead of
+	  // being written out of order.
+	  exit_out = open_memstream(&exit_block,&exit_block_size);
 	  // dump contents of proc/<pid>/comm
 	  snprintf(stat_name,sizeof(stat_name),"/proc/%d/comm",pid);
 	  if ((stat_file = fopen(stat_name,"r")) != NULL){
 	    if (fgets(buffer,sizeof(buffer),stat_file) != NULL){
-	      fprintf(treefile,"%5.3f %d comm ",elapsed,pid);
-	      fputs(buffer,treefile);
+	      fprintf(exit_out,"%5.3f %d comm ",elapsed,pid);
+	      fputs(buffer,exit_out);
 	    }
 	    fclose(stat_file);
 	  }
 	  // dump the full command line
 	  if (tree_cmdline){
 	    snprintf(stat_name,sizeof(stat_name),"/proc/%d/cmdline",pid);
-	    fprintf(treefile,"%5.3f %d cmdline",elapsed,pid);
+	    fprintf(exit_out,"%5.3f %d cmdline",elapsed,pid);
 	    if ((stat_file = fopen(stat_name,"rb")) != NULL){
 	      char *arg = 0;
 	      size_t size = 0;
 	      while (getdelim(&arg,&size,0,stat_file) != -1){
-		fprintf(treefile," %s",arg);
+		fprintf(exit_out," %s",arg);
 	      }
 	    }
-	    fprintf(treefile,"\n");
+	    fprintf(exit_out,"\n");
 	    fclose(stat_file);
 	  }
 
@@ -545,11 +648,18 @@ void ptrace_loop(void){
 	  snprintf(stat_name,sizeof(stat_name),"/proc/%d/stat",pid);
 	  if ((stat_file = fopen(stat_name,"r")) != NULL){
 	    if (fgets(buffer,sizeof(buffer),stat_file) != NULL){
-	      fprintf(treefile,"%5.3f %d exit ",elapsed,pid);
-	      fputs(buffer,treefile);
-	      fflush(treefile);
+	      fprintf(exit_out,"%5.3f %d exit ",elapsed,pid);
+	      fputs(buffer,exit_out);
 	    }
 	    fclose(stat_file);
+	  }
+	  fclose(exit_out);
+	  if (ptrace_pid_is_known(pid)){
+	    fputs(exit_block,treefile);
+	    fflush(treefile);
+	    free(exit_block);
+	  } else {
+	    ptrace_pid_defer_exit(pid,exit_block); // takes ownership; flushed once pid's "fork" line is written
 	  }
 	  debug2("   exit - exit status=%d\n",data);
 	  break;
@@ -582,11 +692,13 @@ void ptrace_loop(void){
 	  fprintf(treefile,"%5.3f %d open %s\n",elapsed,pid,filename);
 	}
 	ptrace(PTRACE_SYSCALL,pid,NULL,NULL,NULL);
+	continue;
       } else {
 	// pass other signals to the child
 	fprintf(treefile,"%5.3f %d signal %d\n",elapsed,pid,WSTOPSIG(status));
 	fflush(treefile);
 	ptrace(trace_syscall?PTRACE_SYSCALL:PTRACE_CONT,pid,NULL,WSTOPSIG(status));
+	continue;
       }
     } else if (WIFCONTINUED(status)){
       fprintf(treefile,"%5.3f %d continued\n",elapsed,pid);
@@ -596,6 +708,8 @@ void ptrace_loop(void){
     // let the child go to the next event
     ptrace(trace_syscall?PTRACE_SYSCALL:PTRACE_CONT,pid,NULL,NULL);
   }
+
+  ptrace_pid_table_flush_and_free(); // flush any exit block whose "fork" line never arrived, and release the table
 
   fprintf(treefile,"# ptrace-summary fork_events=%llu exit_events=%llu unknown_traps=%llu wait_eintr=%llu\n",
 	  fork_events, exit_events, unknown_traps, wait_eintr);
