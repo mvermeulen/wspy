@@ -152,6 +152,38 @@
     previewTimer = setTimeout(refreshPreview, 150);
   }
 
+  // Reflects the server's autofit_checklist_for_custom_plots() result back
+  // into the actual checkboxes/fields -- so "auto-enabled the dcache group"
+  // isn't just a sentence in the notes area while the checkbox still looks
+  // unchecked. Setting .checked/.value directly (not via a synthesized
+  // "change" event) doesn't re-trigger schedulePreview(), so this can't
+  // loop against the very preview request that produced it.
+  function applyResolvedChecklist(resolved) {
+    if (!resolved) return;
+    var counters = resolved.counters || {};
+    if (counters.enabled) {
+      var ce = byId("counters_enabled");
+      if (ce) ce.checked = true;
+    }
+    (counters.groups || []).forEach(function (name) {
+      var el = byId("counters_" + name);
+      if (el) el.checked = true;
+    });
+    if (counters.interval_secs) {
+      var ci = byId("counters_interval");
+      if (ci && !ci.value) ci.value = counters.interval_secs;
+    }
+    var system = resolved.system || {};
+    if (system.enabled) {
+      var se = byId("system_enabled");
+      if (se) se.checked = true;
+    }
+    if (system.interval_secs) {
+      var si = byId("system_interval");
+      if (si && !si.value) si.value = system.interval_secs;
+    }
+  }
+
   function refreshPreview() {
     var pre = byId("preview");
     var notesEl = byId("preview-notes");
@@ -184,6 +216,7 @@
         pre.textContent = lines.length ? lines.map(function (l) { return "$ " + l; }).join("\n")
           : "(nothing will run yet)";
         if (notesEl) notesEl.textContent = (data.notes || []).join(" ");
+        applyResolvedChecklist(data.resolved_checklist);
       })
       .catch(function () { /* transient -- next keystroke will retry */ });
   }

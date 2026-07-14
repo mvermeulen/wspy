@@ -33,6 +33,7 @@ Usage:
 Stdlib only, by design (see CLAUDE.md's web/ entry for the reasoning).
 """
 import argparse
+import copy
 import html
 import json
 import os
@@ -150,6 +151,180 @@ def counter_group_flags(requested_groups):
         elif name not in selected and default_on:
             flags.append(f"--no-{name}")
     return flags, selected
+
+
+# ---------------------------------------------------------------------------
+# Custom plots (item 12's wspy-plot --plot/--only-custom, Run tab section):
+# a custom plot's column list is otherwise completely decoupled from which
+# counter groups are actually being collected, so a column can be requested
+# that the run simply never produces -- wspy-plot degrades gracefully (skips
+# the missing column, warns), but silently producing an empty or partial
+# plot is a worse experience than making sure the right groups (and
+# --interval, without which there's no "time" column for wspy-plot to chart
+# at all) are turned on in the first place. COLUMN_TO_GROUP maps a column's
+# literal CSV header text (topdown.c's/system.c's own PRINT_CSV_HEADER
+# strings -- see CLAUDE.md's plot.c entry for the same column-identity
+# convention) to the ALL_GROUPS name whose --flag produces it.
+#
+# Deliberately excludes two ALL_GROUPS entries: "topdown2" duplicates
+# "topdown"'s own column names verbatim (both call print_topdown()), so
+# resolving a topdown column to "topdown2" instead of "topdown" would be an
+# arbitrary choice -- "topdown" is the canonical resolution and auto-
+# enabling it is sufficient; "cache1" (--cache1) is a dead flag (topdown.c's
+# setup_counter_groups() never wires COUNTER_L1CACHE into any group
+# constructor), so it produces zero CSV columns on any vendor and there's
+# nothing a column could ever resolve to it for.
+COLUMN_TO_GROUP = {
+    "ipc": "ipc",
+    "retire": "topdown", "frontend": "topdown", "backend": "topdown",
+    "speculate": "topdown", "confidence": "topdown", "sanity": "topdown",
+    "icache": "topdown-frontend", "itlb1": "topdown-frontend",
+    "itlb2": "topdown-frontend", "tlbflush": "topdown-frontend",
+    "l1_bound": "topdown-backend", "l2_bound": "topdown-backend",
+    "l3_bound": "topdown-backend", "dram_bound": "topdown-backend",
+    "store_bound": "topdown-backend",
+    "opcache": "topdown-optlb", "dtlb1": "topdown-optlb", "dtlb2": "topdown-optlb",
+    "branch miss": "branch",
+    "l2miss": "cache2",
+    "l3miss": "cache3",
+    "L1-dcache miss": "dcache",
+    "L1-icache miss": "icache",
+    "dTLB miss": "tlb", "iTLB miss": "tlb",
+    "bandwidth": "memory",
+    "opcache miss": "opcache",
+    "float": "float",
+    "cpu-clock": "software", "task-clock": "software", "page faults": "software",
+    "context switches": "software", "cpu migrations": "software",
+    "major page faults": "software", "minor page faults": "software",
+    "alignment faults": "software", "emulation faults": "software",
+}
+# --system's own columns (system.c) -- not an ALL_GROUPS/counter_mask entry,
+# so resolve_column_group() reports these via the "system" sentinel instead,
+# toggling the checklist's separate "system" configuration rather than a
+# counters group. "net <iface>" is one column per interface discovered on
+# this host, so it's matched by prefix rather than listed by name.
+SYSTEM_COLUMN_NAMES = {"load", "runnable", "cpu", "idle", "iowait", "irq"}
+
+
+def resolve_column_group(column_name):
+    """Returns the ALL_GROUPS name (or the "system" sentinel) whose --flag
+    must be enabled to produce column_name in a wspy CSV, or None if
+    column_name isn't a column this tool recognizes (a typo, or a
+    workload-specific name nothing here can auto-detect)."""
+    if column_name in SYSTEM_COLUMN_NAMES or column_name.startswith("net "):
+        return "system"
+    return COLUMN_TO_GROUP.get(column_name)
+
+
+def autofit_checklist_for_custom_plots(checklist, custom_plots):
+    """Makes sure every custom plot's requested columns will actually be
+    collected: auto-enables 'Performance counters' (and the specific
+    group(s) needed) and/or 'System metrics', and auto-sets a 1-second
+    --interval wherever one isn't already given, since a custom plot has
+    nothing to chart without a "time" column. Returns (new_checklist,
+    notes) -- a deep copy with whatever was missing turned on, plus a
+    human-readable note per change made (never a silent one). A column
+    that doesn't resolve to a known group (resolve_column_group() ->
+    None) is left alone and reported separately, since there's nothing
+    to auto-enable for it."""
+    checklist = copy.deepcopy(checklist) if checklist else {}
+    notes = []
+    needed_groups = set()
+    needs_system = False
+    unresolved = set()
+
+    for cp in (custom_plots or []):
+        for col in cp.get("columns", []):
+            group = resolve_column_group(col)
+            if group is None:
+                unresolved.add(col)
+            elif group == "system":
+                needs_system = True
+            else:
+                needed_groups.add(group)
+
+    if needed_groups:
+        counters = checklist.setdefault("counters", {})
+        if not counters.get("enabled"):
+            counters["enabled"] = True
+            notes.append("auto-enabled 'Performance counters' for a custom plot")
+        existing_groups = set(counters.get("groups") or [])
+        new_groups = needed_groups - existing_groups
+        if new_groups:
+            counters["groups"] = sorted(existing_groups | needed_groups)
+            notes.append(f"auto-checked counter group(s) {', '.join(sorted(new_groups))} for a custom plot")
+        if not str(counters.get("interval_secs") or "").strip():
+            counters["interval_secs"] = "1"
+            notes.append("auto-set a 1s interval on 'Performance counters' so the custom plot has "
+                          "a time series to chart")
+        counters["csv"] = True
+
+    if needs_system:
+        system = checklist.setdefault("system", {})
+        if not system.get("enabled"):
+            system["enabled"] = True
+            notes.append("auto-enabled 'System metrics' for a custom plot")
+        if not str(system.get("interval_secs") or "").strip():
+            system["interval_secs"] = "1"
+            notes.append("auto-set a 1s interval on 'System metrics' so the custom plot has a "
+                          "time series to chart")
+        system["csv"] = True
+
+    if unresolved:
+        notes.append("column(s) " + ", ".join(sorted(unresolved)) +
+                      " aren't a recognized wspy output column -- wspy-plot will skip them at run "
+                      "time unless your workload/counter selection actually produces them")
+
+    return checklist, notes
+
+
+# Best-effort column coverage per BUILTIN_PROFILES entry -- which CSV
+# columns actually land in a *time-series* (--interval) CSV wspy-plot can
+# chart at all, derived by hand from wspy-run's own load_builtin_profile()
+# PASS_FLAGS. Unlike the checklist path above, a preset can't be auto-fixed
+# (the deep-dive's own rule: presets stay atomic, never decomposed or
+# edited) -- this is only ever used to *warn*, not to change what runs. A
+# convenience hint, not the enforcement point; wspy-run's own PASS_FLAGS
+# remain authoritative, so keep this in sync by hand if a builtin profile's
+# passes change. Most profiles' passes never use --interval at all (multi-
+# pass/aggregate/no-CSV), so they produce nothing wspy-plot can chart
+# regardless of which counter groups they collect -- only deep-cpu/deep-gpu
+# have any --interval passes today.
+PROFILE_PLOTTABLE_COLUMNS = {
+    "quick": set(),
+    "deep-cpu": SYSTEM_COLUMN_NAMES | {"net *",
+                 "retire", "frontend", "backend", "speculate", "confidence", "sanity"},
+    "deep-cpu-intel": set(),
+    "deep-gpu": SYSTEM_COLUMN_NAMES | {"net *",
+                 "retire", "frontend", "backend", "speculate", "confidence", "sanity",
+                 "gpu_busy", "gpu_temp", "gpu_activity", "gpu_power", "gpu_freq"},
+    "tree-heavy": set(),
+    "ibs-basic": set(),
+    "ibs-memory-deep": set(),
+}
+
+
+def check_preset_custom_plot_coverage(profile_spec, custom_plots):
+    """Warning-only counterpart to autofit_checklist_for_custom_plots() for
+    preset mode: profile_spec may comma-compose more than one builtin
+    profile (wspy-run's own convention), so coverage is the union across
+    every token. Returns a list of warning notes (empty if every requested
+    column is covered, or if custom_plots is empty)."""
+    if not custom_plots:
+        return []
+    covered = set()
+    for token in (profile_spec or "").split(","):
+        covered |= PROFILE_PLOTTABLE_COLUMNS.get(token.strip(), set())
+    notes = []
+    for cp in custom_plots:
+        missing = [c for c in cp.get("columns", [])
+                   if not (c in covered or (c.startswith("net ") and "net *" in covered))]
+        if missing:
+            notes.append(f"warning: preset '{profile_spec}' likely won't produce column(s) "
+                         f"{', '.join(missing)} needed by custom plot '{cp.get('name')}' -- most "
+                         f"presets' passes are aggregate-only (no --interval), so there's no time "
+                         f"series for wspy-plot to chart from them regardless of counter selection")
+    return notes
 
 
 def parse_optional_int(value, lo, hi):
@@ -537,7 +712,7 @@ def run_store_ingest_besteffort(emit, cfg, run_index_path):
 
 def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
                          workload_argv, run_index_path=None, store_ingest=False,
-                         custom_plots=None, only_custom=False):
+                         custom_plots=None, only_custom=False, preset_notes=None):
     """Item 7: invoke wspy-run itself (rather than wspy directly) for one of
     its builtin profiles, then -- mirroring workload/phoronix/run_test.sh's
     own hand-written pattern -- best-effort run wspy-plot (item 12) over the
@@ -556,6 +731,9 @@ def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
         logf.write(line + "\n")
         logf.flush()
         state.append(line)
+
+    for note in (preset_notes or []):
+        emit(f"[note] {note}")
 
     wspy_run_argv = build_wspy_run_argv(cfg["wspy_run_bin"], cfg["wspy_bin"],
                                          cfg["output_root"], suite, benchmark,
@@ -646,14 +824,19 @@ def write_custom_run_summary(rundir, pass_records):
 
 def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_argv,
                         checklist, manifest_on, run_index_path, store_ingest,
-                        custom_plots=None, only_custom=False):
+                        custom_plots=None, only_custom=False, autofit_notes=None):
     """Item 9's "customized away from a preset" path: runs each enabled
     configuration (see build_configuration_passes()) as its own sequential
     wspy invocation into this run directory -- the direct-command-lines
     fallback the deep-dive's own rule calls for once a preset's checklist has
     been touched. Ends by writing a wspy-run-shaped manifest.json/summary.txt
     (see write_custom_run_manifest()/write_custom_run_summary() above) so the
-    existing report/curation/compare machinery needs no new code path."""
+    existing report/curation/compare machinery needs no new code path.
+
+    checklist has already been through autofit_checklist_for_custom_plots()
+    by the caller (_start_custom_run) -- autofit_notes is only threaded
+    through here to surface what was auto-enabled in the live log, not to
+    redo the autofit (that would find nothing left to change)."""
     log_path = os.path.join(rundir, LOG_NAME)
     logf = open(log_path, "w")
 
@@ -661,6 +844,9 @@ def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_ar
         logf.write(line + "\n")
         logf.flush()
         state.append(line)
+
+    for note in (autofit_notes or []):
+        emit(f"[note] {note}")
 
     passes = build_configuration_passes(rundir, checklist)
     if not passes:
@@ -2670,10 +2856,11 @@ class Handler(BaseHTTPRequestHandler):
                                              cfg["output_root"], suite, benchmark,
                                              run_id, profile, workload_argv,
                                              run_index_path=run_index_path)
+        preset_notes = check_preset_custom_plot_coverage(profile, custom_plots)
 
         t = threading.Thread(target=execute_profile_run, args=(
             state, cfg, rundir, suite, benchmark, run_id, profile, workload_argv,
-            run_index_path, store_ingest, custom_plots, only_custom,
+            run_index_path, store_ingest, custom_plots, only_custom, preset_notes,
         ), daemon=True)
         t.start()
 
@@ -2682,6 +2869,7 @@ class Handler(BaseHTTPRequestHandler):
             "events_url": f"/api/run/{suite}/{benchmark}/{run_id}/events",
             "report_url": f"/report/{suite}/{benchmark}/{run_id}",
             "wspy_run_command": shell_preview(wspy_run_argv),
+            "notes": preset_notes,
         })
 
     def _start_custom_run(self, cfg, body):
@@ -2698,6 +2886,7 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             self._send_json(400, err)
             return
+        checklist, autofit_notes = autofit_checklist_for_custom_plots(checklist, custom_plots)
 
         rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
         if os.path.exists(rundir):
@@ -2728,7 +2917,7 @@ class Handler(BaseHTTPRequestHandler):
         t = threading.Thread(target=execute_custom_run, args=(
             state, cfg, rundir, suite, benchmark, run_id, workload_argv,
             checklist, manifest_on, run_index_path, store_ingest,
-            custom_plots, only_custom,
+            custom_plots, only_custom, autofit_notes,
         ), daemon=True)
         t.start()
 
@@ -2737,6 +2926,7 @@ class Handler(BaseHTTPRequestHandler):
             "events_url": f"/api/run/{suite}/{benchmark}/{run_id}/events",
             "report_url": f"/report/{suite}/{benchmark}/{run_id}",
             "commands": command_lines,
+            "notes": autofit_notes,
         })
 
     def _preview(self, cfg, body):
@@ -2768,18 +2958,20 @@ class Handler(BaseHTTPRequestHandler):
             argv = build_wspy_run_argv(cfg["wspy_run_bin"], cfg["wspy_bin"], cfg["output_root"],
                                         suite, benchmark, run_id, preset, workload_argv,
                                         run_index_path=run_index_path)
+            preset_notes = check_preset_custom_plot_coverage(preset, custom_plots)
             self._send_json(200, {"mode": "preset", "lines": [shell_preview(argv), shell_preview(plot_argv)],
-                                   "notes": []})
+                                   "notes": preset_notes})
             return
 
         checklist = body.get("checklist") or {}
+        checklist, autofit_notes = autofit_checklist_for_custom_plots(checklist, custom_plots)
         try:
             passes = build_configuration_passes(rundir, checklist)
         except (TypeError, ValueError):
             self._send_json(400, {"error": "invalid checklist"})
             return
 
-        notes = []
+        notes = list(autofit_notes)
         lines = []
         if not passes:
             notes.append("No configuration enabled yet -- check one below to build a custom run.")
@@ -2798,7 +2990,8 @@ class Handler(BaseHTTPRequestHandler):
             notes.append("wspy-plot will run afterward, best-effort, matching every CSV this run "
                           "produces against the shared plot templates (see CLAUDE.md's plot.c entry) "
                           "and writing whatever fires into plots/.")
-        self._send_json(200, {"mode": "custom", "lines": lines, "notes": notes})
+        self._send_json(200, {"mode": "custom", "lines": lines, "notes": notes,
+                               "resolved_checklist": checklist})
 
     # -----------------------------------------------------------------
     # Discovery tab family (item 9): wspy-validate, wspy-store/wspy-summary,

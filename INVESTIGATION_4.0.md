@@ -549,7 +549,14 @@ derivable from files already being produced.
     Run tab's "Custom plots" section (`web/server.py`/`app.js`) exposes both flags directly: pick and
     choose multiple named plots for one workload launch, some default (the built-in templates, still
     additive unless "only render these" is checked) and some custom (specific counters of interest),
-    without needing to re-run `wspy-plot` by hand afterward. See `CLAUDE.md`'s `plot.c` and item 9
+    without needing to re-run `wspy-plot` by hand afterward. In custom (checklist) mode, requesting a
+    column whose counter group isn't already checked auto-enables it (plus a 1s `--interval`, without
+    which there's no time series at all) rather than silently producing an empty plot — reflected back
+    into the actual checkboxes, not just a text note. Preset mode can't be auto-fixed the same way (a
+    preset is atomic), so it warns instead when the chosen preset's own passes won't produce a
+    requested column at all — true of most presets, which are aggregate-only and have nothing
+    time-series to chart regardless of counter selection; only `deep-cpu`/`deep-gpu` do. See
+    `CLAUDE.md`'s `plot.c` and item 9
     entries for the full breakdown.
 13. Deployment/hosting design note — answer, for both a person browsing their own local run output
     and a team publishing to a shared site: does #8/#11 need to run anywhere besides `localhost`, is a

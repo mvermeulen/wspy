@@ -357,7 +357,16 @@ static int render_match(const char *csv_path,const struct plot_match *pm,const c
   }
   fprintf(gp,"\n");
   rc = pclose(gp);
-  return (rc == 0) ? 0 : -1;
+  if (rc != 0){
+    /* gnuplot's "set output" already created (and possibly partially
+     * wrote) out_png before the plot command itself failed -- e.g. every
+     * data point undefined because the requested counters had no perf
+     * access this run. Remove the stale/empty file rather than leaving a
+     * broken-looking 0-byte PNG sitting in plots/ for a report to link to. */
+    remove(out_png);
+    return -1;
+  }
+  return 0;
 }
 
 /* Parses one CSV's header line, matches it against every built-in template
