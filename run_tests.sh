@@ -310,7 +310,7 @@ fi
 echo "  wspy-plot --list-templates: OK"
 
 mkdir -p test_plot_rundir
-printf 'time,retire,frontend,backend,speculate,\n 1.0,25.0,25.0,25.0,25.0,\n 2.0,30.0,20.0,30.0,20.0,\n' \
+printf 'time,retire,frontend,backend,speculate,load,\n 1.0,25.0,25.0,25.0,25.0,3,\n 2.0,30.0,20.0,30.0,20.0,3,\n' \
     > test_plot_rundir/amdtopdown.csv
 if command -v gnuplot > /dev/null 2>&1; then
     echo "Testing wspy-plot --rundir against a real gnuplot..."
@@ -323,8 +323,25 @@ if command -v gnuplot > /dev/null 2>&1; then
         exit 1
     fi
     echo "  wspy-plot --rundir (real gnuplot): OK"
+
+    echo "Testing wspy-plot --plot / --only-custom (user-configured plot grouping)..."
+    rm -rf test_plot_rundir/plots
+    if ! ./wspy-plot --rundir test_plot_rundir --quiet \
+            --plot mygroup=retire,load --only-custom; then
+        echo "FAIL: wspy-plot --only-custom should exit 0 when gnuplot successfully renders a match"
+        exit 1
+    fi
+    if [ ! -s test_plot_rundir/plots/amdtopdown.mygroup.png ]; then
+        echo "FAIL: wspy-plot --plot did not render plots/amdtopdown.mygroup.png"
+        exit 1
+    fi
+    if [ -e test_plot_rundir/plots/amdtopdown.topdown.png ]; then
+        echo "FAIL: wspy-plot --only-custom should not also render the topdown built-in template"
+        exit 1
+    fi
+    echo "  wspy-plot --plot / --only-custom (real gnuplot): OK"
 else
-    echo "  skipping wspy-plot --rundir rendering check (gnuplot not installed)"
+    echo "  skipping wspy-plot rendering checks (gnuplot not installed)"
 fi
 rm -rf test_plot_rundir
 

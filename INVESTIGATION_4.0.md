@@ -540,8 +540,13 @@ derivable from files already being produced.
     any run, not just the fixed `amdtopdown`/`systemtime` shape. `web/server.py`'s item 6/7/9 run
     executors and `workload/phoronix/run_test.sh`/`workload/cpu2017/run_test.sh` all call `wspy-plot`
     unconditionally (best-effort) after a run instead of gating on whether `amdtopdown.csv` exists,
-    since template matching makes that gate unnecessary. See `CLAUDE.md`'s `plot.c` entry for the full
-    breakdown.
+    since template matching makes that gate unnecessary. `--plot NAME=col1,col2,...` (repeatable) lets
+    a user hand-pick exactly which counters land on one plot together — useful when specific counters
+    matter for a given interval report but don't share a scale with any built-in template's grouping
+    (mixing them into the generic fallback would otherwise flatten the smaller-magnitude ones to an
+    indistinguishable line, confirmed empirically doing exactly this against a real `--system` run);
+    `--only-custom` renders exactly the given `--plot` spec(s) and nothing else, for full control. See
+    `CLAUDE.md`'s `plot.c` entry for the full breakdown.
 13. Deployment/hosting design note — answer, for both a person browsing their own local run output
     and a team publishing to a shared site: does #8/#11 need to run anywhere besides `localhost`, is a
     static site (generated files, no server process) sufficient, and if not, what's the smallest

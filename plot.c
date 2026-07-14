@@ -113,13 +113,15 @@ static int find_col(char * const *header_fields,int header_n,const char *name){
 }
 
 /* Matches every built-in template against one CSV header, appending a
- * struct plot_match per template that reaches its min_match threshold.
- * Matched header columns are marked in claimed[] (size >= header_n) so a
- * following fallback pass can find what's left over. Returns the number of
- * matches appended (<= ntemplates). */
+ * struct plot_match per template that reaches its min_match threshold,
+ * starting at index n (so a caller can run this after --plot's custom
+ * specs and have both land in the same matches[] array). Matched header
+ * columns are marked in claimed[] (size >= header_n) so a following
+ * fallback pass can find what's left over. Returns the new total match
+ * count. */
 static int match_templates(char * const *header_fields,int header_n,int time_col,
-                            struct plot_match *matches,int max_matches,int *claimed){
-  int t,n = 0;
+                            struct plot_match *matches,int max_matches,int *claimed,int n){
+  int t;
 
   for (t = 0; t < ntemplates && n < max_matches; t++){
     const struct plot_template *tmpl = &templates[t];
@@ -223,6 +225,92 @@ static int add_fallback_match(char * const *header_fields,int header_n,
   return n + 1;
 }
 
+#define MAX_CUSTOM_PLOTS 32
+#define MAX_CUSTOM_COLUMNS 16
+
+/* One user-specified --plot NAME=col1,col2,... spec (parsed once at
+ * startup, applied against every CSV scanned) -- the "configure specific
+ * counters onto one plot yourself" escape hatch the built-in templates
+ * above don't offer: they're a fixed, curated catalog of known counter
+ * groups, not a general column-picker. Most useful when several counters
+ * are individually meaningful as a time series but don't share a natural
+ * scale with any built-in template's grouping (e.g. mixing one counter
+ * group's percentage columns with another's raw counts) -- put exactly the
+ * ones that belong together in one --plot spec instead. */
+struct custom_plot_spec {
+  char name[64];
+  char columns[MAX_CUSTOM_COLUMNS][128];
+  int ncolumns;
+};
+
+/* Parses "NAME=col1,col2,..." (the --plot argument text) into spec.
+ * Returns 1 on success, 0 if the argument has no '=', an empty name, or no
+ * column names at all -- a usage error the caller should reject up front,
+ * not something to discover per-CSV later. */
+static int parse_custom_plot_spec(const char *arg,struct custom_plot_spec *spec){
+  const char *eq = strchr(arg,'=');
+  char cols_buf[1024];
+  char *tok,*saveptr;
+  size_t name_len;
+
+  if (!eq || eq == arg) return 0;
+  name_len = (size_t)(eq - arg);
+  if (name_len >= sizeof(spec->name)) name_len = sizeof(spec->name) - 1;
+  memcpy(spec->name,arg,name_len);
+  spec->name[name_len] = '\0';
+
+  snprintf(cols_buf,sizeof(cols_buf),"%s",eq + 1);
+  spec->ncolumns = 0;
+  tok = strtok_r(cols_buf,",",&saveptr);
+  while (tok && spec->ncolumns < MAX_CUSTOM_COLUMNS){
+    snprintf(spec->columns[spec->ncolumns],sizeof(spec->columns[0]),"%s",tok);
+    spec->ncolumns++;
+    tok = strtok_r(NULL,",",&saveptr);
+  }
+  return *spec->name && spec->ncolumns > 0;
+}
+
+/* Matches one --plot spec against a CSV header: any of its named columns
+ * that's actually present in *this* CSV is included, one present column is
+ * enough to fire (the user asked for these specific columns, so there's no
+ * "not enough of them" threshold the way a built-in template has) --
+ * unlike a built-in template, a --plot spec doesn't check claimed[] before
+ * matching (the whole point is to let the same column also appear in a
+ * plot it would otherwise have been grouped into) but does mark claimed[]
+ * afterward, so the generic/network fallbacks don't also duplicate it. A
+ * named column absent from this particular CSV is warned about once (not
+ * silently dropped) since hand-picking columns is meant to be precise; if
+ * every named column is absent, no plot is produced for this spec at all. */
+static int add_custom_plot_match(char * const *header_fields,int header_n,int time_col,
+                                  const struct custom_plot_spec *spec,int *claimed,
+                                  struct plot_match *matches,int max_matches,int n,
+                                  const char *csv_path,int quiet){
+  struct plot_match *pm;
+  int i;
+
+  if (n >= max_matches) return n;
+  pm = &matches[n];
+  pm->ncols = 0;
+  for (i = 0; i < spec->ncolumns; i++){
+    int idx = find_col(header_fields,header_n,spec->columns[i]);
+
+    if (idx < 0){
+      if (!quiet)
+        fprintf(stderr,"wspy-plot: %s: --plot %s: column '%s' not in this CSV's header, skipping it\n",
+                csv_path,spec->name,spec->columns[i]);
+      continue;
+    }
+    if (pm->ncols < MAX_CSV_FIELDS) pm->cols[pm->ncols++] = idx;
+  }
+  if (pm->ncols == 0) return n;
+  for (i = 0; i < pm->ncols; i++) claimed[pm->cols[i]] = 1;
+  snprintf(pm->name,sizeof(pm->name),"%s",spec->name);
+  snprintf(pm->title,sizeof(pm->title),"%s",spec->name);
+  snprintf(pm->ylabel,sizeof(pm->ylabel),"value");
+  pm->time_col = time_col;
+  return n + 1;
+}
+
 static void basename_without_ext(const char *path,char *out,size_t outsize){
   const char *slash = strrchr(path,'/');
   const char *base = slash ? slash + 1 : path;
@@ -280,13 +368,46 @@ static int render_match(const char *csv_path,const struct plot_match *pm,const c
  * case) -- matching the rest of this codebase's "measured vs unavailable"
  * degrade-don't-fail idiom: a CSV this tool doesn't know how to plot is
  * not an error, only a gnuplot invocation that was attempted and failed is. */
-static int process_csv(const char *csv_path,const char *out_dir,int quiet,int *any_failed){
+/* Decides *what* to plot for one CSV header -- custom --plot specs, then
+ * (unless only_custom) the built-in templates and both fallback buckets --
+ * without touching gnuplot or the filesystem, so this half of process_csv()
+ * is unit-testable on its own (test_plot.c does exactly that) without
+ * needing gnuplot installed. Returns the number of matches appended to
+ * matches[] (0 if the header has no "time" column or nothing matched). */
+static int build_plot_matches(char * const *header_fields,int header_n,int time_col,
+                               const struct custom_plot_spec *custom_plots,int ncustom_plots,
+                               int only_custom,struct plot_match *matches,int max_matches,
+                               const char *csv_path,int quiet){
+  int core_col,phase_col;
+  int claimed[MAX_CSV_FIELDS];
+  int nmatches,i;
+
+  core_col = find_col(header_fields,header_n,"core");
+  phase_col = find_col(header_fields,header_n,"phase");
+
+  memset(claimed,0,sizeof(claimed));
+  nmatches = 0;
+  for (i = 0; i < ncustom_plots; i++)
+    nmatches = add_custom_plot_match(header_fields,header_n,time_col,&custom_plots[i],claimed,
+                                      matches,max_matches,nmatches,csv_path,quiet);
+  if (!only_custom){
+    nmatches = match_templates(header_fields,header_n,time_col,matches,max_matches,claimed,nmatches);
+    nmatches = add_network_fallback_match(header_fields,header_n,time_col,claimed,
+                                           matches,max_matches,nmatches);
+    nmatches = add_fallback_match(header_fields,header_n,time_col,core_col,phase_col,
+                                   claimed,matches,max_matches,nmatches);
+  }
+  return nmatches;
+}
+
+static int process_csv(const char *csv_path,const char *out_dir,int quiet,int *any_failed,
+                        const struct custom_plot_spec *custom_plots,int ncustom_plots,
+                        int only_custom){
   FILE *fp;
   char line[8192];
   char *header_fields[MAX_CSV_FIELDS];
   int header_n;
-  int time_col,core_col,phase_col;
-  int claimed[MAX_CSV_FIELDS];
+  int time_col;
   struct plot_match matches[MAX_CSV_FIELDS];
   int nmatches,i,rendered = 0;
   char stem[MAX_NAME_LEN];
@@ -310,15 +431,9 @@ static int process_csv(const char *csv_path,const char *out_dir,int quiet,int *a
       fprintf(stderr,"wspy-plot: %s: no 'time' column (not produced with --interval), skipping\n",csv_path);
     return 0;
   }
-  core_col = find_col(header_fields,header_n,"core");
-  phase_col = find_col(header_fields,header_n,"phase");
 
-  memset(claimed,0,sizeof(claimed));
-  nmatches = match_templates(header_fields,header_n,time_col,matches,MAX_CSV_FIELDS,claimed);
-  nmatches = add_network_fallback_match(header_fields,header_n,time_col,claimed,
-                                         matches,MAX_CSV_FIELDS,nmatches);
-  nmatches = add_fallback_match(header_fields,header_n,time_col,core_col,phase_col,
-                                 claimed,matches,MAX_CSV_FIELDS,nmatches);
+  nmatches = build_plot_matches(header_fields,header_n,time_col,custom_plots,ncustom_plots,
+                                 only_custom,matches,MAX_CSV_FIELDS,csv_path,quiet);
 
   basename_without_ext(csv_path,stem,sizeof(stem));
   for (i = 0; i < nmatches; i++){
@@ -356,6 +471,8 @@ static void print_template_catalog(void){
       printf("%s%s",m ? ", " : "",tmpl->metrics[m]);
     printf(")\n");
   }
+  printf("  %-14s %-28s (any \"net <iface>\" column, e.g. --system's per-interface byte counters)\n",
+         "network-io","Network I/O (fallback)");
   printf("  %-14s %-28s (any metric column left unclaimed by the above)\n","metrics","Other Metrics (fallback)");
 }
 
@@ -380,6 +497,18 @@ static void usage(const char *prog){
     "  --csv <file>        a specific CSV file to plot (repeatable)\n"
     "  --out-dir <dir>     where to write *.png (default: <rundir>/plots,\n"
     "                      or \".\" if --rundir was not given)\n"
+    "  --plot NAME=col1,col2,...\n"
+    "                      define a custom plot grouping exactly these CSV\n"
+    "                      column names together (repeatable) -- useful when\n"
+    "                      counters that matter to you don't share a scale\n"
+    "                      with any built-in template's grouping, so you'd\n"
+    "                      rather chart them on a plot of their own. A named\n"
+    "                      column missing from a given CSV is skipped with a\n"
+    "                      warning, not fatal; if none of NAME's columns are\n"
+    "                      present in a CSV, no plot is produced for it there.\n"
+    "  --only-custom       skip every built-in template and fallback plot --\n"
+    "                      render only the --plot spec(s) given. Requires at\n"
+    "                      least one --plot.\n"
     "  --list-templates    print the built-in template catalog and exit\n"
     "  -q, --quiet         suppress per-plot progress lines\n"
     "  -h, --help          show this help\n"
@@ -397,6 +526,9 @@ int main(int argc,char **argv){
   const char *out_dir = NULL;
   char out_dir_buf[MAX_PATH_LEN];
   int quiet = 0;
+  int only_custom = 0;
+  struct custom_plot_spec custom_plots[MAX_CUSTOM_PLOTS];
+  int ncustom_plots = 0;
   int opt,i;
   int any_failed = 0,total_rendered = 0,total_csvs = 0;
 
@@ -404,6 +536,8 @@ int main(int argc,char **argv){
     { "rundir",         required_argument, 0, 'r' },
     { "csv",            required_argument, 0, 'c' },
     { "out-dir",        required_argument, 0, 'o' },
+    { "plot",           required_argument, 0, 'p' },
+    { "only-custom",    no_argument,       0, 'y' },
     { "list-templates", no_argument,       0, 'l' },
     { "quiet",          no_argument,       0, 'q' },
     { "help",           no_argument,       0, 'h' },
@@ -421,6 +555,19 @@ int main(int argc,char **argv){
       csv_paths[ncsv++] = optarg;
       break;
     case 'o': out_dir = optarg; break;
+    case 'p':
+      if (ncustom_plots >= MAX_CUSTOM_PLOTS){
+        fprintf(stderr,"wspy-plot: too many --plot specs (max %d)\n",MAX_CUSTOM_PLOTS);
+        return 2;
+      }
+      if (!parse_custom_plot_spec(optarg,&custom_plots[ncustom_plots])){
+        fprintf(stderr,"wspy-plot: --plot '%s': expected NAME=col1,col2,... "
+                       "(non-empty name, at least one column)\n",optarg);
+        return 2;
+      }
+      ncustom_plots++;
+      break;
+    case 'y': only_custom = 1; break;
     case 'l': print_template_catalog(); return 0;
     case 'q': quiet = 1; break;
     case 'h': usage(argv[0]); return 0;
@@ -430,6 +577,11 @@ int main(int argc,char **argv){
 
   if (!rundir && ncsv == 0){
     fprintf(stderr,"wspy-plot: nothing to do -- give --rundir <dir> or --csv <file>\n\n");
+    usage(argv[0]);
+    return 2;
+  }
+  if (only_custom && ncustom_plots == 0){
+    fprintf(stderr,"wspy-plot: --only-custom requires at least one --plot\n\n");
     usage(argv[0]);
     return 2;
   }
@@ -460,14 +612,14 @@ int main(int argc,char **argv){
       int r;
 
       snprintf(full,sizeof(full),"%s/%s",rundir,namelist[i]->d_name);
-      r = process_csv(full,out_dir,quiet,&any_failed);
+      r = process_csv(full,out_dir,quiet,&any_failed,custom_plots,ncustom_plots,only_custom);
       if (r > 0){ total_rendered += r; total_csvs++; }
       free(namelist[i]);
     }
     free(namelist);
   }
   for (i = 0; i < ncsv; i++){
-    int r = process_csv(csv_paths[i],out_dir,quiet,&any_failed);
+    int r = process_csv(csv_paths[i],out_dir,quiet,&any_failed,custom_plots,ncustom_plots,only_custom);
     if (r > 0){ total_rendered += r; total_csvs++; }
   }
 
