@@ -1,0 +1,5 @@
+# Newest - July 2nd, 2026
+libxsmm
+mt-dgemm
+openssl
+llama-cpp

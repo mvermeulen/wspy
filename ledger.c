@@ -129,14 +129,18 @@ static char *ltrim(char *s){
 }
 
 /* Parses one workload-list line into up to three tab-separated fields:
- * name, status keyword, free-text note. Returns 0 for a blank or '#'
- * comment line, 1 otherwise (name/status/note point into line, status and
- * note are NULL if not present). */
+ * name, status keyword, free-text note. A '#' anywhere on the line starts
+ * a comment that runs to end of line (whole-line or trailing inline);
+ * it and everything after it are discarded before parsing. Returns 0 for
+ * a blank or comment-only line, 1 otherwise (name/status/note point into
+ * line, status and note are NULL if not present). */
 static int parse_ledger_line(char *line,char **name,char **status,char **note){
   char *p = ltrim(line);
   char *tab;
+  char *hash = strchr(p,'#');
 
-  if (*p == '\0' || *p == '#') return 0;
+  if (hash) *hash = '\0';
+  if (*p == '\0') return 0;
 
   *name = rtrim(p);
   *status = NULL;
@@ -191,8 +195,8 @@ static int add_to_list(const char *path,const char *name){
     fprintf(stderr,"wspy-ledger: --add requires a non-empty workload name\n");
     return 2;
   }
-  if (strchr(name,'\t') || strchr(name,'\n')){
-    fprintf(stderr,"wspy-ledger: workload name must not contain tabs or newlines\n");
+  if (strchr(name,'\t') || strchr(name,'\n') || strchr(name,'#')){
+    fprintf(stderr,"wspy-ledger: workload name must not contain tabs, newlines, or '#'\n");
     return 2;
   }
   if (list_contains_name(path,name)){
@@ -421,7 +425,8 @@ static void usage(const char *prog){
     "\n"
     "<workload-list> is one workload name per line, optionally followed by a\n"
     "tab-separated status (\"unsupported\" or \"needs-tool-support\") and a\n"
-    "free-text note. Blank lines and lines starting with '#' are ignored.\n"
+    "free-text note. Blank lines are ignored, and '#' starts a comment that\n"
+    "runs to end of line (whole-line or trailing after content).\n"
     "A workload's name is matched as a substring against each run-index\n"
     "record's command line. If omitted, defaults to %s\n"
     "(overridable with --list, same as --add below).\n"
