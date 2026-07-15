@@ -1,0 +1,444 @@
+#!/usr/bin/env python3
+"""
+wspy-queue - job/queue processor for wspy (INVESTIGATION_4.0.md item 13,
+"Deployment/hosting design note").
+
+Answers item 13's three concrete use cases beyond "launch one run and watch
+it stream":
+  (a) using the web UI to create a series of jobs, each describing one
+      intended benchmark run, without launching it immediately -- see
+      web/server.py's Run tab "queue instead of run now" toggle and
+      POST /api/enqueue-job, which write job files this tool later reads.
+  (b) processing a queue of such jobs from the command line, independent of
+      the web UI being open or even running -- this tool works fully
+      headless (no HTTP, no server process) so it can run via cron or an
+      interactive SSH session on a machine with no browser involved at all.
+  (c) copying a job file to a second machine that also has wspy checked out
+      and processing it there instead -- a job is a portable, spec-only
+      JSON document (see web/joblib.py's "Job files" section) with no
+      absolute --output-root and no path into the creating machine's
+      --run-index/store.db, so a copied job just needs to land in the
+      destination machine's own jobs/pending/ directory.
+
+A job moves through a minimal pending -> running -> done/failed lifecycle,
+implemented as literal <jobs-dir>/<state>/<job-id>.json directories (a
+Maildir-style layout): claiming a job is one os.rename() from pending/ to
+running/, which is atomic on a POSIX filesystem and doubles as the only
+concurrency control this tool needs -- if two `wspy-queue run` invocations
+race for the same job, exactly one rename succeeds and the other simply
+moves on to the next pending job. There is deliberately no --parallel
+option: a wspy run has exclusive use of the machine's hardware PMU counters
+(preflight.c/coverage.c's multiplexing math already treats counter
+contention as a single-process concern), so jobs are processed strictly
+serially, one wspy/wspy-run invocation at a time. A failed job stays in
+failed/ until a human runs `wspy-queue requeue` -- no silent auto-retry,
+matching the degrade-don't-fail-but-don't-hide-it convention coverage.c/
+validate.c already use elsewhere.
+
+All the actual command-line construction and execution (checklist/preset ->
+wspy argv, invoking wspy/wspy-run/wspy-plot/wspy-store, writing a
+wspy-run-shaped manifest.json/summary.txt for a custom run) is shared with
+web/server.py via web/joblib.py -- this tool is a second front end over the
+same logic, not a reimplementation of it.
+
+Usage:
+    wspy-queue [global options] <subcommand> [subcommand options]
+
+Stdlib only, matching web/server.py's own "thin client, no dependency"
+design principle.
+"""
+import argparse
+import glob
+import json
+import os
+import sys
+from datetime import datetime, timezone
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(SCRIPT_DIR, "web"))
+import joblib  # noqa: E402
+
+STATES = joblib.JOB_STATES  # ("pending", "running", "done", "failed")
+
+
+def now_iso():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def state_dir(jobs_dir, state):
+    return os.path.join(jobs_dir, state)
+
+
+def ensure_jobs_dirs(jobs_dir):
+    for state in STATES:
+        os.makedirs(state_dir(jobs_dir, state), exist_ok=True)
+
+
+def job_path(jobs_dir, state, job_id):
+    return os.path.join(state_dir(jobs_dir, state), f"{job_id}.json")
+
+
+def find_job_file(jobs_dir, job_id):
+    """Searches every state directory for <job_id>.json -- a job's state is
+    which directory it's currently in, not a field inside the file, so
+    locating one by id means checking all four."""
+    for state in STATES:
+        p = job_path(jobs_dir, state, job_id)
+        if os.path.isfile(p):
+            return state, p
+    return None, None
+
+
+def load_job(path):
+    with open(path) as f:
+        return json.load(f)
+
+
+def save_job(path, job):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(job, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def list_pending_job_files(jobs_dir):
+    """Sorted oldest-first: job_id is timestamp-prefixed (make_job_id()), so
+    a plain filename sort is already creation order."""
+    return sorted(glob.glob(os.path.join(state_dir(jobs_dir, "pending"), "*.json")))
+
+
+class QueueRunState(joblib.RunState):
+    """joblib.execute_profile_run()/execute_custom_run() only need
+    .append(line)/.finish(status, report_url) -- this just also prints each
+    line so `wspy-queue run` gives live feedback like wspy-run's own
+    stderr-per-pass output does."""
+    def append(self, line):
+        super().append(line)
+        print(line, flush=True)
+
+
+def build_cfg(args):
+    output_root = os.path.abspath(args.output_root)
+    return {
+        "wspy_bin": os.path.abspath(args.wspy),
+        "wspy_run_bin": os.path.abspath(args.wspy_run),
+        "wspy_plot_bin": os.path.abspath(args.wspy_plot),
+        "wspy_store_bin": os.path.abspath(args.wspy_store),
+        "output_root": output_root,
+        "run_index_file": os.path.abspath(args.run_index_file) if args.run_index_file else
+                           os.path.join(output_root, "run_index.jsonl"),
+        "store_db": os.path.abspath(args.store_db) if args.store_db else
+                    os.path.join(output_root, "store.db"),
+    }
+
+
+def fail_job(running_path, dirs, job, job_id, message):
+    job["result"] = {"status": "failed", "error": message, "finished_at": now_iso()}
+    save_job(running_path, job)
+    os.rename(running_path, os.path.join(dirs["failed"], os.path.basename(running_path)))
+    print(f"[{job_id}] FAILED: {message}")
+
+
+def process_job(running_path, cfg, dirs):
+    """Runs exactly one already-claimed job (already moved into running/).
+    Returns True if it finished successfully (moved to done/), False
+    otherwise (moved to failed/)."""
+    job = load_job(running_path)
+    job_id = job.get("job_id") or os.path.splitext(os.path.basename(running_path))[0]
+
+    errors = joblib.validate_job(job)
+    if errors:
+        fail_job(running_path, dirs, job, job_id, "invalid job: " + "; ".join(errors))
+        return False
+
+    workload_argv = job["workload"]
+    suite = job["suite"]
+    benchmark = job["benchmark"]
+    run_id = job.get("run_id") or joblib.make_run_id()
+    rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+    if os.path.exists(rundir):
+        fail_job(running_path, dirs, job, job_id, f"run directory already exists: {rundir}")
+        return False
+    os.makedirs(rundir)
+
+    manifest_on, run_index_path, store_ingest = joblib.resolve_toggles(cfg, job.get("toggles"))
+    custom_plots = job.get("custom_plots") or []
+    only_custom = bool(job.get("only_custom"))
+
+    print(f"[{job_id}] running ({job['mode']}) -> {rundir}")
+    state = QueueRunState(rundir)
+
+    if job["mode"] == "preset":
+        profile = job["profile"]
+        supp_passes, preset_notes = joblib.build_supplementary_plot_passes(rundir, profile, custom_plots)
+        joblib.execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
+                                    workload_argv, run_index_path, store_ingest,
+                                    custom_plots, only_custom, preset_notes, supp_passes, manifest_on)
+    else:
+        checklist, autofit_notes = joblib.autofit_checklist_for_custom_plots(
+            job.get("checklist") or {}, custom_plots)
+        joblib.execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_argv,
+                                   checklist, manifest_on, run_index_path, store_ingest,
+                                   custom_plots, only_custom, autofit_notes)
+
+    ok = state.status == "done"
+    job["result"] = {
+        "status": "done" if ok else "failed",
+        "run_id": run_id,
+        "rundir": os.path.relpath(rundir, cfg["output_root"]),
+        "finished_at": now_iso(),
+    }
+    save_job(running_path, job)
+    dest_dir = dirs["done"] if ok else dirs["failed"]
+    os.rename(running_path, os.path.join(dest_dir, os.path.basename(running_path)))
+    print(f"[{job_id}] {'DONE' if ok else 'FAILED'} -> {rundir}")
+    return ok
+
+
+def cmd_run(args, cfg):
+    jobs_dir = os.path.abspath(args.jobs_dir)
+    ensure_jobs_dirs(jobs_dir)
+    dirs = {s: state_dir(jobs_dir, s) for s in STATES}
+
+    if args.job:
+        state, path = find_job_file(jobs_dir, args.job)
+        if state != "pending":
+            print(f"wspy-queue: job '{args.job}' is not pending "
+                  f"(currently: {state or 'not found'})", file=sys.stderr)
+            return 1
+        candidates = [path]
+    else:
+        candidates = list_pending_job_files(jobs_dir)
+        if args.limit is not None:
+            candidates = candidates[:args.limit]
+
+    if not candidates:
+        print("wspy-queue: no pending jobs")
+        return 0
+
+    processed = 0
+    any_failed = False
+    for pending_path in candidates:
+        running_path = os.path.join(dirs["running"], os.path.basename(pending_path))
+        try:
+            os.rename(pending_path, running_path)
+        except OSError:
+            # Another wspy-queue process (or a manual mv) already claimed it.
+            continue
+        ok = process_job(running_path, cfg, dirs)
+        any_failed = any_failed or not ok
+        processed += 1
+
+    print(f"wspy-queue: processed {processed} job(s)")
+    return 1 if (any_failed and args.strict) else 0
+
+
+def cmd_list(args, cfg):
+    jobs_dir = os.path.abspath(args.jobs_dir)
+    ensure_jobs_dirs(jobs_dir)
+    states = [args.state] if args.state else STATES
+    rows = []
+    for state in states:
+        for path in sorted(glob.glob(os.path.join(state_dir(jobs_dir, state), "*.json"))):
+            try:
+                job = load_job(path)
+            except (OSError, ValueError) as e:
+                rows.append((state, os.path.basename(path), "?", "?", f"<unreadable: {e}>", "?"))
+                continue
+            job_id = job.get("job_id", os.path.splitext(os.path.basename(path))[0])
+            mode = job.get("mode", "?")
+            ident = f'{job.get("suite","?")}/{job.get("benchmark","?")}'
+            workload = " ".join(job.get("workload") or [])
+            created = job.get("created_at", "?")
+            rows.append((state, job_id, mode, ident, workload, created))
+    if not rows:
+        print("wspy-queue: no jobs")
+        return 0
+    widths = [max(len(str(r[i])) for r in rows) for i in range(len(rows[0]))]
+    headers = ("state", "job_id", "mode", "suite/benchmark", "workload", "created_at")
+    widths = [max(w, len(h)) for w, h in zip(widths, headers)]
+    fmt = "  ".join(f"{{:<{w}}}" for w in widths)
+    print(fmt.format(*headers))
+    for r in rows:
+        print(fmt.format(*r))
+    return 0
+
+
+def cmd_show(args, cfg):
+    jobs_dir = os.path.abspath(args.jobs_dir)
+    state, path = find_job_file(jobs_dir, args.job_id)
+    if not path:
+        print(f"wspy-queue: no job '{args.job_id}' in {jobs_dir}", file=sys.stderr)
+        return 1
+    job = load_job(path)
+    print(f"state: {state}")
+    print(json.dumps(job, indent=2))
+    return 0
+
+
+def cmd_requeue(args, cfg):
+    jobs_dir = os.path.abspath(args.jobs_dir)
+    state, path = find_job_file(jobs_dir, args.job_id)
+    if not path:
+        print(f"wspy-queue: no job '{args.job_id}' in {jobs_dir}", file=sys.stderr)
+        return 1
+    if state == "pending":
+        print(f"wspy-queue: job '{args.job_id}' is already pending")
+        return 0
+    if state == "done" and not args.force:
+        print(f"wspy-queue: job '{args.job_id}' already completed successfully; "
+              f"pass --force to requeue it anyway", file=sys.stderr)
+        return 1
+    job = load_job(path)
+    job.pop("result", None)
+    ensure_jobs_dirs(jobs_dir)
+    dest = job_path(jobs_dir, "pending", args.job_id)
+    save_job(path, job)
+    os.rename(path, dest)
+    print(f"[{args.job_id}] requeued ({state} -> pending)")
+    return 0
+
+
+def cmd_add(args, cfg):
+    jobs_dir = os.path.abspath(args.jobs_dir)
+    ensure_jobs_dirs(jobs_dir)
+
+    try:
+        workload_argv = args.workload
+        if not workload_argv:
+            raise ValueError("workload command is required (after --)")
+    except ValueError as e:
+        print(f"wspy-queue: {e}", file=sys.stderr)
+        return 1
+
+    checklist = None
+    if args.mode == "custom":
+        if not args.checklist_json:
+            print("wspy-queue: --checklist-json is required for --mode custom "
+                  "(a JSON file matching web/server.py's Run tab checklist shape; "
+                  "see build_configuration_passes() in web/joblib.py)", file=sys.stderr)
+            return 1
+        with open(args.checklist_json) as f:
+            checklist = json.load(f)
+    elif not args.profile:
+        print("wspy-queue: --profile is required for --mode preset "
+              "(e.g. deep-cpu or deep-cpu,tree-heavy)", file=sys.stderr)
+        return 1
+
+    custom_plots = []
+    for spec in (args.custom_plot or []):
+        if "=" not in spec:
+            print(f"wspy-queue: malformed --custom-plot '{spec}' (expected NAME=col1,col2,...)",
+                  file=sys.stderr)
+            return 1
+        name, cols = spec.split("=", 1)
+        columns = [c.strip() for c in cols.split(",") if c.strip()]
+        if not name.strip() or not columns:
+            print(f"wspy-queue: malformed --custom-plot '{spec}' (expected NAME=col1,col2,...)",
+                  file=sys.stderr)
+            return 1
+        custom_plots.append({"name": name.strip(), "columns": columns})
+
+    benchmark = args.benchmark or joblib.default_benchmark_from_workload(workload_argv)
+    toggles = {
+        "manifest": not args.no_manifest,
+        "run_index": not args.no_run_index,
+        "store_ingest": not args.no_store_ingest,
+    }
+    job = joblib.build_job(workload_argv, args.suite, benchmark, args.mode,
+                            profile=args.profile, checklist=checklist,
+                            custom_plots=custom_plots, only_custom=args.only_custom,
+                            toggles=toggles, run_id=args.run_id, notes=args.notes or "")
+    errors = joblib.validate_job(job)
+    if errors:
+        print("wspy-queue: refusing to create invalid job: " + "; ".join(errors), file=sys.stderr)
+        return 1
+
+    path = job_path(jobs_dir, "pending", job["job_id"])
+    save_job(path, job)
+    print(f"queued job {job['job_id']} -> {path}")
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--jobs-dir", default=os.path.join(SCRIPT_DIR, "web", "jobs"),
+                     help="root of the pending/running/done/failed job directories "
+                          "(default: web/jobs)")
+    ap.add_argument("--wspy", default=os.path.join(SCRIPT_DIR, "wspy"))
+    ap.add_argument("--wspy-run", default=os.path.join(SCRIPT_DIR, "wspy-run"))
+    ap.add_argument("--wspy-plot", default=os.path.join(SCRIPT_DIR, "wspy-plot"))
+    ap.add_argument("--wspy-store", default=os.path.join(SCRIPT_DIR, "wspy-store"))
+    ap.add_argument("--output-root", default=os.path.join(SCRIPT_DIR, "web", "runs"),
+                     help="directory root for <suite>/<benchmark>/<run-id>/ run output "
+                          "(default: web/runs, same default as web/server.py so jobs queued "
+                          "from the web UI and processed by this tool land in the same tree)")
+    ap.add_argument("--run-index-file",
+                     help="shared --run-index file (default: <output-root>/run_index.jsonl)")
+    ap.add_argument("--store-db",
+                     help="normalized-store database (default: <output-root>/store.db)")
+
+    sub = ap.add_subparsers(dest="command", required=True)
+
+    p_run = sub.add_parser("run", help="process pending job(s) serially")
+    p_run.add_argument("--job", help="process only this job id (must be pending)")
+    p_run.add_argument("--limit", type=int, help="process at most this many pending jobs")
+    p_run.add_argument("--strict", action="store_true",
+                        help="exit 1 if any processed job failed")
+    p_run.set_defaults(func=cmd_run)
+
+    p_list = sub.add_parser("list", help="list jobs")
+    p_list.add_argument("--state", choices=STATES, help="only list jobs in this state")
+    p_list.set_defaults(func=cmd_list)
+
+    p_show = sub.add_parser("show", help="print one job's full JSON (and its state)")
+    p_show.add_argument("job_id")
+    p_show.set_defaults(func=cmd_show)
+
+    p_requeue = sub.add_parser("requeue", help="move a failed (or stuck running) job back to pending")
+    p_requeue.add_argument("job_id")
+    p_requeue.add_argument("--force", action="store_true",
+                            help="requeue even a job that already completed successfully")
+    p_requeue.set_defaults(func=cmd_requeue)
+
+    p_add = sub.add_parser(
+        "add", help="create a pending job (preset mode via flags, custom mode via --checklist-json)")
+    p_add.add_argument("--suite", default="manual")
+    p_add.add_argument("--benchmark", help="default: derived from the workload command")
+    p_add.add_argument("--run-id", help="default: assigned fresh when the job is processed")
+    p_add.add_argument("--mode", choices=("preset", "custom"), default="preset")
+    p_add.add_argument("--profile", help="wspy-run profile spec for --mode preset, "
+                                          "e.g. deep-cpu or deep-cpu,tree-heavy")
+    p_add.add_argument("--checklist-json",
+                        help="path to a JSON file with --mode custom's checklist object "
+                             "(same shape the web UI's Run tab posts -- see "
+                             "build_configuration_passes() in web/joblib.py)")
+    p_add.add_argument("--custom-plot", action="append", metavar="NAME=col1,col2,...",
+                        help="repeatable; same syntax as wspy-plot --plot")
+    p_add.add_argument("--only-custom", action="store_true")
+    p_add.add_argument("--no-manifest", action="store_true")
+    p_add.add_argument("--no-run-index", action="store_true")
+    p_add.add_argument("--no-store-ingest", action="store_true")
+    p_add.add_argument("--notes", help="free-text note stored on the job")
+    p_add.add_argument("workload", nargs=argparse.REMAINDER,
+                        help="workload command, e.g. -- sleep 1")
+    p_add.set_defaults(func=cmd_add)
+
+    args = ap.parse_args()
+    if args.command == "add" and args.workload and args.workload[0] == "--":
+        args.workload = args.workload[1:]
+
+    cfg = build_cfg(args)
+    if args.command == "run":
+        for label, path in (("wspy", args.wspy), ("wspy-run", args.wspy_run),
+                             ("wspy-plot", args.wspy_plot), ("wspy-store", args.wspy_store)):
+            if not os.path.isfile(path):
+                print(f"warning: {label} not found at {path}", file=sys.stderr)
+
+    sys.exit(args.func(args, cfg))
+
+
+if __name__ == "__main__":
+    main()

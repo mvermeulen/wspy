@@ -692,6 +692,16 @@ if ! ./tests/capability_matrix.sh; then
     exit 1
 fi
 
+# wspy-queue/job-file smoke tests (INVESTIGATION_4.0.md item 13, "Deployment/
+# hosting design note"): fake wspy/wspy-run/wspy-plot/wspy-store binaries, so
+# this needs no build/GPU axis and no root/perf access -- run once here
+# rather than per-build like golden_output.sh/capability_matrix.sh above.
+echo "Testing wspy-queue job/queue smoke tests..."
+if ! ./tests/wspy_queue_smoke.sh; then
+    echo "FAIL: wspy-queue smoke tests failed"
+    exit 1
+fi
+
 # AMDGPU build test (if AMDGPU support is available). ROCm was historically
 # only installed under /opt/rocm, but distro packages (e.g. Debian/Ubuntu's
 # rocm-smi-lib) may instead put amd_smi/amdsmi.h under /usr, so check both.

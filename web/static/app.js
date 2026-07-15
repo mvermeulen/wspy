@@ -252,6 +252,45 @@
       var preset = getValue("preset");
       runButton.disabled = true;
       runResult.textContent = "";
+
+      if (getChecked("queue_job")) {
+        // Item 13: queue instead of run -- one endpoint handles both preset
+        // and custom mode (like /api/preview does), since a job file is
+        // just the same state captured instead of executed.
+        liveOutput.hidden = true;
+        var jobBody = {
+          workload: getValue("workload"),
+          suite: getValue("suite"),
+          benchmark: getValue("benchmark"),
+          run_id: getValue("run_id"),
+          preset: preset,
+          checklist: buildChecklist(),
+          toggles: buildToggles(),
+          custom_plots: buildCustomPlots(),
+          only_custom: getChecked("only_custom"),
+        };
+        fetch("/api/enqueue-job", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(jobBody),
+        })
+          .then(function (resp) {
+            return resp.json().then(function (data) {
+              if (!resp.ok) throw new Error(data.error || ("HTTP " + resp.status));
+              return data;
+            });
+          })
+          .then(function (data) {
+            runButton.disabled = false;
+            runResult.textContent = "Queued as " + data.job_id + ". " + data.message;
+          })
+          .catch(function (err) {
+            runButton.disabled = false;
+            runResult.textContent = "Error: " + err.message;
+          });
+        return;
+      }
+
       liveOutput.hidden = false;
       liveOutput.textContent = "";
 

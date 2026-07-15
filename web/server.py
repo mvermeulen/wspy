@@ -33,7 +33,6 @@ Usage:
 Stdlib only, by design (see CLAUDE.md's web/ entry for the reasoning).
 """
 import argparse
-import copy
 import html
 import json
 import os
@@ -49,8 +48,25 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, parse_qs
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import joblib  # noqa: E402 -- see joblib.py's own docstring; shared with wspy-queue
+
+REPO_ROOT = joblib.REPO_ROOT
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+
+# Re-exported from joblib.py (see its docstring) so the rest of this file --
+# and any external code importing server.py's own names -- keeps working
+# unchanged; joblib.py is the canonical definition, shared with wspy-queue.
+from joblib import (  # noqa: E402,F401
+    GROUP_NAMES, counter_group_flags, autofit_checklist_for_custom_plots,
+    build_supplementary_plot_passes, parse_optional_int, build_configuration_passes,
+    build_pass_argv, valid_segment, valid_relpath, make_run_id,
+    default_benchmark_from_workload, valid_profile_spec, build_wspy_run_argv,
+    build_plot_argv, shell_preview, RunState, run_store_ingest_besteffort,
+    execute_profile_run, execute_custom_run, write_custom_run_manifest,
+    write_custom_run_summary, LOG_NAME, PLOTS_DIR_NAME, RUN_MANIFEST_NAME, SUMMARY_NAME,
+    NAME_RE, resolve_toggles,
+)
 
 # The one fixed configuration item 6 knows about -- matches wspy-run's
 # deep-cpu/deep-gpu "amdtopdown" pass exactly (wspy-run, load_builtin_profile()).
@@ -60,17 +76,14 @@ CSV_NAME = "amdtopdown.csv"
 MANIFEST_NAME = "amdtopdown.manifest.json"
 PNG_NAME = "amdtopdown.png"  # legacy root-level plot name from the retired gnuplot.sh; old
                               # reports on disk from before item 12 may still have one there.
-LOG_NAME = "launch.log"
-PLOTS_DIR_NAME = "plots"      # wspy-plot's own output directory (item 12), relative to a run dir
+# LOG_NAME/RUN_MANIFEST_NAME/SUMMARY_NAME/NAME_RE/PROFILE_TOKEN_RE come from
+# joblib.py (import block above).
 ARTIFACT_FILES = (CSV_NAME, MANIFEST_NAME, PNG_NAME, LOG_NAME)
 
-# wspy-run's own unified-layout artifacts (item 7) -- see wspy-run's
-# generate_summary()/generate_manifest(). RUN_MANIFEST_NAME's presence in a
-# run directory is what distinguishes an item-7 (wspy-run) report from an
-# item-6 (fixed-config) one -- the two never collide since item 6 never
-# writes a bare "manifest.json" (its own manifest is amdtopdown.manifest.json).
-RUN_MANIFEST_NAME = "manifest.json"
-SUMMARY_NAME = "summary.txt"
+# RUN_MANIFEST_NAME's presence in a run directory is what distinguishes an
+# item-7 (wspy-run) report from an item-6 (fixed-config) one -- the two
+# never collide since item 6 never writes a bare "manifest.json" (its own
+# manifest is amdtopdown.manifest.json).
 TOPLEVEL_MARKER_FILES = ARTIFACT_FILES + (RUN_MANIFEST_NAME, SUMMARY_NAME)
 
 # wspy-run's own builtin profile catalog (wspy-run, BUILTIN_PROFILES) --
@@ -79,438 +92,13 @@ TOPLEVEL_MARKER_FILES = ARTIFACT_FILES + (RUN_MANIFEST_NAME, SUMMARY_NAME)
 BUILTIN_PROFILES = ("quick", "deep-cpu", "deep-cpu-intel", "deep-gpu",
                      "tree-heavy", "ibs-basic", "ibs-memory-deep")
 
-NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
-PROFILE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-
-# ---------------------------------------------------------------------------
-# Item 9 (INVESTIGATION_4.0.md): the configuration/option checklist that
-# generalizes item 7's preset-only wspy-run launcher into the real
-# preset/configuration/option hierarchy the "deep-dive" section describes.
-# A "configuration" here is one of the doc's own examples (a process tree, an
-# interval measurement of performance counters, an interval measurement of
-# other system metrics, an overall performance-counters measurement, an
-# overall system measurement) plus the mockup feedback's explicit GPU/IBS
-# extensions -- five independently toggleable rows, each with its own
-# sub-options, each becoming its own separate `wspy` invocation/pass (mirrors
-# wspy-run's own one-pass-per-configuration shape, just assembled from
-# checklist state instead of a hardcoded PASS_NAMES/PASS_FLAGS pair).
+# ALL_GROUPS/counter_group_flags/COLUMN_TO_GROUP/resolve_column_group/
+# autofit_checklist_for_custom_plots/PROFILE_PLOTTABLE_COLUMNS/
+# build_supplementary_plot_passes/parse_optional_int/build_configuration_passes/
+# build_pass_argv (item 9's checklist -> wspy-argv machinery, see joblib.py's
+# own docstring for the full "Item 9" design rationale) now live in
+# joblib.py, imported above -- shared with wspy-queue.
 #
-# Deliberately NOT attempted: decomposing a named preset (BUILTIN_PROFILES)
-# into equivalent checklist state, or detecting "this checklist state happens
-# to equal preset X". The deep-dive's own rule is that a preset names a
-# configuration+option combination wspy-run already knows how to run -- the
-# moment it's customized it leaves that space and becomes direct wspy command
-# lines -- so presets stay atomic (picked from a dropdown, run via wspy-run
-# exactly as item 7 already did) and are simply mutually exclusive with the
-# checklist rather than reverse-engineered from it. That keeps the "live
-# indicator" honest and simple: a preset is selected, or the checklist is in
-# play -- never a fuzzy "close enough" match.
-# ---------------------------------------------------------------------------
-
-# (group name, default_on) -- default_on groups (ipc/software) need an
-# explicit --no-<name> when left unchecked; the rest need an explicit
-# --<name> when checked. Mirrors wspy.h's COUNTER_* set and is also the exact
-# token vocabulary multipass.c's multipass_group_names[] uses for
-# --passes=<list>, so the same list drives both the plain-flags and
-# --passes-bin-packed branches below without a second table to keep in sync.
-ALL_GROUPS = [
-    ("ipc", True),
-    ("topdown", False),
-    ("topdown2", False),
-    ("topdown-frontend", False),
-    ("topdown-backend", False),
-    ("topdown-optlb", False),
-    ("branch", False),
-    ("cache1", False),
-    ("cache2", False),
-    ("cache3", False),
-    ("dcache", False),
-    ("icache", False),
-    ("tlb", False),
-    ("memory", False),
-    ("opcache", False),
-    ("software", True),
-    ("float", False),
-]
-GROUP_NAMES = [name for name, _ in ALL_GROUPS]
-GROUP_NAME_SET = set(GROUP_NAMES)
-GROUP_DEFAULT_ON = {name for name, default_on in ALL_GROUPS if default_on}
-
-
-def counter_group_flags(requested_groups):
-    """Whitelist-filters requested_groups against ALL_GROUPS and returns
-    (flags, selected_set) -- flags is the minimal --<name>/--no-<name> list
-    needed to reach exactly that selection from wspy's own defaults (ipc and
-    software on, everything else off), in ALL_GROUPS' fixed order so the
-    result is deterministic regardless of the client's array order."""
-    selected = {g for g in (requested_groups or []) if g in GROUP_NAME_SET}
-    flags = []
-    for name, default_on in ALL_GROUPS:
-        if name in selected and not default_on:
-            flags.append(f"--{name}")
-        elif name not in selected and default_on:
-            flags.append(f"--no-{name}")
-    return flags, selected
-
-
-# ---------------------------------------------------------------------------
-# Custom plots (item 12's wspy-plot --plot/--only-custom, Run tab section):
-# a custom plot's column list is otherwise completely decoupled from which
-# counter groups are actually being collected, so a column can be requested
-# that the run simply never produces -- wspy-plot degrades gracefully (skips
-# the missing column, warns), but silently producing an empty or partial
-# plot is a worse experience than making sure the right groups (and
-# --interval, without which there's no "time" column for wspy-plot to chart
-# at all) are turned on in the first place. COLUMN_TO_GROUP maps a column's
-# literal CSV header text (topdown.c's/system.c's own PRINT_CSV_HEADER
-# strings -- see CLAUDE.md's plot.c entry for the same column-identity
-# convention) to the ALL_GROUPS name whose --flag produces it.
-#
-# Deliberately excludes two ALL_GROUPS entries: "topdown2" duplicates
-# "topdown"'s own column names verbatim (both call print_topdown()), so
-# resolving a topdown column to "topdown2" instead of "topdown" would be an
-# arbitrary choice -- "topdown" is the canonical resolution and auto-
-# enabling it is sufficient; "cache1" (--cache1) is a dead flag (topdown.c's
-# setup_counter_groups() never wires COUNTER_L1CACHE into any group
-# constructor), so it produces zero CSV columns on any vendor and there's
-# nothing a column could ever resolve to it for.
-COLUMN_TO_GROUP = {
-    "ipc": "ipc",
-    "retire": "topdown", "frontend": "topdown", "backend": "topdown",
-    "speculate": "topdown", "confidence": "topdown", "sanity": "topdown",
-    "icache": "topdown-frontend", "itlb1": "topdown-frontend",
-    "itlb2": "topdown-frontend", "tlbflush": "topdown-frontend",
-    "l1_bound": "topdown-backend", "l2_bound": "topdown-backend",
-    "l3_bound": "topdown-backend", "dram_bound": "topdown-backend",
-    "store_bound": "topdown-backend",
-    "opcache": "topdown-optlb", "dtlb1": "topdown-optlb", "dtlb2": "topdown-optlb",
-    "branch miss": "branch",
-    "l2miss": "cache2",
-    "l3miss": "cache3",
-    "L1-dcache miss": "dcache",
-    "L1-icache miss": "icache",
-    "dTLB miss": "tlb", "iTLB miss": "tlb",
-    "bandwidth": "memory",
-    "opcache miss": "opcache",
-    "float": "float",
-    "cpu-clock": "software", "task-clock": "software", "page faults": "software",
-    "context switches": "software", "cpu migrations": "software",
-    "major page faults": "software", "minor page faults": "software",
-    "alignment faults": "software", "emulation faults": "software",
-}
-# --system's own columns (system.c) -- not an ALL_GROUPS/counter_mask entry,
-# so resolve_column_group() reports these via the "system" sentinel instead,
-# toggling the checklist's separate "system" configuration rather than a
-# counters group. "net <iface>" is one column per interface discovered on
-# this host, so it's matched by prefix rather than listed by name.
-SYSTEM_COLUMN_NAMES = {"load", "runnable", "cpu", "idle", "iowait", "irq"}
-
-
-def resolve_column_group(column_name):
-    """Returns the ALL_GROUPS name (or the "system" sentinel) whose --flag
-    must be enabled to produce column_name in a wspy CSV, or None if
-    column_name isn't a column this tool recognizes (a typo, or a
-    workload-specific name nothing here can auto-detect)."""
-    if column_name in SYSTEM_COLUMN_NAMES or column_name.startswith("net "):
-        return "system"
-    return COLUMN_TO_GROUP.get(column_name)
-
-
-def autofit_checklist_for_custom_plots(checklist, custom_plots):
-    """Makes sure every custom plot's requested columns will actually be
-    collected: auto-enables 'Performance counters' (and the specific
-    group(s) needed) and/or 'System metrics', and auto-sets a 1-second
-    --interval wherever one isn't already given, since a custom plot has
-    nothing to chart without a "time" column. Returns (new_checklist,
-    notes) -- a deep copy with whatever was missing turned on, plus a
-    human-readable note per change made (never a silent one). A column
-    that doesn't resolve to a known group (resolve_column_group() ->
-    None) is left alone and reported separately, since there's nothing
-    to auto-enable for it."""
-    checklist = copy.deepcopy(checklist) if checklist else {}
-    notes = []
-    needed_groups = set()
-    needs_system = False
-    unresolved = set()
-
-    for cp in (custom_plots or []):
-        for col in cp.get("columns", []):
-            group = resolve_column_group(col)
-            if group is None:
-                unresolved.add(col)
-            elif group == "system":
-                needs_system = True
-            else:
-                needed_groups.add(group)
-
-    if needed_groups:
-        counters = checklist.setdefault("counters", {})
-        if not counters.get("enabled"):
-            counters["enabled"] = True
-            notes.append("auto-enabled 'Performance counters' for a custom plot")
-        existing_groups = set(counters.get("groups") or [])
-        new_groups = needed_groups - existing_groups
-        if new_groups:
-            counters["groups"] = sorted(existing_groups | needed_groups)
-            notes.append(f"auto-checked counter group(s) {', '.join(sorted(new_groups))} for a custom plot")
-        if not str(counters.get("interval_secs") or "").strip():
-            counters["interval_secs"] = "1"
-            notes.append("auto-set a 1s interval on 'Performance counters' so the custom plot has "
-                          "a time series to chart")
-        counters["csv"] = True
-
-    if needs_system:
-        system = checklist.setdefault("system", {})
-        if not system.get("enabled"):
-            system["enabled"] = True
-            notes.append("auto-enabled 'System metrics' for a custom plot")
-        if not str(system.get("interval_secs") or "").strip():
-            system["interval_secs"] = "1"
-            notes.append("auto-set a 1s interval on 'System metrics' so the custom plot has a "
-                          "time series to chart")
-        system["csv"] = True
-
-    if unresolved:
-        notes.append("column(s) " + ", ".join(sorted(unresolved)) +
-                      " aren't a recognized wspy output column -- wspy-plot will skip them at run "
-                      "time unless your workload/counter selection actually produces them")
-
-    return checklist, notes
-
-
-# Best-effort column coverage per BUILTIN_PROFILES entry -- which CSV
-# columns actually land in a *time-series* (--interval) CSV wspy-plot can
-# chart at all, derived by hand from wspy-run's own load_builtin_profile()
-# PASS_FLAGS. A convenience hint, not the enforcement point; wspy-run's own
-# PASS_FLAGS remain authoritative, so keep this in sync by hand if a builtin
-# profile's passes change. Most profiles' passes never use --interval at all
-# (multi-pass/aggregate/no-CSV), so they produce nothing wspy-plot can chart
-# regardless of which counter groups they collect -- only deep-cpu/deep-gpu
-# have any --interval passes today. build_supplementary_plot_passes() below
-# uses this table to find what a preset's own passes are missing, not just to
-# warn about it.
-PROFILE_PLOTTABLE_COLUMNS = {
-    "quick": set(),
-    "deep-cpu": SYSTEM_COLUMN_NAMES | {"net *",
-                 "retire", "frontend", "backend", "speculate", "confidence", "sanity"},
-    "deep-cpu-intel": set(),
-    "deep-gpu": SYSTEM_COLUMN_NAMES | {"net *",
-                 "retire", "frontend", "backend", "speculate", "confidence", "sanity",
-                 "gpu_busy", "gpu_temp", "gpu_activity", "gpu_power", "gpu_freq"},
-    "tree-heavy": set(),
-    "ibs-basic": set(),
-    "ibs-memory-deep": set(),
-}
-
-
-def build_supplementary_plot_passes(rundir, profile_spec, custom_plots):
-    """Preset-mode counterpart to autofit_checklist_for_custom_plots(): a
-    preset's own wspy-run passes stay atomic (the deep-dive's own rule --
-    never decomposed or edited), but a custom plot asking for column(s) none
-    of the preset's passes will ever produce (per PROFILE_PLOTTABLE_COLUMNS)
-    would otherwise just warn and leave wspy-plot with no time series to
-    chart. Instead, resolve exactly the missing column(s) the same way
-    autofit_checklist_for_custom_plots() would (against an empty checklist,
-    so nothing the preset already covers is duplicated), and turn the result
-    into one or two extra, ordinary `wspy` passes -- named with a
-    'plotdata-' prefix so they can never collide with a builtin profile's own
-    pass filenames (e.g. deep-cpu's 'amdtopdown.csv'). These run alongside
-    wspy-run's own invocation, not instead of it, and land in the same run
-    directory, so wspy-plot's whole-directory CSV scan (and
-    render_wspy_run_report()'s "Other artifacts" listing) picks them up with
-    no further plumbing. profile_spec may comma-compose more than one
-    builtin profile (wspy-run's own convention), so coverage is the union
-    across every token. Returns (passes, notes) -- passes is empty (with a
-    plain per-column warning note, same wording as before) when a missing
-    column doesn't resolve to any known group; notes is empty entirely if
-    every requested column is already covered or custom_plots is empty."""
-    if not custom_plots:
-        return [], []
-    covered = set()
-    for token in (profile_spec or "").split(","):
-        covered |= PROFILE_PLOTTABLE_COLUMNS.get(token.strip(), set())
-    missing = set()
-    for cp in custom_plots:
-        for c in cp.get("columns", []):
-            if not (c in covered or (c.startswith("net ") and "net *" in covered)):
-                missing.add(c)
-    if not missing:
-        return [], []
-
-    synthetic = [{"name": "_missing", "columns": sorted(missing)}]
-    checklist, autofit_notes = autofit_checklist_for_custom_plots({}, synthetic)
-    passes = build_configuration_passes(rundir, checklist)
-    for p in passes:
-        p["name"] = "plotdata-" + p["name"]
-
-    notes = []
-    if passes:
-        notes.append(f"note: preset '{profile_spec}' doesn't collect column(s) "
-                      f"{', '.join(sorted(missing))} needed by your custom plot(s) -- added "
-                      f"supplementary pass(es) {', '.join(p['name'] for p in passes)} alongside "
-                      f"the preset to collect them")
-    for note in autofit_notes:
-        if note.startswith("column(s) "):
-            notes.append("warning: " + note)
-    return passes, notes
-
-
-def parse_optional_int(value, lo, hi):
-    """Returns an int in [lo,hi] parsed from value, or None if value is
-    blank/absent -- the checklist's numeric fields (interval seconds, IBS
-    thresholds, ...) are all optional, and "not given" is meaningfully
-    different from 0."""
-    if value is None:
-        return None
-    s = str(value).strip()
-    if not s:
-        return None
-    try:
-        n = int(s)
-    except ValueError:
-        return None
-    if n < lo or n > hi:
-        return None
-    return n
-
-
-def build_configuration_passes(rundir, checklist):
-    """The one place checklist state (see the item-9 comment above) becomes
-    real wspy flags -- used identically by the preview endpoint and the real
-    executor, so a preview is never a paraphrase of what actually runs.
-    Returns a list of {"name","flags","csv","timeout"} dicts, in the fixed
-    tree/counters/system/gpu/ibs order, one per *enabled and non-empty*
-    configuration (an enabled configuration with nothing meaningful selected,
-    e.g. "counters" with no groups checked, is silently skipped rather than
-    producing a no-op wspy invocation)."""
-    checklist = checklist or {}
-    passes = []
-
-    tree = checklist.get("tree") or {}
-    if tree.get("enabled"):
-        flags = ["--tree", os.path.join(rundir, "process.tree.txt")]
-        if tree.get("cmdline"):
-            flags.append("--tree-cmdline")
-        if tree.get("open"):
-            flags.append("--tree-open")
-        if tree.get("vmsize"):
-            flags.append("--tree-vmsize")
-        flags.append("--software" if tree.get("software", True) else "--no-software")
-        flags.append("--no-ipc")
-        timeout = parse_optional_int(tree.get("timeout_secs"), 1, 86400)
-        passes.append({"name": "tree", "flags": flags, "csv": False, "timeout": timeout})
-
-    counters = checklist.get("counters") or {}
-    if counters.get("enabled"):
-        group_flags, selected = counter_group_flags(counters.get("groups"))
-        if selected:
-            interval = parse_optional_int(counters.get("interval_secs"), 1, 3600)
-            per_core = bool(counters.get("per_core")) and interval is not None
-            rusage_on = bool(counters.get("rusage"))
-            csv = bool(counters.get("csv", True))
-            # --passes rejects --interval/--per-core outright (wspy.c, see
-            # CLAUDE.md's wspy.c entry) -- so interval mode always uses plain
-            # flags (potentially multiplexed by the kernel across >1 group,
-            # same as any ordinary wspy invocation would be); aggregate mode
-            # only needs --passes' bin-packing once >=2 groups are requested,
-            # since a single group never multiplexes against itself.
-            if interval is None and len(selected) >= 2:
-                ordered = [n for n in GROUP_NAMES if n in selected]
-                flags = [f"--passes={','.join(ordered)}"]
-            else:
-                flags = list(group_flags)
-                if interval is not None:
-                    flags += ["--interval", str(interval)]
-                if per_core:
-                    flags.append("--per-core")
-            flags.append("--rusage" if rusage_on else "--no-rusage")
-            if csv:
-                flags.append("--csv")
-            # Reuse the well-known "amdtopdown" name for exactly the case
-            # that name always meant elsewhere in this codebase: an
-            # interval, CSV, topdown-only sweep. wspy-plot (item 12) matches
-            # templates against a CSV's header, not its filename, so this
-            # naming is now just continuity with older reports, not a
-            # requirement for plotting to fire.
-            name = "amdtopdown" if (interval is not None and csv and selected == {"topdown"}) else "counters"
-            passes.append({"name": name, "flags": flags, "csv": csv, "timeout": None})
-
-    system = checklist.get("system") or {}
-    if system.get("enabled"):
-        interval = parse_optional_int(system.get("interval_secs"), 1, 3600)
-        csv = bool(system.get("csv", True))
-        flags = ["--system", "--no-ipc", "--no-rusage", "--no-software"]
-        if interval is not None:
-            flags += ["--interval", str(interval)]
-        if csv:
-            flags.append("--csv")
-        # Same reasoning as "amdtopdown" above -- kept for continuity with
-        # older reports, not because wspy-plot needs this literal filename.
-        name = "systemtime" if (interval is not None and csv) else "system"
-        passes.append({"name": name, "flags": flags, "csv": csv, "timeout": None})
-
-    gpu = checklist.get("gpu") or {}
-    if gpu.get("enabled"):
-        backend_flags = []
-        if gpu.get("busy"):
-            backend_flags.append("--gpu-busy")
-        if gpu.get("metrics"):
-            backend_flags.append("--gpu-metrics")
-        if gpu.get("smi"):
-            backend_flags.append("--gpu-smi")
-        if backend_flags:
-            flags = list(backend_flags)
-            device = parse_optional_int(gpu.get("device"), 0, 63)
-            if device is not None:
-                flags += ["--gpu-device", str(device)]
-            interval = parse_optional_int(gpu.get("interval_secs"), 1, 3600)
-            if interval is not None:
-                flags += ["--interval", str(interval)]
-            flags += ["--no-ipc", "--no-rusage", "--no-software"]
-            csv = bool(gpu.get("csv", True))
-            if csv:
-                flags.append("--csv")
-            passes.append({"name": "gpu", "flags": flags, "csv": csv, "timeout": None})
-
-    ibs = checklist.get("ibs") or {}
-    if ibs.get("enabled"):
-        profile = ibs.get("profile") if ibs.get("profile") in ("basic", "memory-deep") else "basic"
-        flags = ["--ibs-basic" if profile == "basic" else "--ibs-memory-deep", "--no-ipc"]
-        maxcnt = parse_optional_int(ibs.get("maxcnt"), 1, 10 ** 9)
-        ldlat = parse_optional_int(ibs.get("ldlat"), 0, 10 ** 6)
-        fetchlat = parse_optional_int(ibs.get("fetchlat"), 0, 10 ** 6)
-        if maxcnt is not None:
-            flags += ["--ibs-maxcnt", str(maxcnt)]
-        if ldlat is not None:
-            flags += ["--ibs-ldlat", str(ldlat)]
-        if fetchlat is not None:
-            flags += ["--ibs-fetchlat", str(fetchlat)]
-        csv = bool(ibs.get("csv", True))
-        if csv:
-            flags.append("--csv")
-        passes.append({"name": "ibs", "flags": flags, "csv": csv, "timeout": None})
-
-    return passes
-
-
-def build_pass_argv(wspy_bin, rundir, p, manifest_on, run_index_path):
-    """Full argv for one configuration pass, minus the trailing `-- <workload
-    argv>` (appended by the caller, which also decides whether to prefix a
-    `timeout <secs>` wrapper) -- mirrors wspy-run's own run_pass() shape:
-    <pass-name>.<csv|txt> for output, <pass-name>.manifest.json alongside it
-    when manifest recording is on."""
-    ext = "csv" if p["csv"] else "txt"
-    outfile = os.path.join(rundir, f'{p["name"]}.{ext}')
-    argv = [wspy_bin] + p["flags"] + ["-o", outfile]
-    manifest_path = None
-    if manifest_on:
-        manifest_path = os.path.join(rundir, f'{p["name"]}.manifest.json')
-        argv += ["--manifest", manifest_path]
-    if run_index_path:
-        argv += ["--run-index", run_index_path]
-    return argv, outfile, manifest_path
-
-
 # ---------------------------------------------------------------------------
 # Run registry: in-memory only, purely to relay a run's live log lines to an
 # SSE stream while it's in flight. Nothing here is authoritative -- once a
@@ -518,26 +106,9 @@ def build_pass_argv(wspy_bin, rundir, p, manifest_on, run_index_path):
 # so a server restart mid-run loses only the live tail, not the artifacts.
 # ---------------------------------------------------------------------------
 
-class RunState:
-    def __init__(self, rundir):
-        self.rundir = rundir
-        self.lines = []
-        self.status = "running"  # running | done | error
-        self.report_url = None
-        self.cond = threading.Condition()
-
-    def append(self, line):
-        with self.cond:
-            self.lines.append(line)
-            self.cond.notify_all()
-
-    def finish(self, status, report_url):
-        with self.cond:
-            self.status = status
-            self.report_url = report_url
-            self.cond.notify_all()
-
-
+# RunState (see joblib.py, imported above) is used identically here for the
+# SSE relay -- the .lines/.cond machinery is only actually watched when a
+# GET /api/run/.../events listener is attached.
 RUNS = {}
 RUNS_LOCK = threading.Lock()
 
@@ -546,37 +117,8 @@ def run_key(suite, benchmark, run_id):
     return (suite, benchmark, run_id)
 
 
-def valid_segment(s):
-    return bool(s) and bool(NAME_RE.match(s)) and s not in (".", "..")
-
-
-def valid_relpath(s):
-    """Like valid_segment(), but allows one or more "/"-separated
-    components (e.g. "plots/amdtopdown.topdown.png", item 12's plot PNGs
-    living one directory level under a run dir) -- every component must
-    still individually pass valid_segment(), so "..", a leading/trailing/
-    doubled "/", and any character outside NAME_RE's whitelist are all
-    rejected the same as they always were for a single segment."""
-    if not s or s.startswith("/") or s.endswith("/") or "//" in s:
-        return False
-    return all(valid_segment(part) for part in s.split("/"))
-
-
-def make_run_id():
-    # Same shape as wspy-run's own <timestamp>.<ms>-<suffix> run ids (see
-    # run_index.c's format_run_id()), but this server is long-running so a
-    # per-request pid isn't unique the way wspy-run's own "$$" is -- a short
-    # random hex suffix stands in for it instead.
-    now = datetime.now(timezone.utc)
-    ms = now.microsecond // 1000
-    return f"{now.strftime('%Y%m%dT%H%M%S')}.{ms:03d}-{secrets.token_hex(4)}"
-
-
-def default_benchmark_from_workload(argv):
-    base = os.path.basename(argv[0]) if argv else "workload"
-    base = re.sub(r"[^A-Za-z0-9_.-]", "_", base)
-    return base or "workload"
-
+# valid_segment/valid_relpath/make_run_id/default_benchmark_from_workload
+# come from joblib.py (import block above).
 
 # ---------------------------------------------------------------------------
 # Command construction -- the same strings are used to (a) show the user what
@@ -590,27 +132,7 @@ def build_wspy_argv(wspy_bin, rundir, workload_argv):
             ["-o", csv_path, "--manifest", manifest_path, "--"] + workload_argv)
 
 
-def build_plot_argv(wspy_plot_bin, rundir, custom_plots=None, only_custom=False):
-    """wspy-plot (item 12, "shared plotting templates") over the whole run
-    directory: it scans every *.csv itself and matches each against the
-    shared template table, so -- unlike the old gnuplot.sh, which only knew
-    two literal filenames -- this one command line covers any counter-group
-    combination a run happened to produce, with no "did this produce
-    amdtopdown.csv?" gate needed before calling it.
-
-    custom_plots (the Run tab's "Custom plots" section, validated by
-    _parse_custom_plots()) becomes one --plot NAME=col1,col2,... per entry
-    -- wspy-plot's own escape hatch for grouping specific counters onto one
-    plot regardless of the built-in templates' groupings; only_custom adds
-    --only-custom, which renders exactly those spec(s) and skips every
-    built-in template and fallback plot."""
-    argv = [wspy_plot_bin, "--rundir", rundir, "--quiet"]
-    for cp in (custom_plots or []):
-        argv += ["--plot", f"{cp['name']}={','.join(cp['columns'])}"]
-    if only_custom:
-        argv.append("--only-custom")
-    return argv
-
+# build_plot_argv comes from joblib.py (import block above).
 
 def list_plot_pngs(rundir):
     """Every *.png wspy-plot wrote into <rundir>/plots/, as filenames
@@ -626,32 +148,8 @@ def list_plot_pngs(rundir):
     return [f"{PLOTS_DIR_NAME}/{f}" for f in names]
 
 
-def valid_profile_spec(spec):
-    tokens = spec.split(",")
-    return bool(tokens) and all(PROFILE_TOKEN_RE.match(t) for t in tokens)
-
-
-def build_wspy_run_argv(wspy_run_bin, wspy_bin, output_root, suite, benchmark,
-                         run_id, profile, workload_argv, run_index_path=None):
-    # wspy-run always writes each pass's manifest into the run directory once
-    # --suite/--benchmark select the unified layout (MANIFEST_DIR defaults to
-    # RUNROOT unconditionally there's no flag to opt back out) -- so unlike
-    # the custom checklist path, there's no "manifest off" toggle to thread
-    # through here; only --run-index is actually optional.
-    argv = [wspy_run_bin, "--wspy", wspy_bin, "-o", output_root,
-            "--suite", suite, "--benchmark", benchmark, "--run-id", run_id]
-    if run_index_path:
-        argv += ["--run-index", run_index_path]
-    argv += [profile, "--"] + workload_argv
-    return argv
-
-
-def shell_preview(argv, cwd=None):
-    s = shlex.join(argv)
-    if cwd:
-        return f"(cd {shlex.quote(cwd)} && {s})"
-    return s
-
+# valid_profile_spec/build_wspy_run_argv/shell_preview come from joblib.py
+# (import block above).
 
 # ---------------------------------------------------------------------------
 # Run execution
@@ -714,267 +212,9 @@ def execute_run(state, wspy_bin, wspy_plot_bin, rundir, workload_argv,
     state.finish(status, None)
 
 
-def run_store_ingest_besteffort(emit, cfg, run_index_path):
-    """Best-effort trailing step shared by every run path (item 9's
-    defaults-on "ingest into store" toggle chip): re-runs wspy-store against
-    the shared run-index file so the normalized store (Tier 1, store.c) stays
-    current without a separate manual step. Never fails the run itself --
-    same degrade-don't-fail idiom as the plot generation step above."""
-    if not run_index_path:
-        emit("[skipping store ingest: run index was not recorded for this run]")
-        return
-    argv = [cfg["wspy_store_bin"], "--db", cfg["store_db"], "--run-index", run_index_path]
-    emit("$ " + shell_preview(argv))
-    try:
-        proc = subprocess.Popen(argv, cwd=REPO_ROOT,
-                                 stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT,
-                                 text=True, bufsize=1)
-        for line in proc.stdout:
-            emit(line.rstrip("\n"))
-        rc = proc.wait()
-        emit(f"[wspy-store exited {rc}]")
-    except OSError as e:
-        emit(f"[error] failed to launch wspy-store ({cfg['wspy_store_bin']}): {e}")
-
-
-def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
-                         workload_argv, run_index_path=None, store_ingest=False,
-                         custom_plots=None, only_custom=False, preset_notes=None,
-                         supp_passes=None, manifest_on=False):
-    """Item 7: invoke wspy-run itself (rather than wspy directly) for one of
-    its builtin profiles, then -- mirroring workload/phoronix/run_test.sh's
-    own hand-written pattern -- best-effort run wspy-plot (item 12) over the
-    whole run directory afterward. Unlike the old gnuplot.sh, wspy-plot
-    matches its shared templates against whatever CSV(s) the chosen profile
-    actually produced, so there's no "did this profile make amdtopdown.csv?"
-    gate needed first -- deep-cpu-intel/quick/tree-heavy/ibs-* now get
-    whatever plots their own CSVs support instead of none. Item 9 adds the
-    optional trailing run-index/store-ingest steps (the "preset" side of the
-    Run tab's toggle chips); manifest recording has no toggle here for
-    wspy-run's own passes, since its unified layout always writes one per
-    pass regardless -- but it does apply to supp_passes below, which are
-    plain `wspy` invocations like any custom-mode pass.
-
-    supp_passes (build_supplementary_plot_passes()) are extra, ordinary
-    `wspy` passes run after wspy-run's own invocation finishes and before
-    wspy-plot, purely to collect column(s) a custom plot needs that the
-    preset's own passes don't produce -- wspy-run's own invocation is never
-    modified, so the preset itself stays atomic. A supplementary pass
-    failing doesn't fail the run (same degrade-don't-fail idiom as the
-    wspy-plot step below); its CSV/manifest just won't exist for wspy-plot
-    or the report to find."""
-    log_path = os.path.join(rundir, LOG_NAME)
-    logf = open(log_path, "w")
-
-    def emit(line):
-        logf.write(line + "\n")
-        logf.flush()
-        state.append(line)
-
-    for note in (preset_notes or []):
-        emit(f"[note] {note}")
-
-    wspy_run_argv = build_wspy_run_argv(cfg["wspy_run_bin"], cfg["wspy_bin"],
-                                         cfg["output_root"], suite, benchmark,
-                                         run_id, profile, workload_argv,
-                                         run_index_path=run_index_path)
-    emit("$ " + shell_preview(wspy_run_argv))
-    try:
-        proc = subprocess.Popen(wspy_run_argv, cwd=REPO_ROOT,
-                                 stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT,
-                                 text=True, bufsize=1)
-    except OSError as e:
-        emit(f"[error] failed to launch wspy-run ({cfg['wspy_run_bin']}): {e}")
-        logf.close()
-        state.finish("error", None)
-        return
-
-    for line in proc.stdout:
-        emit(line.rstrip("\n"))
-    wspy_run_rc = proc.wait()
-    emit(f"[wspy-run exited {wspy_run_rc}]")
-
-    for p in (supp_passes or []):
-        argv, outfile, _manifest_path = build_pass_argv(cfg["wspy_bin"], rundir, p,
-                                                          manifest_on, run_index_path)
-        full_argv = argv + ["--"] + workload_argv
-        if p["timeout"]:
-            full_argv = ["timeout", str(p["timeout"])] + full_argv
-        emit(f"[{p['name']}] $ " + shell_preview(full_argv))
-        try:
-            supp_proc = subprocess.Popen(full_argv, cwd=REPO_ROOT,
-                                          stdout=subprocess.PIPE,
-                                          stderr=subprocess.STDOUT,
-                                          text=True, bufsize=1)
-            for line in supp_proc.stdout:
-                emit(line.rstrip("\n"))
-            supp_rc = supp_proc.wait()
-        except OSError as e:
-            emit(f"[error] failed to launch wspy for supplementary pass "
-                 f"'{p['name']}' ({cfg['wspy_bin']}): {e}")
-            supp_rc = 1
-        emit(f"[{p['name']}] exited {supp_rc} -> {os.path.basename(outfile)}")
-
-    plot_argv = build_plot_argv(cfg["wspy_plot_bin"], rundir, custom_plots, only_custom)
-    emit("$ " + shell_preview(plot_argv))
-    try:
-        proc = subprocess.Popen(plot_argv, cwd=REPO_ROOT,
-                                 stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT,
-                                 text=True, bufsize=1)
-        for line in proc.stdout:
-            emit(line.rstrip("\n"))
-        plot_rc = proc.wait()
-        emit(f"[wspy-plot exited {plot_rc}]")
-    except OSError as e:
-        emit(f"[error] failed to launch wspy-plot ({cfg['wspy_plot_bin']}): {e}")
-        plot_rc = 1
-
-    if store_ingest:
-        run_store_ingest_besteffort(emit, cfg, run_index_path)
-
-    logf.close()
-    status = "done" if wspy_run_rc == 0 and plot_rc == 0 else "error"
-    state.finish(status, None)
-
-
-def write_custom_run_manifest(rundir, suite, benchmark, run_id, workload_argv, pass_records):
-    """Same shape as wspy-run's own generate_manifest() (see wspy-run's
-    comment there) -- writing the identical layout_version/suite/benchmark/
-    run_id/command/passes[] fields means render_wspy_run_report() renders a
-    checklist-driven custom run exactly like a wspy-run profile run, with no
-    extra branching needed in the report layer for item 9's new run shape."""
-    data = {
-        "layout_version": "1.0.0",
-        "suite": suite,
-        "benchmark": benchmark,
-        "run_id": run_id,
-        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-        "command": workload_argv,
-        "passes": [
-            {"name": p["name"], "output": p["output"], "manifest": p["manifest"], "status": p["status"]}
-            for p in pass_records
-        ],
-    }
-    with open(os.path.join(rundir, RUN_MANIFEST_NAME), "w") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
-
-
-def write_custom_run_summary(rundir, pass_records):
-    """Mirrors wspy-run's generate_summary(): concatenates every non-CSV,
-    non-tree pass's text output into one summary.txt."""
-    chunks = []
-    for p in pass_records:
-        if p["output"].endswith(".csv") or p["kind"] == "tree":
-            continue
-        path = os.path.join(rundir, p["output"])
-        try:
-            with open(path) as f:
-                content = f.read()
-        except OSError:
-            continue
-        chunks.append(f"=== {p['name']} ===\n{content}\n")
-    if not chunks:
-        return
-    with open(os.path.join(rundir, SUMMARY_NAME), "w") as f:
-        f.write("".join(chunks))
-
-
-def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_argv,
-                        checklist, manifest_on, run_index_path, store_ingest,
-                        custom_plots=None, only_custom=False, autofit_notes=None):
-    """Item 9's "customized away from a preset" path: runs each enabled
-    configuration (see build_configuration_passes()) as its own sequential
-    wspy invocation into this run directory -- the direct-command-lines
-    fallback the deep-dive's own rule calls for once a preset's checklist has
-    been touched. Ends by writing a wspy-run-shaped manifest.json/summary.txt
-    (see write_custom_run_manifest()/write_custom_run_summary() above) so the
-    existing report/curation/compare machinery needs no new code path.
-
-    checklist has already been through autofit_checklist_for_custom_plots()
-    by the caller (_start_custom_run) -- autofit_notes is only threaded
-    through here to surface what was auto-enabled in the live log, not to
-    redo the autofit (that would find nothing left to change)."""
-    log_path = os.path.join(rundir, LOG_NAME)
-    logf = open(log_path, "w")
-
-    def emit(line):
-        logf.write(line + "\n")
-        logf.flush()
-        state.append(line)
-
-    for note in (autofit_notes or []):
-        emit(f"[note] {note}")
-
-    passes = build_configuration_passes(rundir, checklist)
-    if not passes:
-        emit("[error] no configuration was enabled (or every enabled configuration had "
-             "nothing selected within it) -- nothing to run")
-        logf.close()
-        state.finish("error", None)
-        return
-
-    pass_records = []
-    any_failed = False
-    for p in passes:
-        argv, outfile, manifest_path = build_pass_argv(cfg["wspy_bin"], rundir, p,
-                                                         manifest_on, run_index_path)
-        full_argv = argv + ["--"] + workload_argv
-        if p["timeout"]:
-            full_argv = ["timeout", str(p["timeout"])] + full_argv
-        emit(f"[{p['name']}] $ " + shell_preview(full_argv))
-        try:
-            proc = subprocess.Popen(full_argv, cwd=REPO_ROOT,
-                                     stdout=subprocess.PIPE,
-                                     stderr=subprocess.STDOUT,
-                                     text=True, bufsize=1)
-            for line in proc.stdout:
-                emit(line.rstrip("\n"))
-            rc = proc.wait()
-        except OSError as e:
-            emit(f"[error] failed to launch wspy for pass '{p['name']}' ({cfg['wspy_bin']}): {e}")
-            rc = 1
-        status = "ok" if rc == 0 else "wspy-error"
-        any_failed = any_failed or rc != 0
-        emit(f"[{p['name']}] exited {rc} -> {os.path.basename(outfile)}")
-        pass_records.append({
-            "name": p["name"],
-            "output": os.path.basename(outfile),
-            "manifest": os.path.basename(manifest_path) if manifest_path else None,
-            "status": status,
-            "kind": "tree" if p["name"] == "tree" else "other",
-        })
-
-    plot_argv = build_plot_argv(cfg["wspy_plot_bin"], rundir, custom_plots, only_custom)
-    emit("$ " + shell_preview(plot_argv))
-    try:
-        proc = subprocess.Popen(plot_argv, cwd=REPO_ROOT,
-                                 stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT,
-                                 text=True, bufsize=1)
-        for line in proc.stdout:
-            emit(line.rstrip("\n"))
-        plot_rc = proc.wait()
-        emit(f"[wspy-plot exited {plot_rc}]")
-    except OSError as e:
-        emit(f"[error] failed to launch wspy-plot ({cfg['wspy_plot_bin']}): {e}")
-        plot_rc = 1
-
-    write_custom_run_summary(rundir, pass_records)
-    write_custom_run_manifest(rundir, suite, benchmark, run_id, workload_argv, pass_records)
-    emit(f"[wrote {RUN_MANIFEST_NAME}]")
-
-    if store_ingest:
-        run_store_ingest_besteffort(emit, cfg, run_index_path)
-
-    logf.close()
-    status = "done" if not any_failed and plot_rc == 0 else "error"
-    state.finish(status, None)
-
-
+# run_store_ingest_besteffort/execute_profile_run/write_custom_run_manifest/
+# write_custom_run_summary/execute_custom_run come from joblib.py (import
+# block above) -- shared with wspy-queue's own job processing.
 # ---------------------------------------------------------------------------
 # Report discovery -- scans OUTPUT_ROOT for suite/benchmark/run_id
 # directories holding at least one known artifact, newest first. This is
@@ -1849,6 +1089,15 @@ def render_run_tab(prefill, cfg):
       <label class="chip"><input type="checkbox" id="toggle_run_index" checked> Append to run index</label>
       <label class="chip"><input type="checkbox" id="toggle_store_ingest" checked> Ingest into store after run</label>
     </div>
+
+    <label class="inline-check">
+      <input type="checkbox" id="queue_job">
+      Queue this instead of running it now
+      <span class="muted">(writes a job file to <code>{html.escape(cfg["jobs_dir"])}/pending/</code>
+        &mdash; process it later with <code>wspy-queue run</code>, from this machine, cron, or after
+        copying the job file to another machine with wspy checked out; see
+        <code>INVESTIGATION_4.0.md</code> item 13)</span>
+    </label>
 
     <fieldset class="preview">
       <legend>Command(s) about to run (copy/paste-able)</legend>
@@ -2728,6 +1977,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/run-profile": self._start_profile_run,
             "/api/run-custom": self._start_custom_run,
             "/api/preview": self._preview,
+            "/api/enqueue-job": self._enqueue_job,
             "/api/discovery/capabilities": self._discovery_capabilities,
             "/api/discovery/preflight": self._discovery_preflight,
             "/api/discovery/validate": self._discovery_validate,
@@ -2805,13 +2055,9 @@ class Handler(BaseHTTPRequestHandler):
     def _parse_toggles(cfg, body):
         """The Run tab's defaults-on toggle chips (manifest/run-index/store-
         ingest -- item 9's mockup-feedback item, see INVESTIGATION_4.0.md
-        line ~336). Returns (manifest_on, run_index_path_or_None, store_ingest)."""
-        toggles = body.get("toggles") or {}
-        manifest_on = bool(toggles.get("manifest", True))
-        run_index_on = bool(toggles.get("run_index", True))
-        store_ingest = bool(toggles.get("store_ingest", True)) and run_index_on
-        run_index_path = cfg["run_index_file"] if run_index_on else None
-        return manifest_on, run_index_path, store_ingest
+        line ~336). Returns (manifest_on, run_index_path_or_None, store_ingest).
+        Thin wrapper over joblib.resolve_toggles() (shared with wspy-queue)."""
+        return resolve_toggles(cfg, body.get("toggles"))
 
     @staticmethod
     def _parse_custom_plots(body):
@@ -3063,6 +2309,87 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"mode": "custom", "lines": lines, "notes": notes,
                                "resolved_checklist": checklist})
 
+    def _enqueue_job(self, cfg, body):
+        """Item 13 (INVESTIGATION_4.0.md, "Deployment/hosting design note"),
+        use case (a): the Run tab's "queue instead of run now" toggle. Builds
+        the exact same portable job document `wspy-queue add` itself creates
+        (joblib.build_job()/validate_job()) from the same preset/checklist/
+        workload/toggles state _preview()/_start_profile_run()/
+        _start_custom_run() already consume, and writes it into
+        <jobs-dir>/pending/ instead of launching anything -- this server
+        never processes a job itself (see joblib.py's "Job files" section
+        for why: `wspy-queue run` is the one place job execution happens,
+        headless, so a job queued here works the same whether or not this
+        server is still running when it's picked up)."""
+        workload_str = (body.get("workload") or "").strip()
+        if not workload_str:
+            self._send_json(400, {"error": "workload command is required"})
+            return
+        try:
+            workload_argv = shlex.split(workload_str)
+        except ValueError as e:
+            self._send_json(400, {"error": f"could not parse workload command: {e}"})
+            return
+        if not workload_argv:
+            self._send_json(400, {"error": "workload command is required"})
+            return
+
+        suite = (body.get("suite") or "manual").strip()
+        benchmark = (body.get("benchmark") or "").strip() or default_benchmark_from_workload(workload_argv)
+        run_id = (body.get("run_id") or "").strip() or None
+        if not valid_segment(suite) or not valid_segment(benchmark) or (run_id and not valid_segment(run_id)):
+            self._send_json(400, {"error": "suite/benchmark/run_id must be non-empty and contain "
+                                             "only letters, digits, '.', '_', '-'"})
+            return
+
+        custom_plots, only_custom, err = self._parse_custom_plots(body)
+        if err:
+            self._send_json(400, err)
+            return
+        toggles = body.get("toggles") or {}
+        notes = (body.get("notes") or "").strip()
+
+        preset = (body.get("preset") or "").strip()
+        if preset:
+            if not valid_profile_spec(preset):
+                self._send_json(400, {"error": "invalid preset spec"})
+                return
+            job = joblib.build_job(workload_argv, suite, benchmark, "preset", profile=preset,
+                                    custom_plots=custom_plots, only_custom=only_custom,
+                                    toggles=toggles, run_id=run_id, notes=notes)
+        else:
+            checklist = body.get("checklist") or {}
+            # Placeholder rundir: build_configuration_passes() only ever uses
+            # it to spell a --tree pass's output path into that pass's flags
+            # text -- it never touches the filesystem -- so this is safe to
+            # call purely to check "is anything enabled" before queuing.
+            if not build_configuration_passes(
+                    os.path.join(cfg["output_root"], suite, benchmark, "<job>"), checklist):
+                self._send_json(400, {"error": "no configuration is enabled (or every enabled "
+                                                "configuration has nothing selected within it)"})
+                return
+            job = joblib.build_job(workload_argv, suite, benchmark, "custom", checklist=checklist,
+                                    custom_plots=custom_plots, only_custom=only_custom,
+                                    toggles=toggles, run_id=run_id, notes=notes)
+
+        errors = joblib.validate_job(job)
+        if errors:
+            self._send_json(400, {"error": "; ".join(errors)})
+            return
+
+        pending_dir = os.path.join(cfg["jobs_dir"], "pending")
+        os.makedirs(pending_dir, exist_ok=True)
+        path = os.path.join(pending_dir, f'{job["job_id"]}.json')
+        with open(path, "w") as f:
+            json.dump(job, f, indent=2)
+            f.write("\n")
+
+        self._send_json(202, {
+            "job_id": job["job_id"], "path": path,
+            "message": "queued -- run `wspy-queue run` (on this machine, via cron, or after "
+                       "copying the job file to another machine) to actually launch it",
+        })
+
     # -----------------------------------------------------------------
     # Discovery tab family (item 9): wspy-validate, wspy-store/wspy-summary,
     # wspy --capabilities/--preflight. All synchronous (run_sync()) -- none
@@ -3234,6 +2561,11 @@ def main():
     ap.add_argument("--store-db",
                      help="normalized-store database used by the Store & Summary tab and the "
                           "Run tab's 'ingest into store' toggle chip (default: <output-root>/store.db)")
+    ap.add_argument("--jobs-dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "jobs"),
+                     help="root of the pending/running/done/failed job directories the Run tab's "
+                          "'queue instead of run now' toggle writes into (item 13; default: web/jobs, "
+                          "the same default wspy-queue itself uses) -- jobs are processed by the "
+                          "separate wspy-queue tool, not by this server")
     args = ap.parse_args()
 
     output_root = os.path.abspath(args.output_root)
@@ -3270,6 +2602,7 @@ def main():
         "wspy_summary_bin": os.path.abspath(args.wspy_summary),
         "run_index_file": run_index_file,
         "store_db": store_db,
+        "jobs_dir": os.path.abspath(args.jobs_dir),
     }
     print(f"wspy web launcher listening on http://{args.host}:{args.port}  "
           f"(output root: {output_root})")
