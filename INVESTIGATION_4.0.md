@@ -558,7 +558,8 @@ derivable from files already being produced.
     time-series to chart regardless of counter selection; only `deep-cpu`/`deep-gpu` do. See
     `CLAUDE.md`'s `plot.c` and item 9
     entries for the full breakdown.
-13. Deployment/hosting design note — answer, for both a person browsing their own local run output
+13. ~~Deployment/hosting design note~~ — **shipped**, as a real feature rather than staying
+    design-only. Original scope: answer, for both a person browsing their own local run output
     and a team publishing to a shared site: does #8/#11 need to run anywhere besides `localhost`, is a
     static site (generated files, no server process) sufficient, and if not, what's the smallest
     backend that covers both cases? Feeds #5's mockup pass directly and should land before #9's
@@ -604,6 +605,31 @@ derivable from files already being produced.
       the run-index directly) using the same substring-matching approach `ledger.c` already implements
       for suite-level workload coverage, not a new completion-tracker bolted onto the job file itself.
       See #19's own entry for the current (still speculative/future) scope of that connection.
+    - **What shipped:** every piece of the design above landed as described, not just the note. The
+      checklist/preset → `wspy` argv builders and the actual run executors that used to live directly in
+      `web/server.py` were pulled out (no behavior change) into `web/joblib.py`, which now also holds the
+      job format itself (`build_job()`/`validate_job()`/`resolve_toggles()`/`JOB_SCHEMA_VERSION`) — this
+      is what lets `wspy-queue` (repo root, alongside `wspy-run`, stdlib-only Python, no build step) share
+      the identical preset/checklist → command-line logic instead of reimplementing it, so a job behaves
+      identically whether it's processed by `wspy-queue` headless or (indirectly, via the same functions)
+      by the web UI. `wspy-queue`'s `pending`/`running`/`done`/`failed` lifecycle is literally four
+      `<jobs-dir>/<state>/*.json` directories (Maildir-style); claiming a job is one `os.rename()` from
+      `pending/` to `running/`, which is atomic on a POSIX filesystem and doubles as the only concurrency
+      control needed. Subcommands: `add` (preset mode via `--profile`, custom mode via
+      `--checklist-json <file>`), `run` (drains pending jobs — `--job`/`--limit`/`--strict`), `list`,
+      `show`, `requeue`. `web/server.py`'s Run tab grew a "Queue this instead of running it now" checkbox
+      that posts the same preset-or-checklist/workload/toggle state to a new `POST /api/enqueue-job`
+      (`Handler._enqueue_job()`) instead of `/api/run-profile`/`/api/run-custom` — the server never
+      executes a job itself, only ever writes one into `<jobs-dir>/pending/` (default `web/jobs`, same
+      default `wspy-queue` uses), confirming the "smallest backend for execution is none" answer above.
+      Tests: `tests/wspy_queue_smoke.sh` (wired into `run_tests.sh`; fake `wspy`/`wspy-run`/`wspy-plot`/
+      `wspy-store` binaries exercise the full lifecycle, failure/requeue, and portability by copying a
+      job file into a second, independent jobs/output tree) and `web/test_joblib.py` (job schema/
+      validation and checklist→argv unit tests, standalone like the rest of `web/`'s test story). Not
+      done as part of this item, left for whoever picks up #16/#17/#19: a job-browsing view in the web
+      UI (today a queued job is only visible via `wspy-queue list`/`show`), and #16's structured
+      configuration provenance still isn't shared with the job format even though they're designed to be
+      close in shape.
 14. Traceability links (summary row → manifest → raw CSV → plots → tree artifacts) — closes the
     "every published row traces back to command/environment/artifacts" criterion deferred from 4.0
     (see "Success criteria for a 4.0 kickoff").

@@ -55,3 +55,7 @@ __pycache__/
 # web/server.py's default run output root -- generated per-launch artifacts,
 # not source.
 web/runs/
+
+# wspy-queue's / web/server.py's default job queue directory (item 13) --
+# generated pending/running/done/failed job files, not source.
+web/jobs/
