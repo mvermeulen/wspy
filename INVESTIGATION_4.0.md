@@ -652,12 +652,13 @@ derivable from files already being produced.
       for creating/browsing jobs and reports, never required for a job to actually run. #8/#11 (browsing
       curated reports / historical search) can still be a thin server (or later, a static-site export)
       layered on top, since neither depends on how a run was launched.
-    - This is also the concrete driving use case behind #19's rough "read a Phoronix article, inventory
-      its benchmarks, and create jobs for whichever haven't been run yet" idea: "already run" there is
-      answered by matching a candidate benchmark name against `wspy-store`'s normalized `runs` table (or
-      the run-index directly) using the same substring-matching approach `ledger.c` already implements
-      for suite-level workload coverage, not a new completion-tracker bolted onto the job file itself.
-      See #19's own entry for the current (still speculative/future) scope of that connection.
+    - This is also the concrete driving use case behind 4.2 #26's rough "read a Phoronix article,
+      inventory its benchmarks, and create jobs for whichever haven't been run yet" idea: "already run"
+      there is answered by matching a candidate benchmark name against `wspy-store`'s normalized `runs`
+      table (or the run-index directly) using the same substring-matching approach `ledger.c` already
+      implements for suite-level workload coverage, not a new completion-tracker bolted onto the job
+      file itself. See 4.2 #26's own entry (pushed there from this release) for the current (still
+      speculative/future) scope of that connection.
     - **What shipped:** every piece of the design above landed as described, not just the note. The
       checklist/preset → `wspy` argv builders and the actual run executors that used to live directly in
       `web/server.py` were pulled out (no behavior change) into `web/joblib.py`, which now also holds the
@@ -679,7 +680,7 @@ derivable from files already being produced.
       `wspy-store` binaries exercise the full lifecycle, failure/requeue, and portability by copying a
       job file into a second, independent jobs/output tree) and `web/test_joblib.py` (job schema/
       validation and checklist→argv unit tests, standalone like the rest of `web/`'s test story). Not
-      done as part of this item, left for whoever picks up #16/#17/#19: a job-browsing view in the web
+      done as part of this item, left for whoever picks up #16/#17/4.2 #26: a job-browsing view in the web
       UI (today a queued job is only visible via `wspy-queue list`/`show`), and #16's structured
       configuration provenance still isn't shared with the job format even though they're designed to be
       close in shape.
@@ -816,36 +817,6 @@ derivable from files already being produced.
     (`cpu2017`, `pbbsbench`) or arbitrary workload commands, which have no equivalent estimator
     today — those just report "no estimate available" rather than guessing. See `CLAUDE.md`'s
     `web/` entry, "Estimated runtime check" bullet, for the full design.
-19. Deeper Phoronix Test Suite awareness in the web UI — not needed for 4.1's release, flagged as a
-    future backlog item since most real wspy testing in practice runs through Phoronix specifically
-    (`workload/phoronix/`), so some suite-specific knowledge on top of the general-purpose launcher is
-    likely worth it eventually. Rough shape, to be refined when actually scoped:
-    - A "Phoronix" tab to browse/filter the suite's installed vs. not-yet-installed tests and surface
-      their attributes (description, last-updated date, typical run time, ...) so a test can be chosen
-      — and, if not installed, installed — without leaving the web UI or knowing `phoronix-test-suite`
-      CLI incantations by heart.
-    - Reduce redundant typing in the Run tab: today the "workload command," "suite," and "benchmark"
-      fields are filled in by hand even when the workload is a Phoronix test, where the suite/benchmark
-      are already implied by the test name. Run directories are already unique, but embedding the
-      benchmark name more directly (they're already namespaced by suite/benchmark, see `wspy-run`'s
-      unified output layout) would make Phoronix-sourced runs easier to recognize at a glance in the
-      homepage listing/#11's historical browser.
-    - Locate where a Phoronix test actually ran/logged on disk (its own results/log directory, separate
-      from wspy's own run directory) and surface/link to it from the report page — particularly useful
-      for troubleshooting when a benchmark run fails and the wspy-side artifacts alone don't explain why.
-    - Reading a Phoronix benchmark *article* (not just the locally-installed suite) and inventorying the
-      benchmarks it lists, so that whichever ones haven't been run yet get jobs created for them, and
-      once every benchmark from that article has a completed run, an uplevel report can be generated
-      referencing the article alongside pointers to each benchmark's run(s). Now builds on #13's
-      job/queue mechanism rather than needing its own separate execution/dedup design: this becomes
-      "parse the article, diff its benchmark list against the store/run-index the same way `ledger.c`
-      already diffs a workload list for suite-level coverage, emit a job file per gap, let `wspy-queue`
-      work them off," plus a small article-level report generator once #13's job states show every job
-      for that article as `done`.
-    - Likely other Phoronix-specific conveniences once this is actually scoped; the general idea is a
-      dedicated future item for deeper Phoronix-particular knowledge in the web UI, layered on top of
-      (not replacing) the suite-agnostic launcher #9 already ships.
-
 ## 4.2 priorities
 Goal: everything originally scoped for 4.1 beyond Tier 1 (shipped) and Tier 2 (now 4.1's
 web-interface focus — see above): the stats/confidence layer, topdown/IBS refinement, `/proc`/tree
@@ -951,6 +922,39 @@ Ordered in dependency tiers; items within a tier are independently startable.
     the `AMDGPU=1` variant, tag, label every merged PR since the last tag, draft release notes from
     the merged-PR list) as a repeatable script or documented checklist instead of redoing it by hand,
     since 4.1/4.2/4.3/4.4 will each need this same sequence again.
+
+**Tier 8 — Phoronix Test Suite deeper web UI integration:**
+
+26. Deeper Phoronix Test Suite awareness in the web UI — pushed from 4.1 (not needed for that
+    release), flagged as a backlog item since most real wspy testing in practice runs through
+    Phoronix specifically (`workload/phoronix/`), so some suite-specific knowledge on top of the
+    general-purpose launcher is likely worth it eventually. Rough shape, to be refined when actually
+    scoped:
+    - A "Phoronix" tab to browse/filter the suite's installed vs. not-yet-installed tests and surface
+      their attributes (description, last-updated date, typical run time, ...) so a test can be chosen
+      — and, if not installed, installed — without leaving the web UI or knowing `phoronix-test-suite`
+      CLI incantations by heart.
+    - Reduce redundant typing in the Run tab: today the "workload command," "suite," and "benchmark"
+      fields are filled in by hand even when the workload is a Phoronix test, where the suite/benchmark
+      are already implied by the test name. Run directories are already unique, but embedding the
+      benchmark name more directly (they're already namespaced by suite/benchmark, see `wspy-run`'s
+      unified output layout) would make Phoronix-sourced runs easier to recognize at a glance in the
+      homepage listing/4.1 #11's historical browser.
+    - Locate where a Phoronix test actually ran/logged on disk (its own results/log directory, separate
+      from wspy's own run directory) and surface/link to it from the report page — particularly useful
+      for troubleshooting when a benchmark run fails and the wspy-side artifacts alone don't explain why.
+    - Reading a Phoronix benchmark *article* (not just the locally-installed suite) and inventorying the
+      benchmarks it lists, so that whichever ones haven't been run yet get jobs created for them, and
+      once every benchmark from that article has a completed run, an uplevel report can be generated
+      referencing the article alongside pointers to each benchmark's run(s). Builds on 4.1 #13's
+      job/queue mechanism rather than needing its own separate execution/dedup design: this becomes
+      "parse the article, diff its benchmark list against the store/run-index the same way `ledger.c`
+      already diffs a workload list for suite-level coverage, emit a job file per gap, let `wspy-queue`
+      work them off," plus a small article-level report generator once 4.1 #13's job states show every
+      job for that article as `done`.
+    - Likely other Phoronix-specific conveniences once this is actually scoped; the general idea is a
+      dedicated future item for deeper Phoronix-particular knowledge in the web UI, layered on top of
+      (not replacing) the suite-agnostic launcher 4.1 #9 already ships.
 
 ## 4.3 priorities
 Goal: use the normalized store built in 4.1 for regression detection, clustering, phase-aware
