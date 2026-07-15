@@ -187,5 +187,77 @@ class BuildPassArgvTest(unittest.TestCase):
         self.assertNotIn("--config-option", argv)
 
 
+class ChecklistFromProvenanceTest(unittest.TestCase):
+    """INVESTIGATION_4.0.md item 17 ("Browse-reports"): the read side of
+    item 16's structured configuration provenance -- turning a run's
+    recorded configuration_provenance back into checklist state a report's
+    "Customize & run again" link can restore. checklist_section_from_options()
+    round-trips against build_configuration_passes()'s own _config_options()
+    output below, not a hand-written fixture, so a future checklist field
+    added to one side is caught here if the other isn't updated to match."""
+
+    def test_round_trips_through_build_configuration_passes(self):
+        checklist = {
+            "counters": {"enabled": True, "groups": ["topdown", "cache2"],
+                         "interval_secs": "1", "per_core": True, "rusage": False, "csv": True},
+        }
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        p = passes[0]
+        self.assertEqual(p["category"], "performance-counters")
+        restored = joblib.checklist_section_from_options("counters", p["options"])
+        self.assertEqual(restored["groups"], ["topdown", "cache2"])
+        self.assertEqual(restored["interval_secs"], "1")
+        self.assertIs(restored["per_core"], True)
+        self.assertIs(restored["rusage"], False)
+        self.assertIs(restored["csv"], True)
+        self.assertIs(restored["enabled"], True)
+
+    def test_bool_options_round_trip_both_ways(self):
+        section = joblib.checklist_section_from_options(
+            "tree", [("cmdline", "true"), ("open", "false"), ("software", "true")])
+        self.assertEqual(section, {"enabled": True, "cmdline": True, "open": False, "software": True})
+
+    def test_unknown_option_name_ignored(self):
+        section = joblib.checklist_section_from_options("system", [("bogus", "x"), ("csv", "true")])
+        self.assertEqual(section, {"enabled": True, "bogus": "x", "csv": True})
+
+    def test_preset_wins_over_any_configuration(self):
+        """wspy-run's run_pass() sets --preset-name once per invocation and
+        --config-name on every pass (see build_pass_argv()'s docstring) -- a
+        preset-bearing run is never also decomposed into checklist state."""
+        provenances = [
+            {"preset": "deep-cpu", "configuration": "amdtopdown", "options": []},
+            {"preset": "deep-cpu", "configuration": "systemtime", "options": []},
+        ]
+        preset, checklist = joblib.checklist_from_pass_provenance(provenances)
+        self.assertEqual(preset, "deep-cpu")
+        self.assertIsNone(checklist)
+
+    def test_checklist_driven_run_reconstructs_multiple_categories(self):
+        provenances = [
+            {"preset": None, "configuration": "performance-counters",
+             "options": [("groups", "topdown"), ("csv", "true")]},
+            {"preset": None, "configuration": "system-metrics",
+             "options": [("csv", "true")]},
+        ]
+        preset, checklist = joblib.checklist_from_pass_provenance(provenances)
+        self.assertIsNone(preset)
+        self.assertEqual(set(checklist.keys()), {"counters", "system"})
+        self.assertEqual(checklist["counters"]["groups"], ["topdown"])
+        self.assertIs(checklist["system"]["enabled"], True)
+
+    def test_no_provenance_at_all_returns_none_none(self):
+        preset, checklist = joblib.checklist_from_pass_provenance([None, None])
+        self.assertIsNone(preset)
+        self.assertIsNone(checklist)
+
+    def test_unrecognized_category_skipped(self):
+        preset, checklist = joblib.checklist_from_pass_provenance(
+            [{"preset": None, "configuration": "some-future-category", "options": []}])
+        self.assertIsNone(preset)
+        self.assertIsNone(checklist)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -757,11 +757,33 @@ derivable from files already being produced.
     definition. `store.c`/`summary.c` ingestion of this new field, and #8/#11/#17's actual rendering of
     it, are explicitly out of scope for this item (see #17 below) — this item only had to get the data
     captured and structurally real, not yet consumed.
-17. Browse-reports: relate each report's artifacts back to the preset/configuration/option choices
-    that produced it (via #16), and add a "customize & run again" action that returns to the launcher
-    pre-filled from the report rather than from scratch. The mockup demonstrates this in-session
-    (capturing the launcher's live state into each simulated run and restoring it on demand); the real
-    version depends on #16 actually persisting that state somewhere reports can read it back from.
+17. ~~Browse-reports~~ — **shipped.** Relates each report's artifacts back to the preset/configuration/
+    option choices that produced them (via #16's `configuration_provenance`) and lets "customize & run
+    again" return to the launcher pre-filled from the report rather than from scratch, closing the gap
+    #16 deliberately left open. `read_manifest_config_provenance()` (`web/server.py`) pulls a pass's own
+    `configuration_provenance` back out of its per-pass manifest.json; `render_wspy_run_report()`
+    (item 7/9 reports) and `render_fixed_report()` (item 6's superseded fixed-config reports, checked
+    for completeness even though `execute_run()` never populates it) print it inline next to each pass
+    (`format_config_provenance()`) so a report visibly states "this pass was `deep-cpu`" or "this pass
+    was `performance-counters` with `groups=topdown,cache2`", not just a bare command line. The read side
+    of #16's structured provenance lives in `web/joblib.py`: `checklist_section_from_options()` is the
+    exact reverse of `_config_options()`, and `checklist_from_pass_provenance()` aggregates a run's
+    per-pass records into either a restorable preset name (any pass carrying `--preset-name`, per
+    `wspy-run`'s `run_pass()`) or a full checklist dict (item 9's checklist-driven runs, which record
+    `--config-name`/`--config-option` per category but never a preset) — mutually exclusive by
+    construction, matching how `build_pass_argv()` emits them. `build_rerun_url()` folds whichever one
+    resolved into a single JSON `config` query parameter on the "Customize & run again" link (a
+    checklist is a nested structure the older flat `workload`/`suite`/`benchmark` query params can't
+    express); `do_GET("/")` parses and validates it defensively (preset checked against
+    `BUILTIN_PROFILES`, checklist restricted to the known `tree`/`counters`/`system`/`gpu`/`ibs` category
+    keys) before it reaches `render_run_tab()`, which renders the preset `<select>`'s matching `<option
+    selected>` and every checklist checkbox/field pre-checked/pre-filled from the restored state — a
+    plain visit to `/` or a report with no recorded provenance (predating #16, or a direct `wspy`
+    invocation) falls back to today's workload/suite/benchmark-only prefill unchanged. Covered by
+    `web/test_joblib.py`'s `ChecklistFromProvenanceTest` (round-trips a checklist through
+    `build_configuration_passes()` → `_config_options()` → `checklist_section_from_options()` and back,
+    plus the preset-wins-over-checklist and no-provenance-at-all cases) and hand-verified end-to-end
+    against a real checklist-driven run and a synthetic preset-driven manifest.
 18. Estimated runtime display in the `wspy-run` profile launcher (#7) — once benchmark is selected,
     show an estimated runtime for the run before it's launched. `phoronix-test-suite` reportedly has
     a run-time-estimate command that could source this for Phoronix benchmarks specifically (the same

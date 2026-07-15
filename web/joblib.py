@@ -374,6 +374,88 @@ def _config_options(section):
     return options
 
 
+# INVESTIGATION_4.0.md item 16's launcher-vocabulary category name (recorded
+# via --config-name, see build_pass_argv()) back to the Run tab checklist key
+# that produced it -- the read-side counterpart to build_configuration_passes()'s
+# own tree/counters/system/gpu/ibs dispatch, used by item 17's "customize &
+# run again" to figure out which checklist card a given pass's
+# configuration_provenance belongs to.
+CATEGORY_TO_CHECKLIST_KEY = {
+    "process-tree": "tree",
+    "performance-counters": "counters",
+    "system-metrics": "system",
+    "gpu-metrics": "gpu",
+    "ibs": "ibs",
+}
+
+# Which of a checklist section's own option keys are booleans (recorded as
+# the literal strings "true"/"false" by _config_options() above) rather than
+# plain text/list values -- needed to parse a manifest's recorded
+# configuration_provenance.options back into the same {enabled, ...} shape
+# buildChecklist() (web/static/app.js) produces client-side. "groups"
+# (counters only) is handled separately since it's a comma-joined list, not
+# a scalar.
+_BOOL_OPTION_KEYS = {
+    "tree": {"cmdline", "open", "vmsize", "software"},
+    "counters": {"per_core", "rusage", "csv"},
+    "system": {"csv"},
+    "gpu": {"busy", "metrics", "smi", "csv"},
+    "ibs": set(),
+}
+
+
+def checklist_section_from_options(checklist_key, options):
+    """Reverse of _config_options(): turns one pass's recorded
+    configuration_provenance.options (name/value string pairs, as written by
+    manifest.c's write_config_provenance()) back into that checklist
+    category's sub-dict, in the same shape build_configuration_passes()
+    consumes and buildChecklist() (app.js) produces. "enabled" is implied
+    (the pass exists, so its configuration was on) -- not itself an
+    option name recorded in provenance, see _config_options()'s own
+    "enabled" skip."""
+    section = {"enabled": True}
+    bool_keys = _BOOL_OPTION_KEYS.get(checklist_key, set())
+    for name, value in options:
+        if not name:
+            continue
+        if checklist_key == "counters" and name == "groups":
+            section[name] = [g for g in (value or "").split(",") if g]
+        elif name in bool_keys:
+            section[name] = (value == "true")
+        else:
+            section[name] = value
+    return section
+
+
+def checklist_from_pass_provenance(pass_provenances):
+    """Aggregates a run's per-pass configuration_provenance records (each a
+    {"preset","configuration","options"} dict or None, see server.py's
+    read_manifest_config_provenance()) back into whichever launcher state
+    actually produced the run: a preset name (wspy-run's builtin profiles,
+    item 7 -- --preset-name is only ever set together with a pass's own
+    --config-name, so one preset-bearing pass is enough to identify the
+    whole run) or a full checklist dict (item 9's checklist-driven custom
+    runs, which never set --preset-name -- see build_pass_argv()'s own
+    comment). Returns (preset_or_None, checklist_or_None); both None means
+    no restorable configuration_provenance was found at all (a report from
+    before item 16, or a direct wspy invocation with neither flag given) --
+    item 17's "customize & run again" falls back to today's
+    workload/suite/benchmark-only prefill in that case."""
+    for cp in pass_provenances:
+        if cp and cp.get("preset"):
+            return cp["preset"], None
+
+    checklist = {}
+    for cp in pass_provenances:
+        if not cp:
+            continue
+        key = CATEGORY_TO_CHECKLIST_KEY.get(cp.get("configuration"))
+        if not key:
+            continue
+        checklist[key] = checklist_section_from_options(key, cp.get("options") or [])
+    return (None, checklist) if checklist else (None, None)
+
+
 def build_configuration_passes(rundir, checklist):
     """The one place checklist state (see the item-9 comment above) becomes
     real wspy flags -- used identically by the preview endpoint and the real
