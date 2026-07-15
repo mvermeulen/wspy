@@ -644,6 +644,26 @@ def probe_ibs(wspy_bin, label, flags):
 PHORONIX_RUN_SUBCOMMANDS = ("batch-run", "run", "benchmark")
 PHORONIX_MAX_TESTS_CHECKED = 5  # a handful is plenty for an on-page check; batch-run rarely lists more
 
+# `phoronix-test-suite build-suite` lets a user hand-pick a subset of a real
+# test's option combinations into a local suite, by convention (not enforced
+# by phoronix-test-suite itself) named "<real-test>-subset" -- see
+# workload/phoronix/backlog.txt for the canonical test names this is built
+# from. `phoronix-test-suite info` only knows about real OpenBenchmarking
+# test profiles, not these local suites, so an unresolved "-subset" name
+# reports "no such test" instead of a usable estimate. Stripping the suffix
+# resolves it to the real profile's estimate/measured time -- an overestimate
+# for the subset (it covers fewer option combinations) but far more useful
+# than none at all.
+PHORONIX_SUBSET_SUFFIX = "-subset"
+
+
+def resolve_phoronix_subset_name(name):
+    """Returns (name to query via `phoronix-test-suite info`, whether `name`
+    was a "-subset" suite resolved to its underlying real test)."""
+    if name.endswith(PHORONIX_SUBSET_SUFFIX) and len(name) > len(PHORONIX_SUBSET_SUFFIX):
+        return name[:-len(PHORONIX_SUBSET_SUFFIX)], True
+    return name, False
+
 
 def parse_phoronix_test_names(workload):
     """If workload looks like a `phoronix-test-suite <run-subcommand> <test>
@@ -2939,9 +2959,12 @@ class Handler(BaseHTTPRequestHandler):
         total_seconds = 0.0
         total_known = True
         for name in checked_names:
-            argv = [phoronix_bin, "info", name]
+            query_name, is_subset = resolve_phoronix_subset_name(name)
+            argv = [phoronix_bin, "info", query_name]
             rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=30)
             entry = {"name": name, "command": shell_preview(argv)}
+            if is_subset:
+                entry["queried_name"] = query_name
             if timed_out:
                 entry["error"] = "phoronix-test-suite info timed out"
                 total_known = False
@@ -2955,6 +2978,11 @@ class Handler(BaseHTTPRequestHandler):
                     total_known = False
                 else:
                     estimate = estimate_phoronix_runtime(fields)
+                    if is_subset:
+                        estimate["detail"] = (
+                            f"estimate is for the full '{query_name}' test -- '{name}' is a "
+                            "build-suite subset of it, so this run should take no longer, "
+                            "likely less. " + estimate["detail"])
                     if estimate["seconds"] is None:
                         total_known = False
                     else:
