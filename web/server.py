@@ -541,10 +541,20 @@ def guess_content_type(filename):
 # large to sensibly ship in full -- a process tree is the concrete case the
 # spec calls out, but the same logic applies uniformly to any text-shaped
 # artifact rather than special-casing tree files specifically.
+#
+# Item 15 (report commentary/annotation) adds one more field alongside
+# "blocks": a single "overview_note" for the report as a whole, distinct
+# from each block's own per-configuration commentary ("what does *this*
+# configuration tell us" vs. "what does the report as a whole tell us") --
+# the doc is explicit that this needs to be both, not one collapsed into
+# the other. It lives in the same curation.json file rather than the
+# normalized store, matching this tier's "no server-owned state that isn't
+# reconstructible from the run directory" principle that #8 already
+# established for per-block commentary.
 # ---------------------------------------------------------------------------
 
 CURATION_NAME = "curation.json"
-CURATION_SCHEMA_VERSION = "1.0"
+CURATION_SCHEMA_VERSION = "1.1"
 DEFAULT_EXCERPT_LINES = 40
 MAX_INLINE_BYTES = 5 * 1024 * 1024  # don't embed a pathologically large file even at depth=full
 
@@ -743,9 +753,12 @@ def render_curated_section(rundir, base_url, suite, benchmark, run_id):
     if not curation:
         return ""
     included = [b for b in curation.get("blocks", []) if b.get("depth", "none") != "none"]
-    if not included:
+    overview_note = curation.get("overview_note", "")
+    if not included and not overview_note:
         return ""
     parts = ["<h2>Curated view</h2>"]
+    if overview_note:
+        parts.append(f'<p class="overview-note">{html.escape(overview_note)}</p>')
     for b in included:
         parts.append('<div class="block">')
         parts.append(f"<h3>{html.escape(b.get('title') or '(untitled)')}</h3>")
@@ -848,15 +861,22 @@ def export_block_content(rundir, base_url, block):
     return "pre", text, None
 
 
-def _export_blocks(rundir):
+def _export_data(rundir):
+    """(overview_note, included_blocks) for the export renderers -- one
+    read of curation.json shared by every format and by the download
+    endpoint, so the report-level note and the block sequence never fall
+    out of sync with each other."""
     curation = load_curation(rundir)
     if not curation:
-        return []
-    return [b for b in curation.get("blocks", []) if b.get("depth", "none") != "none"]
+        return "", []
+    blocks = [b for b in curation.get("blocks", []) if b.get("depth", "none") != "none"]
+    return curation.get("overview_note", ""), blocks
 
 
-def render_export_markdown(rundir, base_url, title, blocks):
+def render_export_markdown(rundir, base_url, title, overview_note, blocks):
     parts = [f"# {title}\n"]
+    if overview_note:
+        parts.append(f"{overview_note}\n")
     for b in blocks:
         parts.append(f"## {b.get('title') or '(untitled)'}\n")
         if b.get("commentary"):
@@ -872,8 +892,10 @@ def render_export_markdown(rundir, base_url, title, blocks):
     return "\n".join(parts) + "\n"
 
 
-def render_export_html(rundir, base_url, title, blocks):
+def render_export_html(rundir, base_url, title, overview_note, blocks):
     body_parts = [f'<h1 style="font-family:sans-serif;">{html.escape(title)}</h1>']
+    if overview_note:
+        body_parts.append(f'<p style="font-family:sans-serif;">{html.escape(overview_note)}</p>')
     for b in blocks:
         body_parts.append(
             f'<h2 style="font-family:sans-serif;margin-top:2em;">{html.escape(b.get("title") or "(untitled)")}</h2>')
@@ -901,8 +923,10 @@ def _wp_block(name, inner_html, attrs=None):
     return f"<!-- wp:{name}{attrs_json} -->\n{inner_html}\n<!-- /wp:{name} -->"
 
 
-def render_export_wordpress(rundir, base_url, title, blocks):
+def render_export_wordpress(rundir, base_url, title, overview_note, blocks):
     parts = [_wp_block("heading", f"<h1>{html.escape(title)}</h1>", {"level": 1})]
+    if overview_note:
+        parts.append(_wp_block("paragraph", f'<p>{html.escape(overview_note)}</p>'))
     for b in blocks:
         parts.append(_wp_block("heading", f'<h2>{html.escape(b.get("title") or "(untitled)")}</h2>',
                                 {"level": 2}))
@@ -921,26 +945,26 @@ def render_export_wordpress(rundir, base_url, title, blocks):
     return "\n\n".join(parts) + "\n"
 
 
-def render_export(rundir, base_url, title, fmt, blocks):
+def render_export(rundir, base_url, title, fmt, overview_note, blocks):
     if fmt == "markdown":
-        return render_export_markdown(rundir, base_url, title, blocks)
+        return render_export_markdown(rundir, base_url, title, overview_note, blocks)
     if fmt == "html":
-        return render_export_html(rundir, base_url, title, blocks)
-    return render_export_wordpress(rundir, base_url, title, blocks)
+        return render_export_html(rundir, base_url, title, overview_note, blocks)
+    return render_export_wordpress(rundir, base_url, title, overview_note, blocks)
 
 
 def render_export_page(rundir, base_url, suite, benchmark, run_id, fmt):
     studio_url = f"/studio/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
     title = f"{suite} / {benchmark} / {run_id}"
-    blocks = _export_blocks(rundir)
+    overview_note, blocks = _export_data(rundir)
 
-    if not blocks:
+    if not blocks and not overview_note:
         body = (f'<section class="panel"><h1>Export: {html.escape(benchmark)}/{html.escape(run_id)}</h1>'
                 f'<p class="muted">No curated blocks yet &mdash; '
                 f'<a href="{studio_url}">curate this report</a> first, then come back here.</p></section>')
         return page(f"export: {benchmark}/{run_id}", body)
 
-    rendered = render_export(rundir, base_url, title, fmt, blocks)
+    rendered = render_export(rundir, base_url, title, fmt, overview_note, blocks)
     has_image = any(b.get("source_kind") == "image" and b.get("depth") == "full" for b in blocks)
 
     nav = "".join(
@@ -1458,9 +1482,11 @@ def apply_studio_post(rundir, form):
     """Reconstructs the block list from a studio form submission (in DOM/
     submission order, which is the current on-page order) and applies the one
     op the clicked submit button carries. Every submit button lives inside
-    the same <form> as every block's editable fields, so a reorder/add/
-    delete click also persists whatever title/depth/commentary edits were
-    pending on the other blocks -- there's no separate "save" step to forget."""
+    the same <form> as every block's editable fields and the report-level
+    overview note, so a reorder/add/delete click also persists whatever
+    title/depth/commentary/overview edits were pending -- there's no
+    separate "save" step to forget."""
+    overview_note = form.get("overview_note", [""])[0]
     ids = form.get("id", [])
     kinds = form.get("kind", [])
     source_files = form.get("source_file", [])
@@ -1511,7 +1537,7 @@ def apply_studio_post(rundir, form):
         if b["depth"] not in allowed:
             b["depth"] = allowed[-1] if allowed else "none"
 
-    save_curation(rundir, {"blocks": blocks})
+    save_curation(rundir, {"blocks": blocks, "overview_note": overview_note})
 
 
 def _studio_link_and_curated(rundir, base_url, suite, benchmark, run_id, raw_html):
@@ -1537,6 +1563,7 @@ def _studio_link_and_curated(rundir, base_url, suite, benchmark, run_id, raw_htm
 def render_studio(rundir, suite, benchmark, run_id):
     curation = load_curation(rundir) or {"blocks": []}
     blocks = curation.get("blocks", [])
+    overview_note = curation.get("overview_note", "")
     available = collect_run_files(rundir)
     action = f"/studio/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
 
@@ -1599,6 +1626,12 @@ def render_studio(rundir, suite, benchmark, run_id):
   <p><a href="/report/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}">Back to report</a>
      &middot; <a href="/export/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}">Export</a></p>
   <form method="post" action="{action}">
+    <div class="block-card overview-card">
+      <label>Report overview <span class="muted">(one note for the report as a whole, separate from
+        each block's own commentary below)</span>
+        <textarea name="overview_note" rows="3">{html.escape(overview_note)}</textarea>
+      </label>
+    </div>
     <div class="block-list">{"".join(cards)}</div>
     <fieldset class="preview">
       <legend>Add a block</legend>
@@ -1961,13 +1994,13 @@ class Handler(BaseHTTPRequestHandler):
             if fmt not in EXPORT_FORMATS:
                 self._send(400, "invalid format")
                 return
-            blocks = _export_blocks(rundir)
-            if not blocks:
+            overview_note, blocks = _export_data(rundir)
+            if not blocks and not overview_note:
                 self._send(400, "no curated blocks to export")
                 return
             base = f"/files/{suite}/{benchmark}/{run_id}"
             title = f"{suite} / {benchmark} / {run_id}"
-            rendered = render_export(rundir, base, title, fmt, blocks)
+            rendered = render_export(rundir, base, title, fmt, overview_note, blocks)
             filename = f"{benchmark}-{run_id}-{fmt}.{EXPORT_FORMAT_EXTENSIONS[fmt]}"
             self._send(200, rendered, content_type=EXPORT_FORMAT_CONTENT_TYPES[fmt],
                        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
