@@ -82,6 +82,32 @@ static void write_environment(FILE *fp,const struct provenance_info *prov){
   fprintf(fp,"  },\n");
 }
 
+/* Writes the "configuration_provenance" object (INVESTIGATION_4.0.md item 16
+ * -- see manifest.h's manifest_config_provenance comment). preset/
+ * configuration are null when the run wasn't launched via a known preset/
+ * configuration; options is always present, just [] when none were given. */
+static void write_config_provenance(FILE *fp,const struct manifest_config_provenance *cp){
+  int i;
+
+  fprintf(fp,"  \"configuration_provenance\": {\n");
+  fprintf(fp,"    \"preset\": ");
+  if (cp->preset) json_write_string(fp,cp->preset); else fputs("null",fp);
+  fprintf(fp,",\n");
+  fprintf(fp,"    \"configuration\": ");
+  if (cp->configuration) json_write_string(fp,cp->configuration); else fputs("null",fp);
+  fprintf(fp,",\n");
+  fprintf(fp,"    \"options\": [\n");
+  for (i = 0; i < cp->noptions; i++){
+    fprintf(fp,"%s     { \"name\": ",i ? ",\n" : "");
+    json_write_string(fp,cp->options[i].name);
+    fprintf(fp,", \"value\": ");
+    json_write_string(fp,cp->options[i].value);
+    fprintf(fp," }");
+  }
+  fprintf(fp,"%s    ]\n",cp->noptions ? "\n" : "");
+  fprintf(fp,"  },\n");
+}
+
 int write_manifest(const char *path,const struct manifest_info *info){
   FILE *fp;
   int i;
@@ -160,6 +186,8 @@ int write_manifest(const char *path,const struct manifest_info *info){
   fprintf(fp,"  },\n");
 
   write_environment(fp,&info->provenance);
+
+  write_config_provenance(fp,&info->config_provenance);
 
   fprintf(fp,"  \"options\": {\n");
   fprintf(fp,"    \"counter_mask\": \"0x%x\",\n",info->counter_mask);

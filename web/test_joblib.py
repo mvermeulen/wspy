@@ -134,6 +134,58 @@ class BuildConfigurationPassesTest(unittest.TestCase):
         self.assertFalse(any(f.startswith("--passes=") for f in passes[0]["flags"]))
         self.assertIn("--interval", passes[0]["flags"])
 
+    def test_category_tags_each_enabled_configuration(self):
+        # Structured configuration provenance (INVESTIGATION_4.0.md item 16):
+        # each pass carries a stable launcher-vocabulary "category", distinct
+        # from "name" (the output filename stem, which can be a legacy alias
+        # like "amdtopdown"/"systemtime").
+        checklist = {
+            "tree": {"enabled": True},
+            "counters": {"enabled": True, "groups": ["topdown"], "interval_secs": "1"},
+            "system": {"enabled": True, "interval_secs": "1"},
+        }
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        categories = {p["name"]: p["category"] for p in passes}
+        self.assertEqual(categories["tree"], "process-tree")
+        self.assertEqual(categories["amdtopdown"], "performance-counters")
+        self.assertEqual(categories["systemtime"], "system-metrics")
+
+
+class ConfigOptionsTest(unittest.TestCase):
+    def test_skips_enabled_and_none_and_empty(self):
+        options = joblib._config_options({"enabled": True, "groups": None, "csv": ""})
+        self.assertEqual(options, [])
+
+    def test_stringifies_and_joins_list_values(self):
+        options = dict(joblib._config_options(
+            {"enabled": True, "groups": ["topdown", "branch"], "interval_secs": 1, "csv": True}))
+        self.assertEqual(options["groups"], "topdown,branch")
+        self.assertEqual(options["interval_secs"], "1")
+        self.assertEqual(options["csv"], "true")
+
+
+class BuildPassArgvTest(unittest.TestCase):
+    def test_emits_config_name_and_config_options_not_gated_on_manifest(self):
+        p = {"name": "counters", "csv": True, "flags": ["--topdown"],
+             "category": "performance-counters",
+             "options": [("groups", "topdown"), ("interval_secs", "1")]}
+        argv, outfile, manifest_path = joblib.build_pass_argv(
+            "/usr/bin/wspy", "/tmp/rundir", p, manifest_on=False, run_index_path=None)
+        self.assertIn("--config-name", argv)
+        self.assertEqual(argv[argv.index("--config-name") + 1], "performance-counters")
+        self.assertIn("--config-option", argv)
+        self.assertIn("groups=topdown", argv)
+        self.assertIn("interval_secs=1", argv)
+        self.assertNotIn("--preset-name", argv)
+        self.assertIsNone(manifest_path)
+
+    def test_no_category_means_no_config_name(self):
+        p = {"name": "custom", "csv": False, "flags": ["--software"]}
+        argv, _, _ = joblib.build_pass_argv(
+            "/usr/bin/wspy", "/tmp/rundir", p, manifest_on=False, run_index_path=None)
+        self.assertNotIn("--config-name", argv)
+        self.assertNotIn("--config-option", argv)
+
 
 if __name__ == "__main__":
     unittest.main()

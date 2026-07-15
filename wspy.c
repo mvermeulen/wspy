@@ -60,6 +60,18 @@ char *tree_output_path = NULL;
 char *manifest_path = NULL;
 char *run_index_path = NULL;
 
+/* Structured configuration provenance (INVESTIGATION_4.0.md item 16): purely
+ * metadata passed through from a front end (wspy-run's builtin profiles, the
+ * web launcher) via --preset-name/--config-name/--config-option -- wspy
+ * itself has no notion of presets/configurations and none of these affect
+ * what the run actually does. See manifest.h's manifest_config_provenance
+ * comment. */
+const char *config_provenance_preset = NULL;
+const char *config_provenance_configuration = NULL;
+static struct manifest_config_option *config_provenance_options = NULL;
+static int config_provenance_noptions = 0;
+static int config_provenance_options_cap = 0;
+
 FILE *treefile = NULL;
 FILE *outfile = NULL;
 unsigned int counter_mask = COUNTER_IPC;
@@ -83,6 +95,29 @@ static void bind_core_counter_groups(struct counter_group *list,int cpu,unsigned
   }
 }
 
+// Parses one --config-option key=value argument (structured configuration
+// provenance, see the config_provenance_* globals above), appending it to
+// config_provenance_options. A malformed argument (no '=', or an empty key)
+// is warned about and skipped rather than fatal -- this is optional metadata,
+// not something that should abort an otherwise-fine run, matching e.g.
+// --ibs-maxcnt's own sscanf-failure warning.
+static void add_config_provenance_option(const char *arg){
+  const char *eq = strchr(arg,'=');
+
+  if (!eq || eq == arg){
+    warning("invalid argument to --config-option (expected key=value): %s, ignored\n",arg);
+    return;
+  }
+  if (config_provenance_noptions == config_provenance_options_cap){
+    config_provenance_options_cap = config_provenance_options_cap ? config_provenance_options_cap * 2 : 4;
+    config_provenance_options = realloc(config_provenance_options,
+      config_provenance_options_cap * sizeof(*config_provenance_options));
+  }
+  config_provenance_options[config_provenance_noptions].name = strndup(arg,eq-arg);
+  config_provenance_options[config_provenance_noptions].value = strdup(eq+1);
+  config_provenance_noptions++;
+}
+
 int parse_options(int argc,char *const argv[]){
   FILE *fp;
   int opt;
@@ -93,6 +128,8 @@ int parse_options(int argc,char *const argv[]){
     { "branch", no_argument, 0, 4 },
     { "no-branch", no_argument, 0, 5 },
     { "capabilities", no_argument, 0, 54 },
+    { "config-name", required_argument, 0, 69 },
+    { "config-option", required_argument, 0, 70 },
     { "csv", no_argument, 0, 3 },
     { "cache1", no_argument, 0, 39 },
     { "no-cache1", no_argument, 0, 40 },
@@ -131,6 +168,7 @@ int parse_options(int argc,char *const argv[]){
     { "phase-detect", no_argument, 0, 62 },
     { "no-phase-detect", no_argument, 0, 63 },
     { "preflight", no_argument, 0, 61 },
+    { "preset-name", required_argument, 0, 68 },
     { "run-index", required_argument, 0, 53 },
     { "rusage", no_argument, 0, 21 },
     { "no-rusage", no_argument, 0, 22 },
@@ -398,6 +436,15 @@ int parse_options(int argc,char *const argv[]){
     case 67: // --no-multiplex
       multiplex_flag = 0;
       break;
+    case 68: // --preset-name
+      config_provenance_preset = optarg;
+      break;
+    case 69: // --config-name
+      config_provenance_configuration = optarg;
+      break;
+    case 70: // --config-option
+      add_config_provenance_option(optarg);
+      break;
     case 31: // --tree
       if ((treefile = fopen(optarg,"w")) == NULL){
 	warning("unable to open tree file: %s, ignored\n",optarg);
@@ -592,6 +639,10 @@ static void populate_manifest_common(struct manifest_info *minfo){
   minfo->counters_unavailable_count = ngaps;
   minfo->counters_unavailable = gaps;
   provenance_collect(&minfo->provenance);
+  minfo->config_provenance.preset = config_provenance_preset;
+  minfo->config_provenance.configuration = config_provenance_configuration;
+  minfo->config_provenance.noptions = config_provenance_noptions;
+  minfo->config_provenance.options = config_provenance_options;
 }
 
 // --exit-with-child's return-code logic, shared between main()'s single-pass
@@ -839,6 +890,15 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t--csv                     - create csv output\n"
 	    "\t--manifest <file>         - write a JSON run manifest to <file>\n"
 	    "\t--run-index <file>        - append a JSON run-index record to <file>\n"
+	    "\t--preset-name <name>      - record a launcher's named preset (e.g. wspy-run's own\n"
+	    "\t                            profile name) in the manifest/run-index; metadata\n"
+	    "\t                            only, doesn't affect what this run does\n"
+	    "\t--config-name <name>      - record a launcher's configuration category (e.g.\n"
+	    "\t                            \"performance-counters\") in the manifest/run-index;\n"
+	    "\t                            metadata only\n"
+	    "\t--config-option <k>=<v>   - record one launcher-vocabulary option (repeatable);\n"
+	    "\t                            metadata only -- see INVESTIGATION_4.0.md item 16,\n"
+	    "\t                            \"structured configuration provenance\"\n"
 	    "\t--exit-with-child         - exit with the launched command's exit status\n"
 	    "\t--passes=<list>           - re-launch the workload once per automatically-sized\n"
 	    "\t                            pass covering the comma-separated counter group\n"

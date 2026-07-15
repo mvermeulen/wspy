@@ -348,15 +348,45 @@ def parse_optional_int(value, lo, hi):
     return n
 
 
+def _config_options(section):
+    """Turns one checklist category's raw sub-dict (e.g. checklist["counters"])
+    into the launcher-vocabulary (name,value) pairs recorded via wspy's
+    --config-option (INVESTIGATION_4.0.md item 16, structured configuration
+    provenance) -- the same keys/values the Run tab checklist itself uses,
+    not a re-derivation from the wspy flags build_configuration_passes()
+    also produces. "enabled" is omitted (implied by the pass existing at
+    all); a None/empty value is omitted (nothing was chosen); a list value
+    (e.g. counters' "groups") is comma-joined to match --passes=<list>'s own
+    syntax; everything else is stringified as-is."""
+    options = []
+    for key, value in (section or {}).items():
+        if key == "enabled" or value is None or value == "":
+            continue
+        if isinstance(value, (list, tuple)):
+            if not value:
+                continue
+            value = ",".join(str(v) for v in value)
+        elif isinstance(value, bool):
+            value = "true" if value else "false"
+        else:
+            value = str(value)
+        options.append((key, value))
+    return options
+
+
 def build_configuration_passes(rundir, checklist):
     """The one place checklist state (see the item-9 comment above) becomes
     real wspy flags -- used identically by the preview endpoint and the real
     executor, so a preview is never a paraphrase of what actually runs.
-    Returns a list of {"name","flags","csv","timeout"} dicts, in the fixed
-    tree/counters/system/gpu/ibs order, one per *enabled and non-empty*
-    configuration (an enabled configuration with nothing meaningful selected,
-    e.g. "counters" with no groups checked, is silently skipped rather than
-    producing a no-op wspy invocation)."""
+    Returns a list of {"name","category","options","flags","csv","timeout"}
+    dicts, in the fixed tree/counters/system/gpu/ibs order, one per *enabled
+    and non-empty* configuration (an enabled configuration with nothing
+    meaningful selected, e.g. "counters" with no groups checked, is silently
+    skipped rather than producing a no-op wspy invocation). "category" is
+    the launcher-vocabulary configuration name (item 16's structured
+    configuration provenance, --config-name) -- stable across the legacy
+    "amdtopdown"/"systemtime" pass-name aliases below, unlike "name" (the
+    output filename stem), which is not."""
     checklist = checklist or {}
     passes = []
 
@@ -372,7 +402,9 @@ def build_configuration_passes(rundir, checklist):
         flags.append("--software" if tree.get("software", True) else "--no-software")
         flags.append("--no-ipc")
         timeout = parse_optional_int(tree.get("timeout_secs"), 1, 86400)
-        passes.append({"name": "tree", "flags": flags, "csv": False, "timeout": timeout})
+        passes.append({"name": "tree", "category": "process-tree",
+                        "options": _config_options(tree),
+                        "flags": flags, "csv": False, "timeout": timeout})
 
     counters = checklist.get("counters") or {}
     if counters.get("enabled"):
@@ -407,7 +439,9 @@ def build_configuration_passes(rundir, checklist):
             # naming is now just continuity with older reports, not a
             # requirement for plotting to fire.
             name = "amdtopdown" if (interval is not None and csv and selected == {"topdown"}) else "counters"
-            passes.append({"name": name, "flags": flags, "csv": csv, "timeout": None})
+            passes.append({"name": name, "category": "performance-counters",
+                            "options": _config_options(counters),
+                            "flags": flags, "csv": csv, "timeout": None})
 
     system = checklist.get("system") or {}
     if system.get("enabled"):
@@ -421,7 +455,9 @@ def build_configuration_passes(rundir, checklist):
         # Same reasoning as "amdtopdown" above -- kept for continuity with
         # older reports, not because wspy-plot needs this literal filename.
         name = "systemtime" if (interval is not None and csv) else "system"
-        passes.append({"name": name, "flags": flags, "csv": csv, "timeout": None})
+        passes.append({"name": name, "category": "system-metrics",
+                        "options": _config_options(system),
+                        "flags": flags, "csv": csv, "timeout": None})
 
     gpu = checklist.get("gpu") or {}
     if gpu.get("enabled"):
@@ -444,7 +480,9 @@ def build_configuration_passes(rundir, checklist):
             csv = bool(gpu.get("csv", True))
             if csv:
                 flags.append("--csv")
-            passes.append({"name": "gpu", "flags": flags, "csv": csv, "timeout": None})
+            passes.append({"name": "gpu", "category": "gpu-metrics",
+                            "options": _config_options(gpu),
+                            "flags": flags, "csv": csv, "timeout": None})
 
     ibs = checklist.get("ibs") or {}
     if ibs.get("enabled"):
@@ -462,7 +500,9 @@ def build_configuration_passes(rundir, checklist):
         csv = bool(ibs.get("csv", True))
         if csv:
             flags.append("--csv")
-        passes.append({"name": "ibs", "flags": flags, "csv": csv, "timeout": None})
+        passes.append({"name": "ibs", "category": "ibs",
+                        "options": _config_options(ibs),
+                        "flags": flags, "csv": csv, "timeout": None})
 
     return passes
 
@@ -472,10 +512,24 @@ def build_pass_argv(wspy_bin, rundir, p, manifest_on, run_index_path):
     argv>` (appended by the caller, which also decides whether to prefix a
     `timeout <secs>` wrapper) -- mirrors wspy-run's own run_pass() shape:
     <pass-name>.<csv|txt> for output, <pass-name>.manifest.json alongside it
-    when manifest recording is on."""
+    when manifest recording is on. Also threads p's "category"/"options"
+    (see build_configuration_passes()) through as --config-name/
+    --config-option -- structured configuration provenance
+    (INVESTIGATION_4.0.md item 16), the checklist's own vocabulary rather
+    than wspy's flags, recorded in the pass's manifest/run-index regardless
+    of whether manifest_on/run_index_path are set for *this* pass (it's
+    cheap metadata, not gated on those toggles the way the file paths are).
+    There's no --preset-name here -- unlike wspy-run's builtin profiles
+    (see wspy-run's own run_pass()), a checklist-driven run has no named
+    preset by definition; "category" alone is the provenance this path can
+    truthfully record."""
     ext = "csv" if p["csv"] else "txt"
     outfile = os.path.join(rundir, f'{p["name"]}.{ext}')
     argv = [wspy_bin] + p["flags"] + ["-o", outfile]
+    if p.get("category"):
+        argv += ["--config-name", p["category"]]
+    for name, value in p.get("options") or []:
+        argv += ["--config-option", f"{name}={value}"]
     manifest_path = None
     if manifest_on:
         manifest_path = os.path.join(rundir, f'{p["name"]}.manifest.json')

@@ -15,7 +15,7 @@
  * its shape can evolve on its own schedule. Bump MAJOR when a field is
  * removed/renamed, MINOR when a field is added, PATCH for fixes that don't
  * change the shape. */
-#define RUN_INDEX_SCHEMA_VERSION "1.4.0"
+#define RUN_INDEX_SCHEMA_VERSION "1.5.0"
 
 /* Appends one compact JSON record (JSON Lines format: one self-contained
  * object per line, newline-terminated, no enclosing array) describing this

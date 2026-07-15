@@ -347,6 +347,19 @@ run_pass(){
   if [ -n "$RUN_INDEX" ]; then
     cmd+=(--run-index "$RUN_INDEX")
   fi
+  # Structured configuration provenance (INVESTIGATION_4.0.md item 16): wspy
+  # itself has no notion of presets/configurations, so wspy-run -- the front
+  # end that does -- passes its own vocabulary through as metadata. PROFILE is
+  # only set for a named builtin profile (comma-composed lists included
+  # verbatim, e.g. "deep-cpu,tree-heavy"), not for a -c/--config pass-list
+  # file, since that path has no named preset to record. name (this pass's
+  # own PASS_NAMES entry, e.g. "amdtopdown") is always recorded as the
+  # configuration -- it's the one piece of launcher vocabulary every pass has,
+  # preset or not.
+  if [ -n "$PROFILE" ]; then
+    cmd+=(--preset-name "$PROFILE")
+  fi
+  cmd+=(--config-name "$name")
   cmd+=(-- "${WORKLOAD[@]}")
 
   PASS_EXT["$name"]="$ext"

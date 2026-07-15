@@ -18,7 +18,7 @@
  * breaks existing readers, MINOR when a field is added in a backward
  * compatible way, PATCH for fixes that don't change the shape. Consumers
  * should warn (not silently misparse) on an unrecognized MAJOR version. */
-#define MANIFEST_SCHEMA_VERSION "1.4.0"
+#define MANIFEST_SCHEMA_VERSION "1.5.0"
 
 /* One counter that setup_counters() (topdown.c) tried and failed to open via
  * perf_event_open, as recorded by coverage.c. Kept as its own small struct
@@ -28,6 +28,36 @@ struct manifest_counter_gap {
   const char *group_label;
   const char *counter_label;
   int open_errno;
+};
+
+/* One launcher-vocabulary option name/value pair -- see
+ * manifest_config_provenance below. Both are opaque strings from wspy's own
+ * point of view; a front end (wspy-run, the web launcher) picks names that
+ * make sense in its own preset/configuration/option vocabulary (e.g.
+ * "counter_groups"="topdown,cache2"), not a fixed enum wspy validates. */
+struct manifest_config_option {
+  const char *name;
+  const char *value;
+};
+
+/* Structured configuration provenance (INVESTIGATION_4.0.md item 16): which
+ * named preset (if any) and/or launcher-vocabulary configuration category
+ * and options produced this run. wspy itself has no notion of presets or
+ * configurations -- that vocabulary belongs to a front end (wspy-run's
+ * builtin profiles, the web launcher's preset picker/checklist) -- so these
+ * fields are populated purely from --preset-name/--config-name/
+ * --config-option (metadata only, no effect on what the run does) rather
+ * than derived from counter_mask/aflag/etc. All-NULL/zero (the default for
+ * a direct wspy invocation with none of those flags given) means "not
+ * launched from a known preset or configuration", not a gap -- most direct
+ * command-line uses of wspy will leave this empty. This is what lets a
+ * report say "this was deep-cpu's performance-counters pass" in the same
+ * words the launcher used, instead of re-deriving it from counter_mask/argv. */
+struct manifest_config_provenance {
+  const char *preset;          /* e.g. "deep-cpu", NULL if none              */
+  const char *configuration;   /* e.g. "performance-counters", NULL if none  */
+  int noptions;
+  const struct manifest_config_option *options; /* array, length noptions   */
 };
 
 struct manifest_exit_status {
@@ -98,6 +128,10 @@ struct manifest_info {
    * provenance_collect() -- every field degrades to "unavailable" rather
    * than failing the run. */
   struct provenance_info provenance;
+  /* Structured configuration provenance (see manifest_config_provenance
+   * above): all-NULL/zero unless a front end passed --preset-name/
+   * --config-name/--config-option. */
+  struct manifest_config_provenance config_provenance;
 };
 
 /* Writes the manifest as JSON to path. Returns 0 on success, -1 if the file

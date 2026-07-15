@@ -717,12 +717,33 @@ derivable from files already being produced.
     rather than a firm requirement. Future extension, not in scope now: an optional local-LLM-drafted
     starting point generated from a configuration's own metrics, which the user edits rather than
     writes from scratch — shown in the mockup as a visibly disabled affordance, not a real integration.
-16. Structured configuration provenance — record a run's preset/configuration/option choices (see the
-    deep-dive above) as structured data in `manifest.h`/`run_index.h`, not just the flat command line
-    and flag set already captured. This is what lets #8/#11's reports render "how this was run" in the
-    same vocabulary the launcher uses, and lets #17's "customize & run again" restore exact launcher
-    state from a report instead of re-parsing argv. A real schema change (bump
-    `MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION`), not only a UI concern.
+16. ~~Structured configuration provenance~~ — **shipped.** Records a run's preset/configuration/option
+    choices (see the deep-dive above) as structured data in `manifest.h`/`run_index.h`, not just the
+    flat command line and flag set already captured — this is what lets #8/#11's reports eventually
+    render "how this was run" in the same vocabulary the launcher uses, and lets #17's "customize & run
+    again" restore exact launcher state from a report instead of re-parsing argv (both still open,
+    consuming this item's output). A real schema change, as scoped: `MANIFEST_SCHEMA_VERSION`/
+    `RUN_INDEX_SCHEMA_VERSION` bumped `1.4.0` → `1.5.0` (MINOR, additive) for the new
+    `configuration_provenance` object (`struct manifest_config_provenance`, `manifest.h`) — `{ "preset":
+    ..., "configuration": ..., "options": [...] }`, all-`null`/`[]` (not a gap) for a plain direct
+    `wspy` invocation. `wspy` itself has no notion of presets or configurations — that vocabulary
+    belongs to a front end — so the fields are populated purely from three new metadata-only CLI flags
+    (`wspy.c`): `--preset-name <name>`, `--config-name <name>`, and repeatable `--config-option
+    <k>=<v>` (a malformed one is warned about and dropped, not fatal). Neither flag affects what the
+    run actually does; they exist only so a caller that *does* have that vocabulary can stamp it onto
+    the manifest/run-index instead of a report having to re-derive "this was deep-cpu's
+    performance-counters pass" from `counter_mask`/argv later. Two front ends populate it today:
+    `wspy-run`'s `run_pass()` passes `--config-name <pass-name>` on every pass and `--preset-name
+    "$PROFILE"` whenever the pass came from a named builtin profile (not a `-c`/`--config` pass-list
+    file, which has no preset to record); `web/joblib.py`'s `build_configuration_passes()` tags each
+    checklist row with a stable `category` (`process-tree`/`performance-counters`/`system-metrics`/
+    `gpu-metrics`/`ibs` — distinct from the pass's output-filename `name`, which can be a legacy alias
+    like `amdtopdown`) and a generic `options` projection of that row's own sub-dict
+    (`_config_options()`), and `build_pass_argv()` threads both through as `--config-name`/
+    `--config-option` — with no `--preset-name`, since a checklist-driven run has no named preset by
+    definition. `store.c`/`summary.c` ingestion of this new field, and #8/#11/#17's actual rendering of
+    it, are explicitly out of scope for this item (see #17 below) — this item only had to get the data
+    captured and structurally real, not yet consumed.
 17. Browse-reports: relate each report's artifacts back to the preset/configuration/option choices
     that produced it (via #16), and add a "customize & run again" action that returns to the launcher
     pre-filled from the report rather than from scratch. The mockup demonstrates this in-session

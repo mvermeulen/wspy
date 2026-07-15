@@ -58,7 +58,7 @@ if command -v python3 > /dev/null 2>&1; then
     fi
 fi
 for expected in \
-    '"schema_version": "1.4.0"' \
+    '"schema_version": "1.5.0"' \
     '"collector": "wspy"' \
     '"wspy_version"' \
     '"argv": \["/bin/true"\]' \
@@ -71,7 +71,10 @@ for expected in \
     '"environment": {' \
     '"virt_role":' \
     '"environment_coverage": {' \
-    '"probed": 9'; do
+    '"probed": 9' \
+    '"configuration_provenance": {' \
+    '"preset": null' \
+    '"configuration": null'; do
     if ! grep -q "$expected" test_manifest.json; then
         echo "FAIL: manifest missing expected content: $expected"
         exit 1
@@ -162,13 +165,14 @@ assert records[1]['exit_status']['exit_code'] == 1
     fi
 fi
 for expected in \
-    '"schema_version":"1.4.0"' \
+    '"schema_version":"1.5.0"' \
     '"collector":"wspy"' \
     '"wspy_version"' \
     '"command":\["/bin/true"\]' \
     '"counter_coverage":{"requested":0,"measured":0}' \
     '"environment":{"virt_role":' \
-    '"environment_coverage":{"captured":'; do
+    '"environment_coverage":{"captured":' \
+    '"configuration_provenance":{"preset":null,"configuration":null,"options":\[\]}'; do
     if ! grep -q "$expected" test_run_index.jsonl; then
         echo "FAIL: run index missing expected content: $expected"
         exit 1
