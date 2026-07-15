@@ -34,6 +34,25 @@
  * store.c's own MINOR-vs-MAJOR versioning convention (see CLAUDE.md's
  * "New normalized-store field") never removes/renames a column on a MINOR
  * bump, only adds one.
+ *
+ * --show-runs and --trace are the "Traceability links (summary row ->
+ * manifest -> raw CSV -> plots -> tree artifacts)" item (INVESTIGATION_4.0.md's
+ * 4.1 Tier 2 #14), closing the other criterion deferred from 4.0 ("every
+ * published benchmark row can be traced back to command line, environment,
+ * and raw artifacts" -- see "Success criteria for a 4.0 kickoff"). --show-runs
+ * appends the hostname:run_id of every run contributing to a bucket (not just
+ * outliers -- outlier_run_ids already covered those) so a surprising summary
+ * number has a concrete run identity to chase; --trace <hostname>:<run_id>
+ * takes one of those identities and resolves it, straight out of the
+ * store's own runs.{manifest_path,output_path,tree_output_path} columns
+ * store.c already populated at ingest time, to the actual command line,
+ * environment (via the manifest), raw CSV, tree artifact, and (derived --
+ * wspy-plot writes into <rundir>/plots, a sibling of the CSV, not a stored
+ * column of its own) plots directory -- the rest of the chain this item
+ * closes. Neither mode requires the other -- --trace works against any
+ * hostname:run_id already known by other means (e.g. from a run-index file
+ * directly), and --show-runs is useful on its own as a "which runs made up
+ * this row" audit even without immediately tracing one.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +60,8 @@
 #include <math.h>
 #include <getopt.h>
 #include <sqlite3.h>
+#include <sys/stat.h>
+#include <dirent.h>
 
 /* metric_values didn't exist before store.c's schema version 2
  * (MIGRATION_V1_TO_V2 in store.c) -- a database older than that has
@@ -61,6 +82,8 @@ struct summary_opts {
   int csvflag;
   int quiet;
   int strict;
+  int show_runs;         /* --show-runs: append every contributing hostname:run_id to a bucket */
+  const char *trace_key; /* --trace <hostname>:<run_id>: standalone artifact-resolution mode */
 };
 
 struct summary_totals {
@@ -165,6 +188,7 @@ struct bucket {
   char metric_name[192];
   double *values;
   char **run_ids;
+  char **hostnames;
   int n,cap;
 };
 
@@ -173,26 +197,76 @@ static void bucket_reset(struct bucket *b,const char *group_val,const char *metr
   b->cap = 0;
   b->values = NULL;
   b->run_ids = NULL;
+  b->hostnames = NULL;
   snprintf(b->group_val,sizeof(b->group_val),"%s",group_val);
   snprintf(b->metric_name,sizeof(b->metric_name),"%s",metric_name);
 }
 
-static void bucket_add(struct bucket *b,double value,const char *run_id){
+static void bucket_add(struct bucket *b,double value,const char *run_id,const char *hostname){
   if (b->n == b->cap){
     b->cap = b->cap ? b->cap * 2 : 8;
     b->values = realloc(b->values,sizeof(double) * (size_t)b->cap);
     b->run_ids = realloc(b->run_ids,sizeof(char *) * (size_t)b->cap);
+    b->hostnames = realloc(b->hostnames,sizeof(char *) * (size_t)b->cap);
   }
   b->values[b->n] = value;
   b->run_ids[b->n] = strdup(run_id);
+  b->hostnames[b->n] = strdup(hostname);
   b->n++;
 }
 
 static void bucket_free_contents(struct bucket *b){
   int i;
-  for (i = 0; i < b->n; i++) free(b->run_ids[i]);
+  for (i = 0; i < b->n; i++){ free(b->run_ids[i]); free(b->hostnames[i]); }
   free(b->run_ids);
+  free(b->hostnames);
   free(b->values);
+}
+
+/* Appends entry to buf (already holding *used bytes, semicolon-separated),
+ * declining to touch buf at all if entry (plus a leading separator, if any)
+ * wouldn't fit -- shared by outlier_ids and format_contributing_runs below
+ * so the bounds-check arithmetic exists in exactly one place. Returns 1 if
+ * entry was actually appended, 0 if dropped for space. Checking the
+ * separator+entry+NUL as one combined bound (rather than adding the
+ * separator first and only then checking the entry) matters once a list
+ * gets long enough to truncate: adding the separator unconditionally would
+ * leave a dangling ';' with no entry after it, and the next call would do
+ * the same, filling the rest of the buffer with bare separators instead of
+ * stopping cleanly. */
+static int append_list_entry(char *buf,size_t bufsize,size_t *used,const char *entry){
+  size_t len = strlen(entry);
+  size_t sep = (*used > 0) ? 1 : 0;
+
+  if (*used + sep + len + 1 > bufsize) return 0;
+  if (sep) buf[(*used)++] = ';';
+  strcpy(buf + *used,entry);
+  *used += len;
+  return 1;
+}
+
+/* Appends every hostname:run_id in the bucket (in run order, not just
+ * outliers -- that's outlier_ids' job) into buf, semicolon-separated, for
+ * --show-runs. Unlike outlier_ids (normally a handful of flagged runs), a
+ * --show-runs list is meant to be complete, so a "(+N more)" marker (itself
+ * best-effort -- if even that doesn't fit, the list is silently short, same
+ * as outlier_ids already accepts) makes a truncation visible rather than
+ * silently dropping the tail. */
+static void format_contributing_runs(const struct bucket *b,char *buf,size_t bufsize){
+  size_t used = 0;
+  int i,dropped = 0;
+
+  buf[0] = '\0';
+  for (i = 0; i < b->n; i++){
+    char entry[256];
+    snprintf(entry,sizeof(entry),"%s:%s",b->hostnames[i],b->run_ids[i]);
+    if (!append_list_entry(buf,bufsize,&used,entry)) dropped++;
+  }
+  if (dropped > 0){
+    char marker[64];
+    snprintf(marker,sizeof(marker),"(+%d more)",dropped);
+    append_list_entry(buf,bufsize,&used,marker);
+  }
 }
 
 /* Computes stats for a closed bucket and prints one table row (human or
@@ -206,6 +280,7 @@ static void emit_bucket(const struct bucket *b,const struct summary_opts *opts,F
   int *outlier_flags;
   int outlier_count,i;
   char outlier_ids[512];
+  char contributing_runs[4096];
   size_t used = 0;
 
   if (b->n < opts->min_runs){
@@ -219,12 +294,10 @@ static void emit_bucket(const struct bucket *b,const struct summary_opts *opts,F
 
   outlier_ids[0] = '\0';
   for (i = 0; i < b->n; i++){
-    size_t len;
     if (!outlier_flags[i]) continue;
-    len = strlen(b->run_ids[i]);
-    if (used > 0 && used + 1 < sizeof(outlier_ids)){ outlier_ids[used++] = ';'; outlier_ids[used] = '\0'; }
-    if (used + len < sizeof(outlier_ids)){ strcpy(outlier_ids + used,b->run_ids[i]); used += len; }
+    append_list_entry(outlier_ids,sizeof(outlier_ids),&used,b->run_ids[i]);
   }
+  if (opts->show_runs) format_contributing_runs(b,contributing_runs,sizeof(contributing_runs));
 
   cv = (mean_v != 0.0) ? (stddev_v / fabs(mean_v)) * 100.0 : 0.0;
 
@@ -234,11 +307,14 @@ static void emit_bucket(const struct bucket *b,const struct summary_opts *opts,F
     fprintf(out,"%d,%.6g,%.6g,%.6g,%.6g,%.6g,%.4g,%d,",
             b->n,min_v,max_v,mean_v,median_v,stddev_v,cv,outlier_count);
     print_csv_field(out,outlier_ids);
+    if (opts->show_runs){ fputc(',',out); print_csv_field(out,contributing_runs); }
     fputc('\n',out);
   } else {
-    fprintf(out,"%-28.28s %-24.24s %4d %10.6g %10.6g %10.6g %10.6g %10.6g %7.2f%% %3d  %s\n",
+    fprintf(out,"%-28.28s %-24.24s %4d %10.6g %10.6g %10.6g %10.6g %10.6g %7.2f%% %3d  %s",
             b->group_val,b->metric_name,b->n,min_v,max_v,mean_v,median_v,stddev_v,cv,outlier_count,
             outlier_ids);
+    if (opts->show_runs) fprintf(out,"  %s",contributing_runs);
+    fputc('\n',out);
   }
   free(outlier_flags);
   totals->groups_reported++;
@@ -258,8 +334,8 @@ static int summarize(sqlite3 *db,const struct summary_opts *opts,FILE *out,struc
   int have_bucket = 0;
 
   snprintf(sql,sizeof(sql),
-    "SELECT r.%s AS group_val, r.run_id AS run_id, mv.metric_name AS metric_name, "
-    "AVG(mv.value) AS avg_value "
+    "SELECT r.%s AS group_val, r.run_id AS run_id, r.hostname AS run_hostname, "
+    "mv.metric_name AS metric_name, AVG(mv.value) AS avg_value "
     "FROM metric_values mv JOIN runs r ON r.id = mv.run_id "
     "WHERE mv.value IS NOT NULL "
     "AND (?1 = '' OR r.command LIKE '%%' || ?1 || '%%') "
@@ -278,10 +354,12 @@ static int summarize(sqlite3 *db,const struct summary_opts *opts,FILE *out,struc
   while (sqlite3_step(stmt) == SQLITE_ROW){
     const unsigned char *group_raw = sqlite3_column_text(stmt,0);
     const unsigned char *run_id_raw = sqlite3_column_text(stmt,1);
-    const unsigned char *metric_raw = sqlite3_column_text(stmt,2);
-    double value = sqlite3_column_double(stmt,3);
+    const unsigned char *hostname_raw = sqlite3_column_text(stmt,2);
+    const unsigned char *metric_raw = sqlite3_column_text(stmt,3);
+    double value = sqlite3_column_double(stmt,4);
     const char *group_val = group_raw ? (const char *)group_raw : "(unknown)";
     const char *run_id = run_id_raw ? (const char *)run_id_raw : "?";
+    const char *hostname = hostname_raw ? (const char *)hostname_raw : "?";
     const char *metric_name = metric_raw ? (const char *)metric_raw : "?";
 
     if (!metric_wanted(opts,metric_name)) continue;
@@ -292,7 +370,7 @@ static int summarize(sqlite3 *db,const struct summary_opts *opts,FILE *out,struc
       bucket_reset(&cur,group_val,metric_name);
       have_bucket = 1;
     }
-    bucket_add(&cur,value,run_id);
+    bucket_add(&cur,value,run_id,hostname);
   }
   if (have_bucket){ emit_bucket(&cur,opts,out,totals); bucket_free_contents(&cur); }
 
@@ -326,6 +404,126 @@ static sqlite3 *open_summary_db(const char *path){
   return db;
 }
 
+/* Resolves a "hostname:run_id" identity (the same identity --show-runs
+ * appends to a summary bucket) to the artifact chain this item exists to
+ * close: command line, environment (via the manifest), raw CSV, tree
+ * artifact, and plots. Output is a stable "key=value" line format rather
+ * than --csv's table shape (a single resolved run isn't a table row) or a
+ * bespoke JSON encoding (this codebase's hand-rolled JSON emitter lives in
+ * json_util.c for manifest/run-index writing, not worth pulling into a
+ * query tool for one record) -- easy for a script (web/server.py) or a
+ * human to read either way. Every path field degrades independently
+ * (exists=0 rather than aborting) matching validate.c/coverage.c's
+ * "measured vs unavailable" idiom -- a manifest/CSV/tree file recorded at
+ * ingest time may since have been moved, pruned, or never existed on this
+ * machine at all (store.c's own doc note: paths from a different
+ * originating host frequently don't resolve here). Returns 0 if the
+ * (hostname,run_id) pair was found in the store (regardless of which
+ * artifacts still exist), 1 if no such run is recorded at all. */
+/* Prints "key=value\n", replacing any embedded '\n'/'\r' in value with a
+ * space first -- the key=value format is one record per line, so a stray
+ * newline inside a stored command/path (nothing upstream forbids one)
+ * would otherwise start a bare, unkeyed line that a parser like
+ * web/server.py's _discovery_trace() silently drops instead of corrupting
+ * the field it belongs to. */
+static void print_trace_field(FILE *out,const char *key,const char *value){
+  const char *p;
+  fprintf(out,"%s=",key);
+  for (p = value; *p; p++) fputc((*p == '\n' || *p == '\r') ? ' ' : *p,out);
+  fputc('\n',out);
+}
+
+static int trace_run(sqlite3 *db,const char *hostname,const char *run_id,FILE *out){
+  sqlite3_stmt *stmt;
+  int found = 0;
+  const char *sql =
+    "SELECT command,start_time,cpu_vendor,manifest_path,output_path,tree_output_path "
+    "FROM runs WHERE hostname = ?1 AND run_id = ?2;";
+
+  if (sqlite3_prepare_v2(db,sql,-1,&stmt,NULL) != SQLITE_OK){
+    fprintf(stderr,"wspy-summary: query failed: %s\n",sqlite3_errmsg(db));
+    return 1;
+  }
+  sqlite3_bind_text(stmt,1,hostname,-1,SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt,2,run_id,-1,SQLITE_TRANSIENT);
+
+  if (sqlite3_step(stmt) == SQLITE_ROW){
+    const unsigned char *command = sqlite3_column_text(stmt,0);
+    const unsigned char *start_time = sqlite3_column_text(stmt,1);
+    const unsigned char *cpu_vendor = sqlite3_column_text(stmt,2);
+    const char *output_path = (const char *)sqlite3_column_text(stmt,4);
+    /* {path key, exists key, sqlite column} triples sharing one print+
+     * stat() loop below -- a fourth artifact path (a future store column)
+     * is one array entry, not a fourth copy-pasted block. Key names match
+     * store.c's own (irregular: "tree_output_path", not "tree_path")
+     * column names, since web/server.py's _discovery_trace() parses these
+     * exact keys back out. */
+    struct { const char *path_key,*exists_key; int column; } artifacts[] = {
+      { "manifest_path", "manifest_exists", 3 },
+      { "output_path", "output_exists", 4 },
+      { "tree_output_path", "tree_exists", 5 },
+    };
+    size_t i;
+
+    found = 1;
+    print_trace_field(out,"hostname",hostname);
+    print_trace_field(out,"run_id",run_id);
+    print_trace_field(out,"command",command ? (const char *)command : "");
+    print_trace_field(out,"start_time",start_time ? (const char *)start_time : "");
+    print_trace_field(out,"cpu_vendor",cpu_vendor ? (const char *)cpu_vendor : "");
+
+    for (i = 0; i < sizeof(artifacts)/sizeof(artifacts[0]); i++){
+      const char *path = (const char *)sqlite3_column_text(stmt,artifacts[i].column);
+      struct stat st;
+
+      print_trace_field(out,artifacts[i].path_key,path ? path : "");
+      fprintf(out,"%s=%d\n",artifacts[i].exists_key,(path && stat(path,&st) == 0) ? 1 : 0);
+    }
+
+    /* wspy-plot (plot.c) writes into <rundir>/plots, a sibling of whichever
+     * CSV it charted from -- not a path store.c records anywhere, so derive
+     * it from output_path's directory rather than leaving it unresolved.
+     * output_path with no '/' at all (a bare relative filename) has no
+     * derivable directory of its own -- degrade to "can't tell" (exists=0)
+     * rather than guessing a "plots" path relative to wherever
+     * wspy-summary's cwd happens to be, which could silently report an
+     * unrelated directory's contents as this run's plots. */
+    if (output_path && strchr(output_path,'/')){
+      char plots_dir[4096];
+      const char *slash = strrchr(output_path,'/');
+      DIR *d;
+      int png_count = 0;
+
+      snprintf(plots_dir,sizeof(plots_dir),"%.*s/plots",
+               (int)(slash - output_path),output_path);
+
+      print_trace_field(out,"plots_dir",plots_dir);
+      d = opendir(plots_dir);
+      if (d){
+        struct dirent *ent;
+        while ((ent = readdir(d)) != NULL){
+          size_t len = strlen(ent->d_name);
+          if (len > 4 && !strcmp(ent->d_name + len - 4,".png")) png_count++;
+        }
+        closedir(d);
+        fprintf(out,"plots_exist=1\n");
+      } else {
+        fprintf(out,"plots_exist=0\n");
+      }
+      fprintf(out,"plots_count=%d\n",png_count);
+    } else {
+      fprintf(out,"plots_dir=\n");
+      fprintf(out,"plots_exist=0\n");
+      fprintf(out,"plots_count=0\n");
+    }
+  }
+
+  sqlite3_finalize(stmt);
+  if (!found)
+    fprintf(stderr,"wspy-summary: no run found for %s:%s\n",hostname,run_id);
+  return found ? 0 : 1;
+}
+
 #ifndef TEST_SUMMARY
 static void usage(const char *prog){
   fprintf(stderr,
@@ -350,14 +548,22 @@ static void usage(const char *prog){
     "  --outlier-stddev <n>   z-score threshold for flagging outliers (default 2.0)\n"
     "  --min-runs <n>         only report (group,metric) buckets with >= n runs (default 1)\n"
     "  --csv                  machine-readable CSV output instead of the human table\n"
+    "  --show-runs            append every contributing run's hostname:run_id to each\n"
+    "                         bucket (traceability: chase a surprising number to its runs)\n"
     "  -q, --quiet            suppress the trailing summary line\n"
     "  -s, --strict           exit non-zero if any bucket was skipped for --min-runs,\n"
     "                         or if nothing matched at all\n"
     "  -h, --help              show this help\n"
     "\n"
+    "  --trace <host>:<run_id>  standalone mode: resolve one run (as named by\n"
+    "                         --show-runs or a run-index record) to its manifest/\n"
+    "                         raw CSV/tree/plots artifact paths, checking which\n"
+    "                         still exist on disk. Ignores every other option\n"
+    "                         above except --db. Prints key=value lines.\n"
+    "\n"
     "Exit status: 0 normally (1 with --strict if any bucket still needs more\n"
-    "runs, or nothing matched), 2 on a usage error or if the database could\n"
-    "not be opened.\n",
+    "runs, or nothing matched; 1 with --trace if no such run is recorded),\n"
+    "2 on a usage error or if the database could not be opened.\n",
     prog);
 }
 
@@ -377,6 +583,8 @@ int main(int argc,char **argv){
     { "outlier-stddev", required_argument, 0, 'z' },
     { "min-runs",       required_argument, 0, 'n' },
     { "csv",            no_argument,       0, 'C' },
+    { "show-runs",      no_argument,       0, 'R' },
+    { "trace",          required_argument, 0, 'T' },
     { "quiet",          no_argument,       0, 'q' },
     { "strict",         no_argument,       0, 's' },
     { "help",           no_argument,       0, 'h' },
@@ -406,6 +614,8 @@ int main(int argc,char **argv){
     case 'z': opts.outlier_z = atof(optarg); break;
     case 'n': opts.min_runs = atoi(optarg); break;
     case 'C': opts.csvflag = 1; break;
+    case 'R': opts.show_runs = 1; break;
+    case 'T': opts.trace_key = optarg; break;
     case 'q': opts.quiet = 1; break;
     case 's': opts.strict = 1; break;
     case 'h': usage(argv[0]); return 0;
@@ -417,6 +627,27 @@ int main(int argc,char **argv){
     usage(argv[0]);
     return 2;
   }
+
+  if (opts.trace_key){
+    const char *colon = strchr(opts.trace_key,':');
+    char hostname_buf[256];
+    int rc;
+
+    if (!colon || colon == opts.trace_key || colon[1] == '\0'){
+      fprintf(stderr,"wspy-summary: --trace expects <hostname>:<run_id>, got '%s'\n\n",opts.trace_key);
+      usage(argv[0]);
+      return 2;
+    }
+    snprintf(hostname_buf,sizeof(hostname_buf),"%.*s",
+             (int)(colon - opts.trace_key),opts.trace_key);
+
+    db = open_summary_db(opts.db_path);
+    if (!db) return 2;
+    rc = trace_run(db,hostname_buf,colon + 1,stdout);
+    sqlite3_close(db);
+    return rc;
+  }
+
   if (!parse_group_by(group_by_str,&opts.group_by)){
     fprintf(stderr,"wspy-summary: unrecognized --group-by '%s' (expected command, hostname, "
                     "or cpu_vendor)\n\n",group_by_str);
@@ -430,11 +661,16 @@ int main(int argc,char **argv){
 
   memset(&totals,0,sizeof(totals));
 
-  if (opts.csvflag)
-    printf("group,metric,n,min,max,mean,median,stddev,cv_percent,outlier_count,outlier_run_ids\n");
-  else
-    printf("%-28s %-24s %4s %10s %10s %10s %10s %10s %8s %3s  %s\n",
+  if (opts.csvflag){
+    printf("group,metric,n,min,max,mean,median,stddev,cv_percent,outlier_count,outlier_run_ids");
+    if (opts.show_runs) printf(",contributing_runs");
+    printf("\n");
+  } else {
+    printf("%-28s %-24s %4s %10s %10s %10s %10s %10s %8s %3s  %s",
            "group","metric","n","min","max","mean","median","stddev","cv","out","outlier run(s)");
+    if (opts.show_runs) printf("  %s","contributing runs (host:run_id)");
+    printf("\n");
+  }
 
   if (summarize(db,&opts,stdout,&totals) != 0){
     sqlite3_close(db);

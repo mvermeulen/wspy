@@ -27,11 +27,36 @@ static sqlite3 *open_memory_db(void){
   assert(sqlite3_open(":memory:",&db) == SQLITE_OK);
   assert(sqlite3_exec(db,
     "CREATE TABLE runs (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, hostname TEXT NOT NULL, "
-    "command TEXT NOT NULL, cpu_vendor TEXT, start_time TEXT NOT NULL);"
+    "command TEXT NOT NULL, cpu_vendor TEXT, start_time TEXT NOT NULL, "
+    "manifest_path TEXT, output_path TEXT, tree_output_path TEXT);"
     "CREATE TABLE metric_values (id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, "
     "metric_name TEXT NOT NULL, value REAL);",
     NULL,NULL,NULL) == SQLITE_OK);
   return db;
+}
+
+/* trace_run() reads runs.{manifest_path,output_path,tree_output_path}, which
+ * insert_run() above (used by every other fixture) leaves NULL -- this
+ * variant is only for the --trace tests below. */
+static void insert_run_with_paths(sqlite3 *db,int id,const char *run_id,const char *hostname,
+                                   const char *command,const char *start_time,
+                                   const char *manifest_path,const char *output_path,
+                                   const char *tree_output_path){
+  sqlite3_stmt *stmt;
+  assert(sqlite3_prepare_v2(db,
+    "INSERT INTO runs (id,run_id,hostname,command,start_time,manifest_path,output_path,tree_output_path) "
+    "VALUES (?,?,?,?,?,?,?,?);",
+    -1,&stmt,NULL) == SQLITE_OK);
+  sqlite3_bind_int(stmt,1,id);
+  sqlite3_bind_text(stmt,2,run_id,-1,SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt,3,hostname,-1,SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt,4,command,-1,SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt,5,start_time,-1,SQLITE_TRANSIENT);
+  if (manifest_path) sqlite3_bind_text(stmt,6,manifest_path,-1,SQLITE_TRANSIENT); else sqlite3_bind_null(stmt,6);
+  if (output_path) sqlite3_bind_text(stmt,7,output_path,-1,SQLITE_TRANSIENT); else sqlite3_bind_null(stmt,7);
+  if (tree_output_path) sqlite3_bind_text(stmt,8,tree_output_path,-1,SQLITE_TRANSIENT); else sqlite3_bind_null(stmt,8);
+  assert(sqlite3_step(stmt) == SQLITE_DONE);
+  sqlite3_finalize(stmt);
 }
 
 static void insert_run(sqlite3 *db,int id,const char *run_id,const char *hostname,
@@ -419,6 +444,236 @@ static void test_summarize_null_only_metric_excluded(void){
   printf("test_summarize_null_only_metric_excluded passed\n");
 }
 
+static void test_summarize_show_runs_lists_contributors(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf;
+  size_t size;
+  FILE *fp;
+
+  insert_run(db,1,"r1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"ipc",1.0);
+  insert_run(db,2,"r2","host2","/bin/workloadA",NULL,"2026-01-01T00:01:00Z");
+  insert_metric(db,2,"ipc",1.2);
+
+  opts.csvflag = 1;
+  opts.show_runs = 1;
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  /* Ordered by (group,metric,start_time,id), so host1's earlier run lists first. */
+  assert(strstr(buf,"host1:r1;host2:r2") != NULL);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_summarize_show_runs_lists_contributors passed\n");
+}
+
+static void test_summarize_without_show_runs_omits_contributors(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf;
+  size_t size;
+  FILE *fp;
+
+  insert_run(db,1,"r1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"ipc",1.0);
+
+  opts.csvflag = 1;
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  /* Default (no --show-runs) keeps the pre-existing column set -- no
+   * hostname:run_id identity leaks into output unless asked for. */
+  assert(strstr(buf,"host1:r1") == NULL);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_summarize_without_show_runs_omits_contributors passed\n");
+}
+
+/* trace_run() is the other half of item 14 -- given a hostname:run_id (the
+ * same identity --show-runs prints), resolve it to the manifest/raw CSV/
+ * tree/plots artifact chain. Exercised against a real temp directory (not
+ * just string paths) so manifest_exists/output_exists/plots_count reflect
+ * actual stat()/opendir() results, not just what was recorded at ingest
+ * time -- the whole point of this tool is noticing when a recorded path no
+ * longer resolves. */
+static void test_trace_run_resolves_existing_run(void){
+  sqlite3 *db = open_memory_db();
+  char base[] = "/tmp/test_summary_trace_XXXXXX";
+  char manifest_path[256],output_path[256],plots_dir[256],png_path[512];
+  char *buf;
+  size_t size;
+  FILE *fp,*f;
+  int rc;
+
+  {
+    int fd = mkstemp(base);
+    assert(fd >= 0);
+    close(fd);
+    unlink(base);
+  }
+  assert(mkdir(base,0755) == 0);
+  snprintf(manifest_path,sizeof(manifest_path),"%s/run.manifest.json",base);
+  snprintf(output_path,sizeof(output_path),"%s/run.csv",base);
+  snprintf(plots_dir,sizeof(plots_dir),"%s/plots",base);
+  snprintf(png_path,sizeof(png_path),"%s/run.topdown.png",plots_dir);
+
+  f = fopen(manifest_path,"w"); assert(f); fclose(f);
+  f = fopen(output_path,"w"); assert(f); fclose(f);
+  assert(mkdir(plots_dir,0755) == 0);
+  f = fopen(png_path,"w"); assert(f); fclose(f);
+
+  insert_run_with_paths(db,1,"r1","host1","/bin/workloadA","2026-01-01T00:00:00Z",
+                         manifest_path,output_path,NULL);
+
+  fp = open_memstream(&buf,&size);
+  rc = trace_run(db,"host1","r1",fp);
+  fclose(fp);
+
+  assert(rc == 0);
+  assert(strstr(buf,"command=/bin/workloadA") != NULL);
+  assert(strstr(buf,"manifest_exists=1") != NULL);
+  assert(strstr(buf,"output_exists=1") != NULL);
+  assert(strstr(buf,"tree_output_path=\n") != NULL); /* NULL in the store -- no tree pass this run */
+  assert(strstr(buf,"tree_exists=0") != NULL);
+  assert(strstr(buf,"plots_exist=1") != NULL);
+  assert(strstr(buf,"plots_count=1") != NULL);
+
+  free(buf);
+  sqlite3_close(db);
+  unlink(png_path);
+  rmdir(plots_dir);
+  unlink(manifest_path);
+  unlink(output_path);
+  rmdir(base);
+  printf("test_trace_run_resolves_existing_run passed\n");
+}
+
+static void test_trace_run_stale_paths_degrade_not_fail(void){
+  sqlite3 *db = open_memory_db();
+  char *buf;
+  size_t size;
+  FILE *fp;
+  int rc;
+
+  /* Recorded at ingest time, but the files no longer exist here -- e.g. a
+   * run-index copied in from a different host (doc/ARTIFACT_CONTRACT.md's
+   * "Normalized store" section notes this is the common case for
+   * multi-host aggregation). Must report exists=0, not fail the lookup. */
+  insert_run_with_paths(db,1,"r1","host1","/bin/workloadA","2026-01-01T00:00:00Z",
+                         "/nonexistent/run.manifest.json","/nonexistent/run.csv",
+                         "/nonexistent/run.tree.txt");
+
+  fp = open_memstream(&buf,&size);
+  rc = trace_run(db,"host1","r1",fp);
+  fclose(fp);
+
+  assert(rc == 0);
+  assert(strstr(buf,"manifest_exists=0") != NULL);
+  assert(strstr(buf,"output_exists=0") != NULL);
+  assert(strstr(buf,"tree_exists=0") != NULL);
+  assert(strstr(buf,"plots_exist=0") != NULL);
+  assert(strstr(buf,"plots_count=0") != NULL);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_trace_run_stale_paths_degrade_not_fail passed\n");
+}
+
+/* A bare relative output_path (no '/' at all) has no directory of its own
+ * to derive a sibling "plots" path from -- must degrade to "can't tell"
+ * rather than guessing a "plots" path relative to wherever wspy-summary's
+ * own cwd happens to be, which could silently attribute an unrelated
+ * directory's contents to this run. */
+static void test_trace_run_relative_output_path_skips_plots_guess(void){
+  sqlite3 *db = open_memory_db();
+  char *buf;
+  size_t size;
+  FILE *fp;
+  int rc;
+
+  insert_run_with_paths(db,1,"r1","host1","/bin/workloadA","2026-01-01T00:00:00Z",
+                         NULL,"run.csv",NULL);
+
+  fp = open_memstream(&buf,&size);
+  rc = trace_run(db,"host1","r1",fp);
+  fclose(fp);
+
+  assert(rc == 0);
+  assert(strstr(buf,"output_path=run.csv\n") != NULL);
+  assert(strstr(buf,"plots_dir=\n") != NULL);
+  assert(strstr(buf,"plots_exist=0\n") != NULL);
+  assert(strstr(buf,"plots_count=0\n") != NULL);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_trace_run_relative_output_path_skips_plots_guess passed\n");
+}
+
+static void test_summarize_show_runs_truncates_with_marker(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf;
+  size_t size;
+  FILE *fp;
+  int i;
+
+  /* Enough contributing runs that the hostname:run_id list can't fit in
+   * contributing_runs' 4096-byte buffer (format_contributing_runs()) --
+   * must report a "(+N more)" marker instead of silently dropping the
+   * tail, unlike outlier_ids' pre-existing (rare-in-practice) truncation. */
+  for (i = 0; i < 400; i++){
+    char run_id[32],start_time[32];
+    snprintf(run_id,sizeof(run_id),"r%d",i);
+    snprintf(start_time,sizeof(start_time),"2026-01-01T00:%02d:00Z",i % 60);
+    insert_run(db,i + 1,run_id,"host-with-a-fairly-long-name","/bin/workloadA",NULL,start_time);
+    insert_metric(db,i + 1,"ipc",1.0);
+  }
+
+  opts.csvflag = 1;
+  opts.show_runs = 1;
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  assert(strstr(buf,"more)") != NULL);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_summarize_show_runs_truncates_with_marker passed\n");
+}
+
+static void test_trace_run_no_such_run(void){
+  sqlite3 *db = open_memory_db();
+  char *buf;
+  size_t size;
+  FILE *fp;
+  int rc;
+
+  insert_run(db,1,"r1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+
+  fp = open_memstream(&buf,&size);
+  rc = trace_run(db,"host1","no-such-run",fp);
+  fclose(fp);
+
+  assert(rc == 1);
+  assert(strlen(buf) == 0); /* nothing printed to out on a miss -- the "not found" is stderr's job */
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_trace_run_no_such_run passed\n");
+}
+
 static void test_open_summary_db_schema_gate(void){
   char path[] = "/tmp/test_summary_db_XXXXXX";
   int fd = mkstemp(path);
@@ -471,6 +726,13 @@ int main(void){
   test_summarize_min_runs_skips_thin_buckets();
   test_summarize_group_by_cpu_vendor_unknown_bucket();
   test_summarize_null_only_metric_excluded();
+  test_summarize_show_runs_lists_contributors();
+  test_summarize_without_show_runs_omits_contributors();
+  test_trace_run_resolves_existing_run();
+  test_trace_run_stale_paths_degrade_not_fail();
+  test_trace_run_relative_output_path_skips_plots_guess();
+  test_summarize_show_runs_truncates_with_marker();
+  test_trace_run_no_such_run();
   test_open_summary_db_schema_gate();
 
   printf("\nAll test_summary tests passed.\n");
