@@ -24,14 +24,23 @@
  * name as a substring against each run-index record's "command" array:
  * no match -> skipped, at least one successful matching run -> done, one or
  * more matching runs but none succeeded -> needs-tool-support.
+ *
+ * --add <name> is a separate mode: rather than reporting coverage, it just
+ * appends a workload name to a workload-list file (creating it if needed),
+ * defaulting to workload/phoronix/backlog.txt -- a spot to jot down
+ * candidate workloads as they come up, in the same file format this tool
+ * already reads, without hand-editing the file or needing --run-index.
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <errno.h>
 #include <getopt.h>
 #include "json_reader.h"
 #include "run_index.h"
+
+#define DEFAULT_LIST_PATH "workload/phoronix/backlog.txt"
 
 enum ledger_status { LEDGER_DONE, LEDGER_SKIPPED, LEDGER_UNSUPPORTED, LEDGER_NEEDS_TOOL_SUPPORT };
 
@@ -146,6 +155,59 @@ static int parse_ledger_line(char *line,char **name,char **status,char **note){
 
   *note = ltrim(tab + 1);
   return 1;
+}
+
+/* Checks whether name already appears (exact match on the name field,
+ * i.e. ignoring any status/note columns) in the workload list at path.
+ * A missing file just means "not present yet", not an error. */
+static int list_contains_name(const char *path,const char *name){
+  long size;
+  char *buf;
+  char **lines;
+  int nlines,i,found = 0;
+
+  buf = read_whole_file(path,&size);
+  if (!buf) return 0;
+  lines = split_lines(buf,&nlines);
+  for (i = 0; i < nlines && !found; i++){
+    char *n,*status_str,*note;
+
+    if (!parse_ledger_line(lines[i],&n,&status_str,&note)) continue;
+    if (!strcmp(n,name)) found = 1;
+  }
+  free(lines);
+  free(buf);
+  return found;
+}
+
+/* Appends name as a new line to the workload list at path (creating the
+ * file if it doesn't exist yet), unless it's already present. Returns a
+ * process exit code (0 on success, including the already-present case;
+ * 2 on a usage/IO error), matching main()'s other error paths. */
+static int add_to_list(const char *path,const char *name){
+  FILE *fp;
+
+  if (!*name){
+    fprintf(stderr,"wspy-ledger: --add requires a non-empty workload name\n");
+    return 2;
+  }
+  if (strchr(name,'\t') || strchr(name,'\n')){
+    fprintf(stderr,"wspy-ledger: workload name must not contain tabs or newlines\n");
+    return 2;
+  }
+  if (list_contains_name(path,name)){
+    printf("wspy-ledger: '%s' is already in %s, not added\n",name,path);
+    return 0;
+  }
+  fp = fopen(path,"a");
+  if (!fp){
+    fprintf(stderr,"wspy-ledger: unable to open %s for writing: %s\n",path,strerror(errno));
+    return 2;
+  }
+  fprintf(fp,"%s\n",name);
+  fclose(fp);
+  printf("wspy-ledger: added '%s' to %s\n",name,path);
+  return 0;
 }
 
 static struct ledger_entry *load_workload_list(const char *path,int *count_out){
@@ -347,7 +409,8 @@ static void print_csv_field(const char *s){
 #ifndef TEST_LEDGER
 static void usage(const char *prog){
   fprintf(stderr,
-    "Usage: %s [options] --run-index <file> [--run-index <file> ...] <workload-list>\n"
+    "Usage: %s [options] --run-index <file> [--run-index <file> ...] [<workload-list>]\n"
+    "       %s --add <name> [--list <file>]\n"
     "\n"
     "Generates a \"coverage ledger\" for a suite of workloads: for each\n"
     "workload named in <workload-list>, reports whether it is done (a\n"
@@ -360,18 +423,26 @@ static void usage(const char *prog){
     "tab-separated status (\"unsupported\" or \"needs-tool-support\") and a\n"
     "free-text note. Blank lines and lines starting with '#' are ignored.\n"
     "A workload's name is matched as a substring against each run-index\n"
-    "record's command line.\n"
+    "record's command line. If omitted, defaults to %s\n"
+    "(overridable with --list, same as --add below).\n"
+    "\n"
+    "--add <name> instead appends <name> as a new line to the workload list\n"
+    "(creating it if needed) rather than generating a report -- a spot to\n"
+    "note candidate workloads as they come up. Does nothing (but still exits\n"
+    "0) if <name> is already in the list.\n"
     "\n"
     "Options:\n"
     "  --run-index <file>  run-index (JSONL) file to scan; may be repeated\n"
     "  --csv               machine-readable CSV output instead of the human report\n"
     "  -q, --quiet         only print workloads that are not done\n"
     "  -s, --strict        exit non-zero if any workload is skipped or needs-tool-support\n"
+    "  --add <name>        append <name> to the workload list instead of reporting\n"
+    "  --list <file>       workload list to use/append to (default: %s)\n"
     "  -h, --help          show this help\n"
     "\n"
     "Exit status: 0 normally (1 with --strict if any workload still needs\n"
     "attention), 2 on a usage error.\n",
-    prog);
+    prog,prog,DEFAULT_LIST_PATH,DEFAULT_LIST_PATH);
 }
 
 int main(int argc,char **argv){
@@ -380,6 +451,8 @@ int main(int argc,char **argv){
   const char *run_index_paths[64];
   int nrun_index = 0;
   const char *workload_list_path;
+  const char *add_name = NULL;
+  const char *list_path = DEFAULT_LIST_PATH;
   struct ledger_entry *entries;
   int nentries,counts[4] = {0,0,0,0};
 
@@ -388,6 +461,8 @@ int main(int argc,char **argv){
     { "csv",       no_argument,       0, 'c' },
     { "quiet",     no_argument,       0, 'q' },
     { "strict",    no_argument,       0, 's' },
+    { "add",       required_argument, 0, 'a' },
+    { "list",      required_argument, 0, 'l' },
     { "help",      no_argument,       0, 'h' },
     { 0,0,0,0 }
   };
@@ -404,21 +479,19 @@ int main(int argc,char **argv){
     case 'c': csvflag = 1; break;
     case 'q': quiet = 1; break;
     case 's': strict = 1; break;
+    case 'a': add_name = optarg; break;
+    case 'l': list_path = optarg; break;
     case 'h': usage(argv[0]); return 0;
     default: usage(argv[0]); return 2;
     }
   }
-  if (optind >= argc){
-    fprintf(stderr,"wspy-ledger: no workload list given\n\n");
-    usage(argv[0]);
-    return 2;
-  }
+  if (add_name) return add_to_list(list_path,add_name);
   if (nrun_index == 0){
     fprintf(stderr,"wspy-ledger: at least one --run-index <file> is required\n\n");
     usage(argv[0]);
     return 2;
   }
-  workload_list_path = argv[optind];
+  workload_list_path = (optind < argc) ? argv[optind] : list_path;
 
   entries = load_workload_list(workload_list_path,&nentries);
   if (!entries) return 2;
