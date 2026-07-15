@@ -124,10 +124,13 @@ carried forward as follow-up validation, not release blockers:
   `--interval`. Also added a real-hardware IBS probe to the web launcher's "Check" button
   (`ibs_probes_for_request()`/`probe_ibs()` in `web/server.py`) so a run that would use IBS gets this
   same live perf_event_open() verification before launching, not just `--capabilities`' sysfs-presence
-  check. Follow-up not yet done: `--interval` support isn't exposed on the `ibs-basic`/`ibs-memory-deep`
-  profiles or the web checklist's IBS row, and `plot.c` has no `ibs_fetch`/`ibs_op` template yet — real
-  filtering behavior (l3missonly/ldlat skew) also still untested against actual filtered vs. unfiltered
-  data on this hardware.
+  check. `ibs-basic`/`ibs-memory-deep` (`wspy-run`) now always pass `--interval 1`, the web checklist's
+  IBS row has its own optional `interval_secs` field, and `plot.c` gained `ibs`/`ibs-accepted-ratio`
+  templates — confirmed live: both profiles render real gnuplot PNGs from genuine per-tick
+  `ibs_fetch`/`ibs_op`/`ibs_op_accepted_ratio` time series on this hardware. Still not done: real
+  filtering behavior (l3missonly/ldlat skew) untested against actual filtered vs. unfiltered data on
+  this hardware — this session's runs used `ibs-memory-deep`'s defaults but didn't specifically compare
+  filtered vs. unfiltered sample distributions.
 - Exercise `--gpu-busy`/`--gpu-metrics`/`--gpu-smi`/`--gpu-device=<idx>` on an `AMDGPU=1` build
   against real AMD GPU hardware, ideally a multi-GPU host, to confirm device enumeration/selection
   and metric correctness beyond what `./run_tests.sh`'s ROCm-header-gated build check covers.
@@ -163,8 +166,10 @@ What appears confirmed from current Linux perf/PMU behavior for AMD Family 1Ah (
 Caveat: if upstream kernel/perf exposes new Zen5-specific generic mappings or PMU caps, update
 presets and coverage logic without changing the report schema.
 
-→ Informs the 4.2 priority list's "Zen-family preset packs" and "PMU-capability-aware comparability
-warnings," and the 4.3 list's "IBS-derived memory-path bottleneck decomposition."
+→ Informs the 4.2 priority list's "Zen-family preset packs," "PMU-capability-aware comparability
+warnings," and #27's IBS sampling-mode support (icache/TLB/dcache/L2/L3/branch rate estimates decoded
+from real per-sample tag data, not just counting-mode sample counts); and the 4.3 list's "IBS-derived
+memory-path bottleneck decomposition," which depends on #27 existing first.
 
 ### Topdown deep-dive
 Advancements worth adopting, in priority order for `wspy` specifically:
@@ -956,6 +961,33 @@ Ordered in dependency tiers; items within a tier are independently startable.
       dedicated future item for deeper Phoronix-particular knowledge in the web UI, layered on top of
       (not replacing) the suite-agnostic launcher 4.1 #9 already ships.
 
+**Tier 9 — AMD IBS sampling mode:**
+
+27. **(Addendum — added after Tier 2/Tier 8 were already numbered, so appended out of sequence rather
+    than renumbering #4-26; conceptually sits alongside #4-7's topdown/IBS refinement work.)** AMD IBS
+    *sampling*-mode support: a genuinely new capability, not an extension of the counting-mode
+    `ibs-basic`/`ibs-memory-deep` profiles shipped in 4.0/4.1 (see `ibs.c`'s entry in `CLAUDE.md` and
+    the interval/plotting work landed alongside this item) — those open `ibs_fetch`/`ibs_op` as plain
+    counting events and only ever `read()` an aggregate/per-tick sample *count*. Real IBS sampling means
+    mmap'ing the perf ring buffer and requesting `PERF_SAMPLE_RAW` so each individual sample's tagged
+    register data is available, not just a count of how many fired — nothing in wspy today reads a perf
+    mmap ring buffer at all, every existing counter group (including IBS as currently implemented) is
+    `read()`-based counting. Each `IbsOpData`/`IbsOpData2`/`IbsOpData3`/`IbsDcLinAd` (op samples) and
+    `IbsFetchCtl`/`IbsFetchLinAd` (fetch samples) record carries tag bits this item would decode into
+    per-tick rate estimates comparable to (but independently sourced from) the equivalent
+    hardware-counter groups already reported: `DcMiss`/`L2Miss`/`NbIbsReqSrc` → dcache/L2/L3 miss and
+    memory-source-of-fill rates (vs. today's `--dcache`/`--cache2`/`--cache3` groups);
+    `DcL1TlbMiss`/`DcL2TlbMiss` → data-TLB miss rates (vs. `--tlb`); fetch-side `IcMiss`/`L1TlbMiss`/
+    `L2TlbMiss` → icache/iTLB miss rates (vs. `--icache`/topdown-frontend's iTLB columns); `BrnMisp`
+    (on branch ops) → branch misprediction rate (vs. `--branch`). Valuable specifically because it's a
+    second, independently-sampled measurement of the same phenomena the counting-mode groups already
+    report — a real disagreement between the two is itself a signal (PMU multiplexing skew, a
+    counting-mode blind spot, or an IBS sampling-rate artifact) — not just a fifth way to get the same
+    number. Format/sysfs-field discovery already exists (`ibs.c`'s `ibs_probe()`) and generalizes
+    directly; the new work is the mmap/ring-buffer read path itself, per-sample record parsing, and the
+    rate-aggregation/report layer built on top. Feeds 4.3 Tier 2's "IBS-derived memory-path bottleneck
+    decomposition" (#7 below), which assumed this sampling capability already existed.
+
 ## 4.3 priorities
 Goal: use the normalized store built in 4.1 for regression detection, clustering, phase-aware
 topdown/IBS attribution, static-site publishing, and a lower-overhead tracing backend.
@@ -973,7 +1005,8 @@ topdown/IBS attribution, static-site publishing, and a lower-overhead tracing ba
 
 5. Phase-aware topdown (warmup/steady/degraded segmentation, drift signal).
 6. Composite attribution (topdown + cache/TLB/IBS signals).
-7. IBS-derived memory-path bottleneck decomposition (combine with topdown/cache).
+7. IBS-derived memory-path bottleneck decomposition (combine with topdown/cache) — needs 4.2 #27's
+   IBS sampling-mode support first; today's counting-mode IBS has no per-sample tag data to decompose.
 
 **Tier 3 — publishing/reporting expansion, needs 4.1's report studio:**
 
