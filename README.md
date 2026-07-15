@@ -1,16 +1,20 @@
-# wspy 4.0
+# wspy
 
 wspy - a workload spy
 
 wspy is an instrumentation wrapper: it launches a child command, lets it run, and reports
-runtime + hardware performance-counter + system metrics gathered while it ran. It's the
-author's internal testbed for workload-characterization experiments, published to make it
-easy to pull onto different machines; listed as public in case it's otherwise useful.
+runtime + hardware performance-counter + system metrics gathered while it ran, plus a set of
+tools around it for turning many such runs into a queryable, publishable dataset (normalized
+storage, summary statistics, shared plots, a job queue, and a web launcher/report browser).
+It's the author's internal testbed for workload-characterization experiments, published to
+make it easy to pull onto different machines; listed as public in case it's otherwise useful.
+Run `wspy --version` for the exact version of a given checkout.
 
 ## Building
 
 ```
-make                          # builds wspy, cpu_info, proctree, wspy-validate, wspy-ledger (no GPU support)
+make                          # builds wspy, cpu_info, proctree, wspy-validate, wspy-ledger,
+                               # wspy-store, wspy-summary, wspy-plot (no GPU support)
 make AMDGPU=1                 # also builds amd_smi, amd_sysfs (needs ROCm; auto-detects /opt/rocm or /usr)
 make AMDGPU=1 ROCM_DIR=<path> # point at a non-default ROCm install
 make test                     # build and run the unit tests
@@ -20,9 +24,15 @@ make clean                    # remove object files
 make clobber                  # also remove built binaries
 ```
 
+`wspy-store`/`wspy-summary` link against the system SQLite library — install `libsqlite3-dev`
+(or your distro's equivalent) before building. `wspy-plot` shells out to a `gnuplot` binary at
+run time, not a build-time dependency. `wspy-queue` and the web launcher (`web/server.py`) are
+plain Python 3 scripts — stdlib only, nothing to build or install.
+
 Performance counters and `--tree` (which uses `ptrace`) generally need root, or
 `CAP_SYS_PTRACE` plus `perf_event_paranoid <= 1`. `scripts/setup_perf.sh` checks and, if you
 confirm, adjusts the `nmi_watchdog` and `perf_event_paranoid` sysctls for the current session.
+`./cpu_info` and `wspy --capabilities`/`--preflight` need no privileges at all.
 
 ## Usage
 
@@ -58,6 +68,17 @@ Some of the more commonly used options:
     so tooling can query "all runs" by scanning one file
   * `--exit-with-child` - exit with the launched command's own exit status (or 128+signal),
     instead of wspy's default of always exiting 0 regardless of the child
+  * `--preset-name <name>`, `--config-name <name>`, `--config-option <k>=<v>` - metadata-only;
+    record which named preset/configuration/option a front end (`wspy-run`, the web launcher)
+    chose to run, so a manifest/run-index record can say "this was `deep-cpu`" instead of a
+    report having to re-derive it from raw flags. `wspy` itself never reads these back.
+* Multi-pass counter execution
+  * `--passes=<groups>` - re-run the workload once per automatically-sized pass (bin-packed to
+    fit the hardware PMU counter budget) and merge the result into one CSV/manifest row, instead
+    of requiring N separate `wspy` invocations to sweep more counter groups than fit at once.
+    Aggregate-only: incompatible with `--interval`/`--per-core`/`--tree`/AMD IBS/GPU flags.
+  * `--multiplex` - with `--passes`, use one pass covering every requested group instead of
+    bin-packing, trading precision (heavier kernel multiplexing) for a single re-execution
 * Process info
   * `--rusage` / `-r` - report `getrusage(2)` info (on by default)
   * `--per-core` / `-a` - report performance counters per-core instead of system-wide
@@ -197,6 +218,92 @@ A workload's name is matched as a substring against each run-index record's comm
 `needs-tool-support` plus a free-text note to override inference for a specific workload. See
 `./wspy-ledger --help` for the full option list.
 
+## wspy-store: normalized SQLite store
+
+`wspy-store` ingests one or more `--run-index` (JSONL) files into a SQLite database: a `runs`
+catalog table plus a long/tall `metric_values` table parsed from each run's CSV output (covers
+aggregate, `--interval`, and `--per-core` shapes uniformly, since column identity comes from the
+CSV header, not which flags produced it). This is what makes "all my runs" queryable instead of a
+pile of separate output files. Ingestion is idempotent — re-running against the same or a grown
+run-index file upserts rather than duplicating rows — and best-effort enriches each run from its
+manifest (host fields) and CSV (metric values) when those files are still readable.
+
+```
+./wspy-store --db results/store.db --run-index results/index.jsonl
+./wspy-store --db results/store.db --run-index results/index.jsonl --strict   # nonzero exit on
+                                                                                # any malformed/
+                                                                                # collided record
+```
+
+See `./wspy-store --help` for the full option list.
+
+## wspy-summary: regenerable summary tables
+
+`wspy-summary` queries a `wspy-store` database directly and computes min/max/mean/median/stddev
+and z-score outlier flags per `(group,metric)` bucket — grouped by workload command (default),
+hostname, or CPU vendor — so a summary table can always be regenerated from indexed data with no
+manual copy/paste.
+
+```
+./wspy-summary --db results/store.db                                # human table
+./wspy-summary --db results/store.db --csv --metric ipc --metric retire
+./wspy-summary --db results/store.db --show-runs                    # append contributing
+                                                                       # hostname:run_id per bucket
+./wspy-summary --db results/store.db --trace myhost:1731000000-1234 # resolve one run to its
+                                                                       # manifest/CSV/tree/plots
+```
+
+See `./wspy-summary --help` for the full option list.
+
+## wspy-plot: shared plotting templates
+
+`wspy-plot` scans wspy CSV output for a `time` column (i.e. produced with `--interval`) and
+renders matching built-in plot templates (topdown, cache, IBS, network I/O, a generic fallback
+for anything unclaimed, ...) via `gnuplot`, one PNG per matching template per CSV. `--plot
+NAME=col1,col2,...` defines a custom grouping when the built-in templates don't fit what you want
+charted together.
+
+```
+./wspy-plot --rundir results/phoronix/coremark/<run-id>       # writes into <rundir>/plots by default
+./wspy-plot --csv results/amdtopdown.csv --out-dir plots
+./wspy-plot --list-templates
+```
+
+See `./wspy-plot --help` for the full option list.
+
+## wspy-queue: job queue processor
+
+`wspy-queue` processes a directory of **job** files — portable, spec-only JSON describing a
+workload/preset/checklist to run, captured before any output exists — through a
+`pending`/`running`/`done`/`failed` lifecycle (Maildir-style directories, no daemon needed). Jobs
+are added either from this tool or from the web launcher's "Queue this instead of running it now"
+checkbox, and processed serially (a `wspy` run has exclusive use of the machine's PMU counters).
+A job file can be copied verbatim to another machine with wspy checked out and processed there.
+
+```
+./wspy-queue add --profile deep-cpu -- phoronix-test-suite batch-run coremark
+./wspy-queue run                       # drain all pending jobs
+./wspy-queue list
+./wspy-queue requeue <job-id>          # a failed job stays failed until requeued
+```
+
+See `./wspy-queue --help` for the full subcommand/option list.
+
+## Web launcher and report browser
+
+`web/server.py` is a stdlib-only Python web UI (no dependency, no build step) for launching runs
+(a preset dropdown or a configuration checklist, either way showing the exact command line about
+to run), browsing/curating/exporting reports, comparing runs side by side, searching run history,
+and running `wspy-validate`/`wspy-store`/`wspy-summary`/`wspy --capabilities`/`--preflight`
+without leaving the browser.
+
+```
+python3 web/server.py                  # serves http://127.0.0.1:8765/ by default
+python3 web/server.py --port 9000 --output-root /path/to/runs
+```
+
+See `./web/server.py --help` for the full option list.
+
 ## Other contents
 
 * `doc/ARTIFACT_CONTRACT.md` - the manifest/run-index/CSV/tree-file format contract (what's
@@ -205,10 +312,15 @@ A workload's name is matched as a substring against each run-index record's comm
 * `scripts/setup_perf.sh` - checks/adjusts `nmi_watchdog` and `perf_event_paranoid` for running
   perf counters as a non-root user
 * `workload/` - driver scripts for exercising wspy against external benchmark suites (SPEC
-  CPU2017, pbbsbench, Phoronix)
+  CPU2017, pbbsbench, Phoronix), all calling `wspy-run --suite/--benchmark` rather than
+  hand-rolling per-suite `wspy` invocations
+* `web/` - the web launcher/report browser (`server.py`, see above) plus its static assets and
+  job-queue library (`joblib.py`, shared with `wspy-queue`)
 * `rocm/` - small standalone C++ utilities (`smi_monitor`, `smi_info`) for exploring the ROCm
   SMI API directly; not linked into wspy
 * `archive/` - older version of the tool, kept for reference
+* `INVESTIGATION_4.0.md` - the project's own development log/backlog: what's shipped, what's
+  planned next and why, organized by release
 
 ## License
 
