@@ -707,16 +707,29 @@ derivable from files already being produced.
       state from a traced run — `--trace` surfaces the *artifacts* a run produced, not the
       *configuration* that produced them; that's #16's structured configuration provenance, still
       open.
-15. Report commentary/annotation — free-text notes saved alongside a report (session-local in the
-    mockup; a real implementation needs a place to persist it — most naturally the normalized store
-    from #1, keyed to the run — so it survives a report being regenerated). Scoped *per configuration*
-    ("what does this tell us," attached to that configuration's block in #8) plus one overview note for
-    the report as a whole — not a single global field — matching the real precedent's pattern of
-    commentary interspersed between each chart/output block rather than one summary at the end.
-    Speculative/lower priority within this tier; flagged explicitly as forward-looking by 4.1 feedback
-    rather than a firm requirement. Future extension, not in scope now: an optional local-LLM-drafted
-    starting point generated from a configuration's own metrics, which the user edits rather than
-    writes from scratch — shown in the mockup as a visibly disabled affordance, not a real integration.
+15. ~~Report commentary/annotation~~ — **shipped.** Per-configuration commentary ("what does *this*
+    configuration tell us," attached to a block in #8's curation studio) already shipped as part of #8
+    itself; this item adds the other half the doc called for — "not a single global field" — one
+    **overview note** for the report as a whole, distinct from every block's own commentary. Persisted
+    as a new `overview_note` string alongside `blocks` in `<rundir>/curation.json`
+    (`CURATION_SCHEMA_VERSION` bumped 1.0 → 1.1, a backward-compatible addition — `load_curation()`
+    defaults a pre-existing file's missing key to `""`), not the normalized store as originally
+    speculated: #8 already established curation state as a run-directory file rather than server-owned
+    state, and the note needs exactly the same "survives a report being regenerated, editable from the
+    studio, degrades to absent on an old curation.json" behavior the per-block commentary field already
+    has — reusing that mechanism is simpler than introducing a second, store-backed persistence path for
+    one string. `render_studio()` gets a "Report overview" textarea above the block list (inside the
+    same `<form>`, so it saves along with any block edit exactly like every other field);
+    `apply_studio_post()` reads it back via `form.get("overview_note", [""])[0]`.
+    `render_curated_section()` renders it first, above the per-block sequence, whenever it's non-empty
+    — and now shows the curated view even when there are zero included blocks but a written overview
+    note, rather than requiring at least one block. All three of #10's export formats
+    (`render_export_markdown`/`_html`/`_wordpress`) render it as an intro paragraph right after the
+    title heading, ahead of the per-block content; `_export_data()` replaces the old `_export_blocks()`
+    helper so the note and the block sequence are read from `curation.json` together and can't drift out
+    of sync in the export/download code paths. Not in scope, per the doc's own framing as a lower
+    priority: an optional local-LLM-drafted starting point generated from a configuration's own metrics
+    — still just a visibly-disabled mockup affordance, no real integration.
 16. ~~Structured configuration provenance~~ — **shipped.** Records a run's preset/configuration/option
     choices (see the deep-dive above) as structured data in `manifest.h`/`run_index.h`, not just the
     flat command line and flag set already captured — this is what lets #8/#11's reports eventually
