@@ -511,7 +511,9 @@ derivable from files already being produced.
    `--preflight` respectively, all synchronous (no run directory, no SSE, nothing to browse to). Not
    yet covered, by design: **#16** structured configuration provenance (so "customize & run again"
    still can't restore exact preset/checklist state, only workload/suite/benchmark — the same
-   limitation #6/#7 already had), and **#18** estimated-runtime display. **#13** was originally
+   limitation #6/#7 already had) — since shipped, see its own entry and #17's — and **#18**
+   estimated-runtime display — also since shipped, as a standalone Run tab "Check" button, see its
+   own entry. **#13** was originally
    listed here as an open gap (no design note existed yet, and #5's mockup round had proposed a
    local-vs-shared execution-mode toggle on this same Run tab as the answer) — since resolved, but not
    the way either of those assumed: #13's own design pass concluded the real need was a portable,
@@ -784,12 +786,21 @@ derivable from files already being produced.
     `build_configuration_passes()` → `_config_options()` → `checklist_section_from_options()` and back,
     plus the preset-wins-over-checklist and no-provenance-at-all cases) and hand-verified end-to-end
     against a real checklist-driven run and a synthetic preset-driven manifest.
-18. Estimated runtime display in the `wspy-run` profile launcher (#7) — once benchmark is selected,
-    show an estimated runtime for the run before it's launched. `phoronix-test-suite` reportedly has
-    a run-time-estimate command that could source this for Phoronix benchmarks specifically (the same
-    command #23 in the 4.2 "testing/docs" tier proposes using to size `--tree`'s pass timeout); not
-    yet scoped for other suites (`cpu2017`, `pbbsbench`) or for arbitrary workload commands, which
-    have no equivalent estimator today.
+18. ~~Estimated runtime display~~ — **shipped**, as a standalone "Check" button on the Run tab
+    (`web/server.py`'s `render_run_tab()`/`Handler._check_run()`, `POST /api/check-run`) rather than
+    inline once a benchmark is selected — deliberately optional/read-only per the item's own
+    "quickly check ... before launching" framing, so it never blocks or slows down an actual Run
+    click. Two independent checks: (a) `perf_event_paranoid`/`nmi_watchdog` read directly from
+    `/proc/sys/kernel/*` and reported ok/warn against wspy's documented minimum
+    (`scripts/setup_perf.sh`'s own thresholds); (b) for a `phoronix-test-suite batch-run`/`run`/
+    `benchmark` workload specifically, `phoronix-test-suite info <test>` per test — parsed for
+    install status, times run, and `Estimated Run-Time` vs. this host's own measured
+    `Average Run-Time` — picking whichever is more informative (not installed, or installed-but-
+    never-run → the generic estimate; already run here → the measured average), matching the
+    original design note's install/not-run/run three-way split. Still not scoped for other suites
+    (`cpu2017`, `pbbsbench`) or arbitrary workload commands, which have no equivalent estimator
+    today — those just report "no estimate available" rather than guessing. See `CLAUDE.md`'s
+    `web/` entry, "Estimated runtime check" bullet, for the full design.
 19. Deeper Phoronix Test Suite awareness in the web UI — not needed for 4.1's release, flagged as a
     future backlog item since most real wspy testing in practice runs through Phoronix specifically
     (`workload/phoronix/`), so some suite-specific knowledge on top of the general-purpose launcher is

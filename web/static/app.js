@@ -372,6 +372,98 @@
   }
 
   // ---------------------------------------------------------------------
+  // Run tab "Check" button (item 18): a synchronous, read-only look at
+  // perf-counter-access sysctls and -- for a phoronix-test-suite workload --
+  // that test's install status and an estimated/measured single-run time.
+  // Never launches anything, so it's plain fetch+render like the Discovery
+  // family below, just triggered from the Run tab next to the Run button.
+  // ---------------------------------------------------------------------
+  function statusClass(status) {
+    return status === "ok" ? "status-ok" : status === "warn" ? "status-warn" : "status-unknown";
+  }
+
+  function renderPerfCheck(perf) {
+    var labels = { perf_event_paranoid: "perf_event_paranoid", nmi_watchdog: "nmi_watchdog" };
+    var html = '<div class="check-section"><strong>Perf counter access</strong>';
+    ["perf_event_paranoid", "nmi_watchdog"].forEach(function (key) {
+      var p = perf[key];
+      if (!p) return;
+      var valueText = (p.value === null || p.value === undefined) ? "unknown" : String(p.value);
+      html += '<div class="' + statusClass(p.status) + '">' + escapeHtml(labels[key]) + " = "
+        + escapeHtml(valueText) + " (" + escapeHtml(p.status) + ")</div>";
+      if (p.detail) html += '<div class="muted">' + escapeHtml(p.detail) + "</div>";
+    });
+    html += "</div>";
+    return html;
+  }
+
+  function renderPhoronixTest(t) {
+    var html = '<div class="check-test"><code>' + escapeHtml(t.command || "") + "</code>";
+    if (t.error) {
+      html += '<div class="status-warn">' + escapeHtml(t.error) + "</div>";
+    } else {
+      html += "<div>" + escapeHtml(t.name) + ": installed=" + escapeHtml(t.installed || "unknown")
+        + ", times run=" + escapeHtml(t.times_run || "0")
+        + (t.last_run ? ", last run=" + escapeHtml(t.last_run) : "") + "</div>";
+      var est = t.estimate || {};
+      html += "<div><strong>" + escapeHtml(est.text || "no estimate available") + "</strong>"
+        + (est.source ? " (" + escapeHtml(est.source) + ")" : "") + "</div>";
+      if (est.detail) html += '<div class="muted">' + escapeHtml(est.detail) + "</div>";
+    }
+    html += "</div>";
+    return html;
+  }
+
+  function renderCheckResults(data) {
+    var html = renderPerfCheck(data.perf || {});
+    var ph = data.phoronix;
+    html += '<div class="check-section"><strong>Runtime estimate</strong>';
+    if (!ph || !ph.detected) {
+      html += '<div class="muted">' + escapeHtml((ph && ph.note) || "no estimate available") + "</div>";
+    } else {
+      (ph.tests || []).forEach(function (t) { html += renderPhoronixTest(t); });
+      if (ph.total_seconds !== null && ph.total_seconds !== undefined && (ph.tests || []).length > 1) {
+        html += "<div><strong>Total estimated: " + Math.round(ph.total_seconds) + "s</strong></div>";
+      }
+      if (ph.truncated) {
+        html += '<div class="muted">only the first ' + (ph.tests || []).length
+          + " test(s) shown; the command lists more</div>";
+      }
+    }
+    html += "</div>";
+    return html;
+  }
+
+  function wireCheckButton() {
+    var btn = byId("check-button");
+    var outputEl = byId("check-results");
+    if (!btn || !outputEl) return;
+    btn.addEventListener("click", function () {
+      btn.disabled = true;
+      outputEl.hidden = false;
+      outputEl.textContent = "checking…";
+      fetch("/api/check-run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workload: getValue("workload") }),
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          btn.disabled = false;
+          if (data.error) {
+            outputEl.textContent = "Error: " + data.error;
+            return;
+          }
+          outputEl.innerHTML = renderCheckResults(data);
+        })
+        .catch(function (err) {
+          btn.disabled = false;
+          outputEl.textContent = "Error: " + err.message;
+        });
+    });
+  }
+
+  // ---------------------------------------------------------------------
   // Validate / Store & Summary / Discovery tabs: synchronous request/render,
   // no SSE needed since none of these launch a workload (see run_sync() in
   // server.py).
@@ -599,6 +691,7 @@
 
   wireTabs();
   wireRunTab();
+  wireCheckButton();
   wireValidateTab();
   wireStoreTab();
   wireDiscoveryTab();
