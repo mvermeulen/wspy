@@ -413,6 +413,55 @@ def discover_run_history(output_root, filters, page=1, page_size=HISTORY_PAGE_SI
     return filtered[start:start + page_size], total
 
 
+def _rundir_triple_for_path(output_root, path):
+    """If path falls inside output_root at the <suite>/<benchmark>/<run_id>/...
+    depth the unified output layout uses, returns (suite, benchmark, run_id,
+    relpath-within-rundir); otherwise None. Used by _resolve_trace_links()
+    (item 14) to turn a store-recorded absolute path back into a /report or
+    /files URL -- only possible for runs this server's own --output-root
+    produced (or was pointed at), not an absolute path ingested from a
+    different host's run-index (doc/ARTIFACT_CONTRACT.md's "Normalized
+    store" section notes that's the common cross-host case, and it's
+    expected to just not resolve here)."""
+    if not path:
+        return None
+    try:
+        rel = os.path.relpath(os.path.abspath(path), os.path.abspath(output_root))
+    except ValueError:
+        return None  # e.g. different drive on Windows; never true on this project's Linux target
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep):
+        return None
+    parts = rel.split(os.sep)
+    if len(parts) < 4:
+        return None
+    suite, benchmark, run_id = parts[0], parts[1], parts[2]
+    if not all(valid_segment(x) for x in (suite, benchmark, run_id)):
+        return None
+    filename = "/".join(parts[3:])
+    if not valid_relpath(filename):
+        return None
+    return suite, benchmark, run_id, filename
+
+
+def _resolve_trace_links(output_root, fields):
+    """Best-effort companion to _discovery_trace(): turns wspy-summary
+    --trace's raw {manifest,output,tree_output}_path fields into clickable
+    /report + /files links wherever they resolve under this server's own
+    output_root, degrading to "no link" (the caller still has the raw path
+    text from `fields`) rather than failing the whole lookup when they
+    don't -- same idiom as everywhere else in this tier."""
+    links = {}
+    for path_field, kind in (("manifest_path", "manifest"), ("output_path", "output"),
+                              ("tree_output_path", "tree")):
+        triple = _rundir_triple_for_path(output_root, fields.get(path_field))
+        if not triple:
+            continue
+        suite, benchmark, run_id, filename = triple
+        links.setdefault("report_url", f"/report/{suite}/{benchmark}/{run_id}")
+        links[f"{kind}_url"] = f"/files/{suite}/{benchmark}/{run_id}/{filename}"
+    return links
+
+
 def run_sync(argv, cwd=None, timeout=120):
     """Runs a short-lived discovery/report command (wspy --capabilities,
     wspy-validate, wspy-store, wspy-summary) to completion and captures its
@@ -1186,11 +1235,25 @@ def render_store_tab(cfg):
     <label>Outlier stddev <input type="text" id="summary-outlier" placeholder="2.0"></label>
     <label>Min runs <input type="text" id="summary-min-runs" placeholder="1"></label>
     <label class="chip"><input type="checkbox" id="summary-csv"> CSV output</label>
+    <label class="chip"><input type="checkbox" id="summary-show-runs"> show contributing runs</label>
     <label class="chip"><input type="checkbox" id="summary-strict"> --strict</label>
   </div>
   <button type="button" id="summary-run">Run wspy-summary</button>
   <pre id="summary-cmdline" class="muted" hidden></pre>
   <pre id="summary-output" class="live-output" hidden></pre>
+
+  <h2>Trace a run</h2>
+  <p class="config-label">Traceability links (summary row &rarr; manifest &rarr; raw CSV &rarr; plots
+     &rarr; tree artifacts): paste a <code>hostname:run_id</code> from the "show contributing runs"
+     column above (or from a run-index record) to resolve it back to its command line, manifest,
+     raw CSV, tree file, and plots &mdash; <code>wspy-summary --trace</code>.</p>
+  <div class="row">
+    <label>Database path <input type="text" id="trace-db" value="{db}"></label>
+    <label>hostname:run_id <input type="text" id="trace-key" placeholder="host1:1699999999-1234"></label>
+  </div>
+  <button type="button" id="trace-run">Trace run</button>
+  <pre id="trace-cmdline" class="muted" hidden></pre>
+  <div id="trace-output" hidden></div>
 </section>
 """
 
@@ -1983,6 +2046,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/discovery/validate": self._discovery_validate,
             "/api/discovery/store-ingest": self._discovery_store_ingest,
             "/api/discovery/summary": self._discovery_summary,
+            "/api/discovery/trace": self._discovery_trace,
         }
         handler = POST_HANDLERS.get(parsed.path)
         if handler is None:
@@ -2486,11 +2550,40 @@ class Handler(BaseHTTPRequestHandler):
         csv = bool(body.get("csv"))
         if csv:
             argv.append("--csv")
+        if body.get("show_runs"):
+            argv.append("--show-runs")
         if body.get("strict"):
             argv.append("--strict")
         rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=60)
         self._send_json(200, {"command": shell_preview(argv), "exit_code": rc,
                                "output": output, "timed_out": timed_out, "csv": csv})
+
+    # Item 14 "Traceability links (summary row -> manifest -> raw CSV ->
+    # plots -> tree artifacts)": resolves one hostname:run_id (as printed by
+    # the "show contributing runs" checkbox above) via `wspy-summary --trace`
+    # to its artifact paths, then -- best-effort, only when those paths
+    # happen to live under this server's own --output-root, the common case
+    # for runs this same server launched -- derives a suite/benchmark/run_id
+    # triple so the response can offer real links into /report and /files
+    # instead of just bare filesystem paths a browser can't open.
+    def _discovery_trace(self, cfg, body):
+        db = (body.get("db") or "").strip() or cfg["store_db"]
+        key = (body.get("key") or "").strip()
+        if ":" not in key or key.startswith(":") or key.endswith(":"):
+            self._send_json(400, {"error": "expected hostname:run_id"})
+            return
+        argv = [cfg["wspy_summary_bin"], "--db", db, "--trace", key]
+        rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=30)
+        fields = {}
+        for line in output.splitlines():
+            k, sep, v = line.partition("=")
+            if sep:
+                fields[k] = v
+        result = {"command": shell_preview(argv), "exit_code": rc, "output": output,
+                   "timed_out": timed_out, "found": rc == 0, "fields": fields}
+        if rc == 0:
+            result["links"] = _resolve_trace_links(cfg["output_root"], fields)
+        self._send_json(200, result)
 
     def _stream_events(self, suite, benchmark, run_id):
         key = run_key(suite, benchmark, run_id)

@@ -12,6 +12,15 @@
   function byId(id) { return document.getElementById(id); }
   function getChecked(id) { var el = byId(id); return !!(el && el.checked); }
   function getValue(id) { var el = byId(id); return el ? el.value.trim() : ""; }
+  // Store-recorded text (workload command, filesystem paths, ...) is
+  // user-influenced -- e.g. typed into the Run tab's workload field -- and
+  // ends up rendered back into another viewer's page by the trace form
+  // below, so it's escaped before ever touching innerHTML.
+  function escapeHtml(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
   function selectedGroups(prefix) {
     return GROUP_NAMES.filter(function (name) { return getChecked(prefix + "_" + name); });
   }
@@ -470,9 +479,104 @@
           outlier_stddev: getValue("summary-outlier"),
           min_runs: getValue("summary-min-runs"),
           csv: getChecked("summary-csv"),
+          show_runs: getChecked("summary-show-runs"),
           strict: getChecked("summary-strict"),
         };
       },
+    });
+    wireTraceForm();
+  }
+
+  // Item 14 "Traceability links": resolves a hostname:run_id (as printed by
+  // the summary query's "show contributing runs" column) to its manifest/
+  // raw CSV/tree/plots artifact chain. Rendered as real links (not a plain
+  // <pre> dump like the other Discovery-family endpoints above) whenever
+  // the resolved paths live under this server's own output-root, per
+  // _resolve_trace_links() in server.py -- otherwise falls back to showing
+  // the bare filesystem path text.
+  function wireTraceForm() {
+    var btn = byId("trace-run");
+    var outputEl = byId("trace-output");
+    var cmdEl = byId("trace-cmdline");
+    if (!btn || !outputEl) return;
+
+    // {display label, fields.*_exists key, fields.*_path key, links.*_url
+    // key} -- one row per artifact, driven by this table rather than three
+    // separate hand-typed calls below so a copy/paste slip (e.g. the wrong
+    // *_exists key for a given *_path) can't silently cross-wire two rows.
+    var ARTIFACT_ROWS = [
+      { label: "Manifest", existsField: "manifest_exists", pathField: "manifest_path", urlField: "manifest_url" },
+      { label: "Raw CSV", existsField: "output_exists", pathField: "output_path", urlField: "output_url" },
+      { label: "Tree artifact", existsField: "tree_exists", pathField: "tree_output_path", urlField: "tree_url" },
+    ];
+
+    function artifactRow(row, fields, links) {
+      var exists = fields[row.existsField] === "1";
+      var path = fields[row.pathField] || "";
+      if (!path) return "<div>" + row.label + ": <span class=\"muted\">not recorded</span></div>";
+      // links.* is server-built from already-validated filesystem segments
+      // (valid_segment()/valid_relpath() in web/joblib.py), so it can't
+      // contain quote/angle-bracket characters -- escaped anyway as
+      // defense in depth against that assumption ever loosening.
+      var escapedPath = escapeHtml(path);
+      var target = links[row.urlField]
+        ? "<a href=\"" + escapeHtml(links[row.urlField]) + "\" target=\"_blank\">" + escapedPath + "</a>"
+        : escapedPath;
+      var status = exists ? "" : " <span class=\"muted\">(missing on this machine)</span>";
+      return "<div>" + row.label + ": " + target + status + "</div>";
+    }
+
+    btn.addEventListener("click", function () {
+      var db = getValue("trace-db");
+      var key = getValue("trace-key");
+      if (!key || key.indexOf(":") < 0) {
+        outputEl.hidden = false;
+        outputEl.textContent = "Error: expected hostname:run_id";
+        return;
+      }
+      btn.disabled = true;
+      outputEl.hidden = false;
+      outputEl.textContent = "running…";
+      if (cmdEl) cmdEl.hidden = true;
+      fetch("/api/discovery/trace", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ db: db, key: key }),
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          btn.disabled = false;
+          if (data.error) {
+            outputEl.textContent = "Error: " + data.error;
+            return;
+          }
+          if (cmdEl && data.command) {
+            cmdEl.hidden = false;
+            cmdEl.textContent = "$ " + data.command;
+          }
+          if (!data.found) {
+            outputEl.textContent = data.output || "no such run in this store";
+            return;
+          }
+          var fields = data.fields || {};
+          var links = data.links || {};
+          var html = "";
+          html += "<div><strong>" + escapeHtml(fields.command || "") + "</strong>"
+            + " (" + escapeHtml(fields.hostname || "") + ":" + escapeHtml(fields.run_id || "") + ", "
+            + escapeHtml(fields.start_time || "") + ")</div>";
+          if (links.report_url) {
+            html += "<div><a href=\"" + escapeHtml(links.report_url) + "\" target=\"_blank\">open report page</a></div>";
+          }
+          ARTIFACT_ROWS.forEach(function (row) { html += artifactRow(row, fields, links); });
+          var plotsCount = fields.plots_count || "0";
+          html += "<div>Plots: " + escapeHtml(plotsCount) + " PNG(s)"
+            + (links.report_url ? " (see report page)" : "") + "</div>";
+          outputEl.innerHTML = html;
+        })
+        .catch(function (err) {
+          btn.disabled = false;
+          outputEl.textContent = "Error: " + err.message;
+        });
     });
   }
 

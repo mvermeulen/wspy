@@ -352,9 +352,28 @@ one, so the columns `wspy-summary` reads keep working forward.
 
 **Output:** a flat table (human or `--csv`), one row per `(group, metric)` bucket, with the
 statistics above plus an `outlier_run_ids` column (semicolon-separated) naming which runs were
-flagged, so a surprising number in the table is traceable back to a specific run — the same
-traceability instinct `INVESTIGATION_4.0.md`'s Tier 2 "Traceability links" item (still open) will
-eventually wire all the way through to raw artifacts.
+flagged, so a surprising number in the table is traceable back to a specific run.
+
+**Traceability (`--show-runs`/`--trace`):** `INVESTIGATION_4.0.md`'s 4.1 Tier 2 item 14,
+"Traceability links (summary row → manifest → raw CSV → plots → tree artifacts)" — closing the
+other criterion deferred from 4.0 alongside the summary generator itself (see "Success criteria for
+a 4.0 kickoff" above). `--show-runs` appends every contributing run's `hostname:run_id` to a bucket
+(a `contributing_runs`/trailing column, all of them — not just `outlier_run_ids`' flagged subset),
+giving any row in the table a concrete set of run identities to chase, not just the outliers.
+`--trace <hostname>:<run_id>` is a separate standalone mode (needs only `--db`, ignores every
+grouping/filter option) that resolves one of those identities straight out of the `runs` table's own
+`manifest_path`/`output_path`/`tree_output_path` columns — checking with `stat()`/`opendir()` whether
+each still exists on disk, and deriving a `<output_path's directory>/plots` path (`wspy-plot`'s output
+location, not a column the store tracks anywhere) — completing the chain from a summary row through
+to the manifest (command line + environment), raw CSV, tree artifact, and plots. Every field degrades
+independently (`exists=0`, not a failure) rather than aborting the lookup when a path no longer
+resolves, matching the same-section note above about cross-host paths frequently not resolving on the
+ingesting machine. Output is stable `key=value` lines (not `--csv`'s table shape, and not a bespoke
+JSON encoding) so a caller — a script, or `web/server.py`'s `/api/discovery/trace` endpoint, which
+further resolves a `/report`/`/files` link whenever the paths happen to fall under its own
+`--output-root` — can parse a single resolved run without needing a JSON library on either side.
+Exit status is 1 (not 2) when the `(hostname,run_id)` pair isn't recorded in the store at all,
+mirroring `--strict`'s "still needs more data" convention rather than treating it as a usage error.
 
 ## CSV output (`-o <file> --csv` or `--csv` to stdout)
 

@@ -21,16 +21,25 @@ organization, and publication easier and more repeatable.
   `workload/*/run_test.sh` scripts run end to end via `wspy-run --suite/--benchmark` against real
   suite installs (see "What shipped in 4.0").
 
-Two criteria that were part of 4.0's original bar are **deliberately deferred to 4.1, not dropped**:
-- A summary page can be regenerated from data only (no manual copy/paste).
+Two criteria that were part of 4.0's original bar were **deliberately deferred to 4.1, not dropped —
+both are now met:**
+- A summary page can be regenerated from data only (no manual copy/paste). **Met** — `wspy-summary`/
+  `summary.c` (4.1 Tier 1 item 2) queries `wspy-store`'s normalized store directly and regenerates a
+  min/max/mean/median/stddev/outlier-flag table on demand, no copy/paste involved.
 - Every published benchmark row can be traced back to command line, environment, and raw artifacts.
+  **Met** — `wspy-summary --show-runs`/`--trace` (4.1 Tier 2 item 14, "Traceability links") resolves a
+  summary row's contributing `hostname:run_id` identities straight through to the manifest (command
+  line + environment), raw CSV, tree artifact, and plots, via `store.c`'s already-recorded
+  `manifest_path`/`output_path`/`tree_output_path` columns; `web/server.py`'s Store & Summary tab
+  surfaces the same chain as real links wherever the artifacts live under its own `--output-root`.
 
-Rationale: building a minimal report/summary generator now, then rebuilding it properly once the 4.1
-normalized-store work (schema + indexed queries) lands, is duplicated effort for no real benefit —
-nothing downstream depends on a 4.0-era stub existing first. Better to do the reporting layer once,
-thoroughly, as 4.1 Tier 1-2 already scopes it (canonical schema, summary table generator, report
-studio, traceability links). 4.0 ships the foundation those depend on (manifest/run-index/validation/coverage/
-provenance); 4.1 turns it into the actual page/row a person reads.
+Rationale (for deferring, at the time): building a minimal report/summary generator immediately, then
+rebuilding it properly once the 4.1 normalized-store work (schema + indexed queries) landed, would have
+been duplicated effort for no real benefit — nothing downstream depended on a 4.0-era stub existing
+first. Better to do the reporting layer once, thoroughly, as 4.1 Tier 1-2 scoped it (canonical schema,
+summary table generator, report studio, traceability links) — which is what happened: 4.0 shipped the
+foundation those depend on (manifest/run-index/validation/coverage/provenance), and 4.1 turned it into
+the actual page/row a person reads, closing both deferred criteria above.
 
 ## How to use this document
 - "What shipped in 4.0" is a pointer list, not a feature log — `CLAUDE.md` documents each module's
@@ -657,9 +666,47 @@ derivable from files already being produced.
       UI (today a queued job is only visible via `wspy-queue list`/`show`), and #16's structured
       configuration provenance still isn't shared with the job format even though they're designed to be
       close in shape.
-14. Traceability links (summary row → manifest → raw CSV → plots → tree artifacts) — closes the
-    "every published row traces back to command/environment/artifacts" criterion deferred from 4.0
-    (see "Success criteria for a 4.0 kickoff").
+14. ~~Traceability links (summary row → manifest → raw CSV → plots → tree artifacts)~~ — **shipped.**
+    Closes the "every published row traces back to command/environment/artifacts" criterion deferred
+    from 4.0 (see "Success criteria for a 4.0 kickoff", now updated to reflect both deferred criteria
+    being met). Built directly on `store.c`'s existing `runs.{manifest_path,output_path,
+    tree_output_path}` columns (already populated at ingest time, per `wspy-summary`'s own
+    "Reads store.c's ... tables directly" design) rather than a new schema/index — the data traceability
+    needs was already there, it just had no query path back out.
+    - `wspy-summary --show-runs` appends every contributing run's `hostname:run_id` to a
+      `(group,metric)` bucket (a new trailing column in both `--csv` and human output — all
+      contributing runs, not just `outlier_run_ids`' flagged subset), so any row in a summary table,
+      surprising or not, has a concrete set of run identities to chase.
+    - `wspy-summary --trace <hostname>:<run_id>` is a new standalone mode (`trace_run()`) that
+      resolves one of those identities to the actual chain: command line + environment (via the
+      manifest path), raw CSV, tree artifact, and plots (derived as `<output_path's directory>/plots`
+      — `wspy-plot`'s output location, not a column the store tracks on its own) — checking with
+      `stat()`/`opendir()` which of them still exist on disk rather than trusting what was recorded at
+      ingest time. Every field degrades independently (`exists=0`, not a failure) when a path no
+      longer resolves — expected for a run-index ingested from a different host, per
+      `doc/ARTIFACT_CONTRACT.md`'s existing note that `manifest_path`/`output_path` are frequently
+      host-relative in that setup. Output is stable `key=value` lines (not `--csv`'s table shape, not
+      a bespoke JSON encoding) so a script or `web/server.py` can parse one resolved run without a
+      JSON library on either side. See `CLAUDE.md`'s `summary.c` entry and
+      `doc/ARTIFACT_CONTRACT.md`'s "Summary tables" section for the full breakdown, and
+      `test_summary.c` for coverage (contributing-run-list presence/absence, artifact resolution
+      against a real temp directory including stale/never-existed paths, an unmatched
+      `(hostname,run_id)`).
+    - `web/server.py`'s Store & Summary tab gets a "show contributing runs" checkbox (passes
+      `--show-runs` through to `/api/discovery/summary`) and a new "Trace a run" sub-form
+      (`POST /api/discovery/trace`) that runs `--trace`, parses its `key=value` output, and —
+      best-effort, via `_rundir_triple_for_path()`/`_resolve_trace_links()` — resolves real
+      `/report`/`/files` links whenever the returned paths happen to fall under this server's own
+      `--output-root` (the common case for a run this same server launched and stored), rendering
+      real clickable links instead of bare filesystem path text wherever that's possible. Covered
+      standalone by `web/test_trace_links.py` (same "not wired into `make test`" convention as
+      `web/test_joblib.py`), matching this tier's design principle that a report/query result should
+      be reconstructible from the normalized store plus raw artifacts already on disk, with no new
+      server-owned state.
+    - Not part of this item's scope (left for #16/#17): restoring exact preset/checklist launcher
+      state from a traced run — `--trace` surfaces the *artifacts* a run produced, not the
+      *configuration* that produced them; that's #16's structured configuration provenance, still
+      open.
 15. Report commentary/annotation — free-text notes saved alongside a report (session-local in the
     mockup; a real implementation needs a place to persist it — most naturally the normalized store
     from #1, keyed to the run — so it survives a report being regenerated). Scoped *per configuration*
