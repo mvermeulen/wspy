@@ -51,6 +51,7 @@ struct counter_info {
   unsigned long int config;
   unsigned long int config1; // extended config word (e.g. AMD IBS ldlat threshold); 0 for counters that don't use it
   unsigned long int config2;
+  unsigned long int sample_period; // perf_event_attr.sample_period (e.g. AMD IBS MaxCnt); 0 for counters that don't use it
   struct counter_def *cdef;
   int fd;
   unsigned long int value;

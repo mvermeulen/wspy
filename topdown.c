@@ -1047,6 +1047,10 @@ void setup_counters(struct counter_group *counter_group_list){
       pe.config = cgroup->cinfo[i].config;
       pe.config1 = cgroup->cinfo[i].config1;
       pe.config2 = cgroup->cinfo[i].config2;
+      // AMD IBS MaxCnt: the kernel's IBS PMU driver derives it from this
+      // attr field directly (see ibs.h's struct ibs_event comment), not from
+      // a config bitfield -- 0 for every non-IBS counter, a no-op there.
+      pe.sample_period = cgroup->cinfo[i].sample_period;
       pe.sample_type = PERF_SAMPLE_IDENTIFIER; // is this needed?
       pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED|PERF_FORMAT_TOTAL_TIME_RUNNING;
       pe.size = sizeof(struct perf_event_attr);

@@ -169,11 +169,14 @@ static void test_ibs_partially_present(void){
 }
 
 /* Sets up the same fake ibs_fetch/ibs_op fixture test_ibs_fully_present()
- * uses -- ibs_op exposes cnt_ctl/l3missonly/ldlat/swfilt but no "maxcnt" or
- * "fetchlat", ibs_fetch exposes l3missonly/rand_en/swfilt but no
- * "fetchlat" either -- so the build/apply tests below exercise both the
- * "field present, gets applied" and "field absent, requested-not-applied"
- * paths against one realistic-looking sysfs snapshot. */
+ * uses -- ibs_op exposes cnt_ctl/l3missonly/ldlat/swfilt but no "fetchlat",
+ * ibs_fetch exposes l3missonly/rand_en/swfilt but no "fetchlat" either --
+ * matching a real sysfs snapshot, which never exposes a "maxcnt" format
+ * field at all (MaxCnt comes from sample_period, not a format field -- see
+ * ibs.h's struct ibs_event comment) -- so the build/apply tests below
+ * exercise both the "field present, gets applied" and "field absent,
+ * requested-not-applied" paths against one realistic-looking sysfs
+ * snapshot. */
 static void make_fully_present_fixture(void){
   rmdir_recursive(FAKE_SYSFS_BASE);
   {
@@ -206,7 +209,8 @@ static void test_ibs_build_event_basic_profile(void){
   assert(fetch_ev.type == 10);
   assert(fetch_ev.l3missonly_requested == 0);
   assert(fetch_ev.fetchlat_requested == 0);
-  assert(fetch_ev.config == 0); /* no maxcnt field in this fixture, nothing else requested */
+  assert(fetch_ev.config == 0); /* nothing requested; MaxCnt lives in sample_period, not config */
+  assert(fetch_ev.sample_period == IBS_DEFAULT_MAXCNT); /* no override given -- default applies */
 
   op_ev = ibs_build_op_event(&ibs.op,IBS_PROFILE_BASIC,NULL);
   assert(op_ev.valid == 1);
@@ -214,6 +218,7 @@ static void test_ibs_build_event_basic_profile(void){
   assert(op_ev.l3missonly_requested == 0);
   assert(op_ev.ldlat_requested == 0);
   assert(op_ev.config == 0);
+  assert(op_ev.sample_period == IBS_DEFAULT_MAXCNT);
 
   rmdir_recursive(FAKE_SYSFS_BASE);
   printf("PASS: ibs_build_*_event basic profile\n");
@@ -238,6 +243,7 @@ static void test_ibs_build_event_memory_deep_profile(void){
   assert(op_ev.ldlat_requested == 1 && op_ev.ldlat_applied == 1);
   assert(op_ev.ldlat_threshold == 250);
   assert(op_ev.config1 == 250);
+  assert(op_ev.sample_period == IBS_DEFAULT_MAXCNT); /* params.maxcnt left at 0 -- default applies */
 
   /* ibs_fetch: l3missonly is present (config:59) and gets applied; fetchlat
    * is requested by the profile but this fixture has no "fetchlat" format
@@ -248,6 +254,7 @@ static void test_ibs_build_event_memory_deep_profile(void){
   assert(fetch_ev.l3missonly_requested == 1 && fetch_ev.l3missonly_applied == 1);
   assert((fetch_ev.config & (1UL<<59)) != 0);
   assert(fetch_ev.fetchlat_requested == 1 && fetch_ev.fetchlat_applied == 0);
+  assert(fetch_ev.sample_period == IBS_DEFAULT_MAXCNT);
 
   /* the unfiltered baseline event never requests l3missonly/ldlat, so the
    * filtered/unfiltered pair differs only by those bits -- that difference
@@ -257,9 +264,31 @@ static void test_ibs_build_event_memory_deep_profile(void){
   assert(op_unf_ev.valid == 1);
   assert(op_unf_ev.l3missonly_requested == 0);
   assert(op_unf_ev.config == 0);
+  assert(op_unf_ev.sample_period == IBS_DEFAULT_MAXCNT);
 
   rmdir_recursive(FAKE_SYSFS_BASE);
   printf("PASS: ibs_build_*_event memory-deep profile\n");
+}
+
+static void test_ibs_build_event_maxcnt_override(void){
+  struct ibs_capabilities ibs;
+  struct ibs_event fetch_ev,op_ev,op_unf_ev;
+  struct ibs_profile_params params = {500,0,0}; /* custom maxcnt, default ldlat/fetchlat */
+
+  printf("Testing ibs_build_*_event: --ibs-maxcnt override reaches sample_period on every event...\n");
+
+  make_fully_present_fixture();
+  ibs = ibs_probe_at(FAKE_SYSFS_BASE);
+
+  fetch_ev = ibs_build_fetch_event(&ibs.fetch,IBS_PROFILE_BASIC,&params);
+  assert(fetch_ev.sample_period == 500);
+  op_ev = ibs_build_op_event(&ibs.op,IBS_PROFILE_BASIC,&params);
+  assert(op_ev.sample_period == 500);
+  op_unf_ev = ibs_build_op_unfiltered_event(&ibs.op,&params);
+  assert(op_unf_ev.sample_period == 500);
+
+  rmdir_recursive(FAKE_SYSFS_BASE);
+  printf("PASS: ibs_build_*_event maxcnt override\n");
 }
 
 static void test_ibs_build_event_absent_pmu(void){
@@ -303,6 +332,7 @@ int main(void){
   test_ibs_partially_present();
   test_ibs_build_event_basic_profile();
   test_ibs_build_event_memory_deep_profile();
+  test_ibs_build_event_maxcnt_override();
   test_ibs_build_event_absent_pmu();
   test_ibs_counter_group();
 
