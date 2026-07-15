@@ -25,6 +25,8 @@ static void test_parse_ledger_line(void){
   char partial[] = "baz\tneeds-tool-support";
   char comment[] = "# a comment";
   char blank[] = "   ";
+  char inline_comment[] = "qux  # trailing comment";
+  char inline_annotated[] = "quux\tunsupported  # docker only";
   char *name,*status,*note;
 
   printf("Testing parse_ledger_line...\n");
@@ -46,6 +48,16 @@ static void test_parse_ledger_line(void){
 
   assert(parse_ledger_line(comment,&name,&status,&note) == 0);
   assert(parse_ledger_line(blank,&name,&status,&note) == 0);
+
+  assert(parse_ledger_line(inline_comment,&name,&status,&note) == 1);
+  assert(!strcmp(name,"qux"));
+  assert(status == NULL);
+  assert(note == NULL);
+
+  assert(parse_ledger_line(inline_annotated,&name,&status,&note) == 1);
+  assert(!strcmp(name,"quux"));
+  assert(!strcmp(status,"unsupported"));
+  assert(note == NULL);
 
   printf("PASS: parse_ledger_line\n");
 }
