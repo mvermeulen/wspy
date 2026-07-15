@@ -66,7 +66,7 @@ One JSON object, written once at the end of a run (`manifest.c:write_manifest()`
 {
   "schema_version": "1.5.0",
   "collector": "wspy",
-  "wspy_version": "4.0",
+  "wspy_version": "4.1",
   "generated_at": "<ISO-8601 timestamp>",
   "command": { "argv": ["<workload argv[0]>", "..."] },
   "timing": { "start_time": "...", "finish_time": "...", "elapsed_seconds": 12.345 },
@@ -123,8 +123,8 @@ Field notes:
   does **not** by itself mean the run is bad — it means some counters degraded gracefully (see
   "Degrade, don't fail"). Common causes are covered in "Troubleshooting" below.
 - `passes` is populated only for a native multi-pass counter execution run (`wspy --passes=<list>`,
-  `multipass.h`/`multipass.c`, `INVESTIGATION_4.0.md`'s 4.1 Tier 1 "Native multi-pass counter
-  execution" item) — `[]` for a normal run, otherwise one entry per automatically-sized pass:
+  `multipass.h`/`multipass.c`, `INVESTIGATION_4.0.md`'s "What shipped in 4.1", "Native multi-pass
+  counter execution") — `[]` for a normal run, otherwise one entry per automatically-sized pass:
   ```
   "passes": [
     { "counter_mask": "0x1", "counters_requested": 3, "counters_measured": 3,
@@ -145,7 +145,7 @@ Field notes:
   are still the running totals across all passes, since `coverage_reset()` runs once before the pass
   loop begins, not per pass — this array's own `counters_requested`/`counters_measured` are each
   pass's individual delta, for per-pass audit, not a second way to recompute those top-level totals.
-- `configuration_provenance` (INVESTIGATION_4.0.md item 16, "structured configuration provenance")
+- `configuration_provenance` (INVESTIGATION_4.0.md's "What shipped in 4.1", "structured configuration provenance")
   records which named preset (if any) and/or launcher-vocabulary configuration category and options
   produced this run -- `wspy` itself has no notion of presets/configurations (that vocabulary
   belongs to a front end: `wspy-run`'s builtin profiles, the web launcher's preset picker/checklist),
@@ -179,7 +179,7 @@ Per-record shape (same information as the manifest, projected leaner — no `out
 details beyond the three path strings, no per-field environment gap list, just counts):
 
 ```
-{"schema_version":"1.5.0","run_id":"20260710T153000.123-48213","collector":"wspy","wspy_version":"4.0",
+{"schema_version":"1.5.0","run_id":"20260710T153000.123-48213","collector":"wspy","wspy_version":"4.1",
  "hostname":"...","cpu_vendor":"...","cpu_family":25,"cpu_model":97,
  "environment":{...same field set as manifest's "environment"...},
  "environment_coverage":{"captured":9,"probed":9},
@@ -216,8 +216,8 @@ details beyond the three path strings, no per-field environment gap list, just c
 
 `wspy-store` is not something `wspy` itself writes — it's a separate ingestion tool that reads one
 or more `--run-index` files, and best-effort the manifest and CSV output each record points at,
-into a SQLite database. This is `INVESTIGATION_4.0.md`'s 4.1 Tier 1 "canonical metrics schema +
-normalized store" item: a queryable index of *which runs exist and what they are* (identity,
+into a SQLite database. This is `INVESTIGATION_4.0.md`'s "What shipped in 4.1", "canonical metrics
+schema + normalized store": a queryable index of *which runs exist and what they are* (identity,
 timing, exit status, coverage counts, provenance — the `runs` table and its child tables), **plus**
 a queryable long/tall table of the actual per-run *metric values* (IPC, topdown, cache numbers —
 `metric_values`) that a run's CSV output contains. The metric-value layer only exists for runs that
@@ -339,15 +339,15 @@ runs either the fresh-database `SCHEMA_DDL` (`user_version == 0`) or exactly one
 `MIGRATION_V1_TO_V2` adds `metric_values` and the two `runs.metrics_*` columns to a database created
 before this table existed), never both — see `CLAUDE.md`'s "New normalized-store field" entry for
 the pattern to follow when adding the next one. This is `wspy-store`'s first real migration; broader
-migration/compatibility testing across the whole tool is still `INVESTIGATION_4.0.md`'s 4.1 Tier 9
+migration/compatibility testing across the whole tool is still `INVESTIGATION_4.0.md`'s 4.2 Tier 7
 "Schema compatibility/migration tests" item.
 
 ## Summary tables (`wspy-summary --db <path>`)
 
 `wspy-summary` is a read-only query tool over the normalized store above — it never writes to
 `--db`, and it produces nothing persisted; running it again is exactly how a summary table is meant
-to be "regenerated from data only" (`INVESTIGATION_4.0.md`'s 4.1 Tier 1 "summary table generator"
-item, closing the "a summary page can be regenerated from data only" criterion deferred from 4.0).
+to be "regenerated from data only" (`INVESTIGATION_4.0.md`'s "What shipped in 4.1", "summary table
+generator", closing the "a summary page can be regenerated from data only" criterion deferred from 4.0).
 
 **What it computes:** for each contributing run, a metric's `metric_values` rows are first averaged
 (`AVG(value)`) down to one number for that run — a no-op for the common single-row aggregate CSV
@@ -373,7 +373,7 @@ one, so the columns `wspy-summary` reads keep working forward.
 statistics above plus an `outlier_run_ids` column (semicolon-separated) naming which runs were
 flagged, so a surprising number in the table is traceable back to a specific run.
 
-**Traceability (`--show-runs`/`--trace`):** `INVESTIGATION_4.0.md`'s 4.1 Tier 2 item 14,
+**Traceability (`--show-runs`/`--trace`):** `INVESTIGATION_4.0.md`'s "What shipped in 4.1",
 "Traceability links (summary row → manifest → raw CSV → plots → tree artifacts)" — closing the
 other criterion deferred from 4.0 alongside the summary generator itself (see "Success criteria for
 a 4.0 kickoff" above). `--show-runs` appends every contributing run's `hostname:run_id` to a bucket

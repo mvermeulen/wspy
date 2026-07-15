@@ -159,8 +159,9 @@ class BuildConfigurationPassesTest(unittest.TestCase):
         self.assertEqual(flags[flags.index("--ibs-fetchlat") + 1], "256")
 
     def test_category_tags_each_enabled_configuration(self):
-        # Structured configuration provenance (INVESTIGATION_4.0.md item 16):
-        # each pass carries a stable launcher-vocabulary "category", distinct
+        # Structured configuration provenance (INVESTIGATION_4.0.md's "What
+        # shipped in 4.1"): each pass carries a stable launcher-vocabulary
+        # "category", distinct
         # from "name" (the output filename stem, which can be a legacy alias
         # like "amdtopdown"/"systemtime").
         checklist = {
@@ -212,8 +213,8 @@ class BuildPassArgvTest(unittest.TestCase):
 
 
 class ChecklistFromProvenanceTest(unittest.TestCase):
-    """INVESTIGATION_4.0.md item 17 ("Browse-reports"): the read side of
-    item 16's structured configuration provenance -- turning a run's
+    """INVESTIGATION_4.0.md's "What shipped in 4.1" ("Browse-reports"): the read
+    side of structured configuration provenance -- turning a run's
     recorded configuration_provenance back into checklist state a report's
     "Customize & run again" link can restore. checklist_section_from_options()
     round-trips against build_configuration_passes()'s own _config_options()

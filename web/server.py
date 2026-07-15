@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-wspy web launcher + report browser (INVESTIGATION_4.0.md 4.1 Tier 2, items 6-7).
+wspy web launcher + report browser (INVESTIGATION_4.0.md's "What shipped in 4.1").
 
 Two launchers on one page:
 
@@ -272,8 +272,8 @@ def discover_manifest_paths(output_root, limit=100):
 
 
 # ---------------------------------------------------------------------------
-# Historical run index browser/search (item 11, INVESTIGATION_4.0.md 4.1 Tier
-# 2) -- discover_reports() above is the homepage's cheap, mtime-only recent
+# Historical run index browser/search (INVESTIGATION_4.0.md's "What shipped in
+# 4.1") -- discover_reports() above is the homepage's cheap, mtime-only recent
 # list; this is the fuller searchable index over every run directory. Reads
 # straight off disk (directory scan + each run's own manifest(s)), not
 # wspy-store's normalized `runs` table, since store ingestion is an opt-in
@@ -488,8 +488,9 @@ def run_sync(argv, cwd=None, timeout=120):
 # it's read-only discovery like the Discovery tab's capabilities/preflight
 # checks, just surfaced next to the Run button since that's the moment this
 # information is actually useful. No estimator exists yet for cpu2017/
-# pbbsbench/arbitrary commands (INVESTIGATION_4.0.md item 18's own scoping
-# note), so those degrade to "no estimate available" rather than guessing.
+# pbbsbench/arbitrary commands (INVESTIGATION_4.0.md's "What shipped in 4.1",
+# estimated runtime display's own scoping note), so those degrade to "no
+# estimate available" rather than guessing.
 # ---------------------------------------------------------------------------
 
 PERF_PARANOID_PATH = "/proc/sys/kernel/perf_event_paranoid"
@@ -748,7 +749,7 @@ def read_manifest_workload(manifest_path):
 
 def read_manifest_config_provenance(manifest_path):
     """Best-effort: pull a manifest.json's structured configuration
-    provenance (INVESTIGATION_4.0.md item 16, manifest.c's
+    provenance (INVESTIGATION_4.0.md's "What shipped in 4.1", manifest.c's
     write_config_provenance()) back out -- {"preset": str|None,
     "configuration": str|None, "options": [(name,value), ...]} -- or None if
     the manifest is missing/unreadable, or the run was never launched with
@@ -820,7 +821,7 @@ def guess_content_type(filename):
 
 
 # ---------------------------------------------------------------------------
-# Curation studio (item 8, INVESTIGATION_4.0.md): review every artifact a run
+# Curation studio (INVESTIGATION_4.0.md's "What shipped in 4.1"): review every artifact a run
 # collected on one page and curate a subset of it -- select, reorder, and
 # annotate per configuration -- into a block sequence that #10's export will
 # later consume. State lives in <rundir>/curation.json, one more file the run
@@ -1069,8 +1070,8 @@ def render_curated_section(rundir, base_url, suite, benchmark, run_id):
 
 
 # ---------------------------------------------------------------------------
-# Publish-ready export (item 10, INVESTIGATION_4.0.md): renders #8's curated
-# block sequence into a format ready to paste elsewhere, rather than a bulk
+# Publish-ready export (INVESTIGATION_4.0.md's "What shipped in 4.1"): renders
+# the curation studio's curated block sequence into a format ready to paste elsewhere, rather than a bulk
 # data dump. Three targets, in the doc's own recommended-default order:
 #
 #   - WordPress block markup (Gutenberg comment format) -- the default, since
@@ -1277,7 +1278,7 @@ def render_export_page(rundir, base_url, suite, benchmark, run_id, fmt):
         f'(<code>{base_url}</code>), which only resolves while this server keeps running at this '
         'address. For WordPress or another CMS, re-upload the image to that platform\'s media '
         'library first and swap in the resulting URL before publishing (see '
-        '<code>INVESTIGATION_4.0.md</code> item 10/12).</p>'
+        '<code>INVESTIGATION_4.0.md</code>\'s "What shipped in 4.1").</p>'
     ) if has_image else ""
 
     body = f"""
@@ -1507,7 +1508,7 @@ def render_run_tab(prefill, cfg):
       <span class="muted">(writes a job file to <code>{html.escape(cfg["jobs_dir"])}/pending/</code>
         &mdash; process it later with <code>wspy-queue run</code>, from this machine, cron, or after
         copying the job file to another machine with wspy checked out; see
-        <code>INVESTIGATION_4.0.md</code> item 13)</span>
+        <code>INVESTIGATION_4.0.md</code>'s "What shipped in 4.1")</span>
     </label>
 
     <fieldset class="preview">
@@ -2073,8 +2074,9 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
     workload = run_manifest.get("command") or None
     workload_str = shlex.join(workload) if workload else None
 
-    # INVESTIGATION_4.0.md item 17: relate this report's artifacts back to
-    # the preset/configuration/option choices that produced them (item 16's
+    # INVESTIGATION_4.0.md's "What shipped in 4.1", "Browse-reports": relate
+    # this report's artifacts back to the preset/configuration/option choices
+    # that produced them (structured configuration provenance's
     # configuration_provenance, recorded per-pass since each pass is its own
     # wspy invocation) -- read every pass's own manifest once up front so
     # both the per-pass display below and the aggregated rerun link can use
@@ -2572,8 +2574,8 @@ class Handler(BaseHTTPRequestHandler):
     @staticmethod
     def _parse_toggles(cfg, body):
         """The Run tab's defaults-on toggle chips (manifest/run-index/store-
-        ingest -- item 9's mockup-feedback item, see INVESTIGATION_4.0.md
-        line ~336). Returns (manifest_on, run_index_path_or_None, store_ingest).
+        ingest -- a mockup-feedback item, see INVESTIGATION_4.0.md's "What
+        shipped in 4.1"). Returns (manifest_on, run_index_path_or_None, store_ingest).
         Thin wrapper over joblib.resolve_toggles() (shared with wspy-queue)."""
         return resolve_toggles(cfg, body.get("toggles"))
 
@@ -2926,7 +2928,7 @@ class Handler(BaseHTTPRequestHandler):
             result["phoronix"] = {
                 "detected": False,
                 "note": "not a phoronix-test-suite command -- no runtime estimator for this "
-                        "workload yet (INVESTIGATION_4.0.md item 18)",
+                        "workload yet (INVESTIGATION_4.0.md's estimated runtime display)",
             }
             self._send_json(200, result)
             return

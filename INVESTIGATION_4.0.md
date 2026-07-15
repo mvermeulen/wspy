@@ -617,15 +617,15 @@ Each carries a recommendation; treat these as the current default, not a closed 
   question block 4.1's web-interface work or 4.3's static-site work. See also 4.1's new
   "Deployment/hosting design note" item, which should produce a concrete answer for the
   input-form/report-browser layer specifically, ahead of this broader static-site question.
-- **Should `wspy` natively handle multi-pass execution? — resolved.** Yes, shipped in 4.1 Tier 1
-  item 3 above (`wspy --passes=<list>`/`multipass.c`).
+- **Should `wspy` natively handle multi-pass execution? — resolved.** Yes, shipped in 4.1
+  (`wspy --passes=<list>`/`multipass.c`, see "What shipped in 4.1" above).
 - **Is ARM64/AArch64 support a priority for 4.x? — resolved.** Yes, fallback CPU topology
   detection and register-access abstractions have been fully implemented and validated on real
   AArch64 hardware (including the `ptrace_arch.h` `__aarch64__` implementation). Both gaps found by
   code review (raw counter chunking/bin-packing and topdown sanity-tolerance warning checks) have
   been fully resolved, and all tests have been validated and verified on real ARM64 hardware.
 - **Publication automation and reproducibility/provenance capture — resolved.** Provenance capture
-  shipped (4.0); publication automation is exactly the 4.1 Tier 1-2 work above.
+  shipped (4.0); publication automation is exactly 4.1's work (see "What shipped in 4.1" above).
 - **Minimum metadata set for a run to be "publishable" — resolved.** Every field the original
   recommendation named is captured (timestamps, command line, host/CPU/GPU/kernel, provenance,
   schema version, output file list, `wspy-validate` pass/fail). "Benchmark name/suite" is

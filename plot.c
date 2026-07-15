@@ -1,6 +1,6 @@
 /*
  * plot.c - wspy-plot: shared plotting templates over wspy CSV output
- * (INVESTIGATION_4.0.md 4.1 Tier 2, item 12 "Shared plotting templates").
+ * (INVESTIGATION_4.0.md's "What shipped in 4.1", "Shared plotting templates").
  *
  * Replaces workload/phoronix/gnuplot.sh's single hardcoded script, which
  * only knew how to plot two literal filenames (amdtopdown.csv,

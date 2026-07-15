@@ -1,7 +1,7 @@
 /*
  * multipass.h - native multi-pass counter execution: pure, unit-testable
- * pieces of --passes=<name1>,<name2>,... (INVESTIGATION_4.0.md's 4.1 Tier 1
- * "Native multi-pass counter execution" item).
+ * pieces of --passes=<name1>,<name2>,... (INVESTIGATION_4.0.md's "What
+ * shipped in 4.1", "Native multi-pass counter execution").
  *
  * --passes takes a comma-separated list of counter-group names (the same
  * names as the long-option flags, e.g. "ipc,topdown,cache2,software") and
@@ -74,7 +74,7 @@ struct multipass_plan multipass_plan_build(unsigned int requested_mask);
  * an alternative to multipass_plan_build() now that read_counters()
  * (topdown.c) scales a multiplexed counter's value by its
  * time_running/time_enabled ratio instead of silently undercounting it
- * (INVESTIGATION_4.0.md 4.1 Tier 1 #4) -- the trade-off is precision (more
+ * (INVESTIGATION_4.0.md's "What shipped in 4.1") -- the trade-off is precision (more
  * multiplexing means a lower per-counter confidence_ratio(), not wrong
  * values) for a single workload execution instead of N. Still routed
  * through preflight_evaluate()/preflight_warn_if_tight() so a tight fit

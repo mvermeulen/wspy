@@ -299,8 +299,8 @@ fi
 rm -f test_store_index.jsonl test_store_manifest.json test_store_output.csv test_store.db test_store.out
 echo "  wspy-store: OK"
 
-# wspy-plot: shared plotting templates (INVESTIGATION_4.0.md 4.1 Tier 2 item
-# 12), replacing workload/phoronix/gnuplot.sh. Template-matching logic itself
+# wspy-plot: shared plotting templates (INVESTIGATION_4.0.md's "What shipped
+# in 4.1"), replacing workload/phoronix/gnuplot.sh. Template-matching logic itself
 # is covered by test_plot.c's unit tests; this integration check only needs
 # to confirm the CLI plumbing (directory scanning, --out-dir creation) works
 # against a real synthetic CSV. Actually invoking gnuplot needs the binary
@@ -696,8 +696,8 @@ if ! ./tests/capability_matrix.sh; then
     exit 1
 fi
 
-# wspy-queue/job-file smoke tests (INVESTIGATION_4.0.md item 13, "Deployment/
-# hosting design note"): fake wspy/wspy-run/wspy-plot/wspy-store binaries, so
+# wspy-queue/job-file smoke tests (INVESTIGATION_4.0.md's "What shipped in
+# 4.1", "Deployment/hosting design note"): fake wspy/wspy-run/wspy-plot/wspy-store binaries, so
 # this needs no build/GPU axis and no root/perf access -- run once here
 # rather than per-build like golden_output.sh/capability_matrix.sh above.
 echo "Testing wspy-queue job/queue smoke tests..."

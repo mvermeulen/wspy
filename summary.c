@@ -37,7 +37,7 @@
  *
  * --show-runs and --trace are the "Traceability links (summary row ->
  * manifest -> raw CSV -> plots -> tree artifacts)" item (INVESTIGATION_4.0.md's
- * 4.1 Tier 2 #14), closing the other criterion deferred from 4.0 ("every
+ * "What shipped in 4.1"), closing the other criterion deferred from 4.0 ("every
  * published benchmark row can be traced back to command line, environment,
  * and raw artifacts" -- see "Success criteria for a 4.0 kickoff"). --show-runs
  * appends the hostname:run_id of every run contributing to a bucket (not just

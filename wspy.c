@@ -60,7 +60,8 @@ char *tree_output_path = NULL;
 char *manifest_path = NULL;
 char *run_index_path = NULL;
 
-/* Structured configuration provenance (INVESTIGATION_4.0.md item 16): purely
+/* Structured configuration provenance (INVESTIGATION_4.0.md's "What shipped in
+ * 4.1"): purely
  * metadata passed through from a front end (wspy-run's builtin profiles, the
  * web launcher) via --preset-name/--config-name/--config-option -- wspy
  * itself has no notion of presets/configurations and none of these affect
@@ -676,7 +677,8 @@ static int exit_code_epilogue(void){
 // --multiplex swaps the plan builder for multipass_plan_build_multiplexed(),
 // which always produces exactly one pass covering every requested group and
 // leans on the kernel's own PMU multiplexing plus read_counters()'s
-// time_running/time_enabled scaling (INVESTIGATION_4.0.md 4.1 Tier 1 #4) to
+// time_running/time_enabled scaling (INVESTIGATION_4.0.md's "What shipped in
+// 4.1", the multiplex-scaling correctness fix) to
 // keep the values correct despite oversubscription -- one workload execution
 // instead of N, at the cost of lower per-counter confidence. Not the
 // default: bin-packing into fully-scheduled passes remains the more precise
@@ -897,8 +899,9 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t                            \"performance-counters\") in the manifest/run-index;\n"
 	    "\t                            metadata only\n"
 	    "\t--config-option <k>=<v>   - record one launcher-vocabulary option (repeatable);\n"
-	    "\t                            metadata only -- see INVESTIGATION_4.0.md item 16,\n"
-	    "\t                            \"structured configuration provenance\"\n"
+	    "\t                            metadata only -- see INVESTIGATION_4.0.md's\n"
+	    "\t                            \"What shipped in 4.1\", \"structured configuration\n"
+	    "\t                            provenance\"\n"
 	    "\t--exit-with-child         - exit with the launched command's exit status\n"
 	    "\t--passes=<list>           - re-launch the workload once per automatically-sized\n"
 	    "\t                            pass covering the comma-separated counter group\n"

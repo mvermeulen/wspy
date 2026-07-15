@@ -40,8 +40,8 @@ struct manifest_config_option {
   const char *value;
 };
 
-/* Structured configuration provenance (INVESTIGATION_4.0.md item 16): which
- * named preset (if any) and/or launcher-vocabulary configuration category
+/* Structured configuration provenance (INVESTIGATION_4.0.md, "What shipped in
+ * 4.1"): which named preset (if any) and/or launcher-vocabulary configuration category
  * and options produced this run. wspy itself has no notion of presets or
  * configurations -- that vocabulary belongs to a front end (wspy-run's
  * builtin profiles, the web launcher's preset picker/checklist) -- so these

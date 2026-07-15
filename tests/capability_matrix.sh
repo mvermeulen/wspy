@@ -263,7 +263,8 @@ run_bundle "passes-multi-group" 0 --csv --no-ipc \
 # multiplexed) pass instead of bin-packed into N -- still graceful
 # degradation (exit 0, no fatal error, matching CSV column counts), now
 # relying on read_counters()'s time_running/time_enabled scaling
-# (INVESTIGATION_4.0.md 4.1 Tier 1 #4) to keep the values correct.
+# (INVESTIGATION_4.0.md's "What shipped in 4.1", the multiplex-scaling
+# correctness fix) to keep the values correct.
 run_bundle "passes-multiplex" 0 --csv --no-ipc \
   --passes=ipc,topdown,cache2,cache3,branch,memory,tlb,opcache,software --multiplex -- /bin/true
 # --passes' merge semantics only cover the aggregate case -- each of these is

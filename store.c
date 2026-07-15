@@ -2,8 +2,8 @@
  * store.c - wspy-store: ingests --run-index (JSONL) files, and best-effort
  * enriches each record from the manifest.json/CSV output it points at,
  * into a normalized SQLite "run catalog" plus a per-run metric-value
- * table -- INVESTIGATION_4.0.md's 4.1 Tier-1 "Canonical metrics schema +
- * normalized store" item (both halves: run metadata, and the CSV metric
+ * table -- INVESTIGATION_4.0.md's "What shipped in 4.1", "Canonical metrics
+ * schema + normalized store" (both halves: run metadata, and the CSV metric
  * values that make the run metadata actually useful for stats/comparison
  * work -- see doc/ARTIFACT_CONTRACT.md's "Normalized store" section).
  *
@@ -125,7 +125,7 @@ static const char *SCHEMA_DDL =
 
 /* Applied when an existing database is found at STORE_SCHEMA_VERSION 1
  * (the shape wspy-store originally shipped with, before metric_values
- * existed) -- INVESTIGATION_4.0.md's 4.1 Tier 9 "schema
+ * existed) -- INVESTIGATION_4.0.md's 4.2 Tier 7 "schema
  * compatibility/migration tests" item's first real instance, rather than
  * a second "no migration path yet" caveat. Safe to run exactly once
  * (ensure_schema() only reaches this at user_version==1); the ADD COLUMN

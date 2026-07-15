@@ -1160,7 +1160,7 @@ void read_counters(struct counter_group *counter_group_list,int stop_counters){
 	  cgroup->cinfo[i].last_time_running = rf.time_running;
 	  cgroup->cinfo[i].last_time_enabled = rf.time_enabled;
 
-	  // Correctness fix (INVESTIGATION_4.0.md 4.1 Tier 1 #4): when a
+	  // Correctness fix (INVESTIGATION_4.0.md's "What shipped in 4.1"): when a
 	  // counter was multiplexed off the PMU for part of this window,
 	  // the raw count only reflects what happened while it *was*
 	  // scheduled -- extrapolate to the full window instead of

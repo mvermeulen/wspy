@@ -8,7 +8,7 @@
 #include "cpu_info.h"
 
 #define WSPY_VERSION_MAJOR 4
-#define WSPY_VERSION_MINOR 0
+#define WSPY_VERSION_MINOR 1
 
 extern FILE *outfile;
 

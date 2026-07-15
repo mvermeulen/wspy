@@ -82,8 +82,9 @@ static void write_environment(FILE *fp,const struct provenance_info *prov){
   fprintf(fp,"  },\n");
 }
 
-/* Writes the "configuration_provenance" object (INVESTIGATION_4.0.md item 16
- * -- see manifest.h's manifest_config_provenance comment). preset/
+/* Writes the "configuration_provenance" object (structured configuration
+ * provenance, INVESTIGATION_4.0.md's "What shipped in 4.1" -- see manifest.h's
+ * manifest_config_provenance comment). preset/
  * configuration are null when the run wasn't launched via a known preset/
  * configuration; options is always present, just [] when none were given. */
 static void write_config_provenance(FILE *fp,const struct manifest_config_provenance *cp){

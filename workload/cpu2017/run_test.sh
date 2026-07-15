@@ -47,8 +47,8 @@ else
         runcpu --config ${SPECCONFIG} --action=validate --tune base --iterations 3 $TESTNAME \
         2>&1 | tee "${RUNDIR}/amd.${TESTNAME}.out"
     # Renders every *.csv in $RUNDIR that has a "time" column against the
-    # shared plot templates (wspy-plot, INVESTIGATION_4.0.md 4.1 Tier 2 item
-    # 12), replacing the old gnuplot.sh's two hardcoded filenames -- output
+    # shared plot templates (wspy-plot, INVESTIGATION_4.0.md's "What shipped
+    # in 4.1"), replacing the old gnuplot.sh's two hardcoded filenames -- output
     # lands in $RUNDIR/plots/, wspy-run's own unified-output-layout convention.
     "$WSPY_PLOT" --rundir "$RUNDIR"
 fi

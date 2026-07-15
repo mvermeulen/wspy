@@ -1,6 +1,6 @@
 """
 web/joblib.py -- shared run-building logic for web/server.py and wspy-queue
-(INVESTIGATION_4.0.md item 13, "Deployment/hosting design note").
+(INVESTIGATION_4.0.md's "What shipped in 4.1", "Deployment/hosting design note").
 
 Everything in here is pure/stdlib-only and has no server-process dependency
 (no HTTP, no threading requirement, no in-memory state beyond what a caller
@@ -351,8 +351,8 @@ def parse_optional_int(value, lo, hi):
 def _config_options(section):
     """Turns one checklist category's raw sub-dict (e.g. checklist["counters"])
     into the launcher-vocabulary (name,value) pairs recorded via wspy's
-    --config-option (INVESTIGATION_4.0.md item 16, structured configuration
-    provenance) -- the same keys/values the Run tab checklist itself uses,
+    --config-option (INVESTIGATION_4.0.md's "What shipped in 4.1", structured
+    configuration provenance) -- the same keys/values the Run tab checklist itself uses,
     not a re-derivation from the wspy flags build_configuration_passes()
     also produces. "enabled" is omitted (implied by the pass existing at
     all); a None/empty value is omitted (nothing was chosen); a list value
@@ -374,7 +374,8 @@ def _config_options(section):
     return options
 
 
-# INVESTIGATION_4.0.md item 16's launcher-vocabulary category name (recorded
+# Structured configuration provenance's (INVESTIGATION_4.0.md's "What shipped
+# in 4.1") launcher-vocabulary category name (recorded
 # via --config-name, see build_pass_argv()) back to the Run tab checklist key
 # that produced it -- the read-side counterpart to build_configuration_passes()'s
 # own tree/counters/system/gpu/ibs dispatch, used by item 17's "customize &
@@ -600,7 +601,7 @@ def build_pass_argv(wspy_bin, rundir, p, manifest_on, run_index_path):
     when manifest recording is on. Also threads p's "category"/"options"
     (see build_configuration_passes()) through as --config-name/
     --config-option -- structured configuration provenance
-    (INVESTIGATION_4.0.md item 16), the checklist's own vocabulary rather
+    (INVESTIGATION_4.0.md's "What shipped in 4.1"), the checklist's own vocabulary rather
     than wspy's flags, recorded in the pass's manifest/run-index regardless
     of whether manifest_on/run_index_path are set for *this* pass (it's
     cheap metadata, not gated on those toggles the way the file paths are).
@@ -996,7 +997,7 @@ def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_ar
 
 
 # ---------------------------------------------------------------------------
-# Job files (INVESTIGATION_4.0.md item 13, "Deployment/hosting design note").
+# Job files (INVESTIGATION_4.0.md's "What shipped in 4.1", "Deployment/hosting design note").
 #
 # A job is a spec-only JSON document -- "what should run", captured before
 # any run directory or output exists -- built from exactly the same
