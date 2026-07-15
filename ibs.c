@@ -193,9 +193,7 @@ struct ibs_event ibs_build_fetch_event(const struct ibs_pmu *fetch,enum ibs_prof
   if (!fetch->present) return ev;
   ev.valid = 1;
   ev.type = fetch->type;
-
-  if ((f = ibs_pmu_format(fetch,"maxcnt")))
-    apply_format_field(&ev,f,params->maxcnt ? params->maxcnt : IBS_DEFAULT_MAXCNT);
+  ev.sample_period = params->maxcnt ? params->maxcnt : IBS_DEFAULT_MAXCNT;
 
   if (profile == IBS_PROFILE_MEMORY_DEEP){
     ev.l3missonly_requested = 1;
@@ -223,9 +221,7 @@ struct ibs_event ibs_build_op_event(const struct ibs_pmu *op,enum ibs_profile pr
   if (!op->present) return ev;
   ev.valid = 1;
   ev.type = op->type;
-
-  if ((f = ibs_pmu_format(op,"maxcnt")))
-    apply_format_field(&ev,f,params->maxcnt ? params->maxcnt : IBS_DEFAULT_MAXCNT);
+  ev.sample_period = params->maxcnt ? params->maxcnt : IBS_DEFAULT_MAXCNT;
 
   if (profile == IBS_PROFILE_MEMORY_DEEP){
     ev.l3missonly_requested = 1;
@@ -245,7 +241,6 @@ struct ibs_event ibs_build_op_event(const struct ibs_pmu *op,enum ibs_profile pr
 
 struct ibs_event ibs_build_op_unfiltered_event(const struct ibs_pmu *op,const struct ibs_profile_params *params){
   struct ibs_event ev;
-  const struct ibs_format_field *f;
   static const struct ibs_profile_params defaults = {0,0,0};
 
   memset(&ev,0,sizeof(ev));
@@ -253,9 +248,7 @@ struct ibs_event ibs_build_op_unfiltered_event(const struct ibs_pmu *op,const st
   if (!op->present) return ev;
   ev.valid = 1;
   ev.type = op->type;
-
-  if ((f = ibs_pmu_format(op,"maxcnt")))
-    apply_format_field(&ev,f,params->maxcnt ? params->maxcnt : IBS_DEFAULT_MAXCNT);
+  ev.sample_period = params->maxcnt ? params->maxcnt : IBS_DEFAULT_MAXCNT;
   return ev;
 }
 
@@ -301,6 +294,7 @@ struct counter_group *ibs_counter_group(char *name,enum ibs_profile profile,cons
     cgroup->cinfo[idx].config = fetch_ev.config;
     cgroup->cinfo[idx].config1 = fetch_ev.config1;
     cgroup->cinfo[idx].config2 = fetch_ev.config2;
+    cgroup->cinfo[idx].sample_period = fetch_ev.sample_period;
     cgroup->cinfo[idx].is_group_leader = 1;
     idx++;
   }
@@ -310,6 +304,7 @@ struct counter_group *ibs_counter_group(char *name,enum ibs_profile profile,cons
     cgroup->cinfo[idx].config = op_ev.config;
     cgroup->cinfo[idx].config1 = op_ev.config1;
     cgroup->cinfo[idx].config2 = op_ev.config2;
+    cgroup->cinfo[idx].sample_period = op_ev.sample_period;
     cgroup->cinfo[idx].is_group_leader = 1;
     idx++;
   }
@@ -319,6 +314,7 @@ struct counter_group *ibs_counter_group(char *name,enum ibs_profile profile,cons
     cgroup->cinfo[idx].config = op_unfiltered_ev.config;
     cgroup->cinfo[idx].config1 = op_unfiltered_ev.config1;
     cgroup->cinfo[idx].config2 = op_unfiltered_ev.config2;
+    cgroup->cinfo[idx].sample_period = op_unfiltered_ev.sample_period;
     cgroup->cinfo[idx].is_group_leader = 1;
     idx++;
   }

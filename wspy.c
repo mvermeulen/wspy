@@ -940,7 +940,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t--ibs-basic               - AMD IBS: unfiltered ibs_fetch/ibs_op sample counts\n"
 	    "\t--ibs-memory-deep         - AMD IBS: ibs_op with l3missonly+ldlat filtering (skews\n"
 	    "\t                            sampling period -- see output annotations/docs)\n"
-	    "\t--ibs-maxcnt <n>          - override IBS sampling interval (maxcnt format field)\n"
+	    "\t--ibs-maxcnt <n>          - override IBS sampling interval (MaxCnt, via sample_period)\n"
 	    "\t--ibs-ldlat <n>           - override ibs-memory-deep load-latency threshold (cycles)\n"
 	    "\t--ibs-fetchlat <n>        - override ibs-memory-deep fetch-latency threshold (cycles)\n"
 #if AMDGPU

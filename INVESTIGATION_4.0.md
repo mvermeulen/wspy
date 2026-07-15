@@ -110,9 +110,24 @@ see `wspy.c`'s `per_core_csv` comment and `doc/ARTIFACT_CONTRACT.md`'s CSV secti
 `workload/*/run_test.sh` end to end against real suite installs, and the NMI-watchdog/`preflight.c`
 downgrade path. The following items from that same hand-testing pass weren't covered this round —
 carried forward as follow-up validation, not release blockers:
-- Exercise `--ibs-basic`/`--ibs-memory-deep` against real `ibs_fetch`/`ibs_op` PMUs on Zen4/Zen5
-  hardware — `test_ibs.c` only drives `ibs_probe_at()` against a synthetic fake sysfs tree, never
-  real IBS counters or real filtering behavior.
+- ~~Exercise `--ibs-basic`/`--ibs-memory-deep` against real `ibs_fetch`/`ibs_op` PMUs on Zen4/Zen5
+  hardware~~ — addressed 2026-07-15 on real Zen5 (family 25 model 116) hardware. Surfaced a real bug:
+  `ibs.c` derived IBS's MaxCnt from a sysfs `format` field named `"maxcnt"` that doesn't exist on real
+  kernels (MaxCnt actually comes from `perf_event_attr.sample_period`, per `perf_ibs_init()` in
+  `arch/x86/events/amd/ibs.c`), so every IBS counter had silently failed `perf_event_open()` with
+  `-EINVAL` since the feature shipped — `test_ibs.c`'s synthetic-sysfs-only coverage never called
+  `perf_event_open()` and so never caught it. Fixed (`sample_period` threaded through
+  `ibs.h`/`ibs.c`/`cpu_info.h`/`topdown.c`); confirmed live: `ibs-basic` now measures 2/2 counters,
+  `ibs-memory-deep` 3/3, with real nonzero `ibs_fetch`/`ibs_op` values, and `--interval` combined with
+  `--ibs-basic` produces a genuine per-tick time series (not just an aggregate row) — mechanically it
+  was never aggregate-only, `wspy-run`'s builtin `ibs-basic`/`ibs-memory-deep` profiles just never pass
+  `--interval`. Also added a real-hardware IBS probe to the web launcher's "Check" button
+  (`ibs_probes_for_request()`/`probe_ibs()` in `web/server.py`) so a run that would use IBS gets this
+  same live perf_event_open() verification before launching, not just `--capabilities`' sysfs-presence
+  check. Follow-up not yet done: `--interval` support isn't exposed on the `ibs-basic`/`ibs-memory-deep`
+  profiles or the web checklist's IBS row, and `plot.c` has no `ibs_fetch`/`ibs_op` template yet — real
+  filtering behavior (l3missonly/ldlat skew) also still untested against actual filtered vs. unfiltered
+  data on this hardware.
 - Exercise `--gpu-busy`/`--gpu-metrics`/`--gpu-smi`/`--gpu-device=<idx>` on an `AMDGPU=1` build
   against real AMD GPU hardware, ideally a multi-GPU host, to confirm device enumeration/selection
   and metric correctness beyond what `./run_tests.sh`'s ROCm-header-gated build check covers.

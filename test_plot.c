@@ -142,6 +142,55 @@ static void test_coverage_columns_excluded_from_fallback(void){
   printf("PASS: coverage bookkeeping columns never appear in a plot\n");
 }
 
+static void test_ibs_template_matches_memory_deep_shaped_header(void){
+  /* ibs_l3missonly/ibs_ldlat_threshold/ibs_fetchlat_threshold are constant
+   * per-run filter configuration (topdown.c's print_ibs()), not a per-tick
+   * measurement -- they must be excluded from the fallback, not swept into
+   * "Other Metrics" as if they varied over time. */
+  char line[] = "time,ibs_fetch,ibs_op,ibs_op_unfiltered,ibs_op_accepted_ratio,"
+                "ibs_l3missonly,ibs_ldlat_threshold,ibs_fetchlat_threshold,";
+  char *fields[MAX_CSV_FIELDS];
+  int n,time_col,claimed[MAX_CSV_FIELDS] = {0};
+  struct plot_match matches[MAX_CSV_FIELDS];
+  int nmatches;
+
+  printf("Testing ibs/ibs-accepted-ratio template matching on an ibs-memory-deep-shaped header...\n");
+  n = split_csv_line(line,fields,MAX_CSV_FIELDS);
+  time_col = find_col(fields,n,"time");
+
+  nmatches = match_templates(fields,n,time_col,matches,MAX_CSV_FIELDS,claimed,0);
+  assert(nmatches == 2);
+  assert(!strcmp(matches[0].name,"ibs"));
+  assert(matches[0].ncols == 3); /* ibs_fetch, ibs_op, ibs_op_unfiltered */
+  assert(!strcmp(matches[1].name,"ibs-accepted-ratio"));
+  assert(matches[1].ncols == 1); /* ibs_op_accepted_ratio */
+
+  nmatches = add_fallback_match(fields,n,time_col,-1,-1,claimed,matches,MAX_CSV_FIELDS,nmatches);
+  assert(nmatches == 2); /* l3missonly/ldlat_threshold/fetchlat_threshold excluded, nothing left over */
+  printf("PASS: ibs templates match, static filter-config columns excluded from fallback\n");
+}
+
+static void test_ibs_template_matches_basic_shaped_header(void){
+  /* ibs-basic has no deep-profile extras at all -- the "ibs" template must
+   * still fire on just ibs_fetch/ibs_op, and "ibs-accepted-ratio" must not
+   * fire since its one candidate column isn't present. */
+  char line[] = "time,ibs_fetch,ibs_op,";
+  char *fields[MAX_CSV_FIELDS];
+  int n,time_col,claimed[MAX_CSV_FIELDS] = {0};
+  struct plot_match matches[MAX_CSV_FIELDS];
+  int nmatches;
+
+  printf("Testing ibs template matching on an ibs-basic-shaped header...\n");
+  n = split_csv_line(line,fields,MAX_CSV_FIELDS);
+  time_col = find_col(fields,n,"time");
+
+  nmatches = match_templates(fields,n,time_col,matches,MAX_CSV_FIELDS,claimed,0);
+  assert(nmatches == 1);
+  assert(!strcmp(matches[0].name,"ibs"));
+  assert(matches[0].ncols == 2); /* ibs_fetch, ibs_op */
+  printf("PASS: ibs template matches on ibs-basic-shaped header, accepted-ratio template absent\n");
+}
+
 static void test_no_time_column_skipped(void){
   /* An aggregate (non---interval) CSV has no "time" column and is not a
    * time series -- no template should ever be evaluated against it. */
@@ -359,6 +408,8 @@ int main(void){
   test_system_cpu_template();
   test_network_fallback_absent_when_no_net_columns();
   test_coverage_columns_excluded_from_fallback();
+  test_ibs_template_matches_memory_deep_shaped_header();
+  test_ibs_template_matches_basic_shaped_header();
   test_no_time_column_skipped();
   test_no_match_no_fallback_needed();
   test_parse_custom_plot_spec();

@@ -543,6 +543,100 @@ def check_perf_access():
     return results
 
 
+# IBS's PMUs can be present in sysfs (so `wspy --capabilities`/`ibs_probe()`
+# report them as supported) yet still have perf_event_open() reject every
+# counter with -EINVAL at runtime -- a MaxCnt/sample_period mismatch has
+# caused exactly this before, and produced a report full of zeros with no
+# warning until you went digging in its manifest. Only an actual open
+# attempt catches that class of failure, so when this run would use IBS,
+# the Check button also launches a real (trivial, ~2s)
+# `wspy --ibs-basic|--ibs-memory-deep -- true` probe rather
+# than only re-deriving sysfs presence.
+IBS_UNAVAILABLE_RE = re.compile(
+    r"unable to create \S+ performance counter, name=(\S+), errno=(\d+) - (.+)")
+IBS_UNSUPPORTED_TEXT = "AMD IBS not supported on this host/kernel"
+
+
+def ibs_probes_for_request(cfg, preset, checklist):
+    """Returns [(label, flags)] for every IBS profile this request would
+    actually invoke -- a composite preset's ibs-basic/ibs-memory-deep
+    entries, or the Run tab's IBS checklist row in custom mode -- so the
+    probe below tests exactly what would run, not a guess. [] when IBS
+    isn't in play for this request at all."""
+    preset = (preset or "").strip()
+    probes = []
+    if preset:
+        for name in [p.strip() for p in preset.split(",")]:
+            if name == "ibs-basic":
+                probes.append(("ibs-basic", ["--ibs-basic", "--no-ipc", "--csv"]))
+            elif name == "ibs-memory-deep":
+                probes.append(("ibs-memory-deep", ["--ibs-memory-deep", "--no-ipc", "--csv"]))
+        return probes
+
+    ibs = (checklist or {}).get("ibs") or {}
+    if not ibs.get("enabled"):
+        return []
+    label = "ibs-memory-deep" if ibs.get("profile") == "memory-deep" else "ibs-basic"
+    # Placeholder rundir: build_configuration_passes() only ever uses it to
+    # spell a --tree pass's output path into that pass's flags text -- never
+    # touches the filesystem -- so this is safe purely to get the ibs pass's
+    # real flags (profile + --ibs-maxcnt/ldlat/fetchlat overrides), matching
+    # exactly what a real custom run would invoke.
+    placeholder_rundir = os.path.join(cfg["output_root"], "<check>", "<check>", "<check>")
+    for p in build_configuration_passes(placeholder_rundir, checklist):
+        if p["category"] == "ibs":
+            probes.append((label, p["flags"]))
+    return probes
+
+
+def probe_ibs(wspy_bin, label, flags):
+    """Actually runs `wspy <flags> -- true` (a trivial, always-successful
+    workload) and reports whether every requested IBS counter opened. Never
+    raises -- a probe failure degrades to status "unknown", the same
+    measured-vs-unavailable idiom used throughout the C side."""
+    argv = [wspy_bin] + list(flags) + ["--", "true"]
+    entry = {"profile": label, "command": shell_preview(argv)}
+    rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=15)
+    if timed_out:
+        entry.update(status="unknown", detail="probe timed out after 15s")
+        return entry
+    if rc is None:
+        entry.update(status="unknown", detail=f"failed to launch {wspy_bin}")
+        return entry
+    if IBS_UNSUPPORTED_TEXT in output:
+        entry.update(status="warn",
+                      detail=f"{IBS_UNSUPPORTED_TEXT} (ibs_fetch/ibs_op PMUs not present)")
+        return entry
+
+    measured = requested = None
+    lines = output.splitlines()
+    for i, line in enumerate(lines):
+        if "counters_measured" in line and "counters_requested" in line and i + 1 < len(lines):
+            header = [c.strip() for c in line.split(",")]
+            data = [c.strip() for c in lines[i + 1].split(",")]
+            try:
+                measured = int(data[header.index("counters_measured")])
+                requested = int(data[header.index("counters_requested")])
+            except (ValueError, IndexError):
+                measured = requested = None
+            break
+
+    failures = IBS_UNAVAILABLE_RE.findall(output)
+    if requested is None:
+        entry.update(status="unknown", detail="could not parse counter coverage from probe output")
+    elif requested == 0:
+        entry.update(status="unknown", detail="probe requested 0 IBS counters unexpectedly")
+    elif measured == requested and not failures:
+        entry.update(status="ok", detail=f"{measured}/{requested} IBS counter(s) opened successfully")
+    else:
+        detail = "; ".join(f"{name}: errno={errnum} ({reason})" for name, errnum, reason in failures) \
+            or f"only {measured}/{requested} IBS counter(s) opened"
+        entry.update(status="warn", detail=detail)
+    entry["measured"] = measured
+    entry["requested"] = requested
+    return entry
+
+
 # Subcommands that take one or more test/suite names as trailing positional
 # arguments -- batch-run is what wspy-run/workload/phoronix/run_test.sh
 # actually uses; run/benchmark are the same shape for an ad hoc invocation.
@@ -1367,6 +1461,7 @@ def render_run_tab(prefill, cfg):
               <option value="memory-deep"{" selected" if sec('ibs').get('profile') == 'memory-deep' else ""}>memory-deep (l3missonly+ldlat filtering)</option>
             </select>
           </label>
+          <label>Interval seconds <input type="text" id="ibs_interval" value="{val('ibs', 'interval_secs')}" placeholder="(aggregate)"></label>
           <div class="row">
             <label><code>--ibs-maxcnt</code> <input type="text" id="ibs_maxcnt" value="{val('ibs', 'maxcnt')}" placeholder="(default)"></label>
             <label><code>--ibs-ldlat</code> <input type="text" id="ibs_ldlat" value="{val('ibs', 'ldlat')}" placeholder="(default)"></label>
@@ -2822,6 +2917,9 @@ class Handler(BaseHTTPRequestHandler):
     def _check_run(self, cfg, body):
         workload = (body.get("workload") or "").strip()
         result = {"perf": check_perf_access()}
+
+        ibs_probes = ibs_probes_for_request(cfg, body.get("preset"), body.get("checklist"))
+        result["ibs"] = [probe_ibs(cfg["wspy_bin"], label, flags) for label, flags in ibs_probes]
 
         test_names = parse_phoronix_test_names(workload)
         if not test_names:

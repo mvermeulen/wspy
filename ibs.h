@@ -122,6 +122,15 @@ struct ibs_event {
   int valid;
   int type;
   unsigned long config,config1,config2;
+  /* perf_event_attr.sample_period (AMD IBS MaxCnt) -- NOT a sysfs "format"
+   * field (there is no such field exposed for it); the kernel's IBS PMU
+   * driver derives MaxCnt straight from this attr field when config's own
+   * MaxCnt bits are left at 0, per perf_ibs_init() in
+   * arch/x86/events/amd/ibs.c. Always set to a nonzero value (the profile's
+   * default or an --ibs-maxcnt override) -- a zero sample_period makes the
+   * kernel try to pull MaxCnt out of config instead, where it's always 0
+   * here, so perf_event_open() rejects the event with -EINVAL. */
+  unsigned long sample_period;
   int l3missonly_requested,l3missonly_applied;
   int ldlat_requested,ldlat_applied;
   unsigned int ldlat_threshold;
