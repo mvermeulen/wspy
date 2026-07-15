@@ -183,6 +183,12 @@ details summary {
   padding-left: 0.6rem;
   margin: 0.4rem 0 0.7rem;
 }
+.overview-note {
+  font-style: italic;
+  border-left: 3px solid var(--accent);
+  padding-left: 0.6rem;
+  margin: 0.4rem 0 1rem;
+}
 
 .block-card {
   border: 1px solid var(--border);
@@ -191,6 +197,7 @@ details summary {
   margin-bottom: 1rem;
   background: var(--bg);
 }
+.overview-card { border-color: var(--accent); }
 .block-card-head {
   display: flex;
   flex-wrap: wrap;
