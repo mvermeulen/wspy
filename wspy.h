@@ -9,6 +9,12 @@
 
 #define WSPY_VERSION_MAJOR 4
 #define WSPY_VERSION_MINOR 1
+// Point release, bumped for a correctness-only fix that doesn't warrant a
+// MINOR bump (no new feature/flag) but is significant enough that the
+// binary's own --version output should distinguish it from plain 4.1 --
+// see the "raw event .config left unparsed for non-default --passes
+// groups" fix. 0 for a release with no patch-level fix yet.
+#define WSPY_VERSION_PATCH 1
 
 extern FILE *outfile;
 
@@ -100,6 +106,8 @@ enum output_format { PRINT_NORMAL, PRINT_CSV, PRINT_CSV_HEADER };
 
 int check_nmi_watchdog(void);
 int setup_raw_events(void);
+extern struct raw_event amd_raw_events[];
+int amd_raw_events_count(void);
 void setup_counter_groups(struct counter_group **counter_group_list);
 struct counter_group *software_counter_group(char *name);
 void setup_counters(struct counter_group *counter_group_list);

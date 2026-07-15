@@ -532,9 +532,17 @@ static int run_capabilities_probe(void){
     fatal("unable to query CPU information\n");
   }
   check_nmi_watchdog();
+
+  // counter_mask must be its final value (COUNTER_ALL here) *before*
+  // setup_raw_events() runs -- that function only parses a raw_event
+  // table entry's .config when events[i].use intersects counter_mask, so
+  // calling it against whatever counter_mask the CLI flags happened to
+  // leave behind (rather than the COUNTER_ALL this probe actually wants)
+  // silently leaves most raw events unparsed. Same bug class as the
+  // --passes fix in main() below -- see that comment for the full story.
+  counter_mask = COUNTER_ALL;
   setup_raw_events();
 
-  counter_mask = COUNTER_ALL;
   coverage_reset();
   setup_counter_groups(&cpu_info->systemwide_counters);
   if (counter_mask & COUNTER_SOFTWARE){
@@ -869,7 +877,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   
   i = parse_options(argc,argv);
   if (i == 2){
-    fprintf(stdout,"wspy %d.%d\n",WSPY_VERSION_MAJOR,WSPY_VERSION_MINOR);
+    fprintf(stdout,"wspy %d.%d.%d\n",WSPY_VERSION_MAJOR,WSPY_VERSION_MINOR,WSPY_VERSION_PATCH);
     return 0;
   }
   if (i == 3){
@@ -1007,7 +1015,18 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   }
 #endif
 
-  // parse the event tables
+  // parse the event tables -- setup_raw_events() only parses (fills in
+  // .raw.config from the "event=...,umask=..." description) a raw_event
+  // table entry whose .use bits intersect counter_mask, since normally
+  // that's already the CLI's final, complete set of requested groups. With
+  // --passes, though, the requested groups live in passes_requested_mask
+  // instead (parse_options() never touches counter_mask for --passes,
+  // which stays at its COUNTER_IPC default) -- so without this, any raw
+  // event needed only by a non-default pass group never gets parsed and
+  // silently opens as a meaningless config=0 raw event later (real bug,
+  // reproduced live: --passes=topdown-frontend reads 0 for every counter
+  // except the one event that also happens to be COUNTER_IPC-tagged).
+  if (multipass_flag) counter_mask |= passes_requested_mask;
   setup_raw_events();
 
   coverage_reset();

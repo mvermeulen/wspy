@@ -558,6 +558,94 @@ void test_multipass() {
     printf("PASS: native multi-pass counter execution\n");
 }
 
+// Regression test for a real bug (found 2026-07-15 via a production
+// counters.txt full of zeros): setup_raw_events() only parses a raw_event
+// table entry's .config when events[i].use intersects counter_mask -- but
+// --passes leaves counter_mask at its untouched COUNTER_IPC default and
+// carries the actual requested groups in passes_requested_mask instead, so
+// any raw event needed only by a non-default pass group used to keep its
+// zero-initialized .config, open via perf_event_open() as a meaningless
+// always-zero raw event, and never get caught by coverage reporting (which
+// only checks that the fd opened). Confirmed live via strace: `wspy
+// --topdown-frontend` opened real configs like 0x10000188e; `wspy
+// --passes=topdown-frontend` opened config=0 for the same counters. main()
+// now fixes this by OR-ing passes_requested_mask into counter_mask before
+// calling setup_raw_events() when multipass_flag is set -- this test pins
+// that contract at the setup_raw_events()/table level (see also
+// setup_raw_events()'s own comment in topdown.c, and run_capabilities_probe()
+// in wspy.c, which had the same bug in reverse call order).
+void test_multipass_raw_event_parsing(void) {
+    struct cpu_info fake_cpu;
+    struct cpu_info *saved_cpu_info;
+    unsigned int saved_counter_mask;
+    unsigned int saved_passes_requested_mask;
+    int saved_multipass_flag;
+    unsigned int i;
+    int found;
+
+    printf("Testing --passes raw event parsing covers non-default pass groups...\n");
+
+    saved_cpu_info = cpu_info;
+    memset(&fake_cpu, 0, sizeof(fake_cpu));
+    fake_cpu.vendor = VENDOR_AMD;
+    cpu_info = &fake_cpu;
+
+    saved_counter_mask = counter_mask;
+    saved_passes_requested_mask = passes_requested_mask;
+    saved_multipass_flag = multipass_flag;
+
+    // Zero out the whole table first so a pass here can't be explained by
+    // some earlier test (or setup_raw_events() call) having already parsed
+    // these entries.
+    for (i = 0; i < (unsigned int)amd_raw_events_count(); i++)
+        amd_raw_events[i].raw.config = 0;
+
+    // Simulate exactly `wspy --passes=topdown-frontend`: counter_mask
+    // stays at its default (COUNTER_IPC), passes_requested_mask carries
+    // the real request -- same state parse_options() leaves behind.
+    counter_mask = COUNTER_IPC;
+    passes_requested_mask = COUNTER_TOPDOWN_FE;
+    multipass_flag = 1;
+
+    // main()'s fix, applied the same way main() applies it.
+    if (multipass_flag) counter_mask |= passes_requested_mask;
+    setup_raw_events();
+
+    // These 5 events are used only by COUNTER_TOPDOWN_FE, not COUNTER_IPC
+    // -- before the fix, every one of them stayed at .raw.config == 0.
+    // Expected values cross-checked against union amd_raw_cpu_format's
+    // bitfield layout (event:8, umask:8@bit8, event2:4@bit32), e.g.
+    // event=0x18e,umask=0x18 -> event2=0x1,event=0x8e,umask=0x18 ->
+    // (0x1<<32)|(0x18<<8)|0x8e == 0x10000188e.
+    struct { const char *name; unsigned long expected_config; } cases[] = {
+        { "ic_tag_hit_miss.instruction_cache_miss",      0x10000188eUL },
+        { "ic_tag_hit_miss.instruction_cache_accesses",  0x100001f8eUL },
+        { "bp_l1_tlb_miss_l2_tlb_hit",                   0x84UL },
+        { "bp_l1_tlb_miss_l2_tlb_miss.all",              0xfUL },
+        { "ls_tlb_flush.all",                            0xff78UL },
+    };
+    unsigned int c;
+
+    for (c = 0; c < sizeof(cases)/sizeof(cases[0]); c++){
+        found = 0;
+        for (i = 0; i < (unsigned int)amd_raw_events_count(); i++){
+            if (!strcmp(amd_raw_events[i].name,cases[c].name)){
+                found = 1;
+                assert(amd_raw_events[i].raw.config == cases[c].expected_config);
+                break;
+            }
+        }
+        assert(found); // table entry must exist, or this test is checking nothing
+    }
+
+    counter_mask = saved_counter_mask;
+    passes_requested_mask = saved_passes_requested_mask;
+    multipass_flag = saved_multipass_flag;
+    cpu_info = saved_cpu_info;
+
+    printf("PASS: --passes raw event parsing covers non-default pass groups\n");
+}
+
 void test_write_manifest() {
     struct manifest_info minfo;
     char *contents;
@@ -1119,6 +1207,7 @@ int main(int argc, char **argv) {
     test_coverage();
     test_preflight();
     test_multipass();
+    test_multipass_raw_event_parsing();
     test_provenance();
     test_topdown_confidence();
     test_arm_topdown_equivalence();

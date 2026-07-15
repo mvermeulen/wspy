@@ -117,6 +117,16 @@ struct raw_event amd_raw_events[] = {
   { "ls_l1_d_tlb_miss.all_l2_miss","event=0x45,umask=0xf0",PERF_TYPE_RAW,COUNTER_TOPDOWN_OP,{{0}}},
 };
 
+// amd_raw_events[]'s element count -- a plain `extern struct raw_event
+// amd_raw_events[];` declaration in another translation unit (e.g.
+// test_wspy.c) can't sizeof() an array whose size isn't visible there, so
+// this is the accessor that lets it iterate the real table for regression
+// tests like test_multipass_raw_event_parsing() without duplicating the
+// table itself.
+int amd_raw_events_count(void){
+  return sizeof(amd_raw_events)/sizeof(amd_raw_events[0]);
+}
+
 struct raw_event arm_raw_events[] = {
   { "instructions","event=0x08",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_L2CACHE,{{0}} },
   { "cpu-cycles","event=0x11",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_TOPDOWN_BE,{{0}} },
@@ -263,6 +273,24 @@ static int raw_event_requires_available(struct raw_event *ev){
   return 1;
 }
 
+// Parses each vendor raw_event table entry's "event=...,umask=..."
+// description into its .raw.config, but ONLY for an entry whose .use bits
+// intersect the global counter_mask -- deliberate, not an oversight: an
+// unrequested raw event (e.g. AMD L3 events on a host that never asked for
+// L3 counters) must stay unparsed so raw_event_requires_available() doesn't
+// warn about a missing sysfs path nobody cares about this run (see that
+// function's own comment). The corollary: counter_mask MUST already be its
+// final, complete value for whatever mode is calling this before this call
+// -- if a mode's real requested-counters set lives in a different variable
+// (e.g. --passes' passes_requested_mask, unioned into counter_mask in
+// main() right before this call) or gets assigned to counter_mask *after*
+// this call (a real bug this codebase shipped in run_capabilities_probe()),
+// any raw event that set doesn't happen to already share with counter_mask
+// silently keeps its zero-initialized .raw.config and later opens via
+// perf_event_open() as a meaningless, always-zero-reading raw event --
+// coverage reporting won't catch it either, since it only checks that the
+// fd opened, not that it counts anything. See test_multipass_raw_event_
+// parsing() in test_wspy.c for a regression test pinning this contract.
 int setup_raw_events(void){
   unsigned int i;
   struct raw_event *events;
