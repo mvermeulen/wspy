@@ -100,6 +100,8 @@ enum output_format { PRINT_NORMAL, PRINT_CSV, PRINT_CSV_HEADER };
 
 int check_nmi_watchdog(void);
 int setup_raw_events(void);
+extern struct raw_event amd_raw_events[];
+int amd_raw_events_count(void);
 void setup_counter_groups(struct counter_group **counter_group_list);
 struct counter_group *software_counter_group(char *name);
 void setup_counters(struct counter_group *counter_group_list);
