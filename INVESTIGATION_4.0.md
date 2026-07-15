@@ -317,30 +317,50 @@ show that command line, not hide it); every report should be reconstructible fro
 normalized data plus the raw artifacts already on disk — no server-side state that isn't also
 derivable from files already being produced.
 
-5. Design/mockup pass for the web interface, done deliberately *before* building #6-14 below — the
-   "step back" this reorg calls for. Covers both halves: wireframes/mockups for the input side (how
-   to organize forms across more than just `wspy-run` — see #9) and the output side (a single-run
-   report page, a compare-two-or-more-runs view, and a historical index/search view — see #8/#11).
-   Explicitly evaluate static-file-only rendering (works from `file://` or any static host, no
-   backend process) against a thin dynamic backend, since that choice shapes #8's report studio, #9's
-   launcher, and #10's export format all at once. Deliverable is throwaway mockups plus a short
-   writeup of the chosen direction and open tradeoffs, not production code — expect #6-14 to be
-   revised once feedback lands. First pass of mockups produced 2026-07-11 (see chat/session record);
-   treat those as a starting point for discussion, not a final layout. Feedback round 1 (same day)
-   converged on: per-tool tabs at the top level (#9) with a *multi-select* capability checklist inside
-   the Run tab rather than mutually-exclusive presets — counters/tree/interval/GPU/IBS are each
-   independently toggleable with their own sub-customization, composing into one `wspy-run
-   --profile a,b,c` invocation where the CLI already supports that and falling back to separate
-   command lines (with an inline explanation) where it doesn't yet; a reserved, disabled row for
-   future `/proc` extras (4.2 Tier 3) so that expansion has a natural slot without pre-building it;
-   defaults-on toggle chips for manifest/run-index/store-ingest instead of opt-in checkboxes; and a
-   local-vs-shared deployment toggle answering #13 directly (local executes with live output, shared
-   stays copy-only). That round also surfaced a real gap worth tracking: `wspy-run --profile` only
-   accepts its own named, pre-baked profiles, so a custom counter selection or `--interval` sampling
-   can't be composed with tree/GPU/IBS into a single invocation the way two named profiles can — the
-   mockup's fallback is separate command lines per capability; the real fix would be teaching
-   `wspy-run` to accept an ad-hoc flags-based pass alongside named profiles, which isn't scoped as its
-   own backlog item yet.
+5. ~~Design/mockup pass for the web interface~~ — **done.** Done deliberately *before* building #6-14
+   below — the "step back" this reorg calls for. Covered both halves: wireframes/mockups for the input
+   side (how to organize forms across more than just `wspy-run` — see #9) and the output side (a
+   single-run report page, a compare-two-or-more-runs view, and a historical index/search view — see
+   #8/#11). First pass of mockups produced 2026-07-11 (see chat/session record); feedback round 1 (same
+   day) converged on the decisions below. This entry is that round's short writeup, written once #6-14
+   had actually shipped and could confirm which mockup decisions held up in practice rather than staying
+   speculative.
+   - **Static-file-only vs. thin dynamic backend:** decided in favor of a thin dynamic backend
+     (`web/server.py`, stdlib-only Python), against static-file-only rendering (`file://` or any static
+     host, no backend process). A static build couldn't support two things this tier needed from the
+     start: live SSE-streamed output while a launched run is in progress (#6/#7/#9), and later, #13's
+     job queue (a pending job has to be written somewhere a background worker can pick it up — no
+     static-file equivalent). This choice held for the rest of 4.1 without revisiting.
+   - **Per-tool tabs at the top level**, not one monolithic form — shipped exactly as mocked in #9
+     (`Run`/`Validate`/`Store & Summary`/`Discovery`).
+   - **Multi-select capability checklist inside the Run tab**, rather than mutually-exclusive presets —
+     counters/tree/interval/GPU/IBS each independently toggleable with their own sub-customization.
+     Shipped in #9, composing into native `--passes` bin-packing (multi-group, no-interval selections)
+     or separate per-configuration `wspy` invocations (an interval given), rather than the originally
+     imagined `wspy-run --profile a,b,c` composition — the CLI's own multi-pass execution (Tier 1 item
+     3, not yet shipped when this mockup round happened) turned out to be the better fit once it landed.
+   - **Reserved, disabled row for future `/proc` extras** (4.2 Tier 3) — shipped in #9 as a disabled
+     sixth checklist row, so that expansion has a slot without pre-building it.
+   - **Defaults-on toggle chips** for manifest/run-index/store-ingest, instead of opt-in checkboxes —
+     shipped in #9.
+   - **Local-vs-shared deployment toggle answering #13** (local executes with live output, shared stays
+     copy-only) — this was the mockup round's proposed answer to #13, but it is **not** what #13 shipped
+     as. #13's own design work (done later, independently) concluded that the real need wasn't a
+     local/shared execution-mode toggle on the same launcher, but a portable, spec-only **job** file plus
+     a queue processor (`wspy-queue`/`web/joblib.py`) that decouples *creating* a job (from any machine's
+     web UI) from *running* it (headless, on whichever machine actually has the hardware/counters
+     available, including a second machine entirely) — a materially different shape than "toggle output
+     mode on this same launcher." The toggle idea is superseded, not extended, by #13's shipped design;
+     see #9's "Not yet covered" note, which has been updated to match.
+   - **Gap surfaced, since resolved:** `wspy-run --profile` only accepts its own named, pre-baked
+     profiles, so a custom counter selection or `--interval` sampling couldn't be composed with
+     tree/GPU/IBS into one invocation the way two named profiles can. The mockup's fallback was separate
+     command lines per capability; #9's shipped custom (checklist) path resolved this directly via native
+     `--passes` bin-packing instead, so the fallback was never needed in the shipped UI.
+   - Net effect: every layout/interaction decision from the mockup round shipped as designed in #6-#12;
+     the one open item (#13's answer) evolved past the mockup's proposal once #13's own design pass ran,
+     which is expected — this item's own scoping said to expect #6-14 to be revised once feedback landed,
+     and #13 is the one place that happened at the *answer* level rather than the *layout* level.
 6. ~~**Thin end-to-end slice through the launcher and report browser, one fixed configuration**~~ —
    **shipped.** `web/server.py` (stdlib-only Python, see `CLAUDE.md`'s `web/` entry) proves the whole
    launch → run → artifact → browse → edit pipeline end to end against the one already-well-worn
@@ -482,8 +502,15 @@ derivable from files already being produced.
    `--preflight` respectively, all synchronous (no run directory, no SSE, nothing to browse to). Not
    yet covered, by design: **#16** structured configuration provenance (so "customize & run again"
    still can't restore exact preset/checklist state, only workload/suite/benchmark — the same
-   limitation #6/#7 already had), **#13** local-vs-shared deployment toggle (no design note exists
-   yet — #13 itself is still open), and **#18** estimated-runtime display.
+   limitation #6/#7 already had), and **#18** estimated-runtime display. **#13** was originally
+   listed here as an open gap (no design note existed yet, and #5's mockup round had proposed a
+   local-vs-shared execution-mode toggle on this same Run tab as the answer) — since resolved, but not
+   the way either of those assumed: #13's own design pass concluded the real need was a portable,
+   spec-only job file plus a headless queue processor (`wspy-queue`/`web/joblib.py`), not an
+   execution-mode toggle on this tab. What actually landed in the Run tab is a "Queue instead of run
+   now" checkbox that reuses the tab's exact preset-or-checklist/workload/toggle state to build a job
+   (`POST /api/enqueue-job`) instead of launching immediately — an addition to this item's shipped
+   surface, not a revision of it, and the toggle idea from #5 is superseded rather than implemented.
 10. ~~Publish-ready data export format~~ — **shipped.** `GET /export/<suite>/<benchmark>/<run_id>`
     (`render_export_page()`, linked from the report page and the curation studio once `curation.json`
     has at least one included block) renders #8's curated block sequence into three target formats,
