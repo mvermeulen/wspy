@@ -133,6 +133,25 @@ int append_run_index(const char *path,const struct manifest_info *info){
 	  info->treeflag ? "true" : "false",
 	  info->interval);
 
+  /* Structured configuration provenance (INVESTIGATION_4.0.md item 16): see
+   * manifest.c's write_config_provenance() for the pretty-printed sibling of
+   * this same data. preset/configuration null, options [] for a plain
+   * direct wspy invocation -- not a gap, just "no launcher involved". */
+  fprintf(fp,"\"configuration_provenance\":{\"preset\":");
+  json_write_string_or_null(fp,info->config_provenance.preset);
+  fprintf(fp,",\"configuration\":");
+  json_write_string_or_null(fp,info->config_provenance.configuration);
+  fprintf(fp,",\"options\":[");
+  for (i = 0; i < info->config_provenance.noptions; i++){
+    if (i) fprintf(fp,",");
+    fprintf(fp,"{\"name\":");
+    json_write_string(fp,info->config_provenance.options[i].name);
+    fprintf(fp,",\"value\":");
+    json_write_string(fp,info->config_provenance.options[i].value);
+    fprintf(fp,"}");
+  }
+  fprintf(fp,"]},");
+
   fprintf(fp,"\"counter_coverage\":{\"requested\":%d,\"measured\":%d},",
 	  info->counters_requested,info->counters_measured);
 

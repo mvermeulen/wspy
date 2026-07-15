@@ -36,6 +36,11 @@ void reset_wspy_globals() {
     outfile = NULL;
     if (treefile) fclose(treefile);
     treefile = NULL;
+    config_provenance_preset = NULL;
+    config_provenance_configuration = NULL;
+    config_provenance_options = NULL;
+    config_provenance_noptions = 0;
+    config_provenance_options_cap = 0;
 }
 
 void test_wspy_parse_options() {
@@ -131,6 +136,38 @@ void test_wspy_parse_options() {
     }
     assert(preflightflag == 1);
     assert((counter_mask & COUNTER_TOPDOWN) != 0);
+
+    // Test 8: structured configuration provenance (--preset-name/--config-name/
+    // --config-option) is metadata-only -- parses successfully, doesn't affect
+    // counter_mask/csvflag/etc, and a malformed --config-option (no '=') is
+    // warned about and skipped rather than rejected.
+    reset_wspy_globals();
+    capabilitiesflag = 0; // still set from Test 6 -- reset_wspy_globals() doesn't clear it
+    preflightflag = 0;    // still set from Test 7 -- reset_wspy_globals() doesn't clear it
+    char *argv8[] = {"wspy", "--preset-name", "deep-cpu",
+                      "--config-name", "performance-counters",
+                      "--config-option", "counter_groups=topdown",
+                      "--config-option", "not-key-value",
+                      "--config-option", "interval_seconds=1",
+                      "ls", NULL};
+    int argc8 = 12;
+    optind = 1;
+
+    if (parse_options(argc8, argv8) != 0) {
+        fprintf(stderr, "FAIL: parse_options returned error for config provenance flags\n");
+        exit(1);
+    }
+    assert(config_provenance_preset != NULL);
+    assert(strcmp(config_provenance_preset, "deep-cpu") == 0);
+    assert(config_provenance_configuration != NULL);
+    assert(strcmp(config_provenance_configuration, "performance-counters") == 0);
+    // Only the two well-formed key=value options are kept; the malformed one
+    // is skipped (not fatal, not silently miscounted).
+    assert(config_provenance_noptions == 2);
+    assert(strcmp(config_provenance_options[0].name, "counter_groups") == 0);
+    assert(strcmp(config_provenance_options[0].value, "topdown") == 0);
+    assert(strcmp(config_provenance_options[1].name, "interval_seconds") == 0);
+    assert(strcmp(config_provenance_options[1].value, "1") == 0);
 
     printf("PASS: wspy parse_options\n");
 }
@@ -527,6 +564,10 @@ void test_write_manifest() {
     const char *manifest_out = "/tmp/test_wspy_manifest.json";
     char *test_argv[] = { "sleep", "1" };
     struct manifest_counter_gap gaps[1] = {{ "ipc", "cpu-cycles", EACCES }};
+    struct manifest_config_option options[2] = {
+        { "counter_groups", "topdown" },
+        { "interval_seconds", "1" },
+    };
 
     printf("Testing write_manifest...\n");
 
@@ -550,6 +591,10 @@ void test_write_manifest() {
     minfo.counters_unavailable_count = 1;
     minfo.counters_unavailable = gaps;
     fill_fake_provenance(&minfo.provenance);
+    minfo.config_provenance.preset = "deep-cpu";
+    minfo.config_provenance.configuration = "performance-counters";
+    minfo.config_provenance.noptions = 2;
+    minfo.config_provenance.options = options;
 
     if (write_manifest(manifest_out, &minfo) != 0) {
         fprintf(stderr, "FAIL: write_manifest returned an error\n");
@@ -604,6 +649,15 @@ void test_write_manifest() {
     assert(strstr(contents, "\"field\": \"bios_vendor\"") != NULL);
     assert(strstr(contents, "\"reason\": \"No such file or directory\"") != NULL);
 
+    // Structured configuration provenance (INVESTIGATION_4.0.md item 16):
+    // preset/configuration round-trip as given, and both options appear in
+    // order as { "name", "value" } objects.
+    assert(strstr(contents, "\"schema_version\": \"1.5.0\"") != NULL);
+    assert(strstr(contents, "\"preset\": \"deep-cpu\"") != NULL);
+    assert(strstr(contents, "\"configuration\": \"performance-counters\"") != NULL);
+    assert(strstr(contents, "\"name\": \"counter_groups\", \"value\": \"topdown\"") != NULL);
+    assert(strstr(contents, "\"name\": \"interval_seconds\", \"value\": \"1\"") != NULL);
+
     free(contents);
     remove(manifest_out);
 
@@ -620,6 +674,10 @@ void test_write_manifest() {
     assert(contents != NULL);
     assert(strstr(contents, "\"known\": false") != NULL);
     assert(strstr(contents, "\"exited\": null") != NULL);
+    // No launcher metadata given this time: preset/configuration null, no options.
+    assert(strstr(contents, "\"preset\": null") != NULL);
+    assert(strstr(contents, "\"configuration\": null") != NULL);
+    assert(strstr(contents, "\"options\": [\n    ]") != NULL);
     free(contents);
     remove(manifest_out);
 
@@ -669,6 +727,8 @@ void test_append_run_index() {
     minfo.counters_requested = 3;
     minfo.counters_measured = 1;
     fill_fake_provenance(&minfo.provenance);
+    minfo.config_provenance.preset = "deep-cpu";
+    minfo.config_provenance.configuration = "performance-counters";
 
     if (append_run_index(index_out, &minfo) != 0) {
         fprintf(stderr, "FAIL: append_run_index returned an error (first record)\n");
@@ -717,6 +777,11 @@ void test_append_run_index() {
     assert(strstr(line0, "\"memory_total_kb\":12345678") != NULL);
     assert(strstr(line0, "\"cpu_governor_uniform\":true") != NULL);
     assert(strstr(line0, "\"environment_coverage\":{\"captured\":6,\"probed\":9}") != NULL);
+
+    // Structured configuration provenance (INVESTIGATION_4.0.md item 16):
+    // compact form, preset/configuration given, no options this time.
+    assert(strstr(line0, "\"schema_version\":\"1.5.0\"") != NULL);
+    assert(strstr(line0, "\"configuration_provenance\":{\"preset\":\"deep-cpu\",\"configuration\":\"performance-counters\",\"options\":[]}") != NULL);
 
     // Each line must be independently valid, self-contained JSON (a curly
     // brace per line, no shared array wrapper).

@@ -48,7 +48,7 @@ from `wspy --version` (which is just `WSPY_VERSION_MAJOR.MINOR`, the tool's own 
 The manifest and run index are versioned **independently** (`MANIFEST_SCHEMA_VERSION` vs.
 `RUN_INDEX_SCHEMA_VERSION`) — the run index is a leaner, line-oriented projection of a run, not the
 manifest itself, and its shape evolves on its own schedule. Current versions as of this writing:
-manifest `1.4.0`, run index `1.4.0` (check `manifest.h`/`run_index.h` for the authoritative current
+manifest `1.5.0`, run index `1.5.0` (check `manifest.h`/`run_index.h` for the authoritative current
 values — this doc is not the source of truth for the version number itself, only for the contract
 around how it's used).
 
@@ -64,7 +64,7 @@ One JSON object, written once at the end of a run (`manifest.c:write_manifest()`
 
 ```
 {
-  "schema_version": "1.4.0",
+  "schema_version": "1.5.0",
   "collector": "wspy",
   "wspy_version": "4.0",
   "generated_at": "<ISO-8601 timestamp>",
@@ -80,6 +80,7 @@ One JSON object, written once at the end of a run (`manifest.c:write_manifest()`
                     "cpu_governor_uniform": true, "memory_total_kb": 65894680,
                     "compiler_version": "...", "libc_version": "..." },
   "environment_coverage": { "captured": 9, "probed": 9, "unavailable": [] },
+  "configuration_provenance": { "preset": null, "configuration": null, "options": [] },
   "options": { "counter_mask": "0x3", "per_core": false, "system": false,
                "csv": true, "tree": false, "interval_seconds": 0 },
   "counter_coverage": { "requested": 4, "measured": 4, "unavailable": [] },
@@ -144,6 +145,20 @@ Field notes:
   are still the running totals across all passes, since `coverage_reset()` runs once before the pass
   loop begins, not per pass — this array's own `counters_requested`/`counters_measured` are each
   pass's individual delta, for per-pass audit, not a second way to recompute those top-level totals.
+- `configuration_provenance` (INVESTIGATION_4.0.md item 16, "structured configuration provenance")
+  records which named preset (if any) and/or launcher-vocabulary configuration category and options
+  produced this run -- `wspy` itself has no notion of presets/configurations (that vocabulary
+  belongs to a front end: `wspy-run`'s builtin profiles, the web launcher's preset picker/checklist),
+  so these three fields are populated purely from `--preset-name`/`--config-name`/`--config-option`
+  metadata flags rather than derived from `counter_mask`/`aflag`/etc. `preset`/`configuration` are
+  `null` and `options` is `[]` for a plain direct `wspy` invocation with none of those flags given --
+  this is the common case, not a gap. `options` is an array of `{ "name": ..., "value": ... }` pairs
+  in launcher vocabulary (e.g. `"groups"`/`"topdown,cache2"`, `"interval_secs"`/`"1"`), a different
+  and lower-level thing than the flat `options` block below (`counter_mask` as a hex bitmask) --
+  read both together to answer "how was this run launched" (`configuration_provenance`) vs. "what did
+  it actually collect" (`options`/`counter_coverage`). See `wspy-run`'s `run_pass()` and
+  `web/joblib.py`'s `build_pass_argv()`/`build_configuration_passes()` for the two front ends that
+  populate it today.
 - `output_files` only lists files that were actually requested this run (an entry is present only
   if the corresponding path was given: `-o`, `--tree <file>`, or the manifest's own path). A run
   with no `-o` (stdout output) and no `--tree` produces an `output_files` array with just the
@@ -164,7 +179,7 @@ Per-record shape (same information as the manifest, projected leaner — no `out
 details beyond the three path strings, no per-field environment gap list, just counts):
 
 ```
-{"schema_version":"1.4.0","run_id":"20260710T153000.123-48213","collector":"wspy","wspy_version":"4.0",
+{"schema_version":"1.5.0","run_id":"20260710T153000.123-48213","collector":"wspy","wspy_version":"4.0",
  "hostname":"...","cpu_vendor":"...","cpu_family":25,"cpu_model":97,
  "environment":{...same field set as manifest's "environment"...},
  "environment_coverage":{"captured":9,"probed":9},
@@ -172,6 +187,7 @@ details beyond the three path strings, no per-field environment gap list, just c
  "command":["<argv0>","..."],
  "exit_status":{"known":true,"exited":true,"exit_code":0,"signaled":false,"term_signal":null},
  "options":{"counter_mask":"0x3","per_core":false,"system":false,"csv":true,"tree":false,"interval_seconds":0},
+ "configuration_provenance":{"preset":null,"configuration":null,"options":[]},
  "counter_coverage":{"requested":4,"measured":4},
  "passes":[],
  "output_files":{"output_path":"results/run.csv","tree_output_path":null,"manifest_path":"results/run.manifest.json"}}
@@ -192,6 +208,9 @@ details beyond the three path strings, no per-field environment gap list, just c
   (`counter_mask`, `counters_requested`, `counters_measured`), no per-pass timing/exit status — the
   same "counts here, detail in the manifest" split already used for `counter_coverage`/
   `environment_coverage`. `[]` for a normal (non-`--passes`) run.
+- `configuration_provenance` is the same structured configuration provenance as the manifest's field
+  of the same name (see "Manifest" above) -- identical shape, just compact JSON instead of
+  pretty-printed.
 
 ## Normalized store (`wspy-store --db <path>`)
 
