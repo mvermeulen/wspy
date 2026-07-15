@@ -414,8 +414,24 @@
     return html;
   }
 
+  function renderIbsProbe(p) {
+    var html = '<div class="check-test"><code>' + escapeHtml(p.command || "") + "</code>";
+    html += '<div class="' + statusClass(p.status) + '">' + escapeHtml(p.profile) + ": "
+      + escapeHtml(p.status) + "</div>";
+    if (p.detail) html += '<div class="muted">' + escapeHtml(p.detail) + "</div>";
+    html += "</div>";
+    return html;
+  }
+
   function renderCheckResults(data) {
     var html = renderPerfCheck(data.perf || {});
+    if (data.ibs && data.ibs.length) {
+      html += '<div class="check-section"><strong>AMD IBS probe</strong> '
+        + '<span class="muted">(actually opens the counter(s) against a trivial workload -- '
+        + "sysfs presence alone can't catch a runtime perf_event_open() failure)</span>";
+      data.ibs.forEach(function (p) { html += renderIbsProbe(p); });
+      html += "</div>";
+    }
     var ph = data.phoronix;
     html += '<div class="check-section"><strong>Runtime estimate</strong>';
     if (!ph || !ph.detected) {
@@ -445,7 +461,11 @@
       fetch("/api/check-run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workload: getValue("workload") }),
+        body: JSON.stringify({
+          workload: getValue("workload"),
+          preset: getValue("preset"),
+          checklist: buildChecklist(),
+        }),
       })
         .then(function (r) { return r.json(); })
         .then(function (data) {
