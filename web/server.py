@@ -65,7 +65,7 @@ from joblib import (  # noqa: E402,F401
     build_plot_argv, shell_preview, RunState, run_store_ingest_besteffort,
     execute_profile_run, execute_custom_run, write_custom_run_manifest,
     write_custom_run_summary, LOG_NAME, PLOTS_DIR_NAME, RUN_MANIFEST_NAME, SUMMARY_NAME,
-    NAME_RE, resolve_toggles,
+    NAME_RE, resolve_toggles, checklist_from_pass_provenance,
 )
 
 # The one fixed configuration item 6 knows about -- matches wspy-run's
@@ -492,6 +492,53 @@ def read_manifest_workload(manifest_path):
     except (OSError, json.JSONDecodeError, ValueError):
         pass
     return None
+
+
+def read_manifest_config_provenance(manifest_path):
+    """Best-effort: pull a manifest.json's structured configuration
+    provenance (INVESTIGATION_4.0.md item 16, manifest.c's
+    write_config_provenance()) back out -- {"preset": str|None,
+    "configuration": str|None, "options": [(name,value), ...]} -- or None if
+    the manifest is missing/unreadable, or the run was never launched with
+    --preset-name/--config-name (a plain direct wspy invocation, or an item-6
+    fixed-config run -- see execute_run(), which never sets either flag).
+    This is item 17's read side of item 16: relating a report's artifacts
+    back to the preset/configuration/option choices that produced them."""
+    try:
+        with open(manifest_path) as f:
+            data = json.load(f)
+        cp = data.get("configuration_provenance")
+        if not isinstance(cp, dict):
+            return None
+        preset = cp.get("preset")
+        configuration = cp.get("configuration")
+        if preset is None and configuration is None:
+            return None
+        options = [(o.get("name"), o.get("value")) for o in cp.get("options", [])
+                   if isinstance(o, dict)]
+        return {"preset": preset, "configuration": configuration, "options": options}
+    except (OSError, json.JSONDecodeError, ValueError, AttributeError):
+        return None
+
+
+def format_config_provenance(cp):
+    """Human-readable one-liner for a single pass's configuration_provenance
+    (item 17: showing a report's artifacts alongside the preset/
+    configuration/option choices that produced them), e.g.
+    'preset=deep-cpu; config=amdtopdown' or 'config=performance-counters;
+    options=groups=topdown,cache2, interval_secs=1, csv=true'. None in, None
+    out (nothing to show)."""
+    if not cp:
+        return None
+    bits = []
+    if cp.get("preset"):
+        bits.append(f"preset={cp['preset']}")
+    if cp.get("configuration"):
+        bits.append(f"config={cp['configuration']}")
+    opts = cp.get("options") or []
+    if opts:
+        bits.append("options=" + ", ".join(f"{n}={v}" for n, v in opts if n))
+    return "; ".join(bits) if bits else None
 
 
 def read_run_manifest(run_manifest_path):
@@ -1023,9 +1070,47 @@ def render_run_tab(prefill, cfg):
     w_workload = html.escape(prefill.get("workload", ""))
     w_suite = html.escape(prefill.get("suite", "manual"))
     w_benchmark = html.escape(prefill.get("benchmark", ""))
-    preset_options = "".join(f'<option value="{html.escape(p)}">{html.escape(p)}</option>'
-                              for p in BUILTIN_PROFILES)
-    counters_groups_html = render_group_checkboxes("counters", checked_by_default=("topdown",))
+
+    # Item 17: "Customize & run again" restores not just workload/suite/
+    # benchmark but, when the report's configuration_provenance resolved to
+    # one (checklist_from_pass_provenance(), called from build_rerun_url()'s
+    # callers), the exact preset selection or checklist state that produced
+    # it -- prefill["preset"]/prefill["checklist"], parsed and validated in
+    # do_GET("/"). Absent (a fresh visit to "/", or a report with no
+    # restorable provenance), prefill_checklist is {} and every field below
+    # falls back to its pre-item-17 hardcoded default.
+    prefill_preset = prefill.get("preset") or ""
+    prefill_checklist = prefill.get("checklist") or {}
+
+    def sec(key):
+        section = prefill_checklist.get(key)
+        return section if isinstance(section, dict) else {}
+
+    def chk(cond):
+        return " checked" if cond else ""
+
+    def chk_default(cat, key, default_when_absent):
+        """A checkbox's checked state: the prefilled value when this
+        category is part of a restored checklist (explicit, even if False --
+        see checklist_section_from_options()'s comment on why every boolean
+        option is always recorded), else the pre-item-17 hardcoded default
+        for a fresh form."""
+        if cat in prefill_checklist:
+            return bool(sec(cat).get(key, False))
+        return default_when_absent
+
+    def val(cat, key):
+        v = sec(cat).get(key)
+        return html.escape(str(v)) if v not in (None, "") else ""
+
+    preset_options = "".join(
+        f'<option value="{html.escape(p)}"{" selected" if p == prefill_preset else ""}>'
+        f'{html.escape(p)}</option>'
+        for p in BUILTIN_PROFILES
+    )
+    default_groups = set(sec("counters").get("groups") or []) if "counters" in prefill_checklist \
+        else {"topdown"}
+    counters_groups_html = render_group_checkboxes("counters", checked_by_default=default_groups)
 
     return f"""
 <section class="panel">
@@ -1064,25 +1149,25 @@ def render_run_tab(prefill, cfg):
 
     <div id="checklist">
       <div class="config-card" data-config="tree">
-        <label class="config-toggle"><input type="checkbox" id="tree_enabled"> <strong>Process tree</strong></label>
+        <label class="config-toggle"><input type="checkbox" id="tree_enabled"{chk(sec('tree').get('enabled'))}> <strong>Process tree</strong></label>
         <div class="config-options">
-          <label><input type="checkbox" id="tree_cmdline"> full command lines <code>--tree-cmdline</code></label>
-          <label><input type="checkbox" id="tree_open"> record <code>open()</code> calls <code>--tree-open</code></label>
-          <label><input type="checkbox" id="tree_vmsize"> vmsize samples <code>--tree-vmsize</code></label>
-          <label><input type="checkbox" id="tree_software" checked> software counters too <code>--software</code></label>
-          <label>Timeout seconds <input type="text" id="tree_timeout" placeholder="(none)"></label>
+          <label><input type="checkbox" id="tree_cmdline"{chk(chk_default('tree', 'cmdline', False))}> full command lines <code>--tree-cmdline</code></label>
+          <label><input type="checkbox" id="tree_open"{chk(chk_default('tree', 'open', False))}> record <code>open()</code> calls <code>--tree-open</code></label>
+          <label><input type="checkbox" id="tree_vmsize"{chk(chk_default('tree', 'vmsize', False))}> vmsize samples <code>--tree-vmsize</code></label>
+          <label><input type="checkbox" id="tree_software"{chk(chk_default('tree', 'software', True))}> software counters too <code>--software</code></label>
+          <label>Timeout seconds <input type="text" id="tree_timeout" value="{val('tree', 'timeout_secs')}" placeholder="(none)"></label>
         </div>
       </div>
 
       <div class="config-card" data-config="counters">
-        <label class="config-toggle"><input type="checkbox" id="counters_enabled"> <strong>Performance counters</strong></label>
+        <label class="config-toggle"><input type="checkbox" id="counters_enabled"{chk(sec('counters').get('enabled'))}> <strong>Performance counters</strong></label>
         <div class="config-options">
           <div class="group-grid">{counters_groups_html}</div>
           <div class="row">
-            <label>Interval seconds <input type="text" id="counters_interval" placeholder="(aggregate)"></label>
-            <label class="inline-check"><input type="checkbox" id="counters_per_core"> per-core (interval only)</label>
-            <label class="inline-check"><input type="checkbox" id="counters_rusage"> include rusage</label>
-            <label class="inline-check"><input type="checkbox" id="counters_csv" checked> CSV output</label>
+            <label>Interval seconds <input type="text" id="counters_interval" value="{val('counters', 'interval_secs')}" placeholder="(aggregate)"></label>
+            <label class="inline-check"><input type="checkbox" id="counters_per_core"{chk(chk_default('counters', 'per_core', False))}> per-core (interval only)</label>
+            <label class="inline-check"><input type="checkbox" id="counters_rusage"{chk(chk_default('counters', 'rusage', False))}> include rusage</label>
+            <label class="inline-check"><input type="checkbox" id="counters_csv"{chk(chk_default('counters', 'csv', True))}> CSV output</label>
           </div>
           <p class="muted">2+ groups with no interval given automatically bin-pack via native
              multi-pass execution (<code>--passes</code>, wspy's own PMU-fit arithmetic); giving an
@@ -1092,42 +1177,42 @@ def render_run_tab(prefill, cfg):
       </div>
 
       <div class="config-card" data-config="system">
-        <label class="config-toggle"><input type="checkbox" id="system_enabled"> <strong>System metrics</strong></label>
+        <label class="config-toggle"><input type="checkbox" id="system_enabled"{chk(sec('system').get('enabled'))}> <strong>System metrics</strong></label>
         <div class="config-options">
-          <label>Interval seconds <input type="text" id="system_interval" placeholder="(aggregate)"></label>
-          <label class="inline-check"><input type="checkbox" id="system_csv" checked> CSV output</label>
+          <label>Interval seconds <input type="text" id="system_interval" value="{val('system', 'interval_secs')}" placeholder="(aggregate)"></label>
+          <label class="inline-check"><input type="checkbox" id="system_csv"{chk(chk_default('system', 'csv', True))}> CSV output</label>
         </div>
       </div>
 
       <div class="config-card" data-config="gpu">
-        <label class="config-toggle"><input type="checkbox" id="gpu_enabled"> <strong>GPU metrics</strong>
+        <label class="config-toggle"><input type="checkbox" id="gpu_enabled"{chk(sec('gpu').get('enabled'))}> <strong>GPU metrics</strong>
           <span class="muted">(needs an AMDGPU=1 build; otherwise wspy warns and continues)</span></label>
         <div class="config-options">
-          <label class="inline-check"><input type="checkbox" id="gpu_busy"> busy % <code>--gpu-busy</code></label>
-          <label class="inline-check"><input type="checkbox" id="gpu_metrics"> extended metrics <code>--gpu-metrics</code></label>
-          <label class="inline-check"><input type="checkbox" id="gpu_smi"> ROCm SMI <code>--gpu-smi</code></label>
+          <label class="inline-check"><input type="checkbox" id="gpu_busy"{chk(chk_default('gpu', 'busy', False))}> busy % <code>--gpu-busy</code></label>
+          <label class="inline-check"><input type="checkbox" id="gpu_metrics"{chk(chk_default('gpu', 'metrics', False))}> extended metrics <code>--gpu-metrics</code></label>
+          <label class="inline-check"><input type="checkbox" id="gpu_smi"{chk(chk_default('gpu', 'smi', False))}> ROCm SMI <code>--gpu-smi</code></label>
           <div class="row">
-            <label>Device index <input type="text" id="gpu_device" placeholder="(default)"></label>
-            <label>Interval seconds <input type="text" id="gpu_interval" placeholder="(aggregate)"></label>
-            <label class="inline-check"><input type="checkbox" id="gpu_csv" checked> CSV output</label>
+            <label>Device index <input type="text" id="gpu_device" value="{val('gpu', 'device')}" placeholder="(default)"></label>
+            <label>Interval seconds <input type="text" id="gpu_interval" value="{val('gpu', 'interval_secs')}" placeholder="(aggregate)"></label>
+            <label class="inline-check"><input type="checkbox" id="gpu_csv"{chk(chk_default('gpu', 'csv', True))}> CSV output</label>
           </div>
         </div>
       </div>
 
       <div class="config-card" data-config="ibs">
-        <label class="config-toggle"><input type="checkbox" id="ibs_enabled"> <strong>AMD IBS</strong>
+        <label class="config-toggle"><input type="checkbox" id="ibs_enabled"{chk(sec('ibs').get('enabled'))}> <strong>AMD IBS</strong>
           <span class="muted">(AMD only)</span></label>
         <div class="config-options">
           <label>Profile
             <select id="ibs_profile">
-              <option value="basic">basic (unfiltered ibs_fetch+ibs_op)</option>
-              <option value="memory-deep">memory-deep (l3missonly+ldlat filtering)</option>
+              <option value="basic"{" selected" if sec('ibs').get('profile') != 'memory-deep' else ""}>basic (unfiltered ibs_fetch+ibs_op)</option>
+              <option value="memory-deep"{" selected" if sec('ibs').get('profile') == 'memory-deep' else ""}>memory-deep (l3missonly+ldlat filtering)</option>
             </select>
           </label>
           <div class="row">
-            <label><code>--ibs-maxcnt</code> <input type="text" id="ibs_maxcnt" placeholder="(default)"></label>
-            <label><code>--ibs-ldlat</code> <input type="text" id="ibs_ldlat" placeholder="(default)"></label>
-            <label><code>--ibs-fetchlat</code> <input type="text" id="ibs_fetchlat" placeholder="(default)"></label>
+            <label><code>--ibs-maxcnt</code> <input type="text" id="ibs_maxcnt" value="{val('ibs', 'maxcnt')}" placeholder="(default)"></label>
+            <label><code>--ibs-ldlat</code> <input type="text" id="ibs_ldlat" value="{val('ibs', 'ldlat')}" placeholder="(default)"></label>
+            <label><code>--ibs-fetchlat</code> <input type="text" id="ibs_fetchlat" value="{val('ibs', 'fetchlat')}" placeholder="(default)"></label>
           </div>
         </div>
       </div>
@@ -1670,15 +1755,22 @@ def render_fixed_report(rundir, suite, benchmark, run_id):
 
     workload = read_manifest_workload(manifest_path)
     workload_str = shlex.join(workload) if workload else None
+    # Item 17: item 6's fixed-config launcher never sets --preset-name/
+    # --config-name (see execute_run()), so this is almost always None --
+    # kept here (rather than skipped) so a manifest hand-annotated with
+    # --config-name outside this UI, or a future change to execute_run(),
+    # is picked up automatically instead of needing this function touched.
+    config_provenance = read_manifest_config_provenance(manifest_path)
+    rerun_preset, rerun_checklist = checklist_from_pass_provenance([config_provenance])
 
     parts = [f"<h1>Report: {html.escape(suite)} / {html.escape(benchmark)} / {html.escape(run_id)}</h1>"]
 
     if workload_str:
         parts.append(f"<p>Workload: <code>{html.escape(workload_str)}</code></p>")
-        rerun_url = ("/?" +
-                     "workload=" + _urlescape(workload_str) +
-                     "&suite=" + _urlescape(suite) +
-                     "&benchmark=" + _urlescape(benchmark))
+        cp_text = format_config_provenance(config_provenance)
+        if cp_text:
+            parts.append(f'<p class="muted">Configuration: {html.escape(cp_text)}</p>')
+        rerun_url = build_rerun_url(workload_str, suite, benchmark, rerun_preset, rerun_checklist)
         parts.append(f'<p><a href="{rerun_url}">Customize &amp; run again</a></p>')
     else:
         parts.append('<p class="muted">No manifest found; can\'t restore workload command.</p>')
@@ -1718,21 +1810,36 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
     workload = run_manifest.get("command") or None
     workload_str = shlex.join(workload) if workload else None
 
+    # INVESTIGATION_4.0.md item 17: relate this report's artifacts back to
+    # the preset/configuration/option choices that produced them (item 16's
+    # configuration_provenance, recorded per-pass since each pass is its own
+    # wspy invocation) -- read every pass's own manifest once up front so
+    # both the per-pass display below and the aggregated rerun link can use
+    # it without re-parsing.
+    passes = run_manifest.get("passes", [])
+    pass_provenance = [
+        (read_manifest_config_provenance(os.path.join(rundir, p["manifest"]))
+         if p.get("manifest") else None)
+        for p in passes
+    ]
+    rerun_preset, rerun_checklist = checklist_from_pass_provenance(pass_provenance)
+
     parts = [f"<h1>Report: {html.escape(suite)} / {html.escape(benchmark)} / {html.escape(run_id)}</h1>",
-             '<p class="muted">Produced by the wspy-run profile launcher (item 7).</p>']
+             '<p class="muted">Produced by the wspy-run profile launcher (item 7) or the Run tab\'s '
+             'configuration checklist (item 9).</p>']
 
     if workload_str:
         parts.append(f"<p>Workload: <code>{html.escape(workload_str)}</code></p>")
-        # No structured record of which profile(s) produced this run yet
-        # (that's #16, structured configuration provenance) -- prefill the
-        # profile launcher's workload/suite/benchmark and leave the profile
-        # field for the user to re-pick.
-        rerun_url = ("/?" +
-                     "profile_workload=" + _urlescape(workload_str) +
-                     "&profile_suite=" + _urlescape(suite) +
-                     "&profile_benchmark=" + _urlescape(benchmark))
+        rerun_url = build_rerun_url(workload_str, suite, benchmark, rerun_preset, rerun_checklist)
+        if rerun_preset:
+            note = f"(preset &ldquo;{html.escape(rerun_preset)}&rdquo; prefilled)"
+        elif rerun_checklist:
+            note = "(configuration checklist prefilled from this run)"
+        else:
+            note = "(no structured configuration recorded for this run -- re-pick it by hand; " \
+                   "only workload/suite/benchmark are prefilled)"
         parts.append(f'<p><a href="{rerun_url}">Customize &amp; run again</a> '
-                      f'<span class="muted">(re-pick the profile; workload/suite/benchmark are prefilled)</span></p>')
+                      f'<span class="muted">{note}</span></p>')
     else:
         parts.append('<p class="muted">No workload command recorded in manifest.json.</p>')
 
@@ -1740,7 +1847,7 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
     raw = []
 
     raw.append("<h2>Passes</h2><ul class=\"artifacts\">")
-    for p in run_manifest.get("passes", []):
+    for p, cp in zip(passes, pass_provenance):
         name = p.get("name", "?")
         output = p.get("output")
         pass_manifest = p.get("manifest")
@@ -1761,6 +1868,9 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
             accounted_for.add(pass_manifest)
             if os.path.isfile(os.path.join(rundir, pass_manifest)):
                 raw.append(f' &middot; <a href="{base}/{_urlescape(pass_manifest)}">manifest</a>')
+        cp_text = format_config_provenance(cp)
+        if cp_text:
+            raw.append(f'<br><span class="muted">{html.escape(cp_text)}</span>')
         raw.append("</li>")
     raw.append("</ul>")
 
@@ -1813,6 +1923,30 @@ def _urlescape(s):
     # below) unquotes the path, so a %2F here would arrive as a literal,
     # unmatchable "%2F" in the filename instead of a directory separator.
     return quote(s, safe="/")
+
+
+def build_rerun_url(workload_str, suite, benchmark, preset=None, checklist=None):
+    """Builds the '/?' URL item 17's "customize & run again" links use.
+    Always restores workload/suite/benchmark (pre-item-17 behavior); when
+    checklist_from_pass_provenance() found a restorable preset or checklist
+    for the report, it also rides along as a single 'config' query
+    parameter (JSON -- a checklist is a nested structure the older flat
+    per-field query-param scheme can't express). preset/checklist are
+    mutually exclusive by construction; passing neither just omits the
+    parameter, identical to a pre-item-17 rerun link."""
+    from urllib.parse import quote
+    url = ("/?" +
+           "workload=" + _urlescape(workload_str) +
+           "&suite=" + _urlescape(suite) +
+           "&benchmark=" + _urlescape(benchmark))
+    state = {}
+    if preset:
+        state["preset"] = preset
+    elif checklist:
+        state["checklist"] = checklist
+    if state:
+        url += "&config=" + quote(json.dumps(state))
+    return url
 
 
 def render_compare(output_root, keys):
@@ -1947,6 +2081,29 @@ class Handler(BaseHTTPRequestHandler):
                     if alias in qs:
                         prefill[key] = qs[alias][0]
                         break
+            # Item 17: a report's "Customize & run again" link carries the
+            # preset/configuration/option state build_rerun_url() resolved
+            # from that report's own configuration_provenance, as a single
+            # JSON 'config' param (a checklist is nested, so the flat
+            # per-field scheme above can't express it). Untrusted input
+            # (a hand-edited URL) -- validated defensively before it
+            # reaches render_run_tab(), same as any other query param here.
+            if "config" in qs:
+                try:
+                    state = json.loads(qs["config"][0])
+                except (ValueError, TypeError):
+                    state = None
+                if isinstance(state, dict):
+                    preset = state.get("preset")
+                    if isinstance(preset, str) and preset in BUILTIN_PROFILES:
+                        prefill["preset"] = preset
+                    checklist = state.get("checklist")
+                    if isinstance(checklist, dict):
+                        prefill["checklist"] = {
+                            k: v for k, v in checklist.items()
+                            if k in ("tree", "counters", "system", "gpu", "ibs")
+                            and isinstance(v, dict)
+                        }
             self._send(200, render_index(cfg, prefill))
             return
 
