@@ -81,6 +81,10 @@ static const struct plot_template templates[] = {
     { "branch miss" }, 1, "points" },
   { "float", "Float Instruction Mix", "% of instructions",
     { "float" }, 1, "points" },
+  { "ibs", "AMD IBS Sample Counts", "samples per interval",
+    { "ibs_fetch","ibs_op","ibs_op_unfiltered" }, 1, "points" },
+  { "ibs-accepted-ratio", "IBS Op Accepted Ratio (filtered/unfiltered)", "ratio",
+    { "ibs_op_accepted_ratio" }, 1, "points" },
 };
 static const int ntemplates = sizeof(templates) / sizeof(templates[0]);
 
@@ -171,7 +175,13 @@ static int match_templates(char * const *header_fields,int header_n,int time_col
  * just the generic fallback, in case a future template's candidate list
  * ever collided with these names. */
 static int is_excluded_metric_column(const char *name){
-  return !strcmp(name,"counters_measured") || !strcmp(name,"counters_requested");
+  return !strcmp(name,"counters_measured") || !strcmp(name,"counters_requested") ||
+         /* ibs_l3missonly/ibs_ldlat_threshold/ibs_fetchlat_threshold (topdown.c's
+          * print_ibs()) are per-run filter configuration, constant on every row --
+          * not a per-tick workload measurement, same reasoning as the coverage
+          * columns above. */
+         !strcmp(name,"ibs_l3missonly") || !strcmp(name,"ibs_ldlat_threshold") ||
+         !strcmp(name,"ibs_fetchlat_threshold");
 }
 
 /* Appends one "network-io" plot covering every column whose name starts

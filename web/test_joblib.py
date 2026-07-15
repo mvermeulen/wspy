@@ -134,6 +134,30 @@ class BuildConfigurationPassesTest(unittest.TestCase):
         self.assertFalse(any(f.startswith("--passes=") for f in passes[0]["flags"]))
         self.assertIn("--interval", passes[0]["flags"])
 
+    def test_ibs_defaults_to_aggregate_no_interval(self):
+        checklist = {"ibs": {"enabled": True, "profile": "basic"}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        self.assertIn("--ibs-basic", passes[0]["flags"])
+        self.assertNotIn("--interval", passes[0]["flags"])
+
+    def test_ibs_interval_given_adds_interval_flag(self):
+        checklist = {"ibs": {"enabled": True, "profile": "memory-deep", "interval_secs": "1"}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        self.assertIn("--ibs-memory-deep", passes[0]["flags"])
+        idx = passes[0]["flags"].index("--interval")
+        self.assertEqual(passes[0]["flags"][idx + 1], "1")
+
+    def test_ibs_maxcnt_ldlat_fetchlat_overrides(self):
+        checklist = {"ibs": {"enabled": True, "profile": "memory-deep",
+                              "maxcnt": "500", "ldlat": "128", "fetchlat": "256"}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        flags = passes[0]["flags"]
+        self.assertEqual(flags[flags.index("--ibs-maxcnt") + 1], "500")
+        self.assertEqual(flags[flags.index("--ibs-ldlat") + 1], "128")
+        self.assertEqual(flags[flags.index("--ibs-fetchlat") + 1], "256")
+
     def test_category_tags_each_enabled_configuration(self):
         # Structured configuration provenance (INVESTIGATION_4.0.md item 16):
         # each pass carries a stable launcher-vocabulary "category", distinct

@@ -579,6 +579,9 @@ def build_configuration_passes(rundir, checklist):
             flags += ["--ibs-ldlat", str(ldlat)]
         if fetchlat is not None:
             flags += ["--ibs-fetchlat", str(fetchlat)]
+        interval = parse_optional_int(ibs.get("interval_secs"), 1, 3600)
+        if interval is not None:
+            flags += ["--interval", str(interval)]
         csv = bool(ibs.get("csv", True))
         if csv:
             flags.append("--csv")

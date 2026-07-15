@@ -69,11 +69,13 @@ Builtin profiles:
               left unbounded and allowed to run long if the workload does
               (see --list to check which passes in a given profile carry a
               timeout)
-  ibs-basic   single pass: unfiltered AMD IBS (ibs_fetch+ibs_op) sample counts
-              (AMD-only; wspy warns and produces no IBS columns elsewhere)
+  ibs-basic   single pass: unfiltered AMD IBS (ibs_fetch+ibs_op) sample counts,
+              one-second interval time series (AMD-only; wspy warns and
+              produces no IBS columns elsewhere)
   ibs-memory-deep  single pass: AMD IBS with l3missonly+ldlat filtering on
-              ibs_op for memory-path analysis -- known to skew the effective
-              sampling period, see the run's own output for skew annotations
+              ibs_op for memory-path analysis, one-second interval time series
+              -- known to skew the effective sampling period, see the run's
+              own output for skew annotations
 
 Options:
   -o, --outdir <dir>       Directory to write pass output files into (default: .;
@@ -228,11 +230,11 @@ load_builtin_profile(){
       ;;
     ibs-basic)
       PASS_NAMES=(ibs)
-      PASS_FLAGS=("--csv --ibs-basic --no-ipc")
+      PASS_FLAGS=("--csv --interval 1 --ibs-basic --no-ipc")
       ;;
     ibs-memory-deep)
       PASS_NAMES=(ibs)
-      PASS_FLAGS=("--csv --ibs-memory-deep --no-ipc")
+      PASS_FLAGS=("--csv --interval 1 --ibs-memory-deep --no-ipc")
       ;;
     *)
       echo "$SCRIPT_NAME: unknown profile: $profile (try --list)" >&2

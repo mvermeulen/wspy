@@ -1461,6 +1461,7 @@ def render_run_tab(prefill, cfg):
               <option value="memory-deep"{" selected" if sec('ibs').get('profile') == 'memory-deep' else ""}>memory-deep (l3missonly+ldlat filtering)</option>
             </select>
           </label>
+          <label>Interval seconds <input type="text" id="ibs_interval" value="{val('ibs', 'interval_secs')}" placeholder="(aggregate)"></label>
           <div class="row">
             <label><code>--ibs-maxcnt</code> <input type="text" id="ibs_maxcnt" value="{val('ibs', 'maxcnt')}" placeholder="(default)"></label>
             <label><code>--ibs-ldlat</code> <input type="text" id="ibs_ldlat" value="{val('ibs', 'ldlat')}" placeholder="(default)"></label>

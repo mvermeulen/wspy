@@ -80,6 +80,7 @@
       ibs: {
         enabled: getChecked("ibs_enabled"),
         profile: byId("ibs_profile") ? byId("ibs_profile").value : "basic",
+        interval_secs: getValue("ibs_interval"),
         maxcnt: getValue("ibs_maxcnt"),
         ldlat: getValue("ibs_ldlat"),
         fetchlat: getValue("ibs_fetchlat"),
