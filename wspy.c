@@ -877,7 +877,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   
   i = parse_options(argc,argv);
   if (i == 2){
-    fprintf(stdout,"wspy %d.%d\n",WSPY_VERSION_MAJOR,WSPY_VERSION_MINOR);
+    fprintf(stdout,"wspy %d.%d.%d\n",WSPY_VERSION_MAJOR,WSPY_VERSION_MINOR,WSPY_VERSION_PATCH);
     return 0;
   }
   if (i == 3){
