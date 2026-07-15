@@ -403,6 +403,10 @@
     if (t.error) {
       html += '<div class="status-warn">' + escapeHtml(t.error) + "</div>";
     } else {
+      if (t.queried_name) {
+        html += '<div class="muted">"' + escapeHtml(t.name) + '" is a build-suite subset -- '
+          + "querying full test \"" + escapeHtml(t.queried_name) + "\" for its estimate</div>";
+      }
       html += "<div>" + escapeHtml(t.name) + ": installed=" + escapeHtml(t.installed || "unknown")
         + ", times run=" + escapeHtml(t.times_run || "0")
         + (t.last_run ? ", last run=" + escapeHtml(t.last_run) : "") + "</div>";
