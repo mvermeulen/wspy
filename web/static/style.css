@@ -96,7 +96,26 @@ input[type="text"], input[type="date"], select {
 
 .status-ok { color: #1a7f37; font-weight: 600; }
 .status-failed { color: #cf222e; font-weight: 600; }
+.status-warn { color: #9a6700; font-weight: 600; }
 .status-unknown { color: var(--muted); }
+
+.button-row { display: flex; gap: 0.5rem; align-items: center; margin: 0.75rem 0; }
+
+.check-results {
+  margin: 0 0 0.75rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+}
+.check-section { margin-bottom: 0.6rem; }
+.check-section:last-child { margin-bottom: 0; }
+.check-test {
+  margin: 0.4rem 0;
+  padding-left: 0.6rem;
+  border-left: 2px solid var(--border);
+}
+.check-test code { display: block; margin-bottom: 0.15rem; }
 
 fieldset.preview {
   border: 1px solid var(--border);

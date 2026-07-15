@@ -479,6 +479,164 @@ def run_sync(argv, cwd=None, timeout=120):
         return None, f"[error] failed to launch {argv[0]}: {e}", False
 
 
+# ---------------------------------------------------------------------------
+# Item 18: Run tab "Check" button -- perf-counter-access sysctls plus, for
+# phoronix-test-suite workloads specifically, an estimated/actual runtime
+# looked up via `phoronix-test-suite info <test>`. Deliberately optional and
+# separate from the run itself (matching the design note's "quickly check
+# ... before launching" framing) -- nothing here blocks or alters a run,
+# it's read-only discovery like the Discovery tab's capabilities/preflight
+# checks, just surfaced next to the Run button since that's the moment this
+# information is actually useful. No estimator exists yet for cpu2017/
+# pbbsbench/arbitrary commands (INVESTIGATION_4.0.md item 18's own scoping
+# note), so those degrade to "no estimate available" rather than guessing.
+# ---------------------------------------------------------------------------
+
+PERF_PARANOID_PATH = "/proc/sys/kernel/perf_event_paranoid"
+NMI_WATCHDOG_PATH = "/proc/sys/kernel/nmi_watchdog"
+PERF_PARANOID_MAX_OK = 1   # CLAUDE.md/scripts/setup_perf.sh's documented minimum
+NMI_WATCHDOG_DESIRED = 0
+
+
+def _read_sysctl_int(path):
+    """Best-effort single-integer /proc/sys read -- returns (value_or_None,
+    error_or_None), never raises. A missing file (non-Linux, or a sysctl
+    this kernel doesn't expose) and a permission error both degrade to
+    "unknown" rather than failing the whole check, the same "measured vs
+    unavailable" idiom coverage.c/provenance.c use for hardware-side
+    unavailability."""
+    try:
+        with open(path) as f:
+            return int(f.read().strip()), None
+    except FileNotFoundError:
+        return None, "not present on this system"
+    except (OSError, ValueError) as e:
+        return None, str(e)
+
+
+def check_perf_access():
+    """Reads perf_event_paranoid/nmi_watchdog directly -- the same two
+    sysctls scripts/setup_perf.sh already checks/adjusts -- and reports each
+    as ok/warn/unknown against wspy's documented minimum requirement, no
+    wspy invocation needed since these are plain /proc/sys reads."""
+    results = {}
+    paranoid, perr = _read_sysctl_int(PERF_PARANOID_PATH)
+    if paranoid is None:
+        results["perf_event_paranoid"] = {"value": None, "status": "unknown", "detail": perr}
+    else:
+        ok = paranoid <= PERF_PARANOID_MAX_OK
+        results["perf_event_paranoid"] = {
+            "value": paranoid, "status": "ok" if ok else "warn",
+            "detail": f"wspy needs <= {PERF_PARANOID_MAX_OK} for unprivileged counter access "
+                      f"(root, or CAP_SYS_PTRACE, also works regardless of this value)",
+        }
+    nmi, nerr = _read_sysctl_int(NMI_WATCHDOG_PATH)
+    if nmi is None:
+        results["nmi_watchdog"] = {"value": None, "status": "unknown", "detail": nerr}
+    else:
+        ok = nmi == NMI_WATCHDOG_DESIRED
+        results["nmi_watchdog"] = {
+            "value": nmi, "status": "ok" if ok else "warn",
+            "detail": "an active watchdog reserves one hardware counter system-wide "
+                      "(wspy still runs, just with one fewer slot)",
+        }
+    return results
+
+
+# Subcommands that take one or more test/suite names as trailing positional
+# arguments -- batch-run is what wspy-run/workload/phoronix/run_test.sh
+# actually uses; run/benchmark are the same shape for an ad hoc invocation.
+PHORONIX_RUN_SUBCOMMANDS = ("batch-run", "run", "benchmark")
+PHORONIX_MAX_TESTS_CHECKED = 5  # a handful is plenty for an on-page check; batch-run rarely lists more
+
+
+def parse_phoronix_test_names(workload):
+    """If workload looks like a `phoronix-test-suite <run-subcommand> <test>
+    [<test> ...]` invocation, returns the list of test name tokens (argv
+    after the subcommand, skipping anything that looks like a flag); else
+    []. Best-effort argv parsing via shlex -- an unparseable command string
+    (unbalanced quotes) just yields no match rather than raising, since this
+    is advisory UI, not something that gates a run."""
+    try:
+        tokens = shlex.split(workload or "")
+    except ValueError:
+        return []
+    if len(tokens) < 3:
+        return []
+    if os.path.basename(tokens[0]) != "phoronix-test-suite":
+        return []
+    if tokens[1] not in PHORONIX_RUN_SUBCOMMANDS:
+        return []
+    return [t for t in tokens[2:] if not t.startswith("-")]
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_DURATION_RE = re.compile(
+    r"(?:(\d+)\s*Hours?)?[,\s]*(?:(\d+)\s*Minutes?)?[,\s]*(?:(\d+(?:\.\d+)?)\s*Seconds?)?",
+    re.IGNORECASE)
+
+
+def _parse_duration_seconds(text):
+    """'132 Seconds' / '2 Minutes, 12 Seconds' / '1 Hour, 3 Minutes' -> float
+    seconds, or None if nothing matched -- phoronix-test-suite's own
+    human-readable duration formatting, not a fixed unit."""
+    if not text:
+        return None
+    m = _DURATION_RE.search(text)
+    if not m or not any(m.groups()):
+        return None
+    hours, minutes, seconds = (float(g) if g else 0.0 for g in m.groups())
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def parse_phoronix_info_fields(output):
+    """Parses `phoronix-test-suite info`'s "Label: value" text report into a
+    dict keyed by label text (ANSI color codes stripped; phoronix
+    right-pads values with spaces for column alignment, so both sides are
+    stripped). Not a full parse of the whole report (change history,
+    OpenBenchmarking stats, ...) -- only the handful of fields this check
+    cares about happen to be simple "Label: value" lines, which is all this
+    needs."""
+    fields = {}
+    for raw_line in _ANSI_RE.sub("", output or "").splitlines():
+        m = re.match(r"^([A-Za-z][A-Za-z0-9 /\-.]*):\s+(.*)$", raw_line)
+        if not m:
+            continue
+        fields[m.group(1).strip()] = m.group(2).strip()
+    return fields
+
+
+def estimate_phoronix_runtime(fields):
+    """Applies the "check" button's runtime-source rule (INVESTIGATION_4.0.md
+    item 18's original design note): not installed, or installed but never
+    run -> the profile's own generic estimate; installed and already run at
+    least once on this host -> the host's own measured average, a better
+    estimate than the generic one once it exists."""
+    installed = fields.get("Test Installed") == "Yes"
+    times_run = fields.get("Times Run")
+    has_run = installed and times_run not in (None, "", "0")
+    if has_run:
+        text = fields.get("Average Run-Time") or fields.get("Latest Run-Time")
+        return {
+            "source": "measured",
+            "text": text,
+            "seconds": _parse_duration_seconds(text),
+            "detail": f"measured average from {times_run} prior run(s) on this host",
+        }
+    text = fields.get("Estimated Run-Time")
+    if installed:
+        detail = "installed but never run yet on this host -- using phoronix-test-suite's own estimate"
+    else:
+        detail = ("not installed yet -- using phoronix-test-suite's own estimate "
+                  "(install time not included)")
+    return {
+        "source": "installed-not-run" if installed else "not-installed",
+        "text": text,
+        "seconds": _parse_duration_seconds(text),
+        "detail": detail,
+    }
+
+
 def read_manifest_workload(manifest_path):
     """Best-effort: pull the workload command back out of a manifest.json's
     command.argv (manifest.c writes just the workload's own argv there, not
@@ -1262,8 +1420,18 @@ def render_run_tab(prefill, cfg):
       <pre id="preview">(fill in a workload command above)</pre>
       <p id="preview-notes" class="muted"></p>
     </fieldset>
-    <button type="submit" id="run-button">Run</button>
+    <div class="button-row">
+      <button type="submit" id="run-button">Run</button>
+      <button type="button" id="check-button">Check</button>
+    </div>
+    <p class="muted">"Check" (item 18) is optional and doesn't launch anything: it reports whether
+       <code>perf_event_paranoid</code>/<code>nmi_watchdog</code> are set for unprivileged counter
+       access, and -- for a <code>phoronix-test-suite batch-run</code>/<code>run</code>/
+       <code>benchmark</code> workload specifically -- whether the test is installed and an
+       estimated (not installed, or installed but never run) or measured (already run on this host)
+       single-run time.</p>
   </form>
+  <div id="check-results" class="check-results" hidden></div>
   <pre id="live-output" class="live-output" hidden></pre>
   <p id="run-result"></p>
 </section>
@@ -2231,6 +2399,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/run-custom": self._start_custom_run,
             "/api/preview": self._preview,
             "/api/enqueue-job": self._enqueue_job,
+            "/api/check-run": self._check_run,
             "/api/discovery/capabilities": self._discovery_capabilities,
             "/api/discovery/preflight": self._discovery_preflight,
             "/api/discovery/validate": self._discovery_validate,
@@ -2645,6 +2814,71 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     # -----------------------------------------------------------------
+    # Item 18: Run tab "Check" button. Synchronous like the Discovery tab
+    # family below (no workload launched, nothing to stream live) but kept
+    # in the Run tab family since that's the button it sits next to.
+    # -----------------------------------------------------------------
+
+    def _check_run(self, cfg, body):
+        workload = (body.get("workload") or "").strip()
+        result = {"perf": check_perf_access()}
+
+        test_names = parse_phoronix_test_names(workload)
+        if not test_names:
+            result["phoronix"] = {
+                "detected": False,
+                "note": "not a phoronix-test-suite command -- no runtime estimator for this "
+                        "workload yet (INVESTIGATION_4.0.md item 18)",
+            }
+            self._send_json(200, result)
+            return
+
+        phoronix_bin = cfg["phoronix_bin"]
+        checked_names = test_names[:PHORONIX_MAX_TESTS_CHECKED]
+        tests = []
+        total_seconds = 0.0
+        total_known = True
+        for name in checked_names:
+            argv = [phoronix_bin, "info", name]
+            rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=30)
+            entry = {"name": name, "command": shell_preview(argv)}
+            if timed_out:
+                entry["error"] = "phoronix-test-suite info timed out"
+                total_known = False
+            elif rc is None:
+                entry["error"] = f"failed to launch {phoronix_bin} -- is phoronix-test-suite installed?"
+                total_known = False
+            else:
+                fields = parse_phoronix_info_fields(output)
+                if not fields:
+                    entry["error"] = f"no such test, or unrecognized output (exit {rc})"
+                    total_known = False
+                else:
+                    estimate = estimate_phoronix_runtime(fields)
+                    if estimate["seconds"] is None:
+                        total_known = False
+                    else:
+                        total_seconds += estimate["seconds"]
+                    entry.update({
+                        "installed": fields.get("Test Installed"),
+                        "times_run": fields.get("Times Run"),
+                        "last_run": fields.get("Last Run"),
+                        "estimated_run_time": fields.get("Estimated Run-Time"),
+                        "average_run_time": fields.get("Average Run-Time"),
+                        "latest_run_time": fields.get("Latest Run-Time"),
+                        "estimate": estimate,
+                    })
+            tests.append(entry)
+
+        result["phoronix"] = {
+            "detected": True,
+            "tests": tests,
+            "total_seconds": total_seconds if (total_known and tests) else None,
+            "truncated": len(test_names) > len(checked_names),
+        }
+        self._send_json(200, result)
+
+    # -----------------------------------------------------------------
     # Discovery tab family (item 9): wspy-validate, wspy-store/wspy-summary,
     # wspy --capabilities/--preflight. All synchronous (run_sync()) -- none
     # of these launch a workload, so there's no unbounded runtime to stream
@@ -2849,6 +3083,10 @@ def main():
                           "'queue instead of run now' toggle writes into (item 13; default: web/jobs, "
                           "the same default wspy-queue itself uses) -- jobs are processed by the "
                           "separate wspy-queue tool, not by this server")
+    ap.add_argument("--phoronix-test-suite", default="phoronix-test-suite", dest="phoronix_test_suite",
+                     help="phoronix-test-suite binary/command the Run tab's 'Check' button (item 18) "
+                          "uses to look up a Phoronix test's install status and estimated/measured "
+                          "runtime (default: resolved via PATH, like wspy-plot's gnuplot dependency)")
     args = ap.parse_args()
 
     output_root = os.path.abspath(args.output_root)
@@ -2886,6 +3124,7 @@ def main():
         "run_index_file": run_index_file,
         "store_db": store_db,
         "jobs_dir": os.path.abspath(args.jobs_dir),
+        "phoronix_bin": args.phoronix_test_suite,
     }
     print(f"wspy web launcher listening on http://{args.host}:{args.port}  "
           f"(output root: {output_root})")
