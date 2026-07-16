@@ -143,7 +143,7 @@ struct raw_event arm_raw_events[] = {
   { "br_mis_pred_retired","event=0x22",PERF_TYPE_RAW,COUNTER_BRANCH|COUNTER_TOPDOWN2,{{0}} },
   { "l2d_cache","event=0x16",PERF_TYPE_RAW,COUNTER_L2CACHE,{{0}} },
   // l2d_cache_lmiss_rd exists on both PMU clusters on heterogeneous ARM SoCs.
-  { "l2d_cache_lmiss_rd","event=0x37",PERF_TYPE_RAW,COUNTER_L2CACHE,{{0}} },
+  { "l2d_cache_lmiss_rd","event=0x4009",PERF_TYPE_RAW,COUNTER_L2CACHE,{{0}} },
   { "mem_access","event=0x13",PERF_TYPE_RAW,COUNTER_MEMORY,{{0}} },
   { "bus_access","event=0x19",PERF_TYPE_RAW,COUNTER_MEMORY,{{0}} },
   { "l1d_cache_refill","event=0x03",PERF_TYPE_RAW,COUNTER_ARM_DCACHE_MEM,{{0}} },
