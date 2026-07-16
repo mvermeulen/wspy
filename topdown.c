@@ -90,6 +90,9 @@ struct raw_event amd_raw_events[] = {
   { "branch-misses","event=0xc3",PERF_TYPE_RAW,COUNTER_BRANCH,{0} },
   { "conditional-branches","event=0xd1",PERF_TYPE_RAW,COUNTER_BRANCH,{0} },
   { "indirect-branches","event=0xcc",PERF_TYPE_RAW,COUNTER_BRANCH,{0} },
+  { "near-return","event=0xc8",PERF_TYPE_RAW,COUNTER_BRANCH,{0} },
+  { "near-return-mispredicted","event=0xc9",PERF_TYPE_RAW,COUNTER_BRANCH,{0} },
+  { "indirect-branch-mispredicted","event=0xca",PERF_TYPE_RAW,COUNTER_BRANCH,{0} },
   { "op_cache_hit_miss.all_op_cache_accesses","event=0x28f,umask=0x7",PERF_TYPE_RAW,COUNTER_OPCACHE|COUNTER_TOPDOWN_OP,{0} },
   { "op_cache_hit_miss.op_cache_miss","event=0x28f,umask=0x4",PERF_TYPE_RAW,COUNTER_OPCACHE|COUNTER_TOPDOWN_OP,{0} },
   { "l2_request_g1.all_no_prefetch","event=0x60,umask=0xf9",PERF_TYPE_RAW,COUNTER_L2CACHE,{0} },
@@ -97,10 +100,20 @@ struct raw_event amd_raw_events[] = {
   { "l2_pf_miss_l2_hit_l3", "event=0x71,umask=0x1f",PERF_TYPE_RAW,COUNTER_L2CACHE,{0} },
   { "l2_pf_miss_l2_l3","event=0x72,umask=0x1f",PERF_TYPE_RAW,COUNTER_L2CACHE,{0} },
   { "l2_cache_req_stat.ic_dc_miss_in_l2","event=0x64,umask=0x9",PERF_TYPE_RAW,COUNTER_L2CACHE,{0} },
-  { "ls_data_cache_refills.local_all","event=0x43,umask=0xf",PERF_TYPE_RAW,COUNTER_MEMORY,{0} },
-  { "ls_data_cache_refills.remote_all","event=0x43,umask=0x50",PERF_TYPE_RAW,COUNTER_MEMORY,{0} },
-  { "ls_hwpref_data_cache_refills.local_all","event=0x50,umask=0xf",PERF_TYPE_RAW,COUNTER_MEMORY,{0} },
-  { "ls_hwpref_data_cache_refills.remote_all","event=0x50,umask=0x50",PERF_TYPE_RAW,COUNTER_MEMORY,{0} },
+  // "remote" here means a different NUMA node (multi-socket, or an NPS>1
+  // EPYC config) -- on a single-node host (any single-die/single-CCD client
+  // or APU part, e.g. Strix Halo) there is no remote node to refill from, so
+  // the whole local/remote split degrades to "local == everything" and adds
+  // no signal over not measuring it at all. Gated the same way AMD's L3
+  // events gate on /sys/devices/amd_l3/type: requires= clears .use before
+  // setup_counter_groups()/preflight ever see it if node1 doesn't exist, so
+  // the group is a real zero-cost skip (raw_counter_group() returns NULL
+  // for a fully-masked-out group, not an empty/meaningless one) rather than
+  // spending a counter slot and a pass on a number that can only ever be 0.
+  { "ls_data_cache_refills.local_all","event=0x43,umask=0xf,requires=/sys/devices/system/node/node1",PERF_TYPE_RAW,COUNTER_MEMORY,{0} },
+  { "ls_data_cache_refills.remote_all","event=0x43,umask=0x50,requires=/sys/devices/system/node/node1",PERF_TYPE_RAW,COUNTER_MEMORY,{0} },
+  { "ls_hwpref_data_cache_refills.local_all","event=0x50,umask=0xf,requires=/sys/devices/system/node/node1",PERF_TYPE_RAW,COUNTER_MEMORY,{0} },
+  { "ls_hwpref_data_cache_refills.remote_all","event=0x50,umask=0x50,requires=/sys/devices/system/node/node1",PERF_TYPE_RAW,COUNTER_MEMORY,{0} },
   { "fp_ret_fops_AVX512","event=0x20,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,0},
   { "fp_ret_fops_AVX256","event=0x10,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,0},
   { "fp_ret_fops_AVX128","event=0x8,umask=0x8",PERF_TYPE_RAW,COUNTER_FLOAT,0},
@@ -1958,6 +1971,8 @@ void print_branch(struct counter_group *cgroup,enum output_format oformat){
     fprintf(outfile,"branch miss,");
     if (cpu_info->vendor == VENDOR_ARM){
       fprintf(outfile,"br_immed_retired,br_return_retired,br_pred,br_mis_pred,");
+    } else if (cpu_info->vendor == VENDOR_AMD){
+      fprintf(outfile,"near_return,near_return_mispredicted,indirect_branch_mispredicted,");
     }
     return;
   }  
@@ -2005,6 +2020,12 @@ void print_branch(struct counter_group *cgroup,enum output_format oformat){
           if ((cinfo = find_ci_label(cgroup,"br_pred"))) br_pred_val = cinfo->value;
           if ((cinfo = find_ci_label(cgroup,"br_mis_pred"))) br_mis_pred_val = cinfo->value;
           fprintf(outfile,"%lu,%lu,%lu,%lu,", br_immed, br_return, br_pred_val, br_mis_pred_val);
+      } else if (cpu_info->vendor == VENDOR_AMD){
+          unsigned long near_ret = 0, near_ret_misp = 0, ind_misp = 0;
+          if ((cinfo = find_ci_label(cgroup,"near-return"))) near_ret = cinfo->value;
+          if ((cinfo = find_ci_label(cgroup,"near-return-mispredicted"))) near_ret_misp = cinfo->value;
+          if ((cinfo = find_ci_label(cgroup,"indirect-branch-mispredicted"))) ind_misp = cinfo->value;
+          fprintf(outfile,"%lu,%lu,%lu,", near_ret, near_ret_misp, ind_misp);
       }
   } else {
       fprintf(outfile,"branches             %-14lu # %4.3f branches per 1000 inst\n",
@@ -2029,6 +2050,17 @@ void print_branch(struct counter_group *cgroup,enum output_format oformat){
                   br_pred_val,(double) br_pred_val / instructions * 1000.0);
           fprintf(outfile,"mispredicted exec    %-14lu # %4.3f mispredicted per 1000 inst\n",
                   br_mis_pred_val,(double) br_mis_pred_val / instructions * 1000.0);
+      } else if (cpu_info->vendor == VENDOR_AMD){
+          unsigned long near_ret = 0, near_ret_misp = 0, ind_misp = 0;
+          if ((cinfo = find_ci_label(cgroup,"near-return"))) near_ret = cinfo->value;
+          if ((cinfo = find_ci_label(cgroup,"near-return-mispredicted"))) near_ret_misp = cinfo->value;
+          if ((cinfo = find_ci_label(cgroup,"indirect-branch-mispredicted"))) ind_misp = cinfo->value;
+          fprintf(outfile,"near return          %-14lu # %4.3f near return per 1000 inst\n",
+                  near_ret,(double) near_ret / instructions * 1000.0);
+          fprintf(outfile,"near ret mispredict  %-14lu # %4.2f%% near return mispredict rate\n",
+                  near_ret_misp,(double) near_ret_misp / near_ret * 100.0);
+          fprintf(outfile,"indirect mispredict  %-14lu # %4.2f%% indirect branch mispredict rate\n",
+                  ind_misp,(double) ind_misp / ind_branches * 100.0);
       }
   }
 }

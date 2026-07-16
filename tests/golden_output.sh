@@ -46,6 +46,17 @@ if [ -x ./cpu_info ]; then
 fi
 echo "Detected CPU vendor: $vendor"
 
+# memory's local/remote raw events (topdown.c's amd_raw_events[]) carry a
+# requires=/sys/devices/system/node/node1 gate -- meaningless on a
+# single-NUMA-node host, since "remote" can only ever be 0 there -- so the
+# group's CSV header shape genuinely differs by host topology, not just
+# vendor. See topdown.c's amd_raw_events[] comment on those entries.
+has_remote_numa="no"
+if [ -d /sys/devices/system/node/node1 ]; then
+  has_remote_numa="yes"
+fi
+echo "Detected second NUMA node (node1): $has_remote_numa"
+
 # assert_csv_header <label> <flags...> -- <expected exact header line>
 assert_csv_header() {
   local label="$1"; shift
@@ -163,13 +174,21 @@ assert_csv_header_regex "system" --no-ipc --system -- \
 if [ "$vendor" = "AMD" ]; then
   echo ""
   echo "=== CSV header contract (exact match, AMD-specific raw event labels) ==="
-  assert_csv_header "branch"           --no-ipc --branch           -- "${BASE}branch miss,counters_measured,counters_requested,"
+  assert_csv_header "branch"           --no-ipc --branch           -- "${BASE}branch miss,near_return,near_return_mispredicted,indirect_branch_mispredicted,counters_measured,counters_requested,"
   assert_csv_header "cache2-l2"        --no-ipc --cache2           -- "${BASE}l2miss,counters_measured,counters_requested,"
   assert_csv_header "cache3-l3"        --no-ipc --cache3           -- "${BASE}l3miss,counters_measured,counters_requested,"
   assert_csv_header "dcache"           --no-ipc --dcache           -- "${BASE}L1-dcache miss,counters_measured,counters_requested,"
   assert_csv_header "icache"           --no-ipc --icache           -- "${BASE}L1-icache miss,counters_measured,counters_requested,"
   assert_csv_header "tlb"              --no-ipc --tlb              -- "${BASE}dTLB miss,iTLB miss,counters_measured,counters_requested,"
-  assert_csv_header "memory"           --no-ipc --memory           -- "${BASE}bandwidth,counters_measured,counters_requested,"
+  if [ "$has_remote_numa" = "yes" ]; then
+    assert_csv_header "memory"         --no-ipc --memory           -- "${BASE}bandwidth,counters_measured,counters_requested,"
+  else
+    # single NUMA node: every memory raw event's requires= gate clears its
+    # .use bit before setup_counter_groups() runs, so raw_counter_group()
+    # returns NULL (num_counters == 0) and the group never links in --
+    # same "zero extra columns" shape as topdown-backend/cache1 below.
+    assert_csv_header "memory-no-remote-numa" --no-ipc --memory      -- "${BASE}counters_measured,counters_requested,"
+  fi
   assert_csv_header "opcache"          --no-ipc --opcache          -- "${BASE}opcache miss,counters_measured,counters_requested,"
   assert_csv_header "float"            --no-ipc --float            -- "${BASE}float,counters_measured,counters_requested,"
   assert_csv_header "software"         --no-ipc --software         -- "${BASE}cpu-clock,task-clock,page faults,context switches,cpu migrations,major page faults,minor page faults,alignment faults,emulation faults,counters_measured,counters_requested,"
