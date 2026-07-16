@@ -213,6 +213,8 @@ int parse_options(int argc,char *const argv[]){
     { "no-arm-dcache-mem", no_argument, 0, 74 },
     { "arm-icache-tlb", no_argument, 0, 75 },
     { "no-arm-icache-tlb", no_argument, 0, 76 },
+    { "arm-mem-align-tlb", no_argument, 0, 77 },
+    { "no-arm-mem-align-tlb", no_argument, 0, 78 },
     { 0,0,0,0 },
   };
   while ((opt = getopt_long(argc,argv,"+abcio:rsStv",long_options,NULL)) != -1){
@@ -353,6 +355,12 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 76: // --no-arm-icache-tlb
       counter_mask &= (~COUNTER_ARM_ICACHE_TLB);
+      break;
+    case 77: // --arm-mem-align-tlb
+      counter_mask |= COUNTER_ARM_MEM_ALIGN_TLB;
+      break;
+    case 78: // --no-arm-mem-align-tlb
+      counter_mask &= (~COUNTER_ARM_MEM_ALIGN_TLB);
       break;
     case 48: // --gpu-smi
  #if AMDGPU

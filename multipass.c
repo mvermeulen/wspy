@@ -31,6 +31,7 @@ const struct multipass_group_name multipass_group_names[] = {
   { "float",           COUNTER_FLOAT },
   { "arm-dcache-mem",  COUNTER_ARM_DCACHE_MEM },
   { "arm-icache-tlb",  COUNTER_ARM_ICACHE_TLB },
+  { "arm-mem-align-tlb", COUNTER_ARM_MEM_ALIGN_TLB },
 };
 const int multipass_n_group_names = sizeof(multipass_group_names)/sizeof(multipass_group_names[0]);
 

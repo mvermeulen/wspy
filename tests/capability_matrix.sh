@@ -190,6 +190,7 @@ run_bundle "ibs-basic"             0 --csv --no-ipc --ibs-basic     -- /bin/true
 run_bundle "ibs-memory-deep"       0 --csv --no-ipc --ibs-memory-deep -- /bin/true
 run_bundle "arm-dcache-mem"        0 --csv --no-ipc --arm-dcache-mem  -- /bin/true
 run_bundle "arm-icache-tlb"        0 --csv --no-ipc --arm-icache-tlb  -- /bin/true
+run_bundle "arm-mem-align-tlb"     0 --csv --no-ipc --arm-mem-align-tlb -- /bin/true
 
 echo ""
 echo "=== GPU bundles (build=$gpu_build; must degrade gracefully either way) ==="

@@ -67,6 +67,7 @@ extern struct timespec start_time,finish_time;
 #define COUNTER_IBS         0x20000
 #define COUNTER_ARM_DCACHE_MEM 0x40000
 #define COUNTER_ARM_ICACHE_TLB 0x80000
+#define COUNTER_ARM_MEM_ALIGN_TLB 0x100000
 
 /* every counter type wspy knows how to request; used by --capabilities to
  * probe the full set regardless of what counter flags were also given */
@@ -74,7 +75,7 @@ extern struct timespec start_time,finish_time;
 		     COUNTER_TOPDOWN_BE|COUNTER_TOPDOWN_OP|COUNTER_BRANCH|COUNTER_DCACHE| \
 		     COUNTER_ICACHE|COUNTER_L1CACHE|COUNTER_L2CACHE|COUNTER_L3CACHE| \
 		     COUNTER_MEMORY|COUNTER_TLB|COUNTER_OPCACHE|COUNTER_SOFTWARE|COUNTER_FLOAT| \
-		     COUNTER_ARM_DCACHE_MEM|COUNTER_ARM_ICACHE_TLB)
+		     COUNTER_ARM_DCACHE_MEM|COUNTER_ARM_ICACHE_TLB|COUNTER_ARM_MEM_ALIGN_TLB)
 
 extern unsigned int counter_mask;
 
