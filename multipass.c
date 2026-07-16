@@ -29,6 +29,8 @@ const struct multipass_group_name multipass_group_names[] = {
   { "opcache",         COUNTER_OPCACHE },
   { "software",        COUNTER_SOFTWARE },
   { "float",           COUNTER_FLOAT },
+  { "arm-dcache-mem",  COUNTER_ARM_DCACHE_MEM },
+  { "arm-icache-tlb",  COUNTER_ARM_ICACHE_TLB },
 };
 const int multipass_n_group_names = sizeof(multipass_group_names)/sizeof(multipass_group_names[0]);
 

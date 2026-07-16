@@ -188,6 +188,8 @@ run_bundle "software"              0 --csv --no-ipc --software      -- /bin/true
 run_bundle "system"                0 --csv --no-ipc --system        -- /bin/true
 run_bundle "ibs-basic"             0 --csv --no-ipc --ibs-basic     -- /bin/true
 run_bundle "ibs-memory-deep"       0 --csv --no-ipc --ibs-memory-deep -- /bin/true
+run_bundle "arm-dcache-mem"        0 --csv --no-ipc --arm-dcache-mem  -- /bin/true
+run_bundle "arm-icache-tlb"        0 --csv --no-ipc --arm-icache-tlb  -- /bin/true
 
 echo ""
 echo "=== GPU bundles (build=$gpu_build; must degrade gracefully either way) ==="
@@ -260,7 +262,12 @@ run_expected_fatal_bundle "affinity-bad-domain-id" 1 --no-ipc --affinity=domain=
 # x86 test hosts (no midr_el1 at all) -- expected to fail loudly here, same
 # as any other zero-core-types host would; see test_affinity.c's dedicated
 # fake-ARM-sysfs fixture for the actual grouping-logic coverage.
-run_expected_fatal_bundle "affinity-coretype-unavailable" 1 --no-ipc --affinity=coretype=0 -- /bin/true
+if "$WSPY" --list-affinity -- /bin/true 2>&1 | grep -q "0 core type(s)"; then
+  run_expected_fatal_bundle "affinity-coretype-unavailable" 1 --no-ipc --affinity=coretype=0 -- /bin/true
+else
+  run_bundle "affinity-coretype-available" 0 --no-ipc --affinity=coretype=0 -- /bin/true
+  run_expected_fatal_bundle "affinity-coretype-invalid" 1 --no-ipc --affinity=coretype=99999 -- /bin/true
+fi
 
 echo ""
 echo "=== Kitchen-sink bundle (most counter groups + system + rusage at once) ==="
