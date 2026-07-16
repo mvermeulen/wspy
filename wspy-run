@@ -26,6 +26,7 @@ BENCHMARK=""
 RUN_ID=""
 UNIFIED=0
 RUNROOT=""
+AFFINITY=""
 
 declare -A PASS_EXT PASS_OUTFILE PASS_MANIFEST PASS_IS_TREE PASS_STATUS
 
@@ -100,6 +101,11 @@ Options:
   --run-id <id>            Explicit run id for the unified layout (default: an
                             auto-generated, sortable <timestamp-ms>-<pid>); only
                             valid together with --suite/--benchmark
+  --affinity <spec>        Pin every pass's workload to selected CPUs -- passed
+                            through as-is to each wspy invocation's own
+                            --affinity=<spec> (all/thread=<id>/nosmt/domain=<id>/
+                            cpuset=<c0,c1,...>; run --wspy's own --list-affinity
+                            to see this host's core/L3-domain ids)
   --list                   List builtin profiles and their passes, then exit
   --dry-run                Print the wspy command for each pass without running it
   -h, --help                Show this help
@@ -342,6 +348,9 @@ run_pass(){
     cmd+=(timeout "$timeout_secs")
   fi
   cmd+=("$WSPY" "${flagarr[@]}" -o "$outfile")
+  if [ -n "$AFFINITY" ]; then
+    cmd+=(--affinity "$AFFINITY")
+  fi
   if [ -n "$MANIFEST_DIR" ]; then
     manifest_file="${MANIFEST_DIR}/${PREFIX}${name}.manifest.json"
     cmd+=(--manifest "$manifest_file")
@@ -503,6 +512,9 @@ while [ $# -gt 0 ]; do
     --run-id)
       [ $# -ge 2 ] || { echo "$SCRIPT_NAME: $1 requires an argument" >&2; exit 1; }
       RUN_ID="$2"; shift 2 ;;
+    --affinity)
+      [ $# -ge 2 ] || { echo "$SCRIPT_NAME: $1 requires an argument" >&2; exit 1; }
+      AFFINITY="$2"; shift 2 ;;
     --list)
       LIST_ONLY=1; shift ;;
     --dry-run)

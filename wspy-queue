@@ -165,6 +165,7 @@ def process_job(running_path, cfg, dirs):
     manifest_on, run_index_path, store_ingest = joblib.resolve_toggles(cfg, job.get("toggles"))
     custom_plots = job.get("custom_plots") or []
     only_custom = bool(job.get("only_custom"))
+    affinity = job.get("affinity")
 
     print(f"[{job_id}] running ({job['mode']}) -> {rundir}")
     state = QueueRunState(rundir)
@@ -174,13 +175,14 @@ def process_job(running_path, cfg, dirs):
         supp_passes, preset_notes = joblib.build_supplementary_plot_passes(rundir, profile, custom_plots)
         joblib.execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
                                     workload_argv, run_index_path, store_ingest,
-                                    custom_plots, only_custom, preset_notes, supp_passes, manifest_on)
+                                    custom_plots, only_custom, preset_notes, supp_passes, manifest_on,
+                                    affinity)
     else:
         checklist, autofit_notes = joblib.autofit_checklist_for_custom_plots(
             job.get("checklist") or {}, custom_plots)
         joblib.execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_argv,
                                    checklist, manifest_on, run_index_path, store_ingest,
-                                   custom_plots, only_custom, autofit_notes)
+                                   custom_plots, only_custom, autofit_notes, affinity)
 
     ok = state.status == "done"
     job["result"] = {
@@ -346,10 +348,16 @@ def cmd_add(args, cfg):
         "run_index": not args.no_run_index,
         "store_ingest": not args.no_store_ingest,
     }
+    if args.affinity and not joblib.valid_affinity_spec(args.affinity):
+        print("wspy-queue: --affinity must be all/nosmt/thread=<id>/domain=<id>/"
+              "cpuset=<c0,c1,...>", file=sys.stderr)
+        return 1
+
     job = joblib.build_job(workload_argv, args.suite, benchmark, args.mode,
                             profile=args.profile, checklist=checklist,
                             custom_plots=custom_plots, only_custom=args.only_custom,
-                            toggles=toggles, run_id=args.run_id, notes=args.notes or "")
+                            toggles=toggles, run_id=args.run_id, notes=args.notes or "",
+                            affinity=args.affinity)
     errors = joblib.validate_job(job)
     if errors:
         print("wspy-queue: refusing to create invalid job: " + "; ".join(errors), file=sys.stderr)
@@ -421,6 +429,9 @@ def main():
     p_add.add_argument("--no-manifest", action="store_true")
     p_add.add_argument("--no-run-index", action="store_true")
     p_add.add_argument("--no-store-ingest", action="store_true")
+    p_add.add_argument("--affinity",
+                        help="pin the workload to selected CPUs: all (default), thread=<id>, "
+                             "nosmt, domain=<id>, or cpuset=<c0,c1,...> -- see wspy --affinity")
     p_add.add_argument("--notes", help="free-text note stored on the job")
     p_add.add_argument("workload", nargs=argparse.REMAINDER,
                         help="workload command, e.g. -- sleep 1")

@@ -18,7 +18,7 @@
  * breaks existing readers, MINOR when a field is added in a backward
  * compatible way, PATCH for fixes that don't change the shape. Consumers
  * should warn (not silently misparse) on an unrecognized MAJOR version. */
-#define MANIFEST_SCHEMA_VERSION "1.5.0"
+#define MANIFEST_SCHEMA_VERSION "1.6.0"
 
 /* One counter that setup_counters() (topdown.c) tried and failed to open via
  * perf_event_open, as recorded by coverage.c. Kept as its own small struct
@@ -106,6 +106,20 @@ struct manifest_info {
   const char *output_path;   /* -o <file>, NULL if output went to stdout   */
   const char *tree_output_path; /* --tree <file>, NULL if not used         */
   const char *manifest_path; /* path this manifest itself is written to    */
+  /* Core/thread affinity control (INVESTIGATION_4.0.md's "Core/thread
+   * affinity control" item, affinity.h): the resolved placement is part of
+   * a run's provenance, not just implicit in how it was launched.
+   * affinity_mode is one of affinity.h's affinity_mode_name() strings
+   * ("all"/"thread"/"nosmt"/"domain"/"cpuset"); affinity_requested is the
+   * literal --affinity=<spec> argument text (NULL if --affinity wasn't
+   * given at all, i.e. the implicit "all" default); affinity_cpus is the
+   * final resolved cpu list in "0,2-3,7" form (affinity_format_cpu_set()) --
+   * always populated, even for the "all" default, so a reader never has to
+   * cross-reference cpu_info.num_cores to know what "all" meant on this
+   * host. */
+  const char *affinity_mode;
+  const char *affinity_requested;
+  const char *affinity_cpus;
   /* Counter capability discovery + coverage reporting (see coverage.h): how
    * many counters this run's counter_mask/aflag combination requested vs
    * how many actually opened via perf_event_open. Independent of

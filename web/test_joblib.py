@@ -211,6 +211,57 @@ class BuildPassArgvTest(unittest.TestCase):
         self.assertNotIn("--config-name", argv)
         self.assertNotIn("--config-option", argv)
 
+    def test_affinity_appends_flag(self):
+        p = {"name": "custom", "csv": False, "flags": ["--software"]}
+        argv, _, _ = joblib.build_pass_argv(
+            "/usr/bin/wspy", "/tmp/rundir", p, manifest_on=False, run_index_path=None,
+            affinity="domain=1")
+        self.assertIn("--affinity", argv)
+        self.assertEqual(argv[argv.index("--affinity") + 1], "domain=1")
+
+    def test_affinity_all_omits_flag(self):
+        p = {"name": "custom", "csv": False, "flags": ["--software"]}
+        argv, _, _ = joblib.build_pass_argv(
+            "/usr/bin/wspy", "/tmp/rundir", p, manifest_on=False, run_index_path=None,
+            affinity="all")
+        self.assertNotIn("--affinity", argv)
+
+
+class AffinitySpecTest(unittest.TestCase):
+    def test_valid_specs(self):
+        for spec in ("all", "nosmt", "thread=0", "thread=23", "domain=1", "coretype=0",
+                     "coretype=1", "cpuset=0", "cpuset=0,2-3", "cpuset=0-3,12-15"):
+            self.assertTrue(joblib.valid_affinity_spec(spec), spec)
+
+    def test_invalid_specs(self):
+        for spec in ("", None, "bogus", "thread=", "thread=-1", "domain=abc",
+                     "coretype=", "coretype=-1", "cpuset="):
+            self.assertFalse(joblib.valid_affinity_spec(spec), spec)
+
+    def test_build_wspy_run_argv_includes_affinity(self):
+        argv = joblib.build_wspy_run_argv("/usr/bin/wspy-run", "/usr/bin/wspy", "/tmp/out",
+                                           "manual", "sleep", "run1", "quick", ["sleep", "1"],
+                                           affinity="nosmt")
+        self.assertIn("--affinity", argv)
+        self.assertEqual(argv[argv.index("--affinity") + 1], "nosmt")
+
+    def test_build_wspy_run_argv_omits_default_all(self):
+        argv = joblib.build_wspy_run_argv("/usr/bin/wspy-run", "/usr/bin/wspy", "/tmp/out",
+                                           "manual", "sleep", "run1", "quick", ["sleep", "1"],
+                                           affinity="all")
+        self.assertNotIn("--affinity", argv)
+
+    def test_build_job_round_trips_affinity(self):
+        job = joblib.build_job(["sleep", "1"], "manual", "sleep", "preset", profile="quick",
+                                affinity="domain=0")
+        self.assertEqual(joblib.validate_job(job), [])
+        self.assertEqual(job["affinity"], "domain=0")
+
+    def test_validate_job_rejects_bad_affinity(self):
+        job = joblib.build_job(["sleep", "1"], "manual", "sleep", "preset", profile="quick")
+        job["affinity"] = "bogus"
+        self.assertTrue(joblib.validate_job(job))
+
 
 class ChecklistFromProvenanceTest(unittest.TestCase):
     """INVESTIGATION_4.0.md's "What shipped in 4.1" ("Browse-reports"): the read

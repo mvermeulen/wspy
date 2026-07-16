@@ -26,6 +26,7 @@
 #include "ptrace_arch.h"
 #include "ibs.h"
 #include "phase.h"
+#include "affinity.h"
 #if AMDGPU
 #include "amd_sysfs.h"
 extern int gpu_busy_requested;
@@ -359,6 +360,20 @@ int launch_child(int argc,char *const argv[],char *const envp[]){
   if (pipe(child_pipe) == -1) fatal("pipe creation failed\n");
   switch(child = fork()){
   case 0: // child
+    // Core/thread affinity control (affinity.h, INVESTIGATION_4.0.md's
+    // "Core/thread affinity control" item): applied to the child itself,
+    // before PTRACE_TRACEME/execve, so it's inherited across the exec into
+    // the actual workload. affinity_active is 0 for the default AFFINITY_ALL
+    // request (every CPU this wspy process already sees) -- skipped
+    // entirely in that case, matching the documented no-op. A failure here
+    // is logged (error(), which doesn't exit) and otherwise ignored: the
+    // workload still launches unpinned rather than losing the whole run
+    // over a placement request main() already validated was resolvable.
+    if (affinity_active){
+      if (sched_setaffinity(0,sizeof(requested_affinity.set),&requested_affinity.set) != 0){
+	error("sched_setaffinity failed, errno = %d - %s\n",errno,strerror(errno));
+      }
+    }
     if (treeflag){
       debug("ptrace(PTRACE_TRACEME,0)\n");
       ptrace(PTRACE_TRACEME,0,NULL,NULL);

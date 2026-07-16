@@ -27,6 +27,7 @@
 #include "preflight.h"
 #include "phase.h"
 #include "multipass.h"
+#include "affinity.h"
 
 int aflag = 0;
 int oflag = 0;
@@ -44,6 +45,17 @@ int trace_syscall = 0;
 int versionflag = 0;
 int capabilitiesflag = 0;
 int preflightflag = 0;
+int listaffinityflag = 0;
+/* Core/thread affinity control (INVESTIGATION_4.0.md's "Core/thread
+ * affinity control" item, affinity.h): defaults to AFFINITY_ALL, i.e. "every
+ * CPU currently visible to this process" -- today's implicit behavior with
+ * no --affinity given at all, made an explicit (no-op) choice in the spec
+ * vocabulary rather than "absence of a flag". main() resolves this against
+ * the discovered topology/cpu_info's own available-CPU mask before
+ * launch_child() reads it. */
+struct affinity_spec requested_affinity = { .mode = AFFINITY_ALL };
+int affinity_active = 0;
+const char *affinity_requested_arg = NULL; /* raw --affinity=<spec> text, NULL if not given -- manifest/run-index provenance */
 int exit_with_child_flag = 0;
 int multipass_flag = 0;
 unsigned int passes_requested_mask = 0;
@@ -126,6 +138,7 @@ int parse_options(int argc,char *const argv[]){
   int value;
   unsigned int lev;
   static struct option long_options[] = {
+    { "affinity", required_argument, 0, 71 },
     { "branch", no_argument, 0, 4 },
     { "no-branch", no_argument, 0, 5 },
     { "capabilities", no_argument, 0, 54 },
@@ -157,6 +170,7 @@ int parse_options(int argc,char *const argv[]){
     { "interval", required_argument, 0, 34 },
     { "ipc", no_argument, 0, 14 },
     { "no-ipc", no_argument, 0, 15 },
+    { "list-affinity", no_argument, 0, 72 },
     { "manifest", required_argument, 0, 52 },
     { "memory", no_argument, 0, 16 },
     { "no-memory", no_argument, 0, 17 },
@@ -446,6 +460,19 @@ int parse_options(int argc,char *const argv[]){
     case 70: // --config-option
       add_config_provenance_option(optarg);
       break;
+    case 71: { // --affinity
+      struct affinity_spec parsed;
+      if (affinity_parse_spec(optarg,&parsed) != 0){
+	warning("invalid argument to --affinity: %s, ignored (see --help)\n",optarg);
+      } else {
+	requested_affinity = parsed;
+	affinity_requested_arg = optarg;
+      }
+      break;
+    }
+    case 72: // --list-affinity
+      listaffinityflag = 1;
+      break;
     case 31: // --tree
       if ((treefile = fopen(optarg,"w")) == NULL){
 	warning("unable to open tree file: %s, ignored\n",optarg);
@@ -507,6 +534,9 @@ int parse_options(int argc,char *const argv[]){
   if (preflightflag){
     return 4; // no workload command needed, and no privileges either -- pure arithmetic
   }
+  if (listaffinityflag){
+    return 5; // no workload command needed, and no privileges either -- pure sysfs discovery
+  }
   if (optind >= argc){
     warning("missing command after options\n");
     return 1;
@@ -556,6 +586,14 @@ static int run_capabilities_probe(void){
   print_capability_report();
   print_cpu_pmu_report(outfile);
 
+  // Core/thread affinity discovery (SMT sibling groups + L3-sharing
+  // domains, affinity.h): folded into --capabilities' combined report so a
+  // caller doesn't need a separate command to see which --affinity=
+  // domain=<id>/thread=<id> values are meaningful on this host; also
+  // available on its own, without probing any counters, via --list-affinity.
+  affinity_topology_discover();
+  affinity_print_report(outfile);
+
   ibs = ibs_probe();
   print_ibs_capability_report(&ibs);
 
@@ -592,6 +630,27 @@ static int run_preflight_probe(void){
   pf = preflight_evaluate(counter_mask);
   print_preflight_report(&pf);
   preflight_result_free(&pf);
+
+  if (oflag) fclose(outfile);
+  return 0;
+}
+
+// Standalone core/thread affinity topology discovery (wspy --list-affinity):
+// prints every logical CPU's core_id/package_id/SMT-primary-thread flag and
+// L3-sharing domain (the ids --affinity=domain=<id> refers to) plus, on ARM,
+// its MIDR-derived core type (the ids --affinity=coretype=<id> refers to --
+// e.g. distinguishing a big.LITTLE part's "big"/"little" clusters even when
+// they share one combined L3, which domain=<id> alone can't tell apart),
+// needing no privileges or perf access -- pure sysfs reads, same "no root
+// needed" standing as --preflight. Also folded into --capabilities' own
+// combined report (run_capabilities_probe() above) so a caller probing
+// everything at once sees this too without a second command.
+static int run_affinity_report_probe(void){
+  if (inventory_cpu() != 0){
+    fatal("unable to query CPU information\n");
+  }
+  affinity_topology_discover();
+  affinity_print_report(outfile);
 
   if (oflag) fclose(outfile);
   return 0;
@@ -647,6 +706,19 @@ static void populate_manifest_common(struct manifest_info *minfo){
   }
   minfo->counters_unavailable_count = ngaps;
   minfo->counters_unavailable = gaps;
+  // Core/thread affinity control (affinity.h): the resolved placement is
+  // part of a run's provenance, not just implicit in how it was launched --
+  // static, since populate_manifest_common()'s two callers (main()'s
+  // single-pass tail, run_multipass()'s tail) each write_manifest()/
+  // append_run_index() synchronously right after, before this function
+  // could be called again.
+  {
+    static char affinity_cpus_buf[512];
+    affinity_format_cpu_set(&requested_affinity.set,cpu_info->num_cores,affinity_cpus_buf,sizeof(affinity_cpus_buf));
+    minfo->affinity_mode = affinity_mode_name(requested_affinity.mode);
+    minfo->affinity_requested = affinity_requested_arg;
+    minfo->affinity_cpus = affinity_cpus_buf;
+  }
   provenance_collect(&minfo->provenance);
   minfo->config_provenance.preset = config_provenance_preset;
   minfo->config_provenance.configuration = config_provenance_configuration;
@@ -886,11 +958,23 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   if (i == 4){
     return run_preflight_probe();
   }
+  if (i == 5){
+    return run_affinity_report_probe();
+  }
   if (i){
       fatal("usage: %s -[abcistv][-o <file>] <cmd><args>...\n"
 	    "\t--version                 - show version and exit\n"
 	    "\t--capabilities            - probe available counters for this host/kernel and exit\n"
 	    "\t--preflight               - check counter-fit for the given flags and exit (no root needed)\n"
+	    "\t--list-affinity           - list core/thread/L3-domain/core-type topology and exit\n"
+	    "\t                            (no root needed)\n"
+	    "\t--affinity=<spec>         - pin the workload to selected CPUs: all (default),\n"
+	    "\t                            thread=<id>, nosmt (one thread per core), domain=<id>\n"
+	    "\t                            (one L3-sharing core-complex), coretype=<id> (one\n"
+	    "\t                            microarchitecture/core type, e.g. only the \"big\" or\n"
+	    "\t                            only the \"little\" cores on a big.LITTLE ARM part --\n"
+	    "\t                            ARM only, see --list-affinity), or cpuset=<c0,c1,...>\n"
+	    "\t                            (explicit list/ranges)\n"
 	    "\t--per-core or -a          - metrics per core\n"
 	    "\t--rusage or -r            - show getrusage(2) information\n"
 	    "\t--tree <file>             - create CSV of processes\n"
@@ -992,6 +1076,21 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   }
 
   check_nmi_watchdog();
+
+  // Core/thread affinity control (affinity.h): resolve the --affinity=
+  // request (default "all", a no-op) against the discovered SMT/L3
+  // topology and this process's own available-CPU mask, before
+  // launch_child() (topdown.c) reads requested_affinity/affinity_active in
+  // the forked child. A request that can't be satisfied at all (bad
+  // domain/thread id, or no overlap with cpu_info's available-CPU mask) is
+  // fatal here -- this is a real run, unlike --list-affinity's pure
+  // discovery probe -- affinity_resolve() itself only warns (and narrows
+  // the set) for a partial overlap.
+  affinity_topology_discover();
+  if (affinity_resolve(&requested_affinity) != 0){
+    fatal("--affinity: unable to resolve requested CPU set (see above)\n");
+  }
+  affinity_active = (requested_affinity.mode != AFFINITY_ALL);
 
 #if AMDGPU
   if (system_mask & SYSTEM_GPU){

@@ -196,7 +196,18 @@ int write_manifest(const char *path,const struct manifest_info *info){
   fprintf(fp,"    \"system\": %s,\n",info->sflag ? "true" : "false");
   fprintf(fp,"    \"csv\": %s,\n",info->csvflag ? "true" : "false");
   fprintf(fp,"    \"tree\": %s,\n",info->treeflag ? "true" : "false");
-  fprintf(fp,"    \"interval_seconds\": %d\n",info->interval);
+  fprintf(fp,"    \"interval_seconds\": %d,\n",info->interval);
+  fprintf(fp,"    \"affinity\": {\n");
+  fprintf(fp,"      \"requested\": ");
+  if (info->affinity_requested) json_write_string(fp,info->affinity_requested); else fputs("null",fp);
+  fprintf(fp,",\n");
+  fprintf(fp,"      \"mode\": ");
+  json_write_string(fp,info->affinity_mode ? info->affinity_mode : "all");
+  fprintf(fp,",\n");
+  fprintf(fp,"      \"cpus\": ");
+  json_write_string(fp,info->affinity_cpus ? info->affinity_cpus : "");
+  fprintf(fp,"\n");
+  fprintf(fp,"    }\n");
   fprintf(fp,"  },\n");
 
   fprintf(fp,"  \"counter_coverage\": {\n");
