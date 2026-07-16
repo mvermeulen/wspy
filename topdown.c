@@ -1344,7 +1344,7 @@ void print_usage(struct rusage *rusage,enum output_format oformat){
     break;
   case PRINT_NORMAL:
     fprintf(outfile,"elapsed              %4.3f\n",elapsed);
-    fprintf(outfile,"on_cpu               %4.3f          # %4.2f / %d cores\n",
+    fprintf(outfile,"on_cpu               %4.3f          # %4.2f / %d cores",
 	    (rusage->ru_utime.tv_sec+rusage->ru_utime.tv_usec/1000000.0+
 	     rusage->ru_stime.tv_sec+rusage->ru_stime.tv_usec/1000000.0)/
 	    elapsed / num_procs,
@@ -1353,6 +1353,20 @@ void print_usage(struct rusage *rusage,enum output_format oformat){
 	    elapsed,
 	    cpu_info->num_cores_available
 	    );
+    // The ratio above is always against num_cores_available (this
+    // process's own outer, e.g. taskset-derived, affinity mask -- fixed at
+    // inventory_cpu() time), which --affinity never narrows: --affinity is
+    // resolved afterwards and applied only to the forked child, not to
+    // wspy's own process. So a --affinity spec that actually shrinks the
+    // usable core count relative to that denominator would otherwise be
+    // invisible here; call it out explicitly, but only when it does.
+    if (affinity_active){
+      int affinity_cores = CPU_COUNT(&requested_affinity.set);
+      if (affinity_cores < (int) cpu_info->num_cores_available){
+	fprintf(outfile,", %d available under --affinity",affinity_cores);
+      }
+    }
+    fprintf(outfile,"\n");
     fprintf(outfile,"utime                %4.3f\n",
 	    (double) rusage->ru_utime.tv_sec +
 	    rusage->ru_utime.tv_usec / 1000000.0);
