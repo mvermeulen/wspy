@@ -65,7 +65,7 @@ from joblib import (  # noqa: E402,F401
     build_plot_argv, shell_preview, RunState, run_store_ingest_besteffort,
     execute_profile_run, execute_custom_run, write_custom_run_manifest,
     write_custom_run_summary, LOG_NAME, PLOTS_DIR_NAME, RUN_MANIFEST_NAME, SUMMARY_NAME,
-    NAME_RE, resolve_toggles, checklist_from_pass_provenance,
+    NAME_RE, resolve_toggles, checklist_from_pass_provenance, valid_affinity_spec,
 )
 
 # The one fixed configuration item 6 knows about -- matches wspy-run's
@@ -477,6 +477,52 @@ def run_sync(argv, cwd=None, timeout=120):
         return None, (e.stdout or ""), True
     except OSError as e:
         return None, f"[error] failed to launch {argv[0]}: {e}", False
+
+
+# Core/thread affinity control's discovery counterpart (INVESTIGATION_4.0.md's
+# "Core/thread affinity control" item): parses `wspy --list-affinity`'s
+# output (affinity.c's affinity_print_report() -- a small CSV-shaped per-cpu
+# table plus L3-domain and core-type summaries, see CLAUDE.md's affinity.c
+# entry) into structured JSON the Run tab's affinity card can render
+# checkboxes/domain/coretype buttons from, without needing a JSON library on
+# the C side for a report this simple.
+_AFFINITY_CPU_ROW_RE = re.compile(r"^(\d+),(-?\d+),(-?\d+),([01]),(-?\d+),(-?\d+)$")
+_AFFINITY_DOMAIN_RE = re.compile(r"^l3domain (\d+): cpus (\S+) \(([\d.]+) MiB\)$")
+_AFFINITY_CORETYPE_RE = re.compile(r"^coretype (\d+): implementer=(0x[0-9a-f]+) part=(0x[0-9a-f]+) cpus (\S+)$")
+
+
+def parse_affinity_topology_output(output):
+    """Returns {"cpus": [{"id","core_id","package_id","primary_thread",
+    "l3_domain","core_type"}...], "domains": [{"id","cpus","size_mib"}...],
+    "core_types": [{"id","cpus","implementer","part"}...]}, or None if output
+    doesn't look like a --list-affinity report at all (e.g. wspy itself
+    failed to launch). core_types is [] on a non-ARM host (or any host
+    reporting one uniform MIDR across every cpu) -- affinity.c never
+    populates it there, not a parsing gap."""
+    cpus = []
+    domains = []
+    core_types = []
+    for line in output.splitlines():
+        line = line.strip()
+        m = _AFFINITY_CPU_ROW_RE.match(line)
+        if m:
+            cpus.append({
+                "id": int(m.group(1)), "core_id": int(m.group(2)),
+                "package_id": int(m.group(3)), "primary_thread": m.group(4) == "1",
+                "l3_domain": int(m.group(5)), "core_type": int(m.group(6)),
+            })
+            continue
+        m = _AFFINITY_DOMAIN_RE.match(line)
+        if m:
+            domains.append({"id": int(m.group(1)), "cpus": m.group(2), "size_mib": float(m.group(3))})
+            continue
+        m = _AFFINITY_CORETYPE_RE.match(line)
+        if m:
+            core_types.append({"id": int(m.group(1)), "implementer": m.group(2),
+                                "part": m.group(3), "cpus": m.group(4)})
+    if not cpus:
+        return None
+    return {"cpus": cpus, "domains": domains, "core_types": core_types}
 
 
 # ---------------------------------------------------------------------------
@@ -1516,6 +1562,42 @@ def render_run_tab(prefill, cfg):
       </div>
     </div>
 
+    <div class="config-card" id="affinity-card">
+      <label class="config-toggle"><strong>CPU affinity</strong>
+        <span class="muted">(runs regardless of preset vs. custom above)</span></label>
+      <div class="config-options">
+        <p class="muted">Pin the workload to selected CPUs (<code>wspy --affinity</code>) --
+           e.g. avoid an SMT sibling, stay on one L3-sharing core-complex, pick only the
+           "big" or "little" cores of a heterogeneous (e.g. ARM big.LITTLE) part, or
+           enumerate cores by hand. Applies to every pass alike, same as the toggle chips below.</p>
+        <div class="row">
+          <label><input type="radio" name="affinity_mode" value="all" id="affinity_mode_all" checked>
+            All CPUs (default)</label>
+          <label><input type="radio" name="affinity_mode" value="nosmt" id="affinity_mode_nosmt">
+            No SMT <span class="muted">(one thread per core)</span></label>
+          <label><input type="radio" name="affinity_mode" value="domain" id="affinity_mode_domain">
+            One L3 domain</label>
+          <label><input type="radio" name="affinity_mode" value="coretype" id="affinity_mode_coretype">
+            One core type <span class="muted">(e.g. big.LITTLE, ARM only)</span></label>
+          <label><input type="radio" name="affinity_mode" value="cpuset" id="affinity_mode_cpuset">
+            Explicit CPUs</label>
+        </div>
+        <div class="row">
+          <button type="button" id="affinity-discover">Discover CPUs/domains</button>
+          <span id="affinity-discover-status" class="muted"></span>
+        </div>
+        <div id="affinity-domain-picker" hidden>
+          <label>L3 domain <select id="affinity_domain_select"></select></label>
+        </div>
+        <div id="affinity-coretype-picker" hidden>
+          <label>Core type <select id="affinity_coretype_select"></select></label>
+        </div>
+        <div id="affinity-cpuset-picker" hidden>
+          <div id="affinity-cpu-checkboxes" class="row"></div>
+        </div>
+      </div>
+    </div>
+
     <div class="chips">
       <label class="chip"><input type="checkbox" id="toggle_manifest" checked> Write manifest</label>
       <label class="chip"><input type="checkbox" id="toggle_run_index" checked> Append to run index</label>
@@ -2519,6 +2601,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/check-run": self._check_run,
             "/api/discovery/capabilities": self._discovery_capabilities,
             "/api/discovery/preflight": self._discovery_preflight,
+            "/api/discovery/affinity-topology": self._discovery_affinity_topology,
             "/api/discovery/validate": self._discovery_validate,
             "/api/discovery/store-ingest": self._discovery_store_ingest,
             "/api/discovery/summary": self._discovery_summary,
@@ -2637,6 +2720,23 @@ class Handler(BaseHTTPRequestHandler):
                                            "custom plot with a name and columns"}
         return custom_plots, only_custom, None
 
+    @staticmethod
+    def _parse_affinity(body):
+        """The Run tab's CPU affinity card (INVESTIGATION_4.0.md's "Core/
+        thread affinity control" item, wspy.c's --affinity=<spec>): validates
+        body["affinity"] against the same grammar affinity.h's C parser
+        accepts, mirroring _parse_custom_plots()'s "reject here, not deep
+        inside a background run" idiom. Returns (spec_or_None, error_dict) --
+        None (not "all") is what every builder function below treats as "no
+        --affinity flag at all", since "all" is the implicit default."""
+        spec = (body.get("affinity") or "").strip()
+        if not spec or spec == "all":
+            return None, None
+        if not valid_affinity_spec(spec):
+            return None, {"error": "affinity must be all/nosmt/thread=<id>/domain=<id>/"
+                                    "cpuset=<c0,c1,...>"}
+        return spec, None
+
     def _start_run(self, cfg, body):
         workload_argv, suite, benchmark, run_id, err = self._parse_workload_and_ids(body)
         if err:
@@ -2687,6 +2787,10 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             self._send_json(400, err)
             return
+        affinity, err = self._parse_affinity(body)
+        if err:
+            self._send_json(400, err)
+            return
 
         rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
         if os.path.exists(rundir):
@@ -2702,13 +2806,14 @@ class Handler(BaseHTTPRequestHandler):
         wspy_run_argv = build_wspy_run_argv(cfg["wspy_run_bin"], cfg["wspy_bin"],
                                              cfg["output_root"], suite, benchmark,
                                              run_id, profile, workload_argv,
-                                             run_index_path=run_index_path)
+                                             run_index_path=run_index_path,
+                                             affinity=affinity)
         supp_passes, preset_notes = build_supplementary_plot_passes(rundir, profile, custom_plots)
 
         t = threading.Thread(target=execute_profile_run, args=(
             state, cfg, rundir, suite, benchmark, run_id, profile, workload_argv,
             run_index_path, store_ingest, custom_plots, only_custom, preset_notes,
-            supp_passes, manifest_on,
+            supp_passes, manifest_on, affinity,
         ), daemon=True)
         t.start()
 
@@ -2734,6 +2839,10 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             self._send_json(400, err)
             return
+        affinity, err = self._parse_affinity(body)
+        if err:
+            self._send_json(400, err)
+            return
         checklist, autofit_notes = autofit_checklist_for_custom_plots(checklist, custom_plots)
 
         rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
@@ -2756,7 +2865,8 @@ class Handler(BaseHTTPRequestHandler):
         command_lines = []
         for p in passes:
             argv, _outfile, _manifest_path = build_pass_argv(cfg["wspy_bin"], rundir, p,
-                                                               manifest_on, run_index_path)
+                                                               manifest_on, run_index_path,
+                                                               affinity=affinity)
             full_argv = argv + ["--"] + workload_argv
             if p["timeout"]:
                 full_argv = ["timeout", str(p["timeout"])] + full_argv
@@ -2765,7 +2875,7 @@ class Handler(BaseHTTPRequestHandler):
         t = threading.Thread(target=execute_custom_run, args=(
             state, cfg, rundir, suite, benchmark, run_id, workload_argv,
             checklist, manifest_on, run_index_path, store_ingest,
-            custom_plots, only_custom, autofit_notes,
+            custom_plots, only_custom, autofit_notes, affinity,
         ), daemon=True)
         t.start()
 
@@ -2795,6 +2905,10 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             self._send_json(400, err)
             return
+        affinity, err = self._parse_affinity(body)
+        if err:
+            self._send_json(400, err)
+            return
         rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
         plot_argv = build_plot_argv(cfg["wspy_plot_bin"], rundir, custom_plots, only_custom)
 
@@ -2805,12 +2919,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             argv = build_wspy_run_argv(cfg["wspy_run_bin"], cfg["wspy_bin"], cfg["output_root"],
                                         suite, benchmark, run_id, preset, workload_argv,
-                                        run_index_path=run_index_path)
+                                        run_index_path=run_index_path, affinity=affinity)
             supp_passes, preset_notes = build_supplementary_plot_passes(rundir, preset, custom_plots)
             lines = [shell_preview(argv)]
             for p in supp_passes:
                 pargv, _outfile, _manifest_path = build_pass_argv(cfg["wspy_bin"], rundir, p,
-                                                                    _manifest_on, run_index_path)
+                                                                    _manifest_on, run_index_path,
+                                                                    affinity=affinity)
                 full_pargv = pargv + ["--"] + workload_argv
                 if p["timeout"]:
                     full_pargv = ["timeout", str(p["timeout"])] + full_pargv
@@ -2833,7 +2948,8 @@ class Handler(BaseHTTPRequestHandler):
             notes.append("No configuration enabled yet -- check one below to build a custom run.")
         for p in passes:
             argv, outfile, _manifest_path = build_pass_argv(cfg["wspy_bin"], rundir, p,
-                                                              _manifest_on, run_index_path)
+                                                              _manifest_on, run_index_path,
+                                                              affinity=affinity)
             full_argv = argv + ["--"] + workload_argv
             if p["timeout"]:
                 full_argv = ["timeout", str(p["timeout"])] + full_argv
@@ -2886,6 +3002,10 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             self._send_json(400, err)
             return
+        affinity, err = self._parse_affinity(body)
+        if err:
+            self._send_json(400, err)
+            return
         toggles = body.get("toggles") or {}
         notes = (body.get("notes") or "").strip()
 
@@ -2896,7 +3016,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             job = joblib.build_job(workload_argv, suite, benchmark, "preset", profile=preset,
                                     custom_plots=custom_plots, only_custom=only_custom,
-                                    toggles=toggles, run_id=run_id, notes=notes)
+                                    toggles=toggles, run_id=run_id, notes=notes, affinity=affinity)
         else:
             checklist = body.get("checklist") or {}
             # Placeholder rundir: build_configuration_passes() only ever uses
@@ -2910,7 +3030,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             job = joblib.build_job(workload_argv, suite, benchmark, "custom", checklist=checklist,
                                     custom_plots=custom_plots, only_custom=only_custom,
-                                    toggles=toggles, run_id=run_id, notes=notes)
+                                    toggles=toggles, run_id=run_id, notes=notes, affinity=affinity)
 
         errors = joblib.validate_job(job)
         if errors:
@@ -3019,6 +3139,19 @@ class Handler(BaseHTTPRequestHandler):
         rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=60)
         self._send_json(200, {"command": shell_preview(argv), "exit_code": rc,
                                "output": output, "timed_out": timed_out})
+
+    def _discovery_affinity_topology(self, cfg, body):
+        """Backs the Run tab's affinity card 'Discover CPUs' button: runs
+        `wspy --list-affinity` (no privileges needed, pure sysfs reads --
+        same standing as --preflight) and returns both the raw text (for the
+        same command/output display every other Discovery tab action shows)
+        and the parsed topology the card's JS uses to render domain buttons
+        and per-CPU checkboxes."""
+        argv = [cfg["wspy_bin"], "--list-affinity"]
+        rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=30)
+        topology = parse_affinity_topology_output(output) if rc == 0 else None
+        self._send_json(200, {"command": shell_preview(argv), "exit_code": rc,
+                               "output": output, "timed_out": timed_out, "topology": topology})
 
     def _discovery_preflight(self, cfg, body):
         group_flags, selected = counter_group_flags(body.get("groups"))

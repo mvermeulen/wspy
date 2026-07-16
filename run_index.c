@@ -125,13 +125,23 @@ int append_run_index(const char *path,const struct manifest_info *info){
   }
   fprintf(fp,"},");
 
-  fprintf(fp,"\"options\":{\"counter_mask\":\"0x%x\",\"per_core\":%s,\"system\":%s,\"csv\":%s,\"tree\":%s,\"interval_seconds\":%d},",
+  fprintf(fp,"\"options\":{\"counter_mask\":\"0x%x\",\"per_core\":%s,\"system\":%s,\"csv\":%s,\"tree\":%s,\"interval_seconds\":%d,",
 	  info->counter_mask,
 	  info->aflag ? "true" : "false",
 	  info->sflag ? "true" : "false",
 	  info->csvflag ? "true" : "false",
 	  info->treeflag ? "true" : "false",
 	  info->interval);
+
+  /* Core/thread affinity control (see manifest.c's matching "affinity"
+   * block for the pretty-printed sibling of this same data). */
+  fprintf(fp,"\"affinity\":{\"requested\":");
+  json_write_string_or_null(fp,info->affinity_requested);
+  fprintf(fp,",\"mode\":");
+  json_write_string(fp,info->affinity_mode ? info->affinity_mode : "all");
+  fprintf(fp,",\"cpus\":");
+  json_write_string(fp,info->affinity_cpus ? info->affinity_cpus : "");
+  fprintf(fp,"}},");
 
   /* Structured configuration provenance (INVESTIGATION_4.0.md's "What shipped
    * in 4.1"): see

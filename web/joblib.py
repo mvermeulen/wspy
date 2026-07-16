@@ -47,6 +47,21 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 PROFILE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
+# Core/thread affinity control (INVESTIGATION_4.0.md's "Core/thread affinity
+# control" item, wspy.c's --affinity=<spec>/affinity.h): mirrors the C
+# parser's accepted grammar (affinity_parse_spec()) exactly, so a malformed
+# spec is rejected here (400) rather than only surfacing as wspy's own
+# --affinity warning deep inside a background run's log. "all" is the
+# default and never actually reaches a wspy invocation as a flag (see
+# build_wspy_run_argv()/build_pass_argv() below), but is still a valid,
+# explicit choice in the vocabulary.
+AFFINITY_SPEC_RE = re.compile(
+    r"^(all|nosmt|thread=\d+|domain=\d+|coretype=\d+|cpuset=\d+(-\d+)?(,\d+(-\d+)?)*)$")
+
+
+def valid_affinity_spec(spec):
+    return bool(spec) and bool(AFFINITY_SPEC_RE.match(spec))
+
 # wspy-run's own unified-layout artifact names (see wspy-run's
 # generate_summary()/generate_manifest()) -- shared here since
 # execute_profile_run()/execute_custom_run()/write_custom_run_*() below all
@@ -593,7 +608,7 @@ def build_configuration_passes(rundir, checklist):
     return passes
 
 
-def build_pass_argv(wspy_bin, rundir, p, manifest_on, run_index_path):
+def build_pass_argv(wspy_bin, rundir, p, manifest_on, run_index_path, affinity=None):
     """Full argv for one configuration pass, minus the trailing `-- <workload
     argv>` (appended by the caller, which also decides whether to prefix a
     `timeout <secs>` wrapper) -- mirrors wspy-run's own run_pass() shape:
@@ -612,6 +627,11 @@ def build_pass_argv(wspy_bin, rundir, p, manifest_on, run_index_path):
     ext = "csv" if p["csv"] else "txt"
     outfile = os.path.join(rundir, f'{p["name"]}.{ext}')
     argv = [wspy_bin] + p["flags"] + ["-o", outfile]
+    # Core/thread affinity control: applies to every pass alike (it's a
+    # placement decision, not a per-configuration option), same as --manifest/
+    # --run-index below. "all" is the implicit default and never needs the flag.
+    if affinity and affinity != "all":
+        argv += ["--affinity", affinity]
     if p.get("category"):
         argv += ["--config-name", p["category"]]
     for name, value in p.get("options") or []:
@@ -663,7 +683,8 @@ def valid_profile_spec(spec):
 
 
 def build_wspy_run_argv(wspy_run_bin, wspy_bin, output_root, suite, benchmark,
-                         run_id, profile, workload_argv, run_index_path=None):
+                         run_id, profile, workload_argv, run_index_path=None,
+                         affinity=None):
     # wspy-run always writes each pass's manifest into the run directory once
     # --suite/--benchmark select the unified layout (MANIFEST_DIR defaults to
     # RUNROOT unconditionally there's no flag to opt back out) -- so unlike
@@ -673,6 +694,14 @@ def build_wspy_run_argv(wspy_run_bin, wspy_bin, output_root, suite, benchmark,
             "--suite", suite, "--benchmark", benchmark, "--run-id", run_id]
     if run_index_path:
         argv += ["--run-index", run_index_path]
+    # Core/thread affinity control: wspy-run's own --affinity passes the spec
+    # through to every pass's wspy invocation (see wspy-run's run_pass()) --
+    # this is a single flag on the wspy-run invocation itself, not something
+    # that decomposes the preset, so it's compatible with the deep-dive's
+    # "a preset stays atomic" rule the same way --manifest-dir/--run-index
+    # already are. "all" is the implicit default and never needs the flag.
+    if affinity and affinity != "all":
+        argv += ["--affinity", affinity]
     argv += [profile, "--"] + workload_argv
     return argv
 
@@ -762,7 +791,7 @@ def run_store_ingest_besteffort(emit, cfg, run_index_path):
 def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
                          workload_argv, run_index_path=None, store_ingest=False,
                          custom_plots=None, only_custom=False, preset_notes=None,
-                         supp_passes=None, manifest_on=False):
+                         supp_passes=None, manifest_on=False, affinity=None):
     """Item 7: invoke wspy-run itself (rather than wspy directly) for one of
     its builtin profiles, then -- mirroring workload/phoronix/run_test.sh's
     own hand-written pattern -- best-effort run wspy-plot (item 12) over the
@@ -799,7 +828,8 @@ def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
     wspy_run_argv = build_wspy_run_argv(cfg["wspy_run_bin"], cfg["wspy_bin"],
                                          cfg["output_root"], suite, benchmark,
                                          run_id, profile, workload_argv,
-                                         run_index_path=run_index_path)
+                                         run_index_path=run_index_path,
+                                         affinity=affinity)
     emit("$ " + shell_preview(wspy_run_argv))
     try:
         proc = subprocess.Popen(wspy_run_argv, cwd=REPO_ROOT,
@@ -819,7 +849,8 @@ def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
 
     for p in (supp_passes or []):
         argv, outfile, _manifest_path = build_pass_argv(cfg["wspy_bin"], rundir, p,
-                                                          manifest_on, run_index_path)
+                                                          manifest_on, run_index_path,
+                                                          affinity=affinity)
         full_argv = argv + ["--"] + workload_argv
         if p["timeout"]:
             full_argv = ["timeout", str(p["timeout"])] + full_argv
@@ -906,7 +937,8 @@ def write_custom_run_summary(rundir, pass_records):
 
 def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_argv,
                         checklist, manifest_on, run_index_path, store_ingest,
-                        custom_plots=None, only_custom=False, autofit_notes=None):
+                        custom_plots=None, only_custom=False, autofit_notes=None,
+                        affinity=None):
     """Item 9's "customized away from a preset" path: runs each enabled
     configuration (see build_configuration_passes()) as its own sequential
     wspy invocation into this run directory -- the direct-command-lines
@@ -942,7 +974,8 @@ def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_ar
     any_failed = False
     for p in passes:
         argv, outfile, manifest_path = build_pass_argv(cfg["wspy_bin"], rundir, p,
-                                                         manifest_on, run_index_path)
+                                                         manifest_on, run_index_path,
+                                                         affinity=affinity)
         full_argv = argv + ["--"] + workload_argv
         if p["timeout"]:
             full_argv = ["timeout", str(p["timeout"])] + full_argv
@@ -1049,7 +1082,8 @@ def resolve_toggles(cfg, toggles):
 
 
 def build_job(workload_argv, suite, benchmark, mode, profile=None, checklist=None,
-              custom_plots=None, only_custom=False, toggles=None, run_id=None, notes=None):
+              custom_plots=None, only_custom=False, toggles=None, run_id=None, notes=None,
+              affinity=None):
     """Builds a portable job document. mode is "preset" (profile is a
     wspy-run BUILTIN_PROFILES spec, e.g. "deep-cpu,tree-heavy") or "custom"
     (checklist is the same object build_configuration_passes() consumes).
@@ -1060,7 +1094,14 @@ def build_job(workload_argv, suite, benchmark, mode, profile=None, checklist=Non
     specific run_id across machines actually matters to the caller.
     toggles mirrors the Run tab's manifest/run_index/store_ingest chips
     (server.py's _parse_toggles()), defaulting the same way: all on except
-    store_ingest, which also requires run_index."""
+    store_ingest, which also requires run_index. affinity is a validated
+    --affinity=<spec> string (or None/"all" for the default) -- a placement
+    choice, portable across machines the same as everything else in the job
+    document, since it names CPUs by topology-relative id (thread=<id>/
+    domain=<id>) or an explicit cpuset, not anything host-specific beyond
+    that (a job replayed on a machine with fewer CPUs/domains than the one
+    that created it will fail loudly at wspy's own --affinity resolution,
+    same as any other under-provisioned replay target)."""
     toggles = toggles or {}
     return {
         "job_schema_version": JOB_SCHEMA_VERSION,
@@ -1080,6 +1121,7 @@ def build_job(workload_argv, suite, benchmark, mode, profile=None, checklist=Non
             "run_index": bool(toggles.get("run_index", True)),
             "store_ingest": bool(toggles.get("store_ingest", True)),
         },
+        "affinity": affinity or None,
         "notes": notes or "",
     }
 
@@ -1131,5 +1173,9 @@ def validate_job(job):
             if not isinstance(item, dict) or not item.get("name") or not item.get("columns"):
                 errors.append("each custom_plots entry needs a name and at least one column")
                 break
+
+    affinity = job.get("affinity")
+    if affinity is not None and not valid_affinity_spec(affinity):
+        errors.append("affinity, if given, must be all/nosmt/thread=<id>/domain=<id>/cpuset=<c0,c1,...>")
 
     return errors

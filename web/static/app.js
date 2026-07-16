@@ -130,6 +130,118 @@
     return result;
   }
 
+  // ---------------------------------------------------------------------
+  // Run tab: CPU affinity card (item 20, INVESTIGATION_4.0.md's "Core/thread
+  // affinity control") -- independent of preset vs. custom mode, same as
+  // custom plots above, since --affinity applies to every pass alike.
+  // ---------------------------------------------------------------------
+  function getAffinitySpec() {
+    var checked = document.querySelector('input[name="affinity_mode"]:checked');
+    var mode = checked ? checked.value : "all";
+    if (mode === "nosmt") return "nosmt";
+    if (mode === "domain") {
+      var sel = byId("affinity_domain_select");
+      return sel && sel.value !== "" ? "domain=" + sel.value : "";
+    }
+    if (mode === "coretype") {
+      var ctSel = byId("affinity_coretype_select");
+      return ctSel && ctSel.value !== "" ? "coretype=" + ctSel.value : "";
+    }
+    if (mode === "cpuset") {
+      var boxes = document.querySelectorAll("#affinity-cpu-checkboxes input:checked");
+      var ids = Array.prototype.map.call(boxes, function (b) { return b.value; });
+      return ids.length ? "cpuset=" + ids.join(",") : "";
+    }
+    return ""; // "all" -- the implicit default, omitted from every request body
+  }
+
+  function renderAffinityTopology(topology) {
+    var domainSelect = byId("affinity_domain_select");
+    var coretypeSelect = byId("affinity_coretype_select");
+    var cpuContainer = byId("affinity-cpu-checkboxes");
+    if (!domainSelect || !cpuContainer) return;
+    domainSelect.innerHTML = "";
+    (topology.domains || []).forEach(function (d) {
+      var opt = document.createElement("option");
+      opt.value = d.id;
+      opt.textContent = "Domain " + d.id + " — " + d.size_mib.toFixed(1) +
+        " MiB L3 (cpus " + d.cpus + ")";
+      domainSelect.appendChild(opt);
+    });
+    if (coretypeSelect) {
+      coretypeSelect.innerHTML = "";
+      (topology.core_types || []).forEach(function (t) {
+        var opt = document.createElement("option");
+        opt.value = t.id;
+        opt.textContent = "Core type " + t.id + " — implementer " + t.implementer +
+          " part " + t.part + " (cpus " + t.cpus + ")";
+        coretypeSelect.appendChild(opt);
+      });
+    }
+    cpuContainer.innerHTML = "";
+    (topology.cpus || []).forEach(function (c) {
+      var label = document.createElement("label");
+      label.className = "inline-check";
+      var input = document.createElement("input");
+      input.type = "checkbox";
+      input.value = String(c.id);
+      input.addEventListener("change", schedulePreview);
+      label.appendChild(input);
+      label.appendChild(document.createTextNode(
+        " cpu" + c.id + (c.primary_thread ? "" : " (SMT)") + " [domain " + c.l3_domain +
+        (c.core_type >= 0 ? ", type " + c.core_type : "") + "]"));
+      cpuContainer.appendChild(label);
+    });
+  }
+
+  function wireAffinityCard() {
+    var discoverBtn = byId("affinity-discover");
+    var status = byId("affinity-discover-status");
+    var domainPicker = byId("affinity-domain-picker");
+    var coretypePicker = byId("affinity-coretype-picker");
+    var cpusetPicker = byId("affinity-cpuset-picker");
+    var radios = document.querySelectorAll('input[name="affinity_mode"]');
+    if (!radios.length) return;
+
+    function updatePickers() {
+      var checked = document.querySelector('input[name="affinity_mode"]:checked');
+      var mode = checked ? checked.value : "all";
+      if (domainPicker) domainPicker.hidden = mode !== "domain";
+      if (coretypePicker) coretypePicker.hidden = mode !== "coretype";
+      if (cpusetPicker) cpusetPicker.hidden = mode !== "cpuset";
+    }
+    radios.forEach(function (r) {
+      r.addEventListener("change", function () { updatePickers(); schedulePreview(); });
+    });
+    updatePickers();
+
+    if (discoverBtn) {
+      discoverBtn.addEventListener("click", function () {
+        if (status) status.textContent = "discovering...";
+        fetch("/api/discovery/affinity-topology", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (!data.topology) {
+              if (status) status.textContent = "no topology data -- is wspy built? see Discovery tab for details.";
+              return;
+            }
+            renderAffinityTopology(data.topology);
+            if (status) {
+              status.textContent = data.topology.cpus.length + " cpu(s), " +
+                data.topology.domains.length + " L3 domain(s), " +
+                (data.topology.core_types || []).length + " core type(s) discovered.";
+            }
+            schedulePreview();
+          })
+          .catch(function () { if (status) status.textContent = "discovery failed (transient?)"; });
+      });
+    }
+  }
+
   function checklistInputs() {
     return document.querySelectorAll(
       "#checklist .config-card:not(.config-reserved) input, " +
@@ -209,6 +321,7 @@
       toggles: buildToggles(),
       custom_plots: buildCustomPlots(),
       only_custom: getChecked("only_custom"),
+      affinity: getAffinitySpec(),
     };
     fetch("/api/preview", {
       method: "POST",
@@ -254,6 +367,7 @@
         schedulePreview();
       });
     }
+    wireAffinityCard();
     updateModeUI();
     refreshPreview();
 
@@ -278,6 +392,7 @@
           toggles: buildToggles(),
           custom_plots: buildCustomPlots(),
           only_custom: getChecked("only_custom"),
+          affinity: getAffinitySpec(),
         };
         fetch("/api/enqueue-job", {
           method: "POST",
@@ -316,6 +431,7 @@
           toggles: buildToggles(),
           custom_plots: buildCustomPlots(),
           only_custom: getChecked("only_custom"),
+          affinity: getAffinitySpec(),
         };
       } else {
         endpoint = "/api/run-custom";
@@ -328,6 +444,7 @@
           toggles: buildToggles(),
           custom_plots: buildCustomPlots(),
           only_custom: getChecked("only_custom"),
+          affinity: getAffinitySpec(),
         };
       }
 

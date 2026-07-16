@@ -741,7 +741,7 @@ void test_write_manifest() {
     // shipped in 4.1"):
     // preset/configuration round-trip as given, and both options appear in
     // order as { "name", "value" } objects.
-    assert(strstr(contents, "\"schema_version\": \"1.5.0\"") != NULL);
+    assert(strstr(contents, "\"schema_version\": \"" MANIFEST_SCHEMA_VERSION "\"") != NULL);
     assert(strstr(contents, "\"preset\": \"deep-cpu\"") != NULL);
     assert(strstr(contents, "\"configuration\": \"performance-counters\"") != NULL);
     assert(strstr(contents, "\"name\": \"counter_groups\", \"value\": \"topdown\"") != NULL);
@@ -870,7 +870,7 @@ void test_append_run_index() {
     // Structured configuration provenance (INVESTIGATION_4.0.md's "What
     // shipped in 4.1"):
     // compact form, preset/configuration given, no options this time.
-    assert(strstr(line0, "\"schema_version\":\"1.5.0\"") != NULL);
+    assert(strstr(line0, "\"schema_version\":\"" RUN_INDEX_SCHEMA_VERSION "\"") != NULL);
     assert(strstr(line0, "\"configuration_provenance\":{\"preset\":\"deep-cpu\",\"configuration\":\"performance-counters\",\"options\":[]}") != NULL);
 
     // Each line must be independently valid, self-contained JSON (a curly

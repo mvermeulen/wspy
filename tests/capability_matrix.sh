@@ -244,6 +244,25 @@ run_bundle "manifest-and-run-index" 0 --no-ipc --csv -o "$CSV_OUT" --manifest "$
 run_bundle "capabilities" 0 --capabilities -- /bin/true
 
 echo ""
+echo "=== Core/thread affinity control (--affinity, --list-affinity) ==="
+run_bundle "affinity-nosmt"    0 --no-ipc --affinity=nosmt     -- /bin/true
+run_bundle "affinity-domain0"  0 --no-ipc --affinity=domain=0  -- /bin/true
+run_bundle "affinity-thread0"  0 --no-ipc --affinity=thread=0  -- /bin/true
+run_bundle "affinity-cpuset"   0 --no-ipc --affinity=cpuset=0  -- /bin/true
+run_bundle "list-affinity"     0 --list-affinity -- /bin/true
+# An out-of-range domain/thread id is a real placement error (nothing to pin
+# to), not a flag-combination incompatibility -- still expected to fail
+# loudly (run_expected_fatal_bundle), same graceful-degradation-doesn't-mean-
+# never-fail idiom as --passes' own incompatibility checks below.
+run_expected_fatal_bundle "affinity-bad-domain-id" 1 --no-ipc --affinity=domain=99999 -- /bin/true
+# coretype=<id> (ARM MIDR-based big.LITTLE grouping, e.g. Cortex-A7xx "big" vs
+# Cortex-A5xx "little" cores) has nothing to resolve on this codebase's own
+# x86 test hosts (no midr_el1 at all) -- expected to fail loudly here, same
+# as any other zero-core-types host would; see test_affinity.c's dedicated
+# fake-ARM-sysfs fixture for the actual grouping-logic coverage.
+run_expected_fatal_bundle "affinity-coretype-unavailable" 1 --no-ipc --affinity=coretype=0 -- /bin/true
+
+echo ""
 echo "=== Kitchen-sink bundle (most counter groups + system + rusage at once) ==="
 run_bundle "kitchen-sink" 0 --csv --topdown --topdown-frontend --topdown-backend --topdown-optlb \
   --branch --dcache --icache --tlb --cache1 --cache2 --cache3 --opcache --float --memory --software \

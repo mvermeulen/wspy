@@ -560,18 +560,38 @@ topdown/IBS attribution, static-site publishing, and a lower-overhead tracing ba
 19. Collector-plugin implementation (perf stat / trace-cmd / GPU tools as collectors behind the
     `collector` field, normalization path) — the schema seam shipped in 4.0; this is the actual
     implementation of wrapping a non-wspy collector.
-20. Core/thread affinity control (`--affinity=all|thread=<id>|domain=<id>|cpuset=<c0,c1,...>`) — pin
-    the launched workload to a selected set of logical CPUs via `sched_setaffinity()` on the forked
-    child before `execve` in `topdown.c`'s `launch_child()`: `all` (default, every visible thread —
-    today's implicit behavior), `thread=<id>` (that single thread, letting a caller deliberately avoid
-    its SMT sibling), `domain=<id>` (every thread on one core-complex/CCD), and `cpuset=<c0,c1,...>`
-    (explicit enumerated core list — the general form the others are shorthand for). `thread=`/
-    `domain=` need core topology data (SMT sibling pairs, CCD/core-complex grouping) that
-    `cpu_info.c`'s `struct cpu_core_info` doesn't capture yet — parsing
-    `/sys/devices/system/cpu/cpu*/topology/{core_id,core_siblings,package_id}` (plus, for AMD CCD
-    grouping, cache-topology or `cpuid` leaf data) is a real prerequisite here, not a detail to defer
-    silently. The resolved core list should also be recorded in `--manifest`/`--run-index` so a run's
-    placement is part of its provenance rather than only implicit in how it was launched.
+20. ~~Core/thread affinity control~~ — **shipped ahead of schedule** (ahead of the 4.3 cycle this
+    tier belongs to; see `CLAUDE.md`'s `affinity.c`/`affinity.h` entry for the actual design). Landed
+    as `--affinity=all|thread=<id>|nosmt|domain=<id>|coretype=<id>|cpuset=<c0,c1,...>` (`wspy.c`),
+    applied via `sched_setaffinity()` on the forked child before `execve` in `topdown.c`'s
+    `launch_child()`: `all` (default, every CPU currently visible to this process), `thread=<id>`
+    (that single logical CPU, letting a caller deliberately avoid its SMT sibling), `nosmt` (one
+    primary/lowest-numbered SMT thread per core, across every core — the "turn off hyperthreading"
+    preset), `domain=<id>` (every thread on one L3-sharing core-complex/CCD — e.g. picking Zen5's
+    16 MiB-L3 complex vs. Zen5c's 8 MiB-L3 complex on a mixed part), `coretype=<id>` (every thread of
+    one MIDR-distinct microarchitecture — e.g. a big.LITTLE ARM part's "big" Cortex-A7xx cores vs. its
+    "little" Cortex-A5xx ones, added once a real such host — 8x Cortex-A720 + 4x Cortex-A520 sharing
+    one combined 12 MiB L3, so `domain=<id>` alone can't separate them — came up), and
+    `cpuset=<c0,c1,...>` (explicit enumerated core list/ranges — the general form the others are
+    shorthand for). `affinity.c`'s own topology discovery (SMT sibling grouping via
+    `topology/thread_siblings_list`, L3-domain grouping via `cache/index*/{level,shared_cpu_list,size}`,
+    core-type grouping via each cpu's own `regs/identification/midr_el1` implementer+part fields)
+    covers what this item flagged as the real prerequisite, kept in its own module rather than added
+    to `cpu_info.c`'s `struct cpu_core_info` (a placement concern, not a counter/PMU one).
+    `wspy --list-affinity` (no privileges needed, same standing as `--preflight`) discovers domain/
+    thread/core-type ids up front — mirroring what `scripts/map_cpu_hierarchy.py` maps out for a
+    human (including that script's own MIDR-based `decode_midr()`/capability-group logic for
+    core-type detection), read directly from sysfs here since a real run can't shell out to a helper
+    script — and is also folded into `--capabilities`' combined report. The resolved core list is
+    recorded in `--manifest`/`--run-index`'s new `options.affinity`/`affinity` object
+    (`MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION` `1.5.0` → `1.6.0`) so a run's placement is
+    part of its provenance rather than only implicit in how it was launched. `wspy-run --affinity
+    <spec>` and the web launcher's Run tab "CPU affinity" card (preset radios, including a core-type
+    picker, plus a discovery-backed explicit-CPU checkbox list, `POST /api/discovery/affinity-topology`)
+    both thread the same spec through to every pass alike; `wspy-queue add --affinity`/job files carry
+    it too. Detecting x86 hybrid parts (Intel Atom+Core, already tracked as `CORE_INTEL_ATOM`/
+    `CORE_INTEL_CORE` in `cpu_info.c`'s own per-core vendor field) as a `coretype=` grouping too is a
+    natural follow-up, not implemented yet.
 
 **Tier 7 — testing:**
 
