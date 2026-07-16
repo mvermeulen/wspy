@@ -189,10 +189,18 @@ load_builtin_profile(){
       # their own wspy invocation same as before. No --csv here (matching
       # the five passes it replaces) -- human-readable output still flows
       # into summary.txt alongside systemtime/amdtopdown's own output.
+      # cache3 (L3 hit/miss) and memory (local/remote data-cache-refill
+      # locality) were audited in and added here: cache3 uses AMD's L3
+      # uncore PMU budget (excluded from preflight's general-purpose slot
+      # count, so it's effectively free); memory's raw events carry their
+      # own requires=/sys/devices/system/node/node1 gate (topdown.c) so on
+      # a single-NUMA-node host (most client/APU parts) the group is a real
+      # zero-cost skip rather than a pass spent measuring a number that can
+      # only ever read as "100% local".
       PASS_NAMES=(systemtime counters amdtopdown)
       PASS_FLAGS=(
         "--csv --interval 1 --no-rusage --no-software --system --no-ipc"
-        "--passes=software,branch,ipc,topdown2,cache2,float,topdown-frontend,topdown-optlb"
+        "--passes=software,branch,ipc,topdown2,cache2,cache3,memory,float,topdown-frontend,topdown-optlb"
         "--csv --interval 1 --topdown --no-rusage --no-software --no-ipc"
       )
       ;;
@@ -213,7 +221,7 @@ load_builtin_profile(){
       PASS_NAMES=(systemtime counters amdtopdown gpu_busy gpu_metrics)
       PASS_FLAGS=(
         "--csv --interval 1 --no-rusage --no-software --system --no-ipc"
-        "--passes=software,branch,ipc,topdown2,cache2,float,topdown-frontend,topdown-optlb"
+        "--passes=software,branch,ipc,topdown2,cache2,cache3,memory,float,topdown-frontend,topdown-optlb"
         "--csv --interval 1 --topdown --no-rusage --no-software --no-ipc"
         "--csv --interval 1 --gpu-busy --no-ipc --no-rusage --no-software"
         "--csv --interval 1 --gpu-metrics --no-ipc --no-rusage --no-software"
