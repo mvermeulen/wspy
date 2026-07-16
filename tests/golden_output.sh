@@ -226,6 +226,9 @@ assert_csv_columns_match "rusage" --rusage
 assert_csv_columns_match "no-rusage" --no-rusage
 assert_csv_columns_match "ibs-basic" --ibs-basic
 assert_csv_columns_match "ibs-memory-deep" --ibs-memory-deep
+assert_csv_columns_match "arm-dcache-mem" --arm-dcache-mem
+assert_csv_columns_match "arm-icache-tlb" --arm-icache-tlb
+assert_csv_columns_match "arm-mem-align-tlb" --arm-mem-align-tlb
 assert_csv_columns_match "kitchen-sink-combined" \
   --topdown --topdown-frontend --topdown-backend --topdown-optlb \
   --branch --dcache --icache --tlb --opcache --float --memory --software --system

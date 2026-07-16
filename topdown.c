@@ -129,7 +129,7 @@ int amd_raw_events_count(void){
 }
 
 struct raw_event arm_raw_events[] = {
-  { "instructions","event=0x08",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_L2CACHE,{{0}} },
+  { "instructions","event=0x08",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_L2CACHE|COUNTER_ARM_DCACHE_MEM|COUNTER_ARM_ICACHE_TLB|COUNTER_ARM_MEM_ALIGN_TLB,{{0}} },
   { "cpu-cycles","event=0x11",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_TOPDOWN_BE,{{0}} },
   { "op_retired","event=0x3a",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,{{0}} },
   { "op_spec","event=0x3b",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,{{0}} },
@@ -143,9 +143,24 @@ struct raw_event arm_raw_events[] = {
   { "br_mis_pred_retired","event=0x22",PERF_TYPE_RAW,COUNTER_BRANCH|COUNTER_TOPDOWN2,{{0}} },
   { "l2d_cache","event=0x16",PERF_TYPE_RAW,COUNTER_L2CACHE,{{0}} },
   // l2d_cache_lmiss_rd exists on both PMU clusters on heterogeneous ARM SoCs.
-  { "l2d_cache_lmiss_rd","event=0x37",PERF_TYPE_RAW,COUNTER_L2CACHE,{{0}} },
+  { "l2d_cache_lmiss_rd","event=0x4009",PERF_TYPE_RAW,COUNTER_L2CACHE,{{0}} },
   { "mem_access","event=0x13",PERF_TYPE_RAW,COUNTER_MEMORY,{{0}} },
   { "bus_access","event=0x19",PERF_TYPE_RAW,COUNTER_MEMORY,{{0}} },
+  { "l1d_cache_refill","event=0x03",PERF_TYPE_RAW,COUNTER_ARM_DCACHE_MEM,{{0}} },
+  { "l1d_tlb_refill","event=0x05",PERF_TYPE_RAW,COUNTER_ARM_DCACHE_MEM,{{0}} },
+  { "l2d_cache_refill","event=0x17",PERF_TYPE_RAW,COUNTER_ARM_DCACHE_MEM,{{0}} },
+  { "l2d_tlb_refill","event=0x2d",PERF_TYPE_RAW,COUNTER_ARM_DCACHE_MEM,{{0}} },
+  { "l1i_cache_refill","event=0x01",PERF_TYPE_RAW,COUNTER_ARM_ICACHE_TLB,{{0}} },
+  { "l1i_tlb_refill","event=0x02",PERF_TYPE_RAW,COUNTER_ARM_ICACHE_TLB,{{0}} },
+  { "l2i_tlb_refill","event=0x2e",PERF_TYPE_RAW,COUNTER_ARM_ICACHE_TLB,{{0}} },
+  { "br_immed_retired","event=0x0d",PERF_TYPE_RAW,COUNTER_BRANCH,{{0}} },
+  { "br_return_retired","event=0x0e",PERF_TYPE_RAW,COUNTER_BRANCH,{{0}} },
+  { "br_pred","event=0x12",PERF_TYPE_RAW,COUNTER_BRANCH,{{0}} },
+  { "br_mis_pred","event=0x10",PERF_TYPE_RAW,COUNTER_BRANCH,{{0}} },
+  { "dtlb_walk","event=0x34",PERF_TYPE_RAW,COUNTER_ARM_MEM_ALIGN_TLB,{{0}} },
+  { "itlb_walk","event=0x35",PERF_TYPE_RAW,COUNTER_ARM_MEM_ALIGN_TLB,{{0}} },
+  { "ld_align_lat","event=0x4002",PERF_TYPE_RAW,COUNTER_ARM_MEM_ALIGN_TLB,{{0}} },
+  { "st_align_lat","event=0x4003",PERF_TYPE_RAW,COUNTER_ARM_MEM_ALIGN_TLB,{{0}} },
 };
 
 unsigned long parse_intel_event(char *description){
@@ -968,6 +983,27 @@ void setup_counter_groups(struct counter_group **counter_group_list){
     if ((cgroup = cache_counter_group("cache",counter_mask & (COUNTER_DCACHE|COUNTER_ICACHE|COUNTER_TLB)))){
       cgroup->next = *counter_group_list;
       *counter_group_list = cgroup;
+    }
+  }
+
+  if (counter_mask & COUNTER_ARM_DCACHE_MEM){
+    if ((cgroup = raw_counter_group("arm-dcache-mem",COUNTER_ARM_DCACHE_MEM))){
+      cgroup->next = *counter_group_list;
+      *counter_group_list = cgroup;      
+    }
+  }
+
+  if (counter_mask & COUNTER_ARM_ICACHE_TLB){
+    if ((cgroup = raw_counter_group("arm-icache-tlb",COUNTER_ARM_ICACHE_TLB))){
+      cgroup->next = *counter_group_list;
+      *counter_group_list = cgroup;      
+    }
+  }
+
+  if (counter_mask & COUNTER_ARM_MEM_ALIGN_TLB){
+    if ((cgroup = raw_counter_group("arm-mem-align-tlb",COUNTER_ARM_MEM_ALIGN_TLB))){
+      cgroup->next = *counter_group_list;
+      *counter_group_list = cgroup;      
     }
   }
 
@@ -1906,6 +1942,9 @@ void print_branch(struct counter_group *cgroup,enum output_format oformat){
 
   if (oformat == PRINT_CSV_HEADER){
     fprintf(outfile,"branch miss,");
+    if (cpu_info->vendor == VENDOR_ARM){
+      fprintf(outfile,"br_immed_retired,br_return_retired,br_pred,br_mis_pred,");
+    }
     return;
   }  
 
@@ -1915,9 +1954,9 @@ void print_branch(struct counter_group *cgroup,enum output_format oformat){
     cpu_cycles = cinfo->value;
   switch (cpu_info->vendor){
   case VENDOR_ARM:
-    if ((cinfo = find_ci_label(cgroup,"branch-instructions")))
+    if ((cinfo = find_ci_label(cgroup,"br_retired")))
       branches = cinfo->value;
-    if ((cinfo = find_ci_label(cgroup,"branch-misses")))
+    if ((cinfo = find_ci_label(cgroup,"br_mis_pred_retired")))
       branch_miss = cinfo->value;
     break;
   case VENDOR_AMD:
@@ -1945,6 +1984,14 @@ void print_branch(struct counter_group *cgroup,enum output_format oformat){
 
   if (csvflag){
       fprintf(outfile,"%4.2f%%,",(double) branch_miss / branches * 100.0);
+      if (cpu_info->vendor == VENDOR_ARM){
+          unsigned long br_immed = 0, br_return = 0, br_pred_val = 0, br_mis_pred_val = 0;
+          if ((cinfo = find_ci_label(cgroup,"br_immed_retired"))) br_immed = cinfo->value;
+          if ((cinfo = find_ci_label(cgroup,"br_return_retired"))) br_return = cinfo->value;
+          if ((cinfo = find_ci_label(cgroup,"br_pred"))) br_pred_val = cinfo->value;
+          if ((cinfo = find_ci_label(cgroup,"br_mis_pred"))) br_mis_pred_val = cinfo->value;
+          fprintf(outfile,"%lu,%lu,%lu,%lu,", br_immed, br_return, br_pred_val, br_mis_pred_val);
+      }
   } else {
       fprintf(outfile,"branches             %-14lu # %4.3f branches per 1000 inst\n",
 	      branches,(double) branches / instructions * 1000.0);
@@ -1954,6 +2001,21 @@ void print_branch(struct counter_group *cgroup,enum output_format oformat){
 	      cond_branches,(double) cond_branches / instructions * 1000.0);
       fprintf(outfile,"indirect             %-14lu # %4.3f indirect branches per 1000 inst\n",
 	      ind_branches,(double) ind_branches / instructions * 1000.0);      
+      if (cpu_info->vendor == VENDOR_ARM){
+          unsigned long br_immed = 0, br_return = 0, br_pred_val = 0, br_mis_pred_val = 0;
+          if ((cinfo = find_ci_label(cgroup,"br_immed_retired"))) br_immed = cinfo->value;
+          if ((cinfo = find_ci_label(cgroup,"br_return_retired"))) br_return = cinfo->value;
+          if ((cinfo = find_ci_label(cgroup,"br_pred"))) br_pred_val = cinfo->value;
+          if ((cinfo = find_ci_label(cgroup,"br_mis_pred"))) br_mis_pred_val = cinfo->value;
+          fprintf(outfile,"immediate retired    %-14lu # %4.3f immediate per 1000 inst\n",
+                  br_immed,(double) br_immed / instructions * 1000.0);
+          fprintf(outfile,"return retired       %-14lu # %4.3f return per 1000 inst\n",
+                  br_return,(double) br_return / instructions * 1000.0);
+          fprintf(outfile,"predicted executed   %-14lu # %4.3f predicted per 1000 inst\n",
+                  br_pred_val,(double) br_pred_val / instructions * 1000.0);
+          fprintf(outfile,"mispredicted exec    %-14lu # %4.3f mispredicted per 1000 inst\n",
+                  br_mis_pred_val,(double) br_mis_pred_val / instructions * 1000.0);
+      }
   }
 }
 
@@ -2256,6 +2318,114 @@ void print_float(struct counter_group *cgroup,enum output_format oformat){
   }
 }
 
+void print_arm_dcache_mem(struct counter_group *cgroup,enum output_format oformat){
+  int i;
+  struct counter_info *cinfo;
+  unsigned long instructions = 0;
+  
+  if (oformat == PRINT_CSV_HEADER){
+    for (i=0;i<cgroup->ncounters;i++){
+      if (strcmp(cgroup->cinfo[i].label,"instructions") != 0) {
+        fprintf(outfile,"%s,",cgroup->cinfo[i].label);
+      }
+    }
+    return;
+  }
+  if (csvflag){
+    for (i=0;i<cgroup->ncounters;i++){
+      if (strcmp(cgroup->cinfo[i].label,"instructions") != 0) {
+        fprintf(outfile,"%lu,",cgroup->cinfo[i].value);
+      }
+    }
+    return;
+  }
+
+  if ((cinfo = find_ci_label(cgroup,"instructions")))
+    instructions = cinfo->value;
+
+  for (i=0;i<cgroup->ncounters;i++){
+    if (strcmp(cgroup->cinfo[i].label,"instructions") == 0) continue;
+    fprintf(outfile,"%-20s %-14lu",cgroup->cinfo[i].label,cgroup->cinfo[i].value);
+    if (instructions > 0){
+      fprintf(outfile," # %4.3f per 1000 inst",
+              (double)cgroup->cinfo[i].value / instructions * 1000.0);
+    }
+    fprintf(outfile,"\n");
+  }
+}
+
+void print_arm_icache_tlb(struct counter_group *cgroup,enum output_format oformat){
+  int i;
+  struct counter_info *cinfo;
+  unsigned long instructions = 0;
+  
+  if (oformat == PRINT_CSV_HEADER){
+    for (i=0;i<cgroup->ncounters;i++){
+      if (strcmp(cgroup->cinfo[i].label,"instructions") != 0) {
+        fprintf(outfile,"%s,",cgroup->cinfo[i].label);
+      }
+    }
+    return;
+  }
+  if (csvflag){
+    for (i=0;i<cgroup->ncounters;i++){
+      if (strcmp(cgroup->cinfo[i].label,"instructions") != 0) {
+        fprintf(outfile,"%lu,",cgroup->cinfo[i].value);
+      }
+    }
+    return;
+  }
+
+  if ((cinfo = find_ci_label(cgroup,"instructions")))
+    instructions = cinfo->value;
+
+  for (i=0;i<cgroup->ncounters;i++){
+    if (strcmp(cgroup->cinfo[i].label,"instructions") == 0) continue;
+    fprintf(outfile,"%-20s %-14lu",cgroup->cinfo[i].label,cgroup->cinfo[i].value);
+    if (instructions > 0){
+      fprintf(outfile," # %4.3f per 1000 inst",
+              (double)cgroup->cinfo[i].value / instructions * 1000.0);
+    }
+    fprintf(outfile,"\n");
+  }
+}
+
+void print_arm_mem_align_tlb(struct counter_group *cgroup,enum output_format oformat){
+  int i;
+  struct counter_info *cinfo;
+  unsigned long instructions = 0;
+  
+  if (oformat == PRINT_CSV_HEADER){
+    for (i=0;i<cgroup->ncounters;i++){
+      if (strcmp(cgroup->cinfo[i].label,"instructions") != 0) {
+        fprintf(outfile,"%s,",cgroup->cinfo[i].label);
+      }
+    }
+    return;
+  }
+  if (csvflag){
+    for (i=0;i<cgroup->ncounters;i++){
+      if (strcmp(cgroup->cinfo[i].label,"instructions") != 0) {
+        fprintf(outfile,"%lu,",cgroup->cinfo[i].value);
+      }
+    }
+    return;
+  }
+
+  if ((cinfo = find_ci_label(cgroup,"instructions")))
+    instructions = cinfo->value;
+
+  for (i=0;i<cgroup->ncounters;i++){
+    if (strcmp(cgroup->cinfo[i].label,"instructions") == 0) continue;
+    fprintf(outfile,"%-20s %-14lu",cgroup->cinfo[i].label,cgroup->cinfo[i].value);
+    if (instructions > 0){
+      fprintf(outfile," # %4.3f per 1000 inst",
+              (double)cgroup->cinfo[i].value / instructions * 1000.0);
+    }
+    fprintf(outfile,"\n");
+  }
+}
+
 void print_software(struct counter_group *cgroup,enum output_format oformat){
   int i;
   struct counter_info *task_info = find_ci_label(cgroup,"task-clock");
@@ -2390,6 +2560,12 @@ void print_metrics(struct counter_group *counter_group_list,enum output_format o
       }
     } else if (cgroup->mask & COUNTER_FLOAT){
       print_float(cgroup,oformat);
+    } else if (cgroup->mask & COUNTER_ARM_DCACHE_MEM){
+      print_arm_dcache_mem(cgroup,oformat);
+    } else if (cgroup->mask & COUNTER_ARM_ICACHE_TLB){
+      print_arm_icache_tlb(cgroup,oformat);
+    } else if (cgroup->mask & COUNTER_ARM_MEM_ALIGN_TLB){
+      print_arm_mem_align_tlb(cgroup,oformat);
     } else if (cgroup->mask & COUNTER_IBS){
       print_ibs(cgroup,oformat);
     }
