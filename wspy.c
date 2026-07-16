@@ -1099,6 +1099,13 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     fatal("unable to query CPU information\n");
   }
 
+  if (multipass_flag && cpu_info->vendor != VENDOR_AMD) {
+    passes_requested_mask &= ~(COUNTER_TOPDOWN_FE | COUNTER_TOPDOWN_OP);
+    if (passes_requested_mask == 0) {
+      fatal("--passes: none of the requested counter groups are supported on this CPU vendor\n");
+    }
+  }
+
   check_nmi_watchdog();
 
   // Core/thread affinity control (affinity.h): resolve the --affinity=
