@@ -412,7 +412,8 @@ CATEGORY_TO_CHECKLIST_KEY = {
 # (counters only) is handled separately since it's a comma-joined list, not
 # a scalar.
 _BOOL_OPTION_KEYS = {
-    "tree": {"cmdline", "open", "futex", "io", "io_wait", "schedstat", "vmsize", "software"},
+    "tree": {"cmdline", "open", "futex", "io", "io_wait", "schedstat", "vmsize",
+             "connect", "wait", "poll", "nanosleep", "software"},
     "counters": {"per_core", "rusage", "csv"},
     "system": {"csv"},
     "gpu": {"busy", "metrics", "smi", "csv"},
@@ -505,6 +506,14 @@ def build_configuration_passes(rundir, checklist):
             flags.append("--tree-schedstat")
         if tree.get("vmsize"):
             flags.append("--tree-vmsize")
+        if tree.get("connect"):
+            flags.append("--tree-connect")
+        if tree.get("wait"):
+            flags.append("--tree-wait")
+        if tree.get("poll"):
+            flags.append("--tree-poll")
+        if tree.get("nanosleep"):
+            flags.append("--tree-nanosleep")
         flags.append("--software" if tree.get("software", True) else "--no-software")
         flags.append("--no-ipc")
         timeout = parse_optional_int(tree.get("timeout_secs"), 1, 86400)
@@ -736,7 +745,8 @@ def build_plot_argv(wspy_plot_bin, rundir, custom_plots=None, only_custom=False)
     return argv
 
 
-def build_proctree_argv(proctree_bin, tree_txt_path, cmdline=False, futex=False, io=False, io_wait=False, schedstat=False, vmsize=False):
+def build_proctree_argv(proctree_bin, tree_txt_path, cmdline=False, futex=False, io=False, io_wait=False,
+                         schedstat=False, vmsize=False, connect=False, wait=False, poll=False, nanosleep=False):
     """proctree, applied to a --tree pass's raw process.tree.txt record --
     the same "run the tool automatically" treatment wspy-plot already gets
     for CSVs (see build_plot_argv() above), added once a real ~155K-process
@@ -750,13 +760,15 @@ def build_proctree_argv(proctree_bin, tree_txt_path, cmdline=False, futex=False,
     in full on every exit regardless of any wspy flag, so there's nothing to
     condition on -- the fields are simply always in the raw file, and
     proctree's own defaults just don't print them without asking. -X/-B/-I/
-    -D/-R mirror -C's own conditional treatment, not -M/-N/-P's unconditional
-    one: futex/io-wait/io-byte-counter/run-queue-delay/peak-RSS-and-RSS-
-    composition-and-swap data is only in the raw file at all if this run's
-    tree pass requested --tree-futex/--tree-io-wait/--tree-io/
-    --tree-schedstat/--tree-vmsize respectively (--tree-vmsize used to be a
-    no-op on the wspy side -- it now drives -R's data, see wspy.c/topdown.c;
-    -M/-N/-P's own vmsize+rss/thread-count/ppid fields come from a different,
+    -D/-R/-K/-J/-L/-Z mirror -C's own conditional treatment, not -M/-N/-P's
+    unconditional one: futex/io-wait/io-byte-counter/run-queue-delay/
+    peak-RSS-and-RSS-composition-and-swap/connect-latency/wait-blocking-time/
+    poll-blocking-time/nanosleep-time data is only in the raw file at all if
+    this run's tree pass requested --tree-futex/--tree-io-wait/--tree-io/
+    --tree-schedstat/--tree-vmsize/--tree-connect/--tree-wait/--tree-poll/
+    --tree-nanosleep respectively (--tree-vmsize used to be a no-op on the
+    wspy side -- it now drives -R's data, see wspy.c/topdown.c; -M/-N/-P's
+    own vmsize+rss/thread-count/ppid fields come from a different,
     always-present source, /proc/<pid>/stat, and are unaffected by this)."""
     argv = [proctree_bin]
     if cmdline:
@@ -772,11 +784,20 @@ def build_proctree_argv(proctree_bin, tree_txt_path, cmdline=False, futex=False,
         argv.append("-D")
     if vmsize:
         argv.append("-R")
+    if connect:
+        argv.append("-K")
+    if wait:
+        argv.append("-J")
+    if poll:
+        argv.append("-L")
+    if nanosleep:
+        argv.append("-Z")
     argv.append(tree_txt_path)
     return argv
 
 
-def run_proctree_besteffort(emit, cfg, rundir, cmdline=False, futex=False, io=False, io_wait=False, schedstat=False, vmsize=False):
+def run_proctree_besteffort(emit, cfg, rundir, cmdline=False, futex=False, io=False, io_wait=False,
+                             schedstat=False, vmsize=False, connect=False, wait=False, poll=False, nanosleep=False):
     """Best-effort trailing step mirroring the wspy-plot step (build_plot_argv()
     above) but for --tree's raw process.tree.txt record: renders it into a
     human-readable process.tree.summary.txt via proctree. A no-op (not an
@@ -787,7 +808,8 @@ def run_proctree_besteffort(emit, cfg, rundir, cmdline=False, futex=False, io=Fa
     if not (os.path.isfile(tree_txt) and os.path.getsize(tree_txt) > 0):
         return
     summary_path = os.path.join(rundir, "process.tree.summary.txt")
-    argv = build_proctree_argv(cfg["proctree_bin"], tree_txt, cmdline=cmdline, futex=futex, io=io, io_wait=io_wait, schedstat=schedstat, vmsize=vmsize)
+    argv = build_proctree_argv(cfg["proctree_bin"], tree_txt, cmdline=cmdline, futex=futex, io=io, io_wait=io_wait,
+                                schedstat=schedstat, vmsize=vmsize, connect=connect, wait=wait, poll=poll, nanosleep=nanosleep)
     emit("$ " + shell_preview(argv) + f" > {os.path.basename(summary_path)}")
     try:
         with open(summary_path, "w") as outf:
@@ -1106,7 +1128,11 @@ def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_ar
                                  io="--tree-io" in tree_pass["flags"],
                                  io_wait="--tree-io-wait" in tree_pass["flags"],
                                  schedstat="--tree-schedstat" in tree_pass["flags"],
-                                 vmsize="--tree-vmsize" in tree_pass["flags"])
+                                 vmsize="--tree-vmsize" in tree_pass["flags"],
+                                 connect="--tree-connect" in tree_pass["flags"],
+                                 wait="--tree-wait" in tree_pass["flags"],
+                                 poll="--tree-poll" in tree_pass["flags"],
+                                 nanosleep="--tree-nanosleep" in tree_pass["flags"])
 
     write_custom_run_summary(rundir, pass_records)
     write_custom_run_manifest(rundir, suite, benchmark, run_id, workload_argv, pass_records)

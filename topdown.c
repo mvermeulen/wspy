@@ -551,6 +551,19 @@ struct ptrace_pid_entry {
   double io_read_wait_seconds;
   unsigned long long io_write_wait_count;
   double io_write_wait_seconds;
+  // --tree-connect/--tree-nanosleep/--tree-wait/--tree-poll accumulators:
+  // same shape as --tree-futex's single bucket (no read/write-style split
+  // needed for any of these) -- entry->exit duration is the signal, no op
+  // argument to decode. See INVESTIGATION_4.0.md's "Concrete design:
+  // --tree-connect/--tree-wait/--tree-poll/--tree-nanosleep".
+  unsigned long long connect_count;
+  double connect_seconds;
+  unsigned long long nanosleep_count;
+  double nanosleep_seconds;
+  unsigned long long wait_count;    // SYS_wait4 + SYS_waitid (no separate SYS_waitpid on x86_64)
+  double wait_seconds;
+  unsigned long long poll_count;    // poll/ppoll/select/pselect6/epoll_wait/epoll_pwait
+  double poll_seconds;
   struct ptrace_pid_entry *next;
 };
 
@@ -584,6 +597,22 @@ static int classify_io_wait_syscall(long long nr,int *is_write){
       *is_write = io_wait_syscalls[i].is_write;
       return 1;
     }
+  }
+  return 0;
+}
+
+// --tree-poll's syscall table (same shape as io_wait_syscalls[] above, but
+// one bucket instead of two -- there's no read/write-style distinction
+// among these, every one of them just means "waiting for an fd/event").
+static const long poll_syscalls[] = {
+  SYS_poll, SYS_ppoll, SYS_select, SYS_pselect6, SYS_epoll_wait, SYS_epoll_pwait,
+};
+
+static int classify_poll_syscall(long long nr){
+  size_t i;
+
+  for (i = 0; i < sizeof(poll_syscalls)/sizeof(poll_syscalls[0]); i++){
+    if (poll_syscalls[i] == nr) return 1;
   }
   return 0;
 }
@@ -825,6 +854,39 @@ void ptrace_loop(void){
 		      pid_entry->io_write_wait_count,pid_entry->io_write_wait_seconds);
 	    }
 	  }
+	  // --tree-connect/--tree-nanosleep/--tree-wait/--tree-poll: same
+	  // "only emitted when nonzero" idiom and "before exit" placement as
+	  // --tree-futex/--tree-io-wait above -- see INVESTIGATION_4.0.md's
+	  // "Concrete design: --tree-connect/--tree-wait/--tree-poll/
+	  // --tree-nanosleep".
+	  if (tree_connect){
+	    pid_entry = ptrace_pid_lookup(pid,0);
+	    if (pid_entry && pid_entry->connect_count){
+	      fprintf(exit_out,"%5.3f %d connect %llu %.6f\n",elapsed,pid,
+		      pid_entry->connect_count,pid_entry->connect_seconds);
+	    }
+	  }
+	  if (tree_nanosleep){
+	    pid_entry = ptrace_pid_lookup(pid,0);
+	    if (pid_entry && pid_entry->nanosleep_count){
+	      fprintf(exit_out,"%5.3f %d nanosleep %llu %.6f\n",elapsed,pid,
+		      pid_entry->nanosleep_count,pid_entry->nanosleep_seconds);
+	    }
+	  }
+	  if (tree_wait){
+	    pid_entry = ptrace_pid_lookup(pid,0);
+	    if (pid_entry && pid_entry->wait_count){
+	      fprintf(exit_out,"%5.3f %d wait %llu %.6f\n",elapsed,pid,
+		      pid_entry->wait_count,pid_entry->wait_seconds);
+	    }
+	  }
+	  if (tree_poll){
+	    pid_entry = ptrace_pid_lookup(pid,0);
+	    if (pid_entry && pid_entry->poll_count){
+	      fprintf(exit_out,"%5.3f %d poll %llu %.6f\n",elapsed,pid,
+		      pid_entry->poll_count,pid_entry->poll_seconds);
+	    }
+	  }
 	  // --tree-io: this pid's /proc/<pid>/io byte-volume counters, read
 	  // once at exit -- mechanically identical to the /proc/<pid>/stat dump
 	  // below, just a second file; unlike --tree-open/--tree-futex/
@@ -1031,6 +1093,24 @@ void ptrace_loop(void){
 	      pid_entry->io_read_wait_count++;
 	      pid_entry->io_read_wait_seconds += elapsed - pid_entry->syscall_entry_elapsed;
 	    }
+	  }
+	  if (tree_connect && (pid_entry->current_syscall == SYS_connect)){
+	    pid_entry->connect_count++;
+	    pid_entry->connect_seconds += elapsed - pid_entry->syscall_entry_elapsed;
+	  }
+	  if (tree_nanosleep && (pid_entry->current_syscall == SYS_nanosleep ||
+				  pid_entry->current_syscall == SYS_clock_nanosleep)){
+	    pid_entry->nanosleep_count++;
+	    pid_entry->nanosleep_seconds += elapsed - pid_entry->syscall_entry_elapsed;
+	  }
+	  if (tree_wait && (pid_entry->current_syscall == SYS_wait4 ||
+			     pid_entry->current_syscall == SYS_waitid)){
+	    pid_entry->wait_count++;
+	    pid_entry->wait_seconds += elapsed - pid_entry->syscall_entry_elapsed;
+	  }
+	  if (tree_poll && classify_poll_syscall(pid_entry->current_syscall)){
+	    pid_entry->poll_count++;
+	    pid_entry->poll_seconds += elapsed - pid_entry->syscall_entry_elapsed;
 	  }
 	  pid_entry->in_syscall = 0;
 	}

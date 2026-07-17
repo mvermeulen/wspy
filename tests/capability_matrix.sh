@@ -250,6 +250,12 @@ run_bundle "tree-io-io-wait"           0 --no-ipc --tree "$TREE_OUT" --tree-io -
 # scrape at exit, same shape as --tree-io) -- see INVESTIGATION_4.0.md's
 # "Concrete design: /proc/<pid>/schedstat run-delay/timeslice capture".
 run_bundle "tree-schedstat"            0 --no-ipc --tree "$TREE_OUT" --tree-schedstat -- /bin/true
+# --tree-connect/--tree-wait/--tree-poll/--tree-nanosleep: same per-pid
+# entry/exit-timing mechanism --tree-io-wait already established (no new
+# ptrace_arch macros), just four more syscall families -- see
+# INVESTIGATION_4.0.md's "Concrete design: --tree-connect/--tree-wait/
+# --tree-poll/--tree-nanosleep".
+run_bundle "tree-syscall-latency-expansion" 0 --no-ipc --tree "$TREE_OUT" --tree-connect --tree-wait --tree-poll --tree-nanosleep -- /bin/true
 
 echo ""
 echo "=== Run-artifact bundles (manifest, run-index, capabilities) ==="

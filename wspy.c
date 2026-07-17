@@ -44,6 +44,10 @@ int tree_futex = 0;
 int tree_io = 0;
 int tree_io_wait = 0;
 int tree_schedstat = 0;
+int tree_connect = 0;
+int tree_nanosleep = 0;
+int tree_wait = 0;
+int tree_poll = 0;
 int tree_vmsize = 0;
 int trace_syscall = 0;
 int versionflag = 0;
@@ -214,6 +218,10 @@ int parse_options(int argc,char *const argv[]){
     { "tree-io",no_argument,0, 80 },
     { "tree-io-wait",no_argument,0, 81 },
     { "tree-schedstat",no_argument,0, 82 },
+    { "tree-connect",no_argument,0, 83 },
+    { "tree-nanosleep",no_argument,0, 84 },
+    { "tree-wait",no_argument,0, 85 },
+    { "tree-poll",no_argument,0, 86 },
     { "tree-open",no_argument,0, 38 },
     { "tree-vmsize",no_argument,0,41 },
     { "verbose", no_argument, 0, 32 },
@@ -556,6 +564,22 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 82: // --tree-schedstat
       tree_schedstat = 1;
+      break;
+    case 83: // --tree-connect
+      tree_connect = 1;
+      trace_syscall = 1;
+      break;
+    case 84: // --tree-nanosleep
+      tree_nanosleep = 1;
+      trace_syscall = 1;
+      break;
+    case 85: // --tree-wait
+      tree_wait = 1;
+      trace_syscall = 1;
+      break;
+    case 86: // --tree-poll
+      tree_poll = 1;
+      trace_syscall = 1;
       break;
     case 41: // --tree-vmsize
       // Originally registered as a long option (and documented in --help)
@@ -1033,6 +1057,10 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t--tree-io-wait            - record per-pid/thread blocking I/O (read/write) wait time\n"
 	    "\t--tree-schedstat          - record per-pid/thread run-queue delay + timeslice count\n"
 	    "\t--tree-vmsize             - record peak RSS + anon/file/shmem RSS composition + swap\n"
+	    "\t--tree-connect            - record per-pid/thread connect() setup latency\n"
+	    "\t--tree-wait               - record per-pid/thread time blocked in wait4/waitid\n"
+	    "\t--tree-poll               - record per-pid/thread time blocked in poll/select/epoll_wait\n"
+	    "\t--tree-nanosleep          - record per-pid/thread deliberate nanosleep/clock_nanosleep time\n"
 	    "\t-o <file>                 - send output to file\n"
 	    "\t--csv                     - create csv output\n"
 	    "\t--manifest <file>         - write a JSON run manifest to <file>\n"
