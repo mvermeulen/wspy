@@ -349,6 +349,24 @@ button.primary { font-weight: 600; }
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: 0.3rem 0.75rem;
 }
+
+/* Wider-column variant of .group-grid for option lists whose labels are full
+   phrases (e.g. "record blocking futex waits --tree-futex") rather than
+   .group-grid's short single-word group names -- 140px would wrap badly. */
+.option-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 0.3rem 0.75rem;
+}
+.option-group-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin: 0.4rem 0 0.1rem;
+}
+.option-group-label:first-child { margin-top: 0; }
 .group-check {
   display: flex !important;
   align-items: center;
