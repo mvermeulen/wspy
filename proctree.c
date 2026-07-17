@@ -15,10 +15,12 @@
  * Lines this parser reads but deliberately ignores (see the main parse loop
  * below): "<time> <pid> exited", "<time> <pid> signal <n>", "<time> <pid>
  * unknown <status hex>". wspy also writes "<time> <pid> open <path>"
- * (--tree-open) and "<time> <pid> continued" lines; neither is recognized
- * by name here, so each one logs an "unknown command" warning rather than
- * being silently skipped. A trailing "# ptrace-summary ..." comment line
- * closes the file.
+ * (--tree-open), "<time> <pid> futex <count> <total_wait_seconds>"
+ * (--tree-futex, one line per pid/thread that made at least one blocking
+ * futex wait, emitted into that pid's exit block), and "<time> <pid>
+ * continued" lines; none of these three is recognized by name here, so
+ * each one logs an "unknown command" warning rather than being silently
+ * skipped. A trailing "# ptrace-summary ..." comment line closes the file.
  */
 
 #include <stdio.h>

@@ -321,6 +321,82 @@ this isn't a constraint to preserve backward compatibility around at all costs.
 general web launcher, structured configuration provenance, and browse-reports/customize-and-rerun
 (see "What shipped in 4.1" below). Also background for any future `wspy-run` profile-format refactor.
 
+### Critical-path / synchronization-latency deep-dive
+Motivation: hardware counters (topdown/IPC/cache/branch/TLB) characterize how efficiently the CPU
+executed while it was running, but say nothing about time spent not running at all — blocked on I/O, a
+lock, a child process, or deliberately sleeping. For a workload whose wall time is dominated by waiting
+rather than by inefficient execution, no amount of counter analysis explains the bottleneck. The
+tree-wide ptrace mechanism `--tree`/`--tree-open` already established (see `CLAUDE.md`'s "Child launch
+protocol" and `topdown.c`'s `ptrace_loop()`) is positioned to fill this gap: single-stepping every
+syscall entry/exit across the whole process tree already pays the cost of observing every syscall
+boundary; the open design question is which of those boundaries are worth decoding and how to report on
+them, not whether the mechanism can reach them.
+
+Core mechanism insight: `ptrace_loop()`'s `WSTOPSIG(status) == (SIGTRAP | 0x80)` branch already fires
+once per syscall entry and once per exit, and `elapsed` (the run-relative timestamp) is computed at
+every stop already. The entry→exit delta for a matched syscall *is* that call's latency/blocking
+duration, purely from correlating timestamps already being captured — no new instrumentation primitive
+is needed, only (a) a small per-pid "syscall started at T" side table (same shape as the existing
+`ptrace_pid_table` used for deferred exit blocks) and (b) per-syscall argument decoding where useful.
+
+Candidate syscalls/signals, roughly in priority order:
+1. `futex` — highest value. Uncontended pthread mutex/condvar fast paths never reach the kernel, so any
+   observed futex call is itself a contention signal; decoding the low bits of the op argument
+   (`FUTEX_WAIT*` vs `FUTEX_WAKE*`) separates blocking waits from wakeups, and entry→exit duration on a
+   `FUTEX_WAIT*` is time lost to lock/condvar contention. Directly answers "what's the synchronization
+   bottleneck" for multithreaded workloads. **Recommended first concrete step** — see the 4.3 Tier 8
+   item below.
+2. Blocking I/O (`read`/`pread64`/`recvfrom`/etc.) — entry→exit delta on a blocking fd separates "CPU
+   busy" from "blocked on a pipe/socket/slow storage," invisible to a bandwidth counter (same byte
+   count, 2µs vs. 200ms).
+3. `connect` — entry→exit delta is literal connection-setup latency (DNS, RTT, remote backlog); doubles
+   the file/network-provenance use case already noted for `--tree-open` (recording remote addresses
+   touched) with an actual latency number, not just an occurrence.
+4. `nanosleep`/`clock_nanosleep` — deliberate idle time; a large share of wall time here rules out a
+   hardware explanation for a low-IPC interval outright.
+5. `wait4`/`waitpid` on tree nodes that are themselves orchestrators (shell scripts, `make -j`, test
+   harnesses) — time here is pure "blocked on a child," separating orchestration/serialization overhead
+   from compute on the critical path.
+6. `poll`/`ppoll`/`select`/`epoll_wait` — decoding the timeout argument distinguishes "waiting
+   productively for an event" from a short-timeout spin/poll loop (a workload-tuning smell, not a
+   hardware one).
+
+Report-layer payoff — the reason this is worth doing at all: cross-referencing blocking-syscall time
+against `phase.c`'s existing IPC-based warmup/steady/degraded segmentation. A degraded phase that
+overlaps heavy futex-wait/read-wait time means the CPU had nothing to do (waiting, not stalling); a
+degraded phase with no blocking-syscall activity at all is a genuine hardware stall worth chasing with
+topdown/cache counters. These two situations currently look identical from counters alone — this is the
+mechanism that would tell them apart, across the whole tree, not just one process (the actual advantage
+over pointing `strace -T` at one pid by hand — nothing today coordinates N separate strace outputs into
+one timeline).
+
+Design forks to resolve per syscall, not once for the whole area:
+- **Log-per-call vs. aggregate-per-pid.** Rare events (`connect`, `nanosleep`) are naturally one line
+  per occurrence, same as `--tree-open`'s existing `open` lines. High-frequency events (`futex`,
+  blocking `read`) need per-pid accumulation (count + total duration) flushed once at exit — same
+  pattern as the existing `/proc/<pid>/stat` dump on the `exit` line — or the tree file grows to
+  strace-scale and defeats the "lighter than strace" premise.
+- **Argument decoding varies per syscall.** `ptrace_read_null_terminated_string()` (pathname) already
+  exists; futex's op argument is a plain integer needing bitmask decoding; `poll`/`epoll_wait`'s timeout
+  argument and `connect`'s `sockaddr` need a fixed-size remote-memory read (generalizing the existing
+  `PEEKDATA`-loop into a bounded-length `ptrace_read_bytes()`).
+- **Generalizing `tree_open`.** Worth eventually becoming a small table (same shape as
+  `multipass_group_names[]`/`web/server.py`'s `COLUMN_TO_GROUP`) mapping syscall name → number → decode
+  function → log-vs-aggregate mode, rather than each new syscall adding another hand-written `if` branch
+  in `ptrace_loop()`.
+
+Caveat: `ptrace` itself imposes a real stop-the-world cost on every syscall of the traced process, so
+absolute latency numbers collected this way are inflated relative to an untraced run — the same
+observer-effect concern already flagged in 4.3 Tier 6's "low-overhead tracing alternative to ptrace"
+item (#18). The *relative* split (fraction of wall time in futex-wait vs. read-wait vs. on-CPU) should
+stay informative even when absolute numbers are skewed, but this should be documented as an inherent
+limitation of the ptrace-based mechanism, not treated as clean latency data.
+
+→ Feeds the 4.3 priority list's new Tier 8 below; the "no blocking-syscall activity" vs. "heavy
+blocking-syscall activity" split is also a direct input to Tier 2's "Composite attribution" (topdown +
+cache/TLB/IBS signals) — this deep-dive proposes blocking-syscall time as a fourth signal alongside
+those three, not a separate report.
+
 ## 4.2 priorities
 Goal: everything originally scoped for 4.1 beyond Tier 1 and Tier 2 (both shipped as the normalized
 store/reporting layer and the web interface — see "What shipped in 4.1"): the stats/confidence layer,
@@ -598,6 +674,71 @@ topdown/IBS attribution, static-site publishing, and a lower-overhead tracing ba
     guardrails — needs deterministic micro-workloads and 4.1's normalized store plus 4.2's
     stats/confidence infrastructure.
 22. Contributor guide for adding a collector/metric/schema bump safely.
+
+**Tier 8 — critical-path / synchronization-latency instrumentation (new — see the "Critical-path /
+synchronization-latency deep-dive" above for the full use-case breakdown):**
+
+23. General syscall-level critical-path instrumentation: extend the `--tree`/`ptrace_loop()` mechanism
+    already used for `--tree-open` (currently just logs occurrence of `SYS_openat`) to capture
+    entry→exit *latency*, not just occurrence, for blocking/synchronization syscalls (`futex`, blocking
+    `read`/`recvfrom`, `connect`, `nanosleep`, `wait4`, `poll`/`epoll_wait`). Goal is a per-tree-node
+    "time spent blocked, and on what" breakdown correlatable with `phase.c`'s degraded-phase
+    segmentation, to distinguish genuine hardware stalls from synchronization/I-O waits — currently
+    indistinguishable from counters alone. Design forks (log-per-call vs. per-pid aggregate, per-syscall
+    argument decoding, generalizing `tree_open` into a table-driven mechanism) and the ptrace
+    observer-effect caveat are covered in the deep-dive above, not repeated here.
+24. **Recommended first step:** futex-wait tracking specifically (deep-dive item 1) — highest
+    standalone value (any observed futex call is itself a contention signal in glibc's
+    fast-path-first mutex/condvar implementation) and the smallest slice to design end-to-end (one
+    syscall, one op-argument decode, one per-pid aggregate) before generalizing the mechanism to other
+    syscalls.
+
+    **Concrete design (2026-07-16):**
+    - **Prerequisite fix, uncovered by this design, not optional:** `ptrace_loop()`'s syscall
+      entry/exit classification (`last_syscall`/`syscall_entry` in `topdown.c`) is currently
+      loop-global — it compares each stop's syscall number against the *previous stop across the
+      whole tree*, not the previous stop for that pid. Harmless for `--tree-open` today (a
+      misclassification just prints at the wrong moment), but load-bearing for futex timing: two
+      threads entering `futex` around the same time can flip a genuine second entry into a false
+      "exit," corrupting the measured duration — exactly the concurrent-thread scenario
+      futex-tracking exists to measure. Fix: move entry/exit state into the existing per-pid
+      `ptrace_pid_table`/`struct ptrace_pid_entry` (new fields `in_syscall`, `current_syscall`,
+      `syscall_entry_elapsed`), replacing the two loop-globals outright. Each tracee's own stop
+      stream strictly alternates entry/exit (guaranteed by `PTRACE_O_TRACESYSGOOD` re-arming), so
+      per-pid toggling is simply correct with no cross-pid interference — simpler than the
+      number-comparison heuristic it replaces, not just more correct. Benefits every future
+      syscall-latency flag under item 23, not just this one.
+    - **Op decoding is free:** `futex(uaddr, futex_op, val, timeout, uaddr2, val3)` — `futex_op` is
+      argument 2, the exact register `ptrace_arch.h`'s `PTRACE_SYSCALL_ARG2` already exposes for
+      `openat`'s pathname (arg2 is arg2 regardless of type). No new arch macro needed — read it as an
+      int, mask with `FUTEX_CMD_MASK` (`<linux/futex.h>`), and classify blocking ops:
+      `FUTEX_WAIT`/`FUTEX_WAIT_BITSET`/`FUTEX_LOCK_PI`/`FUTEX_LOCK_PI2`/`FUTEX_WAIT_REQUEUE_PI`.
+      `FUTEX_WAKE*`/`*REQUEUE*` (non-wait)/`FUTEX_UNLOCK_PI`/`FUTEX_TRYLOCK_PI` are non-blocking
+      control/wake calls and don't count. A `FUTEX_WAIT` that returns instantly (value already
+      changed, `EAGAIN`) still counts toward `count` and contributes ~0 duration — correct as-is, no
+      special case needed.
+    - **Aggregation:** two new fields on the same per-pid entry, `futex_wait_count`
+      (`unsigned long long`) and `futex_wait_seconds` (`double`), incremented at the matching exit
+      stop (`seconds += elapsed - syscall_entry_elapsed`) whenever the entry was classified as a wait.
+    - **Reporting:** append `<time> <pid> futex <count> <total_wait_seconds>` to the deferred
+      exit-block `open_memstream` already built at `PTRACE_EVENT_EXIT` (right after the existing
+      `comm`/`cmdline`/`exit`-stat writes), only when `count > 0` — inherits the existing
+      fork-before-exit ordering guarantees (`8271e55`) for free, and follows the file's established
+      `<time> <pid> <event> [args...]` grammar. Since threads (`clone(CLONE_THREAD)`) already get
+      their own `fork`/`exit` lines under the existing `PTRACE_O_TRACECLONE` setup, this naturally
+      produces **per-thread**, not just per-process, wait time — the granularity lock-contention
+      analysis actually needs.
+    - **CLI flag:** `--tree-futex`, mirrors `--tree-open` exactly (`tree_futex = 1; trace_syscall =
+      1;` in `parse_options()`). Inert without `--tree`, same as `--tree-open` today.
+    - **Deliberate scope cut:** `proctree.c` doesn't recognize `futex` lines yet — like `open` today,
+      it logs "unknown command" and skips them (documented forward-compat behavior, not a crash).
+      Landing collection first and leaving `proctree`/report-side summarization as a fast-follow
+      matches how `--tree-open` itself shipped ahead of its own 4.2 #11 file-I/O summary item.
+    - **Validation:** no golden-output test is meaningful (durations are inherently
+      non-deterministic) — validate with a small two-thread pthread-mutex-contention test program run
+      under `wspy --tree --tree-futex`, cross-checked against `strace -f -T -e futex` as ground truth,
+      plus a `capability_matrix.sh`-style smoke bundle (`--tree --tree-futex`, assert no
+      fatal/crash) for regression coverage.
 
 ## 4.4 priorities
 Goal: optional/heavier pieces that shouldn't block the rest, in priority order:

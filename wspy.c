@@ -40,6 +40,7 @@ int phase_flag = 1;
 int treeflag = 0;
 int tree_cmdline = 0;
 int tree_open = 0;
+int tree_futex = 0;
 int tree_vmsize = 0;
 int trace_syscall = 0;
 int versionflag = 0;
@@ -206,6 +207,7 @@ int parse_options(int argc,char *const argv[]){
     { "version", no_argument, 0, 51 },
     { "tree", required_argument, 0, 31 }, //
     { "tree-cmdline",no_argument,0,35 },
+    { "tree-futex",no_argument,0, 79 },
     { "tree-open",no_argument,0, 38 },
     { "tree-vmsize",no_argument,0,41 },
     { "verbose", no_argument, 0, 32 },
@@ -533,6 +535,10 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 38:
       tree_open = 1;
+      trace_syscall = 1;
+      break;
+    case 79:
+      tree_futex = 1;
       trace_syscall = 1;
       break;
     case 41: // --tree-vmsize
@@ -1003,6 +1009,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t--rusage or -r            - show getrusage(2) information\n"
 	    "\t--tree <file>             - create CSV of processes\n"
 	    "\t--tree-cmdline            - record full command lines\n"
+	    "\t--tree-futex              - record per-pid/thread blocking futex-wait time\n"
 	    "\t--tree-vmsize             - virtual memory size\n"
 	    "\t-o <file>                 - send output to file\n"
 	    "\t--csv                     - create csv output\n"
