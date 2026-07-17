@@ -15,14 +15,15 @@
  * <time> <pid> io_wait <read_count> <read_seconds> <write_count> <write_seconds>
  * <time> <pid> io <rchar> <wchar> <syscr> <syscw> <read_bytes> <write_bytes> <cancelled_write_bytes>
  * <time> <pid> schedstat <cpu_seconds> <run_delay_seconds> <nr_timeslices>
+ * <time> <pid> vmsize <vm_hwm_kb> <rss_anon_kb> <rss_file_kb> <rss_shmem_kb> <vm_swap_kb>
  *
- * The "futex"/"io_wait"/"io"/"schedstat" lines (--tree-futex/--tree-io-wait/
- * --tree-io/--tree-schedstat, at most one line per pid/thread per flag) are
- * written *before* that pid's "exit" line in the raw file, not after -- see
- * handle_exit()'s comment on why that ordering matters to this parser
- * specifically. "io_wait" is checked before "io" in the dispatch loop below
- * since "io" is a prefix of "io_wait" (same reason "exited" is checked
- * before "exit").
+ * The "futex"/"io_wait"/"io"/"schedstat"/"vmsize" lines (--tree-futex/
+ * --tree-io-wait/--tree-io/--tree-schedstat/--tree-vmsize, at most one line
+ * per pid/thread per flag) are written *before* that pid's "exit" line in
+ * the raw file, not after -- see handle_exit()'s comment on why that
+ * ordering matters to this parser specifically. "io_wait" is checked before
+ * "io" in the dispatch loop below since "io" is a prefix of "io_wait" (same
+ * reason "exited" is checked before "exit").
  *
  * Lines this parser reads but deliberately ignores (see the main parse loop
  * below): "<time> <pid> exited", "<time> <pid> signal <n>", "<time> <pid>
@@ -53,6 +54,7 @@ int futexflag = 0;
 int iflag = 0;
 int bflag = 0;
 int dflag = 0;
+int rflag = 0;
 int output_width = 80;
 int print_cmdline = 0;
 int clocks_per_second;
@@ -104,6 +106,11 @@ struct process_info {
   double sched_cpu_seconds;
   double sched_rundelay_seconds;
   unsigned long long sched_nr_timeslices;
+  // --tree-vmsize (topdown.c): peak RSS + anon/file/shmem RSS composition +
+  // swap from /proc/<pid>/status, present only if wspy was run with
+  // --tree-vmsize -- 0 otherwise, same convention as futex/io_wait/io/
+  // schedstat above. All in kB, the file's own native unit.
+  unsigned long vm_hwm_kb,rss_anon_kb,rss_file_kb,rss_shmem_kb,vm_swap_kb;
   struct process_info *parent;
   struct process_info *children; // linked using the "sibling" relationship
   struct process_info *older_sibling; // elder sibling
@@ -307,6 +314,20 @@ void handle_schedstat(double elapsed,unsigned int pid,char *rest){
   }
 }
 
+// format: elapsed pid vmsize <vm_hwm_kb> <rss_anon_kb> <rss_file_kb> <rss_shmem_kb> <vm_swap_kb>
+// Same lookup/ordering rules as handle_futex() above.
+void handle_vmdetail(double elapsed,unsigned int pid,char *rest){
+  debug("handle_vmdetail(%d,%s)\n",elapsed,pid,rest);
+
+  struct proc_table_entry *pentry = lookup_pid(pid,0);
+  if (pentry){
+    sscanf(rest,"%lu %lu %lu %lu %lu",
+	   &pentry->pinfo->vm_hwm_kb,&pentry->pinfo->rss_anon_kb,
+	   &pentry->pinfo->rss_file_kb,&pentry->pinfo->rss_shmem_kb,
+	   &pentry->pinfo->vm_swap_kb);
+  }
+}
+
 // format: elapsed pid exit </proc/pid/stat>
 void handle_exit(double elapsed,unsigned int pid,char *stat){
   debug("handle_exit(%d,%s)\n",elapsed,pid,stat);
@@ -373,6 +394,7 @@ struct comm_info {
   unsigned long long total_io_read_bytes,total_io_write_bytes;
   double total_sched_rundelay_seconds;
   unsigned long long total_sched_nr_timeslices;
+  unsigned long total_vm_hwm_kb,total_rss_anon_kb,total_rss_file_kb,total_rss_shmem_kb,total_vm_swap_kb;
   struct comm_info *next;
 };
 struct comm_info *comm_totals = NULL;
@@ -399,6 +421,11 @@ static void collect_process_totals(struct process_info *pinfo){
       ci->total_io_write_bytes += pinfo->io_write_bytes;
       ci->total_sched_rundelay_seconds += pinfo->sched_rundelay_seconds;
       ci->total_sched_nr_timeslices += pinfo->sched_nr_timeslices;
+      ci->total_vm_hwm_kb += pinfo->vm_hwm_kb;
+      ci->total_rss_anon_kb += pinfo->rss_anon_kb;
+      ci->total_rss_file_kb += pinfo->rss_file_kb;
+      ci->total_rss_shmem_kb += pinfo->rss_shmem_kb;
+      ci->total_vm_swap_kb += pinfo->vm_swap_kb;
       ci->count++;
       found = 1;
       break;
@@ -421,6 +448,11 @@ static void collect_process_totals(struct process_info *pinfo){
     ci->total_io_write_bytes = pinfo->io_write_bytes;
     ci->total_sched_rundelay_seconds = pinfo->sched_rundelay_seconds;
     ci->total_sched_nr_timeslices = pinfo->sched_nr_timeslices;
+    ci->total_vm_hwm_kb = pinfo->vm_hwm_kb;
+    ci->total_rss_anon_kb = pinfo->rss_anon_kb;
+    ci->total_rss_file_kb = pinfo->rss_file_kb;
+    ci->total_rss_shmem_kb = pinfo->rss_shmem_kb;
+    ci->total_vm_swap_kb = pinfo->vm_swap_kb;
     ci->count = 1;
     comm_totals = ci;
     num_comm_info++;
@@ -456,6 +488,12 @@ static void print_statistics(){
   unsigned long long total_io_read_bytes = 0,total_io_write_bytes = 0;
   double total_sched_rundelay_seconds = 0;
   unsigned long long total_sched_nr_timeslices = 0;
+  // Unlike the durations above, these are point-in-time absolute values,
+  // not accumulated time -- summing them across processes has no "may
+  // overlap in parallel" caveat, same straight-sum framing as the io-byte
+  // totals just below.
+  unsigned long total_vm_hwm_kb = 0,total_rss_anon_kb = 0,total_rss_file_kb = 0;
+  unsigned long total_rss_shmem_kb = 0,total_vm_swap_kb = 0;
 
   printf("%d processes\n",total_processes);
   
@@ -507,6 +545,17 @@ static void print_statistics(){
       total_sched_rundelay_seconds += comm_table[i].total_sched_rundelay_seconds;
       total_sched_nr_timeslices += comm_table[i].total_sched_nr_timeslices;
     }
+    if (rflag){
+      printf(" vm_hwm=%luk rss_anon=%luk rss_file=%luk rss_shmem=%luk vm_swap=%luk",
+	     comm_table[i].total_vm_hwm_kb,comm_table[i].total_rss_anon_kb,
+	     comm_table[i].total_rss_file_kb,comm_table[i].total_rss_shmem_kb,
+	     comm_table[i].total_vm_swap_kb);
+      total_vm_hwm_kb += comm_table[i].total_vm_hwm_kb;
+      total_rss_anon_kb += comm_table[i].total_rss_anon_kb;
+      total_rss_file_kb += comm_table[i].total_rss_file_kb;
+      total_rss_shmem_kb += comm_table[i].total_rss_shmem_kb;
+      total_vm_swap_kb += comm_table[i].total_vm_swap_kb;
+    }
     printf("\n");
   }
 
@@ -528,6 +577,10 @@ static void print_statistics(){
   if (dflag){
     printf("total run_delay=%.3f (%llu timeslices) -- summed across processes, may overlap in parallel\n",
 	   total_sched_rundelay_seconds,total_sched_nr_timeslices);
+  }
+  if (rflag){
+    printf("total vm_hwm=%luk rss_anon=%luk rss_file=%luk rss_shmem=%luk vm_swap=%luk\n",
+	   total_vm_hwm_kb,total_rss_anon_kb,total_rss_file_kb,total_rss_shmem_kb,total_vm_swap_kb);
   }
   printf("\n");
 }
@@ -590,6 +643,11 @@ static void print_tree(struct process_info *pinfo,int level){
     printf(" run_delay=%.3f timeslices=%llu",
 	   pinfo->sched_rundelay_seconds,pinfo->sched_nr_timeslices);
   }
+  if (rflag){
+    printf(" vm_hwm=%luk rss_anon=%luk rss_file=%luk rss_shmem=%luk vm_swap=%luk",
+	   pinfo->vm_hwm_kb,pinfo->rss_anon_kb,pinfo->rss_file_kb,
+	   pinfo->rss_shmem_kb,pinfo->vm_swap_kb);
+  }
 
   printf("\n");
 
@@ -624,7 +682,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   initialize_error_subsystem(argv[0],"-");
 
   // parse options
-  while ((opt = getopt(argc,argv,"+BbCcDdFfIiMmNnPpSsTtUuvw:Xx")) != -1){
+  while ((opt = getopt(argc,argv,"+BbCcDdFfIiMmNnPpRrSsTtUuvw:Xx")) != -1){
     switch(opt){
     case 'B':
       bflag = 1;
@@ -674,6 +732,12 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     case 'p':
       pflag = 0;
       break;
+    case 'R':
+      rflag = 1;
+      break;
+    case 'r':
+      rflag = 0;
+      break;
     case 't':
       treeflag = 0;
       break;
@@ -712,7 +776,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       break;
     default:
     usage:
-      fatal("usage: %s -[BbCcDdFfIiMmNnPpSsTtUuvXx][-w width] file\n"
+      fatal("usage: %s -[BbCcDdFfIiMmNnPpRrSsTtUuvXx][-w width] file\n"
 	    "\t-B\tturn on I/O-wait-time printing (per-pid and summary totals)\n"
 	    "\t-b\tturn off I/O-wait-time printing (default)\n"
 	    "\t-C\tturn on longer command line\n"
@@ -729,6 +793,8 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t-n\tturn off thread-count printing (default)\n"
 	    "\t-P\tturn on parent-pid printing\n"
 	    "\t-p\tturn off parent-pid printing (default)\n"
+	    "\t-R\tturn on peak-RSS/anon-file-shmem-RSS/swap printing (per-pid and summary totals)\n"
+	    "\t-r\tturn off peak-RSS/anon-file-shmem-RSS/swap printing (default)\n"
 	    "\t-S\tturn on summary output (default)\n"
 	    "\t-s\tturn off summary output\n"
 	    "\t-T\tturn on tree output (default)\n"
@@ -745,10 +811,11 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "works on an existing file with no need to re-run wspy. The one\n"
 	    "exception is -C's full command line, which only prints anything if\n"
 	    "wspy was run with --tree-cmdline in the first place -- and likewise\n"
-	    "-X's futex data, -B's I/O-wait data, -I's I/O byte-counter data, and\n"
-	    "-D's run-queue-delay data, each of which only prints anything (beyond\n"
-	    "zeroes) if wspy was run with --tree-futex, --tree-io-wait, --tree-io,\n"
-	    "or --tree-schedstat respectively.\n",
+	    "-X's futex data, -B's I/O-wait data, -I's I/O byte-counter data,\n"
+	    "-D's run-queue-delay data, and -R's peak-RSS/RSS-composition/swap\n"
+	    "data, each of which only prints anything (beyond zeroes) if wspy was\n"
+	    "run with --tree-futex, --tree-io-wait, --tree-io, --tree-schedstat,\n"
+	    "or --tree-vmsize respectively.\n",
 	    argv[0]);
       break;
     }
@@ -804,6 +871,8 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       handle_io(elapsed,event_pid,p+3);
     } else if (!strncmp(p,"schedstat",9)){
       handle_schedstat(elapsed,event_pid,p+10);
+    } else if (!strncmp(p,"vmsize",6)){
+      handle_vmdetail(elapsed,event_pid,p+7);
     } else if (!strncmp(p,"exit",4)){
       handle_exit(elapsed,event_pid,p+5);
     } else {

@@ -235,6 +235,11 @@ run_bundle "interval-per-core"        0 --csv --per-core --interval 1        -- 
 TREE_OUT=$(mktemp /tmp/wspy_capmatrix_tree.XXXXXX)
 trap 'rm -f "$TREE_OUT"' EXIT
 run_bundle "tree-basic"                0 --no-ipc --tree "$TREE_OUT" -- /bin/true
+# --tree-vmsize was a pure no-op for a long stretch of this codebase's history;
+# it now drives a real /proc/<pid>/status scrape (peak RSS + anon/file/shmem
+# RSS composition + swap) -- see INVESTIGATION_4.0.md's "Concrete design:
+# memory footprint detail via /proc/<pid>/status" -- so this bundle now
+# exercises real behavior, not just a flag that used to be accepted and ignored.
 run_bundle "tree-cmdline-open-futex-vmsize"  0 --no-ipc --tree "$TREE_OUT" --tree-cmdline --tree-open --tree-futex --tree-vmsize -- /bin/true
 # --tree-io needs no syscall tracing (plain /proc/<pid>/io scrape at exit);
 # --tree-io-wait extends --tree-futex's ptrace mechanism onto a small
