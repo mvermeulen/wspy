@@ -3324,6 +3324,10 @@ def main():
     ap.add_argument("--wspy-plot", default=os.path.join(REPO_ROOT, "wspy-plot"),
                      help="path to the wspy-plot binary (item 12's shared plotting templates; "
                           "default: repo root's ./wspy-plot)")
+    ap.add_argument("--proctree", default=os.path.join(REPO_ROOT, "proctree"),
+                     help="path to the proctree binary, run best-effort after a --tree pass "
+                          "the same way wspy-plot runs after a CSV-producing pass "
+                          "(default: repo root's ./proctree)")
     ap.add_argument("--output-root", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs"),
                      help="directory root for <suite>/<benchmark>/<run-id>/ run output "
                           "(default: web/runs)")
@@ -3372,12 +3376,17 @@ def main():
         print(f"warning: wspy-plot not found at {args.wspy_plot} (best-effort plot generation "
               f"after a run will fail until it's built -- see CLAUDE.md's Build & Test section)",
               file=sys.stderr)
+    if not os.path.isfile(args.proctree):
+        print(f"warning: proctree not found at {args.proctree} (best-effort tree reconstruction "
+              f"after a --tree pass will fail until it's built -- see CLAUDE.md's Build & Test section)",
+              file=sys.stderr)
 
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.wspy_cfg = {
         "wspy_bin": os.path.abspath(args.wspy),
         "wspy_run_bin": os.path.abspath(args.wspy_run),
         "wspy_plot_bin": os.path.abspath(args.wspy_plot),
+        "proctree_bin": os.path.abspath(args.proctree),
         "output_root": output_root,
         "wspy_validate_bin": os.path.abspath(args.wspy_validate),
         "wspy_store_bin": os.path.abspath(args.wspy_store),

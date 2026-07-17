@@ -124,6 +124,7 @@ def build_cfg(args):
         "wspy_bin": os.path.abspath(args.wspy),
         "wspy_run_bin": os.path.abspath(args.wspy_run),
         "wspy_plot_bin": os.path.abspath(args.wspy_plot),
+        "proctree_bin": os.path.abspath(args.proctree),
         "wspy_store_bin": os.path.abspath(args.wspy_store),
         "output_root": output_root,
         "run_index_file": os.path.abspath(args.run_index_file) if args.run_index_file else
@@ -378,6 +379,7 @@ def main():
     ap.add_argument("--wspy", default=os.path.join(SCRIPT_DIR, "wspy"))
     ap.add_argument("--wspy-run", default=os.path.join(SCRIPT_DIR, "wspy-run"))
     ap.add_argument("--wspy-plot", default=os.path.join(SCRIPT_DIR, "wspy-plot"))
+    ap.add_argument("--proctree", default=os.path.join(SCRIPT_DIR, "proctree"))
     ap.add_argument("--wspy-store", default=os.path.join(SCRIPT_DIR, "wspy-store"))
     ap.add_argument("--output-root", default=os.path.join(SCRIPT_DIR, "web", "runs"),
                      help="directory root for <suite>/<benchmark>/<run-id>/ run output "

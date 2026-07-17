@@ -539,6 +539,7 @@ if ! awk '
 BEGIN {
     root_count = 0;
     fork_lines = 0;
+    exec_lines = 0;
     exit_lines = 0;
     unknown_lines = 0;
     saw_summary = 0;
@@ -589,6 +590,11 @@ BEGIN {
         next;
     }
 
+    if (event == "exec") {
+        exec_lines++;
+        next;
+    }
+
     if (event == "exit") {
         exit_lines++;
         if (!(pid in known)) {
@@ -620,6 +626,10 @@ END {
         }
         if (summary["exit_events"] != exit_lines) {
             printf("exit counter mismatch: footer=%d lines=%d\n", summary["exit_events"], exit_lines) > "/dev/stderr";
+            errors++;
+        }
+        if (summary["exec_events"] != exec_lines) {
+            printf("exec counter mismatch: footer=%d lines=%d\n", summary["exec_events"], exec_lines) > "/dev/stderr";
             errors++;
         }
         if (summary["unknown_traps"] != unknown_lines) {

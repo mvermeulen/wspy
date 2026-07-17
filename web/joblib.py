@@ -728,6 +728,49 @@ def build_plot_argv(wspy_plot_bin, rundir, custom_plots=None, only_custom=False)
     return argv
 
 
+def build_proctree_argv(proctree_bin, tree_txt_path, cmdline=False, vmsize=False):
+    """proctree, applied to a --tree pass's raw process.tree.txt record --
+    the same "run the tool automatically" treatment wspy-plot already gets
+    for CSVs (see build_plot_argv() above), added once a real ~155K-process
+    stress run made clear a raw tree file is too large to eyeball by hand.
+    -C/-M mirror whichever of --tree-cmdline/--tree-vmsize this run's tree
+    pass actually requested (proctree's own defaults are the *narrower*
+    abbreviated-command/no-vmsize shape, so the reconstructed tree would
+    otherwise silently drop detail the raw file actually carries)."""
+    argv = [proctree_bin]
+    if cmdline:
+        argv.append("-C")
+    if vmsize:
+        argv.append("-M")
+    argv.append(tree_txt_path)
+    return argv
+
+
+def run_proctree_besteffort(emit, cfg, rundir, cmdline=False, vmsize=False):
+    """Best-effort trailing step mirroring the wspy-plot step (build_plot_argv()
+    above) but for --tree's raw process.tree.txt record: renders it into a
+    human-readable process.tree.summary.txt via proctree. A no-op (not an
+    error) when no --tree pass ran this time, or its output is missing/empty
+    (e.g. a --tree pass that timed out before writing anything) -- and never
+    fails the run itself, same degrade-don't-fail idiom as the plot step."""
+    tree_txt = os.path.join(rundir, "process.tree.txt")
+    if not (os.path.isfile(tree_txt) and os.path.getsize(tree_txt) > 0):
+        return
+    summary_path = os.path.join(rundir, "process.tree.summary.txt")
+    argv = build_proctree_argv(cfg["proctree_bin"], tree_txt, cmdline=cmdline, vmsize=vmsize)
+    emit("$ " + shell_preview(argv) + f" > {os.path.basename(summary_path)}")
+    try:
+        with open(summary_path, "w") as outf:
+            proc = subprocess.run(argv, cwd=REPO_ROOT, stdout=outf,
+                                   stderr=subprocess.PIPE, text=True)
+        if proc.returncode != 0:
+            emit(f"[error] proctree exited {proc.returncode}: {proc.stderr.strip()}")
+        else:
+            emit(f"[wrote {os.path.basename(summary_path)}]")
+    except OSError as e:
+        emit(f"[error] failed to launch proctree ({cfg['proctree_bin']}): {e}")
+
+
 def shell_preview(argv, cwd=None):
     s = shlex.join(argv)
     if cwd:
@@ -884,6 +927,14 @@ def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
         emit(f"[error] failed to launch wspy-plot ({cfg['wspy_plot_bin']}): {e}")
         plot_rc = 1
 
+    # tree-heavy is currently the only builtin profile with a --tree pass, and
+    # its flags are fixed in wspy-run's load_builtin_profile() (--tree-cmdline,
+    # no --tree-vmsize) -- not discoverable from here without shelling out and
+    # parsing wspy-run's own bash config, so this mirrors that fixed choice
+    # directly. Update alongside load_builtin_profile() if that ever changes.
+    if "tree-heavy" in profile.split(","):
+        run_proctree_besteffort(emit, cfg, rundir, cmdline=True, vmsize=False)
+
     if store_ingest:
         run_store_ingest_besteffort(emit, cfg, run_index_path)
 
@@ -1016,6 +1067,12 @@ def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_ar
     except OSError as e:
         emit(f"[error] failed to launch wspy-plot ({cfg['wspy_plot_bin']}): {e}")
         plot_rc = 1
+
+    tree_pass = next((p for p in passes if p["name"] == "tree"), None)
+    if tree_pass:
+        run_proctree_besteffort(emit, cfg, rundir,
+                                 cmdline="--tree-cmdline" in tree_pass["flags"],
+                                 vmsize="--tree-vmsize" in tree_pass["flags"])
 
     write_custom_run_summary(rundir, pass_records)
     write_custom_run_manifest(rundir, suite, benchmark, run_id, workload_argv, pass_records)

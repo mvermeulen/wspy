@@ -9,6 +9,7 @@
  * <time> <pid> fork <child_pid>
  * <time> <pid> comm <name>
  * <time> <pid> cmdline <arg0> <arg1> ...
+ * <time> <pid> exec <resolved /proc/<pid>/exe target, or "?">
  * <time> <pid> exit <pid> <contents of /proc/<pid>/stat>
  *
  * Lines this parser reads but deliberately ignores (see the main parse loop
@@ -224,6 +225,25 @@ void handle_cmdline(double elapsed,unsigned int pid,char *cmdline){
   struct proc_table_entry *pentry = lookup_pid(pid,0);
   if (pentry){
     pentry->pinfo->cmdline = strdup(cmdline);
+  }
+}
+
+// format: elapsed pid exec </proc/pid/exe target, or "?" if unresolved>
+// Gives a still-running (never exited/signaled) process a real comm instead
+// of "??" -- comm/cmdline are otherwise only populated at exit time (see
+// handle_exit()/the WIFSIGNALED path in topdown.c), which a process that's
+// still alive when the trace ends never reaches. A later "comm" line (from
+// that same pid's eventual exit) overwrites this with the authoritative
+// kernel-truncated name, so this is only ever a fallback.
+void handle_exec(double elapsed,unsigned int pid,char *path){
+  debug("handle_exec(%d,%s)\n",elapsed,pid,path);
+
+  struct proc_table_entry *pentry = lookup_pid(pid,0);
+  char *slash;
+  if (pentry){
+    free(pentry->pinfo->comm);
+    slash = strrchr(path,'/');
+    pentry->pinfo->comm = strdup(slash ? slash+1 : path);
   }
 }
 
@@ -480,6 +500,8 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       handle_comm(elapsed,event_pid,p+5);
     } else if (!strncmp(p,"cmdline",7)){
       handle_cmdline(elapsed,event_pid,p+8);
+    } else if (!strncmp(p,"exec",4)){
+      handle_exec(elapsed,event_pid,p+5);
     } else if (!strncmp(p,"exited",6)){
       // ignore exited events.
     } else if (!strncmp(p,"unknown",7)){
