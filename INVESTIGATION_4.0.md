@@ -348,7 +348,8 @@ Candidate syscalls/signals, roughly in priority order:
    item below.
 2. Blocking I/O (`read`/`pread64`/`recvfrom`/etc.) — entry→exit delta on a blocking fd separates "CPU
    busy" from "blocked on a pipe/socket/slow storage," invisible to a bandwidth counter (same byte
-   count, 2µs vs. 200ms).
+   count, 2µs vs. 200ms). Paired with `/proc/<pid>/io` byte-volume counters (4.2 Tier 3's item #8) —
+   see "Concrete design: blocking I/O + `/proc/<pid>/io` byte counters" below.
 3. `connect` — entry→exit delta is literal connection-setup latency (DNS, RTT, remote backlog); doubles
    the file/network-provenance use case already noted for `--tree-open` (recording remote addresses
    touched) with an actual latency number, not just an occurrence.
@@ -392,10 +393,86 @@ item (#18). The *relative* split (fraction of wall time in futex-wait vs. read-w
 stay informative even when absolute numbers are skewed, but this should be documented as an inherent
 limitation of the ptrace-based mechanism, not treated as clean latency data.
 
+### Concrete design: blocking I/O + `/proc/<pid>/io` byte counters (2026-07-17, not started)
+Investigated together because they're the two natural "how much I/O, and how slow was it" halves of
+the same question, even though they're mechanically unrelated — 4.2 Tier 3's item #8
+(`/proc/<pid>/io` byte counters) is a passive kernel-counter *volume* read, no syscall tracing
+involved; the blocking-I/O half of this deep-dive's candidate #2 is a ptrace-based *latency*
+measurement, generalizing `--tree-futex`'s own per-pid syscall entry/exit state exactly as its own
+design note anticipated ("benefits every future syscall-latency flag under item 23, not just this
+one"). Neither subsumes the other: byte counts don't say whether a process struggled to get them
+(cache-served vs. a real device/network wait), and wait time doesn't say how much data was involved.
+Ships as two independent flags, like `--tree-open`/`--tree-futex` already are — a run can use either
+alone or both together.
+
+**`--tree-io` (item #8, byte volume):**
+- No `trace_syscall` needed — mechanically identical to the existing `/proc/<pid>/stat` scrape
+  already done in `ptrace_loop()`'s `PTRACE_EVENT_EXIT` handling, just a second file. At the same
+  point `/proc/<pid>/stat` is read, additionally open `/proc/<pid>/io`, parse its 7 `label: value`
+  lines (`rchar`/`wchar`/`syscr`/`syscw`/`read_bytes`/`write_bytes`/`cancelled_write_bytes`), and
+  emit one line — `<time> <pid> io <rchar> <wchar> <syscr> <syscw> <read_bytes> <write_bytes>
+  <cancelled_write_bytes>` — into the exit block, written *before* the `exit` line (same ordering
+  rule `--tree-futex` already established, since `proctree.c`'s `handle_exit()` drops the pid from
+  its lookup table as soon as it sees `exit`).
+- Gated behind its own flag rather than unconditional like `-M`/`-N`/`-P`'s stat sub-fields: unlike
+  those (free, since `/proc/<pid>/stat` is already being read regardless), `/proc/<pid>/io` is a
+  second file open/read/close per exiting process — real added cost at the 100K+-process scale the
+  tree mechanism has now been validated against (item #14's real-world run). An unreadable file
+  (permissions, an already-fully-reaped pid, or an old/minimal kernel built without
+  `CONFIG_TASK_IO_ACCOUNTING`) just skips the `io` line — measured-vs-unavailable, not fatal.
+- `proctree.c`: `struct process_info` gains the 7 fields; a new `handle_io()` parses the line; a new
+  print-time toggle `-I`/`-i` (default off, *conditional* like `-C`/`-X` — the data only exists in
+  the raw file if `--tree-io` was used, unlike `-M`/`-N`/`-P`'s unconditional stat fields) adds it to
+  `print_tree()`'s per-line output; `print_statistics()`'s per-`comm` table gets a matching
+  bytes-read/written aggregate column.
+- No manifest/run-index change — same precedent as `--tree-futex` (a tree-file/`proctree`-only
+  feature, no `MANIFEST_SCHEMA_VERSION` bump).
+
+**`--tree-io-wait` (deep-dive candidate #2, blocking latency):**
+- Sets `tree_io_wait = 1; trace_syscall = 1;` — same shape as `--tree-futex`. Unlike futex, there's
+  no op argument to decode: every syscall in scope is a candidate, and its own entry→exit duration
+  *is* the signal (2µs means it didn't really block; 200ms means it did) — so this is actually
+  simpler to decode than futex, not harder.
+- Introduces the small syscall table this deep-dive's own "Generalizing `tree_open`" design fork
+  above already anticipated, instead of one-off `if` branches: read-side
+  (`SYS_read`/`SYS_pread64`/`SYS_readv`/`SYS_preadv`/`SYS_recvfrom`/`SYS_recvmsg`) and write-side
+  (`SYS_write`/`SYS_pwrite64`/`SYS_writev`/`SYS_pwritev`/`SYS_sendto`/`SYS_sendmsg`).
+- **Design call, differs from futex's own precedent:** two accumulator buckets on
+  `struct ptrace_pid_entry` (`io_read_wait_{count,seconds}` / `io_write_wait_{count,seconds}`)
+  rather than futex's single lumped bucket — blocked-reading (waiting on upstream data) and
+  blocked-writing (downstream backpressure) are different bottleneck stories worth keeping apart, and
+  splitting them costs nothing beyond one more `if` on direction at entry.
+- Reporting line (same "before `exit`" placement as `futex`): `<time> <pid> io_wait <read_count>
+  <read_seconds> <write_count> <write_seconds>`, emitted only when at least one count is nonzero.
+- **Explicitly out of scope for this slice:** per-call bytes-transferred capture (would need new
+  `PTRACE_SYSCALL_ARG3`/`PTRACE_SYSCALL_RET` macros in `ptrace_arch.h`, plus a remote-memory iovec
+  walk for `readv`/`writev`/`preadv`/`pwritev` to sum vectored lengths — real scope creep for a first
+  cut). Correlating volume and latency happens at the report layer via `--tree-io`'s cumulative
+  counters instead, not per traced call — keeps this the same size slice `--tree-futex` was
+  ("smallest slice to design end-to-end", 4.3 Tier 8 item #24's own framing).
+- `proctree.c`: `handle_io_wait()` parses the line; a new print toggle `-B`/`-b` ("blocked," unused
+  letters) mirrors `-X`/`-x`'s treatment exactly, both per-line and in `print_statistics()`'s
+  aggregate table.
+- Validation: same idiom as item #24's own — no golden-output test (durations are inherently
+  non-deterministic); a small test program with a deliberately delayed pipe write, cross-checked
+  against `strace -f -T -e trace=read,write,...` as ground truth; a `capability_matrix.sh`-style
+  smoke bundle asserting no fatal/crash.
+
+Report-layer payoff, once both exist: `io_wait_seconds / (read_bytes+write_bytes)` is a rough
+"seconds blocked per byte" figure — high means a slow/contended I/O path, low means genuinely
+throughput-bound; and `rchar - read_bytes` (both already inside `--tree-io`'s own line) separates
+"logical" reads (including page-cache hits) from real device I/O, so a process with large `rchar`,
+tiny `read_bytes`, and near-zero `io_wait` is cache-bound, not I/O-bound at all — a distinction
+neither counter can make alone. Same "correlate two independently-collected signals" idiom the
+Report-layer-payoff paragraph above already describes for futex/topdown/phase.
+
+Both flags are independent (no fatal-combination rule between them, or with `--tree-open`/
+`--tree-futex`) — a run can enable any subset.
+
 → Feeds the 4.3 priority list's new Tier 8 below; the "no blocking-syscall activity" vs. "heavy
 blocking-syscall activity" split is also a direct input to Tier 2's "Composite attribution" (topdown +
 cache/TLB/IBS signals) — this deep-dive proposes blocking-syscall time as a fourth signal alongside
-those three, not a separate report.
+those three, not a separate report. The concrete design above also feeds 4.2 Tier 3's item #8.
 
 ### Local LLM (Ollama) narrative-analysis deep-dive
 Motivation: a run directory already holds validated, structured numbers (CSV, manifest, coverage,
@@ -501,7 +578,9 @@ Ordered in dependency tiers; items within a tier are independently startable.
 
 **Tier 3 — `/proc` and tree enrichment (independent, moderate value, low risk):**
 
-8. `/proc/<pid>/io` byte counters (read/write/cancelled-write bytes).
+8. `/proc/<pid>/io` byte counters (read/write/cancelled-write bytes) — concrete design (`--tree-io`)
+   written up in the Critical-path/synchronization-latency deep-dive above, alongside its companion
+   blocking-I/O-latency feature (4.3 Tier 8 item #25); not started.
 9. `/proc/<pid>/schedstat` run-delay/timeslice capture.
 10. Memory footprint detail (`VmRSS`/`VmHWM`/anon-file-shmem split via `/proc/<pid>/status` or
     `smaps_rollup`).
@@ -839,6 +918,12 @@ synchronization-latency deep-dive" above for the full use-case breakdown):**
       under `wspy --tree --tree-futex`, cross-checked against `strace -f -T -e futex` as ground truth,
       plus a `capability_matrix.sh`-style smoke bundle (`--tree --tree-futex`, assert no
       fatal/crash) for regression coverage.
+25. Blocking I/O wait tracking (`--tree-io-wait`) — the next concrete slice of item 23's general
+    mechanism after futex (item 24), covering this deep-dive's candidate #2. Concrete design written
+    up in the Critical-path/synchronization-latency deep-dive above (its own "Concrete design:
+    blocking I/O + `/proc/<pid>/io` byte counters" section), investigated together with its companion
+    `/proc/<pid>/io` byte-volume feature (4.2 Tier 3 item #8) since they're the volume/latency halves
+    of the same "how much I/O, and how slow was it" question. Not started.
 
 ## 4.4 priorities
 Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
@@ -894,9 +979,12 @@ Each carries a recommendation; treat these as the current default, not a closed 
 - **Publication automation and reproducibility/provenance capture — resolved.** Provenance capture
   shipped (4.0); publication automation is exactly 4.1's work (see "What shipped in 4.1" above).
 - **Minimum metadata set for a run to be "publishable" — resolved.** Every field the original
-  recommendation named is captured (timestamps, command line, host/CPU/GPU/kernel, provenance,
-  schema version, output file list, `wspy-validate` pass/fail). "Benchmark name/suite" is
-  intentionally out of `wspy`'s own scope — it's `wspy-run`/`workload/*`'s job, not the manifest's.
+  recommendation named is captured (timestamps, command line, host/CPU/kernel, provenance, schema
+  version, output file list, `wspy-validate` pass/fail). GPU is a caveat, not fully met: GPU data
+  (busy/clocks/power/temp/memory activity) is CSV-only today — `struct manifest_info`
+  (`manifest.h`) has no GPU fields at all, so it's absent from the manifest/run-index host block;
+  see 4.2 Tier 4's item #16, still open. "Benchmark name/suite" is intentionally out of `wspy`'s own
+  scope — it's `wspy-run`/`workload/*`'s job, not the manifest's.
 
 ## External brainstorming references
 - ReBench — reproducible experiment configuration, resumable execution, explicit benchmark
