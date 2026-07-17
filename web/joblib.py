@@ -728,25 +728,30 @@ def build_plot_argv(wspy_plot_bin, rundir, custom_plots=None, only_custom=False)
     return argv
 
 
-def build_proctree_argv(proctree_bin, tree_txt_path, cmdline=False, vmsize=False):
+def build_proctree_argv(proctree_bin, tree_txt_path, cmdline=False):
     """proctree, applied to a --tree pass's raw process.tree.txt record --
     the same "run the tool automatically" treatment wspy-plot already gets
     for CSVs (see build_plot_argv() above), added once a real ~155K-process
     stress run made clear a raw tree file is too large to eyeball by hand.
-    -C/-M mirror whichever of --tree-cmdline/--tree-vmsize this run's tree
-    pass actually requested (proctree's own defaults are the *narrower*
-    abbreviated-command/no-vmsize shape, so the reconstructed tree would
-    otherwise silently drop detail the raw file actually carries)."""
+    -C mirrors whether this run's tree pass actually requested
+    --tree-cmdline (proctree's own default is the *narrower* abbreviated-
+    command shape, so the reconstructed tree would otherwise silently drop
+    detail the raw file actually carries). -M/-N/-P (vmsize+rss/thread
+    count/ppid) are always passed, unconditionally: unlike cmdline, that
+    data isn't gated by any wspy flag at all -- /proc/<pid>/stat is dumped
+    in full on every exit regardless of --tree-vmsize (itself a documented
+    no-op on the wspy side, see wspy.c), so there's nothing to condition on
+    -- the fields are simply always in the raw file, and proctree's own
+    defaults just don't print them without asking."""
     argv = [proctree_bin]
     if cmdline:
         argv.append("-C")
-    if vmsize:
-        argv.append("-M")
+    argv += ["-M", "-N", "-P"]
     argv.append(tree_txt_path)
     return argv
 
 
-def run_proctree_besteffort(emit, cfg, rundir, cmdline=False, vmsize=False):
+def run_proctree_besteffort(emit, cfg, rundir, cmdline=False):
     """Best-effort trailing step mirroring the wspy-plot step (build_plot_argv()
     above) but for --tree's raw process.tree.txt record: renders it into a
     human-readable process.tree.summary.txt via proctree. A no-op (not an
@@ -757,7 +762,7 @@ def run_proctree_besteffort(emit, cfg, rundir, cmdline=False, vmsize=False):
     if not (os.path.isfile(tree_txt) and os.path.getsize(tree_txt) > 0):
         return
     summary_path = os.path.join(rundir, "process.tree.summary.txt")
-    argv = build_proctree_argv(cfg["proctree_bin"], tree_txt, cmdline=cmdline, vmsize=vmsize)
+    argv = build_proctree_argv(cfg["proctree_bin"], tree_txt, cmdline=cmdline)
     emit("$ " + shell_preview(argv) + f" > {os.path.basename(summary_path)}")
     try:
         with open(summary_path, "w") as outf:
@@ -928,12 +933,12 @@ def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
         plot_rc = 1
 
     # tree-heavy is currently the only builtin profile with a --tree pass, and
-    # its flags are fixed in wspy-run's load_builtin_profile() (--tree-cmdline,
-    # no --tree-vmsize) -- not discoverable from here without shelling out and
-    # parsing wspy-run's own bash config, so this mirrors that fixed choice
-    # directly. Update alongside load_builtin_profile() if that ever changes.
+    # its flags are fixed in wspy-run's load_builtin_profile() (--tree-cmdline)
+    # -- not discoverable from here without shelling out and parsing
+    # wspy-run's own bash config, so this mirrors that fixed choice directly.
+    # Update alongside load_builtin_profile() if that ever changes.
     if "tree-heavy" in profile.split(","):
-        run_proctree_besteffort(emit, cfg, rundir, cmdline=True, vmsize=False)
+        run_proctree_besteffort(emit, cfg, rundir, cmdline=True)
 
     if store_ingest:
         run_store_ingest_besteffort(emit, cfg, run_index_path)
@@ -1071,8 +1076,7 @@ def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_ar
     tree_pass = next((p for p in passes if p["name"] == "tree"), None)
     if tree_pass:
         run_proctree_besteffort(emit, cfg, rundir,
-                                 cmdline="--tree-cmdline" in tree_pass["flags"],
-                                 vmsize="--tree-vmsize" in tree_pass["flags"])
+                                 cmdline="--tree-cmdline" in tree_pass["flags"])
 
     write_custom_run_summary(rundir, pass_records)
     write_custom_run_manifest(rundir, suite, benchmark, run_id, workload_argv, pass_records)

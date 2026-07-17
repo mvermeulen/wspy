@@ -56,8 +56,11 @@ else
     # into a human-readable reconstructed tree (same "run the tool automatically"
     # treatment wspy-plot just got for CSVs, replacing this script's old habit of
     # only running proctree by hand). Guarded on the file existing/non-empty since
-    # a --tree pass can time out or fail without producing one.
+    # a --tree pass can time out or fail without producing one. -C matches
+    # tree-heavy's own --tree-cmdline; -M/-N/-P (vmsize+rss/thread count/ppid)
+    # are unconditional since that data is always in the raw file regardless of
+    # any flag (see proctree.c's parse_stat()), so there's nothing to gate them on.
     if [ -s "${RUNDIR}/process.tree.txt" ]; then
-        "$PROCTREE" "${RUNDIR}/process.tree.txt" > "${RUNDIR}/process.tree.summary.txt"
+        "$PROCTREE" -C -M -N -P "${RUNDIR}/process.tree.txt" > "${RUNDIR}/process.tree.summary.txt"
     fi
 fi
