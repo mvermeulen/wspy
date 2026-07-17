@@ -845,11 +845,13 @@ Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
 5. Optional live TUI (run progress, interval metrics, throttling/skew warnings) — a terminal-side
    surface, unrelated to and not superseded by 4.1's web interface work; nice-to-have, CLI-first model
    stays primary.
-6. Local LLM (Ollama) narrative analysis of run artifacts — turns already-computed/already-validated
-   numbers into human-readable prose via a local model; strictly narration/explanation over deterministic
-   classification, never a replacement for `wspy-validate`/topdown's own decision logic, and never a
-   substitute for the raw numbers themselves. See the "Local LLM (Ollama) narrative-analysis deep-dive"
-   above for the full design.
+6. **Local LLM (Ollama) narrative analysis of run artifacts — done.** `wspy-analyze` turns
+   already-computed/already-validated numbers into human-readable prose via a local model; strictly
+   narration/explanation over deterministic classification, never a replacement for
+   `wspy-validate`/topdown's own decision logic, and never a substitute for the raw numbers themselves.
+   All 11 design decisions in the "Local LLM (Ollama) narrative-analysis deep-dive" above are shipped,
+   including curation/report integration (#7, `web/server.py`'s studio) and comparative mode (#8,
+   `--compare-rundir`).
 
 ## Open questions for prioritization
 Each carries a recommendation; treat these as the current default, not a closed decision.
