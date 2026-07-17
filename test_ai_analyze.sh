@@ -58,6 +58,47 @@ ipc: 1.83
 retire: 60.2%  frontend: 11.3%  backend: 26.1%  speculate: 2.5%
 EOF
 
+# A second run directory (run B) for --compare-rundir mode -- a materially
+# different topdown split (backend-bound rather than retire-bound) so the
+# comparative prompt actually has something to describe changing.
+RUNDIR_B="$WORKDIR/manual/sleep/test-run-2"
+mkdir -p "$RUNDIR_B"
+
+cat > "$RUNDIR_B/manifest.json" <<'EOF'
+{
+  "suite": "manual",
+  "benchmark": "sleep",
+  "run_id": "test-run-2",
+  "command": ["sleep", "1"],
+  "passes": [
+    {"name": "amdtopdown", "output": "amdtopdown.csv", "manifest": "amdtopdown.manifest.json", "status": "ok"}
+  ]
+}
+EOF
+
+cat > "$RUNDIR_B/amdtopdown.manifest.json" <<'EOF'
+{
+  "schema_version": "1.6.0",
+  "output_files": {"output": "amdtopdown.csv"},
+  "output": "amdtopdown.csv",
+  "exit_status": {"known": true, "code": 0, "signaled": false},
+  "counter_coverage": {"measured": 4, "requested": 4},
+  "timing": {"elapsed_seconds": 1.10}
+}
+EOF
+
+cat > "$RUNDIR_B/amdtopdown.csv" <<'EOF'
+time,retire,frontend,backend,speculate
+0.0,40.10,10.00,45.10,4.80
+1.0,38.50,11.00,46.00,4.50
+EOF
+
+cat > "$RUNDIR_B/summary.txt" <<'EOF'
+elapsed: 1.10s
+ipc: 1.10
+retire: 39.3%  frontend: 10.5%  backend: 45.6%  speculate: 4.7%
+EOF
+
 echo ""
 echo "=== Testing wspy-analyze --dry-run (prompt rendering, no Ollama needed) ==="
 OUT="$(./wspy-analyze --rundir "$RUNDIR" --dry-run 2>&1)"
@@ -83,6 +124,18 @@ cp "$RUNDIR/summary.txt" "$BAREDIR/summary.txt"
 OUT="$(./wspy-analyze --rundir "$BAREDIR" --dry-run 2>&1)"
 echo "$OUT" | grep -q "no per-pass manifest.json found" || { echo "FAIL: missing-manifest case did not degrade gracefully"; exit 1; }
 echo "missing-manifest degrade OK"
+
+echo ""
+echo "=== Testing --compare-rundir (comparative mode, design decision #8) ==="
+OUT="$(./wspy-analyze --rundir "$RUNDIR" --compare-rundir "$RUNDIR_B" --dry-run 2>&1)"
+echo "$OUT" | grep -q "PERF_COMPARE_TEMPLATE_VERSION" || { echo "FAIL: compare template version marker missing"; exit 1; }
+echo "$OUT" | grep -q "run_id=test-run-1" || { echo "FAIL: run A identity missing from compare prompt"; exit 1; }
+echo "$OUT" | grep -q "run_id=test-run-2" || { echo "FAIL: run B identity missing from compare prompt"; exit 1; }
+echo "$OUT" | grep -q "retire: 60.2%" || { echo "FAIL: run A raw counter text missing from compare prompt"; exit 1; }
+echo "$OUT" | grep -q "retire: 39.3%" || { echo "FAIL: run B raw counter text missing from compare prompt"; exit 1; }
+[ -f "$RUNDIR/aiprompt.compare.manual-sleep-test-run-2.txt" ] || {
+    echo "FAIL: aiprompt.compare.manual-sleep-test-run-2.txt not written into run A's directory"; exit 1; }
+echo "--compare-rundir dry-run OK"
 
 if ! command -v ollama >/dev/null 2>&1; then
     echo ""
@@ -120,6 +173,13 @@ SLUG="$(printf '%s' "$MODEL" | tr -c 'A-Za-z0-9._-' '_')"
 ANALYSIS="$RUNDIR/aianalysis.$SLUG.txt"
 [ -s "$ANALYSIS" ] || { echo "FAIL: $ANALYSIS missing or empty"; exit 1; }
 echo "live call OK ($(wc -c < "$ANALYSIS") bytes from $MODEL)"
+
+echo ""
+echo "=== Testing a real Ollama call against $MODEL (comparative mode) ==="
+./wspy-analyze --rundir "$RUNDIR" --compare-rundir "$RUNDIR_B" --model "$MODEL" --timeout 120
+COMPARE_ANALYSIS="$RUNDIR/aianalysis.compare.manual-sleep-test-run-2.$SLUG.txt"
+[ -s "$COMPARE_ANALYSIS" ] || { echo "FAIL: $COMPARE_ANALYSIS missing or empty"; exit 1; }
+echo "comparative live call OK ($(wc -c < "$COMPARE_ANALYSIS") bytes from $MODEL)"
 
 echo ""
 echo "=== All tests completed successfully ==="

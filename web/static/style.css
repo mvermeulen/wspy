@@ -163,6 +163,15 @@ table.reports th, table.reports td {
 
 .muted { color: var(--muted); }
 
+.badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 1rem;
+  border: 1px solid var(--border);
+}
+.ai-badge { color: var(--accent); border-color: var(--accent); }
+
 a { color: var(--accent); }
 
 ul.artifacts { list-style: none; padding-left: 0; }

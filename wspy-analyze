@@ -43,6 +43,18 @@ Outputs, written back into the same run directory:
                                       template -- input for a human to fold
                                       into prompts/perf_analysis.tmpl by hand,
                                       never auto-applied
+
+Comparative mode (--compare-rundir <dir>, design decision #8 in the deep-dive):
+takes a second run directory (run B) alongside --rundir (run A) and asks the
+model what changed between them and why, feeding both runs' raw counter text
+and wspy-validate results into one prompt (prompts/perf_compare.tmpl) rather
+than analyzing either run in isolation. Outputs are written into run A's
+directory, namespaced by a slug identifying run B (its suite/benchmark/run_id
+when available, else its directory basename) so they never collide with a
+plain single-run analysis of run A:
+  - aiprompt.compare.<run-b-slug>.txt
+  - aianalysis.compare.<run-b-slug>.<model-slug>.txt
+  - aiprompt.critique.compare.<run-b-slug>.<model-slug>.txt  (only with --critique)
 """
 import argparse
 import glob
@@ -59,6 +71,7 @@ sys.path.insert(0, os.path.join(SCRIPT_DIR, "web"))
 import joblib  # noqa: E402 -- reuses COLUMN_TO_GROUP/resolve_column_group
 
 DEFAULT_TEMPLATE = os.path.join(SCRIPT_DIR, "prompts", "perf_analysis.tmpl")
+DEFAULT_COMPARE_TEMPLATE = os.path.join(SCRIPT_DIR, "prompts", "perf_compare.tmpl")
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_TIMEOUT_SECONDS = 120
 
@@ -134,7 +147,11 @@ EXCLUDED_TEXT_BASENAMES = {
 def load_template(path):
     with open(path, "r") as f:
         text = f.read()
-    m = re.search(r"^PERF_ANALYSIS_TEMPLATE_VERSION\s*=\s*(\S+)", text)
+    # Either template's own version marker (PERF_ANALYSIS_TEMPLATE_VERSION for
+    # a single-run template, PERF_COMPARE_TEMPLATE_VERSION for a comparative
+    # one) -- whichever is present identifies which kind of template this is,
+    # so callers don't need to pass the marker name in themselves.
+    m = re.search(r"^PERF_(?:ANALYSIS|COMPARE)_TEMPLATE_VERSION\s*=\s*(\S+)", text, re.MULTILINE)
     version = m.group(1) if m else "(unversioned)"
     return text, version
 
@@ -234,18 +251,36 @@ def run_wspy_validate(validate_bin, manifest_paths, timeout):
     return (proc.stdout or "").strip() or "(wspy-validate produced no output)"
 
 
+def group_notes_text(groups):
+    if not groups:
+        return "(no counter-group columns were resolved from this run's CSV headers)"
+    return "\n".join("- %s" % GROUP_NOTES[g] for g in sorted(groups) if g in GROUP_NOTES)
+
+
 def render_prompt(template_text, workload_text, validation_text, groups, raw_text):
-    if groups:
-        notes = "\n".join(
-            "- %s" % GROUP_NOTES[g] for g in sorted(groups) if g in GROUP_NOTES
-        )
-    else:
-        notes = "(no counter-group columns were resolved from this run's CSV headers)"
     rendered = template_text
     rendered = rendered.replace("{{WORKLOAD}}", workload_text)
     rendered = rendered.replace("{{VALIDATION}}", validation_text)
-    rendered = rendered.replace("{{COUNTER_GROUP_NOTES}}", notes)
+    rendered = rendered.replace("{{COUNTER_GROUP_NOTES}}", group_notes_text(groups))
     rendered = rendered.replace("{{RAW_TEXT}}", raw_text)
+    return rendered
+
+
+def render_compare_prompt(template_text, data_a, data_b):
+    """Design decision #8: one prompt covering two runs (data_a/data_b, each a
+    gather_run_data() result) asking what changed and why, rather than
+    analyzing either in isolation. Counter-group notes are the union of both
+    runs' groups -- either run's columns are fair game for the model to
+    reference."""
+    rendered = template_text
+    rendered = rendered.replace("{{WORKLOAD_A}}", data_a["workload_text"])
+    rendered = rendered.replace("{{WORKLOAD_B}}", data_b["workload_text"])
+    rendered = rendered.replace("{{VALIDATION_A}}", data_a["validation_text"])
+    rendered = rendered.replace("{{VALIDATION_B}}", data_b["validation_text"])
+    rendered = rendered.replace(
+        "{{COUNTER_GROUP_NOTES}}", group_notes_text(data_a["groups"] | data_b["groups"]))
+    rendered = rendered.replace("{{RAW_TEXT_A}}", data_a["raw_text"])
+    rendered = rendered.replace("{{RAW_TEXT_B}}", data_b["raw_text"])
     return rendered
 
 
@@ -263,8 +298,21 @@ def workload_description(run_manifest, redact_command):
         run_manifest.get("run_id", "?"), command_text)
 
 
-def slugify_model(name):
+def slugify(name):
     return re.sub(r"[^A-Za-z0-9._-]+", "_", name)
+
+
+def run_dir_slug(rundir, run_manifest):
+    """Identifies run B in comparative-mode output filenames -- its own
+    suite/benchmark/run_id when a run-level manifest.json is present (the
+    same identity workload_description() shows), else its directory
+    basename, so two comparisons against different run B's never collide."""
+    if run_manifest:
+        parts = [p for p in (run_manifest.get("suite"), run_manifest.get("benchmark"),
+                              run_manifest.get("run_id")) if p]
+        if parts:
+            return slugify("-".join(parts))
+    return slugify(os.path.basename(os.path.normpath(rundir)))
 
 
 def ollama_list_models(host, timeout):
@@ -300,8 +348,13 @@ fine). Do not just restate your analysis.
 """
 
 
-def analyze_one_model(host, model, prompt, timeout, critique, outdir):
-    slug = slugify_model(model)
+def analyze_one_model(host, model, prompt, timeout, critique, outdir,
+                       analysis_prefix="aianalysis", critique_prefix="aiprompt.critique"):
+    """Shared by single-run and comparative mode alike -- only the output
+    filename prefixes differ (comparative mode namespaces them by run B's
+    slug, see run_dir_slug()), the query/critique logic is identical either
+    way."""
+    slug = slugify(model)
     print("wspy-analyze: querying %s ..." % model, file=sys.stderr)
     t0 = time.time()
     try:
@@ -311,7 +364,7 @@ def analyze_one_model(host, model, prompt, timeout, critique, outdir):
               "-- skipping" % (model, host, e), file=sys.stderr)
         return False
     elapsed = time.time() - t0
-    out_path = os.path.join(outdir, "aianalysis.%s.txt" % slug)
+    out_path = os.path.join(outdir, "%s.%s.txt" % (analysis_prefix, slug))
     with open(out_path, "w") as f:
         f.write(response)
     print("wspy-analyze: %s -> %s (%.1fs, %d chars)" % (
@@ -325,11 +378,32 @@ def analyze_one_model(host, model, prompt, timeout, critique, outdir):
             print("wspy-analyze: warning: %s: critique call failed: %s" % (model, e),
                   file=sys.stderr)
             return True
-        critique_path = os.path.join(outdir, "aiprompt.critique.%s.txt" % slug)
+        critique_path = os.path.join(outdir, "%s.%s.txt" % (critique_prefix, slug))
         with open(critique_path, "w") as f:
             f.write(critique_text)
         print("wspy-analyze: %s critique -> %s" % (model, critique_path), file=sys.stderr)
     return True
+
+
+def gather_run_data(rundir, validate_bin, redact_command, timeout, ap, label):
+    """Everything render_prompt()/render_compare_prompt() needs for one run
+    directory. Factored out so comparative mode can call this twice (once per
+    run) and single-run mode once, without duplicating the collection logic."""
+    run_manifest = find_run_manifest(rundir)
+    source, raw_text = collect_raw_text(rundir, run_manifest)
+    if raw_text is None:
+        ap.error("no counter text output (summary.txt or *.txt) found under %r (%s)" %
+                  (rundir, label))
+    return {
+        "rundir": rundir,
+        "run_manifest": run_manifest,
+        "source": source,
+        "raw_text": raw_text,
+        "groups": collect_present_groups(rundir),
+        "validation_text": run_wspy_validate(
+            validate_bin, find_pass_manifest_paths(rundir, run_manifest), timeout),
+        "workload_text": workload_description(run_manifest, redact_command),
+    }
 
 
 def main():
@@ -338,7 +412,13 @@ def main():
                     "already-computed/validated counter data.")
     ap.add_argument("--rundir", required=True,
                      help="run directory to analyze (wspy-run --suite/--benchmark layout, "
-                          "or any directory holding a wspy manifest.json + text/CSV output)")
+                          "or any directory holding a wspy manifest.json + text/CSV output); "
+                          "run A when --compare-rundir is also given")
+    ap.add_argument("--compare-rundir", default=None,
+                     help="second run directory (run B) -- switches to comparative mode: "
+                          "asks the model what changed between --rundir (run A) and this "
+                          "directory and why, instead of analyzing --rundir in isolation "
+                          "(design decision #8 in the Ollama deep-dive)")
     ap.add_argument("--model", action="append", default=[],
                      help="Ollama model name to query (repeatable)")
     ap.add_argument("--all-models", action="store_true",
@@ -347,8 +427,9 @@ def main():
                      help="Ollama API base URL (default: %(default)s). Pointing this at a "
                           "non-default/remote host sends run data off this machine -- see "
                           "--redact-command.")
-    ap.add_argument("--prompt-template", default=DEFAULT_TEMPLATE,
-                     help="prompt template file (default: %(default)s)")
+    ap.add_argument("--prompt-template", default=None,
+                     help="prompt template file (default: prompts/perf_analysis.tmpl, or "
+                          "prompts/perf_compare.tmpl when --compare-rundir is given)")
     ap.add_argument("--wspy-validate", default=os.path.join(SCRIPT_DIR, "wspy-validate"),
                      help="wspy-validate binary to run against this run's per-pass "
                           "manifests (default: %(default)s)")
@@ -362,32 +443,52 @@ def main():
     ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS,
                      help="per-request timeout in seconds (default: %(default)s)")
     ap.add_argument("--dry-run", action="store_true",
-                     help="render aiprompt.txt and print it, but don't call Ollama at all")
+                     help="render the prompt and print it, but don't call Ollama at all")
     args = ap.parse_args()
 
     rundir = os.path.abspath(args.rundir)
     if not os.path.isdir(rundir):
         ap.error("--rundir %r is not a directory" % args.rundir)
 
-    run_manifest = find_run_manifest(rundir)
-    source, raw_text = collect_raw_text(rundir, run_manifest)
-    if raw_text is None:
-        ap.error("no counter text output (summary.txt or *.txt) found under %r" % rundir)
+    compare_rundir = None
+    if args.compare_rundir:
+        compare_rundir = os.path.abspath(args.compare_rundir)
+        if not os.path.isdir(compare_rundir):
+            ap.error("--compare-rundir %r is not a directory" % args.compare_rundir)
 
-    groups = collect_present_groups(rundir)
-    manifest_paths = find_pass_manifest_paths(rundir, run_manifest)
-    validation_text = run_wspy_validate(args.wspy_validate, manifest_paths, args.timeout)
-    workload_text = workload_description(run_manifest, args.redact_command)
+    data_a = gather_run_data(rundir, args.wspy_validate, args.redact_command, args.timeout,
+                              ap, "run A" if compare_rundir else "--rundir")
 
-    template_text, template_version = load_template(args.prompt_template)
-    prompt = render_prompt(template_text, workload_text, validation_text, groups, raw_text)
+    template_path = args.prompt_template or (
+        DEFAULT_COMPARE_TEMPLATE if compare_rundir else DEFAULT_TEMPLATE)
+    template_text, template_version = load_template(template_path)
 
-    prompt_path = os.path.join(rundir, "aiprompt.txt")
+    if compare_rundir:
+        data_b = gather_run_data(compare_rundir, args.wspy_validate, args.redact_command,
+                                  args.timeout, ap, "run B")
+        prompt = render_compare_prompt(template_text, data_a, data_b)
+        slug_b = run_dir_slug(compare_rundir, data_b["run_manifest"])
+        prompt_path = os.path.join(rundir, "aiprompt.compare.%s.txt" % slug_b)
+        analysis_prefix = "aianalysis.compare.%s" % slug_b
+        critique_prefix = "aiprompt.critique.compare.%s" % slug_b
+        groups_desc = ",".join(sorted(data_a["groups"] | data_b["groups"])) or "(none)"
+        log_line = ("wspy-analyze: comparative mode, template v%s, run A source=%s, "
+                    "run B source=%s, groups=%s -> %s" % (
+                        template_version, data_a["source"], data_b["source"],
+                        groups_desc, prompt_path))
+    else:
+        prompt = render_prompt(template_text, data_a["workload_text"], data_a["validation_text"],
+                                data_a["groups"], data_a["raw_text"])
+        prompt_path = os.path.join(rundir, "aiprompt.txt")
+        analysis_prefix = "aianalysis"
+        critique_prefix = "aiprompt.critique"
+        groups_desc = ",".join(sorted(data_a["groups"])) or "(none)"
+        log_line = "wspy-analyze: template v%s, source=%s, groups=%s -> %s" % (
+            template_version, data_a["source"], groups_desc, prompt_path)
+
     with open(prompt_path, "w") as f:
         f.write(prompt)
-    print("wspy-analyze: template v%s, source=%s, groups=%s -> %s" % (
-        template_version, source, ",".join(sorted(groups)) or "(none)", prompt_path),
-        file=sys.stderr)
+    print(log_line, file=sys.stderr)
 
     if args.dry_run:
         print(prompt)
@@ -408,7 +509,7 @@ def main():
     any_ok = False
     for model in models:
         if analyze_one_model(args.ollama_host, model, prompt, args.timeout,
-                              args.critique, rundir):
+                              args.critique, rundir, analysis_prefix, critique_prefix):
             any_ok = True
     return 0 if any_ok else 1
 
