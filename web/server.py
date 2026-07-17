@@ -954,7 +954,7 @@ def allowed_depths(block):
     return DEPTH_OPTIONS_BY_KIND.get(block.get("source_kind"), ("none", "full"))
 
 
-def new_block(kind, source_file=None, source_kind=None, title=None):
+def new_block(kind, source_file=None, source_kind=None, title=None, ai_generated=False):
     depths = DEPTH_OPTIONS_BY_KIND["freeform"] if kind == "freeform" else \
         DEPTH_OPTIONS_BY_KIND.get(source_kind, ("none", "full"))
     return {
@@ -966,7 +966,37 @@ def new_block(kind, source_file=None, source_kind=None, title=None):
         "depth": "full" if "full" in depths else depths[-1],
         "excerpt_lines": DEFAULT_EXCERPT_LINES,
         "commentary": "",
+        # wspy-analyze's own output (aianalysis.<model>.txt / aiprompt.critique.<model>.txt,
+        # see collect_run_files() below) is model-written prose, not human commentary --
+        # this flag rides along through studio edits/saves/export so it stays labeled
+        # AI-generated even after its text is copied into this block's own commentary
+        # field (INVESTIGATION_4.0.md's Ollama deep-dive, design decision #7: "never
+        # silently substituted as the human's own curated commentary in an export").
+        "ai_generated": ai_generated,
     }
+
+
+AIANALYSIS_RE = re.compile(r"^aianalysis\.(.+)\.txt$")
+AIPROMPT_CRITIQUE_RE = re.compile(r"^aiprompt\.critique\.(.+)\.txt$")
+
+
+def ai_artifact_label(filename):
+    """Friendly (label, ai_generated) for one of wspy-analyze's own output
+    files, or None if filename isn't one -- so collect_run_files() below can
+    offer something more useful than the bare filename, and so a block built
+    from actual model output (aianalysis.*/aiprompt.critique.*, not the
+    deterministically-rendered aiprompt.txt itself) carries an AI-generated
+    marker from the moment it's added. See INVESTIGATION_4.0.md's Ollama
+    deep-dive, design decision #7."""
+    if filename == "aiprompt.txt":
+        return "AI analysis: rendered prompt", False
+    m = AIPROMPT_CRITIQUE_RE.match(filename)
+    if m:
+        return f"AI analysis: prompt critique (model: {m.group(1)})", True
+    m = AIANALYSIS_RE.match(filename)
+    if m:
+        return f"AI narrative analysis (model: {m.group(1)})", True
+    return None
 
 
 def collect_run_files(rundir):
@@ -980,13 +1010,14 @@ def collect_run_files(rundir):
     seen = set()
     items = []
 
-    def add(filename, label):
+    def add(filename, label, ai_generated=False):
         if not filename or filename in seen:
             return
         if not os.path.isfile(os.path.join(rundir, filename)):
             return
         seen.add(filename)
-        items.append({"filename": filename, "kind": guess_kind(filename), "label": label})
+        items.append({"filename": filename, "kind": guess_kind(filename), "label": label,
+                      "ai_generated": ai_generated})
 
     if run_manifest is not None:
         for p in run_manifest.get("passes", []):
@@ -1012,7 +1043,12 @@ def collect_run_files(rundir):
     except OSError:
         extras = []
     for f in extras:
-        add(f, f)
+        ai_label = ai_artifact_label(f)
+        if ai_label is not None:
+            label, ai_generated = ai_label
+            add(f, label, ai_generated=ai_generated)
+        else:
+            add(f, f)
 
     for f in list_plot_pngs(rundir):
         add(f, f"plot: {os.path.basename(f)}")
@@ -1127,7 +1163,10 @@ def render_curated_section(rundir, base_url, suite, benchmark, run_id):
         parts.append(f'<p class="overview-note">{html.escape(overview_note)}</p>')
     for b in included:
         parts.append('<div class="block">')
-        parts.append(f"<h3>{html.escape(b.get('title') or '(untitled)')}</h3>")
+        title_html = html.escape(b.get('title') or '(untitled)')
+        if b.get("ai_generated"):
+            title_html += ' <span class="badge ai-badge">AI-generated</span>'
+        parts.append(f"<h3>{title_html}</h3>")
         if b.get("commentary"):
             parts.append(f'<p class="commentary">{html.escape(b["commentary"])}</p>')
         parts.append(render_block_content(rundir, base_url, b))
@@ -1244,7 +1283,10 @@ def render_export_markdown(rundir, base_url, title, overview_note, blocks):
     if overview_note:
         parts.append(f"{overview_note}\n")
     for b in blocks:
-        parts.append(f"## {b.get('title') or '(untitled)'}\n")
+        heading = b.get('title') or '(untitled)'
+        if b.get("ai_generated"):
+            heading += " _(AI-generated)_"
+        parts.append(f"## {heading}\n")
         if b.get("commentary"):
             parts.append(f"{b['commentary']}\n")
         content_kind, payload, note = export_block_content(rundir, base_url, b)
@@ -1263,8 +1305,10 @@ def render_export_html(rundir, base_url, title, overview_note, blocks):
     if overview_note:
         body_parts.append(f'<p style="font-family:sans-serif;">{html.escape(overview_note)}</p>')
     for b in blocks:
-        body_parts.append(
-            f'<h2 style="font-family:sans-serif;margin-top:2em;">{html.escape(b.get("title") or "(untitled)")}</h2>')
+        heading_html = html.escape(b.get("title") or "(untitled)")
+        if b.get("ai_generated"):
+            heading_html += ' <span style="font-size:0.6em;color:#666;">(AI-generated)</span>'
+        body_parts.append(f'<h2 style="font-family:sans-serif;margin-top:2em;">{heading_html}</h2>')
         if b.get("commentary"):
             body_parts.append(
                 f'<p style="font-family:sans-serif;">{html.escape(b["commentary"])}</p>')
@@ -1294,8 +1338,10 @@ def render_export_wordpress(rundir, base_url, title, overview_note, blocks):
     if overview_note:
         parts.append(_wp_block("paragraph", f'<p>{html.escape(overview_note)}</p>'))
     for b in blocks:
-        parts.append(_wp_block("heading", f'<h2>{html.escape(b.get("title") or "(untitled)")}</h2>',
-                                {"level": 2}))
+        heading_html = html.escape(b.get("title") or "(untitled)")
+        if b.get("ai_generated"):
+            heading_html += ' <em>(AI-generated)</em>'
+        parts.append(_wp_block("heading", f'<h2>{heading_html}</h2>', {"level": 2}))
         if b.get("commentary"):
             parts.append(_wp_block("paragraph", f'<p>{html.escape(b["commentary"])}</p>'))
         content_kind, payload, note = export_block_content(rundir, base_url, b)
@@ -1947,6 +1993,7 @@ def apply_studio_post(rundir, form):
     depths = form.get("depth", [])
     excerpt_lines = form.get("excerpt_lines", [])
     commentaries = form.get("commentary", [])
+    ai_generated_flags = form.get("ai_generated", [])
     op = (form.get("op", [""])[0] or "save")
 
     blocks = []
@@ -1964,6 +2011,7 @@ def apply_studio_post(rundir, form):
             "depth": depths[i] if i < len(depths) else "none",
             "excerpt_lines": excerpt_n,
             "commentary": commentaries[i] if i < len(commentaries) else "",
+            "ai_generated": i < len(ai_generated_flags) and ai_generated_flags[i] == "1",
         })
 
     if op.startswith("up:") or op.startswith("down:"):
@@ -1978,11 +2026,27 @@ def apply_studio_post(rundir, form):
         blocks = [b for b in blocks if b["id"] != bid]
     elif op.startswith("add:"):
         _, src_kind, filename = op.split(":", 2)
-        available_names = {item["filename"] for item in collect_run_files(rundir)}
-        if filename in available_names:
-            blocks.append(new_block("artifact", source_file=filename, source_kind=src_kind, title=filename))
+        available = {item["filename"]: item for item in collect_run_files(rundir)}
+        item = available.get(filename)
+        if item is not None:
+            blocks.append(new_block("artifact", source_file=filename, source_kind=src_kind,
+                                     title=item["label"], ai_generated=item.get("ai_generated", False)))
     elif op == "add-freeform":
         blocks.append(new_block("freeform", title="New section"))
+    elif op.startswith("copy-commentary:"):
+        # Design decision #7 in the Ollama deep-dive: wspy-analyze's narrative
+        # output is meant to become editable report commentary, not just sit
+        # embedded as a raw artifact. This is a plain copy (not a link) --
+        # the block keeps its ai_generated flag regardless, so the copied
+        # text still renders with an AI-generated marker in the studio and
+        # every export format, even after a human edits it down.
+        bid = op.split(":", 1)[1]
+        for b in blocks:
+            if b["id"] == bid and b.get("ai_generated") and b.get("source_file"):
+                text, _size = read_text_safely(os.path.join(rundir, b["source_file"]))
+                if text is not None:
+                    b["commentary"] = text.strip()
+                break
 
     for b in blocks:
         allowed = allowed_depths(b)
@@ -2032,6 +2096,16 @@ def render_studio(rundir, suite, benchmark, run_id):
         source_note = (f'<span class="muted">source: {html.escape(b["source_file"])} '
                         f'({html.escape(b.get("source_kind") or "?")})</span>'
                         if b.get("kind") == "artifact" else '<span class="muted">freeform section</span>')
+        ai_badge = ' <span class="badge ai-badge">AI-generated</span>' if b.get("ai_generated") else ""
+        # Offered only for an artifact block whose source is model output (not every
+        # ai_generated block -- a freeform block can't reach this state) -- see design
+        # decision #7: the point is turning wspy-analyze's prose into editable
+        # commentary, not just displaying it as another embedded artifact.
+        copy_button = (
+            f'<button type="submit" name="op" value="copy-commentary:{html.escape(b["id"])}">'
+            f'Copy analysis into commentary</button>'
+            if b.get("ai_generated") and b.get("kind") == "artifact" else ""
+        )
         show_excerpt = "excerpt" in depths
         cards.append(f"""
 <div class="block-card">
@@ -2039,11 +2113,12 @@ def render_studio(rundir, suite, benchmark, run_id):
   <input type="hidden" name="kind" value="{html.escape(b.get('kind', 'artifact'))}">
   <input type="hidden" name="source_file" value="{html.escape(b.get('source_file') or '')}">
   <input type="hidden" name="source_kind" value="{html.escape(b.get('source_kind') or '')}">
+  <input type="hidden" name="ai_generated" value="{'1' if b.get('ai_generated') else ''}">
   <div class="block-card-head">
     <label>Title
       <input type="text" name="title" value="{html.escape(b.get('title') or '')}">
     </label>
-    {source_note}
+    {source_note}{ai_badge}
     <div class="block-card-ops">
       <button type="submit" name="op" value="up:{html.escape(b['id'])}"{' disabled' if i == 0 else ''}>Move up</button>
       <button type="submit" name="op" value="down:{html.escape(b['id'])}"{' disabled' if i == len(blocks) - 1 else ''}>Move down</button>
@@ -2061,6 +2136,7 @@ def render_studio(rundir, suite, benchmark, run_id):
   <label>Commentary <span class="muted">(what does this configuration tell us?)</span>
     <textarea name="commentary" rows="3">{html.escape(b.get('commentary') or '')}</textarea>
   </label>
+  {copy_button}
 </div>""")
 
     add_buttons = "".join(

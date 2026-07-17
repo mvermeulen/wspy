@@ -434,13 +434,24 @@ Design decisions, in priority order for a first prototype:
    good enough. A `--critique` follow-up turn ("how could this prompt have been better?") writes a
    separate critique artifact per model; critiques are raw input for a human to fold into the template by
    hand, never auto-applied.
-7. **Curation/report integration is free, structurally.** An `aianalysis.*.txt` output is just another
-   text artifact in the run directory, so `collect_run_files()` (`web/server.py`'s curation studio) picks
-   it up automatically as a "+ add" candidate with no server-side changes beyond a friendly label. Expose
-   it as a "copy into commentary" action a human edits, always visibly labeled AI-generated — never
-   silently substituted as the human's own curated commentary in an `/export`.
-8. **Comparative mode** — two run directories in, one prompt asking "what changed and why," feeding
-   naturally off `/compare`'s existing file-union-by-name logic across runs.
+7. **Curation/report integration is free, structurally — shipped.** An `aianalysis.*.txt` output is just
+   another text artifact in the run directory, so `collect_run_files()` (`web/server.py`'s curation studio)
+   picked it up automatically as a "+ add" candidate even before this; it now also gets a friendly label
+   (`ai_artifact_label()`) instead of its bare filename and an `ai_generated` flag that rides along through
+   every studio save. A block built from one shows an "AI-generated" badge in the studio, the report's
+   curated view, and all three `/export` renderers, plus a "copy into commentary" button a human edits —
+   the flag itself is never lost, so the copied text still can't be silently mistaken for the human's own
+   curated commentary in an export.
+8. **Comparative mode — shipped.** `wspy-analyze --rundir <A> --compare-rundir <B>` renders one prompt
+   (`prompts/perf_compare.tmpl`) asking what changed between the two runs and why, built from both runs'
+   already-computed raw counter text/`wspy-validate` results/counter groups (`gather_run_data()` called
+   once per run, `render_compare_prompt()` substituting `{{WORKLOAD_A}}`/`{{WORKLOAD_B}}`/etc.). Output is
+   written into run A's directory, namespaced by a slug identifying run B (`run_dir_slug()`, its own
+   suite/benchmark/run_id when available, else its directory basename) so it never collides with a plain
+   single-run analysis of run A: `aiprompt.compare.<run-b-slug>.txt` /
+   `aianalysis.compare.<run-b-slug>.<model-slug>.txt`. `analyze_one_model()` was generalized to take
+   output-filename prefixes so the query/critique logic is shared, not duplicated, between single-run and
+   comparative mode.
 9. **Remote-host redaction.** `--ollama-host` pointing off-box turns "local-only, nothing leaves the
    machine" into a real exfil surface (hostnames, workload command lines, environment). Needs a
    `--redact-command`/similar opt-out, and the local-only guarantee should be documented as holding only
