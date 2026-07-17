@@ -896,6 +896,43 @@ void ptrace_loop(void){
 		      sched_cpu_ns/1e9,sched_rundelay_ns/1e9,sched_nr_timeslices);
 	    }
 	  }
+	  // --tree-vmsize: this pid's peak RSS + anon/file/shmem RSS composition
+	  // + swap, read once at exit from /proc/<pid>/status -- same passive-
+	  // read shape as --tree-io/--tree-schedstat (no syscall tracing), just
+	  // a fourth file, with the same per-label parsing loop --tree-io uses
+	  // (a `Label:\tvalue kB` line per field, rather than schedstat's single
+	  // fixed-order line). --tree-vmsize was a registered CLI flag long
+	  // before this -- see parse_options()'s comment on tree_vmsize -- but
+	  // was a complete no-op until now. An unreadable file (permissions, an
+	  // already-fully-reaped pid) just skips the "vmsize" line -- same
+	  // measured-vs-unavailable idiom as --tree-io. Emitted whenever the
+	  // read succeeds, not gated on any field being nonzero: a process with
+	  // no swap and no shared/file-backed mappings has real, meaningful
+	  // zeros here, same "zero is real data" precedent as --tree-io/
+	  // --tree-schedstat. Written before "exit" for the same reason as the
+	  // blocks above.
+	  if (tree_vmsize){
+	    unsigned long vm_hwm_kb = 0,rss_anon_kb = 0,rss_file_kb = 0,rss_shmem_kb = 0,vm_swap_kb = 0;
+	    int vm_read_ok = 0;
+	    char vm_line[128];
+
+	    snprintf(stat_name,sizeof(stat_name),"/proc/%d/status",pid);
+	    if ((stat_file = fopen(stat_name,"r")) != NULL){
+	      vm_read_ok = 1;
+	      while (fgets(vm_line,sizeof(vm_line),stat_file) != NULL){
+		sscanf(vm_line,"VmHWM: %lu",&vm_hwm_kb);
+		sscanf(vm_line,"RssAnon: %lu",&rss_anon_kb);
+		sscanf(vm_line,"RssFile: %lu",&rss_file_kb);
+		sscanf(vm_line,"RssShmem: %lu",&rss_shmem_kb);
+		sscanf(vm_line,"VmSwap: %lu",&vm_swap_kb);
+	      }
+	      fclose(stat_file);
+	    }
+	    if (vm_read_ok){
+	      fprintf(exit_out,"%5.3f %d vmsize %lu %lu %lu %lu %lu\n",elapsed,pid,
+		      vm_hwm_kb,rss_anon_kb,rss_file_kb,rss_shmem_kb,vm_swap_kb);
+	    }
+	  }
 	  // dump contents of proc/<pid>/stat
 	  snprintf(stat_name,sizeof(stat_name),"/proc/%d/stat",pid);
 	  if ((stat_file = fopen(stat_name,"r")) != NULL){

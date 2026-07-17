@@ -558,13 +558,16 @@ int parse_options(int argc,char *const argv[]){
       tree_schedstat = 1;
       break;
     case 41: // --tree-vmsize
-      // Registered as a long option (and documented in --help) but never had
-      // a case here at all -- any use of --tree-vmsize fell through to
-      // `default: return 1;` below, which parse_options()'s caller turns
-      // into a fatal "usage: ..." error, i.e. this flag could not be used
-      // for anything without crashing the whole run. tree_vmsize itself
-      // isn't consumed anywhere yet (unlike tree_open/tree_cmdline above),
-      // so this stops the crash but doesn't yet add vmsize to --tree output.
+      // Originally registered as a long option (and documented in --help)
+      // with no case here at all -- any use fell through to
+      // `default: return 1;` below (a fatal "usage: ..." error) -- then
+      // later given this case to stop that crash, but tree_vmsize still
+      // wasn't consumed anywhere (topdown.c/proctree.c), so the flag was a
+      // pure no-op for a long stretch of this codebase's history. Now
+      // actually wired up: topdown.c reads a passive /proc/<pid>/status
+      // scrape (VmHWM/RssAnon/RssFile/RssShmem/VmSwap) gated on this flag,
+      // same shape as --tree-io/--tree-schedstat. See INVESTIGATION_4.0.md's
+      // "Concrete design: memory footprint detail via /proc/<pid>/status".
       tree_vmsize = 1;
       break;
     default:
@@ -1029,7 +1032,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t--tree-io                 - record per-pid /proc/<pid>/io byte counters\n"
 	    "\t--tree-io-wait            - record per-pid/thread blocking I/O (read/write) wait time\n"
 	    "\t--tree-schedstat          - record per-pid/thread run-queue delay + timeslice count\n"
-	    "\t--tree-vmsize             - virtual memory size\n"
+	    "\t--tree-vmsize             - record peak RSS + anon/file/shmem RSS composition + swap\n"
 	    "\t-o <file>                 - send output to file\n"
 	    "\t--csv                     - create csv output\n"
 	    "\t--manifest <file>         - write a JSON run manifest to <file>\n"

@@ -593,6 +593,93 @@ asked to explain). Before this, the second and third cases were indistinguishabl
 4.3 Tier 2's "Composite attribution," alongside the blocking-syscall signal the concrete design above
 already contributes there.
 
+### Concrete design: memory footprint detail via `/proc/<pid>/status` (2026-07-17)
+Motivation: the existing `--tree`/`proctree` `-M` toggle already shows `vmsize`/`rss` (from
+`/proc/<pid>/stat`'s always-present fields), but that's a single combined resident-set number with no
+peak and no composition — it can't distinguish a process whose memory footprint is real growing
+anonymous heap (a genuine allocation-driven workload) from one that's large mostly because it mapped a
+big shared/file-backed region (page cache, a shared library, `tmpfs`), which is a completely different
+story for anyone trying to reason about a workload's memory behavior. This is 4.2 Tier 3 item #10.
+
+**A pre-existing wart this closes as a side effect:** `--tree-vmsize` already exists as a CLI flag
+(`wspy.c`), but it is, and has always been, a complete no-op — `tree_vmsize` is set to `1` and never
+read anywhere else in the codebase (`topdown.c`, `proctree.c`), a state `wspy.c`'s own comment on the
+flag's `case` documents explicitly. Rather than leave that dead flag in place and add a second,
+confusingly-named sibling flag for this feature, this design **repurposes `--tree-vmsize` to actually do
+something** — safe to do since a pure no-op has no existing behavior anything could depend on. The web
+launcher's existing "vmsize samples" checkbox (`server.py`) already emits `--tree-vmsize` when checked
+(`web/joblib.py`'s `build_configuration_passes()`), so this also makes that checkbox meaningful for the
+first time rather than requiring a parallel UI change.
+
+**Mechanism — passive read, same family as `--tree-io`/`--tree-schedstat`:** no `trace_syscall`, no
+ptrace/syscall-table changes. A fourth scrape at the same `PTRACE_EVENT_EXIT` point, reading
+`/proc/<pid>/status` — confirmed on a real host (`/proc/self/status`) to already carry exactly the
+fields this item asks for, no `smaps_rollup` per-VMA walk needed: `VmHWM` (peak RSS), `RssAnon`,
+`RssFile`, `RssShmem` (the anon-vs-file-vs-shmem composition of current RSS), and `VmSwap` — all
+`label:\tvalue kB` lines, parsed the same `sscanf(line, "Label: %lu", &field)` way `/proc/<pid>/io`'s
+per-label loop already works, just a different label set and a `kB` suffix to skip past.
+
+**CLI flag:** `--tree-vmsize` (`wspy.c:parse_options()`'s existing `case 41`, unchanged id — this is the
+same flag, now doing something). No `trace_syscall = 1`, same as `--tree-io`/`--tree-schedstat`.
+
+**Reporting line, same "before `exit`" placement as futex/io_wait/io/schedstat:** `<time> <pid> vmsize
+<hwm_kb> <rss_anon_kb> <rss_file_kb> <rss_shmem_kb> <swap_kb>` — kept in the file's native kB units
+(no unit conversion, unlike `/proc/<pid>/stat`'s page-count `rss`), keyed `vmsize` to match the flag
+name directly (no existing tree-file event keyword collides with it). Emitted whenever the read
+succeeds, not gated on any field being nonzero — same "zero is real data" precedent as `--tree-io`/
+`--tree-schedstat`: a process with no swap and no shared mappings has real, meaningful zeros there.
+
+**`proctree.c`:** `struct process_info` gains five fields; a new `handle_vmdetail()` parses the line,
+mirroring `handle_io()`/`handle_schedstat()`. **New print toggle `-R`/`-r`** (default off, conditional
+like `-X`/`-B`/`-I`/`-D` — this data only exists in the raw file if `--tree-vmsize` was actually used),
+deliberately a different letter than `-M` (which stays exactly as it is today: unconditional, from
+`/proc/<pid>/stat`'s always-present fields) rather than overloading `-M` itself — the two toggles cover
+genuinely different data sources with different availability guarantees, same reasoning `-D`'s own
+addition next to `-M`/`-N`/`-P` already established. Shows `vm_hwm`/`rss_anon`/`rss_file`/`rss_shmem`/
+`vm_swap` per line and per-`comm`/run-wide totals in `print_statistics()` — unlike futex/io-wait/
+run-delay's totals, these are point-in-time absolute values, not accumulated durations, so summing them
+across processes has no "may overlap in parallel" caveat to word (same straight-sum framing as `-I`'s
+io-byte totals): "total peak memory footprint across the tree" is a genuine, if approximate (peaks at
+different times aren't simultaneous), upper-bound signal.
+
+**No manifest/run-index change** — same precedent as every other `--tree-*` collection flag (tree-file/
+`proctree`-only). Web launcher wiring (`run_proctree_besteffort()`/`build_proctree_argv()` in
+`web/joblib.py`) threads `-R` through exactly when the tree pass that ran actually requested
+`--tree-vmsize`, mirroring `-D`'s existing treatment; the existing "vmsize samples" checkbox label
+(`server.py`) is reworded to describe what it now actually does.
+
+**Validation:** unlike futex/io-wait/run-delay, these are point-in-time facts, not durations — no
+"ground truth via an independent timing tool" question to resolve at all. Validate by cross-checking a
+real process's `--tree-vmsize`-recorded `vmsize` line against a direct concurrent read of that same
+pid's `/proc/<pid>/status` (or `/usr/bin/time -v`'s own `Maximum resident set size`, which sources from
+the same `VmHWM` field) for an exact-value match, plus the usual `capability_matrix.sh`-style smoke
+bundle — already exercised today (if inertly) by the existing `tree-cmdline-open-futex-vmsize` bundle,
+which now covers real behavior instead of a no-op flag.
+
+**Real-workload testing surfaced a genuine caveat, not a bug:** validated against two versions of a
+200MB-anon-allocation Python test program under `wspy --tree --tree-vmsize`. A version that let CPython's
+normal interpreter-shutdown sequence run (freeing the allocation before the process actually exits)
+recorded `VmHWM` accurately (~266MB, matching a concurrent direct `/proc/<pid>/status` read almost
+exactly) but `RssAnon` near-zero (~2MB) — because by the time `PTRACE_EVENT_EXIT` fires, the memory had
+already been freed/`munmap`'d during the interpreter's own teardown. A second version calling
+`os._exit(0)` immediately after allocating (skipping that teardown) recorded `RssAnon` at ~208MB, as
+expected. **Conclusion:** `VmHWM` is a true kernel-tracked historical high-water mark and stays accurate
+regardless of what the process does right before exiting, but `RssAnon`/`RssFile`/`RssShmem`/`VmSwap`
+are an *exit-time snapshot*, not a peak-time composition — `/proc/<pid>/status` has no "composition at
+peak" field, only a peak *total*. A process that frees or unmaps memory as part of its own normal
+shutdown (common in interpreted-language runtimes) will under-report its composition here relative to
+what it held at its actual peak, even though the peak *total* (`VmHWM`) is unaffected. Worth documenting
+as an inherent limitation of this data source, not something a future revision needs to "fix."
+
+**Report-layer payoff:** pairs with `--tree-io`'s existing `rchar`/`read_bytes` distinction (logical vs.
+physical I/O) to separate three different "why is this process big/slow" stories that all currently
+look similar from `vsize`/`rss` alone: heavy `RssFile`/`rchar`-without-`read_bytes` is page-cache-bound
+(mapping/reading a lot of file-backed data cheaply); heavy `RssAnon` with a high `VmHWM` is a genuine
+allocation-heavy workload; nonzero `VmSwap` under memory pressure explains a slowdown no hardware
+counter would otherwise account for.
+
+→ Feeds 4.2 Tier 3 item #10 directly.
+
 ### Local LLM (Ollama) narrative-analysis deep-dive
 Motivation: a run directory already holds validated, structured numbers (CSV, manifest, coverage,
 topdown classification) but no prose explaining what they mean to someone who didn't design the counter
@@ -717,8 +804,11 @@ Ordered in dependency tiers; items within a tier are independently startable.
    real CPU-oversubscription test (32 busy-spin processes on a 16-core host): `run_delay` totaled ~32.9s,
    versus ~0.003s for the same test with only 8 processes (undersubscribed) — confirming the signal
    tracks real runqueue contention, not just nonzero noise.
-10. Memory footprint detail (`VmRSS`/`VmHWM`/anon-file-shmem split via `/proc/<pid>/status` or
-    `smaps_rollup`).
+10. ~~Memory footprint detail (`VmRSS`/`VmHWM`/anon-file-shmem split via `/proc/<pid>/status` or
+    `smaps_rollup`)~~ — **shipped 2026-07-17**, by finally implementing the long-dead `--tree-vmsize`
+    flag (`wspy.c`/`topdown.c`) rather than adding a new one — see the "Concrete design: memory
+    footprint detail via `/proc/<pid>/status`" deep-dive above. `proctree.c` gains `-R`, plus the same
+    web launcher wiring (`server.py`/`web/joblib.py`) `--tree-io`/`--tree-schedstat` got.
 11. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
     containerized environments.
 12. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
