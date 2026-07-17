@@ -815,6 +815,118 @@
     });
   }
 
+  // ---------------------------------------------------------------------
+  // Report page: "AI narrative analysis" button (wspy-analyze / Ollama, see
+  // render_analyze_card() in server.py). Model discovery is a quick,
+  // bounded Ollama call, so it uses a plain fetch+render like the Discovery
+  // tab; the analysis run itself can take minutes against a real model, so
+  // it streams over SSE the same way a launched workload's live log does
+  // (wireRunTab() above), not runSyncEndpoint()'s single blocking fetch.
+  // ---------------------------------------------------------------------
+  function wireAnalyzeForm() {
+    var runButton = byId("analyze-run");
+    var logEl = byId("analyze-log");
+    var resultEl = byId("analyze-result");
+    if (!runButton || !logEl || !resultEl) return;
+
+    var discoverButton = byId("analyze-discover-models");
+    var chipsEl = byId("analyze-model-chips");
+    if (discoverButton && chipsEl) {
+      discoverButton.addEventListener("click", function () {
+        discoverButton.disabled = true;
+        chipsEl.textContent = "discovering…";
+        fetch("/api/discovery/ollama-models", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            discoverButton.disabled = false;
+            if (data.error || !data.models || !data.models.length) {
+              chipsEl.textContent = data.error ||
+                "no models found -- is Ollama running, and does it have any models pulled?";
+              return;
+            }
+            chipsEl.innerHTML = data.models.map(function (m) {
+              return '<button type="button" class="add-model-chip" data-model="'
+                + escapeHtml(m) + '">+ ' + escapeHtml(m) + "</button>";
+            }).join("");
+            chipsEl.querySelectorAll(".add-model-chip").forEach(function (chip) {
+              chip.addEventListener("click", function () {
+                var input = byId("analyze-models");
+                if (!input) return;
+                var names = input.value.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+                if (names.indexOf(chip.dataset.model) === -1) names.push(chip.dataset.model);
+                input.value = names.join(", ");
+              });
+            });
+          })
+          .catch(function (err) {
+            discoverButton.disabled = false;
+            chipsEl.textContent = "Error: " + err.message;
+          });
+      });
+    }
+
+    runButton.addEventListener("click", function () {
+      var allModels = getChecked("analyze-all-models");
+      var models = (getValue("analyze-models") || "").split(",")
+        .map(function (s) { return s.trim(); }).filter(Boolean);
+      if (!allModels && !models.length) {
+        resultEl.textContent = "Error: give at least one model, or check "
+          + "\"query every installed model\".";
+        return;
+      }
+      runButton.disabled = true;
+      resultEl.textContent = "";
+      logEl.hidden = false;
+      logEl.textContent = "";
+
+      fetch(runButton.dataset.analyzeUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          models: models,
+          all_models: allModels,
+          critique: getChecked("analyze-critique"),
+        }),
+      })
+        .then(function (resp) {
+          return resp.json().then(function (data) {
+            if (!resp.ok) throw new Error(data.error || ("HTTP " + resp.status));
+            return data;
+          });
+        })
+        .then(function (data) {
+          var es = new EventSource(data.events_url);
+          es.addEventListener("log", function (ev) {
+            logEl.textContent += JSON.parse(ev.data) + "\n";
+            logEl.scrollTop = logEl.scrollHeight;
+          });
+          es.addEventListener("done", function (ev) {
+            var payload = JSON.parse(ev.data);
+            es.close();
+            runButton.disabled = false;
+            if (payload.status === "done") {
+              resultEl.innerHTML = "Done. Reload this page, or open the "
+                + '<a href="' + escapeHtml(data.studio_url) + '">curation studio</a> '
+                + "to add the analysis as a block.";
+            } else {
+              resultEl.textContent = "Finished with errors -- see output above.";
+            }
+          });
+          es.onerror = function () {
+            runButton.disabled = false;
+          };
+        })
+        .catch(function (err) {
+          runButton.disabled = false;
+          resultEl.textContent = "Error: " + err.message;
+        });
+    });
+  }
+
   function wireDiscoveryTab() {
     runSyncEndpoint({
       buttonId: "capabilities-run",
@@ -838,4 +950,5 @@
   wireValidateTab();
   wireStoreTab();
   wireDiscoveryTab();
+  wireAnalyzeForm();
 })();
