@@ -414,6 +414,14 @@ int comm_compare(const void *c1,const void *c2){
 static void print_statistics(){
   int count;
   int i;
+  // run-wide totals, accumulated from the same per-comm sums printed below --
+  // these overlap across processes running in parallel, so they're not a
+  // critical-path duration, just a "how much of this happened in total" figure.
+  unsigned long long total_futex_wait_count = 0;
+  double total_futex_wait_seconds = 0;
+  unsigned long long total_io_read_wait_count = 0,total_io_write_wait_count = 0;
+  double total_io_read_wait_seconds = 0,total_io_write_wait_seconds = 0;
+  unsigned long long total_io_read_bytes = 0,total_io_write_bytes = 0;
 
   printf("%d processes\n",total_processes);
   
@@ -437,6 +445,8 @@ static void print_statistics(){
       printf(" futex_wait=%8.3f (%llu waits)",
 	     comm_table[i].total_futex_wait_seconds,
 	     comm_table[i].total_futex_wait_count);
+      total_futex_wait_seconds += comm_table[i].total_futex_wait_seconds;
+      total_futex_wait_count += comm_table[i].total_futex_wait_count;
     }
     if (bflag){
       printf(" io_wait=%8.3fr/%8.3fw (%llu reads, %llu writes)",
@@ -444,17 +454,36 @@ static void print_statistics(){
 	     comm_table[i].total_io_write_wait_seconds,
 	     comm_table[i].total_io_read_wait_count,
 	     comm_table[i].total_io_write_wait_count);
+      total_io_read_wait_seconds += comm_table[i].total_io_read_wait_seconds;
+      total_io_write_wait_seconds += comm_table[i].total_io_write_wait_seconds;
+      total_io_read_wait_count += comm_table[i].total_io_read_wait_count;
+      total_io_write_wait_count += comm_table[i].total_io_write_wait_count;
     }
     if (iflag){
       printf(" io_bytes=%llur/%lluw",
 	     comm_table[i].total_io_read_bytes,
 	     comm_table[i].total_io_write_bytes);
+      total_io_read_bytes += comm_table[i].total_io_read_bytes;
+      total_io_write_bytes += comm_table[i].total_io_write_bytes;
     }
     printf("\n");
   }
-  
+
   printf("%d processes running\n",num_processes);
   printf("%d maximum processes\n",max_num_processes);
+  if (futexflag){
+    printf("total futex_wait=%.3f (%llu waits) -- summed across processes, may overlap in parallel\n",
+	   total_futex_wait_seconds,total_futex_wait_count);
+  }
+  if (bflag){
+    printf("total io_wait=%.3fr/%.3fw (%llu reads, %llu writes) -- summed across processes, may overlap in parallel\n",
+	   total_io_read_wait_seconds,total_io_write_wait_seconds,
+	   total_io_read_wait_count,total_io_write_wait_count);
+  }
+  if (iflag){
+    printf("total io_bytes=%llur/%lluw\n",
+	   total_io_read_bytes,total_io_write_bytes);
+  }
   printf("\n");
 }
 
