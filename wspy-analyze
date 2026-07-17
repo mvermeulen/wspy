@@ -410,10 +410,11 @@ def main():
     ap = argparse.ArgumentParser(
         description="Local-LLM (Ollama) narrative analysis of a wspy run directory's "
                     "already-computed/validated counter data.")
-    ap.add_argument("--rundir", required=True,
+    ap.add_argument("--rundir", default=None,
                      help="run directory to analyze (wspy-run --suite/--benchmark layout, "
                           "or any directory holding a wspy manifest.json + text/CSV output); "
-                          "run A when --compare-rundir is also given")
+                          "run A when --compare-rundir is also given. Required unless "
+                          "--list-models is given.")
     ap.add_argument("--compare-rundir", default=None,
                      help="second run directory (run B) -- switches to comparative mode: "
                           "asks the model what changed between --rundir (run A) and this "
@@ -423,6 +424,11 @@ def main():
                      help="Ollama model name to query (repeatable)")
     ap.add_argument("--all-models", action="store_true",
                      help="query every model 'ollama list' (via /api/tags) reports installed")
+    ap.add_argument("--list-models", action="store_true",
+                     help="print every model 'ollama list' (via /api/tags) reports installed, "
+                          "one per line, and exit -- no --rundir needed. Lets a caller (e.g. "
+                          "the web UI's model picker) discover model names without knowing "
+                          "the Ollama API itself.")
     ap.add_argument("--ollama-host", default=DEFAULT_OLLAMA_HOST,
                      help="Ollama API base URL (default: %(default)s). Pointing this at a "
                           "non-default/remote host sends run data off this machine -- see "
@@ -446,6 +452,18 @@ def main():
                      help="render the prompt and print it, but don't call Ollama at all")
     args = ap.parse_args()
 
+    if args.list_models:
+        try:
+            for name in ollama_list_models(args.ollama_host, args.timeout):
+                print(name)
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            print("wspy-analyze: error: --list-models could not reach Ollama at %s: %s" % (
+                args.ollama_host, e), file=sys.stderr)
+            return 1
+        return 0
+
+    if not args.rundir:
+        ap.error("--rundir is required (unless --list-models is given)")
     rundir = os.path.abspath(args.rundir)
     if not os.path.isdir(rundir):
         ap.error("--rundir %r is not a directory" % args.rundir)

@@ -112,6 +112,15 @@ BUILTIN_PROFILES = ("quick", "deep-cpu", "deep-cpu-intel", "deep-gpu",
 RUNS = {}
 RUNS_LOCK = threading.Lock()
 
+# Separate registry for the report page's "AI narrative analysis" button
+# (wspy-analyze, see execute_analyze() below): keyed the same way (suite,
+# benchmark, run_id), but kept apart from RUNS so triggering an analysis
+# against an already-finished run's report page never overwrites that run's
+# own launch state (RUNS[key] may already hold a "done"/"error" RunState
+# from the run that produced this report directory in the first place).
+ANALYZE_RUNS = {}
+ANALYZE_RUNS_LOCK = threading.Lock()
+
 
 def run_key(suite, benchmark, run_id):
     return (suite, benchmark, run_id)
@@ -210,6 +219,41 @@ def execute_run(state, wspy_bin, wspy_plot_bin, rundir, workload_argv,
     logf.close()
     status = "done" if plot_rc == 0 else "error"
     state.finish(status, None)
+
+
+def execute_analyze(state, argv, suite, benchmark, run_id):
+    """Runs wspy-analyze (the report page's "AI narrative analysis" button)
+    as a background subprocess, relaying its stderr progress lines through
+    the same RunState/SSE machinery a launched workload uses (state lives in
+    ANALYZE_RUNS, not RUNS -- see that registry's own comment above). Unlike
+    execute_run(), there's no separate launch-log file to write: wspy-analyze
+    already writes its own aiprompt.txt/aianalysis.<model>.txt artifacts
+    straight into rundir, so this thread's only job is relaying live
+    progress -- losing the tail on a server restart mid-analysis loses
+    nothing not already recoverable by just re-running it, same as RUNS'
+    own "nothing here is authoritative" note above. A multi-model (or
+    --all-models) query can run for minutes against a real Ollama daemon, so
+    this gets a live SSE tail rather than the Discovery tab's bounded
+    run_sync()."""
+    def emit(line):
+        state.append(line)
+
+    emit("$ " + shell_preview(argv))
+    try:
+        proc = subprocess.Popen(argv, cwd=REPO_ROOT,
+                                 stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT,
+                                 text=True, bufsize=1)
+    except OSError as e:
+        emit(f"[error] failed to launch wspy-analyze ({argv[0]}): {e}")
+        state.finish("error", None)
+        return
+
+    for line in proc.stdout:
+        emit(line.rstrip("\n"))
+    rc = proc.wait()
+    emit(f"[wspy-analyze exited {rc}]")
+    state.finish("done" if rc == 0 else "error", f"/report/{suite}/{benchmark}/{run_id}")
 
 
 # run_store_ingest_besteffort/execute_profile_run/write_custom_run_manifest/
@@ -2056,6 +2100,49 @@ def apply_studio_post(rundir, form):
     save_curation(rundir, {"blocks": blocks, "overview_note": overview_note})
 
 
+def render_analyze_card(suite, benchmark, run_id):
+    """Report-page "AI narrative analysis" card: triggers wspy-analyze
+    against this run directory (see CLAUDE.md's wspy-analyze entry) without
+    leaving the browser. Model discovery is a live Ollama call
+    (POST /api/discovery/ollama-models), so it's opt-in via a button rather
+    than done at page-render time -- the same "advisory, only when asked"
+    treatment the Run tab's Check button gives its own live probes, since a
+    report page shouldn't hang (or fail) on Ollama not being installed/
+    running just to render. Model names picked from that discovery call are
+    added as chips into the free-text field below, mirroring the Validate
+    tab's "+ add manifest" chip pattern (renderValidateTab()) rather than a
+    dropdown, since --model is repeatable and a user may want more than one.
+    A model query can run for minutes, so this streams progress over SSE the
+    same way a launched workload's live log does (wireRunTab() in app.js),
+    not the Discovery tab's bounded run_sync(); wireAnalyzeForm() in app.js
+    is the client-side counterpart."""
+    analyze_url = f"/api/analyze/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    return f"""
+<h2>AI narrative analysis</h2>
+<p class="muted">Runs <code>wspy-analyze</code> against this run directory's already-computed,
+   already-validated data via a locally running Ollama daemon -- narration, not a re-derived
+   verdict. Output lands back in this run directory as <code>aianalysis.&lt;model&gt;.txt</code>
+   and shows up as an "+ add" candidate in the curation studio once this finishes (reload the
+   page).</p>
+<form id="analyze-form">
+  <div class="row">
+    <label>Model(s) <span class="muted">(comma-separated Ollama model names)</span>
+      <input type="text" id="analyze-models" placeholder="e.g. llama3.1:8b">
+    </label>
+    <button type="button" id="analyze-discover-models">Discover installed models</button>
+  </div>
+  <div id="analyze-model-chips" class="add-buttons"></div>
+  <div class="chips">
+    <label class="chip"><input type="checkbox" id="analyze-all-models"> query every installed model (--all-models)</label>
+    <label class="chip"><input type="checkbox" id="analyze-critique"> also ask for prompt critique (--critique)</label>
+  </div>
+  <button type="button" id="analyze-run" data-analyze-url="{html.escape(analyze_url)}">Run AI analysis</button>
+  <pre id="analyze-log" class="live-output" hidden></pre>
+  <div id="analyze-result"></div>
+</form>
+"""
+
+
 def _studio_link_and_curated(rundir, base_url, suite, benchmark, run_id, raw_html):
     """Shared tail assembly for both report shapes: the curated block
     sequence (when curation.json has at least one included block) plus the
@@ -2218,6 +2305,8 @@ def render_fixed_report(rundir, suite, benchmark, run_id):
     else:
         parts.append('<p class="muted">No manifest found; can\'t restore workload command.</p>')
 
+    parts.append(render_analyze_card(suite, benchmark, run_id))
+
     raw = ["<h2>Artifacts</h2><ul class=\"artifacts\">"]
     plot_pngs = list_plot_pngs(rundir)
     if os.path.exists(png_path):
@@ -2244,7 +2333,8 @@ def render_fixed_report(rundir, suite, benchmark, run_id):
 
     parts.append(_studio_link_and_curated(rundir, base, suite, benchmark, run_id, "".join(raw)))
 
-    body = "<section class=\"panel\">" + "".join(parts) + "</section>"
+    body = ("<section class=\"panel\">" + "".join(parts) + "</section>"
+            '<script src="/static/app.js"></script>')
     return page(f"wspy report: {benchmark}/{run_id}", body)
 
 
@@ -2286,6 +2376,8 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
                       f'<span class="muted">{note}</span></p>')
     else:
         parts.append('<p class="muted">No workload command recorded in manifest.json.</p>')
+
+    parts.append(render_analyze_card(suite, benchmark, run_id))
 
     accounted_for = {RUN_MANIFEST_NAME}
     raw = []
@@ -2355,7 +2447,8 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
 
     parts.append(_studio_link_and_curated(rundir, base, suite, benchmark, run_id, "".join(raw)))
 
-    body = "<section class=\"panel\">" + "".join(parts) + "</section>"
+    body = ("<section class=\"panel\">" + "".join(parts) + "</section>"
+            '<script src="/static/app.js"></script>')
     return page(f"wspy report: {benchmark}/{run_id}", body)
 
 
@@ -2644,6 +2737,11 @@ class Handler(BaseHTTPRequestHandler):
             self._stream_events(*m.groups())
             return
 
+        m = re.match(r"^/api/analyze/([^/]+)/([^/]+)/([^/]+)/events$", path)
+        if m:
+            self._stream_events(*m.groups(), registry=ANALYZE_RUNS, lock=ANALYZE_RUNS_LOCK)
+            return
+
         self._send(404, "not found")
 
     def do_POST(self):
@@ -2669,6 +2767,21 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        m = re.match(r"^/api/analyze/([^/]+)/([^/]+)/([^/]+)$", parsed.path)
+        if m:
+            suite, benchmark, run_id = m.groups()
+            if not all(valid_segment(x) for x in (suite, benchmark, run_id)):
+                self._send(400, "invalid path")
+                return
+            length = int(self.headers.get("Content-Length", "0"))
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "invalid JSON body"})
+                return
+            self._start_analyze(cfg, suite, benchmark, run_id, body)
+            return
+
         POST_HANDLERS = {
             "/api/run": self._start_run,
             "/api/run-profile": self._start_profile_run,
@@ -2683,6 +2796,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/discovery/store-ingest": self._discovery_store_ingest,
             "/api/discovery/summary": self._discovery_summary,
             "/api/discovery/trace": self._discovery_trace,
+            "/api/discovery/ollama-models": self._discovery_ollama_models,
         }
         handler = POST_HANDLERS.get(parsed.path)
         if handler is None:
@@ -2962,6 +3076,51 @@ class Handler(BaseHTTPRequestHandler):
             "report_url": f"/report/{suite}/{benchmark}/{run_id}",
             "commands": command_lines,
             "notes": autofit_notes,
+        })
+
+    def _start_analyze(self, cfg, suite, benchmark, run_id, body):
+        """Report page's "AI narrative analysis" button (render_analyze_card()):
+        runs wspy-analyze against an existing run directory, streamed over SSE
+        via ANALYZE_RUNS the same way a launched workload's live log is (see
+        execute_analyze()'s own comment for why this doesn't reuse RUNS)."""
+        rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+        if not os.path.isdir(rundir):
+            self._send_json(404, {"error": "no such report"})
+            return
+
+        models = [m.strip() for m in (body.get("models") or [])
+                  if isinstance(m, str) and m.strip()]
+        all_models = bool(body.get("all_models"))
+        critique = bool(body.get("critique"))
+        if not models and not all_models:
+            self._send_json(400, {"error": "give at least one model, or check "
+                                            "\"query every installed model\""})
+            return
+
+        argv = [cfg["wspy_analyze_bin"], "--rundir", rundir]
+        for m in models:
+            argv += ["--model", m]
+        if all_models:
+            argv.append("--all-models")
+        if critique:
+            argv.append("--critique")
+
+        key = run_key(suite, benchmark, run_id)
+        state = RunState(rundir)
+        with ANALYZE_RUNS_LOCK:
+            ANALYZE_RUNS[key] = state
+
+        t = threading.Thread(target=execute_analyze, args=(
+            state, argv, suite, benchmark, run_id,
+        ), daemon=True)
+        t.start()
+
+        self._send_json(202, {
+            "suite": suite, "benchmark": benchmark, "run_id": run_id,
+            "events_url": f"/api/analyze/{suite}/{benchmark}/{run_id}/events",
+            "report_url": f"/report/{suite}/{benchmark}/{run_id}",
+            "studio_url": f"/studio/{suite}/{benchmark}/{run_id}",
+            "command": shell_preview(argv),
         })
 
     def _preview(self, cfg, body):
@@ -3277,6 +3436,23 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"command": shell_preview(argv), "exit_code": rc,
                                "output": output, "timed_out": timed_out})
 
+    def _discovery_ollama_models(self, cfg, body):
+        """Backs the report page's "Discover installed models" button
+        (render_analyze_card()): runs `wspy-analyze --list-models`, which
+        just queries Ollama's /api/tags and prints one model name per line
+        -- bounded like the rest of the Discovery-tab family (unlike an
+        actual analysis run, listing models is quick), so this stays
+        synchronous via run_sync() rather than the SSE path _start_analyze()
+        uses."""
+        argv = [cfg["wspy_analyze_bin"], "--list-models"]
+        host = (body.get("ollama_host") or "").strip()
+        if host:
+            argv += ["--ollama-host", host]
+        rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=30)
+        models = [line.strip() for line in output.splitlines() if line.strip()] if rc == 0 else []
+        self._send_json(200, {"command": shell_preview(argv), "exit_code": rc,
+                               "output": output, "timed_out": timed_out, "models": models})
+
     def _discovery_summary(self, cfg, body):
         db = (body.get("db") or "").strip() or cfg["store_db"]
         argv = [cfg["wspy_summary_bin"], "--db", db]
@@ -3347,10 +3523,10 @@ class Handler(BaseHTTPRequestHandler):
             result["links"] = _resolve_trace_links(cfg["output_root"], fields)
         self._send_json(200, result)
 
-    def _stream_events(self, suite, benchmark, run_id):
+    def _stream_events(self, suite, benchmark, run_id, registry=RUNS, lock=RUNS_LOCK):
         key = run_key(suite, benchmark, run_id)
-        with RUNS_LOCK:
-            state = RUNS.get(key)
+        with lock:
+            state = registry.get(key)
         if state is None:
             self._send(404, "no such run")
             return
@@ -3414,6 +3590,10 @@ def main():
                      help="path to the wspy-store binary (default: repo root's ./wspy-store)")
     ap.add_argument("--wspy-summary", default=os.path.join(REPO_ROOT, "wspy-summary"),
                      help="path to the wspy-summary binary (default: repo root's ./wspy-summary)")
+    ap.add_argument("--wspy-analyze", default=os.path.join(REPO_ROOT, "wspy-analyze"),
+                     help="path to the wspy-analyze script (report page's 'AI narrative "
+                          "analysis' button; requires a locally running Ollama daemon; "
+                          "default: repo root's ./wspy-analyze)")
     ap.add_argument("--run-index-file",
                      help="shared --run-index file every launched run appends to when the "
                           "'record run index' toggle chip is on (default: <output-root>/run_index.jsonl)")
@@ -3457,6 +3637,9 @@ def main():
         print(f"warning: proctree not found at {args.proctree} (best-effort tree reconstruction "
               f"after a --tree pass will fail until it's built -- see CLAUDE.md's Build & Test section)",
               file=sys.stderr)
+    if not os.path.isfile(args.wspy_analyze):
+        print(f"warning: wspy-analyze not found at {args.wspy_analyze} (the report page's "
+              f"'AI narrative analysis' button will fail until it's present)", file=sys.stderr)
 
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.wspy_cfg = {
@@ -3468,6 +3651,7 @@ def main():
         "wspy_validate_bin": os.path.abspath(args.wspy_validate),
         "wspy_store_bin": os.path.abspath(args.wspy_store),
         "wspy_summary_bin": os.path.abspath(args.wspy_summary),
+        "wspy_analyze_bin": os.path.abspath(args.wspy_analyze),
         "run_index_file": run_index_file,
         "store_db": store_db,
         "jobs_dir": os.path.abspath(args.jobs_dir),
