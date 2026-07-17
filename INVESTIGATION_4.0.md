@@ -484,6 +484,102 @@ blocking-syscall activity" split is also a direct input to Tier 2's "Composite a
 cache/TLB/IBS signals) — this deep-dive proposes blocking-syscall time as a fourth signal alongside
 those three, not a separate report. The concrete design above also feeds 4.2 Tier 3's item #8.
 
+### Concrete design: `/proc/<pid>/schedstat` run-delay/timeslice capture (2026-07-17)
+Motivation: `--tree-futex`/`--tree-io-wait` (both shipped, see above) tell apart "on-CPU and stalled"
+(topdown) from "blocked in the kernel on a lock or I/O." But the Critical-path/synchronization-latency
+deep-dive's own report-layer-payoff paragraph left a gap: a degraded phase with *no* blocking-syscall
+activity at all was called "a genuine hardware stall worth chasing with topdown/cache counters" — true
+only if the process was actually given the CPU. A runnable-but-not-scheduled process (CPU
+oversubscription, cgroup CFS throttling, an over-committed VM host) produces exactly the same
+signature — no futex/io-wait, low IPC — for a completely different reason: it never got dispatched.
+`/proc/<pid>/schedstat` is the kernel's own answer to "how long was this task runnable but waiting on a
+runqueue," and closes that gap. This is 4.2 Tier 3's item #9.
+
+**Mechanism — passive read, not a ptrace feature:** like `--tree-io` (item #8) and unlike
+`--tree-futex`/`--tree-io-wait`, this needs no `trace_syscall`/syscall-table entry at all — it's a
+second `/proc/<pid>/<file>` scrape at the exact point `topdown.c`'s `PTRACE_EVENT_EXIT` handler already
+opens `/proc/<pid>/io` (right before the existing `/proc/<pid>/stat` dump). `/proc/<pid>/schedstat` is
+one line, three whitespace-separated `u64` fields in nanoseconds/count: time spent actually running on
+a CPU, time spent runnable-but-waiting on a runqueue (**run-delay** — the field this item is named
+for), and the number of timeslices the task has been scheduled. Parsed with a single `sscanf(line,
+"%llu %llu %llu", &cpu_ns, &rundelay_ns, &nr_timeslices)` — no per-label `sscanf` loop like
+`/proc/<pid>/io`'s `label: value` lines needed, since schedstat has no labels at all, just three
+numbers in fixed order.
+
+**The one real gotcha, and why it needs its own check:** `CONFIG_SCHEDSTATS` being compiled in is not
+enough — since Linux 4.6 there's a runtime jump-label toggle, `/proc/sys/kernel/sched_schedstats`
+(boolean), and when it reads `0` the file still *exists* and still *reads successfully*, it just returns
+all-zero fields, indistinguishable at the syscall level from "this process was never delayed." That's a
+different failure mode than `--tree-io`'s "file missing/unreadable → skip the line" case — a silent
+all-zero here would misreport "zero run-delay" as a real measurement when it actually means
+"not being measured," exactly backwards from what this feature exists to show. Fix: check
+`/proc/sys/kernel/sched_schedstats` once at startup, mirroring `check_nmi_watchdog()`'s existing
+one-shot-sysctl-check idiom (`topdown.c`) — if the file exists and reads `0`, `warning()` once
+("schedstat collection is disabled system-wide, --tree-schedstat readings will be zero; enable via
+`sysctl kernel.sched_schedstats=1`") rather than trying to detect it per-pid. A kernel without
+`CONFIG_SCHEDSTATS` at all has no `/proc/sys/kernel/sched_schedstats` file *and* no
+`/proc/<pid>/schedstat` file — that combination degrades exactly like `--tree-io`'s missing-file case
+(skip the line, no warning beyond the one-shot sysctl check finding nothing to check), not a second
+special case.
+
+**CLI flag:** `--tree-schedstat` (`tree_schedstat = 1;` in `wspy.c:parse_options()`, next long-opt id
+after `--tree-io-wait`'s `81` → `82`; no `trace_syscall = 1`, same as `--tree-io`). Inert without
+`--tree`, same precedent as every other `--tree-*` flag.
+
+**Reporting line, same "before `exit`" placement as futex/io_wait/io** (`proctree.c`'s `handle_exit()`
+drops the pid from its lookup table as soon as it sees `exit`): `<time> <pid> schedstat <cpu_seconds>
+<rundelay_seconds> <nr_timeslices>` — `cpu_ns`/`rundelay_ns` converted to seconds (dividing by 1e9) for
+consistency with `futex`/`io_wait`'s seconds-based fields, `nr_timeslices` left as a raw count. Emitted
+whenever the read succeeds, **not** gated on `rundelay_ns > 0` — same "zero is real data" precedent as
+`--tree-io` (a process that was never made to wait is exactly what a well-provisioned run should show),
+not `--tree-futex`/`--tree-io-wait`'s "only if nonzero" precedent — the ambiguity that would otherwise
+create (is zero real, or is collection off?) is fully resolved by the one-shot startup warning above,
+so there's no need to suppress the per-pid line defensively too.
+
+**`proctree.c`:** `struct process_info` gains three fields (`sched_cpu_seconds`,
+`sched_rundelay_seconds`, `sched_nr_timeslices`); a new `handle_schedstat()` parses the line, mirroring
+`handle_io()` exactly. **Design call — only two of the three fields are surfaced by default:** the
+print toggle (`-D`/`-d`, next unused letter pair, default off — same conditional-on-the-flag idiom as
+`-X`/`-B`/`-I`, since this data only exists in the raw file if `--tree-schedstat` was used) shows
+`run_delay=%.3f timeslices=%llu` per line in `print_tree()` and a matching aggregate in
+`print_statistics()`'s per-`comm` table, but deliberately leaves `sched_cpu_seconds` out of both — it's
+stored (parsed, kept on the struct, available to anything that wants it later) but not printed, because
+`-U` already shows `utime`/`stime` from `/proc/<pid>/stat`, and schedstat's own nanosecond-precision
+on-CPU time is a *second*, differently-quantized measurement of nearly the same thing from a different
+kernel accounting path (scheduler ns-precision vs. tick-sampled `utime`/`stime`) — printing both next to
+each other invites "which one is real CPU time" confusion for no diagnostic benefit, when the whole
+point of this feature is the run-delay number `/proc/<pid>/stat` has no equivalent of at all. Run-wide
+totals follow the same pattern `bc31405` just added for futex/io-wait/io: sum `sched_rundelay_seconds`/
+`sched_nr_timeslices` across the tree in `print_statistics()`'s summary line, with the same "summed
+across processes, may overlap in parallel — not a critical-path duration" caveat already worded there
+for futex/io-wait.
+
+**No manifest/run-index change** — same precedent as `--tree-futex`/`--tree-io`/`--tree-io-wait` (a
+tree-file/`proctree`-only feature, no `MANIFEST_SCHEMA_VERSION` bump). Web launcher wiring
+(`run_proctree_besteffort()`/`build_proctree_argv()` in `web/joblib.py`) threads `-D` through exactly
+when the tree pass that ran actually requested `--tree-schedstat`, mirroring `-X`'s existing treatment.
+
+**Validation — weaker ground truth than futex/io-wait, worth saying up front:** `--tree-futex`/
+`--tree-io-wait` had `strace -f -T` as an independent second measurement to cross-check against; this
+feature is a straight passthrough of a single kernel-provided number, so there's no comparably
+independent oracle. Validate instead via a synthetic CPU-oversubscription test (spawn more busy-spin
+child processes than available cores — `--affinity=cpuset=<n>` narrows the core count deterministically
+— under `wspy --tree --tree-schedstat`) and confirm `run_delay` is near-zero when cores aren't
+oversubscribed and grows substantially once they are, i.e. validate the *shape* of the signal
+responding to induced contention rather than an exact-value match. Plus the usual
+`capability_matrix.sh`-style smoke bundle (`--tree --tree-schedstat`, assert no fatal/crash).
+
+**Report-layer payoff:** completes the three-way split the deep-dive above only had two legs of —
+`phase.c`'s degraded phases now decompose into: heavy futex/io-wait (blocked in the kernel, waiting is
+the story), heavy `run_delay` with low futex/io-wait (runnable but not scheduled — an oversubscription/
+placement problem, fixable with `--affinity` or fewer concurrent jobs, not a counter-chasing exercise),
+or neither (a genuine on-CPU hardware stall, now the only case topdown/cache counters are actually being
+asked to explain). Before this, the second and third cases were indistinguishable from counters alone.
+
+→ Feeds 4.2 Tier 3 item #9 directly; the three-way phase decomposition above is also a direct input to
+4.3 Tier 2's "Composite attribution," alongside the blocking-syscall signal the concrete design above
+already contributes there.
+
 ### Local LLM (Ollama) narrative-analysis deep-dive
 Motivation: a run directory already holds validated, structured numbers (CSV, manifest, coverage,
 topdown classification) but no prose explaining what they mean to someone who didn't design the counter
@@ -592,7 +688,10 @@ Ordered in dependency tiers; items within a tier are independently startable.
    `--tree-io` (`wspy.c`/`topdown.c`) + `proctree.c`'s `-I`. See the Critical-path/synchronization-
    latency deep-dive's "Concrete design: blocking I/O + `/proc/<pid>/io` byte counters" above,
    alongside its companion blocking-I/O-latency feature (4.3 Tier 8 item #25, shipped together).
-9. `/proc/<pid>/schedstat` run-delay/timeslice capture.
+9. `/proc/<pid>/schedstat` run-delay/timeslice capture — see the "Concrete design:
+   `/proc/<pid>/schedstat` run-delay/timeslice capture" deep-dive above for the full design (passive
+   `/proc/<pid>/schedstat` read at `PTRACE_EVENT_EXIT`, no ptrace/syscall-table changes needed; the
+   `sched_schedstats` runtime-toggle gotcha; `-D`/`-d` in `proctree.c`).
 10. Memory footprint detail (`VmRSS`/`VmHWM`/anon-file-shmem split via `/proc/<pid>/status` or
     `smaps_rollup`).
 11. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
