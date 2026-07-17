@@ -19,27 +19,30 @@ void test_proctree_parse_stat() {
     // Sample /proc/pid/stat content (partial)
     char stat_str[1024];
     // We need at least 52 fields based on NUM_STAT_FIELDS
-    sprintf(stat_str, 
-        "1234 (test) S 1 1 1 0 -1 0 0 0 0 0 " // 0-12
+    sprintf(stat_str,
+        "1234 (test) S 999 1 1 0 -1 0 0 0 0 0 " // 0-12 (3: ppid)
         "100 200 " // 13 (utime), 14 (stime)
-        "0 0 0 0 0 " // 15-19
+        "0 0 0 0 4 " // 15-19 (19: num_threads)
         "0 " // 20
         "5000 " // 21 (starttime)
         "1048576 " // 22 (vsize)
-        "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 " // 23-37
+        "256 0 0 0 0 0 0 0 0 0 0 0 0 0 0 " // 23-37 (23: rss)
         "3 " // 38 (processor)
         "0 0 0 0 0 0 0 0 0 0 0 0 " // 39-50
         "0" // 51 (exit_code)
     );
-    
+
     parse_stat(stat_str, &pinfo);
-    
+
+    assert(pinfo.ppid == 999);
     assert(pinfo.utime == 100);
     assert(pinfo.stime == 200);
+    assert(pinfo.num_threads == 4);
     assert(pinfo.starttime == 5000);
     assert(pinfo.vsize == 1048576);
+    assert(pinfo.rss == 256);
     assert(pinfo.processor == 3);
-    
+
     printf("PASS: proctree parse_stat\n");
 }
 

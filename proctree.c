@@ -1,12 +1,24 @@
 /*
  * proctree - process the output format from topdown --tree
  *
- * This includes the following four lines:
+ * Every line is "<time> <pid> <event> [args...]" (time and pid always come
+ * first, before the event keyword -- not "<time> <event> <pid>"). Lines this
+ * parser acts on:
  *
- * <time> root <pid>
- * <time> start <pid> <ppid>
- * <time> exit <pid> </proc/<pid>/stat
- * <time> comm <pid> </proc/pid/comm>
+ * <time> <pid> root
+ * <time> <pid> fork <child_pid>
+ * <time> <pid> comm <name>
+ * <time> <pid> cmdline <arg0> <arg1> ...
+ * <time> <pid> exec <resolved /proc/<pid>/exe target, or "?">
+ * <time> <pid> exit <pid> <contents of /proc/<pid>/stat>
+ *
+ * Lines this parser reads but deliberately ignores (see the main parse loop
+ * below): "<time> <pid> exited", "<time> <pid> signal <n>", "<time> <pid>
+ * unknown <status hex>". wspy also writes "<time> <pid> open <path>"
+ * (--tree-open) and "<time> <pid> continued" lines; neither is recognized
+ * by name here, so each one logs an "unknown command" warning rather than
+ * being silently skipped. A trailing "# ptrace-summary ..." comment line
+ * closes the file.
  */
 
 #include <stdio.h>
@@ -23,9 +35,12 @@ int mflag = 0;
 int uflag = 0;
 int vflag = 0;
 int fflag = 1;
+int nflag = 0;
+int pflag = 0;
 int output_width = 80;
 int print_cmdline = 0;
 int clocks_per_second;
+long page_size = 4096; // sysconf(_SC_PAGESIZE) at startup; rss (/proc/<pid>/stat) is in pages, not bytes
 
 /* process_info - maintained for each process */
 struct process_info {
@@ -40,6 +55,9 @@ struct process_info {
   unsigned int vsize;
   unsigned int processor;
   unsigned int exit_code;
+  unsigned int ppid;
+  unsigned int num_threads;
+  unsigned long rss; // pages -- multiply by page_size for bytes
   struct process_info *parent;
   struct process_info *children; // linked using the "sibling" relationship
   struct process_info *older_sibling; // elder sibling
@@ -175,10 +193,13 @@ void parse_stat(char *stat,struct process_info *pinfo){
   for (i=0;i<index;i++){
     debug2("\t%d: %s\n",i,stat_fields[i]);
   }
+  if (stat_fields[3]) pinfo->ppid = atoi(stat_fields[3]); // parent pid
   if (stat_fields[13]) pinfo->utime = atoi(stat_fields[13]); // utime user time in clock ticks
   if (stat_fields[14]) pinfo->stime = atoi(stat_fields[14]); // stime system time in clock ticks
+  if (stat_fields[19]) pinfo->num_threads = atoi(stat_fields[19]); // thread count at exit
   if (stat_fields[21]) pinfo->starttime = atoll(stat_fields[21]); // starttime since boot in clock ticks
   if (stat_fields[22]) pinfo->vsize = atoi(stat_fields[22]); // vsize - virtual memory in bytes
+  if (stat_fields[23]) pinfo->rss = atoll(stat_fields[23]); // rss - resident set size, in pages
   if (stat_fields[38]) pinfo->processor = atoi(stat_fields[38]); // last processor
   if (stat_fields[51]) pinfo->exit_code = atoi(stat_fields[51]); // exit code
   free(stat_line);
@@ -213,6 +234,25 @@ void handle_cmdline(double elapsed,unsigned int pid,char *cmdline){
   struct proc_table_entry *pentry = lookup_pid(pid,0);
   if (pentry){
     pentry->pinfo->cmdline = strdup(cmdline);
+  }
+}
+
+// format: elapsed pid exec </proc/pid/exe target, or "?" if unresolved>
+// Gives a still-running (never exited/signaled) process a real comm instead
+// of "??" -- comm/cmdline are otherwise only populated at exit time (see
+// handle_exit()/the WIFSIGNALED path in topdown.c), which a process that's
+// still alive when the trace ends never reaches. A later "comm" line (from
+// that same pid's eventual exit) overwrites this with the authoritative
+// kernel-truncated name, so this is only ever a fallback.
+void handle_exec(double elapsed,unsigned int pid,char *path){
+  debug("handle_exec(%d,%s)\n",elapsed,pid,path);
+
+  struct proc_table_entry *pentry = lookup_pid(pid,0);
+  char *slash;
+  if (pentry){
+    free(pentry->pinfo->comm);
+    slash = strrchr(path,'/');
+    pentry->pinfo->comm = strdup(slash ? slash+1 : path);
   }
 }
 
@@ -323,12 +363,19 @@ static void print_tree(struct process_info *pinfo,int level){
     printf(" start=%-5.2f finish=%-5.2f",pinfo->start,pinfo->finish);
   }
   if (mflag){
-    printf(" vmsize=%uk",(pinfo->vsize+512)/1024);
+    printf(" vmsize=%uk rss=%luk",(pinfo->vsize+512)/1024,
+	   (pinfo->rss*page_size+512)/1024);
   }
   if (uflag){
     printf(" utime=%-4.2f stime=%-4.2f",
 	   ((double) pinfo->utime/clocks_per_second),
 	   ((double) pinfo->stime/clocks_per_second));
+  }
+  if (pflag){
+    printf(" ppid=%u",pinfo->ppid);
+  }
+  if (nflag){
+    printf(" threads=%u",pinfo->num_threads);
   }
 
   printf("\n");
@@ -359,11 +406,12 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   int event_pid;
 
   clocks_per_second = sysconf(_SC_CLK_TCK);
+  page_size = sysconf(_SC_PAGESIZE);
 
   initialize_error_subsystem(argv[0],"-");
 
   // parse options
-  while ((opt = getopt(argc,argv,"+CcFfMmSsTtUuvw:")) != -1){
+  while ((opt = getopt(argc,argv,"+CcFfMmNnPpSsTtUuvw:")) != -1){
     switch(opt){
     case 'C':
       print_cmdline = 1;
@@ -382,6 +430,18 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       break;
     case 'm':
       mflag = 0;
+      break;
+    case 'N':
+      nflag = 1;
+      break;
+    case 'n':
+      nflag = 0;
+      break;
+    case 'P':
+      pflag = 1;
+      break;
+    case 'p':
+      pflag = 0;
       break;
     case 't':
       treeflag = 0;
@@ -415,21 +475,31 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       break;
     default:
     usage:
-      fatal("usage: %s -[CcFfSsTtuv][-w width] file\n"
+      fatal("usage: %s -[CcFfMmNnPpSsTtUuv][-w width] file\n"
 	    "\t-C\tturn on longer command line\n"
 	    "\t-c\tturn on abbreviated command (default)\n"
-	    "\t-F\turn on start/finish info (default)\n"
+	    "\t-F\tturn on start/finish info (default)\n"
 	    "\t-f\tturn off start/finish info\n"
-	    "\t-M\tturn on vmsize printing\n"
-	    "\t-m\tturn off vmsize printing\n"
-	    "\t-S\tturn on summary output\n"
-	    "\t-s\tturn off summary output (default)\n"
+	    "\t-M\tturn on vmsize/rss printing\n"
+	    "\t-m\tturn off vmsize/rss printing (default)\n"
+	    "\t-N\tturn on thread-count printing\n"
+	    "\t-n\tturn off thread-count printing (default)\n"
+	    "\t-P\tturn on parent-pid printing\n"
+	    "\t-p\tturn off parent-pid printing (default)\n"
+	    "\t-S\tturn on summary output (default)\n"
+	    "\t-s\tturn off summary output\n"
 	    "\t-T\tturn on tree output (default)\n"
 	    "\t-t\tturn off tree output\n"
-	    "\t-U\tturn off utime in tree\n"
-	    "\t-u\tturn on utime in tree\n"
+	    "\t-U\tturn on utime in tree\n"
+	    "\t-u\tturn off utime in tree\n"
 	    "\t-v\tverbose messages\n"
-	    "\t-w width\tset command width\n",
+	    "\t-w width\tset command width\n"
+	    "-C/-M/-N/-P/-U only control what gets *printed* -- ppid/thread-count/\n"
+	    "vmsize/rss/utime/stime are always present in the tree file regardless\n"
+	    "of what flags wspy --tree was run with, so any combination of these\n"
+	    "works on an existing file with no need to re-run wspy. The one\n"
+	    "exception is -C's full command line, which only prints anything if\n"
+	    "wspy was run with --tree-cmdline in the first place.\n",
 	    argv[0]);
       break;
     }
@@ -469,6 +539,8 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       handle_comm(elapsed,event_pid,p+5);
     } else if (!strncmp(p,"cmdline",7)){
       handle_cmdline(elapsed,event_pid,p+8);
+    } else if (!strncmp(p,"exec",4)){
+      handle_exec(elapsed,event_pid,p+5);
     } else if (!strncmp(p,"exited",6)){
       // ignore exited events.
     } else if (!strncmp(p,"unknown",7)){

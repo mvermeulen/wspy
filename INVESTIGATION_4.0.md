@@ -198,7 +198,11 @@ carried forward as follow-up validation, not release blockers:
   `make -j`, a SPEC benchmark) beyond `run_tests.sh`'s synthetic ~2000-process stress test, to sanity
   check ptrace overhead and `proctree` reconstruction under realistic timing. (A real `deep-cpu,
   tree-heavy` phoronix/coremark run during 4.0's release testing recorded 494 fork events cleanly,
-  a useful data point but not a substitute for a genuinely large fork-heavy workload.)
+  a useful data point but not a substitute for a genuinely large fork-heavy workload. **Done**,
+  2026-07-16: a `phoronix-test-suite batch-run build-gcc` run under `deep-cpu,tree-heavy` recorded
+  155,780 fork events / 155,781 processes over 342s, reconstructed cleanly by `proctree` in well
+  under a second — see item 14's Tier 3 entry below for the full writeup, including a small residual
+  gap it turned up.)
 
 ## Track deep-dives
 
@@ -351,22 +355,42 @@ Ordered in dependency tiers; items within a tier are independently startable.
     containerized environments.
 12. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
 13. `proctree` → JSON/Graphviz export + run-to-run tree diff.
-14. `proctree`/tree-file robustness against out-of-order fork/exit ptrace events —
-    `run_tests.sh`'s 2000-process tree stress test intermittently reports `exit for unknown pid`
-    (observed once during the `wspy-store` branch's testing, not reproducible across 3 isolated
-    reruns of the same stress test — load-dependent flake, not a deterministic failure). Root cause
-    is a real kernel-level race, not a `wait4()` bug: `ptrace_loop()` (`topdown.c`) writes tree-file
-    lines in whatever order the kernel delivers ptrace stops across the traced process *and* every
-    child it auto-attaches to via `PTRACE_O_TRACEFORK`/`TRACECLONE`/`TRACEVFORK`; a short-lived child
-    (e.g. `/bin/true`) can run and hit its own exit stop before the *parent's* `PTRACE_EVENT_FORK`
-    stop — which is what records the parent→child edge — is dequeued and written, so under high
-    fork-rate/scheduling pressure an `exit` line can legitimately land in the tree file before its
-    `fork` line. The fix belongs in the reader, not the writer: make `proctree.c`'s reconstruction
-    tolerate an `exit` for a not-yet-seen pid (e.g. a two-pass parse, or buffering unresolved exits
-    keyed by pid and reconciling them once/if a later `root`/`fork` line establishes that pid)
-    instead of assuming strict single-pass ordering. `run_tests.sh`'s own stress-test `awk` integrity
-    checker encodes the same strict-ordering assumption and should be relaxed (or made two-pass)
-    alongside `proctree.c`, so a legitimate kernel race doesn't get flagged as a correctness bug.
+14. `proctree`/tree-file robustness against out-of-order fork/exit ptrace events — **mostly fixed**,
+    see commit `8271e55` ("topdown: fix ptrace_loop() double-continue race dropping fork events",
+    2026-07-14). That commit landed two things: (a) a real bug fix — two `WIFSTOPPED` branches in
+    `ptrace_loop()` each issued their own `ptrace(CONT/SYSCALL)` call and then fell through to the
+    loop's unconditional second `CONT` at the bottom with no intervening `wait4()`, so under a burst
+    of concurrent forks/exits the stray second call could race ahead and consume the tracee's next
+    real stop (e.g. the very next `PTRACE_EVENT_FORK`) before the main loop ever logged it — a
+    genuinely lost `fork` line, not just a misordered one; and (b) writer-side reordering tolerance —
+    `ptrace_pid_table[]`, a small hash table keyed by pid that defers a not-yet-known pid's buffered
+    "comm"/"cmdline"/"exit" block (built via `open_memstream()`) until its own "fork" line has been
+    written, so the file's line order always has `fork` before `exit` for the same pid regardless of
+    which ptrace stop the kernel delivers first — the fix landed in the writer (`topdown.c`), not the
+    reader (`proctree.c`) as originally proposed below.
+    Confirmed against a genuinely large real workload (`workload/phoronix/run_test.sh`'s
+    `deep-cpu,tree-heavy` profile against `phoronix-test-suite batch-run build-gcc`, run
+    2026-07-16, `sacramento` host): 155,780 fork events across a 342-second, 155,781-process run,
+    reconstructed cleanly by `proctree` (0.46s, no `exit for unknown pid`/"unable to remove process"
+    warnings) — a large step up from the 494-fork-event data point recorded above and a real answer
+    to this item's own "beyond `run_tests.sh`'s synthetic ~2000-process stress test" ask. One small,
+    *distinct* residual gap remains, discovered from this same run: 7 of the 155,781 processes
+    (~0.0045%) got a plain `WIFEXITED` reap with **no** preceding `PTRACE_EVENT_EXIT` ptrace-stop at
+    all (confirmed by diffing `process.tree.txt`'s `fork`-target pids against its `exit`-block pids —
+    each of the 7 has a `fork` line and an `exited` line but no `comm`/`cmdline`/`exit`-stat block in
+    between). This is a different mechanism than the reordering bug above — not a stop arriving in the
+    wrong order, but a stop the kernel apparently never delivered before the process was reaped — so
+    `8271e55`'s fix doesn't cover it, and it isn't yet understood whether it's a further ptrace corner
+    case (e.g. a process that exits between its `SIGSTOP`-after-fork and the tracer re-enabling
+    `PTRACE_O_TRACEEXIT` on it) or something else. Not urgent: `proctree.c` already degrades
+    gracefully for it today (a pid whose "exit" block never arrives just keeps its zeroed
+    `finish`/`cpu`/`vmsize`/`utime` fields and `??` in place of `comm` — no crash, no warning, verified
+    against this same run's output), so this is tracked here as a known, now-quantified small
+    imprecision rather than an open correctness bug requiring a code change.
+    `run_tests.sh`'s 2000-process tree stress test previously intermittently reported `exit for
+    unknown pid` (observed once during the `wspy-store` branch's testing, not reproducible across 3
+    isolated reruns — load-dependent flake, not a deterministic failure); worth re-running a few times
+    to confirm `8271e55` also cleared that flake, since it wasn't specifically re-verified there.
 
 **Tier 4 — GPU track:**
 

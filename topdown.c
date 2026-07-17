@@ -455,7 +455,16 @@ void ptrace_setup(pid_t child_pid){
 		  PTRACE_O_EXITKILL | // kill child if I exit
 		  PTRACE_O_TRACESYSGOOD | // set 0x80 for syscall traps
 		  PTRACE_O_TRACECLONE|PTRACE_O_TRACEFORK|PTRACE_O_TRACEVFORK|
-		  PTRACE_O_TRACEEXIT); // exit(2)
+		  PTRACE_O_TRACEEXIT| // exit(2)
+		  PTRACE_O_TRACEEXEC); // without this, a successful execve()
+		  // still traps (it always has, independent of this option --
+		  // PTRACE_O_TRACEEXEC just tags the stop with a decodable
+		  // PTRACE_EVENT_EXEC code instead of a bare SIGTRAP), so
+		  // ptrace_loop()'s event switch previously had no way to
+		  // distinguish it from a genuinely unexplained trap and logged
+		  // it as "unknown 57f" -- confirmed via a real ~155K-process
+		  // tree-heavy run, where these accounted for the vast majority
+		  // of that run's unknown_traps count.
   ptrace(trace_syscall?PTRACE_SYSCALL:PTRACE_CONT,child_pid,NULL,NULL); // let the child continue
 }
 
@@ -594,11 +603,14 @@ void ptrace_loop(void){
   int wait_flags = 0;
   unsigned long long fork_events = 0;
   unsigned long long exit_events = 0;
+  unsigned long long exec_events = 0;
   unsigned long long unknown_traps = 0;
   unsigned long long wait_eintr = 0;
   char *exit_block;
   size_t exit_block_size;
   FILE *exit_out;
+  char exec_path[4096];
+  ssize_t exec_path_len;
 
   ptrace_pid_mark_known(child_pid); // the "root" line for this pid was already written before ptrace_loop() was called
 
@@ -734,6 +746,25 @@ void ptrace_loop(void){
 	  }
 	  debug2("   exit - exit status=%d\n",data);
 	  break;
+	case PTRACE_EVENT_EXEC:
+	  exec_events++;
+	  // /proc/<pid>/exe already points at the newly-exec'd binary by the
+	  // time this stop is delivered (the new image is mapped in before
+	  // the trap fires) -- readlink() it rather than trying to recover
+	  // the path from registers/memory, which PTRACE_GETEVENTMSG doesn't
+	  // provide for this event (it's only meaningful for a non-leader
+	  // thread's exec, per ptrace(2)).
+	  snprintf(stat_name,sizeof(stat_name),"/proc/%d/exe",pid);
+	  exec_path_len = readlink(stat_name,exec_path,sizeof(exec_path)-1);
+	  if (exec_path_len >= 0){
+	    exec_path[exec_path_len] = 0;
+	    fprintf(treefile,"%5.3f %d exec %s\n",elapsed,pid,exec_path);
+	  } else {
+	    fprintf(treefile,"%5.3f %d exec ?\n",elapsed,pid);
+	  }
+	  fflush(treefile);
+	  debug2("   exec - pid=%d\n",pid);
+	  break;
 	default:
     unknown_traps++;
 	  // normal SIGTRAP - not sure how we got here, but continue without it.
@@ -782,8 +813,8 @@ void ptrace_loop(void){
 
   ptrace_pid_table_flush_and_free(); // flush any exit block whose "fork" line never arrived, and release the table
 
-  fprintf(treefile,"# ptrace-summary fork_events=%llu exit_events=%llu unknown_traps=%llu wait_eintr=%llu\n",
-	  fork_events, exit_events, unknown_traps, wait_eintr);
+  fprintf(treefile,"# ptrace-summary fork_events=%llu exit_events=%llu exec_events=%llu unknown_traps=%llu wait_eintr=%llu\n",
+	  fork_events, exit_events, exec_events, unknown_traps, wait_eintr);
   fflush(treefile);
 }
 

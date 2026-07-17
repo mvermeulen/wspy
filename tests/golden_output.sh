@@ -327,7 +327,8 @@ assert_normal_contains "system-loopback-iface" --no-ipc --system -- \
 
 echo ""
 echo "=== Tree format contract ==="
-# The four documented line kinds (proctree.c's header comment) plus the
+# The line kinds documented in proctree.c's header comment (root/fork/exec/
+# exit, plus the summary-checked "unknown" catch-all) plus the
 # "# ptrace-summary" footer whose counters must match what was actually
 # observed in the body -- a lighter, more general version of run_tests.sh's
 # large stress-scale awk check (which stays there as an integrity/stress
@@ -353,6 +354,7 @@ check_tree_grammar() {
       event = $3;
       if (event == "root") { root_count++; next }
       if (event == "fork") { fork_lines++; next }
+      if (event == "exec") { exec_lines++; next }
       if (event == "exit") { exit_lines++; next }
       if (event == "unknown") { unknown_lines++; next }
     }
@@ -372,6 +374,10 @@ check_tree_grammar() {
         }
         if (summary["exit_events"] != exit_lines) {
           printf("%s: exit_events footer=%d actual=%d\n", desc, summary["exit_events"], exit_lines) > "/dev/stderr";
+          errors++;
+        }
+        if (summary["exec_events"] != exec_lines) {
+          printf("%s: exec_events footer=%d actual=%d\n", desc, summary["exec_events"], exec_lines) > "/dev/stderr";
           errors++;
         }
         if (summary["unknown_traps"] != unknown_lines) {
