@@ -481,7 +481,11 @@ Ordered in dependency tiers; items within a tier are independently startable.
 **Tier 1 — stats/confidence layer:**
 
 1. Repeatability policy + confidence metadata (mean, stddev, CV, CI) as default output.
-2. Outlier/threshold engine (per-metric, global + suite-local).
+2. ~~Outlier/threshold engine (per-metric, global + suite-local)~~ — **shipped**, as part of 4.1's
+   summary generator: `wspy-summary`/`summary.c` flags a z-score outlier per value within each
+   `(group,metric)` bucket (`--outlier-stddev`, default 2.0, requires `n>=3`), where "group" is
+   command/hostname/`cpu_vendor` (`--group-by`) — the "suite-local" bucketing this item asked for,
+   with no `--group-by` filter acting as the "global" case. See `CLAUDE.md`'s `summary.c` entry.
 3. Comparison matrix mode (sweep compiler/kernel/governor/SMT/VM-native) — builds on the
    profile-driven launcher; a declarative sweep runner, not new collection logic.
 
@@ -556,7 +560,7 @@ Ordered in dependency tiers; items within a tier are independently startable.
 18. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
     stability) + confidence + top-2 alternatives.
 
-**Tier 6 — portability: shipped, with two follow-up gaps below.**
+**Tier 6 — portability: shipped.**
 
 19. ~~Fallback CPU topology detection for non-x86_64 (`/proc/cpuinfo`, `/sys/devices/system/cpu`) —
     actual ARM64 `cpu_info` support~~ — **shipped.** `cpu_info.c`'s `__cpuid()`/`<cpuid.h>` use is now
@@ -574,7 +578,12 @@ Ordered in dependency tiers; items within a tier are independently startable.
 
 **Tier 7 — testing/docs and small cleanups (track alongside the schema work above):**
 
-20. Schema compatibility/migration tests + reproducibility/idempotency tests.
+20. ~~Schema compatibility/migration tests + reproducibility/idempotency tests~~ — **shipped**, as
+    part of `wspy-store`'s test suite: `test_store.c` covers `ensure_schema()` idempotency, a
+    hand-built v1-shaped database migrating cleanly to the current schema version
+    (`MIGRATION_V1_TO_V2`), and re-ingest idempotency for both `upsert_run` and `ingest_csv_metrics`
+    (no duplicate rows on a repeated or grown run-index/CSV file). See `CLAUDE.md`'s `test_store.c`
+    entry.
 21. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
     output).
 22. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
