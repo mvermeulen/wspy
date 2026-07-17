@@ -54,6 +54,7 @@
         futex: getChecked("tree_futex"),
         io: getChecked("tree_io"),
         io_wait: getChecked("tree_io_wait"),
+        schedstat: getChecked("tree_schedstat"),
         vmsize: getChecked("tree_vmsize"),
         software: getChecked("tree_software"),
         timeout_secs: getValue("tree_timeout"),

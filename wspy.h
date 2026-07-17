@@ -32,6 +32,7 @@ extern int tree_open;
 extern int tree_futex;
 extern int tree_io;
 extern int tree_io_wait;
+extern int tree_schedstat;
 extern int tree_vmsize;
 extern int trace_syscall;
 extern int versionflag;
@@ -112,6 +113,7 @@ extern int child_term_signal;
 enum output_format { PRINT_NORMAL, PRINT_CSV, PRINT_CSV_HEADER };
 
 int check_nmi_watchdog(void);
+void check_schedstat_enabled(void);
 int setup_raw_events(void);
 extern struct raw_event amd_raw_events[];
 int amd_raw_events_count(void);

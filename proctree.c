@@ -14,13 +14,15 @@
  * <time> <pid> futex <blocking_wait_count> <total_wait_seconds>
  * <time> <pid> io_wait <read_count> <read_seconds> <write_count> <write_seconds>
  * <time> <pid> io <rchar> <wchar> <syscr> <syscw> <read_bytes> <write_bytes> <cancelled_write_bytes>
+ * <time> <pid> schedstat <cpu_seconds> <run_delay_seconds> <nr_timeslices>
  *
- * The "futex"/"io_wait"/"io" lines (--tree-futex/--tree-io-wait/--tree-io,
- * at most one line per pid/thread per flag) are written *before* that pid's
- * "exit" line in the raw file, not after -- see handle_exit()'s comment on
- * why that ordering matters to this parser specifically. "io_wait" is
- * checked before "io" in the dispatch loop below since "io" is a prefix of
- * "io_wait" (same reason "exited" is checked before "exit").
+ * The "futex"/"io_wait"/"io"/"schedstat" lines (--tree-futex/--tree-io-wait/
+ * --tree-io/--tree-schedstat, at most one line per pid/thread per flag) are
+ * written *before* that pid's "exit" line in the raw file, not after -- see
+ * handle_exit()'s comment on why that ordering matters to this parser
+ * specifically. "io_wait" is checked before "io" in the dispatch loop below
+ * since "io" is a prefix of "io_wait" (same reason "exited" is checked
+ * before "exit").
  *
  * Lines this parser reads but deliberately ignores (see the main parse loop
  * below): "<time> <pid> exited", "<time> <pid> signal <n>", "<time> <pid>
@@ -50,6 +52,7 @@ int pflag = 0;
 int futexflag = 0;
 int iflag = 0;
 int bflag = 0;
+int dflag = 0;
 int output_width = 80;
 int print_cmdline = 0;
 int clocks_per_second;
@@ -91,6 +94,16 @@ struct process_info {
   unsigned long long io_rchar,io_wchar;
   unsigned long long io_syscr,io_syscw;
   unsigned long long io_read_bytes,io_write_bytes,io_cancelled_write_bytes;
+  // --tree-schedstat (topdown.c): run-queue delay + timeslice count from
+  // /proc/<pid>/schedstat, present only if wspy was run with
+  // --tree-schedstat -- 0/0.0 otherwise, same convention as futex/io_wait/
+  // io above. sched_cpu_seconds is parsed and kept here but deliberately
+  // never printed (see print_tree()'s comment) -- -U's utime/stime already
+  // cover "how much CPU time", this field would just be a second,
+  // differently-quantized measurement of nearly the same thing.
+  double sched_cpu_seconds;
+  double sched_rundelay_seconds;
+  unsigned long long sched_nr_timeslices;
   struct process_info *parent;
   struct process_info *children; // linked using the "sibling" relationship
   struct process_info *older_sibling; // elder sibling
@@ -281,6 +294,19 @@ void handle_io(double elapsed,unsigned int pid,char *rest){
   }
 }
 
+// format: elapsed pid schedstat <cpu_seconds> <run_delay_seconds> <nr_timeslices>
+// Same lookup/ordering rules as handle_futex() above.
+void handle_schedstat(double elapsed,unsigned int pid,char *rest){
+  debug("handle_schedstat(%d,%s)\n",elapsed,pid,rest);
+
+  struct proc_table_entry *pentry = lookup_pid(pid,0);
+  if (pentry){
+    sscanf(rest,"%lf %lf %llu",
+	   &pentry->pinfo->sched_cpu_seconds,&pentry->pinfo->sched_rundelay_seconds,
+	   &pentry->pinfo->sched_nr_timeslices);
+  }
+}
+
 // format: elapsed pid exit </proc/pid/stat>
 void handle_exit(double elapsed,unsigned int pid,char *stat){
   debug("handle_exit(%d,%s)\n",elapsed,pid,stat);
@@ -345,6 +371,8 @@ struct comm_info {
   unsigned long long total_io_write_wait_count;
   double total_io_write_wait_seconds;
   unsigned long long total_io_read_bytes,total_io_write_bytes;
+  double total_sched_rundelay_seconds;
+  unsigned long long total_sched_nr_timeslices;
   struct comm_info *next;
 };
 struct comm_info *comm_totals = NULL;
@@ -369,6 +397,8 @@ static void collect_process_totals(struct process_info *pinfo){
       ci->total_io_write_wait_seconds += pinfo->io_write_wait_seconds;
       ci->total_io_read_bytes += pinfo->io_read_bytes;
       ci->total_io_write_bytes += pinfo->io_write_bytes;
+      ci->total_sched_rundelay_seconds += pinfo->sched_rundelay_seconds;
+      ci->total_sched_nr_timeslices += pinfo->sched_nr_timeslices;
       ci->count++;
       found = 1;
       break;
@@ -389,6 +419,8 @@ static void collect_process_totals(struct process_info *pinfo){
     ci->total_io_write_wait_seconds = pinfo->io_write_wait_seconds;
     ci->total_io_read_bytes = pinfo->io_read_bytes;
     ci->total_io_write_bytes = pinfo->io_write_bytes;
+    ci->total_sched_rundelay_seconds = pinfo->sched_rundelay_seconds;
+    ci->total_sched_nr_timeslices = pinfo->sched_nr_timeslices;
     ci->count = 1;
     comm_totals = ci;
     num_comm_info++;
@@ -422,6 +454,8 @@ static void print_statistics(){
   unsigned long long total_io_read_wait_count = 0,total_io_write_wait_count = 0;
   double total_io_read_wait_seconds = 0,total_io_write_wait_seconds = 0;
   unsigned long long total_io_read_bytes = 0,total_io_write_bytes = 0;
+  double total_sched_rundelay_seconds = 0;
+  unsigned long long total_sched_nr_timeslices = 0;
 
   printf("%d processes\n",total_processes);
   
@@ -466,6 +500,13 @@ static void print_statistics(){
       total_io_read_bytes += comm_table[i].total_io_read_bytes;
       total_io_write_bytes += comm_table[i].total_io_write_bytes;
     }
+    if (dflag){
+      printf(" run_delay=%8.3f (%llu timeslices)",
+	     comm_table[i].total_sched_rundelay_seconds,
+	     comm_table[i].total_sched_nr_timeslices);
+      total_sched_rundelay_seconds += comm_table[i].total_sched_rundelay_seconds;
+      total_sched_nr_timeslices += comm_table[i].total_sched_nr_timeslices;
+    }
     printf("\n");
   }
 
@@ -483,6 +524,10 @@ static void print_statistics(){
   if (iflag){
     printf("total io_bytes=%llur/%lluw\n",
 	   total_io_read_bytes,total_io_write_bytes);
+  }
+  if (dflag){
+    printf("total run_delay=%.3f (%llu timeslices) -- summed across processes, may overlap in parallel\n",
+	   total_sched_rundelay_seconds,total_sched_nr_timeslices);
   }
   printf("\n");
 }
@@ -538,6 +583,13 @@ static void print_tree(struct process_info *pinfo,int level){
 	   pinfo->io_rchar,pinfo->io_wchar,pinfo->io_syscr,pinfo->io_syscw,
 	   pinfo->io_read_bytes,pinfo->io_write_bytes,pinfo->io_cancelled_write_bytes);
   }
+  if (dflag){
+    // sched_cpu_seconds is deliberately not printed here -- see struct
+    // process_info's comment on why it'd just be a second, confusing
+    // measurement of what -U's utime/stime already show.
+    printf(" run_delay=%.3f timeslices=%llu",
+	   pinfo->sched_rundelay_seconds,pinfo->sched_nr_timeslices);
+  }
 
   printf("\n");
 
@@ -572,7 +624,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   initialize_error_subsystem(argv[0],"-");
 
   // parse options
-  while ((opt = getopt(argc,argv,"+BbCcFfIiMmNnPpSsTtUuvw:Xx")) != -1){
+  while ((opt = getopt(argc,argv,"+BbCcDdFfIiMmNnPpSsTtUuvw:Xx")) != -1){
     switch(opt){
     case 'B':
       bflag = 1;
@@ -585,6 +637,12 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       break;
     case 'c':
       print_cmdline = 0;
+      break;
+    case 'D':
+      dflag = 1;
+      break;
+    case 'd':
+      dflag = 0;
       break;
     case 'F':
       fflag = 1;
@@ -654,11 +712,13 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       break;
     default:
     usage:
-      fatal("usage: %s -[BbCcFfIiMmNnPpSsTtUuvXx][-w width] file\n"
+      fatal("usage: %s -[BbCcDdFfIiMmNnPpSsTtUuvXx][-w width] file\n"
 	    "\t-B\tturn on I/O-wait-time printing (per-pid and summary totals)\n"
 	    "\t-b\tturn off I/O-wait-time printing (default)\n"
 	    "\t-C\tturn on longer command line\n"
 	    "\t-c\tturn on abbreviated command (default)\n"
+	    "\t-D\tturn on run-queue-delay printing (per-pid and summary totals)\n"
+	    "\t-d\tturn off run-queue-delay printing (default)\n"
 	    "\t-F\tturn on start/finish info (default)\n"
 	    "\t-f\tturn off start/finish info\n"
 	    "\t-I\tturn on /proc/<pid>/io byte-counter printing (per-pid and summary totals)\n"
@@ -685,9 +745,10 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "works on an existing file with no need to re-run wspy. The one\n"
 	    "exception is -C's full command line, which only prints anything if\n"
 	    "wspy was run with --tree-cmdline in the first place -- and likewise\n"
-	    "-X's futex data, -B's I/O-wait data, and -I's I/O byte-counter data,\n"
-	    "each of which only prints anything (beyond zeroes) if wspy was run\n"
-	    "with --tree-futex, --tree-io-wait, or --tree-io respectively.\n",
+	    "-X's futex data, -B's I/O-wait data, -I's I/O byte-counter data, and\n"
+	    "-D's run-queue-delay data, each of which only prints anything (beyond\n"
+	    "zeroes) if wspy was run with --tree-futex, --tree-io-wait, --tree-io,\n"
+	    "or --tree-schedstat respectively.\n",
 	    argv[0]);
       break;
     }
@@ -741,6 +802,8 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       handle_io_wait(elapsed,event_pid,p+8);
     } else if (!strncmp(p,"io",2)){
       handle_io(elapsed,event_pid,p+3);
+    } else if (!strncmp(p,"schedstat",9)){
+      handle_schedstat(elapsed,event_pid,p+10);
     } else if (!strncmp(p,"exit",4)){
       handle_exit(elapsed,event_pid,p+5);
     } else {
