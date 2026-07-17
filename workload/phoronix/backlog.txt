@@ -1,4 +1,4 @@
-# Newest - July 15th, 2026
+# Newest - July 16th, 2026
 asmfish
 astcenc
 blender
@@ -15,6 +15,7 @@ build-linux-kernel
 build-llvm
 build-nodejs
 build-php
+build-python
 build-wasmer
 build2
 clickhouse
@@ -27,6 +28,7 @@ cyberpunk
 cyberpunk2077
 dirt-rally2
 dynamic-load-bench
+easywave
 embree
 encode-flac
 fluidx3d
@@ -78,6 +80,7 @@ uvg266
 v-ray
 valkey
 vvenc
+warpx
 whisper-cpp
 whisperfile
 xfr
