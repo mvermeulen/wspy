@@ -11,6 +11,12 @@
  * <time> <pid> cmdline <arg0> <arg1> ...
  * <time> <pid> exec <resolved /proc/<pid>/exe target, or "?">
  * <time> <pid> exit <pid> <contents of /proc/<pid>/stat>
+ * <time> <pid> futex <blocking_wait_count> <total_wait_seconds>
+ *
+ * The "futex" line (--tree-futex, one line per pid/thread that made at
+ * least one blocking futex wait) is written *before* that pid's "exit"
+ * line in the raw file, not after -- see handle_exit()'s comment on why
+ * that ordering matters to this parser specifically.
  *
  * Lines this parser reads but deliberately ignores (see the main parse loop
  * below): "<time> <pid> exited", "<time> <pid> signal <n>", "<time> <pid>
@@ -37,6 +43,7 @@ int vflag = 0;
 int fflag = 1;
 int nflag = 0;
 int pflag = 0;
+int futexflag = 0;
 int output_width = 80;
 int print_cmdline = 0;
 int clocks_per_second;
@@ -58,6 +65,11 @@ struct process_info {
   unsigned int ppid;
   unsigned int num_threads;
   unsigned long rss; // pages -- multiply by page_size for bytes
+  // --tree-futex (topdown.c): count/total duration of blocking futex waits,
+  // present only if wspy was run with --tree-futex -- 0/0.0 otherwise,
+  // same as any pid that made no blocking futex calls at all.
+  unsigned long long futex_wait_count;
+  double futex_wait_seconds;
   struct process_info *parent;
   struct process_info *children; // linked using the "sibling" relationship
   struct process_info *older_sibling; // elder sibling
@@ -205,6 +217,21 @@ void parse_stat(char *stat,struct process_info *pinfo){
   free(stat_line);
 }
 
+// format: elapsed pid futex <blocking_wait_count> <total_wait_seconds>
+// Must be looked up (not inserted) like handle_comm()/handle_cmdline() --
+// this line only ever arrives for a pid already in the table, and always
+// before that pid's "exit" line (topdown.c writes it there specifically so
+// handle_exit()'s remove_pid() below hasn't yet dropped this pid from
+// proc_table by the time this runs).
+void handle_futex(double elapsed,unsigned int pid,char *rest){
+  debug("handle_futex(%d,%s)\n",elapsed,pid,rest);
+
+  struct proc_table_entry *pentry = lookup_pid(pid,0);
+  if (pentry){
+    sscanf(rest,"%llu %lf",&pentry->pinfo->futex_wait_count,&pentry->pinfo->futex_wait_seconds);
+  }
+}
+
 // format: elapsed pid exit </proc/pid/stat>
 void handle_exit(double elapsed,unsigned int pid,char *stat){
   debug("handle_exit(%d,%s)\n",elapsed,pid,stat);
@@ -262,6 +289,8 @@ struct comm_info {
   unsigned int count;
   unsigned int total_utime;
   unsigned int total_stime;
+  unsigned long long total_futex_wait_count;
+  double total_futex_wait_seconds;
   struct comm_info *next;
 };
 struct comm_info *comm_totals = NULL;
@@ -278,6 +307,8 @@ static void collect_process_totals(struct process_info *pinfo){
     if (pinfo->comm && !strcmp(pinfo->comm,ci->comm)){
       ci->total_utime += pinfo->utime;
       ci->total_stime += pinfo->stime;
+      ci->total_futex_wait_count += pinfo->futex_wait_count;
+      ci->total_futex_wait_seconds += pinfo->futex_wait_seconds;
       ci->count++;
       found = 1;
       break;
@@ -290,6 +321,8 @@ static void collect_process_totals(struct process_info *pinfo){
     ci->next = comm_totals;
     ci->total_utime = pinfo->utime;
     ci->total_stime = pinfo->stime;
+    ci->total_futex_wait_count = pinfo->futex_wait_count;
+    ci->total_futex_wait_seconds = pinfo->futex_wait_seconds;
     ci->count = 1;
     comm_totals = ci;
     num_comm_info++;
@@ -329,11 +362,17 @@ static void print_statistics(){
   }
   qsort(comm_table,num_comm_info,sizeof(struct comm_info),comm_compare);
   for (i=0;i<num_comm_info;i++){
-    printf("\t%3d %-20s %8.2f %8.2f\n",
+    printf("\t%3d %-20s %8.2f %8.2f",
 	   comm_table[i].count,
 	   comm_table[i].comm,
 	   (double) comm_table[i].total_utime / clocks_per_second,
-	   (double) comm_table[i].total_stime / clocks_per_second);    
+	   (double) comm_table[i].total_stime / clocks_per_second);
+    if (futexflag){
+      printf(" futex_wait=%8.3f (%llu waits)",
+	     comm_table[i].total_futex_wait_seconds,
+	     comm_table[i].total_futex_wait_count);
+    }
+    printf("\n");
   }
   
   printf("%d processes running\n",num_processes);
@@ -377,6 +416,10 @@ static void print_tree(struct process_info *pinfo,int level){
   if (nflag){
     printf(" threads=%u",pinfo->num_threads);
   }
+  if (futexflag){
+    printf(" futex_waits=%llu futex_wait_time=%.3f",
+	   pinfo->futex_wait_count,pinfo->futex_wait_seconds);
+  }
 
   printf("\n");
 
@@ -411,7 +454,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   initialize_error_subsystem(argv[0],"-");
 
   // parse options
-  while ((opt = getopt(argc,argv,"+CcFfMmNnPpSsTtUuvw:")) != -1){
+  while ((opt = getopt(argc,argv,"+CcFfMmNnPpSsTtUuvw:Xx")) != -1){
     switch(opt){
     case 'C':
       print_cmdline = 1;
@@ -466,6 +509,12 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       if (vflag>1) set_error_level(ERROR_LEVEL_DEBUG2);
       else set_error_level(ERROR_LEVEL_DEBUG);
       break;
+    case 'X':
+      futexflag = 1;
+      break;
+    case 'x':
+      futexflag = 0;
+      break;
     case 'w':
       if (sscanf(optarg,"%d",&value) == 1){
 	output_width = value;
@@ -475,7 +524,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       break;
     default:
     usage:
-      fatal("usage: %s -[CcFfMmNnPpSsTtUuv][-w width] file\n"
+      fatal("usage: %s -[CcFfMmNnPpSsTtUuvXx][-w width] file\n"
 	    "\t-C\tturn on longer command line\n"
 	    "\t-c\tturn on abbreviated command (default)\n"
 	    "\t-F\tturn on start/finish info (default)\n"
@@ -494,12 +543,16 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t-u\tturn off utime in tree\n"
 	    "\t-v\tverbose messages\n"
 	    "\t-w width\tset command width\n"
+	    "\t-X\tturn on futex-wait-time printing (per-pid and summary totals)\n"
+	    "\t-x\tturn off futex-wait-time printing (default)\n"
 	    "-C/-M/-N/-P/-U only control what gets *printed* -- ppid/thread-count/\n"
 	    "vmsize/rss/utime/stime are always present in the tree file regardless\n"
 	    "of what flags wspy --tree was run with, so any combination of these\n"
 	    "works on an existing file with no need to re-run wspy. The one\n"
 	    "exception is -C's full command line, which only prints anything if\n"
-	    "wspy was run with --tree-cmdline in the first place.\n",
+	    "wspy was run with --tree-cmdline in the first place -- and likewise\n"
+	    "-X's futex data, which only prints anything (beyond zeroes) if wspy\n"
+	    "was run with --tree-futex.\n",
 	    argv[0]);
       break;
     }
@@ -547,6 +600,8 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       // ignore unknown events
     } else if (!strncmp(p,"signal",6)){
       // ignore signal events
+    } else if (!strncmp(p,"futex",5)){
+      handle_futex(elapsed,event_pid,p+6);
     } else if (!strncmp(p,"exit",4)){
       handle_exit(elapsed,event_pid,p+5);
     } else {

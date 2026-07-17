@@ -1472,6 +1472,7 @@ def render_run_tab(prefill, cfg):
         <div class="config-options">
           <label><input type="checkbox" id="tree_cmdline"{chk(chk_default('tree', 'cmdline', False))}> full command lines <code>--tree-cmdline</code></label>
           <label><input type="checkbox" id="tree_open"{chk(chk_default('tree', 'open', False))}> record <code>open()</code> calls <code>--tree-open</code></label>
+          <label><input type="checkbox" id="tree_futex"{chk(chk_default('tree', 'futex', False))}> record blocking futex waits <code>--tree-futex</code></label>
           <label><input type="checkbox" id="tree_vmsize"{chk(chk_default('tree', 'vmsize', False))}> vmsize samples <code>--tree-vmsize</code></label>
           <label><input type="checkbox" id="tree_software"{chk(chk_default('tree', 'software', True))}> software counters too <code>--software</code></label>
           <label>Timeout seconds <input type="text" id="tree_timeout" value="{val('tree', 'timeout_secs')}" placeholder="(none)"></label>

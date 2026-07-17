@@ -51,6 +51,7 @@
         enabled: getChecked("tree_enabled"),
         cmdline: getChecked("tree_cmdline"),
         open: getChecked("tree_open"),
+        futex: getChecked("tree_futex"),
         vmsize: getChecked("tree_vmsize"),
         software: getChecked("tree_software"),
         timeout_secs: getValue("tree_timeout"),

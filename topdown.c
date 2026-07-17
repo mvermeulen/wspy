@@ -19,6 +19,10 @@
 #include <sys/stat.h>
 #include <sys/ptrace.h>
 #include <linux/perf_event.h>
+#include <linux/futex.h>
+#ifndef FUTEX_LOCK_PI2
+#define FUTEX_LOCK_PI2 13 // added to <linux/futex.h> in Linux 5.14; not present in every build's system headers
+#endif
 #include <errno.h>
 #include "error.h"
 #include "wspy.h"
@@ -512,6 +516,25 @@ struct ptrace_pid_entry {
   pid_t pid;
   int known;
   char *pending_exit;   // buffered "comm"/"cmdline"/"exit" block text, or NULL
+  // Per-pid syscall entry/exit tracking -- replaces what used to be a pair of
+  // loop-global variables in ptrace_loop() (last_syscall/syscall_entry),
+  // which compared each stop against the *previous stop across the whole
+  // tree* rather than the previous stop for this pid, and so could
+  // misclassify entry vs exit under concurrent syscall activity from more
+  // than one tracee (harmless for --tree-open, which only prints on a
+  // match; load-bearing once a stop's *duration* is measured -- see
+  // --tree-futex below). Each tracee's own stop stream strictly alternates
+  // entry/exit (guaranteed by PTRACE_O_TRACESYSGOOD re-arming), so per-pid
+  // toggling needs no syscall-number comparison at all.
+  int in_syscall;             // 0 = next stop is an entry, 1 = next stop is the matching exit
+  long long current_syscall;  // syscall number captured at entry, reused at exit
+  double syscall_entry_elapsed; // elapsed time at the entry stop
+  // --tree-futex accumulators (SYS_futex only): count/total duration of
+  // blocking futex ops (FUTEX_WAIT and friends -- see ptrace_loop()) that
+  // completed for this pid, flushed as a "futex" line in its exit block.
+  int futex_is_wait;          // decided at entry (op argument only meaningful there), read back at exit
+  unsigned long long futex_wait_count;
+  double futex_wait_seconds;
   struct ptrace_pid_entry *next;
 };
 
@@ -588,9 +611,6 @@ static void ptrace_pid_table_flush_and_free(void){
 void ptrace_loop(void){
   pid_t pid;
   int status;
-  // (i removed) use large type to match the syscall-number field's width across arches
-  long long last_syscall = 0;
-  int syscall_entry = 0;
   unsigned long data;
   char buffer[1024];
   char stat_name[128];
@@ -600,6 +620,7 @@ void ptrace_loop(void){
   struct rusage rusage;
   double elapsed;
   char *filename;
+  struct ptrace_pid_entry *pid_entry;
   int wait_flags = 0;
   unsigned long long fork_events = 0;
   unsigned long long exit_events = 0;
@@ -727,6 +748,21 @@ void ptrace_loop(void){
 	    fclose(stat_file);
 	  }
 
+	  // --tree-futex: this pid's accumulated blocking-futex-op time, if any
+	  // (see struct ptrace_pid_entry's comment -- accumulated on the
+	  // syscall-exit stop below). Only emitted when nonzero, same
+	  // "measured vs unavailable" idiom as coverage.c. Written *before* the
+	  // "exit" line below, not after -- proctree.c's handle_exit() removes
+	  // this pid from its own lookup table as soon as it sees "exit", so a
+	  // "futex" line arriving later would find nothing to attach to (same
+	  // reason "comm"/"cmdline" are written before "exit" too).
+	  if (tree_futex){
+	    pid_entry = ptrace_pid_lookup(pid,0);
+	    if (pid_entry && pid_entry->futex_wait_count){
+	      fprintf(exit_out,"%5.3f %d futex %llu %.6f\n",elapsed,pid,
+		      pid_entry->futex_wait_count,pid_entry->futex_wait_seconds);
+	    }
+	  }
 	  // dump contents of proc/<pid>/stat
 	  snprintf(stat_name,sizeof(stat_name),"/proc/%d/stat",pid);
 	  if ((stat_file = fopen(stat_name,"r")) != NULL){
@@ -781,17 +817,40 @@ void ptrace_loop(void){
 	ptrace(trace_syscall?PTRACE_SYSCALL:PTRACE_CONT,pid,NULL,NULL);
 	continue;
       } else if (WSTOPSIG(status) == (SIGTRAP | 0x80)){
-	// stopped because of a system call
+	// stopped because of a system call -- entry/exit state is tracked
+	// per pid (struct ptrace_pid_entry), not via a syscall-number
+	// comparison across the whole tree, so it can't be fooled by two
+	// different tracees hitting syscall stops back to back (see that
+	// struct's comment).
 	ptrace_getregs(pid,&regs);
-        if (last_syscall != PTRACE_SYSCALL_NUM(regs)){
-	  syscall_entry = 1;
+	pid_entry = ptrace_pid_lookup(pid,1);
+	if (!pid_entry->in_syscall){
+	  // entry stop: record which syscall and when: the exit stop below
+	  // reuses current_syscall rather than re-decoding it, since a
+	  // syscall's argument registers (needed for --tree-open/--tree-futex
+	  // below) are only guaranteed meaningful at entry -- futex's op
+	  // argument in particular reflects what was requested, not what the
+	  // kernel already did with it.
+	  pid_entry->current_syscall = PTRACE_SYSCALL_NUM(regs);
+	  pid_entry->syscall_entry_elapsed = elapsed;
+	  pid_entry->in_syscall = 1;
+	  if (tree_futex && (pid_entry->current_syscall == SYS_futex)){
+	    int op = (int)PTRACE_SYSCALL_ARG2(regs) & FUTEX_CMD_MASK;
+	    pid_entry->futex_is_wait = (op == FUTEX_WAIT || op == FUTEX_WAIT_BITSET ||
+					 op == FUTEX_LOCK_PI || op == FUTEX_LOCK_PI2 ||
+					 op == FUTEX_WAIT_REQUEUE_PI);
+	  }
 	} else {
-	  syscall_entry = (1-syscall_entry);
-	}
-	last_syscall = PTRACE_SYSCALL_NUM(regs);
-	if (tree_open && (syscall_entry == 0) && (last_syscall == SYS_openat)){
-	  filename = ptrace_read_null_terminated_string(pid, PTRACE_SYSCALL_ARG2(regs));
-	  fprintf(treefile,"%5.3f %d open %s\n",elapsed,pid,filename);
+	  // exit stop, matching pid_entry->current_syscall from the entry above
+	  if (tree_open && (pid_entry->current_syscall == SYS_openat)){
+	    filename = ptrace_read_null_terminated_string(pid, PTRACE_SYSCALL_ARG2(regs));
+	    fprintf(treefile,"%5.3f %d open %s\n",elapsed,pid,filename);
+	  }
+	  if (tree_futex && (pid_entry->current_syscall == SYS_futex) && pid_entry->futex_is_wait){
+	    pid_entry->futex_wait_count++;
+	    pid_entry->futex_wait_seconds += elapsed - pid_entry->syscall_entry_elapsed;
+	  }
+	  pid_entry->in_syscall = 0;
 	}
 	ptrace(PTRACE_SYSCALL,pid,NULL,NULL,NULL);
 	continue;

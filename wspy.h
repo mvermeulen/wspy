@@ -29,6 +29,7 @@ extern int phase_flag;
 extern int treeflag;
 extern int tree_cmdline;
 extern int tree_open;
+extern int tree_futex;
 extern int tree_vmsize;
 extern int trace_syscall;
 extern int versionflag;

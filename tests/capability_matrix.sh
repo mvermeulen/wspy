@@ -235,7 +235,7 @@ run_bundle "interval-per-core"        0 --csv --per-core --interval 1        -- 
 TREE_OUT=$(mktemp /tmp/wspy_capmatrix_tree.XXXXXX)
 trap 'rm -f "$TREE_OUT"' EXIT
 run_bundle "tree-basic"                0 --no-ipc --tree "$TREE_OUT" -- /bin/true
-run_bundle "tree-cmdline-open-vmsize"  0 --no-ipc --tree "$TREE_OUT" --tree-cmdline --tree-open --tree-vmsize -- /bin/true
+run_bundle "tree-cmdline-open-futex-vmsize"  0 --no-ipc --tree "$TREE_OUT" --tree-cmdline --tree-open --tree-futex --tree-vmsize -- /bin/true
 
 echo ""
 echo "=== Run-artifact bundles (manifest, run-index, capabilities) ==="
