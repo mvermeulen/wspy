@@ -1560,18 +1560,27 @@ def render_run_tab(prefill, cfg):
       <div class="config-card" data-config="tree">
         <label class="config-toggle"><input type="checkbox" id="tree_enabled"{chk(sec('tree').get('enabled'))}> <strong>Process tree</strong></label>
         <div class="config-options">
-          <label><input type="checkbox" id="tree_cmdline"{chk(chk_default('tree', 'cmdline', False))}> full command lines <code>--tree-cmdline</code></label>
-          <label><input type="checkbox" id="tree_open"{chk(chk_default('tree', 'open', False))}> record <code>open()</code> calls <code>--tree-open</code></label>
-          <label><input type="checkbox" id="tree_futex"{chk(chk_default('tree', 'futex', False))}> record blocking futex waits <code>--tree-futex</code></label>
-          <label><input type="checkbox" id="tree_io"{chk(chk_default('tree', 'io', False))}> record I/O byte counters <code>--tree-io</code></label>
-          <label><input type="checkbox" id="tree_io_wait"{chk(chk_default('tree', 'io_wait', False))}> record blocking I/O wait time <code>--tree-io-wait</code></label>
-          <label><input type="checkbox" id="tree_schedstat"{chk(chk_default('tree', 'schedstat', False))}> record run-queue delay <code>--tree-schedstat</code></label>
-          <label><input type="checkbox" id="tree_vmsize"{chk(chk_default('tree', 'vmsize', False))}> record peak RSS + anon/file/shmem RSS + swap <code>--tree-vmsize</code></label>
-          <label><input type="checkbox" id="tree_connect"{chk(chk_default('tree', 'connect', False))}> record connect() latency <code>--tree-connect</code></label>
-          <label><input type="checkbox" id="tree_wait"{chk(chk_default('tree', 'wait', False))}> record wait4/waitid blocking time <code>--tree-wait</code></label>
-          <label><input type="checkbox" id="tree_poll"{chk(chk_default('tree', 'poll', False))}> record poll/select/epoll_wait blocking time <code>--tree-poll</code></label>
-          <label><input type="checkbox" id="tree_nanosleep"{chk(chk_default('tree', 'nanosleep', False))}> record nanosleep time <code>--tree-nanosleep</code></label>
-          <label><input type="checkbox" id="tree_software"{chk(chk_default('tree', 'software', True))}> software counters too <code>--software</code></label>
+          <div class="option-group-label">General</div>
+          <div class="option-grid">
+            <label class="group-check"><input type="checkbox" id="tree_cmdline"{chk(chk_default('tree', 'cmdline', False))}> full command lines <code>--tree-cmdline</code></label>
+            <label class="group-check"><input type="checkbox" id="tree_software"{chk(chk_default('tree', 'software', True))}> software counters too <code>--software</code></label>
+          </div>
+          <div class="option-group-label">Latency (blocking-time measurements)</div>
+          <div class="option-grid">
+            <label class="group-check"><input type="checkbox" id="tree_futex"{chk(chk_default('tree', 'futex', False))}> record blocking futex waits <code>--tree-futex</code></label>
+            <label class="group-check"><input type="checkbox" id="tree_io_wait"{chk(chk_default('tree', 'io_wait', False))}> record blocking I/O wait time <code>--tree-io-wait</code></label>
+            <label class="group-check"><input type="checkbox" id="tree_connect"{chk(chk_default('tree', 'connect', False))}> record connect() latency <code>--tree-connect</code></label>
+            <label class="group-check"><input type="checkbox" id="tree_wait"{chk(chk_default('tree', 'wait', False))}> record wait4/waitid blocking time <code>--tree-wait</code></label>
+            <label class="group-check"><input type="checkbox" id="tree_poll"{chk(chk_default('tree', 'poll', False))}> record poll/select/epoll_wait blocking time <code>--tree-poll</code></label>
+            <label class="group-check"><input type="checkbox" id="tree_nanosleep"{chk(chk_default('tree', 'nanosleep', False))}> record nanosleep time <code>--tree-nanosleep</code></label>
+          </div>
+          <div class="option-group-label">Information (facts, no latency)</div>
+          <div class="option-grid">
+            <label class="group-check"><input type="checkbox" id="tree_open"{chk(chk_default('tree', 'open', False))}> record <code>open()</code> calls <code>--tree-open</code></label>
+            <label class="group-check"><input type="checkbox" id="tree_io"{chk(chk_default('tree', 'io', False))}> record I/O byte counters <code>--tree-io</code></label>
+            <label class="group-check"><input type="checkbox" id="tree_schedstat"{chk(chk_default('tree', 'schedstat', False))}> record run-queue delay <code>--tree-schedstat</code></label>
+            <label class="group-check"><input type="checkbox" id="tree_vmsize"{chk(chk_default('tree', 'vmsize', False))}> record peak RSS + anon/file/shmem RSS + swap <code>--tree-vmsize</code></label>
+          </div>
           <label>Timeout seconds <input type="text" id="tree_timeout" value="{val('tree', 'timeout_secs')}" placeholder="(none)"></label>
         </div>
       </div>
