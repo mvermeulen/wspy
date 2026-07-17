@@ -761,11 +761,11 @@ synchronization-latency deep-dive" above for the full use-case breakdown):**
     indistinguishable from counters alone. Design forks (log-per-call vs. per-pid aggregate, per-syscall
     argument decoding, generalizing `tree_open` into a table-driven mechanism) and the ptrace
     observer-effect caveat are covered in the deep-dive above, not repeated here.
-24. **Recommended first step:** futex-wait tracking specifically (deep-dive item 1) — highest
-    standalone value (any observed futex call is itself a contention signal in glibc's
-    fast-path-first mutex/condvar implementation) and the smallest slice to design end-to-end (one
-    syscall, one op-argument decode, one per-pid aggregate) before generalizing the mechanism to other
-    syscalls.
+24. ~~**Recommended first step:** futex-wait tracking specifically~~ (deep-dive item 1) — **shipped
+    (2026-07-16).** Highest standalone value (any observed futex call is itself a contention signal in
+    glibc's fast-path-first mutex/condvar implementation) and the smallest slice to design end-to-end
+    (one syscall, one op-argument decode, one per-pid aggregate) before generalizing the mechanism to
+    other syscalls (item 23, still open).
 
     **Concrete design (2026-07-16):**
     - **Prerequisite fix, uncovered by this design, not optional:** `ptrace_loop()`'s syscall
