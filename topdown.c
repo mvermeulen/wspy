@@ -748,6 +748,21 @@ void ptrace_loop(void){
 	    fclose(stat_file);
 	  }
 
+	  // --tree-futex: this pid's accumulated blocking-futex-op time, if any
+	  // (see struct ptrace_pid_entry's comment -- accumulated on the
+	  // syscall-exit stop below). Only emitted when nonzero, same
+	  // "measured vs unavailable" idiom as coverage.c. Written *before* the
+	  // "exit" line below, not after -- proctree.c's handle_exit() removes
+	  // this pid from its own lookup table as soon as it sees "exit", so a
+	  // "futex" line arriving later would find nothing to attach to (same
+	  // reason "comm"/"cmdline" are written before "exit" too).
+	  if (tree_futex){
+	    pid_entry = ptrace_pid_lookup(pid,0);
+	    if (pid_entry && pid_entry->futex_wait_count){
+	      fprintf(exit_out,"%5.3f %d futex %llu %.6f\n",elapsed,pid,
+		      pid_entry->futex_wait_count,pid_entry->futex_wait_seconds);
+	    }
+	  }
 	  // dump contents of proc/<pid>/stat
 	  snprintf(stat_name,sizeof(stat_name),"/proc/%d/stat",pid);
 	  if ((stat_file = fopen(stat_name,"r")) != NULL){
@@ -756,17 +771,6 @@ void ptrace_loop(void){
 	      fputs(buffer,exit_out);
 	    }
 	    fclose(stat_file);
-	  }
-	  // --tree-futex: this pid's accumulated blocking-futex-op time, if any
-	  // (see struct ptrace_pid_entry's comment -- accumulated on the
-	  // syscall-exit stop below). Only emitted when nonzero, same
-	  // "measured vs unavailable" idiom as coverage.c.
-	  if (tree_futex){
-	    pid_entry = ptrace_pid_lookup(pid,0);
-	    if (pid_entry && pid_entry->futex_wait_count){
-	      fprintf(exit_out,"%5.3f %d futex %llu %.6f\n",elapsed,pid,
-		      pid_entry->futex_wait_count,pid_entry->futex_wait_seconds);
-	    }
 	  }
 	  fclose(exit_out);
 	  if (ptrace_pid_is_known(pid)){

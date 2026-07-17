@@ -730,7 +730,7 @@ def build_plot_argv(wspy_plot_bin, rundir, custom_plots=None, only_custom=False)
     return argv
 
 
-def build_proctree_argv(proctree_bin, tree_txt_path, cmdline=False):
+def build_proctree_argv(proctree_bin, tree_txt_path, cmdline=False, futex=False):
     """proctree, applied to a --tree pass's raw process.tree.txt record --
     the same "run the tool automatically" treatment wspy-plot already gets
     for CSVs (see build_plot_argv() above), added once a real ~155K-process
@@ -744,16 +744,21 @@ def build_proctree_argv(proctree_bin, tree_txt_path, cmdline=False):
     in full on every exit regardless of --tree-vmsize (itself a documented
     no-op on the wspy side, see wspy.c), so there's nothing to condition on
     -- the fields are simply always in the raw file, and proctree's own
-    defaults just don't print them without asking."""
+    defaults just don't print them without asking. -X mirrors -C's own
+    conditional treatment, not -M/-N/-P's unconditional one: futex data is
+    only in the raw file at all if this run's tree pass requested
+    --tree-futex."""
     argv = [proctree_bin]
     if cmdline:
         argv.append("-C")
     argv += ["-M", "-N", "-P"]
+    if futex:
+        argv.append("-X")
     argv.append(tree_txt_path)
     return argv
 
 
-def run_proctree_besteffort(emit, cfg, rundir, cmdline=False):
+def run_proctree_besteffort(emit, cfg, rundir, cmdline=False, futex=False):
     """Best-effort trailing step mirroring the wspy-plot step (build_plot_argv()
     above) but for --tree's raw process.tree.txt record: renders it into a
     human-readable process.tree.summary.txt via proctree. A no-op (not an
@@ -764,7 +769,7 @@ def run_proctree_besteffort(emit, cfg, rundir, cmdline=False):
     if not (os.path.isfile(tree_txt) and os.path.getsize(tree_txt) > 0):
         return
     summary_path = os.path.join(rundir, "process.tree.summary.txt")
-    argv = build_proctree_argv(cfg["proctree_bin"], tree_txt, cmdline=cmdline)
+    argv = build_proctree_argv(cfg["proctree_bin"], tree_txt, cmdline=cmdline, futex=futex)
     emit("$ " + shell_preview(argv) + f" > {os.path.basename(summary_path)}")
     try:
         with open(summary_path, "w") as outf:
@@ -1078,7 +1083,8 @@ def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_ar
     tree_pass = next((p for p in passes if p["name"] == "tree"), None)
     if tree_pass:
         run_proctree_besteffort(emit, cfg, rundir,
-                                 cmdline="--tree-cmdline" in tree_pass["flags"])
+                                 cmdline="--tree-cmdline" in tree_pass["flags"],
+                                 futex="--tree-futex" in tree_pass["flags"])
 
     write_custom_run_summary(rundir, pass_records)
     write_custom_run_manifest(rundir, suite, benchmark, run_id, workload_argv, pass_records)

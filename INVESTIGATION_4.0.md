@@ -721,19 +721,34 @@ synchronization-latency deep-dive" above for the full use-case breakdown):**
       (`unsigned long long`) and `futex_wait_seconds` (`double`), incremented at the matching exit
       stop (`seconds += elapsed - syscall_entry_elapsed`) whenever the entry was classified as a wait.
     - **Reporting:** append `<time> <pid> futex <count> <total_wait_seconds>` to the deferred
-      exit-block `open_memstream` already built at `PTRACE_EVENT_EXIT` (right after the existing
-      `comm`/`cmdline`/`exit`-stat writes), only when `count > 0` — inherits the existing
-      fork-before-exit ordering guarantees (`8271e55`) for free, and follows the file's established
-      `<time> <pid> <event> [args...]` grammar. Since threads (`clone(CLONE_THREAD)`) already get
-      their own `fork`/`exit` lines under the existing `PTRACE_O_TRACECLONE` setup, this naturally
-      produces **per-thread**, not just per-process, wait time — the granularity lock-contention
-      analysis actually needs.
+      exit-block `open_memstream` already built at `PTRACE_EVENT_EXIT`, only when `count > 0` —
+      written *before* that block's `comm`/`cmdline`/`exit`-stat writes rather than after (a later
+      revision from the original plan here): `proctree.c`'s `handle_exit()` removes the pid from its
+      own lookup table as soon as it sees the `exit` line, so a `futex` line arriving after it would
+      find nothing to attach to, the same reason `comm`/`cmdline` are already written first. Inherits
+      the existing fork-before-exit ordering guarantees (`8271e55`) for free either way, and follows
+      the file's established `<time> <pid> <event> [args...]` grammar. Since threads
+      (`clone(CLONE_THREAD)`) already get their own `fork`/`exit` lines under the existing
+      `PTRACE_O_TRACECLONE` setup, this naturally produces **per-thread**, not just per-process, wait
+      time — the granularity lock-contention analysis actually needs.
     - **CLI flag:** `--tree-futex`, mirrors `--tree-open` exactly (`tree_futex = 1; trace_syscall =
       1;` in `parse_options()`). Inert without `--tree`, same as `--tree-open` today.
-    - **Deliberate scope cut:** `proctree.c` doesn't recognize `futex` lines yet — like `open` today,
-      it logs "unknown command" and skips them (documented forward-compat behavior, not a crash).
-      Landing collection first and leaving `proctree`/report-side summarization as a fast-follow
-      matches how `--tree-open` itself shipped ahead of its own 4.2 #11 file-I/O summary item.
+    - **`proctree.c`/report-side summarization — shipped (2026-07-16), not deferred after all:** the
+      scope cut below described landing collection first and leaving this as a fast-follow, matching
+      `--tree-open`'s own precedent; in practice it was small enough to land in the same pass once
+      requested. `proctree.c` now parses the `futex` line (`handle_futex()`), accumulating per-pid
+      `futex_wait_count`/`futex_wait_seconds` on `struct process_info`, printed two ways: a `-X`/`-x`
+      toggle (default off, mirroring `-M`/`-N`/`-P`'s pattern but conditional like `-C` — futex data
+      only exists in the raw file if `--tree-futex` was used, unlike vmsize/ppid/thread-count, which
+      are unconditionally in every `/proc/<pid>/stat` exit dump regardless of flags) adds
+      `futex_waits=<n> futex_wait_time=<s>` to each tree line in `print_tree()`, and a total
+      `futex_wait=<s> (<n> waits)` column on `print_statistics()`'s existing per-`comm` utime/stime
+      table — the first thing a reader sees at the top of `process.tree.summary.txt`. The web
+      launcher's `run_proctree_besteffort()`/`build_proctree_argv()` (`web/joblib.py`) pass `-X`
+      exactly when the tree pass that ran actually requested `--tree-futex` (read off that pass's own
+      recorded flags in custom mode; unconditionally false for the `tree-heavy` preset, whose fixed
+      flags don't include it), so the Run tab's "record blocking futex waits" checkbox now reaches
+      `process.tree.summary.txt`, not just the raw `process.tree.txt`.
     - **Validation:** no golden-output test is meaningful (durations are inherently
       non-deterministic) — validate with a small two-thread pthread-mutex-contention test program run
       under `wspy --tree --tree-futex`, cross-checked against `strace -f -T -e futex` as ground truth,
