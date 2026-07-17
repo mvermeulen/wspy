@@ -781,6 +781,85 @@ covered. Feeds 4.3 Tier 8 item #23 (the general syscall-level critical-path inst
 mechanism itself doesn't need further generalizing until a syscall family outside this original list of
 six comes up.
 
+### Concrete design: CPU energy/power via the `power`/`power_core` perf PMUs (2026-07-17, proposed)
+Motivation: none of the current 17 `COUNTER_*` groups (see `CLAUDE.md`'s "Counter mask bits") report
+CPU energy or power — the only power/energy signal anywhere in wspy today is GPU-side
+(`amd_smi.c`/`amd_sysfs.c`, `AMDGPU=1`-gated). That's a real gap for perf-per-watt analysis: a workload
+whose IPC or topdown numbers look identical across two configurations (different governor, SMT on/off,
+affinity placement) can still differ substantially in energy cost, and wspy currently has no way to
+show that. Confirmed live on the dev host (AMD Zen5, `family 19 model 74`): `/sys/bus/event_source/
+devices/power/` (type 14, event `energy-pkg`, package-scope Joules) and `/sys/bus/event_source/devices/
+power_core/` (type 15, event `energy-core`, per-physical-core Joules) both exist and are readable by
+`perf`/`perf_event_open()` today, unprivileged. This is the same kernel `power` PMU family that has
+reported Intel RAPL's `energy-pkg`/`energy-cores`/`energy-ram` events for years — AMD Family 19h support
+is newer, but the event *names* wspy would open (`energy-pkg`, `energy-core`) are the same across both
+vendors, so — unlike IBS — this group would need no `VENDOR_AMD`/`VENDOR_INTEL` branching in the probe
+path itself, only in whether the device nodes happen to exist (degrades to unavailable exactly like
+every other vendor-gated group). Unverified on real Intel hardware; flagging that as a thing to confirm
+before claiming vendor-neutral, not assuming it.
+
+**Mechanism — dynamic PMU discovery, same shape as `ibs.c`'s `ibs_probe()`, but much simpler:**
+`power`/`power_core` each expose exactly one format field (`event`, a plain 0-255 raw index — no
+bitfield encoding to parse, unlike IBS's `l3missonly`/`ldlat`/etc.) and one real event apiece
+(`energy-pkg`/`energy-core`), each with a sidecar `<event>.scale` (Joules-per-LSB, `2.3283064365386962890625e-10`
+= 2^-32 on the dev host — read at runtime, not hardcoded, since this is a documented-but-not-guaranteed-
+stable constant) and `<event>.unit` (`"Joules"`, read too, so a future differently-scaled kernel doesn't
+silently mislabel the column). A new `power_probe()` (mirroring `ibs_probe()`'s signature/shape,
+`power.c`/`power.h`) reads `type`/`events/energy-pkg`/`events/energy-pkg.scale`/`events/energy-pkg.unit`
+under `power/`, and the same four files under `power_core/`, into a `struct power_capabilities` — absent
+sysfs directories just mean `present=0`, never fails. `power_counter_group()` (mirroring
+`ibs_counter_group()`) opens `energy-pkg` as one `PERF_TYPE_RAW`-equivalent counting event using the
+discovered dynamic `type`, exactly like `raw_counter_group()`'s existing L3/IBS escape hatch for a
+non-standard `type_id`.
+
+**Scale handling — the one genuinely new piece of plumbing:** every existing counter group's raw delta
+is either printed as-is (a count) or divided by another counter in the same group (a ratio/percentage);
+none of them multiply by an event-specific floating-point scale read from sysfs. `struct counter_info`
+gains an optional `double scale` (default 1.0, unused by every existing group) that `power_counter_group()`
+sets from the probed `.scale` file; `read_counters()`'s existing multiplex-scaling step (already a
+floating-point rescale of the raw delta by `time_running`/`time_enabled`, see `topdown.c`'s entry in
+CLAUDE.md) is the natural place to also multiply by `.scale` when it's set, so `.value` ends up in Joules
+directly and `print_power()` (new, in `topdown.c` alongside `print_ipc()`/`print_float()`) never needs to
+know the raw LSB encoding — same "measured value already correct by the time a print function sees it"
+precedent multiplex-scaling established.
+
+**CLI flag:** `--power`/`--no-power` (new `COUNTER_POWER` bit, `wspy.h`) toggling a new `power` group,
+default off (opening RAPL-style counters is a deliberate choice, same reasoning `--ibs-basic`/
+`--ibs-memory-deep` already use). **Deliberately excluded from `COUNTER_ALL`**, following the IBS
+precedent at `wspy.h`'s `COUNTER_IBS` comment exactly: `--capabilities` gets its own dedicated
+`power_probe()`/`print_power_capability_report()` path (discovery only, no real event opened), so a
+generic "probe everything" run doesn't need to also open a real energy counter.
+
+**CSV/human output:** one new group, `pkg_joules` (cumulative delta over the run) plus a derived
+`pkg_watts` (`pkg_joules / elapsed_seconds`, the actually-useful comparable number across runs of
+different length) — mirrors `print_ipc()`'s own pattern of printing both a raw counter and a derived
+ratio. System-wide only (like software counters/IBS), not per-core, for v1.
+
+**V1 scope deliberately excludes `power_core` (per-core energy):** unlike `energy-pkg`, `power_core`'s
+own `cpumask` (`0,2,4,6,8,10,12,14` on the dev host — one representative logical CPU per physical core,
+the same "SMT primary thread" concept `affinity.c`'s topology discovery already computes independently)
+means getting a real per-core breakdown requires opening N events, one pinned per primary-thread CPU,
+and aggregating them into `--per-core`'s existing per-core row shape — a second, separate unit of work
+layered on top of the v1 aggregate-only design above, not a bigger version of the same `perf_event_open()`
+call. Worth doing later (it would answer "which core(s) actually cost the energy," not just "how much
+total"), but not blocking v1's package-level number from shipping. Left as a documented follow-up, same
+treatment `wspy-run`'s builtin-profiles-onto-`--passes` collapse (4.2 Tier 10 item #28) already gets.
+
+**No manifest/run-index schema change needed for v1** — it's an ordinary counter group like `float`/
+`opcache`, covered by `counter_coverage`'s existing generic measured/requested accounting, no new
+per-field plumbing required.
+
+**Validation:** cross-check `pkg_joules` against a concurrent independent read of the same
+`power/energy-pkg` event via plain `perf stat -e power/energy-pkg/ -- <workload>` for an exact-value
+match (same idiom used to validate `--tree-vmsize` against `/usr/bin/time -v`, above). A CPU-bound
+busy-loop workload run twice — once at a low fixed frequency/governor setting, once at the default
+governor — should show a measurable `pkg_watts` difference in the expected direction; that's the
+concrete "this signal tracks something real" check, mirroring the oversubscription test that validated
+`--tree-schedstat`.
+
+→ New candidate group, not yet in the 4.2 priority list's Tier 1-10 numbering. See 4.2 priorities'
+Tier 11 (appended out of sequence, same treatment as Tier 9 item #27) for the backlog entry.
+
 ### Local LLM (Ollama) narrative-analysis deep-dive
 Motivation: a run directory already holds validated, structured numbers (CSV, manifest, coverage,
 topdown classification) but no prose explaining what they mean to someone who didn't design the counter
@@ -1060,6 +1139,20 @@ enough that the item isn't worth carrying forward.
 30. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
     raw/filename-aligned today (comparing actual artifacts across runs, curated or not); annotating a
     comparison itself, or aligning curated block titles across the compared runs, is still open.
+
+**Tier 11 — CPU energy/power counters (addendum — added after Tiers 1-10 were already numbered, same
+out-of-sequence treatment Tier 9/#27 got; conceptually a new, 18th counter group alongside the
+existing 17 named in `CLAUDE.md`'s "Counter mask bits"):**
+
+31. CPU energy/power via the Linux `power`/`power_core` perf PMUs (`energy-pkg`/`energy-core`,
+    RAPL-equivalent — AMD Family 19h+, also reportedly available via the same PMU family on Intel,
+    unverified here) — a `--power` group reporting package Joules/Watts over the run, the one
+    counter-group category (perf-per-watt) nothing in wspy currently measures for the CPU (GPU power
+    already exists via `amd_smi.c`/`amd_sysfs.c`). Confirmed live and readable, unprivileged, on the
+    dev host. See "Concrete design: CPU energy/power via the `power`/`power_core` perf PMUs" above for
+    the full design (dynamic-PMU discovery mirroring `ibs_probe()`, a new per-counter `scale` field to
+    convert raw LSBs to Joules, v1 scoped to package-level only with per-core `power_core` breakdown
+    left as a documented follow-up). Not started.
 
 ## 4.3 priorities
 Goal: use the normalized store built in 4.1 for regression detection, clustering, phase-aware
