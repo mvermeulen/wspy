@@ -1,12 +1,23 @@
 /*
  * proctree - process the output format from topdown --tree
  *
- * This includes the following four lines:
+ * Every line is "<time> <pid> <event> [args...]" (time and pid always come
+ * first, before the event keyword -- not "<time> <event> <pid>"). Lines this
+ * parser acts on:
  *
- * <time> root <pid>
- * <time> start <pid> <ppid>
- * <time> exit <pid> </proc/<pid>/stat
- * <time> comm <pid> </proc/pid/comm>
+ * <time> <pid> root
+ * <time> <pid> fork <child_pid>
+ * <time> <pid> comm <name>
+ * <time> <pid> cmdline <arg0> <arg1> ...
+ * <time> <pid> exit <pid> <contents of /proc/<pid>/stat>
+ *
+ * Lines this parser reads but deliberately ignores (see the main parse loop
+ * below): "<time> <pid> exited", "<time> <pid> signal <n>", "<time> <pid>
+ * unknown <status hex>". wspy also writes "<time> <pid> open <path>"
+ * (--tree-open) and "<time> <pid> continued" lines; neither is recognized
+ * by name here, so each one logs an "unknown command" warning rather than
+ * being silently skipped. A trailing "# ptrace-summary ..." comment line
+ * closes the file.
  */
 
 #include <stdio.h>
@@ -418,16 +429,16 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       fatal("usage: %s -[CcFfSsTtuv][-w width] file\n"
 	    "\t-C\tturn on longer command line\n"
 	    "\t-c\tturn on abbreviated command (default)\n"
-	    "\t-F\turn on start/finish info (default)\n"
+	    "\t-F\tturn on start/finish info (default)\n"
 	    "\t-f\tturn off start/finish info\n"
 	    "\t-M\tturn on vmsize printing\n"
 	    "\t-m\tturn off vmsize printing\n"
-	    "\t-S\tturn on summary output\n"
-	    "\t-s\tturn off summary output (default)\n"
+	    "\t-S\tturn on summary output (default)\n"
+	    "\t-s\tturn off summary output\n"
 	    "\t-T\tturn on tree output (default)\n"
 	    "\t-t\tturn off tree output\n"
-	    "\t-U\tturn off utime in tree\n"
-	    "\t-u\tturn on utime in tree\n"
+	    "\t-U\tturn on utime in tree\n"
+	    "\t-u\tturn off utime in tree\n"
 	    "\t-v\tverbose messages\n"
 	    "\t-w width\tset command width\n",
 	    argv[0]);
