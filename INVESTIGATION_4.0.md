@@ -397,6 +397,69 @@ blocking-syscall activity" split is also a direct input to Tier 2's "Composite a
 cache/TLB/IBS signals) — this deep-dive proposes blocking-syscall time as a fourth signal alongside
 those three, not a separate report.
 
+### Local LLM (Ollama) narrative-analysis deep-dive
+Motivation: a run directory already holds validated, structured numbers (CSV, manifest, coverage,
+topdown classification) but no prose explaining what they mean to someone who didn't design the counter
+groups. A local model (Ollama — no data leaves the machine by default, unlike a hosted API) can turn
+already-computed numbers into a readable narrative without wspy taking a dependency on any remote
+service. Opened 2026-07-17; not started.
+
+Design decisions, in priority order for a first prototype:
+1. **Prefer classification-by-code, narration-by-model.** Topdown's retire/frontend/backend/
+   bad-speculation split (and `wspy-validate`'s PASS/WARN/FAIL checks) are already deterministic in this
+   codebase — don't ask the model to *derive* a bottleneck category, feed it the already-computed
+   category and ask it to explain it in prose. Keeps the model's job to something a small local model is
+   actually good at and cuts hallucination risk substantially; the model should never be the source of a
+   numeric classification that code could compute instead.
+2. **Always inline the raw numbers verbatim** near the top of the rendered prompt, not summarized or
+   paraphrased — same "never paraphrase, always show the real thing" rule this codebase already applies
+   to command-line previews (see the Preset/Configuration/Option deep-dive above and the web launcher's
+   own command-preview principle). Lets a reviewer spot-check any claim the model makes against the
+   actual data instead of trusting prose blind.
+3. **Run after, and inform with, `wspy-validate`.** Feed its PASS/WARN/FAIL lines into the prompt context
+   so the model isn't asked to (re)discover known-bad data itself (e.g. a `nan` topdown column from a
+   zero-divisor) — analysis should run against already-validated data, not instead of validation.
+4. **Prompt as a versioned template + a per-run rendered artifact**, not a single hand-typed file. The
+   template lives in the repo like any other code (edited by hand, reviewed in diffs); each run writes
+   its own *rendered* prompt (template + this run's actual substituted data) into the run directory as
+   `aiprompt.txt`, embedding a template version string so a stale analysis is identifiable later — same
+   discipline as `MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION`.
+5. **Prompt customized by which counter groups are actually present**, reusing `web/joblib.py`'s existing
+   `COLUMN_TO_GROUP` column→group mapping rather than inventing a second one — only include a group's
+   interpretation blurb (topdown quadrant meaning, IBS L3-miss sampling caveat, etc.) when that group's
+   columns are actually in this run, keeping a small model's limited context focused.
+6. **Multi-model sweep + prompt-critique feedback loop.** `--all-models` enumerates `ollama list` and
+   runs one already-rendered prompt against every installed model, writing one output file per model plus
+   a small comparison (latency, length) — lets a cheap/fast model be picked once the sweep shows it's
+   good enough. A `--critique` follow-up turn ("how could this prompt have been better?") writes a
+   separate critique artifact per model; critiques are raw input for a human to fold into the template by
+   hand, never auto-applied.
+7. **Curation/report integration is free, structurally.** An `aianalysis.*.txt` output is just another
+   text artifact in the run directory, so `collect_run_files()` (`web/server.py`'s curation studio) picks
+   it up automatically as a "+ add" candidate with no server-side changes beyond a friendly label. Expose
+   it as a "copy into commentary" action a human edits, always visibly labeled AI-generated — never
+   silently substituted as the human's own curated commentary in an `/export`.
+8. **Comparative mode** — two run directories in, one prompt asking "what changed and why," feeding
+   naturally off `/compare`'s existing file-union-by-name logic across runs.
+9. **Remote-host redaction.** `--ollama-host` pointing off-box turns "local-only, nothing leaves the
+   machine" into a real exfil surface (hostnames, workload command lines, environment). Needs a
+   `--redact-command`/similar opt-out, and the local-only guarantee should be documented as holding only
+   for the default host.
+10. **No coverage in `make test`/`run_tests.sh`.** Like `test_amd_smi.sh`, this needs a real running
+    daemon and downloaded models — give it its own opt-in smoke test (`./test_ai_analyze.sh`), gated on
+    `command -v ollama`, not wired into the unprivileged unit-test suite.
+11. **Degrade, don't fail, when Ollama is unreachable** — same "measured vs unavailable" idiom used
+    throughout `coverage.c`/`provenance.c`/`wspy-plot`'s missing-gnuplot handling: warn and skip, don't
+    fail the run this analysis is attached to.
+
+Shape of the prototype: a new top-level `wspy-analyze` script (Python stdlib, `chmod +x`, no framework —
+same "thin client over existing commands" principle as `wspy-queue`/`web/joblib.py`; Ollama's HTTP API is
+plain JSON over `urllib.request`, no third-party dependency needed), CLI-first per the 4.4 priority
+list's "CLI-first model stays primary" stance — a web-UI wrapper (mirroring how `wspy-plot` got wrapped)
+is a natural follow-up, not part of the first slice.
+
+→ Informs the 4.4 priority list's new "Local LLM (Ollama) narrative analysis" item below.
+
 ## 4.2 priorities
 Goal: everything originally scoped for 4.1 beyond Tier 1 and Tier 2 (both shipped as the normalized
 store/reporting layer and the web interface — see "What shipped in 4.1"): the stats/confidence layer,
@@ -771,6 +834,11 @@ Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
 5. Optional live TUI (run progress, interval metrics, throttling/skew warnings) — a terminal-side
    surface, unrelated to and not superseded by 4.1's web interface work; nice-to-have, CLI-first model
    stays primary.
+6. Local LLM (Ollama) narrative analysis of run artifacts — turns already-computed/already-validated
+   numbers into human-readable prose via a local model; strictly narration/explanation over deterministic
+   classification, never a replacement for `wspy-validate`/topdown's own decision logic, and never a
+   substitute for the raw numbers themselves. See the "Local LLM (Ollama) narrative-analysis deep-dive"
+   above for the full design.
 
 ## Open questions for prioritization
 Each carries a recommendation; treat these as the current default, not a closed decision.
