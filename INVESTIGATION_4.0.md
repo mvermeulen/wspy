@@ -522,6 +522,19 @@ one-shot-sysctl-check idiom (`topdown.c`) — if the file exists and reads `0`, 
 (skip the line, no warning beyond the one-shot sysctl check finding nothing to check), not a second
 special case.
 
+**Revised during implementation (2026-07-17), after real-hardware testing:** the sysctl-based check
+above turned out to be unreliable in practice — on the actual test host, `/proc/sys/kernel/
+sched_schedstats` read `0` while `/proc/self/schedstat`/`/proc/1/schedstat` were already returning
+real, substantial nonzero data, meaning something had force-enabled scheduler-stat collection outside
+the sysctl's own write path, leaving the sysctl file's cached value stale. Trusting it as designed
+above would have produced a false-positive "readings will be zero" warning on a host where readings
+were, in fact, real. The shipped `check_schedstat_enabled()` (`topdown.c`) instead reads this process's
+own `/proc/self/schedstat` and warns only if its `nr_timeslices` field is genuinely zero — this process
+has certainly been scheduled at least once by the time `main()` reaches this check, so a real zero
+there means collection isn't happening, independent of whatever the sysctl file claims. Confirmed via a
+real CPU-oversubscription test (32 busy-spin processes on a 16-core host, `run_delay` totaling ~32.9s)
+against an undersubscribed control (8 processes, ~0.003s) — the signal tracks genuine contention.
+
 **CLI flag:** `--tree-schedstat` (`tree_schedstat = 1;` in `wspy.c:parse_options()`, next long-opt id
 after `--tree-io-wait`'s `81` → `82`; no `trace_syscall = 1`, same as `--tree-io`). Inert without
 `--tree`, same precedent as every other `--tree-*` flag.
@@ -688,10 +701,22 @@ Ordered in dependency tiers; items within a tier are independently startable.
    `--tree-io` (`wspy.c`/`topdown.c`) + `proctree.c`'s `-I`. See the Critical-path/synchronization-
    latency deep-dive's "Concrete design: blocking I/O + `/proc/<pid>/io` byte counters" above,
    alongside its companion blocking-I/O-latency feature (4.3 Tier 8 item #25, shipped together).
-9. `/proc/<pid>/schedstat` run-delay/timeslice capture — see the "Concrete design:
-   `/proc/<pid>/schedstat` run-delay/timeslice capture" deep-dive above for the full design (passive
-   `/proc/<pid>/schedstat` read at `PTRACE_EVENT_EXIT`, no ptrace/syscall-table changes needed; the
-   `sched_schedstats` runtime-toggle gotcha; `-D`/`-d` in `proctree.c`).
+9. ~~`/proc/<pid>/schedstat` run-delay/timeslice capture~~ — **shipped 2026-07-17** as
+   `--tree-schedstat` (`wspy.c`/`topdown.c`) + `proctree.c`'s `-D`, plus web launcher wiring
+   (`web/server.py`'s checklist row, `web/joblib.py`'s `build_configuration_passes()`/
+   `build_proctree_argv()`/`run_proctree_besteffort()`) and a `tests/capability_matrix.sh` bundle. See
+   the "Concrete design: `/proc/<pid>/schedstat` run-delay/timeslice capture" deep-dive above for the
+   design (passive `/proc/<pid>/schedstat` read at `PTRACE_EVENT_EXIT`, no ptrace/syscall-table changes
+   needed). **Real-hardware testing revised the design's own gotcha check:** trusting
+   `/proc/sys/kernel/sched_schedstats` directly turned out to be unreliable — on the test host that
+   sysctl read `0` while `/proc/<pid>/schedstat` was already returning real nonzero data (something had
+   force-enabled collection outside the sysctl's own write path), which would have made the originally-
+   designed check a false positive. `check_schedstat_enabled()` (`topdown.c`) instead reads this
+   process's own `/proc/self/schedstat` and warns only if its `nr_timeslices` is genuinely zero (this
+   process has certainly been scheduled at least once by the time `main()` checks). Validated against a
+   real CPU-oversubscription test (32 busy-spin processes on a 16-core host): `run_delay` totaled ~32.9s,
+   versus ~0.003s for the same test with only 8 processes (undersubscribed) — confirming the signal
+   tracks real runqueue contention, not just nonzero noise.
 10. Memory footprint detail (`VmRSS`/`VmHWM`/anon-file-shmem split via `/proc/<pid>/status` or
     `smaps_rollup`).
 11. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in

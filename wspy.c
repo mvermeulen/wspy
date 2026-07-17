@@ -43,6 +43,7 @@ int tree_open = 0;
 int tree_futex = 0;
 int tree_io = 0;
 int tree_io_wait = 0;
+int tree_schedstat = 0;
 int tree_vmsize = 0;
 int trace_syscall = 0;
 int versionflag = 0;
@@ -212,6 +213,7 @@ int parse_options(int argc,char *const argv[]){
     { "tree-futex",no_argument,0, 79 },
     { "tree-io",no_argument,0, 80 },
     { "tree-io-wait",no_argument,0, 81 },
+    { "tree-schedstat",no_argument,0, 82 },
     { "tree-open",no_argument,0, 38 },
     { "tree-vmsize",no_argument,0,41 },
     { "verbose", no_argument, 0, 32 },
@@ -551,6 +553,9 @@ int parse_options(int argc,char *const argv[]){
     case 81: // --tree-io-wait
       tree_io_wait = 1;
       trace_syscall = 1;
+      break;
+    case 82: // --tree-schedstat
+      tree_schedstat = 1;
       break;
     case 41: // --tree-vmsize
       // Registered as a long option (and documented in --help) but never had
@@ -1023,6 +1028,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t--tree-futex              - record per-pid/thread blocking futex-wait time\n"
 	    "\t--tree-io                 - record per-pid /proc/<pid>/io byte counters\n"
 	    "\t--tree-io-wait            - record per-pid/thread blocking I/O (read/write) wait time\n"
+	    "\t--tree-schedstat          - record per-pid/thread run-queue delay + timeslice count\n"
 	    "\t--tree-vmsize             - virtual memory size\n"
 	    "\t-o <file>                 - send output to file\n"
 	    "\t--csv                     - create csv output\n"
@@ -1127,6 +1133,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   }
 
   check_nmi_watchdog();
+  if (tree_schedstat) check_schedstat_enabled();
 
   // Core/thread affinity control (affinity.h): resolve the --affinity=
   // request (default "all", a no-op) against the discovered SMT/L3

@@ -241,6 +241,10 @@ run_bundle "tree-cmdline-open-futex-vmsize"  0 --no-ipc --tree "$TREE_OUT" --tre
 # read/write syscall table -- see INVESTIGATION_4.0.md's "Concrete design:
 # blocking I/O + /proc/<pid>/io byte counters".
 run_bundle "tree-io-io-wait"           0 --no-ipc --tree "$TREE_OUT" --tree-io --tree-io-wait -- /bin/true
+# --tree-schedstat needs no syscall tracing either (plain /proc/<pid>/schedstat
+# scrape at exit, same shape as --tree-io) -- see INVESTIGATION_4.0.md's
+# "Concrete design: /proc/<pid>/schedstat run-delay/timeslice capture".
+run_bundle "tree-schedstat"            0 --no-ipc --tree "$TREE_OUT" --tree-schedstat -- /bin/true
 
 echo ""
 echo "=== Run-artifact bundles (manifest, run-index, capabilities) ==="

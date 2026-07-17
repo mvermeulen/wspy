@@ -862,6 +862,40 @@ void ptrace_loop(void){
 		      io_read_bytes,io_write_bytes,io_cancelled_write_bytes);
 	    }
 	  }
+	  // --tree-schedstat: this pid's /proc/<pid>/schedstat run-delay +
+	  // timeslice counters, read once at exit -- same passive-read shape as
+	  // --tree-io just above (no syscall tracing needed), just a third
+	  // file. The file is one line of three whitespace-separated ns/count
+	  // fields (time actually running on a CPU, time runnable but waiting
+	  // on a runqueue -- "run-delay", the reason this flag exists --, and
+	  // a timeslice count), so a single sscanf() suffices, unlike --tree-io's
+	  // per-label parsing loop. An unreadable file (permissions, an
+	  // already-fully-reaped pid, or a kernel built without
+	  // CONFIG_SCHEDSTATS) just skips the "schedstat" line -- same
+	  // measured-vs-unavailable idiom as --tree-io. Emitted whenever the
+	  // read succeeds, not gated on run-delay being nonzero: a process that
+	  // was never made to wait on a runqueue is a real, meaningful zero,
+	  // not noise -- the one case that *would* make a zero ambiguous
+	  // (schedstat collection disabled system-wide via the
+	  // sched_schedstats sysctl) is instead caught once up front by
+	  // check_schedstat_enabled(), not re-checked per pid here. Written
+	  // before "exit" for the same reason as the blocks above.
+	  if (tree_schedstat){
+	    unsigned long long sched_cpu_ns = 0,sched_rundelay_ns = 0,sched_nr_timeslices = 0;
+	    int sched_read_ok = 0;
+
+	    snprintf(stat_name,sizeof(stat_name),"/proc/%d/schedstat",pid);
+	    if ((stat_file = fopen(stat_name,"r")) != NULL){
+	      if (fscanf(stat_file,"%llu %llu %llu",&sched_cpu_ns,&sched_rundelay_ns,&sched_nr_timeslices) == 3){
+		sched_read_ok = 1;
+	      }
+	      fclose(stat_file);
+	    }
+	    if (sched_read_ok){
+	      fprintf(exit_out,"%5.3f %d schedstat %.6f %.6f %llu\n",elapsed,pid,
+		      sched_cpu_ns/1e9,sched_rundelay_ns/1e9,sched_nr_timeslices);
+	    }
+	  }
 	  // dump contents of proc/<pid>/stat
 	  snprintf(stat_name,sizeof(stat_name),"/proc/%d/stat",pid);
 	  if ((stat_file = fopen(stat_name,"r")) != NULL){
@@ -1532,6 +1566,38 @@ int check_nmi_watchdog(void){
     fclose(fp);
   }
   return nmi_running;
+}
+
+// One-shot check for --tree-schedstat. Originally this read the
+// /proc/sys/kernel/sched_schedstats runtime toggle directly and warned when
+// it read '0' -- but real testing turned up a case that check gets wrong:
+// something (a debug/trace facility force-enabling the underlying jump
+// label outside the normal sysctl write path) can leave real scheduler-stat
+// collection running while that sysctl file's own cached value still reads
+// '0', making a check based on it a false positive. /proc/self/schedstat's
+// own timeslice count is the more reliable signal instead: this process has
+// definitely been scheduled at least once by the time main() gets here, so
+// a genuine 0 there means collection isn't happening, regardless of what
+// the sysctl file claims. Only warn on that -- not "readings will be zero"
+// with false certainty, since the same divergence could in principle go the
+// other way (sysctl reads '1' but the actual jump label got disabled some
+// other way) and there's no fully authoritative single signal here. A
+// kernel with no CONFIG_SCHEDSTATS at all has no /proc/self/schedstat
+// either, so this silently finds nothing to check -- the missing
+// /proc/<pid>/schedstat file case for a traced child is handled separately,
+// the same measured-vs-unavailable way /proc/<pid>/io already is.
+void check_schedstat_enabled(void){
+  FILE *fp;
+  unsigned long long cpu_ns = 0,rundelay_ns = 0,nr_timeslices = 0;
+  if ((fp = fopen("/proc/self/schedstat","r")) != NULL){
+    fscanf(fp,"%llu %llu %llu",&cpu_ns,&rundelay_ns,&nr_timeslices);
+    fclose(fp);
+    if (nr_timeslices == 0){
+      warning("scheduler-statistics collection looks disabled (this process's own "
+	      "/proc/self/schedstat shows zero timeslices) -- --tree-schedstat readings "
+	      "will likely be zero (try: sysctl kernel.sched_schedstats=1)\n");
+    }
+  }
 }
 
 void print_usage(struct rusage *rusage,enum output_format oformat){
