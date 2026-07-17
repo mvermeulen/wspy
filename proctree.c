@@ -493,7 +493,13 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t-U\tturn on utime in tree\n"
 	    "\t-u\tturn off utime in tree\n"
 	    "\t-v\tverbose messages\n"
-	    "\t-w width\tset command width\n",
+	    "\t-w width\tset command width\n"
+	    "-C/-M/-N/-P/-U only control what gets *printed* -- ppid/thread-count/\n"
+	    "vmsize/rss/utime/stime are always present in the tree file regardless\n"
+	    "of what flags wspy --tree was run with, so any combination of these\n"
+	    "works on an existing file with no need to re-run wspy. The one\n"
+	    "exception is -C's full command line, which only prints anything if\n"
+	    "wspy was run with --tree-cmdline in the first place.\n",
 	    argv[0]);
       break;
     }
