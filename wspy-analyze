@@ -1,0 +1,417 @@
+#!/usr/bin/env python3
+"""
+wspy-analyze -- local-LLM (Ollama) narrative analysis of wspy run artifacts
+(INVESTIGATION_4.0.md's 4.4 priority list, "Local LLM (Ollama) narrative
+analysis of run artifacts"; see that doc's "Local LLM (Ollama)
+narrative-analysis deep-dive" for the full design this prototype follows).
+
+Turns a run directory's already-computed, already-validated numbers into a
+short prose explanation via a locally running Ollama model. Deliberately
+narration over classification: every bottleneck category, PASS/WARN/FAIL
+verdict, and coverage count fed into the prompt was computed by wspy/
+wspy-validate before this tool ever runs, not derived by the model. The raw
+counter text is always inlined into the prompt verbatim (never summarized by
+this tool) so a reader can check any claim the model makes against the real
+numbers.
+
+Stdlib-only (matches wspy-queue/web/joblib.py's "thin client, no
+dependency" convention) -- talks to Ollama's HTTP API directly
+(POST /api/generate, GET /api/tags), no ollama Python package required.
+
+Inputs (from a run directory produced by wspy-run's unified --suite/
+--benchmark layout, or a bare wspy --manifest run):
+  - summary.txt / <pass>.txt   the human-readable counter output ("counters.txt"
+                                in the design discussion) -- fed to the model
+                                verbatim, this tool never paraphrases it
+  - manifest.json / <pass>.manifest.json
+                                run identity + per-pass manifest paths, used to
+                                run wspy-validate and to resolve which counter
+                                groups are present
+  - *.csv                      scanned only for their header row, to resolve
+                                which counter groups are present via
+                                web/joblib.py's existing COLUMN_TO_GROUP table
+                                (reused, not reimplemented)
+
+Outputs, written back into the same run directory:
+  - aiprompt.txt                     the fully rendered prompt (template +
+                                      this run's real data), so what was
+                                      actually sent to the model is never a
+                                      paraphrase a report could get wrong
+  - aianalysis.<model-slug>.txt      the model's response
+  - aiprompt.critique.<model-slug>.txt   (only with --critique) the model's
+                                      own suggestions for improving the prompt
+                                      template -- input for a human to fold
+                                      into prompts/perf_analysis.tmpl by hand,
+                                      never auto-applied
+"""
+import argparse
+import glob
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.request
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(SCRIPT_DIR, "web"))
+import joblib  # noqa: E402 -- reuses COLUMN_TO_GROUP/resolve_column_group
+
+DEFAULT_TEMPLATE = os.path.join(SCRIPT_DIR, "prompts", "perf_analysis.tmpl")
+DEFAULT_OLLAMA_HOST = "http://localhost:11434"
+DEFAULT_TIMEOUT_SECONDS = 120
+
+# Short, model-facing explanations of what each counter group's columns mean.
+# Keyed by the same ALL_GROUPS/"system" names web/joblib.py's
+# resolve_column_group() already returns, so there is exactly one place that
+# maps a CSV column to its counter-group meaning (COLUMN_TO_GROUP) and one
+# place that maps a group to prose (this dict) -- neither is rederived here.
+GROUP_NOTES = {
+    "ipc": (
+        "`ipc` is instructions-per-cycle: instructions retired divided by CPU "
+        "cycles elapsed. Higher generally means more useful work per cycle, "
+        "but the ceiling depends on the CPU's issue width -- there is no "
+        "universal 'good' value to compare against."
+    ),
+    "topdown": (
+        "`retire`/`frontend`/`backend`/`speculate` are a top-down pipeline-slot "
+        "breakdown: the fraction of available execution slots spent retiring "
+        "useful work, stalled on instruction fetch/decode, stalled on data/"
+        "execution resources, or wasted on mis-speculated work. These four "
+        "fractions are computed by wspy and should sum to roughly 100%; "
+        "`confidence`/`sanity` (when present) already flag low-confidence rows."
+    ),
+    "topdown-frontend": (
+        "`icache`/`itlb1`/`itlb2`/`tlbflush` decompose frontend-bound time "
+        "further into instruction-cache and instruction-TLB effects."
+    ),
+    "topdown-backend": (
+        "`l1_bound`/`l2_bound`/`l3_bound`/`dram_bound`/`store_bound` decompose "
+        "backend-bound time further by which level of the memory hierarchy is "
+        "implicated."
+    ),
+    "topdown-optlb": (
+        "`opcache`/`dtlb1`/`dtlb2` decompose frontend-bound time by op-cache "
+        "and data-TLB effects on AMD parts."
+    ),
+    "branch": "`branch miss` is the branch-misprediction rate.",
+    "cache2": "`l2miss` reports L2 cache miss activity.",
+    "cache3": "`l3miss` reports L3 cache miss activity.",
+    "dcache": "`L1-dcache miss` reports L1 data-cache miss activity.",
+    "icache": "`L1-icache miss` reports L1 instruction-cache miss activity.",
+    "tlb": (
+        "`dTLB miss`/`iTLB miss` report data/instruction TLB miss activity -- "
+        "a sign of working-set pressure exceeding what the TLB can cache."
+    ),
+    "memory": "`bandwidth` reports memory bandwidth utilization.",
+    "opcache": (
+        "`opcache miss` (AMD-specific) reports micro-op cache miss activity, a "
+        "frontend-bandwidth signal distinct from L1-icache misses."
+    ),
+    "float": "`float` reports floating-point operation activity.",
+    "software": (
+        "The software counters (`cpu-clock`, `task-clock`, `page faults`, "
+        "`context switches`, `cpu migrations`) are kernel-tracked scheduling/"
+        "memory events, not hardware PMU counters."
+    ),
+    "system": (
+        "System metrics (`load`, `cpu`, `idle`, `iowait`, `net <iface>`) "
+        "describe whole-machine state during the run, not just this "
+        "workload's own execution -- useful for ruling out contention from "
+        "other processes."
+    ),
+}
+
+# Files this tool never treats as the "counters" narrative text, even though
+# they're .txt/.log -- tree output is a process hierarchy, not counter data,
+# and launch.log/curation.json are launcher/studio bookkeeping.
+EXCLUDED_TEXT_BASENAMES = {
+    "process.tree.txt", "process.tree.summary.txt", "launch.log",
+}
+
+
+def load_template(path):
+    with open(path, "r") as f:
+        text = f.read()
+    m = re.search(r"^PERF_ANALYSIS_TEMPLATE_VERSION\s*=\s*(\S+)", text)
+    version = m.group(1) if m else "(unversioned)"
+    return text, version
+
+
+def find_run_manifest(rundir):
+    """Returns the wspy-run unified-layout run-level manifest.json (parsed),
+    or None if this doesn't look like that layout (e.g. a bare wspy run)."""
+    path = os.path.join(rundir, "manifest.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data.get("passes"), list):
+        return None
+    return data
+
+
+def collect_raw_text(rundir, run_manifest):
+    """Returns (source_description, verbatim_text) for the human-readable
+    counter output to feed the model. Prefers summary.txt (already the
+    concatenation of every non-CSV, non-tree pass's output in a wspy-run
+    layout), falling back to any standalone .txt files in the directory."""
+    summary_path = os.path.join(rundir, "summary.txt")
+    if os.path.isfile(summary_path) and os.path.getsize(summary_path) > 0:
+        with open(summary_path, "r", errors="replace") as f:
+            return "summary.txt", f.read()
+
+    chunks = []
+    for path in sorted(glob.glob(os.path.join(rundir, "*.txt"))):
+        if os.path.basename(path) in EXCLUDED_TEXT_BASENAMES:
+            continue
+        with open(path, "r", errors="replace") as f:
+            body = f.read()
+        if body.strip():
+            chunks.append("# %s\n%s" % (os.path.basename(path), body))
+    if chunks:
+        return "*.txt", "\n\n".join(chunks)
+    return None, None
+
+
+def collect_present_groups(rundir):
+    """Scans every CSV's header row in rundir and resolves each column to a
+    counter group via web/joblib.py's COLUMN_TO_GROUP, returning the set of
+    resolved group names actually present in this run's data."""
+    groups = set()
+    for path in glob.glob(os.path.join(rundir, "*.csv")):
+        try:
+            with open(path, "r", errors="replace") as f:
+                header = f.readline()
+        except OSError:
+            continue
+        for column in header.strip().split(","):
+            group = joblib.resolve_column_group(column.strip())
+            if group:
+                groups.add(group)
+    return groups
+
+
+def find_pass_manifest_paths(rundir, run_manifest):
+    """Per-pass --manifest paths wspy-validate can check, resolved from the
+    run-level manifest.json's passes[] entries when present, else any
+    *.manifest.json file directly in rundir."""
+    paths = []
+    if run_manifest:
+        for p in run_manifest.get("passes", []):
+            mpath = p.get("manifest")
+            if mpath:
+                full = os.path.join(rundir, mpath) if not os.path.isabs(mpath) else mpath
+                if os.path.isfile(full):
+                    paths.append(full)
+    if not paths:
+        paths = sorted(glob.glob(os.path.join(rundir, "*.manifest.json")))
+    return paths
+
+
+def run_wspy_validate(validate_bin, manifest_paths, timeout):
+    """Best-effort: returns wspy-validate's combined report text, or an
+    explanatory placeholder if the binary is missing or no manifests were
+    found -- degrade, don't fail, same idiom as coverage.c/wspy-plot's
+    missing-gnuplot handling."""
+    if not manifest_paths:
+        return "(no per-pass manifest.json found in this run directory -- " \
+               "wspy-validate was not run; pass --manifest when launching " \
+               "wspy/wspy-run to enable this section)"
+    if not os.path.isfile(validate_bin) or not os.access(validate_bin, os.X_OK):
+        return "(wspy-validate binary not found at %s -- skipped; pass " \
+               "--wspy-validate to point at it)" % validate_bin
+    import subprocess
+    try:
+        proc = subprocess.run([validate_bin] + manifest_paths, capture_output=True,
+                               text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return "(wspy-validate failed to run: %s)" % e
+    return (proc.stdout or "").strip() or "(wspy-validate produced no output)"
+
+
+def render_prompt(template_text, workload_text, validation_text, groups, raw_text):
+    if groups:
+        notes = "\n".join(
+            "- %s" % GROUP_NOTES[g] for g in sorted(groups) if g in GROUP_NOTES
+        )
+    else:
+        notes = "(no counter-group columns were resolved from this run's CSV headers)"
+    rendered = template_text
+    rendered = rendered.replace("{{WORKLOAD}}", workload_text)
+    rendered = rendered.replace("{{VALIDATION}}", validation_text)
+    rendered = rendered.replace("{{COUNTER_GROUP_NOTES}}", notes)
+    rendered = rendered.replace("{{RAW_TEXT}}", raw_text)
+    return rendered
+
+
+def workload_description(run_manifest, redact_command):
+    if not run_manifest:
+        return "(no run-level manifest.json found; command line unknown)"
+    if redact_command:
+        return "suite=%s benchmark=%s run_id=%s (command redacted via --redact-command)" % (
+            run_manifest.get("suite", "?"), run_manifest.get("benchmark", "?"),
+            run_manifest.get("run_id", "?"))
+    command = run_manifest.get("command")
+    command_text = " ".join(command) if isinstance(command, list) else str(command)
+    return "suite=%s benchmark=%s run_id=%s\ncommand: %s" % (
+        run_manifest.get("suite", "?"), run_manifest.get("benchmark", "?"),
+        run_manifest.get("run_id", "?"), command_text)
+
+
+def slugify_model(name):
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", name)
+
+
+def ollama_list_models(host, timeout):
+    req = urllib.request.Request(host.rstrip("/") + "/api/tags")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.load(resp)
+    return [m["name"] for m in data.get("models", [])]
+
+
+def ollama_generate(host, model, prompt, timeout):
+    body = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode("utf-8")
+    req = urllib.request.Request(
+        host.rstrip("/") + "/api/generate", data=body,
+        headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.load(resp)
+    return data.get("response", "")
+
+
+CRITIQUE_SUFFIX = """
+
+---
+The above is the exact prompt you were just given, and here is your response to it:
+
+%s
+---
+
+Setting aside the specific run data, critique the PROMPT itself (not your
+answer): what about its structure, instructions, or included context could
+be changed to get a more accurate, more useful performance analysis out of a
+small local model like yourself? Be specific and concise (bullet points are
+fine). Do not just restate your analysis.
+"""
+
+
+def analyze_one_model(host, model, prompt, timeout, critique, outdir):
+    slug = slugify_model(model)
+    print("wspy-analyze: querying %s ..." % model, file=sys.stderr)
+    t0 = time.time()
+    try:
+        response = ollama_generate(host, model, prompt, timeout)
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        print("wspy-analyze: warning: %s: could not reach Ollama at %s: %s "
+              "-- skipping" % (model, host, e), file=sys.stderr)
+        return False
+    elapsed = time.time() - t0
+    out_path = os.path.join(outdir, "aianalysis.%s.txt" % slug)
+    with open(out_path, "w") as f:
+        f.write(response)
+    print("wspy-analyze: %s -> %s (%.1fs, %d chars)" % (
+        model, out_path, elapsed, len(response)), file=sys.stderr)
+
+    if critique:
+        critique_prompt = prompt + (CRITIQUE_SUFFIX % response)
+        try:
+            critique_text = ollama_generate(host, model, critique_prompt, timeout)
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            print("wspy-analyze: warning: %s: critique call failed: %s" % (model, e),
+                  file=sys.stderr)
+            return True
+        critique_path = os.path.join(outdir, "aiprompt.critique.%s.txt" % slug)
+        with open(critique_path, "w") as f:
+            f.write(critique_text)
+        print("wspy-analyze: %s critique -> %s" % (model, critique_path), file=sys.stderr)
+    return True
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Local-LLM (Ollama) narrative analysis of a wspy run directory's "
+                    "already-computed/validated counter data.")
+    ap.add_argument("--rundir", required=True,
+                     help="run directory to analyze (wspy-run --suite/--benchmark layout, "
+                          "or any directory holding a wspy manifest.json + text/CSV output)")
+    ap.add_argument("--model", action="append", default=[],
+                     help="Ollama model name to query (repeatable)")
+    ap.add_argument("--all-models", action="store_true",
+                     help="query every model 'ollama list' (via /api/tags) reports installed")
+    ap.add_argument("--ollama-host", default=DEFAULT_OLLAMA_HOST,
+                     help="Ollama API base URL (default: %(default)s). Pointing this at a "
+                          "non-default/remote host sends run data off this machine -- see "
+                          "--redact-command.")
+    ap.add_argument("--prompt-template", default=DEFAULT_TEMPLATE,
+                     help="prompt template file (default: %(default)s)")
+    ap.add_argument("--wspy-validate", default=os.path.join(SCRIPT_DIR, "wspy-validate"),
+                     help="wspy-validate binary to run against this run's per-pass "
+                          "manifests (default: %(default)s)")
+    ap.add_argument("--redact-command", action="store_true",
+                     help="omit the workload's literal command line from the prompt "
+                          "(suite/benchmark/run_id are kept) -- recommended with a "
+                          "non-default --ollama-host")
+    ap.add_argument("--critique", action="store_true",
+                     help="after each model's analysis, ask it to critique the prompt "
+                          "template itself; writes aiprompt.critique.<model>.txt")
+    ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS,
+                     help="per-request timeout in seconds (default: %(default)s)")
+    ap.add_argument("--dry-run", action="store_true",
+                     help="render aiprompt.txt and print it, but don't call Ollama at all")
+    args = ap.parse_args()
+
+    rundir = os.path.abspath(args.rundir)
+    if not os.path.isdir(rundir):
+        ap.error("--rundir %r is not a directory" % args.rundir)
+
+    run_manifest = find_run_manifest(rundir)
+    source, raw_text = collect_raw_text(rundir, run_manifest)
+    if raw_text is None:
+        ap.error("no counter text output (summary.txt or *.txt) found under %r" % rundir)
+
+    groups = collect_present_groups(rundir)
+    manifest_paths = find_pass_manifest_paths(rundir, run_manifest)
+    validation_text = run_wspy_validate(args.wspy_validate, manifest_paths, args.timeout)
+    workload_text = workload_description(run_manifest, args.redact_command)
+
+    template_text, template_version = load_template(args.prompt_template)
+    prompt = render_prompt(template_text, workload_text, validation_text, groups, raw_text)
+
+    prompt_path = os.path.join(rundir, "aiprompt.txt")
+    with open(prompt_path, "w") as f:
+        f.write(prompt)
+    print("wspy-analyze: template v%s, source=%s, groups=%s -> %s" % (
+        template_version, source, ",".join(sorted(groups)) or "(none)", prompt_path),
+        file=sys.stderr)
+
+    if args.dry_run:
+        print(prompt)
+        return 0
+
+    models = list(args.model)
+    if args.all_models:
+        try:
+            models.extend(m for m in ollama_list_models(args.ollama_host, args.timeout)
+                           if m not in models)
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            print("wspy-analyze: error: --all-models could not reach Ollama at %s: %s" % (
+                args.ollama_host, e), file=sys.stderr)
+            return 1
+    if not models:
+        ap.error("no model given -- pass --model NAME (repeatable) or --all-models")
+
+    any_ok = False
+    for model in models:
+        if analyze_one_model(args.ollama_host, model, prompt, args.timeout,
+                              args.critique, rundir):
+            any_ok = True
+    return 0 if any_ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
