@@ -12,11 +12,15 @@
  * <time> <pid> exec <resolved /proc/<pid>/exe target, or "?">
  * <time> <pid> exit <pid> <contents of /proc/<pid>/stat>
  * <time> <pid> futex <blocking_wait_count> <total_wait_seconds>
+ * <time> <pid> io_wait <read_count> <read_seconds> <write_count> <write_seconds>
+ * <time> <pid> io <rchar> <wchar> <syscr> <syscw> <read_bytes> <write_bytes> <cancelled_write_bytes>
  *
- * The "futex" line (--tree-futex, one line per pid/thread that made at
- * least one blocking futex wait) is written *before* that pid's "exit"
- * line in the raw file, not after -- see handle_exit()'s comment on why
- * that ordering matters to this parser specifically.
+ * The "futex"/"io_wait"/"io" lines (--tree-futex/--tree-io-wait/--tree-io,
+ * at most one line per pid/thread per flag) are written *before* that pid's
+ * "exit" line in the raw file, not after -- see handle_exit()'s comment on
+ * why that ordering matters to this parser specifically. "io_wait" is
+ * checked before "io" in the dispatch loop below since "io" is a prefix of
+ * "io_wait" (same reason "exited" is checked before "exit").
  *
  * Lines this parser reads but deliberately ignores (see the main parse loop
  * below): "<time> <pid> exited", "<time> <pid> signal <n>", "<time> <pid>
@@ -44,6 +48,8 @@ int fflag = 1;
 int nflag = 0;
 int pflag = 0;
 int futexflag = 0;
+int iflag = 0;
+int bflag = 0;
 int output_width = 80;
 int print_cmdline = 0;
 int clocks_per_second;
@@ -70,6 +76,21 @@ struct process_info {
   // same as any pid that made no blocking futex calls at all.
   unsigned long long futex_wait_count;
   double futex_wait_seconds;
+  // --tree-io-wait (topdown.c): count/total duration of blocking read-side
+  // vs write-side syscalls, split into two buckets -- present only if wspy
+  // was run with --tree-io-wait, same "0/0.0 otherwise" convention as futex.
+  unsigned long long io_read_wait_count;
+  double io_read_wait_seconds;
+  unsigned long long io_write_wait_count;
+  double io_write_wait_seconds;
+  // --tree-io (topdown.c): /proc/<pid>/io byte-volume counters, present
+  // only if wspy was run with --tree-io -- 0 otherwise, indistinguishable
+  // from a genuinely idle process's real zero counts (same convention as
+  // futex/io_wait: this parser can't tell "not collected" from "measured
+  // zero" any more than the raw file itself can).
+  unsigned long long io_rchar,io_wchar;
+  unsigned long long io_syscr,io_syscw;
+  unsigned long long io_read_bytes,io_write_bytes,io_cancelled_write_bytes;
   struct process_info *parent;
   struct process_info *children; // linked using the "sibling" relationship
   struct process_info *older_sibling; // elder sibling
@@ -232,6 +253,34 @@ void handle_futex(double elapsed,unsigned int pid,char *rest){
   }
 }
 
+// format: elapsed pid io_wait <read_count> <read_seconds> <write_count> <write_seconds>
+// Same lookup/ordering rules as handle_futex() above.
+void handle_io_wait(double elapsed,unsigned int pid,char *rest){
+  debug("handle_io_wait(%d,%s)\n",elapsed,pid,rest);
+
+  struct proc_table_entry *pentry = lookup_pid(pid,0);
+  if (pentry){
+    sscanf(rest,"%llu %lf %llu %lf",
+	   &pentry->pinfo->io_read_wait_count,&pentry->pinfo->io_read_wait_seconds,
+	   &pentry->pinfo->io_write_wait_count,&pentry->pinfo->io_write_wait_seconds);
+  }
+}
+
+// format: elapsed pid io <rchar> <wchar> <syscr> <syscw> <read_bytes> <write_bytes> <cancelled_write_bytes>
+// Same lookup/ordering rules as handle_futex() above.
+void handle_io(double elapsed,unsigned int pid,char *rest){
+  debug("handle_io(%d,%s)\n",elapsed,pid,rest);
+
+  struct proc_table_entry *pentry = lookup_pid(pid,0);
+  if (pentry){
+    sscanf(rest,"%llu %llu %llu %llu %llu %llu %llu",
+	   &pentry->pinfo->io_rchar,&pentry->pinfo->io_wchar,
+	   &pentry->pinfo->io_syscr,&pentry->pinfo->io_syscw,
+	   &pentry->pinfo->io_read_bytes,&pentry->pinfo->io_write_bytes,
+	   &pentry->pinfo->io_cancelled_write_bytes);
+  }
+}
+
 // format: elapsed pid exit </proc/pid/stat>
 void handle_exit(double elapsed,unsigned int pid,char *stat){
   debug("handle_exit(%d,%s)\n",elapsed,pid,stat);
@@ -291,6 +340,11 @@ struct comm_info {
   unsigned int total_stime;
   unsigned long long total_futex_wait_count;
   double total_futex_wait_seconds;
+  unsigned long long total_io_read_wait_count;
+  double total_io_read_wait_seconds;
+  unsigned long long total_io_write_wait_count;
+  double total_io_write_wait_seconds;
+  unsigned long long total_io_read_bytes,total_io_write_bytes;
   struct comm_info *next;
 };
 struct comm_info *comm_totals = NULL;
@@ -309,6 +363,12 @@ static void collect_process_totals(struct process_info *pinfo){
       ci->total_stime += pinfo->stime;
       ci->total_futex_wait_count += pinfo->futex_wait_count;
       ci->total_futex_wait_seconds += pinfo->futex_wait_seconds;
+      ci->total_io_read_wait_count += pinfo->io_read_wait_count;
+      ci->total_io_read_wait_seconds += pinfo->io_read_wait_seconds;
+      ci->total_io_write_wait_count += pinfo->io_write_wait_count;
+      ci->total_io_write_wait_seconds += pinfo->io_write_wait_seconds;
+      ci->total_io_read_bytes += pinfo->io_read_bytes;
+      ci->total_io_write_bytes += pinfo->io_write_bytes;
       ci->count++;
       found = 1;
       break;
@@ -323,6 +383,12 @@ static void collect_process_totals(struct process_info *pinfo){
     ci->total_stime = pinfo->stime;
     ci->total_futex_wait_count = pinfo->futex_wait_count;
     ci->total_futex_wait_seconds = pinfo->futex_wait_seconds;
+    ci->total_io_read_wait_count = pinfo->io_read_wait_count;
+    ci->total_io_read_wait_seconds = pinfo->io_read_wait_seconds;
+    ci->total_io_write_wait_count = pinfo->io_write_wait_count;
+    ci->total_io_write_wait_seconds = pinfo->io_write_wait_seconds;
+    ci->total_io_read_bytes = pinfo->io_read_bytes;
+    ci->total_io_write_bytes = pinfo->io_write_bytes;
     ci->count = 1;
     comm_totals = ci;
     num_comm_info++;
@@ -372,6 +438,18 @@ static void print_statistics(){
 	     comm_table[i].total_futex_wait_seconds,
 	     comm_table[i].total_futex_wait_count);
     }
+    if (bflag){
+      printf(" io_wait=%8.3fr/%8.3fw (%llu reads, %llu writes)",
+	     comm_table[i].total_io_read_wait_seconds,
+	     comm_table[i].total_io_write_wait_seconds,
+	     comm_table[i].total_io_read_wait_count,
+	     comm_table[i].total_io_write_wait_count);
+    }
+    if (iflag){
+      printf(" io_bytes=%llur/%lluw",
+	     comm_table[i].total_io_read_bytes,
+	     comm_table[i].total_io_write_bytes);
+    }
     printf("\n");
   }
   
@@ -420,6 +498,17 @@ static void print_tree(struct process_info *pinfo,int level){
     printf(" futex_waits=%llu futex_wait_time=%.3f",
 	   pinfo->futex_wait_count,pinfo->futex_wait_seconds);
   }
+  if (bflag){
+    printf(" io_read_waits=%llu io_read_wait_time=%.3f io_write_waits=%llu io_write_wait_time=%.3f",
+	   pinfo->io_read_wait_count,pinfo->io_read_wait_seconds,
+	   pinfo->io_write_wait_count,pinfo->io_write_wait_seconds);
+  }
+  if (iflag){
+    printf(" io_rchar=%llu io_wchar=%llu io_syscr=%llu io_syscw=%llu"
+	   " io_read_bytes=%llu io_write_bytes=%llu io_cancelled_write_bytes=%llu",
+	   pinfo->io_rchar,pinfo->io_wchar,pinfo->io_syscr,pinfo->io_syscw,
+	   pinfo->io_read_bytes,pinfo->io_write_bytes,pinfo->io_cancelled_write_bytes);
+  }
 
   printf("\n");
 
@@ -454,8 +543,14 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   initialize_error_subsystem(argv[0],"-");
 
   // parse options
-  while ((opt = getopt(argc,argv,"+CcFfMmNnPpSsTtUuvw:Xx")) != -1){
+  while ((opt = getopt(argc,argv,"+BbCcFfIiMmNnPpSsTtUuvw:Xx")) != -1){
     switch(opt){
+    case 'B':
+      bflag = 1;
+      break;
+    case 'b':
+      bflag = 0;
+      break;
     case 'C':
       print_cmdline = 1;
       break;
@@ -467,6 +562,12 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       break;
     case 'f':
       fflag = 0;
+      break;
+    case 'I':
+      iflag = 1;
+      break;
+    case 'i':
+      iflag = 0;
       break;
     case 'M':
       mflag = 1;
@@ -524,11 +625,15 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       break;
     default:
     usage:
-      fatal("usage: %s -[CcFfMmNnPpSsTtUuvXx][-w width] file\n"
+      fatal("usage: %s -[BbCcFfIiMmNnPpSsTtUuvXx][-w width] file\n"
+	    "\t-B\tturn on I/O-wait-time printing (per-pid and summary totals)\n"
+	    "\t-b\tturn off I/O-wait-time printing (default)\n"
 	    "\t-C\tturn on longer command line\n"
 	    "\t-c\tturn on abbreviated command (default)\n"
 	    "\t-F\tturn on start/finish info (default)\n"
 	    "\t-f\tturn off start/finish info\n"
+	    "\t-I\tturn on /proc/<pid>/io byte-counter printing (per-pid and summary totals)\n"
+	    "\t-i\tturn off /proc/<pid>/io byte-counter printing (default)\n"
 	    "\t-M\tturn on vmsize/rss printing\n"
 	    "\t-m\tturn off vmsize/rss printing (default)\n"
 	    "\t-N\tturn on thread-count printing\n"
@@ -551,8 +656,9 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "works on an existing file with no need to re-run wspy. The one\n"
 	    "exception is -C's full command line, which only prints anything if\n"
 	    "wspy was run with --tree-cmdline in the first place -- and likewise\n"
-	    "-X's futex data, which only prints anything (beyond zeroes) if wspy\n"
-	    "was run with --tree-futex.\n",
+	    "-X's futex data, -B's I/O-wait data, and -I's I/O byte-counter data,\n"
+	    "each of which only prints anything (beyond zeroes) if wspy was run\n"
+	    "with --tree-futex, --tree-io-wait, or --tree-io respectively.\n",
 	    argv[0]);
       break;
     }
@@ -602,6 +708,10 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       // ignore signal events
     } else if (!strncmp(p,"futex",5)){
       handle_futex(elapsed,event_pid,p+6);
+    } else if (!strncmp(p,"io_wait",7)){
+      handle_io_wait(elapsed,event_pid,p+8);
+    } else if (!strncmp(p,"io",2)){
+      handle_io(elapsed,event_pid,p+3);
     } else if (!strncmp(p,"exit",4)){
       handle_exit(elapsed,event_pid,p+5);
     } else {

@@ -412,7 +412,7 @@ CATEGORY_TO_CHECKLIST_KEY = {
 # (counters only) is handled separately since it's a comma-joined list, not
 # a scalar.
 _BOOL_OPTION_KEYS = {
-    "tree": {"cmdline", "open", "futex", "vmsize", "software"},
+    "tree": {"cmdline", "open", "futex", "io", "io_wait", "vmsize", "software"},
     "counters": {"per_core", "rusage", "csv"},
     "system": {"csv"},
     "gpu": {"busy", "metrics", "smi", "csv"},
@@ -497,6 +497,10 @@ def build_configuration_passes(rundir, checklist):
             flags.append("--tree-open")
         if tree.get("futex"):
             flags.append("--tree-futex")
+        if tree.get("io"):
+            flags.append("--tree-io")
+        if tree.get("io_wait"):
+            flags.append("--tree-io-wait")
         if tree.get("vmsize"):
             flags.append("--tree-vmsize")
         flags.append("--software" if tree.get("software", True) else "--no-software")
@@ -730,7 +734,7 @@ def build_plot_argv(wspy_plot_bin, rundir, custom_plots=None, only_custom=False)
     return argv
 
 
-def build_proctree_argv(proctree_bin, tree_txt_path, cmdline=False, futex=False):
+def build_proctree_argv(proctree_bin, tree_txt_path, cmdline=False, futex=False, io=False, io_wait=False):
     """proctree, applied to a --tree pass's raw process.tree.txt record --
     the same "run the tool automatically" treatment wspy-plot already gets
     for CSVs (see build_plot_argv() above), added once a real ~155K-process
@@ -744,21 +748,25 @@ def build_proctree_argv(proctree_bin, tree_txt_path, cmdline=False, futex=False)
     in full on every exit regardless of --tree-vmsize (itself a documented
     no-op on the wspy side, see wspy.c), so there's nothing to condition on
     -- the fields are simply always in the raw file, and proctree's own
-    defaults just don't print them without asking. -X mirrors -C's own
-    conditional treatment, not -M/-N/-P's unconditional one: futex data is
-    only in the raw file at all if this run's tree pass requested
-    --tree-futex."""
+    defaults just don't print them without asking. -X/-B/-I mirror -C's own
+    conditional treatment, not -M/-N/-P's unconditional one: futex/io-wait/
+    io-byte-counter data is only in the raw file at all if this run's tree
+    pass requested --tree-futex/--tree-io-wait/--tree-io respectively."""
     argv = [proctree_bin]
     if cmdline:
         argv.append("-C")
     argv += ["-M", "-N", "-P"]
     if futex:
         argv.append("-X")
+    if io_wait:
+        argv.append("-B")
+    if io:
+        argv.append("-I")
     argv.append(tree_txt_path)
     return argv
 
 
-def run_proctree_besteffort(emit, cfg, rundir, cmdline=False, futex=False):
+def run_proctree_besteffort(emit, cfg, rundir, cmdline=False, futex=False, io=False, io_wait=False):
     """Best-effort trailing step mirroring the wspy-plot step (build_plot_argv()
     above) but for --tree's raw process.tree.txt record: renders it into a
     human-readable process.tree.summary.txt via proctree. A no-op (not an
@@ -769,7 +777,7 @@ def run_proctree_besteffort(emit, cfg, rundir, cmdline=False, futex=False):
     if not (os.path.isfile(tree_txt) and os.path.getsize(tree_txt) > 0):
         return
     summary_path = os.path.join(rundir, "process.tree.summary.txt")
-    argv = build_proctree_argv(cfg["proctree_bin"], tree_txt, cmdline=cmdline, futex=futex)
+    argv = build_proctree_argv(cfg["proctree_bin"], tree_txt, cmdline=cmdline, futex=futex, io=io, io_wait=io_wait)
     emit("$ " + shell_preview(argv) + f" > {os.path.basename(summary_path)}")
     try:
         with open(summary_path, "w") as outf:
@@ -1084,7 +1092,9 @@ def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_ar
     if tree_pass:
         run_proctree_besteffort(emit, cfg, rundir,
                                  cmdline="--tree-cmdline" in tree_pass["flags"],
-                                 futex="--tree-futex" in tree_pass["flags"])
+                                 futex="--tree-futex" in tree_pass["flags"],
+                                 io="--tree-io" in tree_pass["flags"],
+                                 io_wait="--tree-io-wait" in tree_pass["flags"])
 
     write_custom_run_summary(rundir, pass_records)
     write_custom_run_manifest(rundir, suite, benchmark, run_id, workload_argv, pass_records)

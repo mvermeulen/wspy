@@ -41,6 +41,8 @@ int treeflag = 0;
 int tree_cmdline = 0;
 int tree_open = 0;
 int tree_futex = 0;
+int tree_io = 0;
+int tree_io_wait = 0;
 int tree_vmsize = 0;
 int trace_syscall = 0;
 int versionflag = 0;
@@ -208,6 +210,8 @@ int parse_options(int argc,char *const argv[]){
     { "tree", required_argument, 0, 31 }, //
     { "tree-cmdline",no_argument,0,35 },
     { "tree-futex",no_argument,0, 79 },
+    { "tree-io",no_argument,0, 80 },
+    { "tree-io-wait",no_argument,0, 81 },
     { "tree-open",no_argument,0, 38 },
     { "tree-vmsize",no_argument,0,41 },
     { "verbose", no_argument, 0, 32 },
@@ -539,6 +543,13 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 79:
       tree_futex = 1;
+      trace_syscall = 1;
+      break;
+    case 80: // --tree-io
+      tree_io = 1;
+      break;
+    case 81: // --tree-io-wait
+      tree_io_wait = 1;
       trace_syscall = 1;
       break;
     case 41: // --tree-vmsize
@@ -1010,6 +1021,8 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t--tree <file>             - create CSV of processes\n"
 	    "\t--tree-cmdline            - record full command lines\n"
 	    "\t--tree-futex              - record per-pid/thread blocking futex-wait time\n"
+	    "\t--tree-io                 - record per-pid /proc/<pid>/io byte counters\n"
+	    "\t--tree-io-wait            - record per-pid/thread blocking I/O (read/write) wait time\n"
 	    "\t--tree-vmsize             - virtual memory size\n"
 	    "\t-o <file>                 - send output to file\n"
 	    "\t--csv                     - create csv output\n"
