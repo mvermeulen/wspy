@@ -393,7 +393,17 @@ item (#18). The *relative* split (fraction of wall time in futex-wait vs. read-w
 stay informative even when absolute numbers are skewed, but this should be documented as an inherent
 limitation of the ptrace-based mechanism, not treated as clean latency data.
 
-### Concrete design: blocking I/O + `/proc/<pid>/io` byte counters (2026-07-17, not started)
+### Concrete design: blocking I/O + `/proc/<pid>/io` byte counters (2026-07-17, shipped)
+**Shipped 2026-07-17,** exactly as designed below: `--tree-io`/`--tree-io-wait` (`wspy.c`/`topdown.c`),
+`-I`/`-B` (`proctree.c`), and the matching web launcher checklist rows/`web/joblib.py` wiring. Validated
+with a real delayed-blocking-read test program (`bash -c 'exec 3< <(sleep 0.3; echo hi); read -u 3
+line'` under `wspy --tree --tree-io-wait`) cross-checked against `strace -f -T`: wspy measured
+`io_read_wait_seconds=0.314739` for the blocking read, strace's own ground truth was `0.314351` —
+within 0.4ms. `tests/capability_matrix.sh` gained a `tree-io-io-wait` bundle; the full test suite
+(`make test`, `./run_tests.sh`, `tests/golden_output.sh`, `tests/capability_matrix.sh`,
+`web/test_joblib.py`) passes unchanged. See `CLAUDE.md`'s `topdown.c`/`proctree.c` entries for the
+shipped mechanism's actual behavior.
+
 Investigated together because they're the two natural "how much I/O, and how slow was it" halves of
 the same question, even though they're mechanically unrelated — 4.2 Tier 3's item #8
 (`/proc/<pid>/io` byte counters) is a passive kernel-counter *volume* read, no syscall tracing
@@ -578,9 +588,10 @@ Ordered in dependency tiers; items within a tier are independently startable.
 
 **Tier 3 — `/proc` and tree enrichment (independent, moderate value, low risk):**
 
-8. `/proc/<pid>/io` byte counters (read/write/cancelled-write bytes) — concrete design (`--tree-io`)
-   written up in the Critical-path/synchronization-latency deep-dive above, alongside its companion
-   blocking-I/O-latency feature (4.3 Tier 8 item #25); not started.
+8. ~~`/proc/<pid>/io` byte counters (read/write/cancelled-write bytes)~~ — **shipped 2026-07-17** as
+   `--tree-io` (`wspy.c`/`topdown.c`) + `proctree.c`'s `-I`. See the Critical-path/synchronization-
+   latency deep-dive's "Concrete design: blocking I/O + `/proc/<pid>/io` byte counters" above,
+   alongside its companion blocking-I/O-latency feature (4.3 Tier 8 item #25, shipped together).
 9. `/proc/<pid>/schedstat` run-delay/timeslice capture.
 10. Memory footprint detail (`VmRSS`/`VmHWM`/anon-file-shmem split via `/proc/<pid>/status` or
     `smaps_rollup`).
@@ -918,12 +929,14 @@ synchronization-latency deep-dive" above for the full use-case breakdown):**
       under `wspy --tree --tree-futex`, cross-checked against `strace -f -T -e futex` as ground truth,
       plus a `capability_matrix.sh`-style smoke bundle (`--tree --tree-futex`, assert no
       fatal/crash) for regression coverage.
-25. Blocking I/O wait tracking (`--tree-io-wait`) — the next concrete slice of item 23's general
-    mechanism after futex (item 24), covering this deep-dive's candidate #2. Concrete design written
-    up in the Critical-path/synchronization-latency deep-dive above (its own "Concrete design:
-    blocking I/O + `/proc/<pid>/io` byte counters" section), investigated together with its companion
+25. ~~Blocking I/O wait tracking (`--tree-io-wait`)~~ — **shipped 2026-07-17**, the next concrete
+    slice of item 23's general mechanism after futex (item 24), covering this deep-dive's candidate
+    #2. See the Critical-path/synchronization-latency deep-dive's "Concrete design: blocking I/O +
+    `/proc/<pid>/io` byte counters" above for the shipped design, built together with its companion
     `/proc/<pid>/io` byte-volume feature (4.2 Tier 3 item #8) since they're the volume/latency halves
-    of the same "how much I/O, and how slow was it" question. Not started.
+    of the same "how much I/O, and how slow was it" question. Item 23's general mechanism itself
+    (arbitrary syscalls beyond futex/blocking-I/O, e.g. `connect`/`nanosleep`/`wait4`/`poll`) remains
+    open.
 
 ## 4.4 priorities
 Goal: optional/heavier pieces that shouldn't block the rest, in priority order:

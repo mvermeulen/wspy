@@ -236,6 +236,11 @@ TREE_OUT=$(mktemp /tmp/wspy_capmatrix_tree.XXXXXX)
 trap 'rm -f "$TREE_OUT"' EXIT
 run_bundle "tree-basic"                0 --no-ipc --tree "$TREE_OUT" -- /bin/true
 run_bundle "tree-cmdline-open-futex-vmsize"  0 --no-ipc --tree "$TREE_OUT" --tree-cmdline --tree-open --tree-futex --tree-vmsize -- /bin/true
+# --tree-io needs no syscall tracing (plain /proc/<pid>/io scrape at exit);
+# --tree-io-wait extends --tree-futex's ptrace mechanism onto a small
+# read/write syscall table -- see INVESTIGATION_4.0.md's "Concrete design:
+# blocking I/O + /proc/<pid>/io byte counters".
+run_bundle "tree-io-io-wait"           0 --no-ipc --tree "$TREE_OUT" --tree-io --tree-io-wait -- /bin/true
 
 echo ""
 echo "=== Run-artifact bundles (manifest, run-index, capabilities) ==="

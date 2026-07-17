@@ -535,8 +535,58 @@ struct ptrace_pid_entry {
   int futex_is_wait;          // decided at entry (op argument only meaningful there), read back at exit
   unsigned long long futex_wait_count;
   double futex_wait_seconds;
+  // --tree-io-wait accumulators: unlike futex there's no op argument to
+  // decode -- every syscall in io_wait_syscalls[] (see below) is a
+  // candidate, and its own entry->exit duration is the signal (a few
+  // microseconds means it didn't really block; hundreds of milliseconds
+  // means it did). io_wait_is_write is decided at entry from the matched
+  // table entry, read back at exit to pick which bucket to accumulate into
+  // -- blocked-reading (waiting on upstream data) and blocked-writing
+  // (downstream backpressure) are kept separate rather than lumped into one
+  // bucket the way futex's single bucket is, since they're different
+  // bottleneck stories. See INVESTIGATION_4.0.md's "Concrete design:
+  // blocking I/O + /proc/<pid>/io byte counters".
+  int io_wait_is_write;
+  unsigned long long io_read_wait_count;
+  double io_read_wait_seconds;
+  unsigned long long io_write_wait_count;
+  double io_write_wait_seconds;
   struct ptrace_pid_entry *next;
 };
+
+// --tree-io-wait's syscall table (INVESTIGATION_4.0.md's "Generalizing
+// tree_open" design fork): which syscalls count as candidate blocking I/O,
+// and which accumulator bucket (read vs write) each belongs to. A syscall
+// not in this table is simply not tracked -- no fatal-combination rule with
+// --tree-open/--tree-futex, all three can be requested together.
+static const struct { long nr; int is_write; } io_wait_syscalls[] = {
+  { SYS_read,     0 },
+  { SYS_pread64,  0 },
+  { SYS_readv,    0 },
+  { SYS_preadv,   0 },
+  { SYS_recvfrom, 0 },
+  { SYS_recvmsg,  0 },
+  { SYS_write,    1 },
+  { SYS_pwrite64, 1 },
+  { SYS_writev,   1 },
+  { SYS_pwritev,  1 },
+  { SYS_sendto,   1 },
+  { SYS_sendmsg,  1 },
+};
+
+// Returns 1 and sets *is_write if nr is a tracked blocking-I/O syscall,
+// else returns 0 and leaves *is_write untouched.
+static int classify_io_wait_syscall(long long nr,int *is_write){
+  size_t i;
+
+  for (i = 0; i < sizeof(io_wait_syscalls)/sizeof(io_wait_syscalls[0]); i++){
+    if (io_wait_syscalls[i].nr == nr){
+      *is_write = io_wait_syscalls[i].is_write;
+      return 1;
+    }
+  }
+  return 0;
+}
 
 static struct ptrace_pid_entry *ptrace_pid_table[PTRACE_PID_TABLE_BUCKETS];
 
@@ -763,6 +813,55 @@ void ptrace_loop(void){
 		      pid_entry->futex_wait_count,pid_entry->futex_wait_seconds);
 	    }
 	  }
+	  // --tree-io-wait: this pid's accumulated blocking-I/O time, split by
+	  // direction (see struct ptrace_pid_entry's comment above). Same
+	  // "only emitted when nonzero" idiom and "before exit" placement as
+	  // --tree-futex above.
+	  if (tree_io_wait){
+	    pid_entry = ptrace_pid_lookup(pid,0);
+	    if (pid_entry && (pid_entry->io_read_wait_count || pid_entry->io_write_wait_count)){
+	      fprintf(exit_out,"%5.3f %d io_wait %llu %.6f %llu %.6f\n",elapsed,pid,
+		      pid_entry->io_read_wait_count,pid_entry->io_read_wait_seconds,
+		      pid_entry->io_write_wait_count,pid_entry->io_write_wait_seconds);
+	    }
+	  }
+	  // --tree-io: this pid's /proc/<pid>/io byte-volume counters, read
+	  // once at exit -- mechanically identical to the /proc/<pid>/stat dump
+	  // below, just a second file; unlike --tree-open/--tree-futex/
+	  // --tree-io-wait this needs no syscall tracing at all. An unreadable
+	  // file (permissions, an already-fully-reaped pid, or a minimal kernel
+	  // built without CONFIG_TASK_IO_ACCOUNTING) just skips the "io" line --
+	  // measured-vs-unavailable, not fatal. Emitted whenever the file was
+	  // read successfully, not gated on nonzero like futex/io_wait above: a
+	  // genuinely idle process's zero byte counts are a real measurement
+	  // here, not noise to suppress. Written before "exit" for the same
+	  // reason as the blocks above.
+	  if (tree_io){
+	    unsigned long long io_rchar = 0,io_wchar = 0,io_syscr = 0,io_syscw = 0;
+	    unsigned long long io_read_bytes = 0,io_write_bytes = 0,io_cancelled_write_bytes = 0;
+	    int io_read_ok = 0;
+	    char io_line[128];
+
+	    snprintf(stat_name,sizeof(stat_name),"/proc/%d/io",pid);
+	    if ((stat_file = fopen(stat_name,"r")) != NULL){
+	      io_read_ok = 1;
+	      while (fgets(io_line,sizeof(io_line),stat_file) != NULL){
+		sscanf(io_line,"rchar: %llu",&io_rchar);
+		sscanf(io_line,"wchar: %llu",&io_wchar);
+		sscanf(io_line,"syscr: %llu",&io_syscr);
+		sscanf(io_line,"syscw: %llu",&io_syscw);
+		sscanf(io_line,"read_bytes: %llu",&io_read_bytes);
+		sscanf(io_line,"write_bytes: %llu",&io_write_bytes);
+		sscanf(io_line,"cancelled_write_bytes: %llu",&io_cancelled_write_bytes);
+	      }
+	      fclose(stat_file);
+	    }
+	    if (io_read_ok){
+	      fprintf(exit_out,"%5.3f %d io %llu %llu %llu %llu %llu %llu %llu\n",elapsed,pid,
+		      io_rchar,io_wchar,io_syscr,io_syscw,
+		      io_read_bytes,io_write_bytes,io_cancelled_write_bytes);
+	    }
+	  }
 	  // dump contents of proc/<pid>/stat
 	  snprintf(stat_name,sizeof(stat_name),"/proc/%d/stat",pid);
 	  if ((stat_file = fopen(stat_name,"r")) != NULL){
@@ -840,6 +939,9 @@ void ptrace_loop(void){
 					 op == FUTEX_LOCK_PI || op == FUTEX_LOCK_PI2 ||
 					 op == FUTEX_WAIT_REQUEUE_PI);
 	  }
+	  if (tree_io_wait){
+	    classify_io_wait_syscall(pid_entry->current_syscall,&pid_entry->io_wait_is_write);
+	  }
 	} else {
 	  // exit stop, matching pid_entry->current_syscall from the entry above
 	  if (tree_open && (pid_entry->current_syscall == SYS_openat)){
@@ -849,6 +951,15 @@ void ptrace_loop(void){
 	  if (tree_futex && (pid_entry->current_syscall == SYS_futex) && pid_entry->futex_is_wait){
 	    pid_entry->futex_wait_count++;
 	    pid_entry->futex_wait_seconds += elapsed - pid_entry->syscall_entry_elapsed;
+	  }
+	  if (tree_io_wait && classify_io_wait_syscall(pid_entry->current_syscall,&pid_entry->io_wait_is_write)){
+	    if (pid_entry->io_wait_is_write){
+	      pid_entry->io_write_wait_count++;
+	      pid_entry->io_write_wait_seconds += elapsed - pid_entry->syscall_entry_elapsed;
+	    } else {
+	      pid_entry->io_read_wait_count++;
+	      pid_entry->io_read_wait_seconds += elapsed - pid_entry->syscall_entry_elapsed;
+	    }
 	  }
 	  pid_entry->in_syscall = 0;
 	}
