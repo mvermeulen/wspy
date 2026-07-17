@@ -680,6 +680,107 @@ counter would otherwise account for.
 
 → Feeds 4.2 Tier 3 item #10 directly.
 
+### Concrete design: `--tree-connect`/`--tree-wait`/`--tree-poll`/`--tree-nanosleep` (2026-07-17)
+Motivation: the Critical-path/synchronization-latency deep-dive's own candidate list (above) named six
+syscall families in priority order; futex (#1) and blocking I/O (#2) shipped as `--tree-futex`/
+`--tree-io-wait`. This ships the next four in one PR — `connect` (#3), `nanosleep`/`clock_nanosleep`
+(#4), `wait4`/`waitid` (#5), and the `poll`/`epoll_wait` family (#6) — bundled together (rather than as
+four separate PRs) because mechanically they're all near-identical extensions of the exact per-pid
+entry/exit-timing mechanism `--tree-io-wait` already established: no new `ptrace_arch.h` macros, no new
+architecture, just four more syscall-number comparisons feeding the same `ptrace_pid_entry` accumulate-
+at-exit/flush-in-exit-block pattern `--tree-futex` uses. Confirmed the actual x86_64 syscall numbers
+exist on real headers before designing against them: `SYS_connect`=42, `SYS_wait4`=61, `SYS_waitid`=247,
+`SYS_poll`=7, `SYS_ppoll`=271, `SYS_select`=23, `SYS_pselect6`=270, `SYS_epoll_wait`=232,
+`SYS_epoll_pwait`=281, `SYS_nanosleep`=35, `SYS_clock_nanosleep`=230 — notably **no separate
+`SYS_waitpid` exists on x86_64** (glibc's `waitpid()` is a thin wrapper over the `wait4` syscall on this
+arch), so the "wait" bucket only needs to watch `wait4`/`waitid`.
+
+**Scope decision, departing from the deep-dive's original per-syscall log-vs-aggregate split:** the
+deep-dive originally called `connect`/`nanosleep` "naturally one line per occurrence" (rare events, like
+`--tree-open`'s existing `open <path>` lines) and reserved per-pid aggregation for high-frequency events.
+This design instead **aggregates all four the same way** (count + total seconds per pid, exactly
+`--tree-futex`'s own shape) rather than building a new per-call event-log print path for two of them —
+because that path doesn't actually exist in `proctree.c` today: `--tree-open`'s own `open <path>` lines
+aren't parsed by `proctree.c` at all yet (every one triggers an "unknown command" warning — confirmed by
+grep, `item #11`'s own "build a report-layer summary on top of `--tree-open`" backlog line is *why* it's
+still unbuilt). Building that per-call log-line UI machinery just for `connect`/`nanosleep` here, ahead of
+item #11 needing the identical thing for `--tree-open`, would be solving the same problem twice with two
+different shapes. Aggregating uniformly keeps this PR the size of "four more `--tree-futex`-shaped
+buckets," fully bounded and predictable in tree-file size regardless of how many times a workload calls
+`connect`/`nanosleep` — the per-call log-line design (for `--tree-open`, and possibly retrofit onto
+`connect`/`nanosleep` too) is deferred to whenever item #11 actually gets built.
+
+**The four buckets:**
+- **`--tree-connect`** (`tree_connect`): `SYS_connect` only. `connect_count`/`connect_seconds` per pid.
+  No sockaddr/remote-address decoding in this slice (that needs a bounded-length
+  `ptrace_read_bytes()` generalization of the existing `PEEKDATA`-loop pathname reader — explicitly
+  future work per the deep-dive's own design forks, not required for the latency signal alone).
+- **`--tree-nanosleep`** (`tree_nanosleep`): `SYS_nanosleep` + `SYS_clock_nanosleep`. `nanosleep_count`/
+  `nanosleep_seconds` per pid — deliberate idle time, rules out a hardware explanation for a low-IPC
+  phase outright when this dominates.
+- **`--tree-wait`** (`tree_wait`): `SYS_wait4` + `SYS_waitid` (both mean "blocked waiting for a child"
+  — no reason to split them into separate buckets, unlike io-wait's genuinely different read/write
+  bottleneck stories). `wait_count`/`wait_seconds` per pid — time an orchestrator (shell script,
+  `make -j`, a test harness) spent blocked on a child, separating orchestration/serialization overhead
+  from actual compute on the critical path.
+- **`--tree-poll`** (`tree_poll`): `SYS_poll`/`SYS_ppoll`/`SYS_select`/`SYS_pselect6`/`SYS_epoll_wait`/
+  `SYS_epoll_pwait`, via a small `classify_poll_syscall()` table (same shape as `--tree-io-wait`'s
+  `io_wait_syscalls[]`, just one bucket instead of two since there's no read/write distinction here).
+  `poll_count`/`poll_seconds` per pid. No timeout-argument decoding in this slice (would distinguish
+  "waiting productively for an event" from a short-timeout spin/poll loop — a real refinement, deferred
+  the same way `--tree-io-wait` deferred per-call byte-transferred capture: "keeps this the same size
+  slice `--tree-futex` was").
+
+**Mechanism:** all four need `trace_syscall = 1` (unlike `--tree-io`/`--tree-schedstat`/`--tree-vmsize`,
+which are passive reads) since they're ptrace-timed, like `--tree-futex`/`--tree-io-wait`. No new entry-
+stop decoding needed for any of the four (unlike futex's op-argument decode) — every matched syscall's
+own entry→exit duration is itself the signal, exactly `--tree-io-wait`'s own reasoning. `struct
+ptrace_pid_entry` gains 8 new fields (`{connect,nanosleep,wait,poll}_{count,seconds}`); the exit-stop
+dispatch (`ptrace_loop()`) gains four more `if (tree_X && ...)` checks alongside the existing futex/
+io-wait ones — no restructuring of the existing dispatch chain, just four more branches, since a fully
+generalized "syscall name → number → decode → log-vs-aggregate" table (the deep-dive's own
+"Generalizing `tree_open`" design fork) is more machinery than four more `if` branches justify at this
+count; revisit that generalization if a *seventh* syscall family is added, not now.
+
+**Reporting lines, all "only when count>0" like `--tree-futex`** (not `--tree-io`/`--tree-schedstat`/
+`--tree-vmsize`'s "always emit" convention, since a process making zero `connect`/`wait`/`poll`/
+`nanosleep` calls is unremarkable, unlike a continuously-sampled fact like RSS):
+```
+<time> <pid> connect <count> <seconds>
+<time> <pid> nanosleep <count> <seconds>
+<time> <pid> wait <count> <seconds>
+<time> <pid> poll <count> <seconds>
+```
+Written before that pid's `exit` line, same ordering rule as every other `--tree-*` accumulator line.
+
+**`proctree.c`:** four new print toggles, since `-X`/`-B`/`-I`/`-D`/`-R` already claimed the obvious
+mnemonic letters: `-K`/`-k` (connect), `-J`/`-j` (wait — `-W`/`-w` is unavailable, `-w` already takes an
+argument for the output-width option), `-L`/`-l` (poll), `-Z`/`-z` (nanosleep, "zzz"). All four follow
+`-X`'s exact shape: a `handle_*()` parser, a per-line `count`/`seconds` print, and per-`comm`/run-wide
+totals in `print_statistics()` with the same "summed across processes, may overlap in parallel" caveat
+futex/io-wait/run-delay already carry (these are durations, not point-in-time facts like `--tree-io`/
+`--tree-vmsize`'s totals).
+
+**Web launcher:** four more checklist rows on the process-tree config card (`server.py`), threaded
+through `web/joblib.py`'s `build_configuration_passes()`/`_BOOL_OPTION_KEYS`/`build_proctree_argv()`/
+`run_proctree_besteffort()` exactly like `--tree-schedstat`'s `-D` was.
+
+**No manifest/run-index change** — same precedent as every other `--tree-*` collection flag.
+
+**Validation:** no golden-output test is meaningful (durations are inherently non-deterministic), same
+idiom as futex/io-wait/run-delay. Validate each with a small real test program whose blocking behavior
+is deliberately induced and roughly known: a `connect()` to a deliberately slow/filtered address for
+connection-setup latency; a parent `wait()`-ing on a child that `sleep()`s for a known duration; a
+`poll()`/`epoll_wait()` on a pipe with a delayed writer; a direct `nanosleep()` call compared against its
+own requested duration. Plus the usual `capability_matrix.sh`-style smoke bundle (all four flags
+together, assert no fatal/crash).
+
+→ Ships four of the six deep-dive candidates (`connect`, `nanosleep`, `wait4`/`waitid`, `poll`/
+`epoll_wait`); only futex (#1) and blocking I/O (#2) preceded these, so all six named candidates are now
+covered. Feeds 4.3 Tier 8 item #23 (the general syscall-level critical-path instrumentation goal) — the
+mechanism itself doesn't need further generalizing until a syscall family outside this original list of
+six comes up.
+
 ### Local LLM (Ollama) narrative-analysis deep-dive
 Motivation: a run directory already holds validated, structured numbers (CSV, manifest, coverage,
 topdown classification) but no prose explaining what they mean to someone who didn't design the counter
@@ -1076,6 +1177,14 @@ synchronization-latency deep-dive" above for the full use-case breakdown):**
     indistinguishable from counters alone. Design forks (log-per-call vs. per-pid aggregate, per-syscall
     argument decoding, generalizing `tree_open` into a table-driven mechanism) and the ptrace
     observer-effect caveat are covered in the deep-dive above, not repeated here.
+    ~~All six named syscall families now shipped~~ — **shipped 2026-07-17**: `futex` (#24, below) and
+    blocking `read`/`recvfrom` (#25, below) first, then `connect`/`nanosleep`/`wait4`+`waitid`/
+    `poll`+`epoll_wait` together as `--tree-connect`/`--tree-nanosleep`/`--tree-wait`/`--tree-poll` — see
+    the "Concrete design: `--tree-connect`/`--tree-wait`/`--tree-poll`/`--tree-nanosleep`" deep-dive
+    above. The *general, table-driven* mechanism this item's own title asks for (`tree_open`'s "syscall
+    name → number → decode → log-vs-aggregate" generalization) was deliberately **not** built — six
+    syscall families were still cheap enough as individual `if` branches in `ptrace_loop()`'s dispatch;
+    revisit the generalization if a seventh comes up, per that deep-dive's own closing note.
 24. ~~**Recommended first step:** futex-wait tracking specifically~~ (deep-dive item 1) — **shipped
     (2026-07-16).** Highest standalone value (any observed futex call is itself a contention signal in
     glibc's fast-path-first mutex/condvar implementation) and the smallest slice to design end-to-end

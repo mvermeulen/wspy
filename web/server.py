@@ -1567,6 +1567,10 @@ def render_run_tab(prefill, cfg):
           <label><input type="checkbox" id="tree_io_wait"{chk(chk_default('tree', 'io_wait', False))}> record blocking I/O wait time <code>--tree-io-wait</code></label>
           <label><input type="checkbox" id="tree_schedstat"{chk(chk_default('tree', 'schedstat', False))}> record run-queue delay <code>--tree-schedstat</code></label>
           <label><input type="checkbox" id="tree_vmsize"{chk(chk_default('tree', 'vmsize', False))}> record peak RSS + anon/file/shmem RSS + swap <code>--tree-vmsize</code></label>
+          <label><input type="checkbox" id="tree_connect"{chk(chk_default('tree', 'connect', False))}> record connect() latency <code>--tree-connect</code></label>
+          <label><input type="checkbox" id="tree_wait"{chk(chk_default('tree', 'wait', False))}> record wait4/waitid blocking time <code>--tree-wait</code></label>
+          <label><input type="checkbox" id="tree_poll"{chk(chk_default('tree', 'poll', False))}> record poll/select/epoll_wait blocking time <code>--tree-poll</code></label>
+          <label><input type="checkbox" id="tree_nanosleep"{chk(chk_default('tree', 'nanosleep', False))}> record nanosleep time <code>--tree-nanosleep</code></label>
           <label><input type="checkbox" id="tree_software"{chk(chk_default('tree', 'software', True))}> software counters too <code>--software</code></label>
           <label>Timeout seconds <input type="text" id="tree_timeout" value="{val('tree', 'timeout_secs')}" placeholder="(none)"></label>
         </div>

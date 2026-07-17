@@ -16,14 +16,20 @@
  * <time> <pid> io <rchar> <wchar> <syscr> <syscw> <read_bytes> <write_bytes> <cancelled_write_bytes>
  * <time> <pid> schedstat <cpu_seconds> <run_delay_seconds> <nr_timeslices>
  * <time> <pid> vmsize <vm_hwm_kb> <rss_anon_kb> <rss_file_kb> <rss_shmem_kb> <vm_swap_kb>
+ * <time> <pid> connect <count> <seconds>
+ * <time> <pid> nanosleep <count> <seconds>
+ * <time> <pid> wait <count> <seconds>
+ * <time> <pid> poll <count> <seconds>
  *
- * The "futex"/"io_wait"/"io"/"schedstat"/"vmsize" lines (--tree-futex/
- * --tree-io-wait/--tree-io/--tree-schedstat/--tree-vmsize, at most one line
- * per pid/thread per flag) are written *before* that pid's "exit" line in
- * the raw file, not after -- see handle_exit()'s comment on why that
- * ordering matters to this parser specifically. "io_wait" is checked before
- * "io" in the dispatch loop below since "io" is a prefix of "io_wait" (same
- * reason "exited" is checked before "exit").
+ * The "futex"/"io_wait"/"io"/"schedstat"/"vmsize"/"connect"/"nanosleep"/
+ * "wait"/"poll" lines (--tree-futex/--tree-io-wait/--tree-io/
+ * --tree-schedstat/--tree-vmsize/--tree-connect/--tree-nanosleep/
+ * --tree-wait/--tree-poll, at most one line per pid/thread per flag) are
+ * written *before* that pid's "exit" line in the raw file, not after -- see
+ * handle_exit()'s comment on why that ordering matters to this parser
+ * specifically. "io_wait" is checked before "io" in the dispatch loop below
+ * since "io" is a prefix of "io_wait" (same reason "exited" is checked
+ * before "exit").
  *
  * Lines this parser reads but deliberately ignores (see the main parse loop
  * below): "<time> <pid> exited", "<time> <pid> signal <n>", "<time> <pid>
@@ -55,6 +61,10 @@ int iflag = 0;
 int bflag = 0;
 int dflag = 0;
 int rflag = 0;
+int kflag = 0;
+int jflag = 0;
+int lflag = 0;
+int zflag = 0;
 int output_width = 80;
 int print_cmdline = 0;
 int clocks_per_second;
@@ -111,6 +121,18 @@ struct process_info {
   // --tree-vmsize -- 0 otherwise, same convention as futex/io_wait/io/
   // schedstat above. All in kB, the file's own native unit.
   unsigned long vm_hwm_kb,rss_anon_kb,rss_file_kb,rss_shmem_kb,vm_swap_kb;
+  // --tree-connect/--tree-nanosleep/--tree-wait/--tree-poll (topdown.c):
+  // count/total duration of each syscall family, present only if wspy was
+  // run with the matching flag -- 0/0.0 otherwise, same convention as
+  // futex/io_wait above.
+  unsigned long long connect_count;
+  double connect_seconds;
+  unsigned long long nanosleep_count;
+  double nanosleep_seconds;
+  unsigned long long wait_count;
+  double wait_seconds;
+  unsigned long long poll_count;
+  double poll_seconds;
   struct process_info *parent;
   struct process_info *children; // linked using the "sibling" relationship
   struct process_info *older_sibling; // elder sibling
@@ -328,6 +350,50 @@ void handle_vmdetail(double elapsed,unsigned int pid,char *rest){
   }
 }
 
+// format: elapsed pid connect <count> <seconds>
+// Same lookup/ordering rules as handle_futex() above.
+void handle_connect(double elapsed,unsigned int pid,char *rest){
+  debug("handle_connect(%d,%s)\n",elapsed,pid,rest);
+
+  struct proc_table_entry *pentry = lookup_pid(pid,0);
+  if (pentry){
+    sscanf(rest,"%llu %lf",&pentry->pinfo->connect_count,&pentry->pinfo->connect_seconds);
+  }
+}
+
+// format: elapsed pid nanosleep <count> <seconds>
+// Same lookup/ordering rules as handle_futex() above.
+void handle_nanosleep(double elapsed,unsigned int pid,char *rest){
+  debug("handle_nanosleep(%d,%s)\n",elapsed,pid,rest);
+
+  struct proc_table_entry *pentry = lookup_pid(pid,0);
+  if (pentry){
+    sscanf(rest,"%llu %lf",&pentry->pinfo->nanosleep_count,&pentry->pinfo->nanosleep_seconds);
+  }
+}
+
+// format: elapsed pid wait <count> <seconds>
+// Same lookup/ordering rules as handle_futex() above.
+void handle_wait(double elapsed,unsigned int pid,char *rest){
+  debug("handle_wait(%d,%s)\n",elapsed,pid,rest);
+
+  struct proc_table_entry *pentry = lookup_pid(pid,0);
+  if (pentry){
+    sscanf(rest,"%llu %lf",&pentry->pinfo->wait_count,&pentry->pinfo->wait_seconds);
+  }
+}
+
+// format: elapsed pid poll <count> <seconds>
+// Same lookup/ordering rules as handle_futex() above.
+void handle_poll(double elapsed,unsigned int pid,char *rest){
+  debug("handle_poll(%d,%s)\n",elapsed,pid,rest);
+
+  struct proc_table_entry *pentry = lookup_pid(pid,0);
+  if (pentry){
+    sscanf(rest,"%llu %lf",&pentry->pinfo->poll_count,&pentry->pinfo->poll_seconds);
+  }
+}
+
 // format: elapsed pid exit </proc/pid/stat>
 void handle_exit(double elapsed,unsigned int pid,char *stat){
   debug("handle_exit(%d,%s)\n",elapsed,pid,stat);
@@ -395,6 +461,14 @@ struct comm_info {
   double total_sched_rundelay_seconds;
   unsigned long long total_sched_nr_timeslices;
   unsigned long total_vm_hwm_kb,total_rss_anon_kb,total_rss_file_kb,total_rss_shmem_kb,total_vm_swap_kb;
+  unsigned long long total_connect_count;
+  double total_connect_seconds;
+  unsigned long long total_nanosleep_count;
+  double total_nanosleep_seconds;
+  unsigned long long total_wait_count;
+  double total_wait_seconds;
+  unsigned long long total_poll_count;
+  double total_poll_seconds;
   struct comm_info *next;
 };
 struct comm_info *comm_totals = NULL;
@@ -426,6 +500,14 @@ static void collect_process_totals(struct process_info *pinfo){
       ci->total_rss_file_kb += pinfo->rss_file_kb;
       ci->total_rss_shmem_kb += pinfo->rss_shmem_kb;
       ci->total_vm_swap_kb += pinfo->vm_swap_kb;
+      ci->total_connect_count += pinfo->connect_count;
+      ci->total_connect_seconds += pinfo->connect_seconds;
+      ci->total_nanosleep_count += pinfo->nanosleep_count;
+      ci->total_nanosleep_seconds += pinfo->nanosleep_seconds;
+      ci->total_wait_count += pinfo->wait_count;
+      ci->total_wait_seconds += pinfo->wait_seconds;
+      ci->total_poll_count += pinfo->poll_count;
+      ci->total_poll_seconds += pinfo->poll_seconds;
       ci->count++;
       found = 1;
       break;
@@ -453,6 +535,14 @@ static void collect_process_totals(struct process_info *pinfo){
     ci->total_rss_file_kb = pinfo->rss_file_kb;
     ci->total_rss_shmem_kb = pinfo->rss_shmem_kb;
     ci->total_vm_swap_kb = pinfo->vm_swap_kb;
+    ci->total_connect_count = pinfo->connect_count;
+    ci->total_connect_seconds = pinfo->connect_seconds;
+    ci->total_nanosleep_count = pinfo->nanosleep_count;
+    ci->total_nanosleep_seconds = pinfo->nanosleep_seconds;
+    ci->total_wait_count = pinfo->wait_count;
+    ci->total_wait_seconds = pinfo->wait_seconds;
+    ci->total_poll_count = pinfo->poll_count;
+    ci->total_poll_seconds = pinfo->poll_seconds;
     ci->count = 1;
     comm_totals = ci;
     num_comm_info++;
@@ -494,6 +584,10 @@ static void print_statistics(){
   // totals just below.
   unsigned long total_vm_hwm_kb = 0,total_rss_anon_kb = 0,total_rss_file_kb = 0;
   unsigned long total_rss_shmem_kb = 0,total_vm_swap_kb = 0;
+  unsigned long long total_connect_count = 0,total_nanosleep_count = 0;
+  unsigned long long total_wait_count = 0,total_poll_count = 0;
+  double total_connect_seconds = 0,total_nanosleep_seconds = 0;
+  double total_wait_seconds = 0,total_poll_seconds = 0;
 
   printf("%d processes\n",total_processes);
   
@@ -556,6 +650,30 @@ static void print_statistics(){
       total_rss_shmem_kb += comm_table[i].total_rss_shmem_kb;
       total_vm_swap_kb += comm_table[i].total_vm_swap_kb;
     }
+    if (kflag){
+      printf(" connect=%8.3f (%llu calls)",
+	     comm_table[i].total_connect_seconds,comm_table[i].total_connect_count);
+      total_connect_seconds += comm_table[i].total_connect_seconds;
+      total_connect_count += comm_table[i].total_connect_count;
+    }
+    if (zflag){
+      printf(" nanosleep=%8.3f (%llu calls)",
+	     comm_table[i].total_nanosleep_seconds,comm_table[i].total_nanosleep_count);
+      total_nanosleep_seconds += comm_table[i].total_nanosleep_seconds;
+      total_nanosleep_count += comm_table[i].total_nanosleep_count;
+    }
+    if (jflag){
+      printf(" wait=%8.3f (%llu calls)",
+	     comm_table[i].total_wait_seconds,comm_table[i].total_wait_count);
+      total_wait_seconds += comm_table[i].total_wait_seconds;
+      total_wait_count += comm_table[i].total_wait_count;
+    }
+    if (lflag){
+      printf(" poll=%8.3f (%llu calls)",
+	     comm_table[i].total_poll_seconds,comm_table[i].total_poll_count);
+      total_poll_seconds += comm_table[i].total_poll_seconds;
+      total_poll_count += comm_table[i].total_poll_count;
+    }
     printf("\n");
   }
 
@@ -581,6 +699,22 @@ static void print_statistics(){
   if (rflag){
     printf("total vm_hwm=%luk rss_anon=%luk rss_file=%luk rss_shmem=%luk vm_swap=%luk\n",
 	   total_vm_hwm_kb,total_rss_anon_kb,total_rss_file_kb,total_rss_shmem_kb,total_vm_swap_kb);
+  }
+  if (kflag){
+    printf("total connect=%.3f (%llu calls) -- summed across processes, may overlap in parallel\n",
+	   total_connect_seconds,total_connect_count);
+  }
+  if (zflag){
+    printf("total nanosleep=%.3f (%llu calls) -- summed across processes, may overlap in parallel\n",
+	   total_nanosleep_seconds,total_nanosleep_count);
+  }
+  if (jflag){
+    printf("total wait=%.3f (%llu calls) -- summed across processes, may overlap in parallel\n",
+	   total_wait_seconds,total_wait_count);
+  }
+  if (lflag){
+    printf("total poll=%.3f (%llu calls) -- summed across processes, may overlap in parallel\n",
+	   total_poll_seconds,total_poll_count);
   }
   printf("\n");
 }
@@ -648,6 +782,18 @@ static void print_tree(struct process_info *pinfo,int level){
 	   pinfo->vm_hwm_kb,pinfo->rss_anon_kb,pinfo->rss_file_kb,
 	   pinfo->rss_shmem_kb,pinfo->vm_swap_kb);
   }
+  if (kflag){
+    printf(" connect_calls=%llu connect_time=%.3f",pinfo->connect_count,pinfo->connect_seconds);
+  }
+  if (zflag){
+    printf(" nanosleep_calls=%llu nanosleep_time=%.3f",pinfo->nanosleep_count,pinfo->nanosleep_seconds);
+  }
+  if (jflag){
+    printf(" wait_calls=%llu wait_time=%.3f",pinfo->wait_count,pinfo->wait_seconds);
+  }
+  if (lflag){
+    printf(" poll_calls=%llu poll_time=%.3f",pinfo->poll_count,pinfo->poll_seconds);
+  }
 
   printf("\n");
 
@@ -682,7 +828,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   initialize_error_subsystem(argv[0],"-");
 
   // parse options
-  while ((opt = getopt(argc,argv,"+BbCcDdFfIiMmNnPpRrSsTtUuvw:Xx")) != -1){
+  while ((opt = getopt(argc,argv,"+BbCcDdFfIiJjKkLlMmNnPpRrSsTtUuvw:XxZz")) != -1){
     switch(opt){
     case 'B':
       bflag = 1;
@@ -713,6 +859,24 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       break;
     case 'i':
       iflag = 0;
+      break;
+    case 'J':
+      jflag = 1;
+      break;
+    case 'j':
+      jflag = 0;
+      break;
+    case 'K':
+      kflag = 1;
+      break;
+    case 'k':
+      kflag = 0;
+      break;
+    case 'L':
+      lflag = 1;
+      break;
+    case 'l':
+      lflag = 0;
       break;
     case 'M':
       mflag = 1;
@@ -774,9 +938,15 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	warning("bad output width:%s ignored\n",optarg);
       }
       break;
+    case 'Z':
+      zflag = 1;
+      break;
+    case 'z':
+      zflag = 0;
+      break;
     default:
     usage:
-      fatal("usage: %s -[BbCcDdFfIiMmNnPpRrSsTtUuvXx][-w width] file\n"
+      fatal("usage: %s -[BbCcDdFfIiJjKkLlMmNnPpRrSsTtUuvXxZz][-w width] file\n"
 	    "\t-B\tturn on I/O-wait-time printing (per-pid and summary totals)\n"
 	    "\t-b\tturn off I/O-wait-time printing (default)\n"
 	    "\t-C\tturn on longer command line\n"
@@ -787,6 +957,12 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t-f\tturn off start/finish info\n"
 	    "\t-I\tturn on /proc/<pid>/io byte-counter printing (per-pid and summary totals)\n"
 	    "\t-i\tturn off /proc/<pid>/io byte-counter printing (default)\n"
+	    "\t-J\tturn on wait4/waitid blocking-time printing (per-pid and summary totals)\n"
+	    "\t-j\tturn off wait4/waitid blocking-time printing (default)\n"
+	    "\t-K\tturn on connect() latency printing (per-pid and summary totals)\n"
+	    "\t-k\tturn off connect() latency printing (default)\n"
+	    "\t-L\tturn on poll/select/epoll_wait blocking-time printing (per-pid and summary totals)\n"
+	    "\t-l\tturn off poll/select/epoll_wait blocking-time printing (default)\n"
 	    "\t-M\tturn on vmsize/rss printing\n"
 	    "\t-m\tturn off vmsize/rss printing (default)\n"
 	    "\t-N\tturn on thread-count printing\n"
@@ -805,6 +981,8 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t-w width\tset command width\n"
 	    "\t-X\tturn on futex-wait-time printing (per-pid and summary totals)\n"
 	    "\t-x\tturn off futex-wait-time printing (default)\n"
+	    "\t-Z\tturn on nanosleep/clock_nanosleep time printing (per-pid and summary totals)\n"
+	    "\t-z\tturn off nanosleep/clock_nanosleep time printing (default)\n"
 	    "-C/-M/-N/-P/-U only control what gets *printed* -- ppid/thread-count/\n"
 	    "vmsize/rss/utime/stime are always present in the tree file regardless\n"
 	    "of what flags wspy --tree was run with, so any combination of these\n"
@@ -812,10 +990,13 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "exception is -C's full command line, which only prints anything if\n"
 	    "wspy was run with --tree-cmdline in the first place -- and likewise\n"
 	    "-X's futex data, -B's I/O-wait data, -I's I/O byte-counter data,\n"
-	    "-D's run-queue-delay data, and -R's peak-RSS/RSS-composition/swap\n"
-	    "data, each of which only prints anything (beyond zeroes) if wspy was\n"
-	    "run with --tree-futex, --tree-io-wait, --tree-io, --tree-schedstat,\n"
-	    "or --tree-vmsize respectively.\n",
+	    "-D's run-queue-delay data, -R's peak-RSS/RSS-composition/swap data,\n"
+	    "-K's connect() latency, -Z's nanosleep time, -J's wait4/waitid time,\n"
+	    "and -L's poll/select/epoll_wait time, each of which only prints\n"
+	    "anything (beyond zeroes) if wspy was run with --tree-futex,\n"
+	    "--tree-io-wait, --tree-io, --tree-schedstat, --tree-vmsize,\n"
+	    "--tree-connect, --tree-nanosleep, --tree-wait, or --tree-poll\n"
+	    "respectively.\n",
 	    argv[0]);
       break;
     }
@@ -873,6 +1054,14 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       handle_schedstat(elapsed,event_pid,p+10);
     } else if (!strncmp(p,"vmsize",6)){
       handle_vmdetail(elapsed,event_pid,p+7);
+    } else if (!strncmp(p,"connect",7)){
+      handle_connect(elapsed,event_pid,p+8);
+    } else if (!strncmp(p,"nanosleep",9)){
+      handle_nanosleep(elapsed,event_pid,p+10);
+    } else if (!strncmp(p,"wait",4)){
+      handle_wait(elapsed,event_pid,p+5);
+    } else if (!strncmp(p,"poll",4)){
+      handle_poll(elapsed,event_pid,p+5);
     } else if (!strncmp(p,"exit",4)){
       handle_exit(elapsed,event_pid,p+5);
     } else {
