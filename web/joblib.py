@@ -412,7 +412,7 @@ CATEGORY_TO_CHECKLIST_KEY = {
 # (counters only) is handled separately since it's a comma-joined list, not
 # a scalar.
 _BOOL_OPTION_KEYS = {
-    "tree": {"cmdline", "open", "vmsize", "software"},
+    "tree": {"cmdline", "open", "futex", "vmsize", "software"},
     "counters": {"per_core", "rusage", "csv"},
     "system": {"csv"},
     "gpu": {"busy", "metrics", "smi", "csv"},
@@ -495,6 +495,8 @@ def build_configuration_passes(rundir, checklist):
             flags.append("--tree-cmdline")
         if tree.get("open"):
             flags.append("--tree-open")
+        if tree.get("futex"):
+            flags.append("--tree-futex")
         if tree.get("vmsize"):
             flags.append("--tree-vmsize")
         flags.append("--software" if tree.get("software", True) else "--no-software")
