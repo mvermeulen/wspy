@@ -694,8 +694,10 @@ topdown/IBS attribution, static-site publishing, and a lower-overhead tracing ba
 
 11. `--tree-open` → file-I/O topology summary (hot paths, open-failure rates, startup storms,
     process→file maps) — `tree_open`/`SYS_openat` capture already exists (`topdown.c:455`).
-12. System (`--system`) → per-interface network attribution, user/system/iowait/steal mix,
-    local-vs-system-pressure attribution.
+12. System (`--system`) → per-interface network attribution and local-vs-system-pressure
+    attribution, plus steal-time capture (user/system/iowait are already captured and printed —
+    `system.c`'s existing `/proc/stat` parsing — this item is the missing steal column and the
+    analysis layer on top of what's already there, not the raw mix itself).
 13. Tree/lifecycle enrichments (exit code/signal summary, spawn/exit burst indicators, optional
     `comm`-pattern role tagging).
 
