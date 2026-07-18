@@ -126,7 +126,15 @@ child with optional ptrace → periodic/final counter reads → CSV or human-rea
   `--rundir <dir>` renders a versioned prompt (`prompts/perf_analysis.tmpl`, `PERF_ANALYSIS_TEMPLATE_VERSION`)
   into `aiprompt.txt` in that same directory, then queries `--model <name>` (repeatable) or every model
   `--all-models` (`ollama list` via `/api/tags`) reports installed, writing each one's response to
-  `aianalysis.<model-slug>.txt`; `--critique` additionally asks each model to suggest improvements to the
+  `aianalysis.<model-slug>.txt`. If neither `--model` nor `--all-models` is given, `--default-model`
+  (default `gpt-oss:20b`) is used instead -- but only once confirmed actually installed via the same
+  `/api/tags` list; if it isn't installed, an explicit `--model`/`--all-models` is still required (never a
+  silent guess at a model name Ollama doesn't have). The web launcher's report-page "AI narrative analysis"
+  card (`render_analyze_card()`/`_start_analyze()`, `web/server.py`) has no client- or server-side "at least
+  one model" gate for exactly this reason -- leaving its model field blank submits a plain `wspy-analyze
+  --rundir <dir>` invocation with no `--model`/`--all-models` at all, letting this same fallback apply; if
+  the default isn't installed either, `wspy-analyze`'s own error surfaces in the streamed log like any other
+  `wspy-analyze` failure. `--critique` additionally asks each model to suggest improvements to the
   prompt template itself, written to `aiprompt.critique.<model-slug>.txt` (input for a human to fold back
   into the template by hand, never auto-applied). `--redact-command` omits the workload's literal command
   line (kept: suite/benchmark/run_id) for use with a non-default `--ollama-host`, since pointing that at a

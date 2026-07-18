@@ -924,11 +924,11 @@
       var allModels = getChecked("analyze-all-models");
       var models = (getValue("analyze-models") || "").split(",")
         .map(function (s) { return s.trim(); }).filter(Boolean);
-      if (!allModels && !models.length) {
-        resultEl.textContent = "Error: give at least one model, or check "
-          + "\"query every installed model\".";
-        return;
-      }
+      // No client-side "at least one model" gate: leaving both blank is a
+      // valid choice now (wspy-analyze's own --default-model fallback
+      // applies) -- if the default isn't installed either, wspy-analyze's
+      // own error shows up in the streamed log below, same as any other
+      // wspy-analyze failure.
       runButton.disabled = true;
       resultEl.textContent = "";
       logEl.hidden = false;
