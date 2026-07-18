@@ -301,7 +301,11 @@ def autofit_checklist_for_custom_plots(checklist, custom_plots):
 # warn about it.
 PROFILE_PLOTTABLE_COLUMNS = {
     "quick": set(),
-    "deep-cpu": SYSTEM_COLUMN_NAMES | {"net *",
+    # systemtime now also collects --power (wspy-run's load_builtin_profile()),
+    # so pkg_joules/pkg_watts land in the same CSV as cpu/freq -- POWER_COLUMN_NAMES
+    # here, not just SYSTEM_COLUMN_NAMES, since --power is its own checklist card
+    # (see resolve_column_group()'s "power" sentinel above), not a system_mask bit.
+    "deep-cpu": SYSTEM_COLUMN_NAMES | POWER_COLUMN_NAMES | {"net *",
                  "retire", "frontend", "backend", "speculate", "confidence", "sanity"},
     "deep-cpu-intel": set(),
     "deep-gpu": SYSTEM_COLUMN_NAMES | {"net *",
