@@ -192,7 +192,7 @@ COLUMN_TO_GROUP = {
 # toggling the checklist's separate "system" configuration rather than a
 # counters group. "net <iface>" is one column per interface discovered on
 # this host, so it's matched by prefix rather than listed by name.
-SYSTEM_COLUMN_NAMES = {"load", "runnable", "cpu", "idle", "iowait", "irq"}
+SYSTEM_COLUMN_NAMES = {"load", "runnable", "cpu", "idle", "iowait", "irq", "freq"}
 # --power's own columns (power.c/topdown.c's print_power()) -- same "not an
 # ALL_GROUPS entry" reasoning as SYSTEM_COLUMN_NAMES above: --power isn't a
 # counter_mask bit build_configuration_passes()'s "counters" section
