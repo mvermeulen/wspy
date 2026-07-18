@@ -1144,15 +1144,27 @@ enough that the item isn't worth carrying forward.
 out-of-sequence treatment Tier 9/#27 got; conceptually a new, 18th counter group alongside the
 existing 17 named in `CLAUDE.md`'s "Counter mask bits"):**
 
-31. CPU energy/power via the Linux `power`/`power_core` perf PMUs (`energy-pkg`/`energy-core`,
-    RAPL-equivalent — AMD Family 19h+, also reportedly available via the same PMU family on Intel,
-    unverified here) — a `--power` group reporting package Joules/Watts over the run, the one
-    counter-group category (perf-per-watt) nothing in wspy currently measures for the CPU (GPU power
-    already exists via `amd_smi.c`/`amd_sysfs.c`). Confirmed live and readable, unprivileged, on the
-    dev host. See "Concrete design: CPU energy/power via the `power`/`power_core` perf PMUs" above for
-    the full design (dynamic-PMU discovery mirroring `ibs_probe()`, a new per-counter `scale` field to
-    convert raw LSBs to Joules, v1 scoped to package-level only with per-core `power_core` breakdown
-    left as a documented follow-up). Not started.
+31. **CPU energy/power via the Linux `power`/`power_core` perf PMUs — done.** `--power`/`--no-power`
+    (`power.c`/`power.h`, new `COUNTER_POWER` bit) report package `pkg_joules`/`pkg_watts` over the
+    run, matching the full design above: dynamic-PMU discovery mirroring `ibs_probe()`
+    (`power_probe()`, sysfs-parameterized as `power_probe_at()` for `test_power.c`'s fake-sysfs
+    fixtures), a new per-counter `struct counter_info.scale` field `read_counters()` (`topdown.c`)
+    applies alongside its existing multiplex-scaling step so `.scaled_value` is real Joules by the
+    time `print_power()` sees it, and v1's package-level-only scope (`power_core`/per-core energy is
+    still probed for `--capabilities` discovery but not opened as a real counter, same documented
+    follow-up as before). System-wide only, like software/IBS, and deliberately excluded from
+    `COUNTER_ALL`/`--passes` (its own fatal incompatibility check, mirroring IBS's). Because it links
+    into `cpu_info->systemwide_counters` exactly like every other systemwide group, `--interval`
+    support needed no interval-specific plumbing at all — `timer_callback()`'s existing generic
+    per-tick read/print already covers it. Confirmed against real hardware on the dev host (both the
+    sysfs-derived `--capabilities` report and graceful degradation without `CAP_PERFMON`); real
+    non-zero `pkg_joules`/`pkg_watts` values still need to be confirmed with root/`CAP_PERFMON`
+    access, which the dev host lacked passwordless sudo for. Web launcher support (`web/joblib.py`'s
+    `build_configuration_passes()`/`resolve_column_group()`, `web/server.py`'s Run tab) shipped
+    alongside it: a dedicated "CPU power" checklist card (mirroring AMD IBS's own dedicated card
+    rather than folding into "Performance counters", since `--power` isn't part of the
+    `--passes`-bin-packed `ALL_GROUPS` vocabulary either) plus custom-plot column autofit for
+    `pkg_joules`/`pkg_watts`.
 
 ## 4.3 priorities
 Goal: use the normalized store built in 4.1 for regression detection, clustering, phase-aware

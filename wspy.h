@@ -76,6 +76,13 @@ extern struct timespec start_time,finish_time;
 #define COUNTER_ARM_DCACHE_MEM 0x40000
 #define COUNTER_ARM_ICACHE_TLB 0x80000
 #define COUNTER_ARM_MEM_ALIGN_TLB 0x100000
+/* CPU energy/power via the Linux power/energy-pkg dynamic PMU (RAPL-
+ * equivalent, see power.h). Not folded into COUNTER_ALL, same reasoning as
+ * COUNTER_IBS above: --capabilities gets its own dedicated
+ * power_probe()/print_power_capability_report() discovery path, so a
+ * generic "probe everything" run doesn't need to also open a real energy
+ * counter. */
+#define COUNTER_POWER       0x200000
 
 /* every counter type wspy knows how to request; used by --capabilities to
  * probe the full set regardless of what counter flags were also given */

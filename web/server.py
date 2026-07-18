@@ -1747,6 +1747,15 @@ def render_run_tab(prefill, cfg):
         </div>
       </div>
 
+      <div class="config-card" data-config="power">
+        <label class="config-toggle"><input type="checkbox" id="power_enabled"{chk(sec('power').get('enabled'))}> <strong>CPU power</strong>
+          <span class="muted">(<code>power</code>/<code>energy-pkg</code> dynamic PMU, RAPL-equivalent -- needs root or CAP_PERFMON)</span></label>
+        <div class="config-options">
+          <label>Interval seconds <input type="text" id="power_interval" value="{val('power', 'interval_secs')}" placeholder="(aggregate)"></label>
+          <label class="inline-check"><input type="checkbox" id="power_csv"{chk(chk_default('power', 'csv', True))}> CSV output</label>
+        </div>
+      </div>
+
       <div class="config-card config-reserved">
         <label class="config-toggle"><input type="checkbox" disabled> <strong>/proc extras</strong>
           <span class="muted">(reserved for 4.2 Tier 3 &mdash; not implemented yet)</span></label>
@@ -2757,7 +2766,7 @@ class Handler(BaseHTTPRequestHandler):
                     if isinstance(checklist, dict):
                         prefill["checklist"] = {
                             k: v for k, v in checklist.items()
-                            if k in ("tree", "counters", "system", "gpu", "ibs")
+                            if k in ("tree", "counters", "system", "gpu", "ibs", "power")
                             and isinstance(v, dict)
                         }
             self._send(200, render_index(cfg, prefill))

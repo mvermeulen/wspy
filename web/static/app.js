@@ -93,6 +93,11 @@
         ldlat: getValue("ibs_ldlat"),
         fetchlat: getValue("ibs_fetchlat"),
       },
+      power: {
+        enabled: getChecked("power_enabled"),
+        interval_secs: getValue("power_interval"),
+        csv: getChecked("power_csv"),
+      },
     };
   }
 
@@ -311,6 +316,15 @@
     if (system.interval_secs) {
       var si = byId("system_interval");
       if (si && !si.value) si.value = system.interval_secs;
+    }
+    var power = resolved.power || {};
+    if (power.enabled) {
+      var pe = byId("power_enabled");
+      if (pe) pe.checked = true;
+    }
+    if (power.interval_secs) {
+      var pi = byId("power_interval");
+      if (pi && !pi.value) pi.value = power.interval_secs;
     }
   }
 

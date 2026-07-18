@@ -29,6 +29,7 @@
 #include "coverage.h"
 #include "ptrace_arch.h"
 #include "ibs.h"
+#include "power.h"
 #include "phase.h"
 #include "affinity.h"
 #if AMDGPU
@@ -1625,6 +1626,16 @@ void read_counters(struct counter_group *counter_group_list,int stop_counters){
 	  cgroup->cinfo[i].time_running = running_delta;
 	  cgroup->cinfo[i].time_enabled = enabled_delta;
 
+	  // power/energy-pkg (power.c): the only counter group that sets
+	  // .scale, converting the raw LSB delta above into a real unit
+	  // (Joules) here rather than at print time, so print_power() never
+	  // needs to know the raw encoding -- same "value already correct by
+	  // the time a print function sees it" precedent the multiplex
+	  // scaling above established. 0.0 (every other counter's default)
+	  // means "no scaling".
+	  if (cgroup->cinfo[i].scale != 0.0)
+	    cgroup->cinfo[i].scaled_value = (double) cgroup->cinfo[i].value * cgroup->cinfo[i].scale;
+
 	  if (stop_counters){
 	    status = ioctl(cgroup->cinfo[i].fd,PERF_EVENT_IOC_DISABLE,0);
 	  
@@ -2954,6 +2965,38 @@ void print_ibs(struct counter_group *cgroup,enum output_format oformat){
     fprintf(outfile,"# warning: l3missonly filter requested (ibs-memory-deep) but not supported by this kernel/CPU -- ibs_op is unfiltered\n");
 }
 
+// prints CPU package energy (Joules, from the power/energy-pkg dynamic PMU,
+// power.c) plus a derived pkg_watts figure -- the actually-comparable-
+// across-runs number, same "raw count enriched with a derived ratio"
+// pattern print_ipc() uses. pkg_watts divides by this counter's own
+// time_enabled delta (read_counters() already tracks this per read as "how
+// long was this window", regardless of aggregate vs. --interval mode) --
+// deliberately not a separately-tracked elapsed/interval value, since a
+// system-wide counter's own scheduled window already *is* the reporting
+// window, whether that's the whole run or one periodic tick.
+void print_power(struct counter_group *cgroup,enum output_format oformat){
+  struct counter_info *cinfo = find_ci_label(cgroup,"pkg_joules");
+  double joules = 0.0,watts = 0.0;
+
+  if (oformat == PRINT_CSV_HEADER){
+    fprintf(outfile,"pkg_joules,pkg_watts,");
+    return;
+  }
+
+  if (cinfo){
+    joules = cinfo->scaled_value;
+    if (cinfo->time_enabled > 0) watts = joules / ((double) cinfo->time_enabled / 1000000000.0);
+  }
+
+  if (oformat == PRINT_CSV){
+    fprintf(outfile,"%.3f,%.3f,",joules,watts);
+    return;
+  }
+
+  fprintf(outfile,"pkg_joules           %-14.3f# Joules (package RAPL-equivalent energy counter)\n",joules);
+  fprintf(outfile,"pkg_watts            %-14.3f# average over this measurement window\n",watts);
+}
+
 void print_metrics(struct counter_group *counter_group_list,enum output_format oformat){
   struct counter_group *cgroup;
   for (cgroup = counter_group_list;cgroup;cgroup = cgroup->next){
@@ -2998,6 +3041,8 @@ void print_metrics(struct counter_group *counter_group_list,enum output_format o
       print_arm_mem_align_tlb(cgroup,oformat);
     } else if (cgroup->mask & COUNTER_IBS){
       print_ibs(cgroup,oformat);
+    } else if (cgroup->mask & COUNTER_POWER){
+      print_power(cgroup,oformat);
     }
   }
 }

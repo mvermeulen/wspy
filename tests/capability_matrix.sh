@@ -188,6 +188,11 @@ run_bundle "software"              0 --csv --no-ipc --software      -- /bin/true
 run_bundle "system"                0 --csv --no-ipc --system        -- /bin/true
 run_bundle "ibs-basic"             0 --csv --no-ipc --ibs-basic     -- /bin/true
 run_bundle "ibs-memory-deep"       0 --csv --no-ipc --ibs-memory-deep -- /bin/true
+# CPU energy/power (power/energy-pkg dynamic PMU, RAPL-equivalent, power.c) --
+# same graceful-degradation contract as ibs-basic above: an unsupported
+# host/kernel just yields zero extra columns (see golden_output.sh's
+# sysfs-presence-gated exact-header check for that shape), not a fatal error.
+run_bundle "power"                 0 --csv --no-ipc --power        -- /bin/true
 run_bundle "arm-dcache-mem"        0 --csv --no-ipc --arm-dcache-mem  -- /bin/true
 run_bundle "arm-icache-tlb"        0 --csv --no-ipc --arm-icache-tlb  -- /bin/true
 run_bundle "arm-mem-align-tlb"     0 --csv --no-ipc --arm-mem-align-tlb -- /bin/true
@@ -231,6 +236,11 @@ run_bundle "interval-no-phase-detect" 0 --csv --interval 1 --no-phase-detect -- 
 # doesn't apply while --interval is active (see wspy.c's per_core_csv
 # comment) -- this combination isn't fixed by this bundle's sibling above.
 run_bundle "interval-per-core"        0 --csv --per-core --interval 1        -- sleep 1
+# --power over --interval: power/energy-pkg links into systemwide_counters
+# like software/ibs, so timer_callback()'s existing generic per-tick read/
+# print already covers it with no interval-specific plumbing of its own --
+# this bundle exercises exactly that path end to end.
+run_bundle "power-interval"           0 --csv --no-ipc --power --interval 1  -- sleep 1
 
 TREE_OUT=$(mktemp /tmp/wspy_capmatrix_tree.XXXXXX)
 trap 'rm -f "$TREE_OUT"' EXIT
@@ -323,6 +333,7 @@ run_expected_fatal_bundle "passes-interval-incompatible" 1 --no-ipc --passes=ipc
 run_expected_fatal_bundle "passes-per-core-incompatible" 1 --no-ipc --passes=ipc --per-core -- /bin/true
 run_expected_fatal_bundle "passes-tree-incompatible"     1 --no-ipc --passes=ipc --tree "$TREE_OUT" -- /bin/true
 run_expected_fatal_bundle "passes-ibs-incompatible"      1 --no-ipc --passes=ipc --ibs-basic -- /bin/true
+run_expected_fatal_bundle "passes-power-incompatible"    1 --no-ipc --passes=ipc --power -- /bin/true
 # --multiplex only means something alongside --passes -- without it, it's
 # rejected the same way the other --passes-only modifiers would be if they
 # had no other meaning (mirrors the checks just above).

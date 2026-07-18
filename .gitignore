@@ -35,6 +35,7 @@ test_wspy
 test_validate
 test_ledger
 test_ibs
+test_power
 test_phase
 test_store
 test_summary

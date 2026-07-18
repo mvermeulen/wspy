@@ -24,6 +24,7 @@
 #include "coverage.h"
 #include "provenance.h"
 #include "ibs.h"
+#include "power.h"
 #include "preflight.h"
 #include "phase.h"
 #include "multipass.h"
@@ -190,6 +191,8 @@ int parse_options(int argc,char *const argv[]){
     { "per-core", no_argument, 0, 20 },
     { "phase-detect", no_argument, 0, 62 },
     { "no-phase-detect", no_argument, 0, 63 },
+    { "power", no_argument, 0, 87 },
+    { "no-power", no_argument, 0, 88 },
     { "preflight", no_argument, 0, 61 },
     { "preset-name", required_argument, 0, 68 },
     { "run-index", required_argument, 0, 53 },
@@ -455,6 +458,12 @@ int parse_options(int argc,char *const argv[]){
     case 63: // --no-phase-detect
       phase_flag = 0;
       break;
+    case 87: // --power
+      counter_mask |= COUNTER_POWER;
+      break;
+    case 88: // --no-power
+      counter_mask &= (~COUNTER_POWER);
+      break;
     case 64: // --gpu-device
 #if AMDGPU
       if ((sscanf(optarg,"%d",&value) == 1) && value >= 0){
@@ -630,6 +639,7 @@ int parse_options(int argc,char *const argv[]){
 static int run_capabilities_probe(void){
   struct counter_group *cgroup;
   struct ibs_capabilities ibs;
+  struct power_capabilities power;
 
   if (inventory_cpu() != 0){
     fatal("unable to query CPU information\n");
@@ -669,6 +679,9 @@ static int run_capabilities_probe(void){
 
   ibs = ibs_probe();
   print_ibs_capability_report(&ibs);
+
+  power = power_probe();
+  print_power_capability_report(&power);
 
 #if AMDGPU
   // GPU device enumeration -- lists every AMD card/device this host can
@@ -1119,6 +1132,8 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t--ibs-maxcnt <n>          - override IBS sampling interval (MaxCnt, via sample_period)\n"
 	    "\t--ibs-ldlat <n>           - override ibs-memory-deep load-latency threshold (cycles)\n"
 	    "\t--ibs-fetchlat <n>        - override ibs-memory-deep fetch-latency threshold (cycles)\n"
+	    "\t--power                   - CPU package energy/power (power/energy-pkg dynamic PMU,\n"
+	    "\t                            RAPL-equivalent): pkg_joules/pkg_watts, system-wide only\n"
 #if AMDGPU
 	    "\t--gpu-smi                 - get gpu information from smi interface\n"
       "\t--gpu-busy                - read instantaneous GPU busy percent (sysfs)\n"
@@ -1144,6 +1159,10 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       fatal("--passes is incompatible with --tree (ptrace child-tracing model conflicts with re-executing the child N times)\n");
     if (counter_mask & COUNTER_IBS)
       fatal("--passes is incompatible with --ibs-basic/--ibs-memory-deep (IBS has its own separate system-wide budget)\n");
+    if (counter_mask & COUNTER_POWER)
+      fatal("--passes is incompatible with --power (power/energy-pkg is a cumulative counter with"
+            " its own separate system-wide budget, and scale-multiplication across separately-timed"
+            " re-executions of the child isn't a defined merge)\n");
 #if AMDGPU
     if (gpu_smi_requested || gpu_busy_requested || gpu_metrics_requested)
       fatal("--passes is incompatible with --gpu-smi/--gpu-busy/--gpu-metrics\n");
@@ -1269,6 +1288,17 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   // branch raw events are, so --per-core has no natural meaning here.
   if (counter_mask & COUNTER_IBS){
     if ((cgroup = ibs_counter_group("ibs",ibs_collection_profile,&ibs_params))){
+      cgroup->next = cpu_info->systemwide_counters;
+      cpu_info->systemwide_counters = cgroup;
+    }
+  }
+
+  // CPU package energy (power/energy-pkg, power.c) is only system-wide too --
+  // it's one cumulative machine-wide RAPL-equivalent register, not a
+  // per-core countable event, so --per-core has no natural meaning here
+  // either.
+  if (counter_mask & COUNTER_POWER){
+    if ((cgroup = power_counter_group("power"))){
       cgroup->next = cpu_info->systemwide_counters;
       cpu_info->systemwide_counters = cgroup;
     }
