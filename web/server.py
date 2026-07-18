@@ -40,10 +40,12 @@ import queue
 import re
 import secrets
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, parse_qs
@@ -634,6 +636,29 @@ def check_perf_access():
     return results
 
 
+def check_tooling():
+    """Checks for external binaries wspy's own tools shell out to at runtime
+    (not build time, so nothing catches a missing one until the shellout
+    itself fails) -- currently just gnuplot, which wspy-plot always
+    popen()s literally as "gnuplot" (plot.c) with no configurable path.
+    execute_profile_run()/execute_custom_run() run wspy-plot best-effort
+    after every launch, so a missing gnuplot doesn't fail the run -- it
+    just silently produces no plots, discoverable today only by noticing
+    an empty plots/ directory after the fact. A real incident: a run
+    finished, was published, and the missing plots weren't noticed until
+    someone went looking for them."""
+    gnuplot = shutil.which("gnuplot")
+    return {
+        "gnuplot": {
+            "status": "ok" if gnuplot else "warn",
+            "path": gnuplot,
+            "detail": ("found on PATH" if gnuplot else
+                       "not found on PATH -- the plots step (wspy-plot, run best-effort "
+                       "after every launch) will fail silently and produce no PNGs"),
+        },
+    }
+
+
 # IBS's PMUs can be present in sysfs (so `wspy --capabilities`/`ibs_probe()`
 # report them as supported) yet still have perf_event_open() reject every
 # counter with -EINVAL at runtime -- a MaxCnt/sample_period mismatch has
@@ -840,6 +865,79 @@ def estimate_phoronix_runtime(fields):
         "seconds": _parse_duration_seconds(text),
         "detail": detail,
     }
+
+
+# `phoronix-test-suite batch-run` doesn't take flags for any of this -- it
+# reads user-config.xml's <BatchMode> block, written by the interactive
+# `phoronix-test-suite batch-setup` wizard, and falls back to prompting on
+# stdin for anything that block leaves unanswered. A real incident:
+# RunAllTestCombinations left at its FALSE default (the wizard's own
+# suggested default, not something wspy-run itself ever sets) made a
+# background wspy-run invocation pause indefinitely asking which of a
+# test's option combinations to run, with nowhere for that prompt to go --
+# not discovered until much later, since wspy itself doesn't time out.
+# PTS_USER_PATH is the same env var phoronix-test-suite itself honors to
+# relocate this file.
+PHORONIX_BATCH_MODE_REQUIRED = {
+    "Configured": "TRUE",
+    "RunAllTestCombinations": "TRUE",
+    "PromptForTestIdentifier": "FALSE",
+    "PromptForTestDescription": "FALSE",
+    "PromptSaveName": "FALSE",
+}
+PHORONIX_BATCH_MODE_HINTS = {
+    "Configured": "the batch-setup wizard has never been run/completed",
+    "RunAllTestCombinations": "prompts to pick one test option combination instead of "
+                              "running all of them",
+    "PromptForTestIdentifier": "prompts for a test identifier before each run",
+    "PromptForTestDescription": "prompts for a test description before each run",
+    "PromptSaveName": "prompts for a save name before each run",
+}
+
+
+def phoronix_user_config_path():
+    base = os.environ.get("PTS_USER_PATH") or os.path.join(os.path.expanduser("~"),
+                                                             ".phoronix-test-suite")
+    return os.path.join(base, "user-config.xml")
+
+
+def check_phoronix_batch_config():
+    """Reads user-config.xml's <BatchMode> block and warns about any setting
+    that makes `phoronix-test-suite batch-run` pause waiting on stdin for
+    input a background/scripted invocation has no way to supply. Best-effort
+    text/XML read against phoronix-test-suite's own config file format, not
+    validated against its source -- an unreadable or unexpected file
+    degrades to "unknown" rather than failing the whole check, same
+    measured-vs-unavailable idiom used throughout this codebase."""
+    path = phoronix_user_config_path()
+    if not os.path.isfile(path):
+        return {"status": "warn", "path": path, "settings": None,
+                "detail": "no user-config.xml found -- phoronix-test-suite will run its "
+                          "interactive batch-setup wizard on first batch-run and pause "
+                          "waiting for input; run `phoronix-test-suite batch-setup` once first"}
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError as e:
+        return {"status": "unknown", "path": path, "settings": None,
+                "detail": f"could not parse {path}: {e}"}
+    batch_mode = root.find("BatchMode")
+    if batch_mode is None:
+        return {"status": "warn", "path": path, "settings": None,
+                "detail": "no <BatchMode> section -- run `phoronix-test-suite batch-setup` "
+                          "once to configure unattended batch-run behavior"}
+    settings = {}
+    problems = []
+    for key, wanted in PHORONIX_BATCH_MODE_REQUIRED.items():
+        el = batch_mode.find(key)
+        value = el.text.strip() if el is not None and el.text else None
+        settings[key] = value
+        if (value or "").upper() != wanted:
+            problems.append(f"{key}={value!r} (needs {wanted}) -- {PHORONIX_BATCH_MODE_HINTS[key]}")
+    if problems:
+        return {"status": "warn", "path": path, "settings": settings,
+                "detail": "batch-run will pause waiting for input: " + "; ".join(problems)}
+    return {"status": "ok", "path": path, "settings": settings,
+            "detail": "configured for unattended batch-run"}
 
 
 def read_manifest_workload(manifest_path):
@@ -3310,7 +3408,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _check_run(self, cfg, body):
         workload = (body.get("workload") or "").strip()
-        result = {"perf": check_perf_access()}
+        result = {"perf": check_perf_access(), "tools": check_tooling()}
 
         ibs_probes = ibs_probes_for_request(cfg, body.get("preset"), body.get("checklist"))
         result["ibs"] = [probe_ibs(cfg["wspy_bin"], label, flags) for label, flags in ibs_probes]
@@ -3325,6 +3423,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, result)
             return
 
+        # batch-run is the only one of PHORONIX_RUN_SUBCOMMANDS that reads
+        # user-config.xml's <BatchMode> block for unattended operation --
+        # `run`/`benchmark` already prompt interactively by design, so
+        # there's nothing check_phoronix_batch_config() would add for those.
+        is_batch_run = shlex.split(workload)[1] == "batch-run"
         phoronix_bin = cfg["phoronix_bin"]
         checked_names = test_names[:PHORONIX_MAX_TESTS_CHECKED]
         tests = []
@@ -3375,6 +3478,7 @@ class Handler(BaseHTTPRequestHandler):
             "tests": tests,
             "total_seconds": total_seconds if (total_known and tests) else None,
             "truncated": len(test_names) > len(checked_names),
+            "batch_mode": check_phoronix_batch_config() if is_batch_run else None,
         }
         self._send_json(200, result)
 

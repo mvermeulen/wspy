@@ -553,8 +553,29 @@
     return html;
   }
 
+  function renderToolsCheck(tools) {
+    var g = (tools || {}).gnuplot;
+    if (!g) return "";
+    var html = '<div class="check-section"><strong>Tooling</strong>';
+    html += '<div class="' + statusClass(g.status) + '">gnuplot: ' + escapeHtml(g.status) + "</div>";
+    if (g.detail) html += '<div class="muted">' + escapeHtml(g.detail) + "</div>";
+    html += "</div>";
+    return html;
+  }
+
+  function renderPhoronixBatchMode(bm) {
+    if (!bm) return "";
+    var html = '<div class="check-test"><strong>Batch-mode config</strong> '
+      + '<span class="muted">(' + escapeHtml(bm.path) + ")</span>";
+    html += '<div class="' + statusClass(bm.status) + '">' + escapeHtml(bm.status) + "</div>";
+    if (bm.detail) html += '<div class="muted">' + escapeHtml(bm.detail) + "</div>";
+    html += "</div>";
+    return html;
+  }
+
   function renderCheckResults(data) {
     var html = renderPerfCheck(data.perf || {});
+    html += renderToolsCheck(data.tools);
     if (data.ibs && data.ibs.length) {
       html += '<div class="check-section"><strong>AMD IBS probe</strong> '
         + '<span class="muted">(actually opens the counter(s) against a trivial workload -- '
@@ -567,6 +588,7 @@
     if (!ph || !ph.detected) {
       html += '<div class="muted">' + escapeHtml((ph && ph.note) || "no estimate available") + "</div>";
     } else {
+      html += renderPhoronixBatchMode(ph.batch_mode);
       (ph.tests || []).forEach(function (t) { html += renderPhoronixTest(t); });
       if (ph.total_seconds !== null && ph.total_seconds !== undefined && (ph.tests || []).length > 1) {
         html += "<div><strong>Total estimated: " + Math.round(ph.total_seconds) + "s</strong></div>";
