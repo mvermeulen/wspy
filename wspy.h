@@ -96,7 +96,7 @@ extern unsigned int counter_mask;
 
 #define SYSTEM_LOADAVG      0x1
 #define SYSTEM_CPU          0x2
-#if AMDGPU
+#if AMDGPU || NVIDIA
 #define SYSTEM_GPU          0x4
 #endif
 #define SYSTEM_NETWORK      0x8

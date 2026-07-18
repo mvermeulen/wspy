@@ -46,6 +46,12 @@ if [ -x ./cpu_info ]; then
 fi
 echo "Detected CPU vendor: $vendor"
 
+nvidia_build="no"
+if ! "$WSPY" --gpu-nvidia -- /bin/true 2>&1 | grep -q "GPU support not built"; then
+  nvidia_build="yes"
+fi
+echo "NVIDIA build: $nvidia_build"
+
 # memory's local/remote raw events (topdown.c's amd_raw_events[]) carry a
 # requires=/sys/devices/system/node/node1 gate -- meaningless on a
 # single-NUMA-node host, since "remote" can only ever be 0 there -- so the
@@ -329,6 +335,14 @@ $out"
 assert_csv_interval_rows_match "topdown" 3 --topdown --no-rusage --no-software --no-ipc
 assert_csv_interval_rows_match "system"  3 --system --no-rusage --no-software --no-ipc
 assert_csv_interval_rows_match "default-ipc" 3
+# --gpu-nvidia's periodic-tick columns are populated by topdown.c's own
+# timer_callback(), a separate print call site from wspy.c's aggregate/tail
+# row -- exactly the kind of drift this helper exists to catch (see the
+# comment above it re: the pre-existing counters_measured/counters_requested
+# bug). Only meaningful on an NVIDIA=1 build with a real GPU/driver present.
+if [ "$nvidia_build" = "yes" ]; then
+  assert_csv_interval_rows_match "gpu-nvidia" 3 --gpu-nvidia --no-rusage --no-software --no-ipc
+fi
 
 echo ""
 echo "=== Normal (human-readable) output summary-fragment contract ==="

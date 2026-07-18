@@ -567,8 +567,12 @@ degrades that one field/counter to unavailable, it doesn't fail the run.** This 
   run continues with the counters that did open.
 - Individual provenance fields (`provenance.c`) — logged into `environment_coverage.unavailable`
   with a reason, rest of provenance still captured.
-- GPU flags on a non-`AMDGPU=1` build — a warning ("GPU support not built (rebuild with AMDGPU=1):
-  ... ignored"), not an error; the run proceeds without GPU data.
+- GPU flags on a build missing the matching `AMDGPU=1`/`NVIDIA=1` — a warning ("GPU support not built
+  (rebuild with AMDGPU=1/NVIDIA=1): ... ignored"), not an error; the run proceeds without GPU data.
+- `--gpu-nvidia` on an `NVIDIA=1` build with no NVIDIA driver installed — `nvidia_nvml.c` dlopen()s
+  `libnvidia-ml.so.1` at run time rather than linking it at build time, so a missing driver is a
+  first-class runtime condition here (unlike AMD's build-time link failure): logged, the run proceeds
+  with zero-valued `nv_*` columns.
 - Missing AMD L3 events (no `/sys/devices/amd_l3/type`) — `--cache3` is silently skipped rather than
   aborting the run.
 
@@ -635,6 +639,25 @@ Symptom-first; each entry names the underlying cause and where to look/what to r
 - **`--gpu-smi` specifically fails to build/link:** confirm `ROCM_DIR/include/amd_smi/amdsmi.h` and
   `-lamd_smi` actually exist under the ROCm install the Makefile auto-detected (`/opt/rocm` preferred
   over `/usr`) — pass `ROCM_DIR=<path>` explicitly if auto-detection picked the wrong one.
+
+### `--gpu-nvidia` produces no data / `nv_*` columns are all zero
+
+- **Cause:** the binary wasn't built with `NVIDIA=1`. Same "recognized but warns" convention as the
+  AMD GPU flags: `"GPU support not built (rebuild with NVIDIA=1): --gpu-nvidia ignored"`. Rebuild with
+  `make NVIDIA=1` (see `CLAUDE.md`'s "Build & Test") — no CUDA toolkit/nvidia-dev package is needed to
+  build this, unlike AMD's ROCm dependency.
+- **Built with `NVIDIA=1`, still no data:** unlike AMD, this isn't a build-time link — `nvidia_nvml.c`
+  `dlopen()`s `libnvidia-ml.so.1` at *run* time, so the NVIDIA driver has to actually be installed on
+  the machine running `wspy` (not just the machine it was built on). Check `wspy --capabilities`'s
+  NVML section: it explains which stage failed ("library not found" vs. "`nvmlInit_v2()` failed").
+- **Wrong GPU on a multi-GPU machine:** `nvidia_nvml_initialize()` defaults to NVML device 0 when no
+  device is selected. Pass `--gpu-nvidia-device=<idx>` to select a specific device by index (see the
+  device list printed by `wspy --capabilities` on multi-GPU hosts). An out-of-range index degrades to
+  no NVIDIA data (logged) rather than erroring, same as `--gpu-device`.
+- **`--interval` ticks are missing the `nv_*` columns:** these are populated by `topdown.c`'s
+  `timer_callback()`, a separate print call site from the aggregate/tail row — a genuine regression
+  here (not a documented gap, unlike `--gpu-smi`'s interval gap noted above) since both are meant to
+  stay in sync; `tests/golden_output.sh`'s `gpu-nvidia` interval check exists specifically to catch it.
 
 ### CSV output looks corrupted (fields fused together, wrong column count)
 
