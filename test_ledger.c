@@ -279,6 +279,104 @@ static void test_schema_version_missing_field(void){
   printf("PASS: missing schema_version field warns but still processes records\n");
 }
 
+static void write_run_index_record_with_output(FILE *fp,const char *run_id,const char *start_time,
+                                                const char *cmd,int exit_known,int exit_code,
+                                                const char *output_path){
+  fprintf(fp,"{\"schema_version\":\"%s\",\"run_id\":\"%s\",\"start_time\":\"%s\",\"command\":[\"wspy\",\"--\",\"%s\"],",
+          RUN_INDEX_SCHEMA_VERSION,run_id,start_time,cmd);
+  fprintf(fp,"\"output_files\":{\"output_path\":\"%s\",\"tree_output_path\":null,\"manifest_path\":null},",output_path);
+  if (exit_known)
+    fprintf(fp,"\"exit_status\":{\"known\":true,\"exited\":true,\"exit_code\":%d,\"signaled\":false,\"term_signal\":null}}\n",
+            exit_code);
+  else
+    fprintf(fp,"\"exit_status\":{\"known\":false,\"exited\":null,\"exit_code\":null,\"signaled\":null,\"term_signal\":null}}\n");
+}
+
+static void test_record_paths_exist(void){
+  const char *live_path = "/tmp/test_ledger_paths_live.txt";
+  struct json_value *root;
+  char errbuf[256];
+
+  printf("Testing record_paths_exist...\n");
+
+  write_file(live_path,"data\n");
+
+  root = json_parse("{\"output_files\":{\"output_path\":null,\"tree_output_path\":null,\"manifest_path\":null}}",
+                     errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  assert(record_paths_exist(root) == -1); /* no paths named at all */
+  json_free(root);
+
+  {
+    char buf[512];
+    snprintf(buf,sizeof(buf),
+             "{\"output_files\":{\"output_path\":\"%s\",\"tree_output_path\":null,\"manifest_path\":null}}",
+             live_path);
+    root = json_parse(buf,errbuf,sizeof(errbuf));
+    assert(root != NULL);
+    assert(record_paths_exist(root) == 1); /* names a path, and it exists */
+    json_free(root);
+  }
+
+  root = json_parse("{\"output_files\":{\"output_path\":\"/tmp/test_ledger_paths_does_not_exist.txt\","
+                     "\"tree_output_path\":null,\"manifest_path\":null}}",errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  assert(record_paths_exist(root) == 0); /* names a path, but it's gone */
+  json_free(root);
+
+  remove(live_path);
+  printf("PASS: record_paths_exist\n");
+}
+
+static void test_stale_run_excluded_from_scoring(void){
+  const char *index_path = "/tmp/test_ledger_index8.jsonl";
+  const char *list_path = "/tmp/test_ledger_list9.txt";
+  const char *live_output = "/tmp/test_ledger_live_output.csv";
+  const char *deleted_output = "/tmp/test_ledger_deleted_output.csv";
+  struct ledger_entry *entries;
+  int n;
+  FILE *fp;
+  struct ledger_entry *e;
+
+  printf("Testing a matching run whose output file was deleted is excluded as stale...\n");
+
+  write_file(list_path,
+    "500.perlbench_r\n"
+    "541.leela_r\n");
+
+  write_file(live_output,"time,ipc\n1,0.5\n");
+  remove(deleted_output); /* make sure it really doesn't exist */
+
+  fp = fopen(index_path,"w");
+  assert(fp != NULL);
+  /* perlbench: matching run's own output file still exists -> stays DONE */
+  write_run_index_record_with_output(fp,"run1","2026-07-01T00:00:00.000Z","runcpu 500.perlbench_r",1,0,live_output);
+  /* leela: the only matching run failed *and* its output file was deleted
+   * -- simulating deleting a run directory after a bad, environment-caused
+   * run -- so it should no longer count as evidence of a real attempt. */
+  write_run_index_record_with_output(fp,"run2","2026-07-02T00:00:00.000Z","runcpu 541.leela_r",1,1,deleted_output);
+  fclose(fp);
+
+  entries = load_workload_list(list_path,&n);
+  assert(entries != NULL && n == 2);
+  assert(process_run_index_file(index_path,entries,n) == 2);
+
+  e = find_entry(entries,n,"500.perlbench_r");
+  assert(entry_status(e) == LEDGER_DONE);
+  assert(e->runs_matched == 1 && e->runs_stale == 0);
+
+  e = find_entry(entries,n,"541.leela_r");
+  assert(entry_status(e) == LEDGER_SKIPPED); /* stale run doesn't count as an attempt */
+  assert(e->runs_matched == 0 && e->runs_succeeded == 0 && e->runs_stale == 1);
+  assert(!strcmp(e->last_stale_run_id,"run2"));
+
+  free(entries);
+  remove(index_path);
+  remove(list_path);
+  remove(live_output);
+  printf("PASS: stale run excluded from scoring\n");
+}
+
 int main(void){
   test_parse_ledger_line();
   test_load_workload_list();
@@ -287,6 +385,8 @@ int main(void){
   test_malformed_record_skipped();
   test_schema_version_mismatch_warns();
   test_schema_version_missing_field();
+  test_record_paths_exist();
+  test_stale_run_excluded_from_scoring();
 
   printf("\nAll test_ledger tests passed.\n");
   return 0;
