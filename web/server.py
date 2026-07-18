@@ -667,8 +667,10 @@ def check_tooling():
 # attempt catches that class of failure, so when this run would use IBS,
 # the Check button also launches a real (trivial, ~2s)
 # `wspy --ibs-basic|--ibs-memory-deep -- true` probe rather
-# than only re-deriving sysfs presence.
-IBS_UNAVAILABLE_RE = re.compile(
+# than only re-deriving sysfs presence. topdown.c:setup_counters()'s error()
+# text is identical regardless of which counter group failed to open, so
+# this same regex also parses probe_power()'s failures below.
+COUNTER_UNAVAILABLE_RE = re.compile(
     r"unable to create \S+ performance counter, name=(\S+), errno=(\d+) - (.+)")
 IBS_UNSUPPORTED_TEXT = "AMD IBS not supported on this host/kernel"
 
@@ -737,7 +739,7 @@ def probe_ibs(wspy_bin, label, flags):
                 measured = requested = None
             break
 
-    failures = IBS_UNAVAILABLE_RE.findall(output)
+    failures = COUNTER_UNAVAILABLE_RE.findall(output)
     if requested is None:
         entry.update(status="unknown", detail="could not parse counter coverage from probe output")
     elif requested == 0:
@@ -747,6 +749,106 @@ def probe_ibs(wspy_bin, label, flags):
     else:
         detail = "; ".join(f"{name}: errno={errnum} ({reason})" for name, errnum, reason in failures) \
             or f"only {measured}/{requested} IBS counter(s) opened"
+        entry.update(status="warn", detail=detail)
+    entry["measured"] = measured
+    entry["requested"] = requested
+    return entry
+
+
+# power/energy-pkg's own permission story is stricter than the general
+# perf_event_paranoid gate check_perf_access() already covers -- confirmed
+# live: at perf_event_paranoid=1 (wspy's own documented minimum,
+# scripts/setup_perf.sh's default target), --ibs-basic opens its counters
+# fine but --power gets EACCES, because RAPL/power-PMU access needs
+# CAP_PERFMON or root specifically (the Platypus-CVE-era kernel hardening),
+# not just a permissive-enough paranoid value. --capabilities' sysfs-only
+# discovery can't see this either (it happily reports the PMU as
+# "supported" from sysfs alone) -- only an actual open attempt catches it,
+# same reasoning as the IBS probe above.
+POWER_UNSUPPORTED_TEXT = "CPU power/energy (power/energy-pkg) not supported on this host/kernel"
+# EACCES specifically -- the exact errno RAPL's CAP_PERFMON/root requirement
+# produces, distinct from e.g. EINVAL on a malformed config -- gets an
+# actionable remediation hint appended, not just "insufficient permission".
+POWER_EACCES_ERRNO = "13"
+POWER_EACCES_HINT = (
+    "power/energy-pkg needs root or the CAP_PERFMON capability, stricter than "
+    "perf_event_paranoid alone covers (confirmed: --ibs-basic opens fine at the same "
+    "paranoid level that denies this) -- either run wspy under sudo, or grant it once via "
+    "`sudo setcap cap_perfmon+ep <path to wspy>`; scripts/setup_perf.sh's sysctl changes "
+    "won't fix this on their own"
+)
+
+
+def power_probes_for_request(cfg, preset, checklist):
+    """Returns [(label, flags)] -- at most one entry, since --power has no
+    profile variants the way IBS does -- for whether this request would
+    actually invoke --power. No BUILTIN_PROFILES preset uses --power today,
+    so only custom mode's checklist can trigger this; kept list-shaped for
+    symmetry with ibs_probes_for_request() and in case a future preset adds
+    one. [] when power isn't in play for this request at all."""
+    preset = (preset or "").strip()
+    if preset:
+        return []
+
+    power = (checklist or {}).get("power") or {}
+    if not power.get("enabled"):
+        return []
+    # Placeholder rundir: build_configuration_passes() only ever uses it to
+    # spell a --tree pass's output path into that pass's flags text -- never
+    # touches the filesystem -- so this is safe purely to get the power
+    # pass's real flags, matching exactly what a real custom run would invoke.
+    placeholder_rundir = os.path.join(cfg["output_root"], "<check>", "<check>", "<check>")
+    for p in build_configuration_passes(placeholder_rundir, checklist):
+        if p["category"] == "power":
+            return [("power", p["flags"])]
+    return []
+
+
+def probe_power(wspy_bin, label, flags):
+    """Actually runs `wspy <flags> -- true` (a trivial, always-successful
+    workload) and reports whether the pkg_joules counter opened -- catches
+    the RAPL-specific CAP_PERFMON/root requirement described above, which
+    sysfs-presence-only discovery can't. Never raises -- a probe failure
+    degrades to status "unknown", same idiom as probe_ibs()."""
+    argv = [wspy_bin] + list(flags) + ["--", "true"]
+    entry = {"profile": label, "command": shell_preview(argv)}
+    rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=15)
+    if timed_out:
+        entry.update(status="unknown", detail="probe timed out after 15s")
+        return entry
+    if rc is None:
+        entry.update(status="unknown", detail=f"failed to launch {wspy_bin}")
+        return entry
+    if POWER_UNSUPPORTED_TEXT in output:
+        entry.update(status="warn",
+                      detail=f"{POWER_UNSUPPORTED_TEXT} (power/energy-pkg PMU not present in sysfs)")
+        return entry
+
+    measured = requested = None
+    lines = output.splitlines()
+    for i, line in enumerate(lines):
+        if "counters_measured" in line and "counters_requested" in line and i + 1 < len(lines):
+            header = [c.strip() for c in line.split(",")]
+            data = [c.strip() for c in lines[i + 1].split(",")]
+            try:
+                measured = int(data[header.index("counters_measured")])
+                requested = int(data[header.index("counters_requested")])
+            except (ValueError, IndexError):
+                measured = requested = None
+            break
+
+    failures = COUNTER_UNAVAILABLE_RE.findall(output)
+    if requested is None:
+        entry.update(status="unknown", detail="could not parse counter coverage from probe output")
+    elif requested == 0:
+        entry.update(status="unknown", detail="probe requested 0 power counter(s) unexpectedly")
+    elif measured == requested and not failures:
+        entry.update(status="ok", detail=f"{measured}/{requested} power counter(s) opened successfully")
+    else:
+        detail = "; ".join(f"{name}: errno={errnum} ({reason})" for name, errnum, reason in failures) \
+            or f"only {measured}/{requested} power counter(s) opened"
+        if any(errnum == POWER_EACCES_ERRNO for _, errnum, _ in failures):
+            detail += " -- " + POWER_EACCES_HINT
         entry.update(status="warn", detail=detail)
     entry["measured"] = measured
     entry["requested"] = requested
@@ -1744,6 +1846,15 @@ def render_run_tab(prefill, cfg):
             <label><code>--ibs-ldlat</code> <input type="text" id="ibs_ldlat" value="{val('ibs', 'ldlat')}" placeholder="(default)"></label>
             <label><code>--ibs-fetchlat</code> <input type="text" id="ibs_fetchlat" value="{val('ibs', 'fetchlat')}" placeholder="(default)"></label>
           </div>
+        </div>
+      </div>
+
+      <div class="config-card" data-config="power">
+        <label class="config-toggle"><input type="checkbox" id="power_enabled"{chk(sec('power').get('enabled'))}> <strong>CPU power</strong>
+          <span class="muted">(<code>power</code>/<code>energy-pkg</code> dynamic PMU, RAPL-equivalent -- needs root or CAP_PERFMON)</span></label>
+        <div class="config-options">
+          <label>Interval seconds <input type="text" id="power_interval" value="{val('power', 'interval_secs')}" placeholder="(aggregate)"></label>
+          <label class="inline-check"><input type="checkbox" id="power_csv"{chk(chk_default('power', 'csv', True))}> CSV output</label>
         </div>
       </div>
 
@@ -2757,7 +2868,7 @@ class Handler(BaseHTTPRequestHandler):
                     if isinstance(checklist, dict):
                         prefill["checklist"] = {
                             k: v for k, v in checklist.items()
-                            if k in ("tree", "counters", "system", "gpu", "ibs")
+                            if k in ("tree", "counters", "system", "gpu", "ibs", "power")
                             and isinstance(v, dict)
                         }
             self._send(200, render_index(cfg, prefill))
@@ -3417,6 +3528,9 @@ class Handler(BaseHTTPRequestHandler):
 
         ibs_probes = ibs_probes_for_request(cfg, body.get("preset"), body.get("checklist"))
         result["ibs"] = [probe_ibs(cfg["wspy_bin"], label, flags) for label, flags in ibs_probes]
+
+        power_probes = power_probes_for_request(cfg, body.get("preset"), body.get("checklist"))
+        result["power"] = [probe_power(cfg["wspy_bin"], label, flags) for label, flags in power_probes]
 
         test_names = parse_phoronix_test_names(workload)
         if not test_names:

@@ -61,6 +61,11 @@ struct counter_info {
   unsigned long int time_enabled;   // this read's time_enabled *delta* (see read_counters())
   unsigned long int last_time_running; // cumulative time_running as of the previous read
   unsigned long int last_time_enabled; // cumulative time_enabled as of the previous read
+  double scale;         // raw-LSB-to-real-unit multiplier (e.g. Joules-per-LSB for power/
+                         // energy-pkg, from that event's sysfs .scale file); 0.0 (the default
+                         // for every counter that isn't power) means "no scaling"
+  double scaled_value;  // this read's .value * scale, in the counter's own real unit (e.g.
+                         // Joules) -- only meaningful when scale != 0.0; see read_counters()
 };
 
 // CPU counter tables

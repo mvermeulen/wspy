@@ -175,6 +175,25 @@ class BuildConfigurationPassesTest(unittest.TestCase):
         self.assertEqual(categories["amdtopdown"], "performance-counters")
         self.assertEqual(categories["systemtime"], "system-metrics")
 
+    def test_power_defaults_to_aggregate_no_interval(self):
+        checklist = {"power": {"enabled": True}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        self.assertIn("--power", passes[0]["flags"])
+        self.assertNotIn("--interval", passes[0]["flags"])
+        self.assertEqual(passes[0]["category"], "power")
+
+    def test_power_interval_given_adds_interval_flag(self):
+        checklist = {"power": {"enabled": True, "interval_secs": "1"}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        idx = passes[0]["flags"].index("--interval")
+        self.assertEqual(passes[0]["flags"][idx + 1], "1")
+
+    def test_power_disabled_produces_no_pass(self):
+        checklist = {"power": {"enabled": False}}
+        self.assertEqual(joblib.build_configuration_passes("/tmp/rundir", checklist), [])
+
 
 class ConfigOptionsTest(unittest.TestCase):
     def test_skips_enabled_and_none_and_empty(self):
@@ -263,6 +282,46 @@ class AffinitySpecTest(unittest.TestCase):
         self.assertTrue(joblib.validate_job(job))
 
 
+class ResolveColumnGroupTest(unittest.TestCase):
+    def test_counters_column(self):
+        self.assertEqual(joblib.resolve_column_group("retire"), "topdown")
+
+    def test_system_column(self):
+        self.assertEqual(joblib.resolve_column_group("load"), "system")
+
+    def test_system_network_column_prefix(self):
+        self.assertEqual(joblib.resolve_column_group("net eth0"), "system")
+
+    def test_power_columns(self):
+        self.assertEqual(joblib.resolve_column_group("pkg_joules"), "power")
+        self.assertEqual(joblib.resolve_column_group("pkg_watts"), "power")
+
+    def test_unrecognized_column(self):
+        self.assertIsNone(joblib.resolve_column_group("not_a_real_column"))
+
+
+class AutofitChecklistForCustomPlotsTest(unittest.TestCase):
+    def test_power_column_autofits_power_checklist(self):
+        checklist, notes = joblib.autofit_checklist_for_custom_plots(
+            {}, [{"name": "power-plot", "columns": ["pkg_watts"]}])
+        self.assertTrue(checklist["power"]["enabled"])
+        self.assertEqual(checklist["power"]["interval_secs"], "1")
+        self.assertTrue(checklist["power"]["csv"])
+        self.assertTrue(any("power" in n.lower() for n in notes))
+
+    def test_power_column_leaves_counters_untouched(self):
+        checklist, _ = joblib.autofit_checklist_for_custom_plots(
+            {}, [{"name": "power-plot", "columns": ["pkg_joules"]}])
+        self.assertNotIn("counters", checklist)
+
+    def test_already_enabled_power_is_not_reported_as_a_change(self):
+        checklist, notes = joblib.autofit_checklist_for_custom_plots(
+            {"power": {"enabled": True, "interval_secs": "5"}},
+            [{"name": "power-plot", "columns": ["pkg_watts"]}])
+        self.assertEqual(checklist["power"]["interval_secs"], "5")  # not overwritten
+        self.assertFalse(any("power" in n.lower() for n in notes))
+
+
 class ChecklistFromProvenanceTest(unittest.TestCase):
     """INVESTIGATION_4.0.md's "What shipped in 4.1" ("Browse-reports"): the read
     side of structured configuration provenance -- turning a run's
@@ -286,6 +345,17 @@ class ChecklistFromProvenanceTest(unittest.TestCase):
         self.assertEqual(restored["interval_secs"], "1")
         self.assertIs(restored["per_core"], True)
         self.assertIs(restored["rusage"], False)
+        self.assertIs(restored["csv"], True)
+        self.assertIs(restored["enabled"], True)
+
+    def test_power_round_trips_through_build_configuration_passes(self):
+        checklist = {"power": {"enabled": True, "interval_secs": "1", "csv": True}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        p = passes[0]
+        self.assertEqual(p["category"], "power")
+        restored = joblib.checklist_section_from_options("power", p["options"])
+        self.assertEqual(restored["interval_secs"], "1")
         self.assertIs(restored["csv"], True)
         self.assertIs(restored["enabled"], True)
 

@@ -1144,15 +1144,46 @@ enough that the item isn't worth carrying forward.
 out-of-sequence treatment Tier 9/#27 got; conceptually a new, 18th counter group alongside the
 existing 17 named in `CLAUDE.md`'s "Counter mask bits"):**
 
-31. CPU energy/power via the Linux `power`/`power_core` perf PMUs (`energy-pkg`/`energy-core`,
-    RAPL-equivalent — AMD Family 19h+, also reportedly available via the same PMU family on Intel,
-    unverified here) — a `--power` group reporting package Joules/Watts over the run, the one
-    counter-group category (perf-per-watt) nothing in wspy currently measures for the CPU (GPU power
-    already exists via `amd_smi.c`/`amd_sysfs.c`). Confirmed live and readable, unprivileged, on the
-    dev host. See "Concrete design: CPU energy/power via the `power`/`power_core` perf PMUs" above for
-    the full design (dynamic-PMU discovery mirroring `ibs_probe()`, a new per-counter `scale` field to
-    convert raw LSBs to Joules, v1 scoped to package-level only with per-core `power_core` breakdown
-    left as a documented follow-up). Not started.
+31. **CPU energy/power via the Linux `power`/`power_core` perf PMUs — done.** `--power`/`--no-power`
+    (`power.c`/`power.h`, new `COUNTER_POWER` bit) report package `pkg_joules`/`pkg_watts` over the
+    run, matching the full design above: dynamic-PMU discovery mirroring `ibs_probe()`
+    (`power_probe()`, sysfs-parameterized as `power_probe_at()` for `test_power.c`'s fake-sysfs
+    fixtures), a new per-counter `struct counter_info.scale` field `read_counters()` (`topdown.c`)
+    applies alongside its existing multiplex-scaling step so `.scaled_value` is real Joules by the
+    time `print_power()` sees it, and v1's package-level-only scope (`power_core`/per-core energy is
+    still probed for `--capabilities` discovery but not opened as a real counter, same documented
+    follow-up as before). System-wide only, like software/IBS, and deliberately excluded from
+    `COUNTER_ALL`/`--passes` (its own fatal incompatibility check, mirroring IBS's). Because it links
+    into `cpu_info->systemwide_counters` exactly like every other systemwide group, `--interval`
+    support needed no interval-specific plumbing at all — `timer_callback()`'s existing generic
+    per-tick read/print already covers it. Confirmed against real hardware on the dev host: the
+    sysfs-derived `--capabilities` report, graceful degradation without `CAP_PERFMON`, and (via
+    `sudo`, since the dev host itself lacks passwordless sudo) real non-zero `pkg_joules`/
+    `pkg_watts` values from a `sudo ./wspy --csv --no-ipc --power --interval 1 -- sleep 3` run --
+    `pkg_watts` was internally consistent on every row (~60W steady state) and correctly tracked
+    each row's *actual* accumulation window (reconstructible as `pkg_joules/pkg_watts`: ~3.0s,
+    ~1.0s, ~1.0s, ~0.005s for that run's four rows) rather than assuming a fixed interval. That
+    first-row 3.0s (not 1.0s) window surfaced a genuine, pre-existing wspy behavior `--power` is
+    the first counter group to make visible: every group's counters start (`start_counters()`)
+    before `wspy.c`'s fixed 2-second pre-launch `sleep(2)`, so a first read's raw delta always
+    covers that ~2s of pre-launch time too -- invisible for self-normalizing ratios like IPC/
+    topdown, but visible in `--power`'s absolute Joules. `pkg_watts` is unaffected (it divides by
+    the real window either way); only a bare first-row `pkg_joules` value needs this caveat. See
+    `power.c`'s `CLAUDE.md` entry for the full writeup. Web launcher support (`web/joblib.py`'s
+    `build_configuration_passes()`/`resolve_column_group()`, `web/server.py`'s Run tab) shipped
+    alongside it: a dedicated "CPU power" checklist card (mirroring AMD IBS's own dedicated card
+    rather than folding into "Performance counters", since `--power` isn't part of the
+    `--passes`-bin-packed `ALL_GROUPS` vocabulary either) plus custom-plot column autofit for
+    `pkg_joules`/`pkg_watts`. The Run tab's "Check" button (item 18's estimated-runtime check)
+    also gained a real `--power` probe (`power_probes_for_request()`/`probe_power()`,
+    `web/server.py`) mirroring its existing AMD IBS probe: sysfs-presence discovery
+    (`--capabilities`) can't see that RAPL/`energy-pkg` access needs root or `CAP_PERFMON`
+    specifically — confirmed live, `--ibs-basic` opens fine at the same `perf_event_paranoid`
+    level that denies `--power` with `EACCES` — so only an actual `perf_event_open()` attempt
+    catches it before a real run wastes time on it. On that `EACCES` specifically, the probe's
+    detail message now tells the user what to do (run under `sudo`, or `sudo setcap
+    cap_perfmon+ep <path to wspy>` once), and notes explicitly that `scripts/setup_perf.sh`'s
+    `perf_event_paranoid`/`nmi_watchdog` sysctl adjustments don't fix this on their own.
 
 ## 4.3 priorities
 Goal: use the normalized store built in 4.1 for regression detection, clustering, phase-aware

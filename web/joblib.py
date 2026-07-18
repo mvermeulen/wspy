@@ -193,15 +193,22 @@ COLUMN_TO_GROUP = {
 # counters group. "net <iface>" is one column per interface discovered on
 # this host, so it's matched by prefix rather than listed by name.
 SYSTEM_COLUMN_NAMES = {"load", "runnable", "cpu", "idle", "iowait", "irq"}
+# --power's own columns (power.c/topdown.c's print_power()) -- same "not an
+# ALL_GROUPS entry" reasoning as SYSTEM_COLUMN_NAMES above: --power isn't a
+# counter_mask bit build_configuration_passes()'s "counters" section
+# handles, it's its own checklist card (see that section below).
+POWER_COLUMN_NAMES = {"pkg_joules", "pkg_watts"}
 
 
 def resolve_column_group(column_name):
-    """Returns the ALL_GROUPS name (or the "system" sentinel) whose --flag
-    must be enabled to produce column_name in a wspy CSV, or None if
+    """Returns the ALL_GROUPS name (or the "system"/"power" sentinel) whose
+    --flag must be enabled to produce column_name in a wspy CSV, or None if
     column_name isn't a column this tool recognizes (a typo, or a
     workload-specific name nothing here can auto-detect)."""
     if column_name in SYSTEM_COLUMN_NAMES or column_name.startswith("net "):
         return "system"
+    if column_name in POWER_COLUMN_NAMES:
+        return "power"
     return COLUMN_TO_GROUP.get(column_name)
 
 
@@ -220,6 +227,7 @@ def autofit_checklist_for_custom_plots(checklist, custom_plots):
     notes = []
     needed_groups = set()
     needs_system = False
+    needs_power = False
     unresolved = set()
 
     for cp in (custom_plots or []):
@@ -229,6 +237,8 @@ def autofit_checklist_for_custom_plots(checklist, custom_plots):
                 unresolved.add(col)
             elif group == "system":
                 needs_system = True
+            elif group == "power":
+                needs_power = True
             else:
                 needed_groups.add(group)
 
@@ -258,6 +268,17 @@ def autofit_checklist_for_custom_plots(checklist, custom_plots):
             notes.append("auto-set a 1s interval on 'System metrics' so the custom plot has a "
                           "time series to chart")
         system["csv"] = True
+
+    if needs_power:
+        power = checklist.setdefault("power", {})
+        if not power.get("enabled"):
+            power["enabled"] = True
+            notes.append("auto-enabled 'CPU power' for a custom plot")
+        if not str(power.get("interval_secs") or "").strip():
+            power["interval_secs"] = "1"
+            notes.append("auto-set a 1s interval on 'CPU power' so the custom plot has a "
+                          "time series to chart")
+        power["csv"] = True
 
     if unresolved:
         notes.append("column(s) " + ", ".join(sorted(unresolved)) +
@@ -402,6 +423,7 @@ CATEGORY_TO_CHECKLIST_KEY = {
     "system-metrics": "system",
     "gpu-metrics": "gpu",
     "ibs": "ibs",
+    "power": "power",
 }
 
 # Which of a checklist section's own option keys are booleans (recorded as
@@ -418,6 +440,7 @@ _BOOL_OPTION_KEYS = {
     "system": {"csv"},
     "gpu": {"busy", "metrics", "smi", "csv"},
     "ibs": set(),
+    "power": {"csv"},
 }
 
 
@@ -478,7 +501,7 @@ def build_configuration_passes(rundir, checklist):
     real wspy flags -- used identically by the preview endpoint and the real
     executor, so a preview is never a paraphrase of what actually runs.
     Returns a list of {"name","category","options","flags","csv","timeout"}
-    dicts, in the fixed tree/counters/system/gpu/ibs order, one per *enabled
+    dicts, in the fixed tree/counters/system/gpu/ibs/power order, one per *enabled
     and non-empty* configuration (an enabled configuration with nothing
     meaningful selected, e.g. "counters" with no groups checked, is silently
     skipped rather than producing a no-op wspy invocation). "category" is
@@ -620,6 +643,19 @@ def build_configuration_passes(rundir, checklist):
             flags.append("--csv")
         passes.append({"name": "ibs", "category": "ibs",
                         "options": _config_options(ibs),
+                        "flags": flags, "csv": csv, "timeout": None})
+
+    power = checklist.get("power") or {}
+    if power.get("enabled"):
+        interval = parse_optional_int(power.get("interval_secs"), 1, 3600)
+        csv = bool(power.get("csv", True))
+        flags = ["--power", "--no-ipc", "--no-rusage", "--no-software"]
+        if interval is not None:
+            flags += ["--interval", str(interval)]
+        if csv:
+            flags.append("--csv")
+        passes.append({"name": "power", "category": "power",
+                        "options": _config_options(power),
                         "flags": flags, "csv": csv, "timeout": None})
 
     return passes

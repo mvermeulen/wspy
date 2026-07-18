@@ -57,6 +57,17 @@ if [ -d /sys/devices/system/node/node1 ]; then
 fi
 echo "Detected second NUMA node (node1): $has_remote_numa"
 
+# power/energy-pkg (power.c, RAPL-equivalent) presence is a sysfs/kernel
+# fact independent of CPU vendor (Intel RAPL has reported it for years; AMD
+# Family 19h+ support is newer) -- confirmed unsupported (yet) on real Intel
+# hardware in practice, so this is gated on sysfs presence directly rather
+# than assumed from vendor the way the AMD raw-event block below is.
+has_power_pmu="no"
+if [ -e /sys/bus/event_source/devices/power/events/energy-pkg ]; then
+  has_power_pmu="yes"
+fi
+echo "Detected CPU power/energy-pkg PMU: $has_power_pmu"
+
 # assert_csv_header <label> <flags...> -- <expected exact header line>
 assert_csv_header() {
   local label="$1"; shift
@@ -153,6 +164,17 @@ assert_csv_header "default-ipc"             -- "${BASE}ipc,counters_measured,cou
 assert_csv_header "no-rusage"   --no-rusage -- "ipc,counters_measured,counters_requested,"
 assert_csv_header "topdown"     --no-ipc --topdown  -- "${BASE}retire,frontend,backend,speculate,confidence,sanity,counters_measured,counters_requested,"
 assert_csv_header "topdown2"    --no-ipc --topdown2 -- "${BASE}retire,frontend,backend,speculate,confidence,sanity,counters_measured,counters_requested,"
+# power/energy-pkg's column names are vendor-neutral (unlike the AMD raw
+# event labels below), so this is checked here rather than inside the
+# vendor-gated block -- gated on sysfs presence instead: an unsupported
+# host/kernel correctly contributes zero extra columns (power_counter_group()
+# returns NULL), same shape as "topdown-backend-unsupported-on-amd"/
+# "cache1-not-yet-implemented" below.
+if [ "$has_power_pmu" = "yes" ]; then
+  assert_csv_header "power"          --no-ipc --power -- "${BASE}pkg_joules,pkg_watts,counters_measured,counters_requested,"
+else
+  assert_csv_header "power-unsupported" --no-ipc --power -- "${BASE}counters_measured,counters_requested,"
+fi
 
 echo ""
 echo "=== CSV header contract (exact match, --interval phase-boundary detection) ==="
@@ -245,6 +267,7 @@ assert_csv_columns_match "rusage" --rusage
 assert_csv_columns_match "no-rusage" --no-rusage
 assert_csv_columns_match "ibs-basic" --ibs-basic
 assert_csv_columns_match "ibs-memory-deep" --ibs-memory-deep
+assert_csv_columns_match "power" --power
 assert_csv_columns_match "arm-dcache-mem" --arm-dcache-mem
 assert_csv_columns_match "arm-icache-tlb" --arm-icache-tlb
 assert_csv_columns_match "arm-mem-align-tlb" --arm-mem-align-tlb
