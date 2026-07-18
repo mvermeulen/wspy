@@ -21,8 +21,8 @@
  *
  * V1 scope is package-level only: power_core (per-core energy) is probed
  * for --capabilities discovery but never opened as a real counter -- see
- * power_counter_group()'s comment. Tracked as
- * https://github.com/mvermeulen/wspy/issues/76.
+ * power_counter_group()'s comment and INVESTIGATION_4.0.md's Tier 11
+ * follow-up note (4.2 priorities) for the deferred per-core work.
  */
 #ifndef _WSPY_POWER_H
 #define _WSPY_POWER_H 1

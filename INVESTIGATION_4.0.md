@@ -844,7 +844,7 @@ layered on top of the v1 aggregate-only design above, not a bigger version of th
 call. Worth doing later (it would answer "which core(s) actually cost the energy," not just "how much
 total"), but not blocking v1's package-level number from shipping. Left as a documented follow-up, same
 treatment `wspy-run`'s builtin-profiles-onto-`--passes` collapse (4.2 Tier 10 item #28) already gets --
-tracked as [issue #76](https://github.com/mvermeulen/wspy/issues/76).
+tracked below (Tier 11), not as a separate GitHub issue.
 
 **No manifest/run-index schema change needed for v1** — it's an ordinary counter group like `float`/
 `opcache`, covered by `counter_coverage`'s existing generic measured/requested accounting, no new
@@ -1152,8 +1152,9 @@ existing 17 named in `CLAUDE.md`'s "Counter mask bits"):**
     fixtures), a new per-counter `struct counter_info.scale` field `read_counters()` (`topdown.c`)
     applies alongside its existing multiplex-scaling step so `.scaled_value` is real Joules by the
     time `print_power()` sees it, and v1's package-level-only scope (`power_core`/per-core energy is
-    still probed for `--capabilities` discovery but not opened as a real counter, tracked as
-    [issue #76](https://github.com/mvermeulen/wspy/issues/76)). System-wide only, like software/IBS, and deliberately excluded from
+    still probed for `--capabilities` discovery but not opened as a real counter -- see this same
+    item's "V1 scope deliberately excludes `power_core`" paragraph above for the deferred follow-up).
+    System-wide only, like software/IBS, and deliberately excluded from
     `COUNTER_ALL`/`--passes` (its own fatal incompatibility check, mirroring IBS's). Because it links
     into `cpu_info->systemwide_counters` exactly like every other systemwide group, `--interval`
     support needed no interval-specific plumbing at all — `timer_callback()`'s existing generic
