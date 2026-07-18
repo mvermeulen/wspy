@@ -362,6 +362,150 @@ static void test_default_mode_combines_custom_and_builtins(void){
   printf("PASS: default mode combines the custom plot with built-in templates and the fallback\n");
 }
 
+static void test_power_vs_frequency_template_dual_axis(void){
+  /* Both pkg_watts and freq present -- the pairing fires and claims both
+   * columns, with freq routed to the secondary axis. */
+  char line[] = "time,pkg_joules,pkg_watts,freq,";
+  char *fields[MAX_CSV_FIELDS];
+  int n,time_col,claimed[MAX_CSV_FIELDS] = {0};
+  struct plot_match matches[MAX_CSV_FIELDS];
+  int nmatches,i,found_pkg_watts = 0,found_freq = 0;
+
+  printf("Testing power-vs-frequency template fires with a real secondary axis...\n");
+  n = split_csv_line(line,fields,MAX_CSV_FIELDS);
+  time_col = find_col(fields,n,"time");
+
+  nmatches = match_templates(fields,n,time_col,matches,MAX_CSV_FIELDS,claimed,0);
+  assert(nmatches == 1);
+  assert(!strcmp(matches[0].name,"power-vs-frequency"));
+  assert(matches[0].ncols == 2);
+  assert(matches[0].y2label[0] != '\0');
+  for (i = 0; i < matches[0].ncols; i++){
+    if (matches[0].cols[i] == find_col(fields,n,"pkg_watts")){
+      assert(matches[0].col_axis[i] == 0);
+      found_pkg_watts = 1;
+    }
+    if (matches[0].cols[i] == find_col(fields,n,"freq")){
+      assert(matches[0].col_axis[i] == 1);
+      found_freq = 1;
+    }
+  }
+  assert(found_pkg_watts && found_freq);
+  /* pkg_joules is untouched by this template and still available to the
+   * generic fallback. */
+  assert(!claimed[find_col(fields,n,"pkg_joules")]);
+  printf("PASS: power-vs-frequency pairs pkg_watts (y1) with freq (y2)\n");
+}
+
+static void test_power_template_absent_without_pairing_column(void){
+  /* pkg_watts alone (no freq/cpu/gpu_busy/ipc/topdown) fires no power-vs-*
+   * template -- a half-satisfied pairing isn't the plot that was asked
+   * for, and pkg_watts should still be reachable via the generic fallback. */
+  char line[] = "time,pkg_joules,pkg_watts,";
+  char *fields[MAX_CSV_FIELDS];
+  int n,time_col,claimed[MAX_CSV_FIELDS] = {0};
+  struct plot_match matches[MAX_CSV_FIELDS];
+  int nmatches;
+
+  printf("Testing no power-vs-* template fires on a --power-only header...\n");
+  n = split_csv_line(line,fields,MAX_CSV_FIELDS);
+  time_col = find_col(fields,n,"time");
+
+  nmatches = match_templates(fields,n,time_col,matches,MAX_CSV_FIELDS,claimed,0);
+  assert(nmatches == 0);
+  assert(!claimed[find_col(fields,n,"pkg_watts")]);
+
+  nmatches = add_fallback_match(fields,n,time_col,-1,-1,claimed,matches,MAX_CSV_FIELDS,nmatches);
+  assert(nmatches == 1);
+  assert(!strcmp(matches[0].name,"metrics"));
+  assert(matches[0].ncols == 2); /* pkg_joules, pkg_watts */
+  printf("PASS: pkg_watts without a pairing column falls through to the generic fallback\n");
+}
+
+static void test_power_vs_topdown_requires_min_match(void){
+  /* power-vs-topdown needs 2 of the topdown four, same threshold as the
+   * plain "topdown" template -- one alone isn't enough to fire either. */
+  char line[] = "time,pkg_watts,retire,";
+  char *fields[MAX_CSV_FIELDS];
+  int n,time_col,claimed[MAX_CSV_FIELDS] = {0};
+  struct plot_match matches[MAX_CSV_FIELDS];
+  int nmatches;
+
+  printf("Testing power-vs-topdown requires its own y2min_match threshold...\n");
+  n = split_csv_line(line,fields,MAX_CSV_FIELDS);
+  time_col = find_col(fields,n,"time");
+
+  nmatches = match_templates(fields,n,time_col,matches,MAX_CSV_FIELDS,claimed,0);
+  assert(nmatches == 0); /* only 1 of retire/frontend/backend/speculate present */
+  printf("PASS: power-vs-topdown doesn't fire on a single topdown column\n");
+}
+
+static void test_parse_custom_plot_spec_secondary_axis(void){
+  struct custom_plot_spec spec;
+
+  printf("Testing parse_custom_plot_spec's ';' secondary-axis syntax...\n");
+  assert(parse_custom_plot_spec("power=pkg_watts;freq,ipc",&spec) == 1);
+  assert(!strcmp(spec.name,"power"));
+  assert(spec.ncolumns == 1);
+  assert(!strcmp(spec.columns[0],"pkg_watts"));
+  assert(spec.ny2columns == 2);
+  assert(!strcmp(spec.y2columns[0],"freq"));
+  assert(!strcmp(spec.y2columns[1],"ipc"));
+
+  /* no ';' at all -- unchanged from before, no secondary columns. */
+  assert(parse_custom_plot_spec("mygroup=retire,frontend",&spec) == 1);
+  assert(spec.ny2columns == 0);
+  printf("PASS: parse_custom_plot_spec's secondary-axis syntax\n");
+}
+
+static void test_custom_plot_secondary_axis_match(void){
+  char line[] = "time,pkg_watts,freq,";
+  char *fields[MAX_CSV_FIELDS];
+  int n,time_col,claimed[MAX_CSV_FIELDS] = {0};
+  struct plot_match matches[MAX_CSV_FIELDS];
+  struct custom_plot_spec spec;
+  int nmatches;
+
+  printf("Testing add_custom_plot_match() routes ';'-separated columns to the secondary axis...\n");
+  n = split_csv_line(line,fields,MAX_CSV_FIELDS);
+  time_col = find_col(fields,n,"time");
+  assert(parse_custom_plot_spec("power=pkg_watts;freq",&spec) == 1);
+
+  nmatches = add_custom_plot_match(fields,n,time_col,&spec,claimed,matches,MAX_CSV_FIELDS,0,
+                                    "test.csv",1 /* quiet */);
+  assert(nmatches == 1);
+  assert(matches[0].ncols == 2);
+  assert(matches[0].y2label[0] != '\0');
+  assert(matches[0].cols[0] == find_col(fields,n,"pkg_watts"));
+  assert(matches[0].col_axis[0] == 0);
+  assert(matches[0].cols[1] == find_col(fields,n,"freq"));
+  assert(matches[0].col_axis[1] == 1);
+  printf("PASS: custom --plot secondary-axis columns land in col_axis==1\n");
+}
+
+static void test_custom_plot_missing_secondary_column_warns_not_fatal(void){
+  /* The secondary-axis column is absent from this CSV -- the primary axis
+   * still fires (with no secondary axis, since nothing landed on it). */
+  char line[] = "time,pkg_watts,";
+  char *fields[MAX_CSV_FIELDS];
+  int n,time_col,claimed[MAX_CSV_FIELDS] = {0};
+  struct plot_match matches[MAX_CSV_FIELDS];
+  struct custom_plot_spec spec;
+  int nmatches;
+
+  printf("Testing a missing secondary-axis column degrades to primary-only...\n");
+  n = split_csv_line(line,fields,MAX_CSV_FIELDS);
+  time_col = find_col(fields,n,"time");
+  assert(parse_custom_plot_spec("power=pkg_watts;freq",&spec) == 1);
+
+  nmatches = add_custom_plot_match(fields,n,time_col,&spec,claimed,matches,MAX_CSV_FIELDS,0,
+                                    "test.csv",1);
+  assert(nmatches == 1);
+  assert(matches[0].ncols == 1);
+  assert(matches[0].y2label[0] == '\0'); /* nothing actually landed on the secondary axis */
+  printf("PASS: a missing secondary-axis column doesn't leave a dangling y2 label\n");
+}
+
 static void test_basename_without_ext(void){
   char out[MAX_NAME_LEN];
 
@@ -417,6 +561,12 @@ int main(void){
   test_custom_plot_missing_column_warns_not_fatal();
   test_only_custom_skips_builtins_and_fallbacks();
   test_default_mode_combines_custom_and_builtins();
+  test_power_vs_frequency_template_dual_axis();
+  test_power_template_absent_without_pairing_column();
+  test_power_vs_topdown_requires_min_match();
+  test_parse_custom_plot_spec_secondary_axis();
+  test_custom_plot_secondary_axis_match();
+  test_custom_plot_missing_secondary_column_warns_not_fatal();
   test_basename_without_ext();
   test_process_csv_skips_aggregate_csv();
   test_process_csv_empty_file();

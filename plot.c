@@ -49,6 +49,19 @@ struct plot_template {
   const char *metrics[MAX_TEMPLATE_METRICS]; /* candidate metric column names, preferred plot order */
   int min_match;                              /* how many of metrics[] must be present to fire */
   const char *style;                          /* gnuplot "with" style, e.g. "points" or "lines" */
+  /* Optional secondary (right-hand) y axis -- for pairing two metrics that
+   * don't share a natural scale (e.g. pkg_watts alongside a 0-100 busy% or
+   * a 0-4 IPC ratio) onto one time series instead of flattening one of them
+   * on a shared linear axis. y2min_match == 0 (the default for every
+   * existing template, via C's zero-init of unspecified trailing fields)
+   * means "no secondary axis" -- the whole template behaves exactly as
+   * before. When y2min_match > 0, the *entire* template requires both the
+   * primary min_match and this secondary one to be met before it fires --
+   * a "power-vs-frequency" plot with no frequency data isn't a lesser
+   * version of itself, it's not the plot that was asked for. */
+  const char *y2_metrics[MAX_TEMPLATE_METRICS];
+  const char *y2label;
+  int y2min_match;
 };
 
 /* Column names below are the literal wspy CSV header text for each counter
@@ -85,6 +98,24 @@ static const struct plot_template templates[] = {
     { "ibs_fetch","ibs_op","ibs_op_unfiltered" }, 1, "points" },
   { "ibs-accepted-ratio", "IBS Op Accepted Ratio (filtered/unfiltered)", "ratio",
     { "ibs_op_accepted_ratio" }, 1, "points" },
+  /* power.c's pkg_watts paired against a second variable on its own
+   * (right-hand) axis -- watts (tens-hundreds) shares no useful scale with
+   * a busy percentage, a MHz frequency, or a 0-4 IPC ratio. Each requires
+   * --power's own column *and* the paired column(s) to be present, so a
+   * --power-only CSV still falls through to the generic fallback plot
+   * exactly as before rather than firing a half-empty pairing. */
+  { "power-vs-utilization", "Package Power vs. CPU/GPU Utilization", "Watts",
+    { "pkg_watts" }, 1, "lines",
+    { "cpu","gpu_busy" }, "% busy", 1 },
+  { "power-vs-frequency", "Package Power vs. CPU Frequency", "Watts",
+    { "pkg_watts" }, 1, "lines",
+    { "freq" }, "MHz", 1 },
+  { "power-vs-ipc", "Package Power vs. IPC", "Watts",
+    { "pkg_watts" }, 1, "lines",
+    { "ipc" }, "IPC", 1 },
+  { "power-vs-topdown", "Package Power vs. Topdown Breakdown", "Watts",
+    { "pkg_watts" }, 1, "lines",
+    { "retire","frontend","backend","speculate" }, "% of pipeline slots", 2 },
 };
 static const int ntemplates = sizeof(templates) / sizeof(templates[0]);
 
@@ -99,7 +130,11 @@ struct plot_match {
   const char *style;   /* gnuplot "with" style; always "lines" outside match_templates() */
   int time_col;
   int cols[MAX_CSV_FIELDS];
+  int col_axis[MAX_CSV_FIELDS]; /* parallel to cols[]: 0 = primary (y1), 1 = secondary (y2) --
+                                  * only meaningful (and only ever read) when y2label[0] != '\0' */
   int ncols;
+  char y2label[64];     /* empty (the default every builder must set explicitly) means no
+                          * secondary axis -- render_match() never consults col_axis[] otherwise */
 };
 
 /* Mirrored verbatim from validate.c/store.c's own split_csv_line() -- this
@@ -143,6 +178,8 @@ static int match_templates(char * const *header_fields,int header_n,int time_col
     const struct plot_template *tmpl = &templates[t];
     int found[MAX_TEMPLATE_METRICS];
     int nfound = 0,m,i;
+    int y2found[MAX_TEMPLATE_METRICS];
+    int ny2found = 0;
     struct plot_match *pm;
 
     for (m = 0; m < MAX_TEMPLATE_METRICS && tmpl->metrics[m]; m++){
@@ -151,16 +188,36 @@ static int match_templates(char * const *header_fields,int header_n,int time_col
     }
     if (nfound < tmpl->min_match) continue;
 
+    if (tmpl->y2min_match > 0){
+      for (m = 0; m < MAX_TEMPLATE_METRICS && tmpl->y2_metrics[m]; m++){
+        int idx = find_col(header_fields,header_n,tmpl->y2_metrics[m]);
+        if (idx >= 0) y2found[ny2found++] = idx;
+      }
+      if (ny2found < tmpl->y2min_match) continue; /* secondary-axis pairing not satisfied */
+    }
+
     pm = &matches[n++];
     snprintf(pm->name,sizeof(pm->name),"%s",tmpl->name);
     snprintf(pm->title,sizeof(pm->title),"%s",tmpl->title);
     snprintf(pm->ylabel,sizeof(pm->ylabel),"%s",tmpl->ylabel);
+    pm->y2label[0] = '\0';
     pm->style = tmpl->style;
     pm->time_col = time_col;
-    pm->ncols = nfound;
+    pm->ncols = 0;
     for (i = 0; i < nfound; i++){
-      pm->cols[i] = found[i];
+      pm->cols[pm->ncols] = found[i];
+      pm->col_axis[pm->ncols] = 0;
       claimed[found[i]] = 1;
+      pm->ncols++;
+    }
+    if (ny2found > 0){
+      snprintf(pm->y2label,sizeof(pm->y2label),"%s",tmpl->y2label);
+      for (i = 0; i < ny2found; i++){
+        pm->cols[pm->ncols] = y2found[i];
+        pm->col_axis[pm->ncols] = 1;
+        claimed[y2found[i]] = 1;
+        pm->ncols++;
+      }
     }
   }
   return n;
@@ -203,6 +260,7 @@ static int add_network_fallback_match(char * const *header_fields,int header_n,
   if (n >= max_matches) return n;
   pm = &matches[n];
   pm->ncols = 0;
+  pm->y2label[0] = '\0';
   for (i = 0; i < header_n; i++){
     if (claimed[i] || !*header_fields[i]) continue;
     if (strncmp(header_fields[i],"net ",4)) continue;
@@ -234,6 +292,7 @@ static int add_fallback_match(char * const *header_fields,int header_n,
   if (n >= max_matches) return n;
   pm = &matches[n];
   pm->ncols = 0;
+  pm->y2label[0] = '\0';
   for (i = 0; i < header_n; i++){
     if (i == time_col || i == core_col || i == phase_col) continue;
     if (!*header_fields[i]) continue; /* trailing empty header cell from wspy's own trailing comma */
@@ -266,16 +325,24 @@ struct custom_plot_spec {
   char name[64];
   char columns[MAX_CUSTOM_COLUMNS][128];
   int ncolumns;
+  /* Columns after an optional ';' in the --plot argument -- rendered on a
+   * secondary (right-hand) y axis, for pairing columns that don't share a
+   * scale with the primary group (e.g. pkg_watts;freq). Empty (ny2columns
+   * == 0) is the common case and behaves exactly as before. */
+  char y2columns[MAX_CUSTOM_COLUMNS][128];
+  int ny2columns;
 };
 
-/* Parses "NAME=col1,col2,..." (the --plot argument text) into spec.
- * Returns 1 on success, 0 if the argument has no '=', an empty name, or no
- * column names at all -- a usage error the caller should reject up front,
- * not something to discover per-CSV later. */
+/* Parses "NAME=col1,col2,...[;col3,col4,...]" (the --plot argument text)
+ * into spec -- columns before an optional ';' go on the primary axis,
+ * columns after it (if any) go on the secondary axis. Returns 1 on
+ * success, 0 if the argument has no '=', an empty name, or no column names
+ * at all on either side -- a usage error the caller should reject up
+ * front, not something to discover per-CSV later. */
 static int parse_custom_plot_spec(const char *arg,struct custom_plot_spec *spec){
   const char *eq = strchr(arg,'=');
   char cols_buf[1024];
-  char *tok,*saveptr;
+  char *secondary,*tok,*saveptr;
   size_t name_len;
 
   if (!eq || eq == arg) return 0;
@@ -286,13 +353,29 @@ static int parse_custom_plot_spec(const char *arg,struct custom_plot_spec *spec)
 
   snprintf(cols_buf,sizeof(cols_buf),"%s",eq + 1);
   spec->ncolumns = 0;
+  spec->ny2columns = 0;
+
+  secondary = strchr(cols_buf,';');
+  if (secondary){
+    *secondary = '\0';
+    secondary++;
+  }
+
   tok = strtok_r(cols_buf,",",&saveptr);
   while (tok && spec->ncolumns < MAX_CUSTOM_COLUMNS){
     snprintf(spec->columns[spec->ncolumns],sizeof(spec->columns[0]),"%s",tok);
     spec->ncolumns++;
     tok = strtok_r(NULL,",",&saveptr);
   }
-  return *spec->name && spec->ncolumns > 0;
+  if (secondary){
+    tok = strtok_r(secondary,",",&saveptr);
+    while (tok && spec->ny2columns < MAX_CUSTOM_COLUMNS){
+      snprintf(spec->y2columns[spec->ny2columns],sizeof(spec->y2columns[0]),"%s",tok);
+      spec->ny2columns++;
+      tok = strtok_r(NULL,",",&saveptr);
+    }
+  }
+  return *spec->name && (spec->ncolumns > 0 || spec->ny2columns > 0);
 }
 
 /* Matches one --plot spec against a CSV header: any of its named columns
@@ -311,11 +394,12 @@ static int add_custom_plot_match(char * const *header_fields,int header_n,int ti
                                   struct plot_match *matches,int max_matches,int n,
                                   const char *csv_path,int quiet){
   struct plot_match *pm;
-  int i;
+  int i,ny2added = 0;
 
   if (n >= max_matches) return n;
   pm = &matches[n];
   pm->ncols = 0;
+  pm->y2label[0] = '\0';
   for (i = 0; i < spec->ncolumns; i++){
     int idx = find_col(header_fields,header_n,spec->columns[i]);
 
@@ -325,13 +409,34 @@ static int add_custom_plot_match(char * const *header_fields,int header_n,int ti
                 csv_path,spec->name,spec->columns[i]);
       continue;
     }
-    if (pm->ncols < MAX_CSV_FIELDS) pm->cols[pm->ncols++] = idx;
+    if (pm->ncols < MAX_CSV_FIELDS){
+      pm->cols[pm->ncols] = idx;
+      pm->col_axis[pm->ncols] = 0;
+      pm->ncols++;
+    }
+  }
+  for (i = 0; i < spec->ny2columns; i++){
+    int idx = find_col(header_fields,header_n,spec->y2columns[i]);
+
+    if (idx < 0){
+      if (!quiet)
+        fprintf(stderr,"wspy-plot: %s: --plot %s: column '%s' (secondary axis) not in this CSV's "
+                       "header, skipping it\n",csv_path,spec->name,spec->y2columns[i]);
+      continue;
+    }
+    if (pm->ncols < MAX_CSV_FIELDS){
+      pm->cols[pm->ncols] = idx;
+      pm->col_axis[pm->ncols] = 1;
+      pm->ncols++;
+      ny2added++;
+    }
   }
   if (pm->ncols == 0) return n;
   for (i = 0; i < pm->ncols; i++) claimed[pm->cols[i]] = 1;
   snprintf(pm->name,sizeof(pm->name),"%s",spec->name);
   snprintf(pm->title,sizeof(pm->title),"%s",spec->name);
   snprintf(pm->ylabel,sizeof(pm->ylabel),"value");
+  if (ny2added > 0) snprintf(pm->y2label,sizeof(pm->y2label),"value (secondary)");
   pm->style = "lines";
   pm->time_col = time_col;
   return n + 1;
@@ -357,6 +462,7 @@ static int render_match(const char *csv_path,const struct plot_match *pm,const c
   FILE *gp;
   int i;
   int rc;
+  int has_y2 = pm->y2label[0] != '\0';
 
   gp = popen("gnuplot","w");
   if (!gp){
@@ -376,10 +482,18 @@ static int render_match(const char *csv_path,const struct plot_match *pm,const c
   fprintf(gp,"set key autotitle columnhead\n");
   fprintf(gp,"set xlabel 'time (s)'\n");
   fprintf(gp,"set ylabel '%s'\n",pm->ylabel);
+  if (has_y2){
+    /* nomirror: without it gnuplot draws y1's tics on the right edge too,
+     * which then collide visually with y2's own tics there. */
+    fprintf(gp,"set ytics nomirror\n");
+    fprintf(gp,"set y2tics\n");
+    fprintf(gp,"set y2label '%s'\n",pm->y2label);
+  }
   fprintf(gp,"plot ");
   for (i = 0; i < pm->ncols; i++){
     if (i) fprintf(gp,", ");
     fprintf(gp,"'%s' using %d:%d with %s",csv_path,pm->time_col + 1,pm->cols[i] + 1,pm->style);
+    if (has_y2 && pm->col_axis[i] == 1) fprintf(gp," axes x1y2");
   }
   fprintf(gp,"\n");
   rc = pclose(gp);
@@ -501,10 +615,16 @@ static void print_template_catalog(void){
   printf("Built-in plot templates:\n");
   for (t = 0; t < ntemplates; t++){
     const struct plot_template *tmpl = &templates[t];
-    printf("  %-14s %-28s (needs %d of: ",tmpl->name,tmpl->title,tmpl->min_match);
+    printf("  %-22s %-40s (needs %d of: ",tmpl->name,tmpl->title,tmpl->min_match);
     for (m = 0; m < MAX_TEMPLATE_METRICS && tmpl->metrics[m]; m++)
       printf("%s%s",m ? ", " : "",tmpl->metrics[m]);
-    printf(")\n");
+    printf(")");
+    if (tmpl->y2min_match > 0){
+      printf(" + %d of secondary axis: ",tmpl->y2min_match);
+      for (m = 0; m < MAX_TEMPLATE_METRICS && tmpl->y2_metrics[m]; m++)
+        printf("%s%s",m ? ", " : "",tmpl->y2_metrics[m]);
+    }
+    printf("\n");
   }
   printf("  %-14s %-28s (any \"net <iface>\" column, e.g. --system's per-interface byte counters)\n",
          "network-io","Network I/O (fallback)");
@@ -532,7 +652,7 @@ static void usage(const char *prog){
     "  --csv <file>        a specific CSV file to plot (repeatable)\n"
     "  --out-dir <dir>     where to write *.png (default: <rundir>/plots,\n"
     "                      or \".\" if --rundir was not given)\n"
-    "  --plot NAME=col1,col2,...\n"
+    "  --plot NAME=col1,col2,...[;col3,col4,...]\n"
     "                      define a custom plot grouping exactly these CSV\n"
     "                      column names together (repeatable) -- useful when\n"
     "                      counters that matter to you don't share a scale\n"
@@ -541,6 +661,11 @@ static void usage(const char *prog){
     "                      column missing from a given CSV is skipped with a\n"
     "                      warning, not fatal; if none of NAME's columns are\n"
     "                      present in a CSV, no plot is produced for it there.\n"
+    "                      Columns after an optional ';' are plotted on a\n"
+    "                      secondary (right-hand) y axis, for pairing columns\n"
+    "                      that don't share a scale with the primary group,\n"
+    "                      e.g. --plot power=pkg_watts;freq pairs Watts\n"
+    "                      against MHz instead of flattening one of them.\n"
     "  --only-custom       skip every built-in template and fallback plot --\n"
     "                      render only the --plot spec(s) given. Requires at\n"
     "                      least one --plot.\n"

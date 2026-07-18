@@ -196,10 +196,17 @@ load_builtin_profile(){
       # own requires=/sys/devices/system/node/node1 gate (topdown.c) so on
       # a single-NUMA-node host (most client/APU parts) the group is a real
       # zero-cost skip rather than a pass spent measuring a number that can
-      # only ever read as "100% local".
+      # only ever read as "100% local". --power rides along on systemtime
+      # (not the --passes sweep, which fatals against --power -- it's a
+      # separate system-wide RAPL PMU with no multi-pass merge semantics,
+      # same reasoning as IBS) rather than amdtopdown: systemtime already
+      # opens zero hardware counters, so --power is a genuinely free
+      # addition there, and it lands pkg_watts/pkg_joules in the same CSV
+      # as cpu/freq -- exactly what wspy-plot's power-vs-utilization/
+      # power-vs-frequency dual-axis templates pair it against.
       PASS_NAMES=(systemtime counters amdtopdown)
       PASS_FLAGS=(
-        "--csv --interval 1 --no-rusage --no-software --system --no-ipc"
+        "--csv --interval 1 --no-rusage --no-software --system --no-ipc --power"
         "--passes=software,branch,ipc,topdown2,cache2,cache3,memory,float,topdown-frontend,topdown-optlb"
         "--csv --interval 1 --topdown --no-rusage --no-software --no-ipc"
       )

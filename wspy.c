@@ -1107,7 +1107,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t--no-phase-detect         - disable automatic phase (warmup/steady/degraded)\n"
 	    "\t                            detection on --interval samples (on by default)\n"
 	    "\t--verbose or -v           - print verbose information\n"
-	    "\t--system                  - system-wide metrics (load, cpu, gpu, network)\n"
+	    "\t--system                  - system-wide metrics (load, cpu, freq, gpu, network)\n"
 	    "\n"
 	    "\t--software or -s          - software counters\n"
 	    "\t--ipc or i                - IPC counters\n"

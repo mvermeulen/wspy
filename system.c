@@ -8,13 +8,14 @@
 #include <unistd.h>
 #include <time.h>
 #include <ctype.h>
+#include <dirent.h>
 #include "wspy.h"
 #include "error.h"
 #if AMDGPU
 #include "amd_sysfs.h"
 #endif
 
-unsigned int system_mask = SYSTEM_LOADAVG|SYSTEM_CPU|SYSTEM_NETWORK;
+unsigned int system_mask = SYSTEM_LOADAVG|SYSTEM_CPU|SYSTEM_NETWORK|SYSTEM_FREQ;
 
 struct netinfo {
   char *name;
@@ -32,6 +33,7 @@ struct system_state {
   } cpu;
   int num_net;
   struct netinfo *netinfo;
+  double freq_mhz; // average current frequency across online cpus with cpufreq
 #if AMDGPU
   struct gpu {
     int busy_percent;
@@ -83,6 +85,44 @@ void setup_net_info(void){
     free(system_state.netinfo);
     system_state.netinfo = NULL;
   }
+}
+
+// cpu ids (from /sys/devices/system/cpu/cpu<N>) that expose cpufreq's
+// scaling_cur_freq, cached once since the set doesn't change mid-run
+static int *freq_cpu_ids = NULL;
+static int num_freq_cpus = 0;
+static int freq_setup_done = 0;
+
+// scan /sys/devices/system/cpu for cpu<N> entries with a readable
+// cpufreq/scaling_cur_freq file -- readdir-driven rather than assuming
+// 0..num_procs-1 are all present/online, same idiom as amd_sysfs.c's
+// device scan
+static void setup_freq_info(void){
+  DIR *dir;
+  struct dirent *entry;
+  int capacity = 0;
+  char path[256];
+  char *endptr;
+  long id;
+
+  freq_setup_done = 1;
+  if ((dir = opendir("/sys/devices/system/cpu")) == NULL) return;
+  while ((entry = readdir(dir)) != NULL){
+    if (strncmp(entry->d_name,"cpu",3) != 0) continue;
+    id = strtol(entry->d_name+3,&endptr,10);
+    if (endptr == entry->d_name+3 || *endptr != '\0') continue; // not "cpu<digits>"
+    snprintf(path,sizeof(path),"/sys/devices/system/cpu/cpu%ld/cpufreq/scaling_cur_freq",id);
+    if (access(path,R_OK) != 0) continue;
+    if (num_freq_cpus >= capacity){
+      int newcap = capacity ? capacity * 2 : 8;
+      int *newlist = realloc(freq_cpu_ids,newcap * sizeof(int));
+      if (newlist == NULL) break;
+      freq_cpu_ids = newlist;
+      capacity = newcap;
+    }
+    freq_cpu_ids[num_freq_cpus++] = (int) id;
+  }
+  closedir(dir);
 }
 
 // read system-wide state
@@ -164,6 +204,25 @@ void read_system(void){
     system_state.gpu.busy_percent = system_state.gpu.last_busy_percent;
   }
 #endif
+  if (system_mask & SYSTEM_FREQ){
+    unsigned long khz;
+    double sum = 0;
+    int count = 0;
+    if (!freq_setup_done) setup_freq_info();
+    for (i=0;i<num_freq_cpus;i++){
+      snprintf(buffer,sizeof(buffer),"/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq",freq_cpu_ids[i]);
+      if ((fp = fopen(buffer,"r"))){
+        if (fscanf(fp,"%lu",&khz) == 1){
+          sum += khz;
+          count++;
+        }
+        fclose(fp);
+      }
+    }
+    // cpufreq unavailable (e.g. some VMs/containers) degrades to 0 rather
+    // than failing, same "measured vs unavailable" idiom used throughout
+    system_state.freq_mhz = count ? (sum / count) / 1000.0 : 0.0;
+  }
 }
 
 void print_system(enum output_format oformat){
@@ -180,6 +239,7 @@ void print_system(enum output_format oformat){
   case PRINT_CSV_HEADER:
     if (system_mask & SYSTEM_LOADAVG) fprintf(outfile,"load,runnable,");
     if (system_mask & SYSTEM_CPU) fprintf(outfile,"cpu,idle,iowait,irq,");
+    if (system_mask & SYSTEM_FREQ) fprintf(outfile,"freq,");
     if (system_mask & SYSTEM_NETWORK){
       if (system_state.netinfo == NULL) setup_net_info();
       for (i=0;i<system_state.num_net;i++) fprintf(outfile,"net %s,",system_state.netinfo[i].name);
@@ -200,6 +260,7 @@ void print_system(enum output_format oformat){
       fprintf(outfile,"%3.2f%%,",
 	      (double) (system_state.cpu.irqtime)/elapsed/num_procs);
     }
+    if (system_mask & SYSTEM_FREQ) fprintf(outfile,"%4.0f,",system_state.freq_mhz);
     if (system_mask & SYSTEM_NETWORK){
       if (system_state.netinfo == NULL) setup_net_info();
       for (i=0;i<system_state.num_net;i++){
@@ -225,7 +286,10 @@ void print_system(enum output_format oformat){
       fprintf(outfile,"io                   %3.2f%%\n",
 	      (double) (system_state.cpu.iowaittime/elapsed/num_procs));      
       fprintf(outfile,"irq                  %3.2f%%\n",
-	      (double) (system_state.cpu.irqtime)/elapsed/num_procs);      
+	      (double) (system_state.cpu.irqtime)/elapsed/num_procs);
+    }
+    if (system_mask & SYSTEM_FREQ){
+      fprintf(outfile,"freq                 %4.0f MHz\n",system_state.freq_mhz);
     }
     if (system_mask & SYSTEM_NETWORK){
       if (system_state.netinfo == NULL) setup_net_info();

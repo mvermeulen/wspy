@@ -192,7 +192,7 @@ COLUMN_TO_GROUP = {
 # toggling the checklist's separate "system" configuration rather than a
 # counters group. "net <iface>" is one column per interface discovered on
 # this host, so it's matched by prefix rather than listed by name.
-SYSTEM_COLUMN_NAMES = {"load", "runnable", "cpu", "idle", "iowait", "irq"}
+SYSTEM_COLUMN_NAMES = {"load", "runnable", "cpu", "idle", "iowait", "irq", "freq"}
 # --power's own columns (power.c/topdown.c's print_power()) -- same "not an
 # ALL_GROUPS entry" reasoning as SYSTEM_COLUMN_NAMES above: --power isn't a
 # counter_mask bit build_configuration_passes()'s "counters" section
@@ -301,7 +301,11 @@ def autofit_checklist_for_custom_plots(checklist, custom_plots):
 # warn about it.
 PROFILE_PLOTTABLE_COLUMNS = {
     "quick": set(),
-    "deep-cpu": SYSTEM_COLUMN_NAMES | {"net *",
+    # systemtime now also collects --power (wspy-run's load_builtin_profile()),
+    # so pkg_joules/pkg_watts land in the same CSV as cpu/freq -- POWER_COLUMN_NAMES
+    # here, not just SYSTEM_COLUMN_NAMES, since --power is its own checklist card
+    # (see resolve_column_group()'s "power" sentinel above), not a system_mask bit.
+    "deep-cpu": SYSTEM_COLUMN_NAMES | POWER_COLUMN_NAMES | {"net *",
                  "retire", "frontend", "backend", "speculate", "confidence", "sanity"},
     "deep-cpu-intel": set(),
     "deep-gpu": SYSTEM_COLUMN_NAMES | {"net *",
