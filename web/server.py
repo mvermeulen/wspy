@@ -920,7 +920,12 @@ def check_phoronix_batch_config():
     except ET.ParseError as e:
         return {"status": "unknown", "path": path, "settings": None,
                 "detail": f"could not parse {path}: {e}"}
-    batch_mode = root.find("BatchMode")
+    # Real-world files nest this under <Options> (<PhoronixTestSuite><Options>
+    # <BatchMode>...), confirmed against a live phoronix-test-suite v10.8.6
+    # install -- search anywhere in the tree rather than assuming a fixed
+    # depth, since that nesting isn't documented anywhere and could shift
+    # across versions.
+    batch_mode = root.find(".//BatchMode")
     if batch_mode is None:
         return {"status": "warn", "path": path, "settings": None,
                 "detail": "no <BatchMode> section -- run `phoronix-test-suite batch-setup` "
