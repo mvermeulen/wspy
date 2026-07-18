@@ -62,3 +62,7 @@ web/runs/
 # wspy-queue's / web/server.py's default job queue directory (item 13) --
 # generated pending/running/done/failed job files, not source.
 web/jobs/
+
+# workload/phoronix/run_test.sh's default OUTROOT="." run-index location --
+# generated per-run artifacts, not source.
+phoronix/
