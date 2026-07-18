@@ -74,6 +74,12 @@ DEFAULT_TEMPLATE = os.path.join(SCRIPT_DIR, "prompts", "perf_analysis.tmpl")
 DEFAULT_COMPARE_TEMPLATE = os.path.join(SCRIPT_DIR, "prompts", "perf_compare.tmpl")
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_TIMEOUT_SECONDS = 120
+# Applied only when neither --model nor --all-models is given, and only when
+# this exact name is confirmed installed (ollama_list_models()) -- never a
+# silent guess. Picked as a reasonable general-purpose default, not tuned
+# against this codebase's own prompt; override with --default-model or just
+# pass --model explicitly.
+DEFAULT_MODEL_IF_PRESENT = "gpt-oss:20b"
 
 # Short, model-facing explanations of what each counter group's columns mean.
 # Keyed by the same ALL_GROUPS/"system" names web/joblib.py's
@@ -465,6 +471,10 @@ def main():
                      help="Ollama model name to query (repeatable)")
     ap.add_argument("--all-models", action="store_true",
                      help="query every model 'ollama list' (via /api/tags) reports installed")
+    ap.add_argument("--default-model", default=DEFAULT_MODEL_IF_PRESENT,
+                     help="model to use when neither --model nor --all-models is given, "
+                          "IF it's actually installed (default: %(default)s); if it isn't "
+                          "installed, an explicit --model/--all-models is still required")
     ap.add_argument("--list-models", action="store_true",
                      help="print every model 'ollama list' (via /api/tags) reports installed, "
                           "one per line, and exit -- no --rundir needed. Lets a caller (e.g. "
@@ -562,8 +572,23 @@ def main():
             print("wspy-analyze: error: --all-models could not reach Ollama at %s: %s" % (
                 args.ollama_host, e), file=sys.stderr)
             return 1
+    elif not models and args.default_model:
+        # Neither --model nor --all-models given: fall back to
+        # --default-model, but only once confirmed installed -- never guess
+        # silently, and never invent a model name Ollama doesn't actually
+        # have. Any doubt (Ollama unreachable, model not installed) falls
+        # through to the explicit-choice error below, same as today.
+        try:
+            installed = ollama_list_models(args.ollama_host, args.timeout)
+        except (urllib.error.URLError, TimeoutError, OSError):
+            installed = []
+        if args.default_model in installed:
+            models = [args.default_model]
+            print("wspy-analyze: no --model given -- defaulting to %s (installed)" %
+                  args.default_model, file=sys.stderr)
     if not models:
-        ap.error("no model given -- pass --model NAME (repeatable) or --all-models")
+        ap.error("no model given -- pass --model NAME (repeatable) or --all-models "
+                 "(default model %r is not installed)" % args.default_model)
 
     any_ok = False
     for model in models:

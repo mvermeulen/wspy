@@ -137,6 +137,16 @@ echo "$OUT" | grep -q "retire: 39.3%" || { echo "FAIL: run B raw counter text mi
     echo "FAIL: aiprompt.compare.manual-sleep-test-run-2.txt not written into run A's directory"; exit 1; }
 echo "--compare-rundir dry-run OK"
 
+echo ""
+echo "=== Testing --default-model fallback: not installed falls through to explicit-choice error ==="
+if OUT="$(./wspy-analyze --rundir "$RUNDIR" --default-model "definitely-not-a-real-model:latest" 2>&1)"; then
+    echo "FAIL: expected a nonzero exit when the default model isn't installed"
+    exit 1
+fi
+echo "$OUT" | grep -q "default model 'definitely-not-a-real-model:latest' is not installed" || {
+    echo "FAIL: expected error message mentioning the unavailable default model"; exit 1; }
+echo "--default-model not-installed fallback OK"
+
 if ! command -v ollama >/dev/null 2>&1; then
     echo ""
     echo "=== ollama not on PATH -- skipping live-call section ==="
@@ -173,6 +183,14 @@ SLUG="$(printf '%s' "$MODEL" | tr -c 'A-Za-z0-9._-' '_')"
 ANALYSIS="$RUNDIR/aianalysis.$SLUG.txt"
 [ -s "$ANALYSIS" ] || { echo "FAIL: $ANALYSIS missing or empty"; exit 1; }
 echo "live call OK ($(wc -c < "$ANALYSIS") bytes from $MODEL)"
+
+echo ""
+echo "=== Testing --default-model fallback: installed model is used automatically ==="
+OUT="$(./wspy-analyze --rundir "$RUNDIR" --default-model "$MODEL" --timeout 120 2>&1)"
+echo "$OUT" | grep -qF "no --model given -- defaulting to $MODEL" || {
+    echo "FAIL: expected a 'defaulting to' message when --default-model is installed"; exit 1; }
+[ -s "$ANALYSIS" ] || { echo "FAIL: $ANALYSIS missing or empty after default-model run"; exit 1; }
+echo "--default-model installed fallback OK"
 
 echo ""
 echo "=== Testing a real Ollama call against $MODEL (comparative mode) ==="

@@ -2356,8 +2356,9 @@ def render_analyze_card(suite, benchmark, run_id):
    page).</p>
 <form id="analyze-form">
   <div class="row">
-    <label>Model(s) <span class="muted">(comma-separated Ollama model names)</span>
-      <input type="text" id="analyze-models" placeholder="e.g. llama3.1:8b">
+    <label>Model(s) <span class="muted">(comma-separated Ollama model names -- leave blank to use
+      wspy-analyze's own default model if it's installed, e.g. gpt-oss:20b)</span>
+      <input type="text" id="analyze-models" placeholder="e.g. llama3.1:8b (blank = default model)">
     </label>
     <button type="button" id="analyze-discover-models">Discover installed models</button>
   </div>
@@ -3312,7 +3313,14 @@ class Handler(BaseHTTPRequestHandler):
         """Report page's "AI narrative analysis" button (render_analyze_card()):
         runs wspy-analyze against an existing run directory, streamed over SSE
         via ANALYZE_RUNS the same way a launched workload's live log is (see
-        execute_analyze()'s own comment for why this doesn't reuse RUNS)."""
+        execute_analyze()'s own comment for why this doesn't reuse RUNS).
+        Neither models nor all_models is required: an empty models list with
+        all_models=False is passed straight through as a plain `wspy-analyze
+        --rundir <dir>` invocation with no --model/--all-models at all, so
+        wspy-analyze's own --default-model fallback (gpt-oss:20b if
+        installed) applies -- if that's also not installed, wspy-analyze
+        itself errors out and that error surfaces in the streamed log, same
+        as any other wspy-analyze failure."""
         rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
         if not os.path.isdir(rundir):
             self._send_json(404, {"error": "no such report"})
@@ -3322,10 +3330,6 @@ class Handler(BaseHTTPRequestHandler):
                   if isinstance(m, str) and m.strip()]
         all_models = bool(body.get("all_models"))
         critique = bool(body.get("critique"))
-        if not models and not all_models:
-            self._send_json(400, {"error": "give at least one model, or check "
-                                            "\"query every installed model\""})
-            return
 
         argv = [cfg["wspy_analyze_bin"], "--rundir", rundir]
         for m in models:
