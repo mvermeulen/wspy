@@ -96,9 +96,16 @@ default `"wspy"` — no non-wspy collector implementation exists yet, that's rea
 
 **AMD GPU track:** dynamic GPU path scan (`amd_sysfs_scan_devices()`, replacing the old `card1`
 hardcode); `--gpu-device=<idx>` override + full multi-GPU enumeration across both the sysfs and SMI
-backends. CUDA/Vulkan instrumentation is **cut from this roadmap** (project scope decision,
-2026-07-08) — this codebase has no NVIDIA/Vulkan code and builds against ROCm only; revisit only if
-the project's mission changes to cross-vendor GPU profiling.
+backends. GPU *kernel*-level instrumentation (CUDA/Vulkan profiling — tracing individual compute
+kernels/shaders, not point-in-time busy%/VRAM monitoring) is **cut from this roadmap** (project scope
+decision, 2026-07-08) — this codebase has no CUDA/Vulkan profiling code; revisit only if the project's
+mission changes to include GPU kernel-level profiling.
+**Revised 2026-07-18:** that decision was specifically about kernel-level instrumentation, not
+cross-vendor GPU *monitoring* — the narrower, AMD-parity capability (busy%/VRAM via a vendor
+management API, exactly what `amd_smi.c`/`amd_sysfs.c` already do for AMD) shipped as `--gpu-nvidia`
+(`nvidia_nvml.c`, `NVIDIA=1` build flag): NVML is `dlopen()`d at runtime rather than linked at build
+time, so unlike the AMD path there's no ROCm-equivalent header/toolkit dependency at build time. See
+`CLAUDE.md`'s "GPU support" section and `nvidia_nvml.c`'s entry in the Architecture list for detail.
 
 **Testing and documentation:** golden output-contract tests + capability-matrix smoke tests
 (`tests/golden_output.sh`, `tests/capability_matrix.sh`) — building these surfaced and fixed five

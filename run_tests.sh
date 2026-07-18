@@ -726,6 +726,20 @@ else
     exit 1
 fi
 
+if ./wspy --gpu-nvidia -- /bin/true 2>&1 | grep -q "GPU support not built"; then
+    echo "  --gpu-nvidia warning: OK"
+else
+    echo "FAIL: --gpu-nvidia should warn when built without NVIDIA"
+    exit 1
+fi
+
+if ./wspy --gpu-nvidia-device=0 -- /bin/true 2>&1 | grep -q "GPU support not built"; then
+    echo "  --gpu-nvidia-device warning: OK"
+else
+    echo "FAIL: --gpu-nvidia-device should warn when built without NVIDIA"
+    exit 1
+fi
+
 # Golden output-contract tests + capability-matrix smoke tests
 # (INVESTIGATION_4.0.md "Testing and documentation" track): formalized,
 # broader versions of the CSV-column-order/GPU-build-vs-not checks above.
@@ -926,6 +940,89 @@ if [ -e "/opt/rocm/include/amd_smi/amdsmi.h" ] || [ -e "/usr/include/amd_smi/amd
     fi
 else
     echo "SKIP: ROCm not found, skipping AMDGPU build test"
+fi
+
+# NVIDIA GPU build test (if an NVIDIA driver's NVML runtime library is
+# available). Unlike AMDGPU, NVIDIA=1 has no build-time header/lib
+# dependency (nvidia_nvml.c dlopen()s libnvidia-ml.so.1 at runtime), so this
+# just checks whether the library itself is resolvable via ldconfig.
+if ldconfig -p 2>/dev/null | grep -q "libnvidia-ml.so"; then
+    echo "Testing NVIDIA build..."
+    make clean > /dev/null 2>&1 || true
+    if make NVIDIA=1 > /dev/null 2>&1; then
+        echo "  NVIDIA build: OK"
+
+        # Verify GPU option works without warnings
+        if ./wspy -v --gpu-nvidia -- sleep 0.05 2>&1 | grep -q "NVIDIA NVML device"; then
+            echo "  --gpu-nvidia functional: OK"
+        else
+            echo "WARNING: --gpu-nvidia did not show expected debug output"
+        fi
+
+        # Test standalone GPU busy/VRAM (CSV)
+        echo "Testing standalone GPU busy/VRAM CSV output..."
+        OUTPUT=$(./wspy --gpu-nvidia --csv -- sleep 0.1 2>/dev/null | head -1)
+        if echo "$OUTPUT" | grep -q "elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,nv_gpu_busy,nv_vram_used_mb,nv_vram_total_mb,ipc"; then
+            echo "  Standalone GPU busy/VRAM CSV column order: OK"
+        else
+            echo "FAIL: nv_gpu_busy/nv_vram_* columns not in expected position (after rusage columns)"
+            echo "Got: $OUTPUT"
+            exit 1
+        fi
+
+        # Test standalone GPU busy/VRAM (normal output)
+        OUTPUT=$(./wspy --gpu-nvidia -- sleep 0.1 2>&1)
+        if echo "$OUTPUT" | grep -q "nv gpu busy" && echo "$OUTPUT" | grep -q "nv vram used" && echo "$OUTPUT" | grep -q "nv vram total"; then
+            echo "  Standalone GPU busy/VRAM in normal output: OK"
+        else
+            echo "FAIL: nv gpu busy/vram lines missing from normal output"
+            exit 1
+        fi
+
+        # Verify GPU columns are NOT shown without --gpu-nvidia
+        if ./wspy --csv -- sleep 0.1 2>&1 | grep -q "nv_gpu_busy"; then
+            echo "FAIL: nv_gpu_busy should not appear without --gpu-nvidia flag"
+            exit 1
+        else
+            echo "  GPU busy gating: OK"
+        fi
+
+        # Test GPU busy/VRAM values are numeric
+        OUTPUT=$(./wspy --gpu-nvidia --csv -- sleep 0.1 2>/dev/null | tail -1)
+        BUSY=$(echo "$OUTPUT" | cut -d',' -f12)
+        VRAM_USED=$(echo "$OUTPUT" | cut -d',' -f13)
+        VRAM_TOTAL=$(echo "$OUTPUT" | cut -d',' -f14)
+        if [ "$BUSY" -ge 0 ] 2>/dev/null && [ "$VRAM_USED" -ge 0 ] 2>/dev/null && [ "$VRAM_TOTAL" -ge 0 ] 2>/dev/null; then
+            echo "  GPU busy/VRAM values numeric: OK"
+        else
+            echo "FAIL: GPU busy/VRAM values not numeric (busy=$BUSY, vram_used=$VRAM_USED, vram_total=$VRAM_TOTAL)"
+            exit 1
+        fi
+
+        # Golden output-contract + capability-matrix smoke tests again, this
+        # time against the NVIDIA=1 build -- tests/capability_matrix.sh
+        # auto-detects which build it's running against and includes the
+        # gpu-nvidia bundle either way.
+        echo "Testing golden output-contract tests (NVIDIA build)..."
+        if ! ./tests/golden_output.sh; then
+            echo "FAIL: golden output-contract tests failed (NVIDIA build)"
+            exit 1
+        fi
+
+        echo "Testing capability-matrix smoke tests (NVIDIA build)..."
+        if ! ./tests/capability_matrix.sh; then
+            echo "FAIL: capability-matrix smoke tests failed (NVIDIA build)"
+            exit 1
+        fi
+
+        # Clean and rebuild standard version
+        make clean > /dev/null 2>&1 || true
+        make > /dev/null 2>&1
+    else
+        echo "WARNING: NVIDIA build failed"
+    fi
+else
+    echo "SKIP: libnvidia-ml.so not found, skipping NVIDIA build test"
 fi
 
 echo ""

@@ -37,6 +37,10 @@
 extern int gpu_busy_requested;
 extern int gpu_metrics_requested;
 #endif
+#if NVIDIA
+#include "nvidia_nvml.h"
+extern int gpu_nvidia_requested;
+#endif
 
 volatile int is_still_running;
 int nmi_running = 0;
@@ -3124,6 +3128,23 @@ void timer_callback(int signum){
         fprintf(outfile,"gpu activity         %u%%\n", amd_sysfs_get_gpu_activity());
         fprintf(outfile,"gpu power            %.2f W\n", amd_sysfs_get_gpu_power());
         fprintf(outfile,"gpu freq             %u MHz\n", amd_sysfs_get_gpu_freq());
+      }
+    }
+  }
+#endif
+#if NVIDIA
+  if (!sflag && gpu_nvidia_requested){
+    nvidia_nvml_metrics();
+    if (csvflag){
+      fprintf(outfile,"%u,%llu,%llu,",
+        nvidia_nvml_metrics_valid() ? nvidia_nvml_get_busy() : 0,
+        nvidia_nvml_metrics_valid() ? (unsigned long long)nvidia_nvml_get_vram_used_mb() : 0,
+        nvidia_nvml_metrics_valid() ? (unsigned long long)nvidia_nvml_get_vram_total_mb() : 0);
+    } else {
+      if (nvidia_nvml_metrics_valid()){
+        fprintf(outfile,"nv gpu busy          %u%%\n", nvidia_nvml_get_busy());
+        fprintf(outfile,"nv vram used         %llu MB\n", (unsigned long long)nvidia_nvml_get_vram_used_mb());
+        fprintf(outfile,"nv vram total        %llu MB\n", (unsigned long long)nvidia_nvml_get_vram_total_mb());
       }
     }
   }

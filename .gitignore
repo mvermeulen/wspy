@@ -30,6 +30,7 @@ wspy-plot
 # Misc
 .DS_Store
 amd_sysfs
+nvidia_nvml
 test_proctree
 test_wspy
 test_validate

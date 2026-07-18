@@ -18,6 +18,9 @@
 #include "amd_smi.h"
 #include "amd_sysfs.h"
 #endif
+#if NVIDIA
+#include "nvidia_nvml.h"
+#endif
 #include "error.h"
 #include "manifest.h"
 #include "run_index.h"
@@ -74,6 +77,10 @@ int gpu_smi_requested = 0; /* legacy */
 int gpu_busy_requested = 0;
 int gpu_metrics_requested = 0;
 int gpu_device_index = -1; /* -1 = auto-select (lowest-numbered sysfs card / SMI device 0) */
+#endif
+#if NVIDIA
+int gpu_nvidia_requested = 0;
+int gpu_nvidia_device_index = -1; /* -1 = auto-select (NVML device 0) */
 #endif
 
 char *outfile_path = NULL;
@@ -164,11 +171,13 @@ int parse_options(int argc,char *const argv[]){
     { "no-cache", no_argument, 0, 11 },
     { "exit-with-child", no_argument, 0, 55 },
     { "float",no_argument,0,33 },
-    /* GPU options always recognized so we can warn if not built with AMDGPU */
+    /* GPU options always recognized so we can warn if not built with AMDGPU/NVIDIA */
     { "gpu-smi", no_argument, 0, 48 },
     { "gpu-busy", no_argument, 0, 49 },
     { "gpu-metrics", no_argument, 0, 50 },
     { "gpu-device", required_argument, 0, 64 },
+    { "gpu-nvidia", no_argument, 0, 89 },
+    { "gpu-nvidia-device", required_argument, 0, 90 },
     { "ibs-basic", no_argument, 0, 56 },
     { "ibs-memory-deep", no_argument, 0, 57 },
     { "ibs-maxcnt", required_argument, 0, 58 },
@@ -475,6 +484,25 @@ int parse_options(int argc,char *const argv[]){
       warning("GPU support not built (rebuild with AMDGPU=1): --gpu-device ignored\n");
 #endif
       break;
+    case 89: // --gpu-nvidia
+#if NVIDIA
+      gpu_nvidia_requested = 1;
+      system_mask |= SYSTEM_GPU;
+#else
+      warning("GPU support not built (rebuild with NVIDIA=1): --gpu-nvidia ignored\n");
+#endif
+      break;
+    case 90: // --gpu-nvidia-device
+#if NVIDIA
+      if ((sscanf(optarg,"%d",&value) == 1) && value >= 0){
+	gpu_nvidia_device_index = value;
+      } else {
+	warning("invalid argument to --gpu-nvidia-device: %s, ignored\n",optarg);
+      }
+#else
+      warning("GPU support not built (rebuild with NVIDIA=1): --gpu-nvidia-device ignored\n");
+#endif
+      break;
     case 65: { // --passes
       char *copy = strdup(optarg);
       char *tok,*saveptr;
@@ -691,6 +719,15 @@ static int run_capabilities_probe(void){
   amd_smi_initialize(-1);
   amd_smi_print_capability_report(outfile);
   amd_smi_finalize();
+#endif
+
+#if NVIDIA
+  // NVIDIA GPU device enumeration -- lists every NVML device this host can
+  // see, independent of whether --gpu-nvidia was given, so
+  // --gpu-nvidia-device=<idx> can be chosen from the printed indices.
+  nvidia_nvml_initialize(-1);
+  nvidia_nvml_print_capability_report(outfile);
+  nvidia_nvml_finalize();
 #endif
 
   if (oflag) fclose(outfile);
@@ -1142,6 +1179,12 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       "\t                            lowest-numbered card / SMI device 0); see the device\n"
       "\t                            list printed by --capabilities on multi-GPU hosts\n"
 #endif
+#if NVIDIA
+      "\t--gpu-nvidia              - read GPU busy percent + VRAM used/total (NVML)\n"
+      "\t--gpu-nvidia-device=<idx> - select NVIDIA GPU device <idx> for the above (default:\n"
+      "\t                            device 0); see the device list printed by\n"
+      "\t                            --capabilities on multi-GPU hosts\n"
+#endif
 	    ,argv[0]);
   }
 
@@ -1166,6 +1209,10 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 #if AMDGPU
     if (gpu_smi_requested || gpu_busy_requested || gpu_metrics_requested)
       fatal("--passes is incompatible with --gpu-smi/--gpu-busy/--gpu-metrics\n");
+#endif
+#if NVIDIA
+    if (gpu_nvidia_requested)
+      fatal("--passes is incompatible with --gpu-nvidia\n");
 #endif
   } else if (multiplex_flag){
     fatal("--multiplex only applies to --passes (it selects how --passes packs its requested counter groups)\n");
@@ -1219,6 +1266,13 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
         amd_sysfs_gpu_metrics();
       }
     }
+  }
+#endif
+
+#if NVIDIA
+  if ((system_mask & SYSTEM_GPU) && gpu_nvidia_requested){
+    nvidia_nvml_initialize(gpu_nvidia_device_index);
+    nvidia_nvml_metrics();
   }
 #endif
 
@@ -1367,6 +1421,11 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       fprintf(outfile,"gpu_smi_temp,gpu_smi_activity,gpu_smi_vram_used,gpu_smi_vram_total,");
     }
 #endif
+#if NVIDIA
+    if (!sflag && gpu_nvidia_requested){
+      fprintf(outfile,"nv_gpu_busy,nv_vram_used_mb,nv_vram_total_mb,");
+    }
+#endif
     if (per_core_csv){
       fprintf(outfile,"core,");
       print_metrics(cpu_info->coreinfo[first_core_with_counters].core_specific_counters,PRINT_CSV_HEADER);
@@ -1467,6 +1526,15 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
           amd_smi_memory_valid() ? amd_smi_get_vram_total() : 0);
       }
 #endif
+#if NVIDIA
+      if (!sflag && gpu_nvidia_requested){
+        nvidia_nvml_metrics();
+        fprintf(outfile,"%u,%llu,%llu,",
+          nvidia_nvml_metrics_valid() ? nvidia_nvml_get_busy() : 0,
+          nvidia_nvml_metrics_valid() ? (unsigned long long)nvidia_nvml_get_vram_used_mb() : 0,
+          nvidia_nvml_metrics_valid() ? (unsigned long long)nvidia_nvml_get_vram_total_mb() : 0);
+      }
+#endif
       fprintf(outfile,"%d,",i);
       print_metrics(cpu_info->coreinfo[i].core_specific_counters,PRINT_CSV);
       print_metrics(cpu_info->systemwide_counters,PRINT_CSV);
@@ -1511,6 +1579,15 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
         amd_smi_memory_valid() ? amd_smi_get_vram_total() : 0);
     }
 #endif
+#if NVIDIA
+    if (!sflag && gpu_nvidia_requested){
+      nvidia_nvml_metrics();
+      fprintf(outfile,"%u,%llu,%llu,",
+        nvidia_nvml_metrics_valid() ? nvidia_nvml_get_busy() : 0,
+        nvidia_nvml_metrics_valid() ? (unsigned long long)nvidia_nvml_get_vram_used_mb() : 0,
+        nvidia_nvml_metrics_valid() ? (unsigned long long)nvidia_nvml_get_vram_total_mb() : 0);
+    }
+#endif
     print_metrics(cpu_info->systemwide_counters,PRINT_CSV);
     print_counter_coverage(PRINT_CSV);
     fprintf(outfile,"\n");
@@ -1545,6 +1622,16 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       if (amd_smi_memory_valid()){
         fprintf(outfile,"gpu vram used        %u MB\n", amd_smi_get_vram_used());
         fprintf(outfile,"gpu vram total       %u MB\n", amd_smi_get_vram_total());
+      }
+    }
+#endif
+#if NVIDIA
+    if (!sflag && gpu_nvidia_requested){
+      nvidia_nvml_metrics();
+      if (nvidia_nvml_metrics_valid()){
+        fprintf(outfile,"nv gpu busy          %u%%\n", nvidia_nvml_get_busy());
+        fprintf(outfile,"nv vram used         %llu MB\n", (unsigned long long)nvidia_nvml_get_vram_used_mb());
+        fprintf(outfile,"nv vram total        %llu MB\n", (unsigned long long)nvidia_nvml_get_vram_total_mb());
       }
     }
 #endif
@@ -1587,6 +1674,10 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     amd_smi_finalize();
   if (gpu_busy_requested || gpu_metrics_requested)
     amd_sysfs_finalize();
+#endif
+#if NVIDIA
+  if (gpu_nvidia_requested)
+    nvidia_nvml_finalize();
 #endif
 
   return exit_code_epilogue();

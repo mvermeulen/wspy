@@ -60,7 +60,12 @@ if ! "$WSPY" --gpu-busy -- /bin/true 2>&1 | grep -q "GPU support not built"; the
   gpu_build="AMDGPU=1"
 fi
 
-echo "Capability matrix: CPU vendor=$vendor, GPU build=$gpu_build"
+nvidia_gpu_build="NVIDIA=0"
+if ! "$WSPY" --gpu-nvidia -- /bin/true 2>&1 | grep -q "GPU support not built"; then
+  nvidia_gpu_build="NVIDIA=1"
+fi
+
+echo "Capability matrix: CPU vendor=$vendor, GPU build=$gpu_build, $nvidia_gpu_build"
 
 # run_bundle <label> <expected_exit_code> <flags...> -- <workload...>
 # Asserts the process exit code, absence of "fatal error"/crash indications,
@@ -210,6 +215,15 @@ run_bundle "gpu-device-select"      0 --no-ipc --gpu-device=0   --gpu-busy -- /b
 run_bundle "gpu-device-out-of-range" 0 --no-ipc --gpu-device=999 --gpu-busy -- /bin/true
 
 echo ""
+echo "=== NVIDIA GPU bundle (build=$nvidia_gpu_build; must degrade gracefully either way) ==="
+run_bundle "gpu-nvidia"     0 --csv --no-ipc --gpu-nvidia -- /bin/true
+# --gpu-nvidia-device selects among multiple NVIDIA cards; an out-of-range
+# index (999) must degrade gracefully (no NVML data for that run) rather
+# than fatal, same contract as --gpu-device above.
+run_bundle "gpu-nvidia-device-select"       0 --no-ipc --gpu-nvidia-device=0   --gpu-nvidia -- /bin/true
+run_bundle "gpu-nvidia-device-out-of-range" 0 --no-ipc --gpu-nvidia-device=999 --gpu-nvidia -- /bin/true
+
+echo ""
 echo "=== Modifier bundles (per-core, interval, tree variants) ==="
 # --per-core combined with any counter group used to produce a CSV header
 # with only the base/coverage columns while each per-core row appended that
@@ -304,7 +318,7 @@ echo ""
 echo "=== Kitchen-sink bundle (most counter groups + system + rusage at once) ==="
 run_bundle "kitchen-sink" 0 --csv --topdown --topdown-frontend --topdown-backend --topdown-optlb \
   --branch --dcache --icache --tlb --cache1 --cache2 --cache3 --opcache --float --memory --software \
-  --system --gpu-busy --gpu-metrics --gpu-smi -- /bin/true
+  --system --gpu-busy --gpu-metrics --gpu-smi --gpu-nvidia -- /bin/true
 
 echo ""
 echo "=== Native multi-pass counter execution (--passes) ==="
