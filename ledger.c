@@ -31,6 +31,24 @@
  * candidate workloads as they come up, in the same file format this tool
  * already reads, without hand-editing the file or needing --run-index.
  *
+ * --unavailable-deps <file> is the other kind of "known in advance" input,
+ * alongside the workload list's own explicit unsupported/needs-tool-support
+ * annotations, but for a whole *class* of workload rather than one at a
+ * time: a file listing Phoronix Test Suite ExternalDependencies tags (one
+ * per line, '#' comments like the workload list) known to be unavailable
+ * on this host -- e.g. "steam" for a machine that can't install Steam.
+ * When given, every unannotated workload is cross-checked against each
+ * matching test-definition.xml's own <ExternalDependencies> list (scanned
+ * from --phoronix-profiles-dir, default $HOME/.phoronix-test-suite/
+ * test-profiles) and, on a match, treated as "unsupported" with a note
+ * naming the tag and the profile it came from -- without needing to
+ * discover or hand-annotate that workload individually. This only ever
+ * *adds* an inferred "unsupported" where the workload would otherwise have
+ * shown as skipped or needs-tool-support; a workload with at least one
+ * successful matching run is left as "done" regardless (proof it actually
+ * works trumps a dependency list saying it shouldn't), and an explicit
+ * workload-list annotation still always wins over both.
+ *
  * A matching run-index record whose own recorded output/tree/manifest files
  * have all been deleted (the common case: the whole run directory was
  * removed after a run failed for an environment reason -- tools not
@@ -52,10 +70,13 @@
 #include <errno.h>
 #include <getopt.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include "json_reader.h"
 #include "run_index.h"
 
 #define DEFAULT_LIST_PATH "workload/phoronix/backlog.txt"
+#define MAX_DEP_TAG 64
+#define MAX_UNAVAILABLE_TAGS 256
 
 enum ledger_status { LEDGER_DONE, LEDGER_SKIPPED, LEDGER_UNSUPPORTED, LEDGER_NEEDS_TOOL_SUPPORT };
 
@@ -79,6 +100,9 @@ struct ledger_entry {
   int runs_stale;                     /* matching runs excluded: their own output files are gone */
   char last_stale_run_id[MAX_RUN_ID];
   char last_stale_start_time[MAX_TIMESTAMP];
+
+  int dep_unavailable;                /* 1 if a --unavailable-deps scan matched this workload */
+  char dep_note[MAX_NOTE];            /* which tag/profile matched, valid only if dep_unavailable */
 };
 
 static const char *status_label(enum ledger_status s){
@@ -276,6 +300,173 @@ static struct ledger_entry *load_workload_list(const char *path,int *count_out){
   return entries;
 }
 
+/* Parses a --unavailable-deps file: one Phoronix ExternalDependencies tag
+ * per line ('#' comments and blank lines ignored, same convention as the
+ * workload list). Returns the number of tags loaded, or -1 on a read
+ * error; truncates silently past max_tags (there's no realistic list this
+ * long, but this keeps the caller's buffer a fixed size like the rest of
+ * this file's arrays). */
+static int load_unavailable_deps(const char *path,char tags[][MAX_DEP_TAG],int max_tags){
+  long size;
+  char *buf;
+  char **lines;
+  int nlines,i,n = 0;
+
+  buf = read_whole_file(path,&size);
+  if (!buf){
+    fprintf(stderr,"wspy-ledger: unable to read --unavailable-deps file: %s\n",path);
+    return -1;
+  }
+  lines = split_lines(buf,&nlines);
+  for (i = 0; i < nlines && n < max_tags; i++){
+    char *p = ltrim(lines[i]);
+    char *hash = strchr(p,'#');
+
+    if (hash) *hash = '\0';
+    rtrim(p);
+    if (!*p) continue;
+    snprintf(tags[n++],MAX_DEP_TAG,"%s",p);
+  }
+  free(lines);
+  free(buf);
+  return n;
+}
+
+static int dep_set_contains(char tags[][MAX_DEP_TAG],int ntags,const char *tag){
+  int i;
+  for (i = 0; i < ntags; i++) if (!strcasecmp(tags[i],tag)) return 1;
+  return 0;
+}
+
+/* A Phoronix test profile directory is named "<test-id>-<version>"; this
+ * strips a trailing version suffix (the last '-' whose remainder is only
+ * digits/dots) to recover the bare test id a workload-list entry's name
+ * is expected to match, e.g. "dirt-rally2-1.0.2" -> "dirt-rally2". A
+ * directory name with no version-looking suffix is returned unchanged. */
+static int looks_like_version(const char *s){
+  int has_digit = 0;
+
+  for (; *s; s++){
+    if (*s == '.') continue;
+    if (*s < '0' || *s > '9') return 0;
+    has_digit = 1;
+  }
+  return has_digit;
+}
+
+static void strip_version_suffix(const char *dirname,char *out,size_t outsize){
+  const char *last_dash = strrchr(dirname,'-');
+
+  if (last_dash && looks_like_version(last_dash + 1)){
+    size_t n = (size_t)(last_dash - dirname);
+    if (n >= outsize) n = outsize - 1;
+    memcpy(out,dirname,n);
+    out[n] = '\0';
+  } else {
+    snprintf(out,outsize,"%s",dirname);
+  }
+}
+
+/* Extracts the raw text between <ExternalDependencies>...</...> in a
+ * test-definition.xml's contents. Deliberately not a real XML parser --
+ * this is the one field this tool needs, and a full parser is more
+ * dependency than that's worth (see json_reader.h's own comment on why
+ * that reader exists only because wspy-validate actually needed one). */
+static int extract_external_dependencies(const char *xml,char *out,size_t outsize){
+  static const char *const open_tag = "<ExternalDependencies>";
+  static const char *const close_tag = "</ExternalDependencies>";
+  const char *start = strstr(xml,open_tag);
+  const char *end;
+  size_t len;
+
+  if (!start) return 0;
+  start += strlen(open_tag);
+  end = strstr(start,close_tag);
+  if (!end) return 0;
+  len = (size_t)(end - start);
+  if (len >= outsize) len = outsize - 1;
+  memcpy(out,start,len);
+  out[len] = '\0';
+  return 1;
+}
+
+/* Scans every "<profiles_dir>/<suite>/<test-id>-<version>/test-definition.xml"
+ * for ExternalDependencies tags in unavail_tags, marking any matching
+ * (by bare test id, case-insensitively) and not-already-annotated entry as
+ * dep_unavailable. A profile directory whose test-definition.xml can't be
+ * read, or that has no ExternalDependencies field, is skipped, not an
+ * error -- most profiles have neither a dependency this tool cares about
+ * nor a matching entry in the workload list at all. Missing/unreadable
+ * profiles_dir itself is reported but not fatal, since --unavailable-deps
+ * is meant to enrich a report, not gate it. */
+static void scan_phoronix_dependencies(const char *profiles_dir,char unavail_tags[][MAX_DEP_TAG],int nunavail,
+                                        struct ledger_entry *entries,int nentries){
+  DIR *suites_dir;
+  struct dirent *suite_ent;
+
+  suites_dir = opendir(profiles_dir);
+  if (!suites_dir){
+    fprintf(stderr,"wspy-ledger: --phoronix-profiles-dir: unable to open %s: %s\n",profiles_dir,strerror(errno));
+    return;
+  }
+  while ((suite_ent = readdir(suites_dir)) != NULL){
+    char suite_path[512];
+    struct stat st;
+    DIR *suite_dir;
+    struct dirent *test_ent;
+
+    if (suite_ent->d_name[0] == '.') continue;
+    snprintf(suite_path,sizeof(suite_path),"%s/%s",profiles_dir,suite_ent->d_name);
+    if (stat(suite_path,&st) != 0 || !S_ISDIR(st.st_mode)) continue;
+
+    suite_dir = opendir(suite_path);
+    if (!suite_dir) continue;
+    while ((test_ent = readdir(suite_dir)) != NULL){
+      char base_name[MAX_NAME];
+      char xml_path[1024];
+      char deps[1024];
+      char *xml;
+      long xml_size;
+      char *tag;
+      int i,any_entry_match = 0;
+
+      if (test_ent->d_name[0] == '.') continue;
+      strip_version_suffix(test_ent->d_name,base_name,sizeof(base_name));
+
+      for (i = 0; i < nentries; i++){
+        if (entries[i].annotated || entries[i].dep_unavailable) continue;
+        if (!strcasecmp(entries[i].name,base_name)){ any_entry_match = 1; break; }
+      }
+      if (!any_entry_match) continue;
+
+      snprintf(xml_path,sizeof(xml_path),"%s/%s/test-definition.xml",suite_path,test_ent->d_name);
+      xml = read_whole_file(xml_path,&xml_size);
+      if (!xml) continue;
+      if (!extract_external_dependencies(xml,deps,sizeof(deps))){ free(xml); continue; }
+
+      tag = strtok(deps,",");
+      while (tag){
+        char *trimmed = rtrim(ltrim(tag));
+
+        if (dep_set_contains(unavail_tags,nunavail,trimmed)){
+          for (i = 0; i < nentries; i++){
+            if (entries[i].annotated || entries[i].dep_unavailable) continue;
+            if (strcasecmp(entries[i].name,base_name)) continue;
+            entries[i].dep_unavailable = 1;
+            snprintf(entries[i].dep_note,sizeof(entries[i].dep_note),
+                     "external dependency '%.40s' not available (%.40s/%.80s)",
+                     trimmed,suite_ent->d_name,test_ent->d_name);
+          }
+        }
+        tag = strtok(NULL,",");
+      }
+      free(xml);
+    }
+    closedir(suite_dir);
+  }
+  closedir(suites_dir);
+}
+
 static int command_matches(const struct json_value *record,const char *name){
   const struct json_value *cmd = json_object_get(record,"command");
   size_t i,n;
@@ -427,14 +618,19 @@ static int process_run_index_file(const char *path,struct ledger_entry *entries,
 
 static enum ledger_status entry_status(const struct ledger_entry *e){
   if (e->annotated) return e->annotated_status;
-  if (e->runs_matched == 0) return LEDGER_SKIPPED;
   if (e->runs_succeeded > 0) return LEDGER_DONE;
+  if (e->dep_unavailable) return LEDGER_UNSUPPORTED;
+  if (e->runs_matched == 0) return LEDGER_SKIPPED;
   return LEDGER_NEEDS_TOOL_SUPPORT;
 }
 
 static void format_detail(const struct ledger_entry *e,enum ledger_status status,char *buf,size_t bufsize){
   if (e->annotated && (status == LEDGER_UNSUPPORTED || status == LEDGER_NEEDS_TOOL_SUPPORT)){
     snprintf(buf,bufsize,"%s",e->note[0] ? e->note : "marked in workload list");
+    return;
+  }
+  if (!e->annotated && status == LEDGER_UNSUPPORTED && e->dep_unavailable){
+    snprintf(buf,bufsize,"%s",e->dep_note);
     return;
   }
   switch (status){
@@ -501,6 +697,16 @@ static void usage(const char *prog){
     "note candidate workloads as they come up. Does nothing (but still exits\n"
     "0) if <name> is already in the list.\n"
     "\n"
+    "--unavailable-deps <file> lists Phoronix Test Suite ExternalDependencies\n"
+    "tags (one per line, '#' comments allowed) known to be unavailable on\n"
+    "this host, e.g. \"steam\". Every unannotated workload is then checked\n"
+    "against its matching test-definition.xml(s) under\n"
+    "--phoronix-profiles-dir (default $HOME/.phoronix-test-suite/test-profiles)\n"
+    "and, on a match, reported as unsupported with the matched tag/profile\n"
+    "noted -- without needing to discover or annotate that workload by hand.\n"
+    "Does not override a workload that already has at least one successful\n"
+    "matching run, or an explicit workload-list annotation.\n"
+    "\n"
     "Options:\n"
     "  --run-index <file>  run-index (JSONL) file to scan; may be repeated\n"
     "  --csv               machine-readable CSV output instead of the human report\n"
@@ -509,6 +715,11 @@ static void usage(const char *prog){
     "  -s, --strict        exit non-zero if any workload is skipped or needs-tool-support\n"
     "  --add <name>        append <name> to the workload list instead of reporting\n"
     "  --list <file>       workload list to use/append to (default: %s)\n"
+    "  --unavailable-deps <file>\n"
+    "                      tags known unavailable on this host (see above)\n"
+    "  --phoronix-profiles-dir <dir>\n"
+    "                      Phoronix test-profiles dir to scan (default:\n"
+    "                      $HOME/.phoronix-test-suite/test-profiles)\n"
     "  -h, --help          show this help\n"
     "\n"
     "Exit status: 0 normally (1 with --strict if any workload still needs\n"
@@ -524,17 +735,21 @@ int main(int argc,char **argv){
   const char *workload_list_path;
   const char *add_name = NULL;
   const char *list_path = DEFAULT_LIST_PATH;
+  const char *unavailable_deps_path = NULL;
+  const char *phoronix_profiles_dir = NULL;
   struct ledger_entry *entries;
   int nentries,counts[4] = {0,0,0,0};
 
   static struct option long_options[] = {
-    { "run-index", required_argument, 0, 'r' },
-    { "csv",       no_argument,       0, 'c' },
-    { "quiet",     no_argument,       0, 'q' },
-    { "strict",    no_argument,       0, 's' },
-    { "add",       required_argument, 0, 'a' },
-    { "list",      required_argument, 0, 'l' },
-    { "help",      no_argument,       0, 'h' },
+    { "run-index",             required_argument, 0, 'r' },
+    { "csv",                   no_argument,       0, 'c' },
+    { "quiet",                 no_argument,       0, 'q' },
+    { "strict",                no_argument,       0, 's' },
+    { "add",                   required_argument, 0, 'a' },
+    { "list",                  required_argument, 0, 'l' },
+    { "unavailable-deps",      required_argument, 0, 'u' },
+    { "phoronix-profiles-dir", required_argument, 0, 'p' },
+    { "help",                  no_argument,       0, 'h' },
     { 0,0,0,0 }
   };
 
@@ -552,6 +767,8 @@ int main(int argc,char **argv){
     case 's': strict = 1; break;
     case 'a': add_name = optarg; break;
     case 'l': list_path = optarg; break;
+    case 'u': unavailable_deps_path = optarg; break;
+    case 'p': phoronix_profiles_dir = optarg; break;
     case 'h': usage(argv[0]); return 0;
     default: usage(argv[0]); return 2;
     }
@@ -569,6 +786,31 @@ int main(int argc,char **argv){
 
   for (i = 0; i < nrun_index; i++){
     if (process_run_index_file(run_index_paths[i],entries,nentries) < 0) return 2;
+  }
+
+  if (!unavailable_deps_path && phoronix_profiles_dir){
+    fprintf(stderr,"wspy-ledger: --phoronix-profiles-dir given without --unavailable-deps, ignoring\n");
+  }
+  if (unavailable_deps_path){
+    char tags[MAX_UNAVAILABLE_TAGS][MAX_DEP_TAG];
+    int ntags = load_unavailable_deps(unavailable_deps_path,tags,MAX_UNAVAILABLE_TAGS);
+    const char *profiles_dir = phoronix_profiles_dir;
+    char default_profiles_dir[512];
+
+    if (ntags < 0) return 2;
+    if (!profiles_dir){
+      const char *home = getenv("HOME");
+      if (home){
+        snprintf(default_profiles_dir,sizeof(default_profiles_dir),"%s/.phoronix-test-suite/test-profiles",home);
+        profiles_dir = default_profiles_dir;
+      }
+    }
+    if (!profiles_dir){
+      fprintf(stderr,"wspy-ledger: --unavailable-deps given but no --phoronix-profiles-dir and "
+                      "$HOME is unset; skipping dependency scan\n");
+    } else {
+      scan_phoronix_dependencies(profiles_dir,tags,ntags,entries,nentries);
+    }
   }
 
   if (csvflag) printf("name,status,runs_matched,runs_succeeded,runs_stale,last_run_id,last_start_time,note\n");
