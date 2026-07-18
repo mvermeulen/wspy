@@ -217,13 +217,48 @@ if ./wspy-ledger --run-index test_ledger_index.jsonl --strict test_ledger_list.t
     exit 1
 fi
 CSV_OUT=$(./wspy-ledger --run-index test_ledger_index.jsonl --csv test_ledger_list.txt)
-if ! echo "$CSV_OUT" | head -1 | grep -q '^name,status,runs_matched,runs_succeeded,last_run_id,last_start_time,note$'; then
+if ! echo "$CSV_OUT" | head -1 | grep -q '^name,status,runs_matched,runs_succeeded,runs_stale,last_run_id,last_start_time,note$'; then
     echo "FAIL: wspy-ledger --csv header did not match"
     echo "$CSV_OUT"
     exit 1
 fi
 rm test_ledger_index.jsonl test_ledger_list.txt test_ledger.out
-echo "  wspy-ledger: OK"
+
+# wspy-ledger: a matching run whose own output file was deleted (e.g. the
+# whole run directory was removed after a bad, environment-caused run)
+# should degrade back to "skipped" rather than stay pinned at
+# "needs-tool-support", while still being visible as a stale run.
+echo "Testing wspy-ledger excludes a matching run whose output file was deleted..."
+rm -f test_ledger_stale_index.jsonl test_ledger_stale_output.csv
+./wspy --no-ipc --csv -o test_ledger_stale_output.csv --run-index test_ledger_stale_index.jsonl -- /bin/sh -c 'exit 1' -- stale-workload > /dev/null || true
+rm -f test_ledger_stale_output.csv
+echo "stale-workload" > test_ledger_stale_list.txt
+if ! ./wspy-ledger --run-index test_ledger_stale_index.jsonl test_ledger_stale_list.txt > test_ledger_stale.out; then
+    echo "FAIL: wspy-ledger should exit 0 without --strict"
+    cat test_ledger_stale.out
+    exit 1
+fi
+for expected in \
+    'stale-workload +skipped' \
+    '1 stale run\(s\) excluded, output deleted'; do
+    if ! grep -qE "$expected" test_ledger_stale.out; then
+        echo "FAIL: wspy-ledger stale-run output missing expected content: $expected"
+        cat test_ledger_stale.out
+        exit 1
+    fi
+done
+if ./wspy-ledger --run-index test_ledger_stale_index.jsonl -q test_ledger_stale_list.txt | grep -q 'stale run'; then
+    echo "FAIL: wspy-ledger -q should suppress the stale-run detail note"
+    exit 1
+fi
+STALE_CSV=$(./wspy-ledger --run-index test_ledger_stale_index.jsonl --csv test_ledger_stale_list.txt)
+if ! echo "$STALE_CSV" | grep -q '^stale-workload,skipped,0,0,1,'; then
+    echo "FAIL: wspy-ledger --csv did not report the stale run as excluded"
+    echo "$STALE_CSV"
+    exit 1
+fi
+rm test_ledger_stale_index.jsonl test_ledger_stale_list.txt test_ledger_stale.out
+echo "  wspy-ledger stale-run handling: OK"
 
 # wspy-store: normalized SQLite run catalog + per-run metric_values ingested
 # from a run index + manifest + CSV output (INVESTIGATION_4.0.md's 4.1

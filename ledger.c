@@ -30,6 +30,20 @@
  * defaulting to workload/phoronix/backlog.txt -- a spot to jot down
  * candidate workloads as they come up, in the same file format this tool
  * already reads, without hand-editing the file or needing --run-index.
+ *
+ * A matching run-index record whose own recorded output/tree/manifest files
+ * have all been deleted (the common case: the whole run directory was
+ * removed after a run failed for an environment reason -- tools not
+ * installed, permissions, etc -- rather than a real workload problem) is
+ * excluded from runs_matched/runs_succeeded rather than left to masquerade
+ * as evidence of a real attempt; deleting a bad run's directory now
+ * degrades that workload back toward "skipped" instead of permanently
+ * pinning it at "needs-tool-support". It's still counted separately
+ * (runs_stale) and, unless -q/--quiet is given, called out in the human
+ * report's detail column and counted in --csv output, so the exclusion
+ * stays auditable rather than silent. This is a read-time check against
+ * the run index as it stands each run -- nothing here rewrites or prunes
+ * the run-index file itself.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,6 +51,7 @@
 #include <strings.h>
 #include <errno.h>
 #include <getopt.h>
+#include <sys/stat.h>
 #include "json_reader.h"
 #include "run_index.h"
 
@@ -60,6 +75,10 @@ struct ledger_entry {
   int last_succeeded;                 /* whether the most recent matching run succeeded */
   char last_run_id[MAX_RUN_ID];
   char last_start_time[MAX_TIMESTAMP]; /* ISO-8601, sorts correctly as a string */
+
+  int runs_stale;                     /* matching runs excluded: their own output files are gone */
+  char last_stale_run_id[MAX_RUN_ID];
+  char last_stale_start_time[MAX_TIMESTAMP];
 };
 
 static const char *status_label(enum ledger_status s){
@@ -270,6 +289,30 @@ static int command_matches(const struct json_value *record,const char *name){
   return 0;
 }
 
+/* Checks whether a run-index record's own output_files paths still exist
+ * on disk. Returns 1 if at least one of output_path/tree_output_path/
+ * manifest_path exists, 0 if the record names at least one path and none
+ * of them exist (the run's artifacts were deleted -- most commonly the
+ * whole run directory was removed), or -1 if the record names no paths at
+ * all to check (an older schema, or a run that used neither --csv/-o,
+ * --tree, nor --manifest output) -- treated as "can't tell", not stale,
+ * so a record with nothing to check never gets wrongly excluded. */
+static int record_paths_exist(const struct json_value *record){
+  static const char *const fields[] = { "output_path","tree_output_path","manifest_path" };
+  const struct json_value *of = json_object_get(record,"output_files");
+  struct stat st;
+  int any_path = 0,i;
+
+  if (!of) return -1;
+  for (i = 0; i < (int)(sizeof(fields)/sizeof(fields[0])); i++){
+    const char *path = json_get_string(of,fields[i],NULL);
+    if (!path || !*path) continue;
+    any_path = 1;
+    if (stat(path,&st) == 0) return 1;
+  }
+  return any_path ? 0 : -1;
+}
+
 static int record_succeeded(const struct json_value *record){
   const struct json_value *es = json_object_get(record,"exit_status");
 
@@ -334,6 +377,7 @@ static int process_run_index_file(const char *path,struct ledger_entry *entries,
     char errbuf[256];
     struct json_value *root = json_parse(lines[i],errbuf,sizeof(errbuf));
     const char *run_id,*start_time;
+    int paths_exist;
 
     if (!root){
       fprintf(stderr,"wspy-ledger: %s:%d: skipping malformed record: %s\n",path,i+1,errbuf);
@@ -343,11 +387,24 @@ static int process_run_index_file(const char *path,struct ledger_entry *entries,
     check_record_schema_version(root,path,warned_versions,&nwarned_versions,&warned_missing);
     run_id = json_get_string(root,"run_id","?");
     start_time = json_get_string(root,"start_time","");
+    paths_exist = record_paths_exist(root);
 
     for (j = 0; j < nentries; j++){
       struct ledger_entry *e = &entries[j];
 
       if (!command_matches(root,e->name)) continue;
+
+      if (paths_exist == 0){
+        /* This run's own output files are gone -- don't let a deleted run
+         * keep counting as evidence of anything, but keep it visible. */
+        e->runs_stale++;
+        if (strcmp(start_time,e->last_stale_start_time) >= 0){
+          snprintf(e->last_stale_run_id,sizeof(e->last_stale_run_id),"%s",run_id);
+          snprintf(e->last_stale_start_time,sizeof(e->last_stale_start_time),"%s",start_time);
+        }
+        continue;
+      }
+
       e->runs_matched++;
       if (record_succeeded(root)) e->runs_succeeded++;
 
@@ -431,6 +488,14 @@ static void usage(const char *prog){
     "record's command line. If omitted, defaults to %s\n"
     "(overridable with --list, same as --add below).\n"
     "\n"
+    "A matching run whose own output/tree/manifest files have all been\n"
+    "deleted (e.g. its whole run directory was removed after a bad,\n"
+    "environment-caused run) does not count as an attempt -- it's excluded\n"
+    "from scoring so the workload can fall back to \"skipped\" rather than\n"
+    "stay pinned at \"needs-tool-support\" -- but it's still counted as a\n"
+    "stale run and noted in the report/CSV so the exclusion stays visible;\n"
+    "-q/--quiet also suppresses that note (not just done workloads).\n"
+    "\n"
     "--add <name> instead appends <name> as a new line to the workload list\n"
     "(creating it if needed) rather than generating a report -- a spot to\n"
     "note candidate workloads as they come up. Does nothing (but still exits\n"
@@ -439,7 +504,8 @@ static void usage(const char *prog){
     "Options:\n"
     "  --run-index <file>  run-index (JSONL) file to scan; may be repeated\n"
     "  --csv               machine-readable CSV output instead of the human report\n"
-    "  -q, --quiet         only print workloads that are not done\n"
+    "  -q, --quiet         only print workloads that are not done, and omit\n"
+    "                      the stale-run detail note from the ones printed\n"
     "  -s, --strict        exit non-zero if any workload is skipped or needs-tool-support\n"
     "  --add <name>        append <name> to the workload list instead of reporting\n"
     "  --list <file>       workload list to use/append to (default: %s)\n"
@@ -505,20 +571,25 @@ int main(int argc,char **argv){
     if (process_run_index_file(run_index_paths[i],entries,nentries) < 0) return 2;
   }
 
-  if (csvflag) printf("name,status,runs_matched,runs_succeeded,last_run_id,last_start_time,note\n");
+  if (csvflag) printf("name,status,runs_matched,runs_succeeded,runs_stale,last_run_id,last_start_time,note\n");
 
   for (i = 0; i < nentries; i++){
     const struct ledger_entry *e = &entries[i];
     enum ledger_status status = entry_status(e);
-    char detail[MAX_NOTE + 64];
+    char detail[MAX_NOTE + 160];
 
     counts[status]++;
     if (quiet && status == LEDGER_DONE) continue;
 
     format_detail(e,status,detail,sizeof(detail));
+    if (!quiet && e->runs_stale > 0){
+      size_t len = strlen(detail);
+      snprintf(detail+len,sizeof(detail)-len," (%d stale run(s) excluded, output deleted, most recent %s)",
+               e->runs_stale,e->last_stale_run_id);
+    }
     if (csvflag){
       print_csv_field(e->name); printf(",");
-      printf("%s,%d,%d,",status_label(status),e->runs_matched,e->runs_succeeded);
+      printf("%s,%d,%d,%d,",status_label(status),e->runs_matched,e->runs_succeeded,e->runs_stale);
       print_csv_field(e->last_run_id); printf(",");
       print_csv_field(e->last_start_time); printf(",");
       print_csv_field(detail);
