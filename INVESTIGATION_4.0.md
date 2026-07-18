@@ -1164,7 +1164,16 @@ existing 17 named in `CLAUDE.md`'s "Counter mask bits"):**
     alongside it: a dedicated "CPU power" checklist card (mirroring AMD IBS's own dedicated card
     rather than folding into "Performance counters", since `--power` isn't part of the
     `--passes`-bin-packed `ALL_GROUPS` vocabulary either) plus custom-plot column autofit for
-    `pkg_joules`/`pkg_watts`.
+    `pkg_joules`/`pkg_watts`. The Run tab's "Check" button (item 18's estimated-runtime check)
+    also gained a real `--power` probe (`power_probes_for_request()`/`probe_power()`,
+    `web/server.py`) mirroring its existing AMD IBS probe: sysfs-presence discovery
+    (`--capabilities`) can't see that RAPL/`energy-pkg` access needs root or `CAP_PERFMON`
+    specifically — confirmed live, `--ibs-basic` opens fine at the same `perf_event_paranoid`
+    level that denies `--power` with `EACCES` — so only an actual `perf_event_open()` attempt
+    catches it before a real run wastes time on it. On that `EACCES` specifically, the probe's
+    detail message now tells the user what to do (run under `sudo`, or `sudo setcap
+    cap_perfmon+ep <path to wspy>` once), and notes explicitly that `scripts/setup_perf.sh`'s
+    `perf_event_paranoid`/`nmi_watchdog` sysctl adjustments don't fix this on their own.
 
 ## 4.3 priorities
 Goal: use the normalized store built in 4.1 for regression detection, clustering, phase-aware

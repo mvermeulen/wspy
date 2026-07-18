@@ -558,7 +558,7 @@
     return html;
   }
 
-  function renderIbsProbe(p) {
+  function renderCounterProbe(p) {
     var html = '<div class="check-test"><code>' + escapeHtml(p.command || "") + "</code>";
     html += '<div class="' + statusClass(p.status) + '">' + escapeHtml(p.profile) + ": "
       + escapeHtml(p.status) + "</div>";
@@ -594,7 +594,15 @@
       html += '<div class="check-section"><strong>AMD IBS probe</strong> '
         + '<span class="muted">(actually opens the counter(s) against a trivial workload -- '
         + "sysfs presence alone can't catch a runtime perf_event_open() failure)</span>";
-      data.ibs.forEach(function (p) { html += renderIbsProbe(p); });
+      data.ibs.forEach(function (p) { html += renderCounterProbe(p); });
+      html += "</div>";
+    }
+    if (data.power && data.power.length) {
+      html += '<div class="check-section"><strong>CPU power probe</strong> '
+        + '<span class="muted">(actually opens pkg_joules against a trivial workload -- RAPL/'
+        + "power access needs root or CAP_PERFMON, stricter than perf_event_paranoid alone, "
+        + "which --capabilities' sysfs-only discovery can't catch)</span>";
+      data.power.forEach(function (p) { html += renderCounterProbe(p); });
       html += "</div>";
     }
     var ph = data.phoronix;
