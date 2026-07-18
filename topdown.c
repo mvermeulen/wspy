@@ -2974,6 +2974,15 @@ void print_ibs(struct counter_group *cgroup,enum output_format oformat){
 // deliberately not a separately-tracked elapsed/interval value, since a
 // system-wide counter's own scheduled window already *is* the reporting
 // window, whether that's the whole run or one periodic tick.
+//
+// Confirmed live (--interval 1, sleep 3, root): pkg_watts is correct on
+// every row (it always divides by that row's real window), but a bare
+// first-row pkg_joules is NOT "one second's worth" the way later rows are.
+// Every counter starts accumulating (start_counters()) before wspy.c's
+// fixed 2s pre-launch sleep(2), so a counter's first-ever read has no
+// prev_read to subtract and its raw delta covers that pre-launch idle time
+// too -- invisible for self-normalizing ratios (IPC/topdown), visible here
+// since Joules is absolute. See CLAUDE.md's power.c entry.
 void print_power(struct counter_group *cgroup,enum output_format oformat){
   struct counter_info *cinfo = find_ci_label(cgroup,"pkg_joules");
   double joules = 0.0,watts = 0.0;

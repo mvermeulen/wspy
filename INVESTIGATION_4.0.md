@@ -1156,10 +1156,20 @@ existing 17 named in `CLAUDE.md`'s "Counter mask bits"):**
     `COUNTER_ALL`/`--passes` (its own fatal incompatibility check, mirroring IBS's). Because it links
     into `cpu_info->systemwide_counters` exactly like every other systemwide group, `--interval`
     support needed no interval-specific plumbing at all — `timer_callback()`'s existing generic
-    per-tick read/print already covers it. Confirmed against real hardware on the dev host (both the
-    sysfs-derived `--capabilities` report and graceful degradation without `CAP_PERFMON`); real
-    non-zero `pkg_joules`/`pkg_watts` values still need to be confirmed with root/`CAP_PERFMON`
-    access, which the dev host lacked passwordless sudo for. Web launcher support (`web/joblib.py`'s
+    per-tick read/print already covers it. Confirmed against real hardware on the dev host: the
+    sysfs-derived `--capabilities` report, graceful degradation without `CAP_PERFMON`, and (via
+    `sudo`, since the dev host itself lacks passwordless sudo) real non-zero `pkg_joules`/
+    `pkg_watts` values from a `sudo ./wspy --csv --no-ipc --power --interval 1 -- sleep 3` run --
+    `pkg_watts` was internally consistent on every row (~60W steady state) and correctly tracked
+    each row's *actual* accumulation window (reconstructible as `pkg_joules/pkg_watts`: ~3.0s,
+    ~1.0s, ~1.0s, ~0.005s for that run's four rows) rather than assuming a fixed interval. That
+    first-row 3.0s (not 1.0s) window surfaced a genuine, pre-existing wspy behavior `--power` is
+    the first counter group to make visible: every group's counters start (`start_counters()`)
+    before `wspy.c`'s fixed 2-second pre-launch `sleep(2)`, so a first read's raw delta always
+    covers that ~2s of pre-launch time too -- invisible for self-normalizing ratios like IPC/
+    topdown, but visible in `--power`'s absolute Joules. `pkg_watts` is unaffected (it divides by
+    the real window either way); only a bare first-row `pkg_joules` value needs this caveat. See
+    `power.c`'s `CLAUDE.md` entry for the full writeup. Web launcher support (`web/joblib.py`'s
     `build_configuration_passes()`/`resolve_column_group()`, `web/server.py`'s Run tab) shipped
     alongside it: a dedicated "CPU power" checklist card (mirroring AMD IBS's own dedicated card
     rather than folding into "Performance counters", since `--power` isn't part of the
