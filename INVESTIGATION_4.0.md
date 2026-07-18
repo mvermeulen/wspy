@@ -194,6 +194,18 @@ carried forward as follow-up validation, not release blockers:
 - Run `wspy-validate`/`wspy-ledger` against a real run-index file accumulated over many genuine runs
   (not `test_ledger.c`/`test_validate.c`'s small synthetic fixtures) to sanity-check behavior at
   realistic scale and with real-world messiness (interrupted runs, mixed schema versions over time).
+  Real use surfaced one concrete instance of this messiness, 2026-07-18: after deleting a failed
+  run's whole output directory (the common cleanup step when a run fails for an environment reason --
+  missing tool, bad permissions -- rather than a real workload problem), its now-orphaned run-index
+  record kept `wspy-ledger` permanently reporting that workload as `needs-tool-support`, with no way
+  to get back to `skipped` short of hand-editing the run-index file. Fixed (PR #81): `wspy-ledger` now
+  checks each matching record's own `output_path`/`tree_output_path`/`manifest_path` against disk and
+  excludes ones whose files are gone from `runs_matched`/`runs_succeeded` scoring (so the workload
+  degrades back toward `skipped`), while still counting/reporting them as `runs_stale` -- a new CSV
+  column plus a report detail note, both suppressed by `-q` the same way `done` rows already were --
+  so the exclusion stays auditable rather than silent. This is a read-time check against the run
+  index as it stands; nothing rewrites or prunes the file itself. Still open: interrupted runs and
+  mixed-schema-version behavior haven't been exercised at real accumulated scale yet.
 - Run `--tree`/`--tree-cmdline`/`--tree-vmsize` against a genuinely fork-heavy real workload (e.g.
   `make -j`, a SPEC benchmark) beyond `run_tests.sh`'s synthetic ~2000-process stress test, to sanity
   check ptrace overhead and `proctree` reconstruction under realistic timing. (A real `deep-cpu,
