@@ -91,8 +91,21 @@ GROUP_NOTES = {
         "`retire`/`frontend`/`backend`/`speculate` are a top-down pipeline-slot "
         "breakdown: the fraction of available execution slots spent retiring "
         "useful work, stalled on instruction fetch/decode, stalled on data/"
-        "execution resources, or wasted on mis-speculated work. These four "
-        "fractions are computed by wspy and should sum to roughly 100%; "
+        "execution resources, or wasted on mis-speculated work. On AMD hosts "
+        "there is a fifth line, `smt-contention`: slots lost to the *other* "
+        "hardware thread sharing this physical core (SMT), not a stall type "
+        "of this thread's own work -- do not skip it when it is present, and "
+        "do not treat it as one of the four stall categories above. Each of "
+        "the first four lines shows two percentages, e.g. \"27.7% (47.1%)\": "
+        "the first is that category's share of ALL available slots "
+        "(including whatever the other SMT thread used), and the "
+        "parenthesized second number is its share of only this thread's own "
+        "slots (excluding `smt-contention`). The first four percentages plus "
+        "`smt-contention`'s own percentage should sum to roughly 100% of all "
+        "slots; the four parenthesized percentages alone should sum to "
+        "roughly 100% of this thread's own slots -- that second sum is what "
+        "the `sanity check` line reports, so don't be confused if a quick "
+        "sum of the first four numbers alone falls well short of 100%. "
         "`confidence`/`sanity` (when present) already flag low-confidence rows."
     ),
     "topdown-frontend": (
@@ -323,13 +336,37 @@ def ollama_list_models(host, timeout):
 
 
 def ollama_generate(host, model, prompt, timeout):
-    body = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode("utf-8")
+    """stream: true (not Ollama's non-streaming default) is deliberate: with
+    stream: false, Ollama computes the entire response server-side --
+    including any hidden "thinking"/reasoning trace a model like deepseek-r1
+    generates before its visible answer -- before writing a single HTTP
+    body, so the client sees one continuous no-data gap from request to
+    response. urlopen(timeout=N) applies per socket read, not per call, so
+    that made `timeout` a hard cap on the *whole* generation rather than a
+    stall detector -- confirmed against a real 36-model Ollama sweep, where
+    several models that legitimately took 70-95s (already close to the
+    120s default) succeeded while others (notably deepseek-r1:32b, a large
+    reasoning model, vs. deepseek-r1:8b succeeding) timed out purely from
+    generation length, not from being stuck. Streaming turns the same
+    `timeout` into a per-chunk idle timeout instead: as long as some token
+    arrives at least every `timeout` seconds, a slow-but-progressing
+    generation of any length succeeds; a genuinely hung Ollama still times
+    out promptly."""
+    body = json.dumps({"model": model, "prompt": prompt, "stream": True}).encode("utf-8")
     req = urllib.request.Request(
         host.rstrip("/") + "/api/generate", data=body,
         headers={"Content-Type": "application/json"}, method="POST")
+    chunks = []
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.load(resp)
-    return data.get("response", "")
+        for line in resp:
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            chunks.append(obj.get("response", ""))
+            if obj.get("done"):
+                break
+    return "".join(chunks)
 
 
 CRITIQUE_SUFFIX = """
@@ -359,7 +396,11 @@ def analyze_one_model(host, model, prompt, timeout, critique, outdir,
     t0 = time.time()
     try:
         response = ollama_generate(host, model, prompt, timeout)
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+        # ValueError also catches json.JSONDecodeError -- a truncated/malformed
+        # NDJSON line from ollama_generate()'s streamed read (e.g. the
+        # connection dropped mid-chunk), same "skip this model, don't crash
+        # the sweep" treatment as an outright connection failure.
         print("wspy-analyze: warning: %s: could not reach Ollama at %s: %s "
               "-- skipping" % (model, host, e), file=sys.stderr)
         return False
@@ -374,7 +415,7 @@ def analyze_one_model(host, model, prompt, timeout, critique, outdir,
         critique_prompt = prompt + (CRITIQUE_SUFFIX % response)
         try:
             critique_text = ollama_generate(host, model, critique_prompt, timeout)
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
             print("wspy-analyze: warning: %s: critique call failed: %s" % (model, e),
                   file=sys.stderr)
             return True
