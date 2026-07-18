@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <sys/stat.h>
 
 #define TEST_LEDGER 1
 #include "ledger.c"
@@ -17,6 +18,27 @@ static struct ledger_entry *find_entry(struct ledger_entry *entries,int n,const 
   int i;
   for (i = 0; i < n; i++) if (!strcmp(entries[i].name,name)) return &entries[i];
   return NULL;
+}
+
+static void mkdir_p(const char *path){
+  char tmp[512];
+  char *p;
+
+  snprintf(tmp,sizeof(tmp),"%s",path);
+  for (p = tmp+1; *p; p++){
+    if (*p == '/'){
+      *p = '\0';
+      mkdir(tmp,0755);
+      *p = '/';
+    }
+  }
+  mkdir(tmp,0755);
+}
+
+static void rmdir_recursive(const char *path){
+  char cmd[600];
+  snprintf(cmd,sizeof(cmd),"rm -rf '%s'",path);
+  system(cmd);
 }
 
 static void test_parse_ledger_line(void){
@@ -377,6 +399,179 @@ static void test_stale_run_excluded_from_scoring(void){
   printf("PASS: stale run excluded from scoring\n");
 }
 
+static void test_strip_version_suffix(void){
+  char out[MAX_NAME];
+
+  printf("Testing strip_version_suffix...\n");
+
+  strip_version_suffix("dirt-rally2-1.0.3",out,sizeof(out));
+  assert(!strcmp(out,"dirt-rally2"));
+
+  strip_version_suffix("build-linux-kernel-1.0.0",out,sizeof(out));
+  assert(!strcmp(out,"build-linux-kernel"));
+
+  strip_version_suffix("xplane11-1.1.2",out,sizeof(out));
+  assert(!strcmp(out,"xplane11"));
+
+  /* No version-looking suffix -- left unchanged. */
+  strip_version_suffix("no-version-here",out,sizeof(out));
+  assert(!strcmp(out,"no-version-here"));
+
+  printf("PASS: strip_version_suffix\n");
+}
+
+static void test_extract_external_dependencies(void){
+  char out[1024];
+  const char *xml_with = "<TestProfile>\n"
+    "  <ExternalDependencies>steam, vulkan-development</ExternalDependencies>\n"
+    "</TestProfile>\n";
+  const char *xml_without = "<TestProfile>\n<ProjectURL>http://example.com</ProjectURL>\n</TestProfile>\n";
+
+  printf("Testing extract_external_dependencies...\n");
+
+  assert(extract_external_dependencies(xml_with,out,sizeof(out)) == 1);
+  assert(!strcmp(out,"steam, vulkan-development"));
+
+  assert(extract_external_dependencies(xml_without,out,sizeof(out)) == 0);
+
+  printf("PASS: extract_external_dependencies\n");
+}
+
+static void test_load_unavailable_deps(void){
+  const char *path = "/tmp/test_ledger_deps.txt";
+  char tags[MAX_UNAVAILABLE_TAGS][MAX_DEP_TAG];
+  int n;
+
+  printf("Testing load_unavailable_deps...\n");
+
+  write_file(path,
+    "steam\n"
+    "  vulkan-development  \n"
+    "\n"
+    "# a whole-line comment\n"
+    "opencl  # trailing comment\n");
+
+  n = load_unavailable_deps(path,tags,MAX_UNAVAILABLE_TAGS);
+  assert(n == 3);
+  assert(!strcmp(tags[0],"steam"));
+  assert(!strcmp(tags[1],"vulkan-development"));
+  assert(!strcmp(tags[2],"opencl"));
+
+  assert(dep_set_contains(tags,n,"Steam") == 1); /* case-insensitive */
+  assert(dep_set_contains(tags,n,"java") == 0);
+
+  assert(load_unavailable_deps("/tmp/test_ledger_deps_missing.txt",tags,MAX_UNAVAILABLE_TAGS) == -1);
+
+  remove(path);
+  printf("PASS: load_unavailable_deps\n");
+}
+
+/* Writes a fake "<profiles_dir>/<suite>/<dirname>/test-definition.xml" with
+ * the given ExternalDependencies text (NULL to omit the field entirely). */
+static void make_fake_profile(const char *profiles_dir,const char *suite,const char *dirname,const char *deps){
+  char dir[512],path[700];
+  char content[1024];
+
+  snprintf(dir,sizeof(dir),"%s/%s/%s",profiles_dir,suite,dirname);
+  mkdir_p(dir);
+  snprintf(path,sizeof(path),"%s/test-definition.xml",dir);
+  if (deps){
+    snprintf(content,sizeof(content),
+      "<?xml version=\"1.0\"?>\n<PhoronixTestSuite>\n<TestProfile>\n"
+      "<ExternalDependencies>%s</ExternalDependencies>\n</TestProfile>\n</PhoronixTestSuite>\n",deps);
+  } else {
+    snprintf(content,sizeof(content),
+      "<?xml version=\"1.0\"?>\n<PhoronixTestSuite>\n<TestProfile>\n</TestProfile>\n</PhoronixTestSuite>\n");
+  }
+  write_file(path,content);
+}
+
+static void test_scan_phoronix_dependencies(void){
+  const char *profiles_dir = "/tmp/test_ledger_profiles";
+  const char *list_path = "/tmp/test_ledger_dep_list.txt";
+  const char *index_path = "/tmp/test_ledger_dep_index.jsonl";
+  char tags[MAX_UNAVAILABLE_TAGS][MAX_DEP_TAG];
+  struct ledger_entry *entries;
+  int n,ntags;
+  struct ledger_entry *e;
+  FILE *fp;
+
+  printf("Testing scan_phoronix_dependencies...\n");
+
+  rmdir_recursive(profiles_dir);
+  make_fake_profile(profiles_dir,"pts","dirt-rally2-1.0.3","steam");
+  make_fake_profile(profiles_dir,"pts","cs2-1.0.2","steam, vulkan-development");
+  make_fake_profile(profiles_dir,"pts","scikit-learn-1.0.1","python-scipy, python-sklearn, python");
+  make_fake_profile(profiles_dir,"pts","no-deps-1.0.0",NULL);
+
+  snprintf(tags[0],MAX_DEP_TAG,"steam");
+  ntags = 1;
+
+  /* dirt-rally2: unannotated, no runs -- should pick up the dep scan.
+   * cs2-hand-annotated: explicit annotation must not be overridden.
+   * cs2-succeeded: a proven successful run must not be overridden either,
+   * even though its own profile also needs steam.
+   * scikit-learn: has ExternalDependencies, but none are in the unavailable
+   * set, so it should be untouched. */
+  write_file(list_path,
+    "dirt-rally2\n"
+    "cs2-hand-annotated\tunsupported\thand annotated already\n"
+    "cs2-succeeded\n"
+    "scikit-learn\n");
+
+  fp = fopen(index_path,"w");
+  assert(fp != NULL);
+  /* cs2-succeeded matches profile dir "cs2-1.0.2" only via its own
+   * ledger-list *name*, not the run's command line -- command_matches()
+   * only needs the name to appear as a substring, so "cs2-succeeded"
+   * itself never has to appear in the profile scan; give it a clean run
+   * under its own name so it resolves to DONE regardless of dep_unavailable. */
+  fprintf(fp,"{\"schema_version\":\"1.0.0\",\"run_id\":\"r1\",\"start_time\":\"2026-01-01T00:00:00Z\","
+              "\"command\":[\"phoronix-test-suite\",\"run\",\"cs2-succeeded\"],"
+              "\"exit_status\":{\"known\":true,\"exited\":true,\"signaled\":false,\"exit_code\":0}}\n");
+  fclose(fp);
+
+  entries = load_workload_list(list_path,&n);
+  assert(entries != NULL && n == 4);
+  assert(process_run_index_file(index_path,entries,n) == 1);
+
+  /* cs2-succeeded's own profile dir ("cs2-1.0.2") won't literally match its
+   * ledger name ("cs2-succeeded") by strip_version_suffix, so give the scan
+   * a dedicated profile dir under that exact name too. */
+  make_fake_profile(profiles_dir,"pts","cs2-succeeded-2.0.0","steam");
+
+  scan_phoronix_dependencies(profiles_dir,tags,ntags,entries,n);
+
+  e = find_entry(entries,n,"dirt-rally2");
+  assert(e->dep_unavailable == 1);
+  assert(strstr(e->dep_note,"steam") != NULL);
+  assert(strstr(e->dep_note,"pts/dirt-rally2-1.0.3") != NULL);
+  assert(entry_status(e) == LEDGER_UNSUPPORTED);
+
+  e = find_entry(entries,n,"cs2-hand-annotated");
+  assert(e->dep_unavailable == 0); /* explicit annotation short-circuits the scan match */
+  assert(entry_status(e) == LEDGER_UNSUPPORTED);
+  {
+    char detail[MAX_NOTE + 160];
+    format_detail(e,entry_status(e),detail,sizeof(detail));
+    assert(!strcmp(detail,"hand annotated already"));
+  }
+
+  e = find_entry(entries,n,"cs2-succeeded");
+  assert(e->dep_unavailable == 1); /* the scan still matched it... */
+  assert(entry_status(e) == LEDGER_DONE); /* ...but a real success outranks it */
+
+  e = find_entry(entries,n,"scikit-learn");
+  assert(e->dep_unavailable == 0); /* its deps exist, just none are "unavailable" */
+  assert(entry_status(e) == LEDGER_SKIPPED);
+
+  free(entries);
+  remove(list_path);
+  remove(index_path);
+  rmdir_recursive(profiles_dir);
+  printf("PASS: scan_phoronix_dependencies\n");
+}
+
 int main(void){
   test_parse_ledger_line();
   test_load_workload_list();
@@ -387,6 +582,10 @@ int main(void){
   test_schema_version_missing_field();
   test_record_paths_exist();
   test_stale_run_excluded_from_scoring();
+  test_strip_version_suffix();
+  test_extract_external_dependencies();
+  test_load_unavailable_deps();
+  test_scan_phoronix_dependencies();
 
   printf("\nAll test_ledger tests passed.\n");
   return 0;
