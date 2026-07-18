@@ -154,10 +154,17 @@ if ! command -v ollama >/dev/null 2>&1; then
     exit 0
 fi
 
-# Pick the smallest non-embedding model actually installed, via the same
-# /api/tags endpoint wspy-analyze itself uses -- a smoke test should be fast,
-# and "first row of `ollama list`" isn't size-ordered (it can land on a
-# multi-GB model and blow past any reasonable timeout).
+# Pick the smallest non-embedding, non-base model actually installed, via
+# the same /api/tags endpoint wspy-analyze itself uses -- a smoke test
+# should be fast, and "first row of `ollama list`" isn't size-ordered (it
+# can land on a multi-GB model and blow past any reasonable timeout). Also
+# excludes "base" (non-instruction-tuned) models: confirmed live that one
+# (a 1.5b base checkpoint, otherwise the smallest model on a real dev host)
+# doesn't reliably follow the "write N sentences" task at all -- it free-
+# associates new document sections instead of stopping, so instead of being
+# merely a low-quality analysis it can run for a very long time before
+# hitting a stop condition, which is exactly wrong for a smoke test that
+# needs to finish quickly and deterministically.
 MODEL="$(python3 -c '
 import json, urllib.request
 try:
@@ -165,7 +172,9 @@ try:
         models = json.load(r).get("models", [])
 except Exception:
     models = []
-models = [m for m in models if "embed" not in m.get("name", "").lower()]
+models = [m for m in models
+          if "embed" not in m.get("name", "").lower()
+          and "base" not in m.get("name", "").lower()]
 if models:
     print(min(models, key=lambda m: m.get("size", 0))["name"])
 ')"

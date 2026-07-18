@@ -2523,9 +2523,15 @@ void print_l2cache(struct counter_group *cgroup,enum output_format oformat){
     } else {
       fprintf(outfile,"instructions         %-14lu # %4.3f l2 access per 1000 inst\n",
 	      instructions,(double) l2_access / instructions*1000.0);
-      fprintf(outfile,"l2 hit from l1       %-14lu # %4.2f%% l2 miss\n",
-	      l2_from_l1_no_prefetch, (double) l2_miss / l2_access * 100.0);
-      fprintf(outfile,"l2 miss from l1      %-14lu #\n",l1_miss_l2_miss);
+      // The overall L2 miss rate (l2_miss/l2_access, combining l1-demand and
+      // prefetch sources, not just this one line's own count) is annotated
+      // on the *miss*-named line below, not the hit-named one above -- a
+      // real local-LLM narrative-analysis run (wspy-analyze) misread a
+      // prior "l2 hit from l1 ... # X% l2 miss" pairing as "X% is this
+      // line's own hit rate," inverting hit vs. miss.
+      fprintf(outfile,"l2 hit from l1       %-14lu #\n",l2_from_l1_no_prefetch);
+      fprintf(outfile,"l2 miss from l1      %-14lu # %4.2f%% l2 miss\n",
+	      l1_miss_l2_miss, (double) l2_miss / l2_access * 100.0);
       fprintf(outfile,"l2 hit from l2 pf    %-14lu #\n",l2_pf_hit_l2);
       fprintf(outfile,"l3 hit from l2 pf    %-14lu #\n",l2_pf_hit_l3);
       fprintf(outfile,"l3 miss from l2 pf   %-14lu #\n",l2_pf_miss_l3);
