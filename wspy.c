@@ -1476,7 +1476,34 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   }
 
   is_still_running = 0;
-  
+
+  // Close the race between the last periodic --interval tick and this
+  // final tail-row print: alarm(interval) is always re-armed at the end
+  // of timer_callback() (topdown.c) for as long as is_still_running was 1
+  // at that point, so a SIGALRM can already be pending/in flight the
+  // instant the blocking wait above returns -- setting is_still_running=0
+  // only stops the *next* re-arm, it doesn't retract a signal the kernel
+  // has already queued. If that signal is then delivered partway through
+  // the tail row's own sequence of fprintf() calls below, timer_callback()
+  // runs to completion (printing its own full periodic row, including its
+  // trailing newline) in the middle of it, splicing two rows' text
+  // together with no line break between them -- reproducible with e.g.
+  // `sleep 3 --interval 1`. Blocking SIGALRM and disarming the timer here,
+  // as the very first thing after the blocking wait returns (before any
+  // of the tail row's own output), leaves only the handful of instructions
+  // between the wait returning and this sigprocmask() call as a residual
+  // window -- narrowed from "the entire multi-fprintf tail print sequence"
+  // to effectively zero, not made mathematically impossible. No matching
+  // unblock is needed: once the child has exited there's no further
+  // legitimate use for SIGALRM before the process exits.
+  if (interval){
+    sigset_t alrm_mask;
+    sigemptyset(&alrm_mask);
+    sigaddset(&alrm_mask,SIGALRM);
+    sigprocmask(SIG_BLOCK,&alrm_mask,NULL);
+    alarm(0);
+  }
+
   clock_gettime(CLOCK_REALTIME,&finish_time);
 
   read_system();
