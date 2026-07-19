@@ -1206,6 +1206,65 @@ existing 17 named in `CLAUDE.md`'s "Counter mask bits"):**
     cap_perfmon+ep <path to wspy>` once), and notes explicitly that `scripts/setup_perf.sh`'s
     `perf_event_paranoid`/`nmi_watchdog` sysctl adjustments don't fix this on their own.
 
+**Tier 12 — combined GPU-workload profiling (addendum — added after Tier 11 was already numbered,
+same out-of-sequence treatment Tier 9/#27 and Tier 11/#31 got; grew out of real end-to-end testing
+against a yquake2 and an ollama workload, PR #84):**
+
+32. **`wspy-run gpu-compute` builtin profile — done.** One `wspy` invocation/one execution of the
+    workload combining syscall-latency tree tracing, system, power, both GPU backends, and topdown
+    on a shared `--interval` timeline, for a GPU-bound/latency-driven workload where `deep-cpu`/
+    `deep-gpu`'s separate-re-execution-per-category shape can't be correlated tick-for-tick (see
+    `CLAUDE.md`'s `wspy-run` entry). Surfaced and fixed two independent, pre-existing CSV
+    correctness bugs while building it: `--gpu-metrics`/`--gpu-smi`/`--gpu-nvidia` were silently
+    dropped from output whenever `--system` was also requested (header and value shared the same
+    wrong `!sflag` gate, so no column-count mismatch ever caught it); and `timer_callback()`'s
+    per-tick print order didn't match the CSV header/final-row order whenever a counter group (e.g.
+    `--power`) was combined with any GPU flag under `--interval` (confirmed present on unmodified
+    pre-fix code, independent of the first bug).
+33. **CPU temperature (`cpu_temp`) system metric — done.** New `SYSTEM_TEMP` bit (`system.c`), on by
+    default alongside load/cpu/network/freq — hwmon-based discovery (`k10temp`/`coretemp`/
+    `cpu_thermal`), a single sysfs read, no privileges needed, same cost class as `--freq`.
+34. **GPU-aware shared plot templates + stable per-metric colors — done.** `plot.c` gained
+    `gpu-utilization` (GPU busy % on its own chart), `gpu-vram` (VRAM usage on its own MB-scale
+    chart), `gpu-thermal` (GPU temp vs. frequency), and `temp-vs-frequency`/`temp-vs-power`/
+    `temp-vs-utilization` (CPU temp pairings) — found necessary from a real ollama run where an
+    ~8151 MB VRAM column was flattening every other metric in the generic fallback plot, and "how
+    much is actually happening on the GPU" wasn't visible without a dedicated chart. Also added
+    `metric_line_color()`: a stable per-column-name line color (curated table + hash fallback)
+    instead of gnuplot's own per-invocation positional cycling, so the same metric renders the same
+    color across every chart it appears in.
+35. **Dual process-tree output (`process.tree.simple.txt`) — done.** Every automatic proctree step
+    (`web/joblib.py`'s `run_proctree_besteffort()`, `workload/phoronix/run_test.sh` via a new
+    `PROFILE` env var) now writes both `process.tree.summary.txt` (every annotation the tree pass
+    actually captured) and `process.tree.simple.txt` (proctree's own bare invocation — just
+    `cpu=`/`start=`/`finish=` per process), since a heavily-annotated summary gets visually busy
+    enough that seeing the raw process hierarchy gets harder, not easier.
+36. Web launcher Check button now verifies wspy was actually built with the GPU backend(s)
+    (`AMDGPU=1`/`NVIDIA=1`) a request's preset/checklist would use (`check_gpu_build()`,
+    `web/server.py`), instead of that only surfacing as a "not built" line buried in a run's log;
+    also fixed `power_probes_for_request()`, which unconditionally skipped the power probe for every
+    preset on a stale claim that none used `--power` (`deep-cpu`'s systemtime pass has carried it
+    all along).
+
+    Still open, found along the way, not yet fixed:
+37. `--gpu-smi --interval` has a pre-existing column-count gap: `timer_callback()` (`topdown.c`)
+    never reads `amd_smi` per tick at all, only in aggregate mode, so a periodic `--gpu-smi
+    --interval` row is missing 4 columns the header claims (confirmed present on unmodified code,
+    independent of #32's fixes). Doesn't affect `gpu-compute` (uses `--gpu-metrics`/`--gpu-busy`/
+    `--gpu-nvidia`, not `--gpu-smi`).
+38. A rare pre-existing race: when the last `--interval` tick lands almost exactly at child exit,
+    the periodic tick's print (`timer_callback()`) and the final tail-read's print can interleave
+    without an intervening newline, producing one malformed/merged CSV line. Confirmed reproducible
+    with e.g. `sleep 3 --interval 1`; not yet fixed (needs careful signal-safety design, not a quick
+    patch).
+39. `deep-gpu`'s `wspy-run` systemtime pass doesn't carry `--power` the way `deep-cpu`'s does — a
+    pre-existing asymmetry between the two profiles, noticed but not fixed while wiring up
+    `power_probes_for_request()` (#36).
+40. The web launcher's custom-checklist GPU card (`server.py`/`web/joblib.py`) has no
+    `--gpu-nvidia` checkbox — only AMD's busy/metrics/smi flags are exposed there. A custom
+    (non-preset) run can't opt into NVIDIA GPU monitoring via checkboxes today; only presets that
+    hardcode it (`gpu-compute`) get NVIDIA data.
+
 ## 4.3 priorities
 Goal: use the normalized store built in 4.1 for regression detection, clustering, phase-aware
 topdown/IBS attribution, static-site publishing, and a lower-overhead tracing backend.
