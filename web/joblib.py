@@ -624,6 +624,8 @@ def build_configuration_passes(rundir, checklist):
             backend_flags.append("--gpu-metrics")
         if gpu.get("smi"):
             backend_flags.append("--gpu-smi")
+        if gpu.get("nvidia"):
+            backend_flags.append("--gpu-nvidia")
         if backend_flags:
             flags = list(backend_flags)
             device = parse_optional_int(gpu.get("device"), 0, 63)

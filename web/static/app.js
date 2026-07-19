@@ -81,6 +81,7 @@
         busy: getChecked("gpu_busy"),
         metrics: getChecked("gpu_metrics"),
         smi: getChecked("gpu_smi"),
+        nvidia: getChecked("gpu_nvidia"),
         device: getValue("gpu_device"),
         interval_secs: getValue("gpu_interval"),
         csv: getChecked("gpu_csv"),
