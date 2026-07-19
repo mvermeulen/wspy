@@ -107,6 +107,36 @@ static void test_topdown_detail_template(void){
   printf("PASS: topdown-detail template claims the 9 L1->L2 columns, topdown/fallback unaffected\n");
 }
 
+static void test_memory_bound_detail_template(void){
+  /* Real print_topdown_be() CSV shape (--topdown-backend, topdown.c): the
+   * original 5 cpu-cycles-normalized columns ("memory-bound") plus the 5
+   * new slots-normalized columns ("memory-bound-detail",
+   * INVESTIGATION.md's 4.2 Tier 1 "Full L1->L2->L3 topdown hierarchy"
+   * item) -- both templates must fire independently on the combined
+   * header without either stealing the other's columns. */
+  char line[] = "time,l1_bound,l2_bound,l3_bound,dram_bound,store_bound,"
+    "l1_bound_slots_pct,l2_bound_slots_pct,l3_bound_slots_pct,dram_bound_slots_pct,store_bound_slots_pct,";
+  char *fields[MAX_CSV_FIELDS];
+  int n,time_col,claimed[MAX_CSV_FIELDS] = {0};
+  struct plot_match matches[MAX_CSV_FIELDS];
+  int nmatches;
+
+  printf("Testing memory-bound-detail template matching alongside memory-bound...\n");
+  n = split_csv_line(line,fields,MAX_CSV_FIELDS);
+  time_col = find_col(fields,n,"time");
+
+  nmatches = match_templates(fields,n,time_col,matches,MAX_CSV_FIELDS,claimed,0);
+  assert(nmatches == 2);
+  assert(!strcmp(matches[0].name,"memory-bound"));
+  assert(matches[0].ncols == 5);
+  assert(!strcmp(matches[1].name,"memory-bound-detail"));
+  assert(matches[1].ncols == 5);
+
+  nmatches = add_fallback_match(fields,n,time_col,-1,-1,claimed,matches,MAX_CSV_FIELDS,nmatches);
+  assert(nmatches == 2); /* every column claimed by one of the two templates, nothing left over */
+  printf("PASS: memory-bound-detail template claims the 5 slots_pct columns, memory-bound unaffected\n");
+}
+
 static void test_system_cpu_template(void){
   char line[] = "time,load,runnable,cpu,idle,iowait,irq,net lo,net enp2s0,";
   char *fields[MAX_CSV_FIELDS];
@@ -582,6 +612,7 @@ int main(void){
   test_topdown_template_matches();
   test_extra_columns_dont_block_match();
   test_topdown_detail_template();
+  test_memory_bound_detail_template();
   test_system_cpu_template();
   test_network_fallback_absent_when_no_net_columns();
   test_coverage_columns_excluded_from_fallback();

@@ -98,6 +98,18 @@ static const struct plot_template templates[] = {
       "spec_pipeline_pct" }, 4, "points" },
   { "memory-bound", "Memory Boundedness", "% of cycles",
     { "l1_bound","l2_bound","l3_bound","dram_bound","store_bound" }, 2, "points" },
+  /* Same 5 metrics as "memory-bound" above, but expressed as a fraction of
+   * print_topdown()'s slots_no_contention denominator instead of this
+   * group's own independent cpu-cycles reading (topdown.c's
+   * shared_slots_no_contention, INVESTIGATION.md's 4.2 Tier 1, "Full
+   * L1->L2->L3 topdown hierarchy" item) -- on the same "% of pipeline
+   * slots" scale as "topdown"/"topdown-detail" above, so it composes with
+   * them instead of sitting on its own cpu-cycles axis. The original
+   * "memory-bound" template/columns are untouched for backward
+   * compatibility with existing consumers/history. */
+  { "memory-bound-detail", "Memory Boundedness (L1->L2->L3 Detail)", "% of pipeline slots",
+    { "l1_bound_slots_pct","l2_bound_slots_pct","l3_bound_slots_pct",
+      "dram_bound_slots_pct","store_bound_slots_pct" }, 3, "points" },
   { "cache-miss", "Cache Miss Rates", "miss rate (%)",
     { "L1-dcache miss","L1-icache miss","iTLB miss","dTLB miss","opcache miss" }, 1, "points" },
   { "system-cpu", "System CPU Time", "% of interval",

@@ -1969,6 +1969,23 @@ static unsigned long safe_sub(unsigned long a,unsigned long b){
   return a >= b ? a - b : 0;
 }
 
+// Cross-group denominator sharing (INVESTIGATION.md's 4.2 Tier 1, "Full L1->L2->L3
+// topdown hierarchy" item): print_topdown() (the "topdown"/"topdown2" counter group)
+// always runs before print_topdown_be() (the separate "topdown-backend" group) for the
+// same row -- setup_counter_groups() checks/prepends COUNTER_TOPDOWN_BE strictly before
+// COUNTER_TOPDOWN2/COUNTER_TOPDOWN, so TOPDOWN/TOPDOWN2 always ends up earlier in the
+// final counter_group_list and print_metrics()'s dispatch loop always reaches them first.
+// print_topdown() stashes its slots_no_contention denominator here so print_topdown_be()
+// can express its own L3 cycle counts as a fraction of the SAME denominator instead of its
+// own group's independent cpu-cycles reading, letting the two levels actually compose.
+// Reset to invalid at the top of every print_topdown() call (not just set on success) so a
+// row where topdown counters failed to open, or an unrecognized vendor's early return,
+// doesn't leak a stale value from an earlier row. If this ordering assumption is ever
+// changed (e.g. a future reorder of the checks in setup_counter_groups()), this sharing
+// breaks silently -- reconfirm it here first before touching that order.
+static unsigned long shared_slots_no_contention = 0;
+static int shared_slots_no_contention_valid = 0;
+
 // Hierarchical (parent->child) topdown schema, v1 (INVESTIGATION.md's 4.2 Tier 1,
 // "Hierarchical topdown schema" item, TOPDOWN_FORMULA_VERSION in wspy.h): L1 nodes
 // (retire/frontend/backend/speculate) are unprefixed CSV columns; L2 nodes are named
@@ -1984,11 +2001,13 @@ static unsigned long safe_sub(unsigned long a,unsigned long b){
 // L2 fields a vendor doesn't populate (e.g. ARM never computes retire_ucode/retire_fastpath)
 // report 0.0 rather than omitting the column -- same "0 = not available or genuinely zero"
 // convention used elsewhere in this codebase (e.g. proctree.c's -X/-B fields).
-// v1 scope is L1->L2 only: --topdown-backend's own l1_bound/l2_bound/l3_bound/dram_bound/
-// store_bound detail (print_topdown_be() below) is a real TMA-style L3, but it's computed
-// against a different denominator (that group's own cpu-cycles reading, in a separate perf
-// counter group) and isn't folded into this hierarchy yet -- a documented fast-follow, not
-// an oversight.
+// L3: --topdown-backend's own l1_bound/l2_bound/l3_bound/dram_bound/store_bound detail
+// (print_topdown_be() below) is a real TMA-style L3, but it's read from a genuinely separate
+// perf counter group (COUNTER_TOPDOWN_BE, its own fd/read cycle) with its own independent
+// cpu-cycles reading -- there's no struct-level link between the two groups. shared_slots_
+// no_contention (just below) is how print_topdown_be() gets access to this function's
+// slots_no_contention so its own L3 percentages can be expressed on the same denominator
+// instead of being stuck on an unrelated one.
 void print_topdown(struct counter_group *cgroup,enum output_format oformat,int mask){
   unsigned long slots=0;
   unsigned long slots_no_contention = 0;
@@ -2022,6 +2041,11 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
   double speculation_confidence = 0.0;
   double confidence;   // min across the above -- the row's overall trust level
   double sanity_pct;   // (retiring+frontend+backend+speculation)/slots_no_contention, ideally ~100%
+
+  // See shared_slots_no_contention's own comment above: reset every call so a row where
+  // topdown counters aren't available doesn't leave print_topdown_be() reading a stale
+  // value computed for an earlier row.
+  shared_slots_no_contention_valid = 0;
 
   if (oformat == PRINT_CSV_HEADER){
     fprintf(outfile,"retire,frontend,backend,speculate,confidence,sanity,");
@@ -2162,6 +2186,12 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
   default:
     return;
   }
+
+  // See shared_slots_no_contention's own comment above: this is the one point every
+  // vendor's branch reaches (the "default: return;" above never gets here), so it's the
+  // right place to publish this row's denominator for print_topdown_be() to read.
+  shared_slots_no_contention = slots_no_contention;
+  shared_slots_no_contention_valid = 1;
 
   // overall row confidence: the weakest link among the independently-read
   // counters that feed retire/frontend/backend/speculate -- a single
@@ -2309,21 +2339,32 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
 void print_topdown_be(struct counter_group *cgroup,enum output_format oformat,int mask){
   unsigned long cpu_cycles=0;
   unsigned long load_stall=0;
-  unsigned long store_stall=0;  
+  unsigned long store_stall=0;
   unsigned long l1_miss=0;
   unsigned long l2_miss=0;
   unsigned long l3_miss=0;
-  
+  unsigned long l1_bound=0,l2_bound=0,l3_bound=0,dram_bound=0,store_bound=0;
+
   struct counter_info *cinfo;
 
-  // The CSV header is always exactly these 5 columns regardless of vendor or
+  // The CSV header is always exactly these columns regardless of vendor or
   // whether the underlying counters were actually measured (permission
   // denied, etc.) -- previously this branch was missing its trailing comma
   // (merging into the next group's header, e.g. "store_boundcounters_
   // measured") and a second, unreachable copy with the correct comma lived
   // below, dead behind the CSV_HEADER case already having returned here.
+  // The 5 trailing *_slots_pct columns (INVESTIGATION.md's 4.2 Tier 1, "Full
+  // L1->L2->L3 topdown hierarchy" item) express the same 5 metrics as a
+  // fraction of print_topdown()'s slots_no_contention denominator (shared
+  // via shared_slots_no_contention, see that function's own comment) instead
+  // of this group's own independent cpu-cycles reading -- letting a reader
+  // drill down from print_topdown()'s backend_memory_pct into which kind of
+  // memory stall it is, on the same scale. The original 5 columns are left
+  // unchanged for backward compatibility with existing consumers/history.
   if (oformat == PRINT_CSV_HEADER){
     fprintf(outfile,"l1_bound,l2_bound,l3_bound,dram_bound,store_bound,");
+    fprintf(outfile,"l1_bound_slots_pct,l2_bound_slots_pct,l3_bound_slots_pct,"
+	    "dram_bound_slots_pct,store_bound_slots_pct,");
     return;
   }
 
@@ -2346,36 +2387,82 @@ void print_topdown_be(struct counter_group *cgroup,enum output_format oformat,in
     return;
   }
 
+  // load_stall/l1_miss/l2_miss/l3_miss are independently-read raw-event
+  // counters (see safe_sub()'s own comment, near print_topdown()) --
+  // architecturally each should be >= the next (an L2 miss is a subset of
+  // L1 misses that also missed L2, etc.), but that's not guaranteed under
+  // measurement noise/independent multiplex-scaling extrapolation. Computed
+  // via safe_sub() so a noisy read degrades to 0 instead of an unsigned
+  // subtraction wrapping to a near-ULONG_MAX value -- l2_bound/l3_bound
+  // were entirely unguarded before this (l1_bound alone had an inline
+  // ternary doing the same job by hand).
+  l1_bound = safe_sub(load_stall,l1_miss);
+  l2_bound = safe_sub(l1_miss,l2_miss);
+  l3_bound = safe_sub(l2_miss,l3_miss);
+  dram_bound = l3_miss;
+  store_bound = store_stall;
+
   // Always emit the 5 value columns (possibly nan/inf if cpu_cycles is 0,
   // e.g. counters unavailable this run) rather than gating on "if
   // (cpu_cycles)" -- gating meant a permission-denied run silently dropped
   // all 5 CSV columns while the header still claimed them, a header/value
-  // column-count mismatch on top of the missing-comma bug above.
+  // column-count mismatch on top of the missing-comma bug above. The new
+  // slots_pct columns use their own explicit 0.0-when-unavailable guard
+  // instead (matching print_topdown()'s own convention for its L1/L2
+  // columns), since shared_slots_no_contention_valid is a real "not
+  // applicable this row" signal, not just a divide-by-zero to tolerate.
   switch(oformat){
   case PRINT_CSV_HEADER:
     break;
-  case PRINT_CSV:
+  case PRINT_CSV: {
+    unsigned long denom = shared_slots_no_contention_valid ? shared_slots_no_contention : 0;
     fprintf(outfile,"%4.1f,%4.1f,%4.1f,%4.1f,%4.1f,",
-	    (double) (load_stall > l1_miss)?(load_stall - l1_miss)*100.0/cpu_cycles:0,
-	    (double) (l1_miss - l2_miss)*100.0/cpu_cycles,
-	    (double) (l2_miss - l3_miss)*100.0/cpu_cycles,
-	    (double) l3_miss*100.0/cpu_cycles,
-	    (double) store_stall*100.0/cpu_cycles);
+	    (double) l1_bound*100.0/cpu_cycles,
+	    (double) l2_bound*100.0/cpu_cycles,
+	    (double) l3_bound*100.0/cpu_cycles,
+	    (double) dram_bound*100.0/cpu_cycles,
+	    (double) store_bound*100.0/cpu_cycles);
+    // Not guaranteed to sum to print_topdown()'s own backend_memory_pct (the
+    // L2 parent this is meant to drill down from): these are independently-
+    // measured decomposition chains (exe_activity.*/memory_activity.* here
+    // vs. ex_no_retire.*/core.topdown-mem-bound there), same "independent
+    // measurement chains, not an exact partition" caveat print_topdown()'s
+    // own sanity check already documents for its four L1 components summing
+    // against 100%.
+    fprintf(outfile,"%4.1f,%4.1f,%4.1f,%4.1f,%4.1f,",
+	    denom ? (double) l1_bound*100.0/denom : 0.0,
+	    denom ? (double) l2_bound*100.0/denom : 0.0,
+	    denom ? (double) l3_bound*100.0/denom : 0.0,
+	    denom ? (double) dram_bound*100.0/denom : 0.0,
+	    denom ? (double) store_bound*100.0/denom : 0.0);
     break;
-  case PRINT_NORMAL:
+  }
+  case PRINT_NORMAL: {
+    unsigned long denom = shared_slots_no_contention_valid ? shared_slots_no_contention : 0;
     fprintf(outfile,"cpu-cycles           %-14lu # %4.1f%% memory latency\n",
 	    cpu_cycles,(double) (load_stall+store_stall)*100.0/cpu_cycles);
-    fprintf(outfile,"load stalls          %-14lu # %4.1f%% l1 bound\n",
-	    load_stall,(load_stall>l1_miss)?(load_stall - l1_miss)*100.0/cpu_cycles:0);
-    fprintf(outfile,"l1 miss              %-14lu # %4.1f%% l2 bound\n",
-	    l1_miss,(double) (l1_miss - l2_miss)*100.0/cpu_cycles);
-    fprintf(outfile,"l2 miss              %-14lu # %4.1f%% l3 bound\n",
-	    l2_miss,(double) (l2_miss - l3_miss)*100.0/cpu_cycles);
-    fprintf(outfile,"l3 miss              %-14lu # %4.1f%% dram bound\n",
-	    l3_miss,(double) l3_miss*100.0/cpu_cycles);
-    fprintf(outfile,"store_stalls         %-14lu # %4.1f%% store bound\n",
-	    store_stall,(double) store_stall*100.0/cpu_cycles);
+    fprintf(outfile,"load stalls          %-14lu # %4.1f%% l1 bound",
+	    load_stall,(double) l1_bound*100.0/cpu_cycles);
+    if (denom) fprintf(outfile," (%4.1f%% of slots)",(double) l1_bound*100.0/denom);
+    fprintf(outfile,"\n");
+    fprintf(outfile,"l1 miss              %-14lu # %4.1f%% l2 bound",
+	    l1_miss,(double) l2_bound*100.0/cpu_cycles);
+    if (denom) fprintf(outfile," (%4.1f%% of slots)",(double) l2_bound*100.0/denom);
+    fprintf(outfile,"\n");
+    fprintf(outfile,"l2 miss              %-14lu # %4.1f%% l3 bound",
+	    l2_miss,(double) l3_bound*100.0/cpu_cycles);
+    if (denom) fprintf(outfile," (%4.1f%% of slots)",(double) l3_bound*100.0/denom);
+    fprintf(outfile,"\n");
+    fprintf(outfile,"l3 miss              %-14lu # %4.1f%% dram bound",
+	    l3_miss,(double) dram_bound*100.0/cpu_cycles);
+    if (denom) fprintf(outfile," (%4.1f%% of slots)",(double) dram_bound*100.0/denom);
+    fprintf(outfile,"\n");
+    fprintf(outfile,"store_stalls         %-14lu # %4.1f%% store bound",
+	    store_stall,(double) store_bound*100.0/cpu_cycles);
+    if (denom) fprintf(outfile," (%4.1f%% of slots)",(double) store_bound*100.0/denom);
+    fprintf(outfile,"\n");
     break;
+  }
   }
 }
 
