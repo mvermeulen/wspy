@@ -92,6 +92,16 @@ extern struct timespec start_time,finish_time;
 		     COUNTER_MEMORY|COUNTER_TLB|COUNTER_OPCACHE|COUNTER_SOFTWARE|COUNTER_FLOAT| \
 		     COUNTER_ARM_DCACHE_MEM|COUNTER_ARM_ICACHE_TLB|COUNTER_ARM_MEM_ALIGN_TLB)
 
+/* Version tag for topdown.c's print_topdown() percentage-decomposition
+ * formulas -- which raw events feed each L1/L2 node, how SMT contention is
+ * computed/subtracted, which denominator (slots_no_contention) drives
+ * classification. Bump when that formula changes, independent of
+ * MANIFEST_SCHEMA_VERSION, so two runs' topdown numbers can be checked for
+ * "were these computed the same way" without diffing source. Recorded in
+ * manifest.h's struct manifest_info (NULL when a run collects no topdown
+ * counters at all). */
+#define TOPDOWN_FORMULA_VERSION "1.0"
+
 extern unsigned int counter_mask;
 
 #define SYSTEM_LOADAVG      0x1

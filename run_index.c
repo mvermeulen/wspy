@@ -166,6 +166,10 @@ int append_run_index(const char *path,const struct manifest_info *info){
   fprintf(fp,"\"counter_coverage\":{\"requested\":%d,\"measured\":%d},",
 	  info->counters_requested,info->counters_measured);
 
+  fprintf(fp,"\"topdown_formula_version\":");
+  json_write_string_or_null(fp,info->topdown_formula_version);
+  fprintf(fp,",");
+
   /* Native multi-pass counter execution (--passes=<list>, multipass.h):
    * leaner than the manifest's "passes" array (counts only, no timing/exit
    * status -- same asymmetry as counter_coverage/environment_coverage

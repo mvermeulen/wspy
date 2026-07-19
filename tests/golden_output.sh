@@ -168,8 +168,13 @@ BASE="elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswa
 assert_csv_header "no-ipc"      --no-ipc    -- "${BASE}counters_measured,counters_requested,"
 assert_csv_header "default-ipc"             -- "${BASE}ipc,counters_measured,counters_requested,"
 assert_csv_header "no-rusage"   --no-rusage -- "ipc,counters_measured,counters_requested,"
-assert_csv_header "topdown"     --no-ipc --topdown  -- "${BASE}retire,frontend,backend,speculate,confidence,sanity,counters_measured,counters_requested,"
-assert_csv_header "topdown2"    --no-ipc --topdown2 -- "${BASE}retire,frontend,backend,speculate,confidence,sanity,counters_measured,counters_requested,"
+# INVESTIGATION.md's 4.2 "Hierarchical topdown schema" item: the 9 trailing
+# columns after "sanity," are the new L1->L2 hierarchy (contention_pct, then
+# 8 L2 columns each named "<parent>_<child>_pct") -- see topdown.c's
+# print_topdown() comment for the full naming/denominator convention.
+TOPDOWN_L2="contention_pct,retire_ucode_pct,retire_fastpath_pct,frontend_latency_pct,frontend_bandwidth_pct,backend_cpu_pct,backend_memory_pct,spec_branch_pct,spec_pipeline_pct,"
+assert_csv_header "topdown"     --no-ipc --topdown  -- "${BASE}retire,frontend,backend,speculate,confidence,sanity,${TOPDOWN_L2}counters_measured,counters_requested,"
+assert_csv_header "topdown2"    --no-ipc --topdown2 -- "${BASE}retire,frontend,backend,speculate,confidence,sanity,${TOPDOWN_L2}counters_measured,counters_requested,"
 # power/energy-pkg's column names are vendor-neutral (unlike the AMD raw
 # event labels below), so this is checked here rather than inside the
 # vendor-gated block -- gated on sysfs presence instead: an unsupported

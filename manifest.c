@@ -226,6 +226,11 @@ int write_manifest(const char *path,const struct manifest_info *info){
   fprintf(fp,"%s    ]\n",info->counters_unavailable_count ? "\n" : "");
   fprintf(fp,"  },\n");
 
+  fprintf(fp,"  \"topdown_formula_version\": ");
+  if (info->topdown_formula_version) json_write_string(fp,info->topdown_formula_version);
+  else fputs("null",fp);
+  fprintf(fp,",\n");
+
   fprintf(fp,"  \"passes\": [\n");
   for (i = 0; i < info->npasses; i++){
     const struct manifest_pass_info *mp = &info->passes[i];

@@ -165,6 +165,17 @@ web launcher's Check button gained a live `perf_event_open()` probe, not just a 
 `pkg_joules`/`pkg_watts` via the `power`/`power_core` perf PMUs — dedicated web launcher card,
 custom-plot column autofit, and a live `EACCES`-aware Check-button probe with remediation guidance.
 
+**Hierarchical topdown schema (v1: L1→L2):** `print_topdown()`'s already-computed per-vendor L2
+breakdown (ucode/fastpath, frontend latency/bandwidth, backend cpu/memory, speculation branch/pipeline)
+now reaches CSV, not just human text, as 9 new trailing columns (`contention_pct` +
+`<parent>_<child>_pct`), all on the same contention-adjusted `slots_no_contention` denominator L1
+already uses (a real AMD-only consistency fix — the human-text L2 lines previously divided by raw
+`slots`). `TOPDOWN_FORMULA_VERSION` (`wspy.h`) is recorded in the manifest/run-index
+(`topdown_formula_version`, `MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION` 1.6.0 → 1.7.0), `null`
+when a run collects no topdown counters. Folding `--topdown-backend`'s own cpu-cycles-normalized L3
+detail (`l1_bound`/`l2_bound`/`l3_bound`/`dram_bound`/`store_bound`) into this same slots-normalized
+hierarchy remains open — see "4.2 — remaining work" below.
+
 **Combined GPU-workload profiling:** `wspy-run gpu-compute` builtin profile (tree tracing + system +
 power + both GPU backends + topdown on one shared `--interval` timeline, for workloads a
 separate-re-execution-per-category profile like `deep-gpu` can't correlate tick-for-tick); surfaced
@@ -374,10 +385,12 @@ decomposition," which depends on IBS sampling-mode support existing first.
 Advancements worth adopting, in priority order for `wspy` specifically:
 1. ~~Multiplex-aware confidence~~ — shipped (see "What shipped in 4.0").
 2. ~~Decomposition consistency/sanity checks~~ — shipped alongside #1.
-3. Hierarchical (L1→L2→L3) parent/child schema with explicit raw-vs-contention-adjusted
-   denominators — needed before drill-down reporting means anything.
-4. SMT/contention-aware normalization — publish both denominators, document which one drives
-   classification.
+3. ~~Hierarchical (L1→L2) parent/child schema with explicit raw-vs-contention-adjusted
+   denominators~~ — shipped for L1→L2 (see "Shipped since 4.1"'s "Hierarchical topdown schema");
+   L3 (folding `--topdown-backend`'s own detail in) remains open, see "4.2 — remaining work" Tier 1.
+4. ~~SMT/contention-aware normalization — publish both denominators, document which one drives
+   classification~~ — shipped alongside #3 (`contention_pct` CSV column; every other percentage
+   documented as a fraction of `slots_no_contention`).
 5. Phase-aware topdown (warmup/steady/degraded) — depends on interval phase segmentation (shipped,
    `phase.c`).
 6. Hybrid/heterogeneous core-class summaries — don't mix Atom+Core topdown into one headline number.
@@ -463,8 +476,11 @@ has). Ordered in dependency tiers; items within a tier are independently startab
 
 **Tier 1 — topdown/IBS refinement (interdependent; sets up 4.3's attribution work):**
 
-1. Hierarchical (parent→child) topdown schema + explicit raw-vs-contention-adjusted denominators +
-    formula/version metadata.
+1. Full L1→L2→L3 topdown hierarchy: fold `--topdown-backend`'s own cpu-cycles-normalized
+    `l1_bound`/`l2_bound`/`l3_bound`/`dram_bound`/`store_bound` detail (`print_topdown_be()`,
+    `topdown.c`) under the slots-normalized L1/L2 tree the v1 pass shipped (see "Shipped since 4.1"
+    above, "Hierarchical topdown schema") — needs cross-group data sharing, since that detail is read
+    from a separate perf counter group with its own denominator today.
 2. Core-class-aware topdown (hybrid Intel Atom+Core; weighted aggregate) — depends on per-core
     collection (shipped) plus the hierarchical schema above.
 3. Zen-family preset packs (`zen-portable`, `zen4plus-deep`) — convenience layer now that IBS
