@@ -597,6 +597,20 @@
     return html;
   }
 
+  function renderPhoronixResultNotifier(rn) {
+    // Only present at all when result_notifier's hooks are actually
+    // registered on this host (server.py's phoronix_result_notifier_
+    // hooks_registered()) -- otherwise the buggy code path this checks for
+    // can never be reached, and showing it would just be alarming noise.
+    if (!rn) return "";
+    var html = '<div class="check-test"><strong>result_notifier.php hook bug check</strong> '
+      + '<span class="muted">(' + escapeHtml(rn.path) + ")</span>";
+    html += '<div class="' + statusClass(rn.status) + '">' + escapeHtml(rn.status) + "</div>";
+    if (rn.detail) html += '<div class="muted">' + escapeHtml(rn.detail) + "</div>";
+    html += "</div>";
+    return html;
+  }
+
   function renderCheckResults(data) {
     var html = renderPerfCheck(data.perf || {});
     html += renderToolsCheck(data.tools);
@@ -629,6 +643,7 @@
       html += '<div class="muted">' + escapeHtml((ph && ph.note) || "no estimate available") + "</div>";
     } else {
       html += renderPhoronixBatchMode(ph.batch_mode);
+      html += renderPhoronixResultNotifier(ph.result_notifier);
       (ph.tests || []).forEach(function (t) { html += renderPhoronixTest(t); });
       if (ph.total_seconds !== null && ph.total_seconds !== undefined && (ph.tests || []).length > 1) {
         html += "<div><strong>Total estimated: " + Math.round(ph.total_seconds) + "s</strong></div>";

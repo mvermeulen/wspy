@@ -385,3 +385,24 @@ own fix, since `test_result_buffer` is never actually populated at either of the
 simple test); a real per-trial position/count would need `__interim_test_run` instead (not currently
 registered by `scripts/setup_phoronix_hooks.sh`), which per PTS's own module-setup description fires
 between trials rather than once around the whole test option.
+
+## 10. Surfacing Bug 2 in the Web Launcher's Check Button (2026-07-19)
+
+Since bug 2 above can turn "hooks registered" into "the next real benchmark run crashes with zero
+results," `web/server.py`'s existing "Check" button (`POST /api/check-run`, already the home of the
+`check_phoronix_batch_config()`/IBS/power probes) now also runs `check_phoronix_result_notifier_bug()`
+for a detected Phoronix workload — but *only* when `phoronix_result_notifier_hooks_registered()` first
+confirms a real `pre_test_run_process`/`post_test_run_process` is actually configured in the correct,
+underscored `modules-data/result_notifier/module-settings.ini`. Without that, the buggy code path can
+never be reached at all, so the check is simply omitted rather than raising an alarm nobody asked for.
+
+Detection is a plain text search of the installed `pts-core/modules/result_notifier.php` (default
+location `/usr/share/phoronix-test-suite`, overridable via `--phoronix-pts-dir` for a non-standard
+install) for the exact known-buggy line (`test_result_buffer->get_count() + 1;`, unguarded) versus this
+project's own fix's marker (`has_result_buffer`) — no PHP execution needed, since both patterns are known
+verbatim from reproducing and patching the bug directly. `ok`/`warn`/`unknown` follow the same convention
+as every other Check button probe, with `warn`'s detail spelling out the exact crash text and pointing at
+`phoronix-test-suite/phoronix-test-suite#924`/`#925`. Verified end to end against three cases: the real
+patched system file (`ok`), a sandboxed copy of the original unpatched file via `--phoronix-pts-dir`
+(`warn`, correct crash text), and a sandboxed `PTS_USER_PATH` with no hooks registered at all (field
+absent from the response entirely, not just `null` on the client side).
