@@ -7,16 +7,6 @@ WSPY_RUN=${WSPY_RUN:="/home/mev/source/wspy/wspy-run"}
 WSPY_PLOT=${WSPY_PLOT:="/home/mev/source/wspy/wspy-plot"}
 PROCTREE=${PROCTREE:="/home/mev/source/wspy/proctree"}
 OUTROOT=${OUTROOT:="."}
-# Fixed staging path scripts/pts_hooks/{pre,post}_test_run.sh write to, if
-# registered (phoronix-test-suite's result_notifier module) -- must match
-# those scripts' own default exactly, since PTS invokes them with a
-# replaced environment that can't carry this value down from here (see
-# doc/phoronix_hook_investigation.md and pts_hooks/pre_test_run.sh's own
-# comment for why). Not present at all if the hooks aren't registered on
-# this host (scripts/setup_phoronix_hooks.sh) -- degrades to no
-# pts_hooks.log artifact, same measured-vs-unavailable idiom as everywhere
-# else in this codebase.
-WSPY_PTS_HOOK_LOG=${WSPY_PTS_HOOK_LOG:="/tmp/wspy_pts_hooks.log"}
 
 # One directory for this run: <OUTROOT>/phoronix/<TESTNAME>/<RUN_ID>, via
 # wspy-run's unified output layout (INVESTIGATION_4.0.md "Run artifact
@@ -28,17 +18,6 @@ RUN_ID="${STAMP}.${NS:0:3}-$$"
 RUNDIR="${OUTROOT}/phoronix/${TESTNAME}/${RUN_ID}"
 
 RUN_INDEX="${OUTROOT}/phoronix/run-index.jsonl"
-
-# A stale staging file left over from an interrupted previous run (one that
-# never reached the relocation step below) would otherwise get silently
-# misattributed to this run -- archive it out of the way rather than lose
-# or misattribute it. Not expected in normal operation (phoronix runs are
-# not run concurrently on this host, matching wspy-queue's own
-# one-at-a-time assumption elsewhere).
-if [ -s "$WSPY_PTS_HOOK_LOG" ]; then
-    mv "$WSPY_PTS_HOOK_LOG" "${WSPY_PTS_HOOK_LOG}.stale-$$"
-    echo "run_test.sh: found a stale $WSPY_PTS_HOOK_LOG from an earlier run, moved aside to ${WSPY_PTS_HOOK_LOG}.stale-$$" >&2
-fi
 
 if [ $(grep -c Intel /proc/cpuinfo) -gt 0 ]; then
     # software/branch, topdown, ipc/l2, backend -- Intel doesn't have the
@@ -103,14 +82,10 @@ else
     fi
 fi
 
-# Relocate the pts_hooks staging log (if the result_notifier hooks are
-# registered on this host -- scripts/setup_phoronix_hooks.sh) into the run
-# directory as a real artifact, and clear the staging path for the next
-# invocation. By the time control returns here, phoronix-test-suite (and
-# every hook subprocess PTS spawned) has fully exited, so this is not a
-# race against anything still writing. Nothing to do, silently, if the
-# hooks aren't registered -- same degrade-don't-fail idiom as the
-# wspy-plot/proctree steps above.
-if [ -s "$WSPY_PTS_HOOK_LOG" ]; then
-    mv "$WSPY_PTS_HOOK_LOG" "${RUNDIR}/pts_hooks.log"
-fi
+# PTS result_notifier hook capture (scripts/pts_hooks/*.sh, if registered --
+# scripts/setup_phoronix_hooks.sh) is relocated per-pass by wspy-run itself
+# now (each pass's own <pass-name>.pts_hooks.log in $RUNDIR), not by this
+# script -- see wspy-run's run_pass()/doc/phoronix_hook_investigation.md.
+# That way capture works the same regardless of which front end launches
+# the phoronix-test-suite invocation (this script, the web launcher,
+# wspy-queue, or wspy-run run by hand), not just this one.
