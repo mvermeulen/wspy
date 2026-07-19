@@ -239,10 +239,12 @@ See `./wspy-store --help` for the full option list.
 
 ## wspy-summary: regenerable summary tables
 
-`wspy-summary` queries a `wspy-store` database directly and computes min/max/mean/median/stddev
+`wspy-summary` queries a `wspy-store` database directly and computes min/max/mean/median/stddev/CV,
+a 95% confidence interval of the mean, a repeatability verdict (`PASS`/`WARN:thin`/`WARN:noisy`),
 and z-score outlier flags per `(group,metric)` bucket — grouped by workload command (default),
 hostname, or CPU vendor — so a summary table can always be regenerated from indexed data with no
-manual copy/paste.
+manual copy/paste. `--strict` fails if any bucket is too thin (`--min-runs`), too noisy
+(`--max-cv`, default 5%), or nothing matched.
 
 ```
 ./wspy-summary --db results/store.db                                # human table

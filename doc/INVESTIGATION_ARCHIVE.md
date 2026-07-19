@@ -586,3 +586,113 @@ Also shipped alongside it, from the same real-workload testing round:
   also fixed `power_probes_for_request()`, which had unconditionally skipped the power probe for every
   preset on a stale claim that none used `--power` (`deep-cpu`'s systemtime pass has carried it all
   along).
+
+### Concrete design: repeatability policy + confidence metadata (2026-07-19, shipped)
+**Shipped 2026-07-19,** exactly as designed below: `summary.c`'s `emit_bucket()` now computes a 95%
+confidence interval of the mean and a repeatability verdict for every reported bucket, alongside the
+pre-existing mean/stddev/`cv_percent`. `test_summary.c` gained 14 new tests (the t-table/CI helper in
+isolation, `compute_verdict()`'s four PASS/WARN combinations, and five `summarize()`-level integration
+tests covering the default-threshold, `--max-cv`-adjusted, and combined-thin-and-noisy cases) — all
+passing, alongside the full pre-existing suite unchanged. Manually smoke-tested against a real SQLite
+fixture: CSV comma-quoting for the `WARN:thin,noisy` verdict (which itself contains a literal comma)
+round-trips correctly through `print_csv_field()`, and `--strict` returns exit 1 when any bucket carries
+a `WARN` verdict and exit 0 once `--max-cv`/`--command` narrow the request to only `PASS` buckets.
+
+Design for 4.2 Tier 2's "Repeatability policy + confidence metadata... as default output" item, worked
+out before implementation since the original backlog line understated how much had already shipped and
+undersold the one real design question (the verdict/policy half) — `emit_bucket()` already computed and
+printed mean, stddev, and CV (`cv_percent`) unconditionally for every reported bucket before this item
+started; what was actually missing was the confidence interval and a pass/fail-style verdict layer.
+
+**Confidence interval (95%, Student's t):**
+- Two-tailed 95% CI of the per-run mean, using Student's t rather than a normal/z approximation —
+  with `n` typically 3-10 wspy-level repeats, t's fatter tails matter more than they would at sample
+  sizes where a normal approximation is usually fine.
+- No stats library is linked (`summary.c` only pulls in `sqlite3`/`math.h`), so this needed a small
+  hardcoded critical-value table — same idiom as `validate.c`'s `sanity_bounds[]` or `topdown.c`'s
+  event tables, not a general-purpose stats routine. `t95_table[30]`, indexed by `df = n - 1`, covers
+  `df=1..30` (12.706, 4.303, 3.182, ... down to 2.042 at `df=30`); `df > 30` falls back to `z = 1.96`
+  (t and normal are close enough there, and repeat counts this high will be rare in practice).
+- `n < 2` (`df < 1`, no table entry) returns a zero-width interval (`ci_low = ci_high = mean`) directly,
+  without consulting the table — consistent with `compute_stats()`'s existing convention that `stddev`
+  is 0 (not NaN/undefined) for `n < 2` ("nothing to vary against"); since half-width is
+  `t * stddev / sqrt(n)`, this is also what the formula would produce anyway once `stddev = 0` — the
+  branch just avoids needing a `t(df=0)` table entry to get there.
+- Not configurable — no `--confidence-level` flag. `compute_stats()`'s `stddev` is likewise fixed at
+  sample (`n-1`) with no user-facing knob; one sane fixed default (95%) beats a flag for every
+  statistical choice this tool makes.
+- `compute_ci95(mean, stddev, n, *ci_low_out, *ci_high_out)` is a standalone helper called from
+  `emit_bucket()` right after `compute_stats()` returns — deliberately *not* folded into
+  `compute_stats()`'s own signature, since CI only needs the mean/stddev/n that function already
+  returns, and keeping it separate meant `test_summary.c`'s existing `compute_stats()` coverage didn't
+  need to change shape, only grow independent tests for the new helper.
+- New CSV/human columns: `ci95_low`, `ci95_high` (actual bounds, not a bare margin) — mirrors `min`/
+  `max` already being two separate columns in this same table rather than one combined range.
+
+**Verdict layer (the actual "policy" half):**
+- Two states only, `PASS`/`WARN` — no `FAIL`. This is a confidence signal about how much to trust a
+  number, not a data-validity check (that's `validate.c`'s job); nothing a verdict here catches is
+  "broken," so `validate.c`'s three-state PASS/WARN/FAIL vocabulary doesn't fully transfer.
+- Computed only for buckets that already cleared `--min-runs` and were emitted — a bucket skipped for
+  `--min-runs` stays skipped exactly as before this item (unchanged default behavior at `--min-runs`'s
+  default of 1); the verdict layer never sees it.
+- `WARN:thin` if `n < 3` (`VERDICT_MIN_RUNS_FOR_CONFIDENCE`) — reuses, rather than invents, the exact
+  threshold `compute_stats()`'s own outlier flagging already applies ("flagging with fewer samples has
+  no real meaning"). Independent of `--min-runs`: `--min-runs` controls what's even shown, this
+  controls what's shown *with* a confidence caveat attached, and the default `--min-runs=1` means most
+  of the "is this thin" work happens here, not there.
+- `WARN:noisy` if `cv_percent > opts.max_cv` — new `--max-cv <percent>` flag, default `5.0`, symmetric
+  with the existing `--outlier-stddev` flag: one blunt global default, user-overridable, not per-metric.
+  (`validate.c`'s per-column `sanity_bounds[]` table is the precedent for a future per-metric override
+  if 5% turns out wrong for some metrics and not others — deliberately not built here without real data
+  to justify differentiated thresholds.)
+- Both conditions can fire together: one `verdict` column holding `PASS` or `WARN:<reasons>` (e.g.
+  `WARN:thin,noisy`) — single field, not two, mirroring how `outlier_ids` is already one field carrying
+  a list rather than exploded across columns. Since that combined value contains a literal comma,
+  `print_csv_field()` quotes it in CSV output exactly like any other comma-bearing field.
+- `--strict` gained a third failure condition: any emitted bucket with a non-`PASS` verdict, on top of
+  its existing two (`groups_skipped_min_runs > 0`, nothing matched at all) — directly matches
+  `wspy-validate`'s own documented `--strict` behavior ("also fails on any WARN," `CLAUDE.md`), keeping
+  the two tools' `--strict` semantics consistent instead of diverging. `summary_totals` gained a
+  `groups_warned` counter for this, surfaced in the trailing (non-`--quiet`) summary line alongside the
+  existing skipped/scanned counts.
+- Column order (CSV and human table both): `...,stddev,cv_percent,ci95_low,ci95_high,verdict,
+  outlier_count,outlier_run_ids[,contributing_runs]` — CI sits next to stddev/CV (the dispersion
+  numbers it's derived from), verdict right after (the rollup conclusion from `n` and `cv`), outlier
+  detection stays a separate, later concern (a per-value diagnostic, not part of the repeat-confidence
+  rollup) exactly where it already was.
+
+**Caveat: wrapped multi-trial harnesses confound wspy-level repeat counting.**
+`wspy-summary`'s repeat unit is one wspy invocation — it has no visibility into what happens inside the
+child process. That's a clean assumption for a bare workload, but not when the wrapped command is
+itself a multi-trial harness: Phoronix Test Suite runs each test at least N times and adds more
+internally if its own variability check exceeds its own threshold; SPEC CPU2017 runs a fixed multiple
+times and reports high/low/median. Two concrete failure modes follow directly from that mismatch:
+- **False `WARN:noisy`:** two wspy invocations of "the same" Phoronix test can legitimately span a
+  different number of Phoronix-internal sub-runs (3 vs. 6, say, because Phoronix's own adaptive-N
+  decided one run needed more), so wspy-level CV across repeat invocations reflects hardware/
+  measurement noise *and* swings in the harness's own internal trial count, conflated into one number.
+  A `WARN:noisy` here might be correctly flagging real instability, or might just be an artifact of
+  Phoronix having auto-added runs on one invocation and not another — wspy has no way to distinguish
+  the two.
+- **Misleading `WARN:thin`:** the reverse case — a workload with excellent harness-internal
+  repeatability (Phoronix/SPEC already settled on a tight median across several internal trials) still
+  reads as `n=1` at the wspy-summary level if only one wspy invocation wrapped it, triggering
+  `WARN:thin` even though the underlying measurement is already well-repeated, just invisibly so from
+  wspy's side.
+- **Deliberately not fixed in `summary.c` itself:** the tool stays harness-agnostic, matching its
+  existing design (it doesn't know or special-case what produced the command line, and Phoronix/
+  SPEC-specific logic belongs at the layer that already has it — `web/server.py`'s
+  `parse_phoronix_test_names()`/`ledger.c`'s `--phoronix-profiles-dir` scanning are the precedent for
+  where harness-specific detection already lives in this codebase, not the stats tool). No
+  differentiated `--max-cv`/`WARN:thin` threshold for detected harnesses without real data to justify
+  one.
+- **Mitigation is documentation, not code:** this caveat should be surfaced wherever verdict output is
+  explained to a reader (4.2 Tier 8's "profile cookbook + interpretation playbook" item is the intended
+  home once it ships), with the actionable fix stated plainly: pin the harness's own internal run count
+  (Phoronix supports fixing it instead of letting it auto-add) if clean, unconfounded wspy-level
+  repeatability data is wanted for a harness-wrapped workload.
+- **Explicitly deferred, not folded into this item:** capturing a wrapped harness's own internal trial
+  count into manifest/provenance (so a future reader could reconcile the two layers automatically) is a
+  real gap but a separably-scoped piece of work — worth its own backlog line later if it turns out to
+  matter in practice, was not built here.

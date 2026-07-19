@@ -303,6 +303,16 @@ specific AMD Strix APU, the ROCm `amd_smi` backend's `gpu_metrics` blob query
 card. Confirmed via `./test_amd_smi.sh`/`./test_nvidia_nvml.sh` and the full `./run_tests.sh` matrix
 (default + `AMDGPU=1` + `NVIDIA=1` builds), all passing.
 
+**Repeatability policy + confidence metadata:** `wspy-summary` (`summary.c`) now reports a 95%
+confidence interval of the mean (`ci95_low`/`ci95_high`, Student's t) and a repeatability verdict
+(`PASS`/`WARN:thin`/`WARN:noisy`/`WARN:thin,noisy`) alongside its pre-existing mean/stddev/CV, all
+default output — "thin" reuses the existing `n>=3` outlier-flagging threshold, "noisy" is a new
+`--max-cv` flag (default 5.0%); `--strict` now also fails on any `WARN` verdict, matching
+`wspy-validate`'s own `--strict` convention. See `doc/INVESTIGATION_ARCHIVE.md`'s "Concrete design:
+repeatability policy + confidence metadata" for the full design, including the documented caveat that a
+workload wrapping its own multi-trial benchmark harness (Phoronix, SPEC) can trigger `WARN:noisy` from
+the harness's own internal repeat-count variance as much as from real measurement noise.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -315,8 +325,8 @@ blockers — just don't assume these are confirmed:
 ## Track deep-dives
 Reasoning that doesn't fit a single backlog line, for tracks with genuinely open work. Deep-dives for
 work that's since fully shipped (blocking I/O, schedstat, vmsize, connect/wait/poll/nanosleep, power,
-the LLM narrative-analysis design, and the full critical-path-instrumentation candidate rationale) have
-moved to `doc/INVESTIGATION_ARCHIVE.md`.
+the LLM narrative-analysis design, the full critical-path-instrumentation candidate rationale, and
+repeatability policy/confidence metadata) have moved to `doc/INVESTIGATION_ARCHIVE.md`.
 
 ### Zen5/IBS deep-dive
 What appears confirmed from current Linux perf/PMU behavior for AMD Family 1Ah (Zen5):
@@ -437,8 +447,7 @@ has). Ordered in dependency tiers; items within a tier are independently startab
 
 **Tier 2 — stats/confidence layer:**
 
-1. Repeatability policy + confidence metadata (mean, stddev, CV, CI) as default output.
-2. Comparison matrix mode (sweep compiler/kernel/governor/SMT/VM-native) — builds on the
+1. Comparison matrix mode (sweep compiler/kernel/governor/SMT/VM-native) — builds on the
    profile-driven launcher; a declarative sweep runner, not new collection logic.
 
 **Tier 3 — topdown/IBS refinement (interdependent; sets up 4.3's attribution work):**
@@ -614,7 +623,7 @@ sampling mode:**
     CSVs into per-test-case/per-trial datasets by correlating run manifests with PTS results, composite.xml,
     and log timestamps. Integrate with the built-in PTS `result_notifier` hooks for sub-millisecond precision
     checkpointing and zero-overhead timing. See the detailed report at
-    [phoronix_hook_investigation.md](file:///home/mev/.gemini/antigravity-cli/brain/5ee99331-0f26-4bbb-8d11-ea886947fbe1/phoronix_hook_investigation.md) for design and prototypes.
+    [phoronix_hook_investigation.md](file:///home/mev/source/wspy/doc/phoronix_hook_investigation.md) for design and prototypes.
 
 **Tier 7 — testing:**
 
