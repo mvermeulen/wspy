@@ -941,6 +941,7 @@
       var allModels = getChecked("analyze-all-models");
       var models = (getValue("analyze-models") || "").split(",")
         .map(function (s) { return s.trim(); }).filter(Boolean);
+      var template = getValue("analyze-template");
       // No client-side "at least one model" gate: leaving both blank is a
       // valid choice now (wspy-analyze's own --default-model fallback
       // applies) -- if the default isn't installed either, wspy-analyze's
@@ -958,6 +959,7 @@
           models: models,
           all_models: allModels,
           critique: getChecked("analyze-critique"),
+          template: template,
         }),
       })
         .then(function (resp) {
