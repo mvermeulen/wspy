@@ -313,6 +313,21 @@ repeatability policy + confidence metadata" for the full design, including the d
 workload wrapping its own multi-trial benchmark harness (Phoronix, SPEC) can trigger `WARN:noisy` from
 the harness's own internal repeat-count variance as much as from real measurement noise.
 
+**Comparison matrix mode:** `wspy-summary` can now group by `affinity_mode`/`preset_name`/
+`config_name`/`cpu_governor`/`virt_role` (previously invisible in the store despite being ingested
+since 4.0/4.1) and compose a second, arbitrary grouping axis via `--group-by-option <name>` (a
+`--config-option` key, parameterized not interpolated); `store.c` gained the ingestion these rely on
+(`preset_name`/`config_name`/`affinity_*` columns, a new `run_config_options` child table,
+`STORE_SCHEMA_VERSION` 2→3). New `wspy-run --config-option <k>=<v>` (repeatable, top-level passthrough
+like `--affinity`) and a new tool, `wspy-sweep`, cross-product `--affinity=<spec>` values (covering
+SMT on/off, L3-domain placement, and core-type comparisons via one generic axis handler) against one
+or more workloads, tagging each cell for later comparison via `wspy-summary --group-by-option`.
+Deliberately scoped down from the original "sweep compiler/kernel/governor/SMT/VM-native" backlog line
+to just the axis wspy can actually control in one sitting — compiler/kernel/governor/VM-native are
+uniform, human-supplied context tags, never swept; see `doc/INVESTIGATION_ARCHIVE.md`'s "Concrete
+design: comparison matrix mode" for the full design and the scope rule ("only automate axes that are
+process-scoped and side-effect-free outside the measured run") governing what could ever be added here.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -325,8 +340,9 @@ blockers — just don't assume these are confirmed:
 ## Track deep-dives
 Reasoning that doesn't fit a single backlog line, for tracks with genuinely open work. Deep-dives for
 work that's since fully shipped (blocking I/O, schedstat, vmsize, connect/wait/poll/nanosleep, power,
-the LLM narrative-analysis design, the full critical-path-instrumentation candidate rationale, and
-repeatability policy/confidence metadata) have moved to `doc/INVESTIGATION_ARCHIVE.md`.
+the LLM narrative-analysis design, the full critical-path-instrumentation candidate rationale,
+repeatability policy/confidence metadata, and comparison matrix mode) have moved to
+`doc/INVESTIGATION_ARCHIVE.md`.
 
 ### Zen5/IBS deep-dive
 What appears confirmed from current Linux perf/PMU behavior for AMD Family 1Ah (Zen5):
@@ -444,11 +460,6 @@ motivation and per-syscall design rationale. What remains open from this track:
 ## 4.2 — remaining work
 Everything from 4.2's original scope that hasn't shipped yet (see "Shipped since 4.1" above for what
 has). Ordered in dependency tiers; items within a tier are independently startable.
-
-**Tier 2 — stats/confidence layer:**
-
-1. Comparison matrix mode (sweep compiler/kernel/governor/SMT/VM-native) — builds on the
-   profile-driven launcher; a declarative sweep runner, not new collection logic.
 
 **Tier 3 — topdown/IBS refinement (interdependent; sets up 4.3's attribution work):**
 

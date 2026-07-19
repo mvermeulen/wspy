@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""
+wspy-sweep - declarative sweep runner for wspy (INVESTIGATION.md's 4.2 Tier 2
+"Comparison matrix mode" item; see "Comparison matrix mode deep-dive" for the
+full design this implements).
+
+Cross-products a small set of *wspy-controllable* axes (v1: only
+"affinity" -- SMT on/off, L3-domain placement, and core-type comparisons all
+fall out of the same --affinity=<spec> mechanism, see AXIS_HANDLERS below)
+against one or more workload commands, invoking `wspy-run` once per cell.
+Everything else the original backlog line named (compiler, kernel version,
+governor, VM-native) is external context, not something this tool drives --
+supply it as a uniform --tag/spec "tags" value and it's recorded via
+--config-option on every cell, never swept.
+
+This tool only automates axes that are process-scoped and side-effect-free
+outside the measured run (--affinity is sched_setaffinity() on the forked
+child only) -- deliberately not, e.g., the CPU governor (a global sysfs
+write affecting every other process on the machine); see the design note
+for why that's a rule, not just a v1 scope cut.
+
+Two invocation shapes, mirroring wspy-run's own builtin-profile-vs--c-<file>
+duality:
+
+  Quick form (one workload, one axis):
+    wspy-sweep --affinity all,nosmt --profile deep-cpu -- phoronix-test-suite batch-run coremark
+
+  Declarative spec (multiple workloads, uniform context tags):
+    wspy-sweep --spec sweep.json
+    {
+      "suite": "sweep-smt-coremark",
+      "workloads": [{"name": "coremark", "command": ["phoronix-test-suite", "batch-run", "coremark"]}],
+      "axes": {"affinity": ["all", "nosmt"]},
+      "profile": "deep-cpu",
+      "tags": {"compiler": "gcc13", "kernel": "6.12.0"}
+    }
+
+Cells run strictly sequentially (matching wspy-queue's own one-PMU-at-a-time
+rule) via ordinary `wspy-run` invocations -- no new collection logic, this
+tool is purely the cross-product-and-invoke loop on top of what wspy-run/
+wspy already do. Coretype/domain IDs are host-specific (assigned by
+affinity_topology_discover()'s ascending-CPU scan order) -- run
+`wspy --list-affinity` first to find real values before writing a spec that
+sweeps them; a spec written for one host's core layout may not transfer
+verbatim to another.
+
+After the sweep, best-effort ingests into the normalized store (same
+degrade-don't-fail idiom as web/joblib.py's run_store_ingest_besteffort())
+and prints -- never runs -- the wspy-summary command line that shows the
+comparison, keeping execution and analysis as two separate, inspectable
+steps.
+
+Stdlib only, matching wspy-queue/wspy-analyze's "thin client" convention.
+"""
+import argparse
+import itertools
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def fatal(msg):
+    print(f"wspy-sweep: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def shell_preview(argv):
+    return shlex.join(argv)
+
+
+# Axis handlers: value -> extra wspy-run argv fragment that actually applies
+# the axis. v1 wires up exactly one, deliberately -- see the module
+# docstring for why "affinity" is the only axis that clears the
+# process-scoped/side-effect-free bar this tool holds itself to. A second
+# real controllable axis, if one is ever added, is one more entry here plus
+# a new "axes" key in the spec format -- not a redesign.
+def axis_affinity(value):
+    return ["--affinity", value]
+
+
+AXIS_HANDLERS = {"affinity": axis_affinity}
+
+
+def sanitize_for_id(s):
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(s))
+
+
+def cell_id(cell):
+    parts = [sanitize_for_id(cell["workload_name"])]
+    for name in sorted(cell["axis_values"]):
+        parts.append(f"{sanitize_for_id(name)}-{sanitize_for_id(cell['axis_values'][name])}")
+    return "__".join(parts)
+
+
+def build_cells(spec):
+    """Cross product of workloads x every axes[] value list. Returns a list
+    of {'workload_name', 'command', 'axis_values': {axis_name: value}}, one
+    per cell, in a deterministic order (workloads outer, then axes in the
+    order they were given -- itertools.product's own left-to-right
+    convention)."""
+    workloads = spec.get("workloads")
+    if not workloads:
+        fatal("spec must have a non-empty 'workloads' list")
+    for wl in workloads:
+        if not isinstance(wl, dict) or "name" not in wl or "command" not in wl:
+            fatal("each workloads[] entry needs a 'name' and a 'command' (argv list)")
+
+    axes = spec.get("axes", {})
+    for name, values in axes.items():
+        if name not in AXIS_HANDLERS:
+            fatal(f"unrecognized axes key '{name}' (supported: {', '.join(sorted(AXIS_HANDLERS))}) -- "
+                  "see the design note for why most of the originally-named axes "
+                  "(compiler/kernel/governor) aren't wspy-controllable and belong in 'tags' instead")
+        if not values:
+            fatal(f"axes.{name} has no values to sweep")
+
+    axis_names = list(axes.keys())
+    axis_value_lists = [axes[n] for n in axis_names]
+
+    cells = []
+    for wl in workloads:
+        if not axis_names:
+            cells.append({"workload_name": wl["name"], "command": wl["command"], "axis_values": {}})
+            continue
+        for combo in itertools.product(*axis_value_lists):
+            cells.append({"workload_name": wl["name"], "command": wl["command"],
+                          "axis_values": dict(zip(axis_names, combo))})
+    return cells
+
+
+def build_wspy_run_argv(args, sweep_stamp, index, cell, spec):
+    run_id = f"{sweep_stamp}-{index:03d}-{cell_id(cell)}"
+    argv = [args.wspy_run_bin, "--wspy", args.wspy_bin,
+            "--suite", spec["suite"], "--benchmark", cell["workload_name"],
+            "--run-id", run_id, "-o", args.outroot]
+    if args.run_index:
+        argv += ["--run-index", args.run_index]
+    for name, value in cell["axis_values"].items():
+        argv += AXIS_HANDLERS[name](value)
+        argv += ["--config-option", f"{name}={value}"]
+    for k, v in spec.get("tags", {}).items():
+        argv += ["--config-option", f"{k}={v}"]
+    argv += [spec["profile"], "--"] + list(cell["command"])
+    return argv
+
+
+def run_store_ingest_besteffort(wspy_store_bin, store_db, run_index_path):
+    if not run_index_path:
+        print("[skipping store ingest: no --run-index given]")
+        return
+    argv = [wspy_store_bin, "--db", store_db, "--run-index", run_index_path]
+    print("$ " + shell_preview(argv))
+    try:
+        subprocess.run(argv)
+    except OSError as e:
+        print(f"[error] failed to launch wspy-store ({wspy_store_bin}): {e}", file=sys.stderr)
+
+
+def print_comparison_suggestion(store_db, spec):
+    axis_names = list(spec.get("axes", {}).keys())
+    print()
+    print("To compare cells, run:")
+    if axis_names:
+        # Only the first axis gets a ready-made suggestion -- --group-by-option
+        # composes exactly one secondary axis at a time (see the design note);
+        # sweeping more than one axis at once still works, this is just the
+        # single most useful command line to hand back, not the only valid one.
+        print(f"  wspy-summary --db {shlex.quote(store_db)} --group-by command "
+              f"--group-by-option {shlex.quote(axis_names[0])}")
+    else:
+        print(f"  wspy-summary --db {shlex.quote(store_db)} --group-by command")
+
+
+def load_spec_from_args(args):
+    if args.spec:
+        if args.affinity or args.profile or args.tag or args.command:
+            fatal("--spec cannot be combined with --affinity/--profile/--tag/a workload command "
+                  "-- put everything in the spec file instead")
+        with open(args.spec) as f:
+            try:
+                spec = json.load(f)
+            except json.JSONDecodeError as e:
+                fatal(f"{args.spec}: invalid JSON: {e}")
+        if "profile" not in spec:
+            fatal(f"{args.spec}: missing required 'profile' field")
+        spec.setdefault("suite", "sweep")
+        spec.setdefault("tags", {})
+        spec.setdefault("axes", {})
+        return spec
+
+    if not args.command:
+        fatal("either --spec <file>, or --profile/--affinity plus a workload command after --, is required")
+    if not args.profile:
+        fatal("--profile is required in the quick form (no --spec given)")
+
+    workload_name = sanitize_for_id(os.path.basename(args.command[0]))
+    axes = {}
+    if args.affinity:
+        axes["affinity"] = [v.strip() for v in args.affinity.split(",") if v.strip()]
+    tags = {}
+    for t in args.tag:
+        if "=" not in t:
+            fatal(f"--tag expects <k>=<v>, got '{t}'")
+        k, v = t.split("=", 1)
+        tags[k] = v
+
+    return {
+        "suite": args.suite,
+        "workloads": [{"name": workload_name, "command": args.command}],
+        "axes": axes,
+        "profile": args.profile,
+        "tags": tags,
+    }
+
+
+def parse_args(argv):
+    # Split on the first bare "--" ourselves rather than relying on
+    # argparse.REMAINDER's own (finicky) "--" handling, mirroring how the
+    # bash tools in this repo (wspy-run) split WORKLOAD off at their own
+    # "--" case arm.
+    if "--" in argv:
+        idx = argv.index("--")
+        head, command = argv[:idx], argv[idx + 1:]
+    else:
+        head, command = argv, []
+
+    p = argparse.ArgumentParser(prog="wspy-sweep", description="Declarative sweep runner for wspy.")
+    p.add_argument("--spec", help="declarative JSON sweep spec file (see module docstring for the shape)")
+    p.add_argument("--affinity", help="comma-separated --affinity spec values to sweep (quick form)")
+    p.add_argument("--profile", help="wspy-run profile/preset (quick form)")
+    p.add_argument("--suite", default="sweep", help="suite name for the unified output layout (default: sweep)")
+    p.add_argument("--tag", action="append", default=[], metavar="K=V",
+                   help="uniform --config-option context tag, repeatable (quick form)")
+    p.add_argument("-o", "--outroot", default=".", help="output root directory (default: .)")
+    p.add_argument("--run-index", help="shared run-index file (default: <outroot>/run-index.jsonl)")
+    p.add_argument("--wspy-bin", default=os.path.join(SCRIPT_DIR, "wspy"))
+    p.add_argument("--wspy-run-bin", default=os.path.join(SCRIPT_DIR, "wspy-run"))
+    p.add_argument("--wspy-store-bin", default=os.path.join(SCRIPT_DIR, "wspy-store"))
+    p.add_argument("--store-db", help="normalized store DB for post-sweep ingest (default: <outroot>/store.db)")
+    p.add_argument("--no-store-ingest", action="store_true", help="skip the post-sweep wspy-store ingest step")
+    p.add_argument("--dry-run", action="store_true", help="print every cell's command line without running any of them")
+    args = p.parse_args(head)
+    args.command = command
+    return args
+
+
+def main():
+    args = parse_args(sys.argv[1:])
+    spec = load_spec_from_args(args)
+    cells = build_cells(spec)
+
+    if not args.run_index:
+        args.run_index = os.path.join(args.outroot, "run-index.jsonl")
+    if not args.store_db:
+        args.store_db = os.path.join(args.outroot, "store.db")
+
+    sweep_stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime()) + f".{int((time.time() % 1) * 1000):03d}"
+
+    n_axis_combos = len(cells) // len(spec["workloads"])
+    print(f"wspy-sweep: {len(cells)} cell(s) ({len(spec['workloads'])} workload(s) x "
+          f"{n_axis_combos} axis combination(s))")
+
+    failed = []
+    for i, cell in enumerate(cells, 1):
+        argv = build_wspy_run_argv(args, sweep_stamp, i, cell, spec)
+        print(f"[{i}/{len(cells)}] $ " + shell_preview(argv))
+        if args.dry_run:
+            continue
+        try:
+            rc = subprocess.run(argv).returncode
+        except OSError as e:
+            print(f"[error] failed to launch {args.wspy_run_bin}: {e}", file=sys.stderr)
+            rc = 1
+        if rc != 0:
+            failed.append((cell_id(cell), rc))
+
+    if args.dry_run:
+        return 0
+
+    if not args.no_store_ingest:
+        run_store_ingest_besteffort(args.wspy_store_bin, args.store_db, args.run_index)
+
+    print_comparison_suggestion(args.store_db, spec)
+
+    if failed:
+        print(f"\nwspy-sweep: {len(failed)}/{len(cells)} cell(s) failed:", file=sys.stderr)
+        for name, rc in failed:
+            print(f"  {name}: exit {rc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

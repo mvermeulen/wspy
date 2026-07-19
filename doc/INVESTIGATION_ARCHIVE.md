@@ -696,3 +696,159 @@ times and reports high/low/median. Two concrete failure modes follow directly fr
   count into manifest/provenance (so a future reader could reconcile the two layers automatically) is a
   real gap but a separably-scoped piece of work — worth its own backlog line later if it turns out to
   matter in practice, was not built here.
+
+### Concrete design: comparison matrix mode (2026-07-19, shipped)
+**Shipped 2026-07-19,** as designed below: `store.c` ingests `preset_name`/`config_name`/`affinity_*`/
+`run_config_options` (`STORE_SCHEMA_VERSION` 2→3, `MIGRATION_V2_TO_V3`); `summary.c` gained five new
+`--group-by` values and the composable `--group-by-option`; `wspy-run` gained a `--config-option`
+passthrough; the new `wspy-sweep` tool cross-products `--affinity` values against workloads. Verified
+end to end on real hardware: `wspy-run`/`wspy-store`/`wspy-summary` round-tripped a real `--affinity
+all`/`nosmt` sweep through real `wspy` invocations (not synthetic fixtures) into a correctly-grouped
+`wspy-summary --group-by command --group-by-option affinity` report; `wspy-sweep`'s quick and spec
+forms, `--dry-run`, and its error paths (unrecognized axis key, empty workloads, `--spec` combined with
+quick-form flags) were all exercised directly. `test_store.c` gained 5 new tests (ingestion, re-ingest
+value updates, missing-provenance degrade-to-NULL, and a `test_schema_migration_v2_to_v3` alongside the
+existing v1→v2 test) and `test_summary.c` gained 5 (new fixed groupings including the `run_environment`
+join, `--group-by-option` composing with the primary group, its inertness when unset, and its
+"(unknown)" degrade for a run with no matching option) — all passing alongside the full pre-existing
+suite. One real mistake caught during manual testing, not a design flaw: an ad hoc test invocation
+placed `--dry-run` after `wspy-sweep`'s own `--` separator, which is by design treated as part of the
+workload command rather than a flag — it actually launched a real `phoronix-test-suite batch-run
+coremark` (including installing and running coremark) before being caught and killed; no data or state
+was corrupted, but it's a sharp edge worth remembering when testing any tool with a `--` splitting
+convention.
+
+Design for 4.2 Tier 2's "Comparison matrix mode (sweep compiler/kernel/governor/SMT/VM-native)" item.
+Split into two pieces that had to land together: making sweep results *comparable* at all (nothing
+before this item could group runs by anything but command/hostname/cpu_vendor), and the sweep *runner*
+itself. Scope narrowed substantially from the backlog line's five example axes once checked against
+what actually exists: Phoronix/SPEC own their own compiler/build-variant machinery (external to wspy,
+not something this tool drives), a kernel version can't be switched without a reboot, and nothing in
+this codebase has ever written `scaling_governor` (`provenance.c` only reads it) — so of the five, only
+**SMT/core-type/L3-domain placement** (via the existing `--affinity=<spec>` mechanism) is something
+wspy can actually flip and re-measure in one sitting. Everything else became a human-supplied,
+uniform-per-invocation context tag, not a swept axis.
+
+**Piece 1 — make results groupable (`store.c`/`summary.c`):**
+- Two things already flowed through every `run-index.jsonl` record, completely unused before this item:
+  `options.affinity.{requested,mode,cpus}` (`run_index.c:136-144`) and
+  `configuration_provenance.{preset,configuration,options[]}` (`run_index.c:146-164`, the
+  `--preset-name`/`--config-name`/`--config-option k=v` metadata `manifest.h`'s
+  `manifest_config_provenance` already carries). `grep -c affinity store.c` was 0 — neither was ingested
+  into the SQLite store, so `wspy-summary` couldn't see either one, let alone group by it.
+- `STORE_SCHEMA_VERSION` 2→3, a new `MIGRATION_V2_TO_V3` (same `ALTER TABLE ADD COLUMN`/`CREATE TABLE`
+  shape as the existing `MIGRATION_V1_TO_V2`, dispatched from `ensure_schema()`'s `user_version==2`
+  branch, chained after `MIGRATION_V1_TO_V2` when starting from `user_version==1` so a v1 database
+  reaches v3 in one `ensure_schema()` call): `runs` gained five columns — `preset_name`, `config_name`
+  (from `configuration_provenance.preset`/`.configuration`), `affinity_mode`, `affinity_requested`,
+  `affinity_cpus` (from `options.affinity.*`) — small, fixed-cardinality, one-value-per-run fields, the
+  same shape as `per_core`/`system_flag` already on that table. A new child table `run_config_options
+  (run_id, option_name, option_value, PRIMARY KEY(run_id,option_name))` holds the genuinely open-ended
+  `configuration_provenance.options[]` array, populated by a new `replace_run_config_options()` that
+  copies `replace_run_command_args()` (`store.c:372-396`)'s DELETE-then-INSERT idempotent-reingest shape
+  — with one addition beyond a pure copy: an `ON CONFLICT(run_id,option_name) DO UPDATE`, since (unlike
+  `run_command_args`' array-index key, which can never collide within one INSERT loop) `wspy`'s
+  `--config-option` parsing never deduplicates repeated keys, so the same `option_name` can legitimately
+  appear twice in one record's `options[]` — last value in array order wins, rather than the second
+  occurrence silently failing the `PRIMARY KEY` constraint.
+- `summary.c`'s `--group-by` whitelist (`command`/`hostname`/`cpu_vendor` before this item) gained
+  `affinity_mode`/`preset_name`/`config_name` (plain `runs` columns, no join) and `cpu_governor`/
+  `virt_role` (already-ingested `run_environment` columns that `summarize()`'s query had never joined —
+  needed regardless of the config-provenance work, since provenance fields had been sitting in the
+  store, ungroupable, since 4.0). `group_by_column()` now returns a fully-qualified `r.`/`e.`-prefixed
+  reference (previously a bare column name the query template itself prefixed with `r.`), since the two
+  new `run_environment` groupings need the `e.` alias instead.
+- New `--group-by-option <name>` flag: the truly open-ended case, since a `--config-option` key is a
+  front end's own invented vocabulary, not a fixed enum. Implemented as a **parameterized** join to
+  `run_config_options` (`option_name = ?3`, bound — not interpolated) alongside the existing
+  `--group-by`, not instead of it: `struct bucket` gained a second key field (`secondary_val`), the
+  query gained a second `SELECT`/`ORDER BY`/bucket-boundary column, and `emit_bucket()` prints one new
+  column, present only when `--group-by-option` was actually given (same conditional-column precedent
+  `--show-runs`' `contributing_runs` already set). `run_environment`/`run_config_options` are both
+  unconditionally `LEFT JOIN`ed regardless of whether either grouping is in use — binding `?3` to `""`
+  when `--group-by-option` isn't given never matches a real `option_name` (`store.c` never stores an
+  empty one), so `secondary_val` is uniformly `NULL`/inert rather than needing a second query shape.
+  This is a real, moderate change to `summarize()`'s query shape, not just a whitelist extension — but
+  it's what actually delivers "for this workload, broken out by SMT on/off" rather than a single flat
+  regrouping. `parse_group_by()`'s existing comment about the whitelist being what makes raw-SQL
+  interpolation safe stayed true and unchanged — `--group-by-option`'s value never goes anywhere but a
+  bound parameter, precisely because it isn't drawn from a fixed set.
+
+**Piece 2 — the sweep runner (`wspy-run` + new `wspy-sweep`):**
+- One small prerequisite gap in `wspy-run`: `--affinity <spec>` was already a top-level flag forwarded
+  to every pass (`run_pass()`) — exactly the mechanism a sweep needs for its one real controllable axis,
+  no change needed there. `--config-option <k>=<v>` was not forwarded at all before this item (`wspy-run`
+  only ever auto-emitted its own `--preset-name`/`--config-name`) — needed both to tag which cell's
+  axis value produced a run (so `--group-by-option` can find it) and to carry the human's uniform
+  context labels (compiler/kernel/governor-as-observed). Added as a repeatable `--config-option`
+  top-level flag, forwarded in `run_pass()` exactly like `--affinity` already is (guarded with bash's
+  `"${CONFIG_OPTIONS[@]+"${CONFIG_OPTIONS[@]}"}"` idiom so an empty array doesn't trip `set -u`).
+- New tool `wspy-sweep` (Python, stdlib-only — matching `wspy-queue`/`wspy-analyze`'s "thin client"
+  convention rather than `wspy-run`'s bash, since this manipulates structured data — cross products,
+  JSON — where bash gets awkward; deliberately does not import `web/joblib.py` despite some logic
+  overlap with its `run_store_ingest_besteffort()`/`shell_preview()`, to keep this tool's fate decoupled
+  from `web/server.py`'s own internal module structure). Two invocation shapes, mirroring `wspy-run`'s
+  own builtin-profile-vs-`-c <file>` duality: a quick CLI form (`wspy-sweep --affinity all,nosmt
+  --profile deep-cpu -- <command>`) for a one-off sweep, and a declarative JSON `--spec <file>` for
+  anything bigger (multiple workloads, uniform tags):
+  ```json
+  {
+    "suite": "sweep-smt-coremark",
+    "workloads": [{"name": "coremark", "command": ["phoronix-test-suite", "batch-run", "coremark"]}],
+    "axes": {"affinity": ["all", "nosmt"]},
+    "profile": "deep-cpu",
+    "tags": {"compiler": "gcc13", "kernel": "6.12.0"}
+  }
+  ```
+  `load_spec_from_args()` builds an equivalent in-memory spec from either invocation shape so
+  `build_cells()`/`build_wspy_run_argv()` never need to know which form was used; the two forms are
+  mutually exclusive (`--spec` combined with any quick-form flag is a usage error, not silently
+  ignored).
+- `axes` is a dict (not a hardcoded two-field format) so a second genuinely controllable axis could be
+  added later without a spec redesign, but v1 wires up exactly one handler: `affinity`. Crucially, that
+  handler is **generic** (`AXIS_HANDLERS["affinity"]`) — each value is passed straight through as
+  `--affinity=<value>` unmodified, not a semantically-typed "SMT on/off" enum. That one handler covers
+  SMT sweeps, L3-domain splits, *and* core-type comparisons for free, since `affinity.c`'s spec grammar
+  already treats `nosmt`/`domain=<id>`/`coretype=<id>` as peers (`["coretype=0", "coretype=1"]` sweeps
+  Zen5-vs-Zen5c or Cortex-A720-vs-A520 with zero additional code). An unrecognized `axes` key is a hard
+  spec error (`fatal()`, exit 2), not silently ignored — matching `--passes`' own
+  fatal-on-unsupported-combination idiom. `tags` maps straight onto `--config-option`, applied
+  identically to every cell in one invocation.
+- Each cell tags its own axis value(s) via `--config-option <axis-name>=<value>` (e.g.
+  `--config-option affinity=nosmt`) in addition to actually applying the axis — deliberately using the
+  axis's own name as the config-option key (not a separately-invented label), and deliberately *not*
+  relying on `summary.c`'s new `affinity_mode` column for this specific purpose: `affinity_mode` is only
+  the resolved spec's *category* (`"coretype"`), not which id was swept, so a `coretype=0`-vs-`coretype=1`
+  sweep would collapse into one `affinity_mode` bucket despite being exactly the comparison the sweep
+  exists to make — `--group-by-option affinity` (the exact raw value) is what actually distinguishes
+  them.
+- Coretype/domain IDs are assigned per-host by `affinity_topology_discover()`'s ascending-CPU scan
+  order, not portable labels — a sweep spec comparing core types needs its IDs looked up first via
+  `wspy --list-affinity` (already prints `coretype N: implementer=0x.. part=0x.. cpus ...`). Noted in
+  the tool's own module docstring; auto-expansion (e.g. a magic `"all-coretypes"` keyword) was not
+  built — a cheap, obvious follow-up once the plain mechanism sees real use, not v1 scope.
+- Execution: cross product of `workloads × axes` values, run strictly sequentially (matching
+  `wspy-queue`'s own one-PMU-at-a-time rule, not something to relax here), each cell an ordinary
+  `wspy-run --affinity <val> --config-option <axis>=<val> --config-option <tag_k>=<tag_v> ... --suite
+  <suite> --benchmark <name> --run-id <sweep-timestamp>-<index>-<cell-id> <profile> -- <command>`
+  invocation, the literal command line printed before running it — never paraphrased, same principle
+  the web launcher already holds itself to. The run-id's timestamp is generated once per `wspy-sweep`
+  invocation (not per cell), so cells within one sweep share it while a later re-run of the identical
+  spec gets a fresh one — re-running a sweep accumulates new repeats in the store rather than colliding
+  with (and silently updating) the prior invocation's run identities. `--dry-run` prints every cell's
+  command line without executing anything. A cell whose `wspy-run` invocation exits nonzero doesn't
+  abort the sweep (the remaining cells still run) but is tracked and reported, with exit code, once the
+  sweep finishes, and makes `wspy-sweep`'s own exit code nonzero. After the sweep: best-effort
+  `wspy-store` ingest (same idiom as `web/joblib.py`'s `run_store_ingest_besteffort()`), then **print,
+  not run**, the matching `wspy-summary --group-by command --group-by-option <axis> ...` command line —
+  execution and analysis stay two separate, inspectable steps.
+
+**Scope boundary, stated as a rule rather than a v1/v2 cutoff:** `wspy-sweep` only ever automates axes
+that are process-scoped and side-effect-free outside the measured run. `--affinity` clears that bar —
+`sched_setaffinity()` on the forked child only, nothing outlives the run, no other process on the
+machine is affected. Governor and kernel version both fail it, for two different reasons: kernel version
+can't be changed without a reboot at all (not a capability gap, a hard impossibility for a tool running
+on the current boot); governor is a global sysfs write that affects every other process on the machine
+and persists after `wspy` exits — a measurement tool being in the business of mutating shared system
+state like that is a different, larger feature with its own safety design, not a natural extension of
+this one. Left genuinely open-ended, not merely deferred to a later phase.

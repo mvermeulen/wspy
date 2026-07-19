@@ -173,7 +173,42 @@ profile's passes into a single invocation — see `./wspy-run --help` for the fu
 config-file format. Each pass writes to `<outdir>/<prefix><pass-name>.<csv|txt>` by default, or
 into the unified per-run directory layout above when `--suite`/`--benchmark` are given (see
 `doc/ARTIFACT_CONTRACT.md`'s "Unified output layout" section for the full directory contents);
-`--manifest-dir`/`--run-index` pass those `wspy` flags through per pass either way.
+`--manifest-dir`/`--run-index` pass those `wspy` flags through per pass either way. `--affinity
+<spec>` and `--config-option <k>=<v>` (repeatable) both pass through unchanged to every pass's own
+`wspy` invocation — the latter is metadata only (no effect on what a pass does), useful for tagging
+a run with context `wspy-summary --group-by-option` can later query on.
+
+## wspy-sweep: comparison matrix mode
+
+`wspy-sweep` cross-products one wspy-controllable axis (`--affinity`, covering SMT on/off,
+L3-domain placement, and core-type comparisons — see `wspy --list-affinity` for real ids on your
+host) against one or more workload commands, running `wspy-run` once per resulting cell and
+tagging each with `--config-option` so the results are directly comparable afterward via
+`wspy-summary --group-by-option`. Deliberately doesn't try to sweep compiler/kernel/governor —
+those go in as a uniform `--tag`/spec `tags` value instead (recorded, never automated); see
+`INVESTIGATION.md`'s "Comparison matrix mode deep-dive" for why.
+
+```
+# Quick form: one workload, one axis
+./wspy-sweep --affinity all,nosmt --profile deep-cpu -- phoronix-test-suite batch-run coremark
+
+# Declarative spec: multiple workloads, uniform context tags
+./wspy-sweep --spec sweep.json
+```
+
+```json
+{
+  "suite": "sweep-smt-coremark",
+  "workloads": [{"name": "coremark", "command": ["phoronix-test-suite", "batch-run", "coremark"]}],
+  "axes": {"affinity": ["all", "nosmt"]},
+  "profile": "deep-cpu",
+  "tags": {"compiler": "gcc13", "kernel": "6.12.0"}
+}
+```
+
+`--dry-run` prints every cell's command line without running any of them. After the sweep,
+best-effort ingests into the normalized store and prints (doesn't run) the `wspy-summary
+--group-by-option` command that shows the comparison.
 
 ## wspy-validate: pre-publish quality checks
 
@@ -246,13 +281,18 @@ See `./wspy-store --help` for the full option list.
 `wspy-summary` queries a `wspy-store` database directly and computes min/max/mean/median/stddev/CV,
 a 95% confidence interval of the mean, a repeatability verdict (`PASS`/`WARN:thin`/`WARN:noisy`),
 and z-score outlier flags per `(group,metric)` bucket — grouped by workload command (default),
-hostname, or CPU vendor — so a summary table can always be regenerated from indexed data with no
-manual copy/paste. `--strict` fails if any bucket is too thin (`--min-runs`), too noisy
-(`--max-cv`, default 5%), or nothing matched.
+hostname, CPU vendor, `affinity_mode`/`preset_name`/`config_name`, or `cpu_governor`/`virt_role` —
+so a summary table can always be regenerated from indexed data with no manual copy/paste.
+`--group-by-option <name>` composes a *second* grouping axis from an arbitrary `--config-option`
+key (e.g. a `wspy-sweep` cell's axis tag), for "this workload, broken out by X" comparisons.
+`--strict` fails if any bucket is too thin (`--min-runs`), too noisy (`--max-cv`, default 5%), or
+nothing matched.
 
 ```
 ./wspy-summary --db results/store.db                                # human table
 ./wspy-summary --db results/store.db --csv --metric ipc --metric retire
+./wspy-summary --db results/store.db --group-by command --group-by-option affinity  # e.g. after
+                                                                       # a wspy-sweep affinity sweep
 ./wspy-summary --db results/store.db --show-runs                    # append contributing
                                                                        # hostname:run_id per bucket
 ./wspy-summary --db results/store.db --trace myhost:1731000000-1234 # resolve one run to its

@@ -22,18 +22,58 @@ static struct summary_opts default_opts(void){
 
 /* Minimal fixture: only the runs/metric_values columns summary.c actually
  * reads, not store.c's full SCHEMA_DDL -- keeps these tests decoupled
- * from store.c's own schema evolution. */
+ * from store.c's own schema evolution. Includes affinity_mode/preset_name/
+ * config_name (runs) and run_environment/run_config_options (both always
+ * LEFT JOINed by summarize()'s query, so they must exist even for tests
+ * that don't populate them) for the "Comparison matrix mode deep-dive"
+ * grouping extension. */
 static sqlite3 *open_memory_db(void){
   sqlite3 *db;
   assert(sqlite3_open(":memory:",&db) == SQLITE_OK);
   assert(sqlite3_exec(db,
     "CREATE TABLE runs (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, hostname TEXT NOT NULL, "
     "command TEXT NOT NULL, cpu_vendor TEXT, start_time TEXT NOT NULL, "
+    "affinity_mode TEXT, preset_name TEXT, config_name TEXT, "
     "manifest_path TEXT, output_path TEXT, tree_output_path TEXT);"
     "CREATE TABLE metric_values (id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, "
-    "metric_name TEXT NOT NULL, value REAL);",
+    "metric_name TEXT NOT NULL, value REAL);"
+    "CREATE TABLE run_environment (run_id INTEGER PRIMARY KEY, cpu_governor TEXT, virt_role TEXT);"
+    "CREATE TABLE run_config_options (run_id INTEGER NOT NULL, option_name TEXT NOT NULL, "
+    "option_value TEXT NOT NULL, PRIMARY KEY (run_id, option_name));",
     NULL,NULL,NULL) == SQLITE_OK);
   return db;
+}
+
+static void set_run_affinity(sqlite3 *db,int run_id,const char *affinity_mode){
+  sqlite3_stmt *stmt;
+  assert(sqlite3_prepare_v2(db,"UPDATE runs SET affinity_mode=? WHERE id=?;",-1,&stmt,NULL) == SQLITE_OK);
+  sqlite3_bind_text(stmt,1,affinity_mode,-1,SQLITE_TRANSIENT);
+  sqlite3_bind_int(stmt,2,run_id);
+  assert(sqlite3_step(stmt) == SQLITE_DONE);
+  sqlite3_finalize(stmt);
+}
+
+static void insert_config_option(sqlite3 *db,int run_id,const char *name,const char *value){
+  sqlite3_stmt *stmt;
+  assert(sqlite3_prepare_v2(db,
+    "INSERT INTO run_config_options (run_id,option_name,option_value) VALUES (?,?,?);",
+    -1,&stmt,NULL) == SQLITE_OK);
+  sqlite3_bind_int(stmt,1,run_id);
+  sqlite3_bind_text(stmt,2,name,-1,SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt,3,value,-1,SQLITE_TRANSIENT);
+  assert(sqlite3_step(stmt) == SQLITE_DONE);
+  sqlite3_finalize(stmt);
+}
+
+static void insert_run_environment(sqlite3 *db,int run_id,const char *cpu_governor){
+  sqlite3_stmt *stmt;
+  assert(sqlite3_prepare_v2(db,
+    "INSERT INTO run_environment (run_id,cpu_governor) VALUES (?,?);",
+    -1,&stmt,NULL) == SQLITE_OK);
+  sqlite3_bind_int(stmt,1,run_id);
+  sqlite3_bind_text(stmt,2,cpu_governor,-1,SQLITE_TRANSIENT);
+  assert(sqlite3_step(stmt) == SQLITE_DONE);
+  sqlite3_finalize(stmt);
 }
 
 /* trace_run() reads runs.{manifest_path,output_path,tree_output_path}, which
@@ -265,6 +305,11 @@ static void test_parse_group_by(void){
   assert(parse_group_by("command",&g) == 1 && g == GROUP_COMMAND);
   assert(parse_group_by("hostname",&g) == 1 && g == GROUP_HOSTNAME);
   assert(parse_group_by("cpu_vendor",&g) == 1 && g == GROUP_CPU_VENDOR);
+  assert(parse_group_by("affinity_mode",&g) == 1 && g == GROUP_AFFINITY_MODE);
+  assert(parse_group_by("preset_name",&g) == 1 && g == GROUP_PRESET_NAME);
+  assert(parse_group_by("config_name",&g) == 1 && g == GROUP_CONFIG_NAME);
+  assert(parse_group_by("cpu_governor",&g) == 1 && g == GROUP_CPU_GOVERNOR);
+  assert(parse_group_by("virt_role",&g) == 1 && g == GROUP_VIRT_ROLE);
   assert(parse_group_by("bogus",&g) == 0);
   printf("test_parse_group_by passed\n");
 }
@@ -672,6 +717,184 @@ static void test_summarize_group_by_cpu_vendor_unknown_bucket(void){
   printf("test_summarize_group_by_cpu_vendor_unknown_bucket passed\n");
 }
 
+/* affinity_mode is a plain runs column (INVESTIGATION.md's "Comparison
+ * matrix mode deep-dive", piece 1) -- the SMT-on/off comparison this whole
+ * item exists for. */
+static void test_summarize_group_by_affinity_mode(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf;
+  size_t size;
+  FILE *fp;
+
+  insert_run(db,1,"r1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  set_run_affinity(db,1,"all");
+  insert_metric(db,1,"ipc",1.1);
+  insert_run(db,2,"r2","host1","/bin/workloadA",NULL,"2026-01-01T00:01:00Z");
+  set_run_affinity(db,2,"nosmt");
+  insert_metric(db,2,"ipc",1.4);
+
+  opts.csvflag = 1;
+  opts.group_by = GROUP_AFFINITY_MODE;
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  assert(strstr(buf,"all,ipc,") != NULL);
+  assert(strstr(buf,"nosmt,ipc,") != NULL);
+  assert(totals.groups_reported == 2);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_summarize_group_by_affinity_mode passed\n");
+}
+
+/* cpu_governor lives in run_environment, not runs -- summarize()'s query
+ * must LEFT JOIN it for this grouping to work at all (a pre-4.2 build had
+ * no join to run_environment, so this would previously have been a SQL
+ * error, not just an unsupported --group-by value). */
+static void test_summarize_group_by_cpu_governor_via_environment_join(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf;
+  size_t size;
+  FILE *fp;
+
+  insert_run(db,1,"r1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_run_environment(db,1,"performance");
+  insert_metric(db,1,"ipc",1.5);
+  insert_run(db,2,"r2","host1","/bin/workloadA",NULL,"2026-01-01T00:01:00Z");
+  insert_run_environment(db,2,"powersave");
+  insert_metric(db,2,"ipc",1.0);
+
+  opts.csvflag = 1;
+  opts.group_by = GROUP_CPU_GOVERNOR;
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  assert(strstr(buf,"performance,ipc,") != NULL);
+  assert(strstr(buf,"powersave,ipc,") != NULL);
+  assert(totals.groups_reported == 2);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_summarize_group_by_cpu_governor_via_environment_join passed\n");
+}
+
+/* The actual comparison-matrix payoff: --group-by command (unchanged) plus
+ * --group-by-option composes a second axis from an arbitrary --config-option
+ * key, e.g. a wspy-sweep cell tag -- "for this workload, broken out by
+ * SMT on/off" rather than one flat regrouping. */
+static void test_summarize_group_by_option_composes_with_primary_group(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf;
+  size_t size;
+  FILE *fp;
+
+  insert_run(db,1,"r1","host1","/bin/coremark",NULL,"2026-01-01T00:00:00Z");
+  insert_config_option(db,1,"affinity_axis","all");
+  insert_metric(db,1,"ipc",1.1);
+  insert_run(db,2,"r2","host1","/bin/coremark",NULL,"2026-01-01T00:01:00Z");
+  insert_config_option(db,2,"affinity_axis","nosmt");
+  insert_metric(db,2,"ipc",1.4);
+  /* A second workload sharing the same axis values -- must not be merged
+   * into the first workload's buckets, confirming the two axes actually
+   * compose (2 groups x 2 secondary values = 4 buckets) rather than one
+   * replacing the other. */
+  insert_run(db,3,"r3","host1","/bin/sha256",NULL,"2026-01-01T00:02:00Z");
+  insert_config_option(db,3,"affinity_axis","all");
+  insert_metric(db,3,"ipc",2.1);
+
+  opts.csvflag = 1;
+  opts.group_by_option = "affinity_axis";
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  assert(strstr(buf,"/bin/coremark,all,ipc,") != NULL);
+  assert(strstr(buf,"/bin/coremark,nosmt,ipc,") != NULL);
+  assert(strstr(buf,"/bin/sha256,all,ipc,") != NULL);
+  assert(totals.groups_reported == 3);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_summarize_group_by_option_composes_with_primary_group passed\n");
+}
+
+/* Without --group-by-option, output must be byte-for-byte the pre-existing
+ * shape -- no spurious column, no accidental extra bucket split, even
+ * though run_config_options is now always LEFT JOINed under the hood. */
+static void test_summarize_group_by_option_unset_is_inert(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf;
+  size_t size;
+  FILE *fp;
+
+  insert_run(db,1,"r1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_config_option(db,1,"affinity_axis","all"); /* present in the store, just not asked for */
+  insert_metric(db,1,"ipc",1.0);
+  insert_run(db,2,"r2","host1","/bin/workloadA",NULL,"2026-01-01T00:01:00Z");
+  insert_config_option(db,2,"affinity_axis","nosmt");
+  insert_metric(db,2,"ipc",1.2);
+
+  opts.csvflag = 1;
+  assert(opts.group_by_option == NULL);
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  /* Exactly the pre-4.2 row shape ("group,metric,..." -- no secondary
+   * column spliced in between) despite run_config_options holding two
+   * distinct values across these two runs. */
+  assert(strstr(buf,"/bin/workloadA,ipc,2,") != NULL);
+  assert(totals.groups_reported == 1); /* both runs land in one bucket, as before this item */
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_summarize_group_by_option_unset_is_inert passed\n");
+}
+
+/* A run with no matching run_config_options row for the requested option
+ * name degrades to "(unknown)" (the same sentinel a NULL primary group
+ * value already uses), not a crash or an empty/garbage column. */
+static void test_summarize_group_by_option_missing_value_shows_unknown(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf;
+  size_t size;
+  FILE *fp;
+
+  insert_run(db,1,"r1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  /* no run_config_options row for this run at all */
+  insert_metric(db,1,"ipc",1.0);
+
+  opts.csvflag = 1;
+  opts.group_by_option = "affinity_axis";
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  assert(strstr(buf,"/bin/workloadA,(unknown),ipc,") != NULL);
+  assert(totals.groups_reported == 1);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_summarize_group_by_option_missing_value_shows_unknown passed\n");
+}
+
 static void test_summarize_null_only_metric_excluded(void){
   sqlite3 *db = open_memory_db();
   struct summary_opts opts = default_opts();
@@ -991,6 +1214,11 @@ int main(void){
   test_summarize_verdict_noisy_when_cv_exceeds_default_max_cv();
   test_summarize_max_cv_flag_raises_noisy_threshold();
   test_summarize_verdict_thin_and_noisy_both_fire();
+  test_summarize_group_by_affinity_mode();
+  test_summarize_group_by_cpu_governor_via_environment_join();
+  test_summarize_group_by_option_composes_with_primary_group();
+  test_summarize_group_by_option_unset_is_inert();
+  test_summarize_group_by_option_missing_value_shows_unknown();
   test_summarize_group_by_cpu_vendor_unknown_bucket();
   test_summarize_null_only_metric_excluded();
   test_summarize_show_runs_lists_contributors();

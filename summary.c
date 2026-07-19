@@ -94,7 +94,17 @@
  * INVESTIGATION.md's "Repeatability policy + confidence metadata deep-dive". */
 #define VERDICT_MIN_RUNS_FOR_CONFIDENCE 3
 
-enum group_by { GROUP_COMMAND, GROUP_HOSTNAME, GROUP_CPU_VENDOR };
+/* command/hostname/cpu_vendor are the original 4.1 whitelist; affinity_mode/
+ * preset_name/config_name (runs columns) and cpu_governor/virt_role
+ * (run_environment columns, already ingested since 4.0's provenance.c but
+ * never groupable until now) are INVESTIGATION.md's "Comparison matrix mode
+ * deep-dive" -- piece 1, making sweep/provenance data actually comparable.
+ * See --group-by-option below for the complementary open-ended case
+ * (an arbitrary --config-option key), which this fixed enum deliberately
+ * does not try to cover. */
+enum group_by { GROUP_COMMAND, GROUP_HOSTNAME, GROUP_CPU_VENDOR,
+                 GROUP_AFFINITY_MODE, GROUP_PRESET_NAME, GROUP_CONFIG_NAME,
+                 GROUP_CPU_GOVERNOR, GROUP_VIRT_ROLE };
 
 struct summary_opts {
   const char *db_path;
@@ -103,6 +113,8 @@ struct summary_opts {
   const char *metrics[64];
   int nmetrics;                 /* 0 = all metrics */
   enum group_by group_by;
+  const char *group_by_option;  /* --group-by-option <name>: composed secondary grouping axis,
+                                  * an arbitrary run_config_options.option_name (NULL = none) */
   double outlier_z;
   double max_cv;      /* --max-cv: CV percent threshold above which a bucket's verdict is WARN:noisy */
   int min_runs;
@@ -120,20 +132,38 @@ struct summary_totals {
   int rows_scanned;
 };
 
+/* Returns a fully-qualified column reference ("r.command", "e.cpu_governor")
+ * -- the table alias varies (r=runs, e=run_environment), so unlike the
+ * pre-4.2 version of this function the caller no longer supplies its own
+ * "r." prefix. */
 static const char *group_by_column(enum group_by g){
   switch (g){
-  case GROUP_HOSTNAME: return "hostname";
-  case GROUP_CPU_VENDOR: return "cpu_vendor";
-  case GROUP_COMMAND: default: return "command";
+  case GROUP_HOSTNAME: return "r.hostname";
+  case GROUP_CPU_VENDOR: return "r.cpu_vendor";
+  case GROUP_AFFINITY_MODE: return "r.affinity_mode";
+  case GROUP_PRESET_NAME: return "r.preset_name";
+  case GROUP_CONFIG_NAME: return "r.config_name";
+  case GROUP_CPU_GOVERNOR: return "e.cpu_governor";
+  case GROUP_VIRT_ROLE: return "e.virt_role";
+  case GROUP_COMMAND: default: return "r.command";
   }
 }
 
 /* Whitelist, not user SQL -- this is what makes it safe to interpolate
- * group_by_column()'s return value directly into a query string below. */
+ * group_by_column()'s return value directly into a query string below.
+ * --group-by-option's value is deliberately NOT handled here -- it names an
+ * arbitrary, front-end-invented --config-option key, not one of a fixed set
+ * of columns, so it's always passed as a bound query parameter instead (see
+ * summarize()), never through this interpolation path. */
 static int parse_group_by(const char *s,enum group_by *out){
   if (!strcmp(s,"command")){ *out = GROUP_COMMAND; return 1; }
   if (!strcmp(s,"hostname")){ *out = GROUP_HOSTNAME; return 1; }
   if (!strcmp(s,"cpu_vendor")){ *out = GROUP_CPU_VENDOR; return 1; }
+  if (!strcmp(s,"affinity_mode")){ *out = GROUP_AFFINITY_MODE; return 1; }
+  if (!strcmp(s,"preset_name")){ *out = GROUP_PRESET_NAME; return 1; }
+  if (!strcmp(s,"config_name")){ *out = GROUP_CONFIG_NAME; return 1; }
+  if (!strcmp(s,"cpu_governor")){ *out = GROUP_CPU_GOVERNOR; return 1; }
+  if (!strcmp(s,"virt_role")){ *out = GROUP_VIRT_ROLE; return 1; }
   return 0;
 }
 
@@ -276,6 +306,7 @@ static void print_csv_field(FILE *out,const char *s){
  * revisited once closed. */
 struct bucket {
   char group_val[160];
+  char secondary_val[160]; /* --group-by-option's composed axis; unused (empty) unless opts->group_by_option is set */
   char metric_name[192];
   double *values;
   char **run_ids;
@@ -283,13 +314,15 @@ struct bucket {
   int n,cap;
 };
 
-static void bucket_reset(struct bucket *b,const char *group_val,const char *metric_name){
+static void bucket_reset(struct bucket *b,const char *group_val,const char *secondary_val,
+                          const char *metric_name){
   b->n = 0;
   b->cap = 0;
   b->values = NULL;
   b->run_ids = NULL;
   b->hostnames = NULL;
   snprintf(b->group_val,sizeof(b->group_val),"%s",group_val);
+  snprintf(b->secondary_val,sizeof(b->secondary_val),"%s",secondary_val);
   snprintf(b->metric_name,sizeof(b->metric_name),"%s",metric_name);
 }
 
@@ -398,6 +431,7 @@ static void emit_bucket(const struct bucket *b,const struct summary_opts *opts,F
 
   if (opts->csvflag){
     print_csv_field(out,b->group_val); fputc(',',out);
+    if (opts->group_by_option){ print_csv_field(out,b->secondary_val); fputc(',',out); }
     print_csv_field(out,b->metric_name); fputc(',',out);
     fprintf(out,"%d,%.6g,%.6g,%.6g,%.6g,%.6g,%.4g,%.6g,%.6g,",
             b->n,min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high);
@@ -407,8 +441,10 @@ static void emit_bucket(const struct bucket *b,const struct summary_opts *opts,F
     if (opts->show_runs){ fputc(',',out); print_csv_field(out,contributing_runs); }
     fputc('\n',out);
   } else {
-    fprintf(out,"%-28.28s %-24.24s %4d %10.6g %10.6g %10.6g %10.6g %10.6g %7.2f%% %10.6g %10.6g %-16s %3d  %s",
-            b->group_val,b->metric_name,b->n,min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high,verdict,
+    fprintf(out,"%-28.28s ",b->group_val);
+    if (opts->group_by_option) fprintf(out,"%-20.20s ",b->secondary_val);
+    fprintf(out,"%-24.24s %4d %10.6g %10.6g %10.6g %10.6g %10.6g %7.2f%% %10.6g %10.6g %-16s %3d  %s",
+            b->metric_name,b->n,min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high,verdict,
             outlier_count,outlier_ids);
     if (opts->show_runs) fprintf(out,"  %s",contributing_runs);
     fputc('\n',out);
@@ -417,28 +453,39 @@ static void emit_bucket(const struct bucket *b,const struct summary_opts *opts,F
   totals->groups_reported++;
 }
 
-/* Streams (group,metric,per-run-average-value) rows out of the store,
- * already sorted by (group,metric,run start_time), bucketing contiguous
- * rows that share (group,metric) and emitting each bucket as it closes.
- * Per-run averaging (AVG(mv.value) grouped by run id) is what collapses
- * --interval's multiple ticks or --per-core's multiple cores down to one
- * number per run before the across-run statistics ever see it -- see the
- * file header comment. */
+/* Streams (group,secondary,metric,per-run-average-value) rows out of the
+ * store, already sorted by (group,secondary,metric,run start_time),
+ * bucketing contiguous rows that share (group,secondary,metric) and
+ * emitting each bucket as it closes. Per-run averaging (AVG(mv.value)
+ * grouped by run id) is what collapses --interval's multiple ticks or
+ * --per-core's multiple cores down to one number per run before the
+ * across-run statistics ever see it -- see the file header comment.
+ *
+ * run_environment is always LEFT JOINed (cheap, at most one row per run)
+ * so --group-by cpu_governor/virt_role work without a conditional query
+ * shape; run_config_options is always LEFT JOINed on a bound option_name
+ * too (?3, "" when --group-by-option wasn't given, which never matches a
+ * real option_name -- store.c never stores an empty one -- so secondary_val
+ * is uniformly NULL/"(unknown)" and effectively inert when the flag isn't
+ * in use, rather than needing a second query shape). */
 static int summarize(sqlite3 *db,const struct summary_opts *opts,FILE *out,struct summary_totals *totals){
-  char sql[1024];
+  char sql[1400];
   sqlite3_stmt *stmt;
   struct bucket cur;
   int have_bucket = 0;
 
   snprintf(sql,sizeof(sql),
-    "SELECT r.%s AS group_val, r.run_id AS run_id, r.hostname AS run_hostname, "
+    "SELECT %s AS group_val, rco.option_value AS secondary_val, "
+    "r.run_id AS run_id, r.hostname AS run_hostname, "
     "mv.metric_name AS metric_name, AVG(mv.value) AS avg_value "
     "FROM metric_values mv JOIN runs r ON r.id = mv.run_id "
+    "LEFT JOIN run_environment e ON e.run_id = r.id "
+    "LEFT JOIN run_config_options rco ON rco.run_id = r.id AND rco.option_name = ?3 "
     "WHERE mv.value IS NOT NULL "
     "AND (?1 = '' OR r.command LIKE '%%' || ?1 || '%%') "
     "AND (?2 = '' OR r.hostname = ?2) "
     "GROUP BY r.id, mv.metric_name "
-    "ORDER BY group_val, mv.metric_name, r.start_time, r.id;",
+    "ORDER BY group_val, secondary_val, mv.metric_name, r.start_time, r.id;",
     group_by_column(opts->group_by));
 
   if (sqlite3_prepare_v2(db,sql,-1,&stmt,NULL) != SQLITE_OK){
@@ -447,14 +494,17 @@ static int summarize(sqlite3 *db,const struct summary_opts *opts,FILE *out,struc
   }
   sqlite3_bind_text(stmt,1,opts->command_filter,-1,SQLITE_TRANSIENT);
   sqlite3_bind_text(stmt,2,opts->hostname_filter,-1,SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt,3,opts->group_by_option ? opts->group_by_option : "",-1,SQLITE_TRANSIENT);
 
   while (sqlite3_step(stmt) == SQLITE_ROW){
     const unsigned char *group_raw = sqlite3_column_text(stmt,0);
-    const unsigned char *run_id_raw = sqlite3_column_text(stmt,1);
-    const unsigned char *hostname_raw = sqlite3_column_text(stmt,2);
-    const unsigned char *metric_raw = sqlite3_column_text(stmt,3);
-    double value = sqlite3_column_double(stmt,4);
+    const unsigned char *secondary_raw = sqlite3_column_text(stmt,1);
+    const unsigned char *run_id_raw = sqlite3_column_text(stmt,2);
+    const unsigned char *hostname_raw = sqlite3_column_text(stmt,3);
+    const unsigned char *metric_raw = sqlite3_column_text(stmt,4);
+    double value = sqlite3_column_double(stmt,5);
     const char *group_val = group_raw ? (const char *)group_raw : "(unknown)";
+    const char *secondary_val = secondary_raw ? (const char *)secondary_raw : "(unknown)";
     const char *run_id = run_id_raw ? (const char *)run_id_raw : "?";
     const char *hostname = hostname_raw ? (const char *)hostname_raw : "?";
     const char *metric_name = metric_raw ? (const char *)metric_raw : "?";
@@ -462,9 +512,10 @@ static int summarize(sqlite3 *db,const struct summary_opts *opts,FILE *out,struc
     if (!metric_wanted(opts,metric_name)) continue;
     totals->rows_scanned++;
 
-    if (!have_bucket || strcmp(cur.group_val,group_val) != 0 || strcmp(cur.metric_name,metric_name) != 0){
+    if (!have_bucket || strcmp(cur.group_val,group_val) != 0 ||
+        strcmp(cur.secondary_val,secondary_val) != 0 || strcmp(cur.metric_name,metric_name) != 0){
       if (have_bucket){ emit_bucket(&cur,opts,out,totals); bucket_free_contents(&cur); }
-      bucket_reset(&cur,group_val,metric_name);
+      bucket_reset(&cur,group_val,secondary_val,metric_name);
       have_bucket = 1;
     }
     bucket_add(&cur,value,run_id,hostname);
@@ -641,7 +692,11 @@ static void usage(const char *prog){
     "  --command <substr>     only include runs whose command matches this substring\n"
     "  --hostname <name>      only include runs from this host\n"
     "  --metric <name>        only include this metric; may be repeated (default: all)\n"
-    "  --group-by <col>       command (default), hostname, or cpu_vendor\n"
+    "  --group-by <col>       command (default), hostname, cpu_vendor, affinity_mode,\n"
+    "                         preset_name, config_name, cpu_governor, or virt_role\n"
+    "  --group-by-option <name>  compose a second grouping axis from an arbitrary\n"
+    "                         --config-option key (e.g. a comparison-matrix sweep's\n"
+    "                         own tag) -- adds one column, doesn't replace --group-by\n"
     "  --outlier-stddev <n>   z-score threshold for flagging outliers (default 2.0)\n"
     "  --min-runs <n>         only report (group,metric) buckets with >= n runs (default 1)\n"
     "  --max-cv <percent>     CV%% above which a bucket's verdict is WARN:noisy (default 5.0)\n"
@@ -685,6 +740,7 @@ int main(int argc,char **argv){
     { "hostname",       required_argument, 0, 'H' },
     { "metric",         required_argument, 0, 'm' },
     { "group-by",       required_argument, 0, 'g' },
+    { "group-by-option",required_argument, 0, 'O' },
     { "outlier-stddev", required_argument, 0, 'z' },
     { "min-runs",       required_argument, 0, 'n' },
     { "max-cv",         required_argument, 0, 'X' },
@@ -718,6 +774,7 @@ int main(int argc,char **argv){
       opts.metrics[opts.nmetrics++] = optarg;
       break;
     case 'g': group_by_str = optarg; break;
+    case 'O': opts.group_by_option = optarg; break;
     case 'z': opts.outlier_z = atof(optarg); break;
     case 'n': opts.min_runs = atoi(optarg); break;
     case 'X': opts.max_cv = atof(optarg); break;
@@ -758,7 +815,8 @@ int main(int argc,char **argv){
 
   if (!parse_group_by(group_by_str,&opts.group_by)){
     fprintf(stderr,"wspy-summary: unrecognized --group-by '%s' (expected command, hostname, "
-                    "or cpu_vendor)\n\n",group_by_str);
+                    "cpu_vendor, affinity_mode, preset_name, config_name, cpu_governor, "
+                    "or virt_role)\n\n",group_by_str);
     usage(argv[0]);
     return 2;
   }
@@ -770,13 +828,17 @@ int main(int argc,char **argv){
   memset(&totals,0,sizeof(totals));
 
   if (opts.csvflag){
-    printf("group,metric,n,min,max,mean,median,stddev,cv_percent,ci95_low,ci95_high,verdict,"
+    printf("group,");
+    if (opts.group_by_option) printf("group_by_option,");
+    printf("metric,n,min,max,mean,median,stddev,cv_percent,ci95_low,ci95_high,verdict,"
            "outlier_count,outlier_run_ids");
     if (opts.show_runs) printf(",contributing_runs");
     printf("\n");
   } else {
-    printf("%-28s %-24s %4s %10s %10s %10s %10s %10s %8s %10s %10s %-16s %3s  %s",
-           "group","metric","n","min","max","mean","median","stddev","cv",
+    printf("%-28s ","group");
+    if (opts.group_by_option) printf("%-20s ","group_by_option");
+    printf("%-24s %4s %10s %10s %10s %10s %10s %8s %10s %10s %-16s %3s  %s",
+           "metric","n","min","max","mean","median","stddev","cv",
            "ci95_low","ci95_high","verdict","out","outlier run(s)");
     if (opts.show_runs) printf("  %s","contributing runs (host:run_id)");
     printf("\n");
