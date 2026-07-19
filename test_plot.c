@@ -75,6 +75,38 @@ static void test_extra_columns_dont_block_match(void){
   printf("PASS: extra columns fall through to the generic fallback template\n");
 }
 
+static void test_topdown_detail_template(void){
+  /* Real print_topdown() CSV shape (topdown.c): "topdown" claims the 4 L1
+   * columns, "topdown-detail" claims the 9 L1->L2 columns added alongside it
+   * (INVESTIGATION.md's 4.2 Tier 1 "Hierarchical topdown schema" item), and
+   * confidence/sanity are still left for the generic fallback -- both
+   * templates must coexist without either stealing the other's columns. */
+  char line[] = "time,retire,frontend,backend,speculate,confidence,sanity,"
+    "contention_pct,retire_ucode_pct,retire_fastpath_pct,frontend_latency_pct,"
+    "frontend_bandwidth_pct,backend_cpu_pct,backend_memory_pct,spec_branch_pct,spec_pipeline_pct,";
+  char *fields[MAX_CSV_FIELDS];
+  int n,time_col,claimed[MAX_CSV_FIELDS] = {0};
+  struct plot_match matches[MAX_CSV_FIELDS];
+  int nmatches;
+
+  printf("Testing topdown-detail template matching alongside topdown...\n");
+  n = split_csv_line(line,fields,MAX_CSV_FIELDS);
+  time_col = find_col(fields,n,"time");
+
+  nmatches = match_templates(fields,n,time_col,matches,MAX_CSV_FIELDS,claimed,0);
+  assert(nmatches == 2);
+  assert(!strcmp(matches[0].name,"topdown"));
+  assert(matches[0].ncols == 4);
+  assert(!strcmp(matches[1].name,"topdown-detail"));
+  assert(matches[1].ncols == 9);
+
+  nmatches = add_fallback_match(fields,n,time_col,-1,-1,claimed,matches,MAX_CSV_FIELDS,nmatches);
+  assert(nmatches == 3);
+  assert(!strcmp(matches[2].name,"metrics"));
+  assert(matches[2].ncols == 2); /* confidence, sanity */
+  printf("PASS: topdown-detail template claims the 9 L1->L2 columns, topdown/fallback unaffected\n");
+}
+
 static void test_system_cpu_template(void){
   char line[] = "time,load,runnable,cpu,idle,iowait,irq,net lo,net enp2s0,";
   char *fields[MAX_CSV_FIELDS];
@@ -549,6 +581,7 @@ int main(void){
   test_split_csv_line();
   test_topdown_template_matches();
   test_extra_columns_dont_block_match();
+  test_topdown_detail_template();
   test_system_cpu_template();
   test_network_fallback_absent_when_no_net_columns();
   test_coverage_columns_excluded_from_fallback();

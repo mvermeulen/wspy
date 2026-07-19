@@ -1953,6 +1953,22 @@ void print_ipc(struct counter_group *cgroup,enum output_format oformat){
   }
 }
 
+// Two independently-read raw-event counters have no guaranteed ordering
+// relationship -- measurement noise or independent multiplex-scaling
+// extrapolation (read_counters()'s own delta scaling, topdown.c) can push a
+// "child" value above its "parent" even when a formula assumes child <=
+// parent. Subtracting two unsigned longs in that case wraps to a
+// near-ULONG_MAX value instead of erroring -- confirmed live on real
+// hardware in print_topdown()'s AMD backend_memory/frontend_latency L2
+// split ("-- cpu 18446744073709528203 # 42865654599275.4%"), silently
+// present in this codebase's own human-text output before this fix, and
+// guaranteed to poison every downstream consumer once these fields became
+// unconditional CSV columns (INVESTIGATION.md's 4.2 Tier 1, "Hierarchical
+// topdown schema" item). safe_sub() clamps to 0 instead of wrapping.
+static unsigned long safe_sub(unsigned long a,unsigned long b){
+  return a >= b ? a - b : 0;
+}
+
 // Hierarchical (parent->child) topdown schema, v1 (INVESTIGATION.md's 4.2 Tier 1,
 // "Hierarchical topdown schema" item, TOPDOWN_FORMULA_VERSION in wspy.h): L1 nodes
 // (retire/frontend/backend/speculate) are unprefixed CSV columns; L2 nodes are named
@@ -2098,7 +2114,7 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
     if ((cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.smt_contention"))) contention = cinfo->value;
     if ((cinfo = find_ci_label(cgroup,"de_src_op_disp.all"))){
       if (cinfo->time_running == 0) too_short = 1;
-      speculation = cinfo->value - retiring;
+      speculation = safe_sub(cinfo->value,retiring);
       speculation_confidence = confidence_ratio(cinfo);
     }
     // backend level 2
@@ -2107,8 +2123,10 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
     if ((cinfo = find_ci_label(cgroup,"ex_no_retire.not_complete")))
       retire_not_complete = cinfo->value;
     if (retire_load_not_complete && retire_not_complete){
-      backend_memory = backend * (double) retire_load_not_complete / retire_not_complete;
-      backend_cpu = backend - backend_memory;
+      double ratio = (double) retire_load_not_complete / retire_not_complete;
+      if (ratio > 1.0) ratio = 1.0; // see safe_sub()'s comment above: two independent counters, no guaranteed <=1 ratio
+      backend_memory = backend * ratio;
+      backend_cpu = safe_sub(backend,backend_memory);
     }
 
     // speculation level 2
@@ -2118,19 +2136,25 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
       resyncs_or_nc_redirects = cinfo->value;
     if (branches_mispredicted && resyncs_or_nc_redirects){
       speculation_pipeline = speculation * (double) resyncs_or_nc_redirects / (resyncs_or_nc_redirects + branches_mispredicted);
-      speculation_branches = speculation - speculation_pipeline;
+      speculation_branches = safe_sub(speculation,speculation_pipeline);
     }
 
     // frontend level 2
     if ((cinfo = find_ci_label(cgroup,"de_no_dispatch_per_slot.no_ops_from_frontend.cmask_0x6"))){
       frontend_latency = cinfo->value*6;
-      frontend_bandwidth = frontend - frontend_latency;
+      if (frontend_latency > frontend) frontend_latency = frontend; // see safe_sub()'s comment above
+      frontend_bandwidth = safe_sub(frontend,frontend_latency);
     }
 
     // retire level 2
     if ((cinfo = find_ci_label(cgroup,"ex_ret_ucode_ops"))){
-      retire_ucode = retiring * (double) cinfo->value / retiring;
-      retire_fastpath = retiring - retire_ucode;
+      // retiring*(value/retiring) reduces to value -- the multiply/divide
+      // round-trip was pure noise (and a retiring==0 div-by-zero risk);
+      // clamp to retiring since these are two independent counters (see
+      // safe_sub()'s comment above).
+      retire_ucode = cinfo->value;
+      if (retire_ucode > retiring) retire_ucode = retiring;
+      retire_fastpath = safe_sub(retiring,retire_ucode);
     }
     
     slots_no_contention = slots - contention;
