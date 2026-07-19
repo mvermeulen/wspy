@@ -192,7 +192,7 @@ COLUMN_TO_GROUP = {
 # toggling the checklist's separate "system" configuration rather than a
 # counters group. "net <iface>" is one column per interface discovered on
 # this host, so it's matched by prefix rather than listed by name.
-SYSTEM_COLUMN_NAMES = {"load", "runnable", "cpu", "idle", "iowait", "irq", "freq"}
+SYSTEM_COLUMN_NAMES = {"load", "runnable", "cpu", "idle", "iowait", "irq", "freq", "cpu_temp"}
 # --power's own columns (power.c/topdown.c's print_power()) -- same "not an
 # ALL_GROUPS entry" reasoning as SYSTEM_COLUMN_NAMES above: --power isn't a
 # counter_mask bit build_configuration_passes()'s "counters" section
@@ -314,6 +314,16 @@ PROFILE_PLOTTABLE_COLUMNS = {
     "tree-heavy": set(),
     "ibs-basic": set(),
     "ibs-memory-deep": set(),
+    # gpu-compute's single pass already runs on --interval 1 (wspy-run's
+    # load_builtin_profile()), unlike quick/tree-heavy/ibs-* above -- so
+    # unlike those, an absent/empty entry here would be wrong, not just
+    # unhelpful: build_supplementary_plot_passes() would wrongly conclude
+    # none of its columns are plottable and spin up a redundant duplicate
+    # pass collecting data gpu-compute's own pass already produces.
+    "gpu-compute": SYSTEM_COLUMN_NAMES | POWER_COLUMN_NAMES | {
+                 "net *", "retire", "frontend", "backend", "speculate", "confidence", "sanity",
+                 "gpu_busy", "gpu_temp", "gpu_activity", "gpu_power", "gpu_freq",
+                 "nv_gpu_busy", "nv_vram_used_mb", "nv_vram_total_mb"},
 }
 
 

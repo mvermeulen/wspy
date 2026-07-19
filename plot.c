@@ -116,6 +116,22 @@ static const struct plot_template templates[] = {
   { "power-vs-topdown", "Package Power vs. Topdown Breakdown", "Watts",
     { "pkg_watts" }, 1, "lines",
     { "retire","frontend","backend","speculate" }, "% of pipeline slots", 2 },
+  /* cpu_temp (system.c, hwmon-sourced) paired against the columns that tell
+   * an actual thermal story -- same secondary-axis reasoning as the power-vs-*
+   * templates above, since deg-C shares no useful scale with MHz, Watts, or
+   * a 0-100 busy percentage. Each requires --system's own cpu_temp column
+   * *and* the paired column(s), so a cpu_temp-only CSV (SYSTEM_TEMP with no
+   * --power/other system columns collected) still falls through to the
+   * generic fallback plot exactly as before rather than firing half-empty. */
+  { "temp-vs-frequency", "CPU Temperature vs. Frequency", "deg C",
+    { "cpu_temp" }, 1, "lines",
+    { "freq" }, "MHz", 1 },
+  { "temp-vs-power", "CPU Temperature vs. Package Power", "deg C",
+    { "cpu_temp" }, 1, "lines",
+    { "pkg_watts" }, "Watts", 1 },
+  { "temp-vs-utilization", "CPU Temperature vs. Utilization", "deg C",
+    { "cpu_temp" }, 1, "lines",
+    { "cpu","gpu_busy" }, "% busy", 1 },
 };
 static const int ntemplates = sizeof(templates) / sizeof(templates[0]);
 

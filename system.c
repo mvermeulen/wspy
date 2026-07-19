@@ -15,7 +15,7 @@
 #include "amd_sysfs.h"
 #endif
 
-unsigned int system_mask = SYSTEM_LOADAVG|SYSTEM_CPU|SYSTEM_NETWORK|SYSTEM_FREQ;
+unsigned int system_mask = SYSTEM_LOADAVG|SYSTEM_CPU|SYSTEM_NETWORK|SYSTEM_FREQ|SYSTEM_TEMP;
 
 struct netinfo {
   char *name;
@@ -34,6 +34,7 @@ struct system_state {
   int num_net;
   struct netinfo *netinfo;
   double freq_mhz; // average current frequency across online cpus with cpufreq
+  double cpu_temp_c; // average CPU package/die temperature across discovered hwmon sensors
 #if AMDGPU
   struct gpu {
     int busy_percent;
@@ -121,6 +122,99 @@ static void setup_freq_info(void){
       capacity = newcap;
     }
     freq_cpu_ids[num_freq_cpus++] = (int) id;
+  }
+  closedir(dir);
+}
+
+// CPU package/die temperature via hwmon (k10temp on AMD Zen, coretemp on
+// Intel, cpu_thermal on some ARM SoCs) -- a single plain sysfs read, same
+// cost class and no-privileges-needed idiom as setup_freq_info() above, not
+// a perf counter or RAPL PMU. readdir-driven (the hwmonN index is
+// enumeration-order dependent and varies host to host, same reasoning as
+// amd_sysfs.c's device scan), not a hardcoded path.
+static char **temp_paths = NULL;
+static int num_temp_paths = 0;
+static int temp_setup_done = 0;
+
+// hwmon driver names known to expose a CPU package/die temperature. Not
+// exhaustive -- an unmatched host just yields zero CPU temp sensors, same
+// "measured vs unavailable" degrade as cpufreq being absent in a VM.
+static const char *TEMP_HWMON_DRIVERS[] = { "k10temp", "coretemp", "cpu_thermal", NULL };
+// Preferred hwmon temp*_label text identifying the overall package/die
+// sensor rather than a per-core/per-chiplet one -- AMD's Tctl is the
+// control temperature (what `sensors`/HWiNFO call "CPU"), Tdie the actual
+// die temp on some parts; Intel's coretemp labels the package sensor
+// "Package id N". A hwmon device with none of these labeled falls back to
+// its own first temp*_input rather than being skipped outright.
+static const char *TEMP_PREFERRED_LABELS[] = { "Tctl", "Tdie", "Package id 0", "Package id 1", NULL };
+
+static int temp_driver_matches(const char *name){
+  int i;
+  for (i = 0; TEMP_HWMON_DRIVERS[i]; i++) if (!strcmp(name,TEMP_HWMON_DRIVERS[i])) return 1;
+  return 0;
+}
+
+static void add_temp_path(const char *path){
+  char **newlist = realloc(temp_paths,(num_temp_paths + 1) * sizeof(char *));
+  if (newlist == NULL) return;
+  temp_paths = newlist;
+  temp_paths[num_temp_paths++] = strdup(path);
+}
+
+static void setup_temp_info(void){
+  DIR *dir,*hdir;
+  struct dirent *entry,*hentry;
+  char namebuf[128],labelbuf[128];
+  char hwmon_dir[300],namepath[350];
+  char chosen[350],fallback[350];
+  FILE *fp;
+
+  temp_setup_done = 1;
+  if ((dir = opendir("/sys/class/hwmon")) == NULL) return;
+  while ((entry = readdir(dir)) != NULL){
+    if (entry->d_name[0] == '.') continue;
+    snprintf(namepath,sizeof(namepath),"/sys/class/hwmon/%s/name",entry->d_name);
+    if ((fp = fopen(namepath,"r")) == NULL) continue;
+    if (fgets(namebuf,sizeof(namebuf),fp) == NULL){ fclose(fp); continue; }
+    fclose(fp);
+    namebuf[strcspn(namebuf,"\n")] = '\0';
+    if (!temp_driver_matches(namebuf)) continue;
+
+    snprintf(hwmon_dir,sizeof(hwmon_dir),"/sys/class/hwmon/%s",entry->d_name);
+    chosen[0] = '\0';
+    fallback[0] = '\0';
+    if ((hdir = opendir(hwmon_dir)) == NULL) continue;
+    while ((hentry = readdir(hdir)) != NULL){
+      size_t len = strlen(hentry->d_name);
+      char base[64];
+      char *suffix;
+      char inputpath[350],labelpath[350];
+      if (strncmp(hentry->d_name,"temp",4) != 0) continue;
+      if (len < 6 || strcmp(hentry->d_name + len - 6,"_input") != 0) continue;
+      snprintf(inputpath,sizeof(inputpath),"%s/%s",hwmon_dir,hentry->d_name);
+      if (fallback[0] == '\0') snprintf(fallback,sizeof(fallback),"%s",inputpath);
+      snprintf(base,sizeof(base),"%s",hentry->d_name);
+      suffix = strstr(base,"_input");
+      if (suffix) *suffix = '\0';
+      snprintf(labelpath,sizeof(labelpath),"%s/%s_label",hwmon_dir,base);
+      if ((fp = fopen(labelpath,"r")) != NULL){
+        if (fgets(labelbuf,sizeof(labelbuf),fp) != NULL){
+          int i;
+          labelbuf[strcspn(labelbuf,"\n")] = '\0';
+          for (i = 0; TEMP_PREFERRED_LABELS[i]; i++){
+            if (!strcmp(labelbuf,TEMP_PREFERRED_LABELS[i])){
+              snprintf(chosen,sizeof(chosen),"%s",inputpath);
+              break;
+            }
+          }
+        }
+        fclose(fp);
+      }
+      if (chosen[0]) break;
+    }
+    closedir(hdir);
+    if (chosen[0]) add_temp_path(chosen);
+    else if (fallback[0]) add_temp_path(fallback);
   }
   closedir(dir);
 }
@@ -223,6 +317,24 @@ void read_system(void){
     // than failing, same "measured vs unavailable" idiom used throughout
     system_state.freq_mhz = count ? (sum / count) / 1000.0 : 0.0;
   }
+  if (system_mask & SYSTEM_TEMP){
+    long millideg;
+    double sum = 0;
+    int count = 0;
+    if (!temp_setup_done) setup_temp_info();
+    for (i=0;i<num_temp_paths;i++){
+      if ((fp = fopen(temp_paths[i],"r"))){
+        if (fscanf(fp,"%ld",&millideg) == 1){
+          sum += millideg / 1000.0;
+          count++;
+        }
+        fclose(fp);
+      }
+    }
+    // no CPU temp sensor discovered (e.g. a VM/container, or an
+    // unrecognized hwmon driver) degrades to 0, same idiom as cpufreq above
+    system_state.cpu_temp_c = count ? sum / count : 0.0;
+  }
 }
 
 void print_system(enum output_format oformat){
@@ -240,6 +352,7 @@ void print_system(enum output_format oformat){
     if (system_mask & SYSTEM_LOADAVG) fprintf(outfile,"load,runnable,");
     if (system_mask & SYSTEM_CPU) fprintf(outfile,"cpu,idle,iowait,irq,");
     if (system_mask & SYSTEM_FREQ) fprintf(outfile,"freq,");
+    if (system_mask & SYSTEM_TEMP) fprintf(outfile,"cpu_temp,");
     if (system_mask & SYSTEM_NETWORK){
       if (system_state.netinfo == NULL) setup_net_info();
       for (i=0;i<system_state.num_net;i++) fprintf(outfile,"net %s,",system_state.netinfo[i].name);
@@ -261,6 +374,7 @@ void print_system(enum output_format oformat){
 	      (double) (system_state.cpu.irqtime)/elapsed/num_procs);
     }
     if (system_mask & SYSTEM_FREQ) fprintf(outfile,"%4.0f,",system_state.freq_mhz);
+    if (system_mask & SYSTEM_TEMP) fprintf(outfile,"%4.1f,",system_state.cpu_temp_c);
     if (system_mask & SYSTEM_NETWORK){
       if (system_state.netinfo == NULL) setup_net_info();
       for (i=0;i<system_state.num_net;i++){
@@ -290,6 +404,9 @@ void print_system(enum output_format oformat){
     }
     if (system_mask & SYSTEM_FREQ){
       fprintf(outfile,"freq                 %4.0f MHz\n",system_state.freq_mhz);
+    }
+    if (system_mask & SYSTEM_TEMP){
+      fprintf(outfile,"cpu temp             %4.1f C\n",system_state.cpu_temp_c);
     }
     if (system_mask & SYSTEM_NETWORK){
       if (system_state.netinfo == NULL) setup_net_info();
