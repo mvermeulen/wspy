@@ -98,6 +98,24 @@ static const struct plot_template templates[] = {
     { "ibs_fetch","ibs_op","ibs_op_unfiltered" }, 1, "points" },
   { "ibs-accepted-ratio", "IBS Op Accepted Ratio (filtered/unfiltered)", "ratio",
     { "ibs_op_accepted_ratio" }, 1, "points" },
+  /* GPU busy/activity percentages (AMD sysfs's gpu_busy/gpu_activity, NVIDIA
+   * NVML's nv_gpu_busy) on their own dedicated chart -- without this, these
+   * were falling into the generic fallback plot alongside everything else
+   * no template claimed, making "how much is actually happening on the GPU"
+   * something you had to go dig for rather than see at a glance. */
+  { "gpu-utilization", "GPU Utilization", "% busy",
+    { "gpu_busy","gpu_activity","nv_gpu_busy" }, 1, "lines" },
+  /* VRAM usage (NVIDIA NVML's nv_vram_used_mb/nv_vram_total_mb, AMD SMI's
+   * gpu_smi_vram_used/gpu_smi_vram_total) is in MB -- thousands, the same
+   * "shares no useful scale with a 0-100 percentage" problem power.c's
+   * pkg_watts had, except worse: sharing an axis with 0-100-ish columns in
+   * the generic fallback flattened everything else to a line along the
+   * bottom (confirmed on a real run: an ~8151 MB total-VRAM column forced
+   * every other metric in that plot down near zero). Its own chart, not a
+   * secondary axis -- there's no single natural pairing partner for VRAM
+   * the way power has utilization/frequency/IPC/topdown. */
+  { "gpu-vram", "GPU VRAM Usage", "MB",
+    { "nv_vram_used_mb","nv_vram_total_mb","gpu_smi_vram_used","gpu_smi_vram_total" }, 1, "lines" },
   /* power.c's pkg_watts paired against a second variable on its own
    * (right-hand) axis -- watts (tens-hundreds) shares no useful scale with
    * a busy percentage, a MHz frequency, or a 0-4 IPC ratio. Each requires
@@ -132,6 +150,15 @@ static const struct plot_template templates[] = {
   { "temp-vs-utilization", "CPU Temperature vs. Utilization", "deg C",
     { "cpu_temp" }, 1, "lines",
     { "cpu","gpu_busy" }, "% busy", 1 },
+  /* AMD sysfs's own gpu_temp/gpu_freq -- same temp-vs-frequency pairing as
+   * the CPU templates above, since gpu_freq (hundreds-thousands of MHz)
+   * dominates a shared axis with anything percentage-scale exactly the way
+   * cpu_temp's own frequency column would. Confirmed on the same real run
+   * that surfaced the VRAM issue above: once VRAM had its own chart,
+   * gpu_freq became the next thing flattening the generic fallback plot. */
+  { "gpu-thermal", "GPU Temperature vs. Frequency", "deg C",
+    { "gpu_temp" }, 1, "lines",
+    { "gpu_freq" }, "MHz", 1 },
 };
 static const int ntemplates = sizeof(templates) / sizeof(templates[0]);
 
@@ -469,12 +496,77 @@ static void basename_without_ext(const char *path,char *out,size_t outsize){
   out[len] = '\0';
 }
 
+/* Stable per-metric-name line color -- gnuplot's own automatic color
+ * cycling assigns colors by column *position* within one plot invocation,
+ * so the same metric (e.g. "backend") can render in a different color on
+ * different charts depending on what else happens to share that particular
+ * chart, making it harder to visually track one metric across several PNGs
+ * from the same run. This instead keys off the column name itself: a small
+ * curated table for metrics that recur across more than one template
+ * (topdown's four, the columns power/temp pairings share), and a stable
+ * hash-based fallback -- not gnuplot's own cycling -- for everything else
+ * (per-core columns, host-specific network interface names), so the same
+ * column always renders the same color, run to run and chart to chart. */
+struct metric_color { const char *name; const char *rgb; };
+static const struct metric_color metric_colors[] = {
+  { "retire",             "#d62728" }, /* red */
+  { "frontend",           "#1f77b4" }, /* blue */
+  { "backend",            "#2ca02c" }, /* green */
+  { "speculate",          "#9467bd" }, /* purple */
+  { "ipc",                "#1f77b4" },
+  { "cpu",                "#1f77b4" },
+  { "idle",               "#7f7f7f" }, /* gray */
+  { "iowait",             "#ff7f0e" }, /* orange */
+  { "irq",                "#9467bd" },
+  { "freq",               "#2ca02c" },
+  { "cpu_temp",           "#d62728" },
+  { "pkg_watts",          "#ff7f0e" },
+  { "pkg_joules",         "#bcbd22" }, /* olive */
+  { "gpu_busy",           "#2ca02c" },
+  { "gpu_activity",       "#17becf" }, /* cyan */
+  { "nv_gpu_busy",        "#1f77b4" },
+  { "gpu_temp",           "#d62728" },
+  { "gpu_power",          "#ff7f0e" },
+  { "gpu_freq",           "#2ca02c" },
+  { "nv_vram_used_mb",    "#1f77b4" },
+  { "nv_vram_total_mb",   "#7f7f7f" },
+  { "gpu_smi_vram_used",  "#1f77b4" },
+  { "gpu_smi_vram_total", "#7f7f7f" },
+  { NULL, NULL },
+};
+/* Palette for names not in the curated table above -- a fixed, visually
+ * distinct set, indexed by a stable hash of the column name rather than
+ * gnuplot's own position-based cycling. */
+static const char *fallback_palette[] = {
+  "#1f77b4","#ff7f0e","#2ca02c","#d62728","#9467bd",
+  "#8c564b","#e377c2","#7f7f7f","#bcbd22","#17becf",
+};
+#define FALLBACK_PALETTE_SIZE (sizeof(fallback_palette)/sizeof(fallback_palette[0]))
+
+static const char *metric_line_color(const char *name){
+  unsigned int hash = 2166136261u; /* FNV-1a */
+  const char *p;
+  int i;
+
+  for (i = 0; metric_colors[i].name; i++){
+    if (!strcmp(name,metric_colors[i].name)) return metric_colors[i].rgb;
+  }
+  for (p = name; *p; p++){
+    hash ^= (unsigned char) *p;
+    hash *= 16777619u;
+  }
+  return fallback_palette[hash % FALLBACK_PALETTE_SIZE];
+}
+
 /* Renders one match via gnuplot -- a generated script piped to gnuplot's
  * stdin (functionally the same idiom gnuplot.sh's heredocs used), reusing
  * this process's own stdout/stderr for gnuplot's diagnostics rather than
  * capturing them, so a caller that pipes wspy-plot's own output (e.g.
- * web/server.py's subprocess.Popen with stderr=STDOUT) sees them too. */
-static int render_match(const char *csv_path,const struct plot_match *pm,const char *out_png){
+ * web/server.py's subprocess.Popen with stderr=STDOUT) sees them too.
+ * header_fields lets it look up each plotted column's own name (for
+ * metric_line_color() above) -- pm->cols[] only carries column indices. */
+static int render_match(const char *csv_path,const struct plot_match *pm,const char *out_png,
+                         char * const *header_fields){
   FILE *gp;
   int i;
   int rc;
@@ -508,7 +600,9 @@ static int render_match(const char *csv_path,const struct plot_match *pm,const c
   fprintf(gp,"plot ");
   for (i = 0; i < pm->ncols; i++){
     if (i) fprintf(gp,", ");
-    fprintf(gp,"'%s' using %d:%d with %s",csv_path,pm->time_col + 1,pm->cols[i] + 1,pm->style);
+    fprintf(gp,"'%s' using %d:%d with %s linecolor rgb '%s'",
+            csv_path,pm->time_col + 1,pm->cols[i] + 1,pm->style,
+            metric_line_color(header_fields[pm->cols[i]]));
     if (has_y2 && pm->col_axis[i] == 1) fprintf(gp," axes x1y2");
   }
   fprintf(gp,"\n");
@@ -605,7 +699,7 @@ static int process_csv(const char *csv_path,const char *out_dir,int quiet,int *a
     char out_png[MAX_PATH_LEN];
 
     snprintf(out_png,sizeof(out_png),"%s/%s.%s.png",out_dir,stem,matches[i].name);
-    if (render_match(csv_path,&matches[i],out_png) != 0){
+    if (render_match(csv_path,&matches[i],out_png,header_fields) != 0){
       fprintf(stderr,"wspy-plot: %s: gnuplot failed rendering '%s' template\n",csv_path,matches[i].name);
       *any_failed = 1;
       continue;
