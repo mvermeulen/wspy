@@ -1323,7 +1323,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     ((cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN)||
      (cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN5)||
      (cpu_info->coreinfo[i].vendor == CORE_INTEL_CORE)||
-     (cpu_info->coreinfo[i].vendor == CORE_ARM_GENERIC))){
+     (is_arm_core_type(cpu_info->coreinfo[i].vendor)))){
 	setup_counter_groups(&cpu_info->coreinfo[i].core_specific_counters);
   bind_core_counter_groups(cpu_info->coreinfo[i].core_specific_counters,
          i,cpu_info->coreinfo[i].pmu_type);
