@@ -32,7 +32,11 @@ plain Python 3 scripts — stdlib only, nothing to build or install.
 Performance counters and `--tree` (which uses `ptrace`) generally need root, or
 `CAP_SYS_PTRACE` plus `perf_event_paranoid <= 1`. `scripts/setup_perf.sh` checks and, if you
 confirm, adjusts the `nmi_watchdog` and `perf_event_paranoid` sysctls for the current session.
-`./cpu_info` and `wspy --capabilities`/`--preflight` need no privileges at all.
+`--power` needs root or `CAP_PERFMON` specifically (RAPL/`energy-pkg` access is stricter than
+`perf_event_paranoid` alone covers) — the same script also checks/grants that on the `wspy`
+binary (`sudo setcap cap_perfmon+ep`); re-run it after rebuilding, since the grant is tied to
+that exact binary file. `./cpu_info` and `wspy --capabilities`/`--preflight` need no privileges
+at all.
 
 ## Usage
 
@@ -312,7 +316,8 @@ See `./web/server.py --help` for the full option list.
   guaranteed to stay stable, how schema versioning works) plus a troubleshooting runbook for common
   partial-coverage, GPU, and validation issues
 * `scripts/setup_perf.sh` - checks/adjusts `nmi_watchdog` and `perf_event_paranoid` for running
-  perf counters as a non-root user
+  perf counters as a non-root user, and checks/grants `CAP_PERFMON` on the `wspy` binary for
+  `--power` (re-run after rebuilding — the grant is a file capability, not a sysctl)
 * `workload/` - driver scripts for exercising wspy against external benchmark suites (SPEC
   CPU2017, pbbsbench, Phoronix), all calling `wspy-run --suite/--benchmark` rather than
   hand-rolling per-suite `wspy` invocations
