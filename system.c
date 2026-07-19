@@ -35,13 +35,11 @@ struct system_state {
   struct netinfo *netinfo;
   double freq_mhz; // average current frequency across online cpus with cpufreq
   double cpu_temp_c; // average CPU package/die temperature across discovered hwmon sensors
-#if AMDGPU
   struct gpu {
     int busy_percent;
     int last_busy_percent;
     int prev_busy_percent;
   } gpu;
-#endif
 } system_state = { 0 };
 
 // read /proc/net/dev and initialize the system_state structure for networks...
@@ -219,6 +217,57 @@ static void setup_temp_info(void){
   closedir(dir);
 }
 
+static int read_gpu_busy_percent(void) {
+#if AMDGPU
+  int val = amd_sysfs_gpu_busy_percent();
+  if (val >= 0) return val;
+#endif
+
+  static char igpu_load_path[450] = "";
+  static int igpu_searched = 0;
+  if (!igpu_searched) {
+    igpu_searched = 1;
+    DIR *dir = opendir("/sys/class/devfreq");
+    if (dir) {
+      struct dirent *de;
+      while ((de = readdir(dir)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+        if (strstr(de->d_name, "gpu") || strstr(de->d_name, "mali") ||
+            strstr(de->d_name, "panfrost") || strstr(de->d_name, "kgsl") ||
+            strstr(de->d_name, "agx")) {
+          char filepath[450];
+          snprintf(filepath, sizeof(filepath), "/sys/class/devfreq/%s/load", de->d_name);
+          if (access(filepath, F_OK) == 0) {
+            snprintf(igpu_load_path, sizeof(igpu_load_path), "%s", filepath);
+            debug("Found iGPU devfreq load sensor at %s\n", filepath);
+            break;
+          }
+        }
+      }
+      closedir(dir);
+    }
+  }
+
+  if (igpu_load_path[0] != '\0') {
+    FILE *fp = fopen(igpu_load_path, "r");
+    if (fp) {
+      char buf[64];
+      if (fgets(buf, sizeof(buf), fp)) {
+        int load = 0;
+        if (sscanf(buf, "%d", &load) == 1) {
+          fclose(fp);
+          if (load < 0) return 0;
+          if (load > 100) return 100;
+          return load;
+        }
+      }
+      fclose(fp);
+    }
+  }
+
+  return 0;
+}
+
 // read system-wide state
 void read_system(void){
   FILE *fp;
@@ -291,13 +340,11 @@ void read_system(void){
       fclose(fp);
     }
   }
-#if AMDGPU
   if (system_mask & SYSTEM_GPU){
     system_state.gpu.prev_busy_percent = system_state.gpu.last_busy_percent;
-    system_state.gpu.last_busy_percent = amd_sysfs_gpu_busy_percent();
+    system_state.gpu.last_busy_percent = read_gpu_busy_percent();
     system_state.gpu.busy_percent = system_state.gpu.last_busy_percent;
   }
-#endif
   if (system_mask & SYSTEM_FREQ){
     unsigned long khz;
     double sum = 0;
@@ -357,9 +404,7 @@ void print_system(enum output_format oformat){
       if (system_state.netinfo == NULL) setup_net_info();
       for (i=0;i<system_state.num_net;i++) fprintf(outfile,"net %s,",system_state.netinfo[i].name);
     }
-#if AMDGPU
     if (system_mask & SYSTEM_GPU) fprintf(outfile,"gpu_busy,");
-#endif
     break;
   case PRINT_CSV:
     if (system_mask & SYSTEM_LOADAVG) fprintf(outfile,"%4.2f,%d,",system_state.load,system_state.runnable);
@@ -381,11 +426,9 @@ void print_system(enum output_format oformat){
 	fprintf(outfile,"%lu,",system_state.netinfo[i].bytes);
       }
     }
-#if AMDGPU
     if (system_mask & SYSTEM_GPU){
       fprintf(outfile,"%d,",system_state.gpu.busy_percent);
     }
-#endif
     break;
   case PRINT_NORMAL:
     if (system_mask & SYSTEM_LOADAVG){
@@ -414,10 +457,8 @@ void print_system(enum output_format oformat){
 	fprintf(outfile,"%-14s       %lu\n",system_state.netinfo[i].name,system_state.netinfo[i].bytes);
       }
     }
-#if AMDGPU
     if (system_mask & SYSTEM_GPU){
       fprintf(outfile,"gpu busy             %d%%\n",system_state.gpu.busy_percent);
     }
-#endif
   }
 }
