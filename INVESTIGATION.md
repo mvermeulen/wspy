@@ -198,6 +198,22 @@ Fixed to mirror `wspy.c`'s aggregate/tail-row `gpu_smi_requested` block exactly,
 `gpu_metrics` and NVIDIA to match column order. Confirmed live (header/row column counts now match)
 and via `tests/golden_output.sh`/`tests/capability_matrix.sh` against an `AMDGPU=1` build.
 
+**`--interval` tail-print/last-tick signal race fixed:** `wspy.c` now blocks `SIGALRM` and disarms the
+periodic timer (`sigprocmask`/`alarm(0)`) as the very first thing after the blocking wait for the child
+returns, before any of the final tail row's `fprintf()` calls — `is_still_running=0` alone only stopped
+the *next* re-arm, it didn't retract a `SIGALRM` the kernel had already queued, so a signal delivered
+partway through the tail row let `timer_callback()` (`topdown.c`) splice a full periodic row (including
+its own trailing newline) into the middle of it. **Validation note, stated plainly:** three escalating
+black-box reproduction attempts (natural near-boundary timing, external `SIGALRM` injection around
+child exit, sustained injection across the whole process lifetime — several dozen trials, thousands of
+signal deliveries each) did not trigger the malformed-line symptom even on the pre-fix binary, so this
+fix is verified by code-level reasoning and the full test suite (`make test`, `tests/golden_output.sh`,
+`tests/capability_matrix.sh`, all passing unchanged) rather than by an empirical repro of the race
+itself — consistent with this codebase's existing precedent for inherently-timing-dependent features
+(futex/io-wait/schedstat validation, `doc/INVESTIGATION_ARCHIVE.md`) not having a golden-output-style
+test. The narrowed window (a handful of instructions between the wait returning and the
+`sigprocmask()` call) is not claimed to be mathematically zero.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -339,13 +355,9 @@ has). Ordered in dependency tiers; items within a tier are independently startab
 
 **Tier 1 — bug fixes surfaced during 4.2 testing (small, independent, worth clearing first):**
 
-1. A rare pre-existing race: when the last `--interval` tick lands almost exactly at child exit, the
-   periodic tick's print (`timer_callback()`) and the final tail-read's print can interleave without
-   an intervening newline, producing one malformed/merged CSV line. Reproducible with e.g. `sleep 3
-   --interval 1`; needs careful signal-safety design, not a quick patch.
-2. `deep-gpu`'s `wspy-run` systemtime pass doesn't carry `--power` the way `deep-cpu`'s does — a
+1. `deep-gpu`'s `wspy-run` systemtime pass doesn't carry `--power` the way `deep-cpu`'s does — a
    pre-existing asymmetry between the two profiles.
-3. The web launcher's custom-checklist GPU card has no `--gpu-nvidia` checkbox — only AMD's
+2. The web launcher's custom-checklist GPU card has no `--gpu-nvidia` checkbox — only AMD's
    busy/metrics/smi flags are exposed there, so a custom (non-preset) run can't opt into NVIDIA GPU
    monitoring; only presets that hardcode it (`gpu-compute`) get NVIDIA data.
 
