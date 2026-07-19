@@ -1147,6 +1147,97 @@ def check_phoronix_batch_config():
             "detail": "configured for unattended batch-run"}
 
 
+# The phoronix-test-suite launcher script itself hardcodes this as PTS_DIR
+# on every non-macOS install (it's not exported into our environment since
+# we invoke it as a subprocess, not source the script) -- see that script's
+# own "Full path to root directory of the actual Phoronix Test Suite code"
+# comment. --phoronix-pts-dir overrides this for a non-standard install.
+PHORONIX_PTS_DEFAULT_DIR = "/usr/share/phoronix-test-suite"
+
+
+def phoronix_result_notifier_settings_path():
+    """Directory name must be the underscored "result_notifier" -- PTS's own
+    module lookup (pts_module::read_option()) resolves it from the module's
+    literal PHP class name, not a hyphenated form. An earlier version of
+    scripts/setup_phoronix_hooks.sh got this wrong (see
+    doc/phoronix_hook_investigation.md's "Real-Host Findings" section) --
+    checking only this, correct path is deliberate: a stale hyphenated
+    directory from that bug is never read by PTS either, so it's not a
+    "hooks are registered" signal worth checking."""
+    base = os.environ.get("PTS_USER_PATH") or os.path.join(os.path.expanduser("~"),
+                                                             ".phoronix-test-suite")
+    return os.path.join(base, "modules-data", "result_notifier", "module-settings.ini")
+
+
+def phoronix_result_notifier_hooks_registered():
+    """True if pre_test_run_process or post_test_run_process is set to a
+    non-empty value in result_notifier's own module-settings.ini -- the
+    precondition for phoronix-test-suite's own result_notifier.php bug (see
+    check_phoronix_result_notifier_bug() below) to actually matter. Without
+    a real hook script configured, the buggy code path is never reached at
+    all, so surfacing the bug check unconditionally on every Phoronix run
+    would be alarming noise for the common case of not using this feature."""
+    try:
+        with open(phoronix_result_notifier_settings_path()) as f:
+            text = f.read()
+    except OSError:
+        return False
+    for key in ("pre_test_run_process", "post_test_run_process"):
+        m = re.search(rf"^{key}\s*=\s*(.+)$", text, re.MULTILINE)
+        if m and m.group(1).strip():
+            return True
+    return False
+
+
+# Two independent bugs found live in phoronix-test-suite's own bundled
+# result_notifier.php (doc/phoronix_hook_investigation.md's "Real-Host
+# Findings" section; reported/fixed upstream at
+# phoronix-test-suite/phoronix-test-suite#924 and #925): it unconditionally
+# dereferences a test_result_buffer that's null both at pre-run time (no
+# trial has happened yet) and, for a simple single-way test, even at
+# post-run time, and it calls a get_result() method that doesn't exist on
+# pts_test_result at all (the real accessor is ->active->get_result()).
+# Either one is an uncaught PHP fatal error the instant a real hook script
+# is configured -- not a wspy bug, but wspy's own scripts/pts_hooks/*.sh are
+# exactly what would configure one on this host, so catching it here (before
+# a real benchmark run crashes with zero results) is the point of this
+# check. Detected by simple text search rather than executing PHP -- this
+# server has no PHP dependency and the exact buggy/fixed lines are known
+# verbatim from reproducing and patching the bug directly.
+PHORONIX_RESULT_NOTIFIER_BUGGY_MARKER = "test_result_buffer->get_count() + 1;"
+PHORONIX_RESULT_NOTIFIER_FIXED_MARKER = "has_result_buffer"
+
+
+def check_phoronix_result_notifier_bug(pts_dir):
+    """Best-effort text search of PTS's own bundled result_notifier.php for
+    the known-buggy vs. known-fixed pattern. Degrades to "unknown" (not
+    "warn") when the file can't be found/read, or contains neither marker
+    (e.g. a future upstream rewrite this project hasn't seen) -- absence of
+    proof isn't proof of a crash, same idiom as every other probe here."""
+    path = os.path.join(pts_dir, "pts-core", "modules", "result_notifier.php")
+    try:
+        with open(path) as f:
+            text = f.read()
+    except OSError:
+        return {"status": "unknown", "path": path,
+                "detail": f"could not read {path} -- is phoronix-test-suite installed under "
+                          f"{pts_dir}? (override with --phoronix-pts-dir)"}
+    if PHORONIX_RESULT_NOTIFIER_FIXED_MARKER in text:
+        return {"status": "ok", "path": path,
+                "detail": "patched -- matches phoronix-test-suite/phoronix-test-suite#924's fix"}
+    if PHORONIX_RESULT_NOTIFIER_BUGGY_MARKER in text:
+        return {"status": "warn", "path": path,
+                "detail": "unpatched -- this install will crash phoronix-test-suite with a fatal "
+                          "PHP error (\"Call to a member function get_count() on null\" or "
+                          "\"Call to undefined method pts_test_result::get_result()\") as soon as "
+                          "the configured hook script fires, producing zero results instead of a "
+                          "real run. See phoronix-test-suite/phoronix-test-suite#924/#925 for the "
+                          "fix, or apply it locally to this file until it ships in a release."}
+    return {"status": "unknown", "path": path,
+            "detail": "neither the known-buggy nor known-fixed pattern was found -- this may be a "
+                      "version this check hasn't seen; can't confirm whether hooks will crash"}
+
+
 def read_manifest_workload(manifest_path):
     """Best-effort: pull the workload command back out of a manifest.json's
     command.argv (manifest.c writes just the workload's own argv there, not
@@ -3722,6 +3813,8 @@ class Handler(BaseHTTPRequestHandler):
             "total_seconds": total_seconds if (total_known and tests) else None,
             "truncated": len(test_names) > len(checked_names),
             "batch_mode": check_phoronix_batch_config() if is_batch_run else None,
+            "result_notifier": (check_phoronix_result_notifier_bug(cfg["phoronix_pts_dir"])
+                                 if phoronix_result_notifier_hooks_registered() else None),
         }
         self._send_json(200, result)
 
@@ -3972,6 +4065,11 @@ def main():
                      help="phoronix-test-suite binary/command the Run tab's 'Check' button (item 18) "
                           "uses to look up a Phoronix test's install status and estimated/measured "
                           "runtime (default: resolved via PATH, like wspy-plot's gnuplot dependency)")
+    ap.add_argument("--phoronix-pts-dir", default=PHORONIX_PTS_DEFAULT_DIR, dest="phoronix_pts_dir",
+                     help="root directory of the actual phoronix-test-suite install (its own "
+                          "'phoronix-test-suite' launcher script hardcodes this as PTS_DIR) -- used "
+                          "by the Check button's result_notifier.php bug check to find "
+                          "pts-core/modules/result_notifier.php (default: %(default)s)")
     args = ap.parse_args()
 
     output_root = os.path.abspath(args.output_root)
@@ -4019,6 +4117,7 @@ def main():
         "store_db": store_db,
         "jobs_dir": os.path.abspath(args.jobs_dir),
         "phoronix_bin": args.phoronix_test_suite,
+        "phoronix_pts_dir": args.phoronix_pts_dir,
     }
     print(f"wspy web launcher listening on http://{args.host}:{args.port}  "
           f"(output root: {output_root})")
