@@ -3099,8 +3099,19 @@ void timer_callback(int signum){
   if (sflag){
     print_system(csvflag?PRINT_CSV:PRINT_NORMAL);
   }
-  
-  print_metrics(cpu_info->systemwide_counters,csvflag?PRINT_CSV:PRINT_NORMAL);
+
+  // GPU columns are printed here, before print_metrics()'s own counter-group
+  // columns (pkg_joules/pkg_watts for --power, ipc/topdown, etc.) -- this
+  // must match both the CSV header's column order (wspy.c, gpu_busy/
+  // gpu_metrics/gpu_smi/nv_ all precede print_metrics()'s own header text)
+  // and the final/tail row's print order in wspy.c's own aggregate-print
+  // block, which already does GPU-then-print_metrics(). Printing
+  // print_metrics() first here (as this used to) silently shifted every
+  // periodic --interval tick's GPU/counter columns out of alignment with
+  // the header whenever a real counter group (e.g. --power) was combined
+  // with any GPU flag -- confirmed independent of any single flag gate,
+  // since only the tail row (not periodic ticks) went through wspy.c's
+  // correctly-ordered code path.
 #if AMDGPU
   if (!sflag && gpu_busy_requested){
     int busy = amd_sysfs_gpu_busy_percent();
@@ -3110,7 +3121,7 @@ void timer_callback(int signum){
       fprintf(outfile,"gpu busy             %d%%\n",busy);
     }
   }
-  if (!sflag && gpu_metrics_requested){
+  if (gpu_metrics_requested){
     amd_sysfs_gpu_metrics();
     if (csvflag){
       if (amd_sysfs_gpu_metrics_valid()){
@@ -3133,7 +3144,7 @@ void timer_callback(int signum){
   }
 #endif
 #if NVIDIA
-  if (!sflag && gpu_nvidia_requested){
+  if (gpu_nvidia_requested){
     nvidia_nvml_metrics();
     if (csvflag){
       fprintf(outfile,"%u,%llu,%llu,",
@@ -3149,6 +3160,7 @@ void timer_callback(int signum){
     }
   }
 #endif
+  print_metrics(cpu_info->systemwide_counters,csvflag?PRINT_CSV:PRINT_NORMAL);
   print_counter_coverage(csvflag?PRINT_CSV:PRINT_NORMAL);
 
   if (csvflag) fprintf(outfile,"\n");

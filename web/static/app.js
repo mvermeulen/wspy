@@ -567,6 +567,15 @@
     return html;
   }
 
+  function renderGpuBuildProbe(p) {
+    var html = '<div class="check-test"><code>' + escapeHtml(p.command || "") + "</code>";
+    html += '<div class="' + statusClass(p.status) + '">' + escapeHtml(p.flag) + ": "
+      + escapeHtml(p.status) + "</div>";
+    if (p.detail) html += '<div class="muted">' + escapeHtml(p.detail) + "</div>";
+    html += "</div>";
+    return html;
+  }
+
   function renderToolsCheck(tools) {
     var g = (tools || {}).gnuplot;
     if (!g) return "";
@@ -603,6 +612,14 @@
         + "power access needs root or CAP_PERFMON, stricter than perf_event_paranoid alone, "
         + "which --capabilities' sysfs-only discovery can't catch)</span>";
       data.power.forEach(function (p) { html += renderCounterProbe(p); });
+      html += "</div>";
+    }
+    if (data.gpu_build && data.gpu_build.length) {
+      html += '<div class="check-section"><strong>GPU build check</strong> '
+        + '<span class="muted">(is wspy actually linked with AMDGPU=1/NVIDIA=1 for the GPU flags '
+        + "this request uses -- a GPU flag on a build without it silently no-ops instead of "
+        + "failing, so this only catches that up front, not hardware/driver availability)</span>";
+      data.gpu_build.forEach(function (p) { html += renderGpuBuildProbe(p); });
       html += "</div>";
     }
     var ph = data.phoronix;

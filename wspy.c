@@ -1411,18 +1411,26 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     if (!interval && xflag) print_usage(NULL,PRINT_CSV_HEADER);
 #if AMDGPU
     if (!sflag && gpu_busy_requested){
-      /* standalone gpu busy column after rusage */
+      /* print_system() already emits an equivalent gpu_busy column when
+       * sflag is set (same amd_sysfs_gpu_busy_percent() source) -- this
+       * standalone column would just duplicate it. gpu_metrics/gpu_smi/
+       * gpu_nvidia have no such home in print_system(), so unlike this one
+       * they must NOT be gated on !sflag -- doing so used to silently drop
+       * all GPU telemetry (temp/activity/power/freq/VRAM) whenever --system
+       * was also given, since both header and value emission shared the
+       * same (wrong) gate and so never showed up as a column-count mismatch.
+       */
       fprintf(outfile,"gpu_busy,");
     }
-    if (!sflag && gpu_metrics_requested){
+    if (gpu_metrics_requested){
       fprintf(outfile,"gpu_temp,gpu_activity,gpu_power,gpu_freq,");
     }
-    if (!sflag && gpu_smi_requested){
+    if (gpu_smi_requested){
       fprintf(outfile,"gpu_smi_temp,gpu_smi_activity,gpu_smi_vram_used,gpu_smi_vram_total,");
     }
 #endif
 #if NVIDIA
-    if (!sflag && gpu_nvidia_requested){
+    if (gpu_nvidia_requested){
       fprintf(outfile,"nv_gpu_busy,nv_vram_used_mb,nv_vram_total_mb,");
     }
 #endif
@@ -1504,7 +1512,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
         int busy = amd_sysfs_gpu_busy_percent();
         fprintf(outfile,"%d,",busy);
       }
-      if (!sflag && gpu_metrics_requested){
+      if (gpu_metrics_requested){
         amd_sysfs_gpu_metrics();
         if (amd_sysfs_gpu_metrics_valid()){
           fprintf(outfile,"%d,%u,%.2f,%u,",
@@ -1516,7 +1524,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
           fprintf(outfile,"0,0,0.00,0,");
         }
       }
-      if (!sflag && gpu_smi_requested){
+      if (gpu_smi_requested){
         amd_smi_metrics();
         amd_smi_memory();
         fprintf(outfile,"%u,%u,%u,%u,",
@@ -1527,7 +1535,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       }
 #endif
 #if NVIDIA
-      if (!sflag && gpu_nvidia_requested){
+      if (gpu_nvidia_requested){
         nvidia_nvml_metrics();
         fprintf(outfile,"%u,%llu,%llu,",
           nvidia_nvml_metrics_valid() ? nvidia_nvml_get_busy() : 0,
@@ -1557,7 +1565,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       int busy = amd_sysfs_gpu_busy_percent();
       fprintf(outfile,"%d,",busy);
     }
-    if (!sflag && gpu_metrics_requested){
+    if (gpu_metrics_requested){
       amd_sysfs_gpu_metrics();
       if (amd_sysfs_gpu_metrics_valid()){
         fprintf(outfile,"%d,%u,%.2f,%u,",
@@ -1569,7 +1577,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
         fprintf(outfile,"0,0,0.00,0,");
       }
     }
-    if (!sflag && gpu_smi_requested){
+    if (gpu_smi_requested){
       amd_smi_metrics();
       amd_smi_memory();
       fprintf(outfile,"%u,%u,%u,%u,",
@@ -1580,7 +1588,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     }
 #endif
 #if NVIDIA
-    if (!sflag && gpu_nvidia_requested){
+    if (gpu_nvidia_requested){
       nvidia_nvml_metrics();
       fprintf(outfile,"%u,%llu,%llu,",
         nvidia_nvml_metrics_valid() ? nvidia_nvml_get_busy() : 0,
@@ -1603,7 +1611,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       int busy_final = amd_sysfs_gpu_busy_percent();
       fprintf(outfile,"gpu busy             %d%%\n",busy_final);
     }
-    if (!sflag && gpu_metrics_requested){
+    if (gpu_metrics_requested){
       amd_sysfs_gpu_metrics();
       if (amd_sysfs_gpu_metrics_valid()){
         fprintf(outfile,"gpu temp             %d C\n", amd_sysfs_get_gpu_temp());
@@ -1612,7 +1620,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
         fprintf(outfile,"gpu freq             %u MHz\n", amd_sysfs_get_gpu_freq());
       }
     }
-    if (!sflag && gpu_smi_requested){
+    if (gpu_smi_requested){
       amd_smi_metrics();
       amd_smi_memory();
       if (amd_smi_metrics_valid()){
@@ -1626,7 +1634,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     }
 #endif
 #if NVIDIA
-    if (!sflag && gpu_nvidia_requested){
+    if (gpu_nvidia_requested){
       nvidia_nvml_metrics();
       if (nvidia_nvml_metrics_valid()){
         fprintf(outfile,"nv gpu busy          %u%%\n", nvidia_nvml_get_busy());

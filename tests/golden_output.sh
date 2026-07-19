@@ -197,7 +197,7 @@ assert_csv_header "interval-per-core"       --per-core --interval 1         -- "
 echo ""
 echo "=== CSV header contract (host-specific, regex) ==="
 assert_csv_header_regex "system" --no-ipc --system -- \
-  'load,runnable,cpu,idle,iowait,irq,freq,(net [^,]+,)+elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,counters_measured,counters_requested,'
+  'load,runnable,cpu,idle,iowait,irq,freq,cpu_temp,(net [^,]+,)+elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,counters_measured,counters_requested,'
 
 if [ "$vendor" = "AMD" ]; then
   echo ""
@@ -361,6 +361,10 @@ assert_normal_contains "system-load-label" --no-ipc --system -- \
   '^load +[0-9]'
 assert_normal_contains "system-freq-label" --no-ipc --system -- \
   '^freq +[0-9]+ MHz$'
+# Degrades to 0.0 (not a failure) on a host/container with no matching hwmon
+# driver, same "measured vs unavailable" tolerance as freq's 0 MHz above.
+assert_normal_contains "system-temp-label" --no-ipc --system -- \
+  '^cpu temp +[0-9]+\.[0-9]+ C$'
 assert_normal_contains "system-loopback-iface" --no-ipc --system -- \
   '^lo +[0-9]'
 

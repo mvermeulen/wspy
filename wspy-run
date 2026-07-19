@@ -30,7 +30,7 @@ AFFINITY=""
 
 declare -A PASS_EXT PASS_OUTFILE PASS_MANIFEST PASS_IS_TREE PASS_STATUS
 
-BUILTIN_PROFILES=(quick deep-cpu deep-cpu-intel deep-gpu tree-heavy ibs-basic ibs-memory-deep)
+BUILTIN_PROFILES=(quick deep-cpu deep-cpu-intel deep-gpu tree-heavy ibs-basic ibs-memory-deep gpu-compute)
 
 usage(){
   cat <<EOF
@@ -77,6 +77,13 @@ Builtin profiles:
               ibs_op for memory-path analysis, one-second interval time series
               -- known to skew the effective sampling period, see the run's
               own output for skew annotations
+  gpu-compute single pass, one execution of the workload: process/syscall
+              latency tracing (futex/io-wait/connect/wait/poll/nanosleep) +
+              system CPU/load/network + package power + AMD sysfs GPU +
+              NVIDIA NVML GPU + topdown, all on one --interval 1 time series
+              -- for a GPU-bound/latency-driven workload (a renderer, a
+              Vulkan compute host loop) where deep-gpu's separate per-category
+              passes can't be correlated tick-for-tick against each other
 
 Options:
   -o, --outdir <dir>       Directory to write pass output files into (default: .;
@@ -256,6 +263,31 @@ load_builtin_profile(){
     ibs-memory-deep)
       PASS_NAMES=(ibs)
       PASS_FLAGS=("--csv --interval 1 --ibs-memory-deep --no-ipc")
+      ;;
+    gpu-compute)
+      # For a GPU-bound/latency-driven workload (a game renderer, a Vulkan
+      # compute kernel host loop like ollama's) the deep-cpu/deep-gpu shape
+      # of "one wspy invocation per instrumentation category" is actively
+      # misleading: each category re-executes the whole workload separately,
+      # so a game's Vulkan-then-software-render phase split (or a model's
+      # prompt-processing-then-decode phase split) lands at different
+      # wall-clock offsets in each category's own CSV, and can't be
+      # correlated tick-for-tick. This profile instead runs everything in
+      # ONE wspy invocation/one execution of the workload: process/syscall
+      # latency tracing (futex/io-wait/connect/wait/poll/nanosleep -- the
+      # same subset the web launcher's checklist already found useful for a
+      # host thread that mostly blocks on GPU completion rather than
+      # computing), system-wide CPU/load/network, package power, both GPU
+      # backends (AMD sysfs busy/temp/activity/power/freq + NVIDIA NVML
+      # busy/VRAM -- harmless no-ops if a build/host lacks one), and topdown
+      # to confirm (or rule out) the host CPU itself as a bottleneck -- all
+      # on one --interval 1 time series so every column lines up against
+      # the same clock. Needs an AMDGPU=1/NVIDIA=1 build to get real GPU
+      # data; wspy itself just warns and continues otherwise.
+      PASS_NAMES=(gpu_compute)
+      PASS_FLAGS=(
+        "--tree ${OUTDIR}/${PREFIX}process.tree.txt --tree-futex --tree-io-wait --tree-connect --tree-wait --tree-poll --tree-nanosleep --system --power --gpu-busy --gpu-metrics --gpu-nvidia --topdown --no-ipc --interval 1 --csv"
+      )
       ;;
     *)
       echo "$SCRIPT_NAME: unknown profile: $profile (try --list)" >&2

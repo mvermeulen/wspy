@@ -192,7 +192,7 @@ COLUMN_TO_GROUP = {
 # toggling the checklist's separate "system" configuration rather than a
 # counters group. "net <iface>" is one column per interface discovered on
 # this host, so it's matched by prefix rather than listed by name.
-SYSTEM_COLUMN_NAMES = {"load", "runnable", "cpu", "idle", "iowait", "irq", "freq"}
+SYSTEM_COLUMN_NAMES = {"load", "runnable", "cpu", "idle", "iowait", "irq", "freq", "cpu_temp"}
 # --power's own columns (power.c/topdown.c's print_power()) -- same "not an
 # ALL_GROUPS entry" reasoning as SYSTEM_COLUMN_NAMES above: --power isn't a
 # counter_mask bit build_configuration_passes()'s "counters" section
@@ -314,6 +314,16 @@ PROFILE_PLOTTABLE_COLUMNS = {
     "tree-heavy": set(),
     "ibs-basic": set(),
     "ibs-memory-deep": set(),
+    # gpu-compute's single pass already runs on --interval 1 (wspy-run's
+    # load_builtin_profile()), unlike quick/tree-heavy/ibs-* above -- so
+    # unlike those, an absent/empty entry here would be wrong, not just
+    # unhelpful: build_supplementary_plot_passes() would wrongly conclude
+    # none of its columns are plottable and spin up a redundant duplicate
+    # pass collecting data gpu-compute's own pass already produces.
+    "gpu-compute": SYSTEM_COLUMN_NAMES | POWER_COLUMN_NAMES | {
+                 "net *", "retire", "frontend", "backend", "speculate", "confidence", "sanity",
+                 "gpu_busy", "gpu_temp", "gpu_activity", "gpu_power", "gpu_freq",
+                 "nv_gpu_busy", "nv_vram_used_mb", "nv_vram_total_mb"},
 }
 
 
@@ -839,28 +849,46 @@ def build_proctree_argv(proctree_bin, tree_txt_path, cmdline=False, futex=False,
 def run_proctree_besteffort(emit, cfg, rundir, cmdline=False, futex=False, io=False, io_wait=False,
                              schedstat=False, vmsize=False, connect=False, wait=False, poll=False, nanosleep=False):
     """Best-effort trailing step mirroring the wspy-plot step (build_plot_argv()
-    above) but for --tree's raw process.tree.txt record: renders it into a
-    human-readable process.tree.summary.txt via proctree. A no-op (not an
+    above) but for --tree's raw process.tree.txt record: renders it into two
+    human-readable views -- process.tree.summary.txt (every annotation this
+    run's tree pass actually captured, via the cmdline/futex/... kwargs above,
+    same as before) and process.tree.simple.txt (proctree's own bare default:
+    just cpu=/start=/finish= per process, no other flags -- easier to read as
+    a pure process hierarchy once a run's tree pass captures enough
+    annotations that the summary view gets visually busy). A no-op (not an
     error) when no --tree pass ran this time, or its output is missing/empty
     (e.g. a --tree pass that timed out before writing anything) -- and never
     fails the run itself, same degrade-don't-fail idiom as the plot step."""
     tree_txt = os.path.join(rundir, "process.tree.txt")
     if not (os.path.isfile(tree_txt) and os.path.getsize(tree_txt) > 0):
         return
-    summary_path = os.path.join(rundir, "process.tree.summary.txt")
-    argv = build_proctree_argv(cfg["proctree_bin"], tree_txt, cmdline=cmdline, futex=futex, io=io, io_wait=io_wait,
-                                schedstat=schedstat, vmsize=vmsize, connect=connect, wait=wait, poll=poll, nanosleep=nanosleep)
-    emit("$ " + shell_preview(argv) + f" > {os.path.basename(summary_path)}")
-    try:
-        with open(summary_path, "w") as outf:
-            proc = subprocess.run(argv, cwd=REPO_ROOT, stdout=outf,
-                                   stderr=subprocess.PIPE, text=True)
-        if proc.returncode != 0:
-            emit(f"[error] proctree exited {proc.returncode}: {proc.stderr.strip()}")
-        else:
-            emit(f"[wrote {os.path.basename(summary_path)}]")
-    except OSError as e:
-        emit(f"[error] failed to launch proctree ({cfg['proctree_bin']}): {e}")
+
+    def _run(out_name, argv):
+        out_path = os.path.join(rundir, out_name)
+        emit("$ " + shell_preview(argv) + f" > {out_name}")
+        try:
+            with open(out_path, "w") as outf:
+                proc = subprocess.run(argv, cwd=REPO_ROOT, stdout=outf,
+                                       stderr=subprocess.PIPE, text=True)
+            if proc.returncode != 0:
+                emit(f"[error] proctree exited {proc.returncode}: {proc.stderr.strip()}")
+            else:
+                emit(f"[wrote {out_name}]")
+        except OSError as e:
+            emit(f"[error] failed to launch proctree ({cfg['proctree_bin']}): {e}")
+
+    summary_argv = build_proctree_argv(cfg["proctree_bin"], tree_txt, cmdline=cmdline, futex=futex, io=io,
+                                        io_wait=io_wait, schedstat=schedstat, vmsize=vmsize, connect=connect,
+                                        wait=wait, poll=poll, nanosleep=nanosleep)
+    _run("process.tree.summary.txt", summary_argv)
+
+    # Deliberately not build_proctree_argv() -- it always adds -M/-N/-P
+    # unconditionally, which is exactly the annotation this leaner view
+    # exists to omit. proctree's own bare invocation (no flags at all)
+    # already prints just cpu=/start=/finish= per process (its only
+    # default-on field is start=/finish=, everything else defaults off).
+    simple_argv = [cfg["proctree_bin"], tree_txt]
+    _run("process.tree.simple.txt", simple_argv)
 
 
 def shell_preview(argv, cwd=None):
@@ -1019,13 +1047,19 @@ def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
         emit(f"[error] failed to launch wspy-plot ({cfg['wspy_plot_bin']}): {e}")
         plot_rc = 1
 
-    # tree-heavy is currently the only builtin profile with a --tree pass, and
-    # its flags are fixed in wspy-run's load_builtin_profile() (--tree-cmdline)
-    # -- not discoverable from here without shelling out and parsing
-    # wspy-run's own bash config, so this mirrors that fixed choice directly.
-    # Update alongside load_builtin_profile() if that ever changes.
-    if "tree-heavy" in profile.split(","):
+    # Each of these builtin profiles' own --tree pass flags are fixed in
+    # wspy-run's load_builtin_profile() -- not discoverable from here without
+    # shelling out and parsing wspy-run's own bash config, so this mirrors
+    # those fixed choices directly (tree-heavy: --tree-cmdline only;
+    # gpu-compute: the syscall-latency set, no cmdline). Update alongside
+    # load_builtin_profile() if either ever changes, or a future profile adds
+    # its own --tree pass.
+    profile_names = profile.split(",")
+    if "tree-heavy" in profile_names:
         run_proctree_besteffort(emit, cfg, rundir, cmdline=True)
+    elif "gpu-compute" in profile_names:
+        run_proctree_besteffort(emit, cfg, rundir, futex=True, io_wait=True,
+                                 connect=True, wait=True, poll=True, nanosleep=True)
 
     if store_ingest:
         run_store_ingest_besteffort(emit, cfg, run_index_path)
