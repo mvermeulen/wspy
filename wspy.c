@@ -716,7 +716,9 @@ static int run_capabilities_probe(void){
   // GPU device enumeration -- lists every AMD card/device this host can
   // see, independent of whether --gpu-busy/--gpu-metrics/--gpu-smi were
   // given, so --gpu-device=<idx> can be chosen from the printed indices.
+  amd_sysfs_initialize(-1);
   amd_sysfs_print_capability_report(outfile);
+  amd_sysfs_finalize();
   amd_smi_initialize(-1);
   amd_smi_print_capability_report(outfile);
   amd_smi_finalize();
