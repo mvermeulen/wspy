@@ -243,3 +243,59 @@ timestamp-correlation approach from Sections 1-3. Teaching it to prefer `pts_hoo
 (higher precision, no composite.xml hash-mapping indirection needed since the log already carries the
 test identifier/args directly) is the next real step, once hooks have been registered on at least one
 host and produced real data to validate the format against.
+
+## 8. Follow-up (2026-07-19): Relocation Moved From `run_test.sh` Into `wspy-run` Itself
+
+Registering the hooks on a real host (`scripts/setup_phoronix_hooks.sh`) surfaced a gap Section 7 didn't
+anticipate: real Phoronix runs on this host go through several different front ends (`workload/phoronix/
+run_test.sh`, the web launcher's `wspy-run`-backed preset path via `web/joblib.py`'s
+`execute_profile_run()`, `wspy-queue`'s preset jobs), and Section 7's relocation step lived only in
+`run_test.sh`. Every run actually launched through one of the other front ends silently lost its hook
+capture — `/tmp/wspy_pts_hooks.log` accumulated events but nothing ever relocated it into a run
+directory, and (being under `/tmp`) it didn't even persist for later manual recovery.
+
+The relocation now lives in `wspy-run`'s own `run_pass()`, the one place every front end above already
+funnels through, instead of in any one caller:
+
+- Before each pass runs, a non-empty staging file is archived aside (`.stale-$$`) rather than attributed
+  to the upcoming pass — necessary now in a way it wasn't when relocation happened only once at the very
+  end of a whole `run_test.sh` invocation: `wspy-run`'s builtin profiles are multi-pass (e.g. `deep-cpu`
+  is three separate `wspy` invocations, each a full re-execution of `phoronix-test-suite batch-run
+  <test>`), so the hooks — if registered — fire again on every pass. Relocating only once at the end
+  would otherwise merge every pass's `START`/`FINISH` lines into one undifferentiated blob with no way
+  to tell which pass a given trial run belonged to.
+- After each pass, a non-empty staging file is relocated to `<pass-name>.pts_hooks.log` next to that
+  pass's own output/manifest (unified layout: `<rundir>/<pass-name>.pts_hooks.log`; flat mode:
+  `<outdir>/<prefix><pass-name>.pts_hooks.log`), and recorded in the run-level `manifest.json`'s
+  `passes[]` entry as `"pts_hooks_log"` (`null` when absent, same convention as the existing `"manifest"`
+  field).
+- `run_test.sh` no longer does any of its own staging/relocation — it now gets `pts_hooks.log` artifacts
+  the same way every other front end does, entirely as a side effect of calling `wspy-run`.
+
+Verified against a fake PTS stand-in script (writes `START`/`FINISH` lines to `$WSPY_PTS_HOOK_LOG` when
+invoked, like the real hooks would) driven through a real two-pass `wspy-run -c <config>` invocation:
+each pass produced its own distinct `<pass-name>.pts_hooks.log` with no cross-pass contamination, the
+staging path was empty again after each pass, and a workload that never touches the hooks at all (hooks
+not registered, or a non-Phoronix command) produces no `pts_hooks.log` files and `"pts_hooks_log": null`
+in the manifest, same measured-vs-unavailable degradation as before.
+
+**Update (same day):** the web launcher's *custom checklist* run path (`web/joblib.py`'s
+`execute_custom_run()`) is now covered too, via a Python-side equivalent of the same two steps
+(`_archive_stale_pts_hooks_log()`/`_capture_pts_hooks_log()`, `web/joblib.py`) rather than folding that
+path onto `wspy-run` itself (it deliberately invokes `wspy` directly per configuration, not `wspy-run` --
+see `build_configuration_passes()`'s own docstring). Applied at both places in `joblib.py` that launch a
+plain `wspy` subprocess directly: `execute_custom_run()`'s per-configuration passes, and
+`execute_profile_run()`'s supplementary plot-data passes (extra `wspy` invocations run after a preset's
+own `wspy-run` call, to collect a column a custom plot needs that the preset's own passes don't produce --
+the same "invokes `wspy` directly, not through `wspy-run`" shape as the custom-checklist path). Each
+custom-mode pass's capture is recorded as `"pts_hooks_log"` in `write_custom_run_manifest()`'s
+`manifest.json`, identical field name/shape to `wspy-run`'s own; a supplementary pass's capture isn't
+recorded anywhere (`manifest.json` there is `wspy-run`'s own document, which knows nothing about
+supplementary passes), but still lands in the run directory and is picked up by the report's existing
+"Other artifacts" scan like any other unclaimed file. Verified with the same fake-PTS-hook-firing-script approach as the `wspy-run`
+follow-up above, driven through a real `execute_custom_run()` call: captured correctly to
+`<pass-name>.pts_hooks.log`, recorded in `manifest.json`, and the staging path cleared afterward.
+
+With this, every real launch path in the codebase (`workload/phoronix/run_test.sh`, the web launcher's
+preset path, the web launcher's custom checklist path, `wspy-queue`'s preset and custom-checklist jobs)
+captures Phoronix hook data the same way, regardless of which one runs a given Phoronix workload.

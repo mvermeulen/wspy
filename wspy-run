@@ -12,6 +12,16 @@ SCRIPT_NAME=$(basename "$0")
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 WSPY="${WSPY:-$SCRIPT_DIR/wspy}"
+# Fixed staging path scripts/pts_hooks/{pre,post}_test_run.sh write to, if
+# Phoronix Test Suite's result_notifier module hooks are registered on this
+# host (scripts/setup_phoronix_hooks.sh) -- must match those scripts' own
+# default exactly, since PTS invokes them with a replaced environment that
+# can't carry this value down (see doc/phoronix_hook_investigation.md).
+# run_pass() below relocates it into a per-pass artifact, so capture works
+# regardless of which front end invoked wspy-run (workload/phoronix/
+# run_test.sh, the web launcher's preset path, wspy-queue) rather than only
+# the one caller that used to do this relocation itself.
+WSPY_PTS_HOOK_LOG="${WSPY_PTS_HOOK_LOG:-/tmp/wspy_pts_hooks.log}"
 OUTDIR="."
 PREFIX=""
 PROFILE=""
@@ -29,7 +39,7 @@ RUNROOT=""
 AFFINITY=""
 CONFIG_OPTIONS=()
 
-declare -A PASS_EXT PASS_OUTFILE PASS_MANIFEST PASS_IS_TREE PASS_STATUS
+declare -A PASS_EXT PASS_OUTFILE PASS_MANIFEST PASS_IS_TREE PASS_STATUS PASS_PTSLOG
 
 BUILTIN_PROFILES=(quick deep-cpu deep-cpu-intel deep-gpu tree-heavy ibs-basic ibs-memory-deep gpu-compute)
 
@@ -140,6 +150,12 @@ Unified output layout (INVESTIGATION.md, "Run artifact foundation"):
                                    step workload/cpu2017 and workload/phoronix hand-roll
       manifest.json                run-level index: suite/benchmark/run_id plus each
                                    pass's output/manifest filename and wspy-level status
+      <pass-name>.pts_hooks.log    Phoronix Test Suite result_notifier hook capture for
+                                   this pass (scripts/pts_hooks/*.sh, doc/
+                                   phoronix_hook_investigation.md) -- present only if
+                                   the hooks are registered on this host
+                                   (scripts/setup_phoronix_hooks.sh) and this pass's
+                                   workload actually triggered them; absent otherwise
       plots/                       reserved, empty -- for a future report generator
                                    (4.1/4.2); nothing here populates it yet
 
@@ -448,6 +464,7 @@ run_pass(){
   PASS_EXT["$name"]="$ext"
   PASS_OUTFILE["$name"]="$outfile"
   PASS_MANIFEST["$name"]="$manifest_file"
+  PASS_PTSLOG["$name"]=""
   case " $flags " in
     *" --tree "*) PASS_IS_TREE["$name"]=1 ;;
     *) PASS_IS_TREE["$name"]=0 ;;
@@ -460,6 +477,18 @@ run_pass(){
     return 0
   fi
 
+  # A non-empty staging log at this point predates this pass: either an
+  # earlier pass in this same wspy-run invocation (each pass fully
+  # re-executes the workload, so PTS's result_notifier hooks -- if
+  # registered, scripts/setup_phoronix_hooks.sh -- fire again every time) or
+  # a stale leftover from an interrupted earlier run that never reached the
+  # relocation step below. Either way it must not be attributed to this
+  # pass -- move it aside rather than lose or misattribute it.
+  if [ -s "$WSPY_PTS_HOOK_LOG" ]; then
+    mv "$WSPY_PTS_HOOK_LOG" "${WSPY_PTS_HOOK_LOG}.stale-$$"
+    echo "[$name] found a stale $WSPY_PTS_HOOK_LOG predating this pass, moved aside to ${WSPY_PTS_HOOK_LOG}.stale-$$" >&2
+  fi
+
   echo "[$name] ${cmd[*]}" >&2
   # Note: wspy's own exit status reflects whether wspy itself ran (it always
   # returns 0 once the child is launched, even if the child command fails or
@@ -467,16 +496,34 @@ run_pass(){
   # only catch wspy-level failures (bad options, can't open output file,
   # fork failure, ...), not workload command failures; check --manifest or
   # --run-index exit_status for that.
+  local ok=1
   if "${cmd[@]}"; then
     echo "[$name] done -> $outfile" >&2
     PASS_STATUS["$name"]="ok"
-    return 0
   else
     local rc=$?
     echo "[$name] wspy error (exit $rc) -> $outfile" >&2
     PASS_STATUS["$name"]="wspy-error"
-    return 1
+    ok=0
   fi
+
+  # Relocate this pass's own PTS hook capture (if the hooks are registered
+  # on this host and this pass's workload actually triggered them) into a
+  # per-pass artifact next to its output/manifest -- captured here, in the
+  # one place every profile's passes funnel through, rather than by whatever
+  # front end happened to invoke wspy-run. By now the workload command (and
+  # every hook subprocess PTS spawned) has fully exited, so this isn't a
+  # race against anything still writing. Silently a no-op if the hooks
+  # aren't registered or this pass's workload wasn't a PTS invocation --
+  # same measured-vs-unavailable idiom used throughout this codebase.
+  if [ -s "$WSPY_PTS_HOOK_LOG" ]; then
+    local ptslog_file="${OUTDIR}/${PREFIX}${name}.pts_hooks.log"
+    mv "$WSPY_PTS_HOOK_LOG" "$ptslog_file"
+    PASS_PTSLOG["$name"]="$ptslog_file"
+    echo "[$name] pts hooks captured -> $ptslog_file" >&2
+  fi
+
+  [ "$ok" -eq 1 ]
 }
 
 json_escape(){
@@ -535,7 +582,7 @@ generate_manifest(){
     done
     printf '],\n'
     printf '  "passes": [\n'
-    local n=${#PASS_NAMES[@]} i name manifest_json
+    local n=${#PASS_NAMES[@]} i name manifest_json ptslog_json
     for ((i=0;i<n;i++)); do
       name="${PASS_NAMES[$i]}"
       if [ -n "${PASS_MANIFEST[$name]}" ]; then
@@ -543,10 +590,16 @@ generate_manifest(){
       else
         manifest_json="null"
       fi
-      printf '    {"name": "%s", "output": "%s", "manifest": %s, "status": "%s"}' \
+      if [ -n "${PASS_PTSLOG[$name]:-}" ]; then
+        ptslog_json="\"$(json_escape "$(basename "${PASS_PTSLOG[$name]}")")\""
+      else
+        ptslog_json="null"
+      fi
+      printf '    {"name": "%s", "output": "%s", "manifest": %s, "pts_hooks_log": %s, "status": "%s"}' \
         "$(json_escape "$name")" \
         "$(json_escape "$(basename "${PASS_OUTFILE[$name]}")")" \
         "$manifest_json" \
+        "$ptslog_json" \
         "${PASS_STATUS[$name]}"
       if [ "$i" -lt $((n-1)) ]; then printf ',\n'; else printf '\n'; fi
     done

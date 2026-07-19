@@ -71,6 +71,67 @@ PLOTS_DIR_NAME = "plots"
 RUN_MANIFEST_NAME = "manifest.json"
 SUMMARY_NAME = "summary.txt"
 
+# Fixed staging path scripts/pts_hooks/{pre,post}_test_run.sh write to, if
+# Phoronix Test Suite's result_notifier module hooks are registered on this
+# host (scripts/setup_phoronix_hooks.sh) -- must match those scripts' own
+# default exactly, since PTS invokes them with a replaced environment that
+# can't carry this value down (see doc/phoronix_hook_investigation.md).
+# wspy-run's own run_pass() relocates it into a per-pass artifact for any
+# run launched through wspy-run (execute_profile_run()'s main wspy-run
+# invocation); _archive_stale_pts_hooks_log()/_capture_pts_hooks_log() below
+# are the Python-side equivalent for the two launch shapes here that invoke
+# `wspy` directly instead (execute_custom_run()'s per-configuration passes,
+# and execute_profile_run()'s own supplementary plot-data passes) -- without
+# this, a Phoronix workload run via the Run tab's checklist mode (rather
+# than a preset) would silently lose its hook capture the same way every
+# non-wspy-run launch path used to before wspy-run grew this itself.
+WSPY_PTS_HOOK_LOG = os.environ.get("WSPY_PTS_HOOK_LOG", "/tmp/wspy_pts_hooks.log")
+
+
+def _archive_stale_pts_hooks_log(emit):
+    """A non-empty staging log at this point predates whatever pass is about
+    to run -- either an earlier pass in this same run (each pass fully
+    re-executes the workload, so PTS's hooks -- if registered -- fire again
+    every time) or a stale leftover from an interrupted earlier run that
+    never reached the relocation step below. Mirrors wspy-run's run_pass()
+    exactly: move it aside rather than lose or misattribute it."""
+    try:
+        if os.path.getsize(WSPY_PTS_HOOK_LOG) == 0:
+            return
+    except OSError:
+        return
+    stale_path = f"{WSPY_PTS_HOOK_LOG}.stale-{os.getpid()}"
+    try:
+        os.replace(WSPY_PTS_HOOK_LOG, stale_path)
+    except OSError:
+        return
+    emit(f"[note] found a stale {WSPY_PTS_HOOK_LOG} predating this pass, "
+         f"moved aside to {stale_path}")
+
+
+def _capture_pts_hooks_log(emit, rundir, name):
+    """Relocates a non-empty PTS result_notifier hook capture staging log
+    into a per-pass artifact (<name>.pts_hooks.log) next to that pass's own
+    output/manifest -- the same artifact shape wspy-run's own run_pass()
+    produces, so a checklist-driven custom run (or a preset run's
+    supplementary plot-data pass) gets identical capture whether or not it
+    went through wspy-run itself. Returns the artifact's basename, or None
+    if the hooks aren't registered on this host or this pass's workload
+    didn't trigger them -- same measured-vs-unavailable idiom used
+    throughout this codebase."""
+    try:
+        if os.path.getsize(WSPY_PTS_HOOK_LOG) == 0:
+            return None
+    except OSError:
+        return None
+    dest = os.path.join(rundir, f"{name}.pts_hooks.log")
+    try:
+        os.replace(WSPY_PTS_HOOK_LOG, dest)
+    except OSError:
+        return None
+    emit(f"[{name}] pts hooks captured -> {os.path.basename(dest)}")
+    return os.path.basename(dest)
+
 # ---------------------------------------------------------------------------
 # Item 9 (INVESTIGATION.md): the configuration/option checklist that
 # generalizes item 7's preset-only wspy-run launcher into the real
@@ -1024,6 +1085,7 @@ def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
         if p["timeout"]:
             full_argv = ["timeout", str(p["timeout"])] + full_argv
         emit(f"[{p['name']}] $ " + shell_preview(full_argv))
+        _archive_stale_pts_hooks_log(emit)
         try:
             supp_proc = subprocess.Popen(full_argv, cwd=REPO_ROOT,
                                           stdout=subprocess.PIPE,
@@ -1037,6 +1099,12 @@ def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
                  f"'{p['name']}' ({cfg['wspy_bin']}): {e}")
             supp_rc = 1
         emit(f"[{p['name']}] exited {supp_rc} -> {os.path.basename(outfile)}")
+        # Not recorded anywhere in manifest.json (that file is wspy-run's own
+        # generate_manifest(), which knows nothing about these supplementary
+        # passes) -- the artifact just lands in rundir like the pass's own
+        # output/manifest, picked up by render_wspy_run_report()'s existing
+        # "Other artifacts" scan for anything no passes[] entry claims.
+        _capture_pts_hooks_log(emit, rundir, p["name"])
 
     plot_argv = build_plot_argv(cfg["wspy_plot_bin"], rundir, custom_plots, only_custom)
     emit("$ " + shell_preview(plot_argv))
@@ -1089,7 +1157,8 @@ def write_custom_run_manifest(rundir, suite, benchmark, run_id, workload_argv, p
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
         "command": workload_argv,
         "passes": [
-            {"name": p["name"], "output": p["output"], "manifest": p["manifest"], "status": p["status"]}
+            {"name": p["name"], "output": p["output"], "manifest": p["manifest"],
+             "pts_hooks_log": p.get("pts_hooks_log"), "status": p["status"]}
             for p in pass_records
         ],
     }
@@ -1163,6 +1232,7 @@ def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_ar
         if p["timeout"]:
             full_argv = ["timeout", str(p["timeout"])] + full_argv
         emit(f"[{p['name']}] $ " + shell_preview(full_argv))
+        _archive_stale_pts_hooks_log(emit)
         try:
             proc = subprocess.Popen(full_argv, cwd=REPO_ROOT,
                                      stdout=subprocess.PIPE,
@@ -1177,10 +1247,12 @@ def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_ar
         status = "ok" if rc == 0 else "wspy-error"
         any_failed = any_failed or rc != 0
         emit(f"[{p['name']}] exited {rc} -> {os.path.basename(outfile)}")
+        pts_hooks_log = _capture_pts_hooks_log(emit, rundir, p["name"])
         pass_records.append({
             "name": p["name"],
             "output": os.path.basename(outfile),
             "manifest": os.path.basename(manifest_path) if manifest_path else None,
+            "pts_hooks_log": pts_hooks_log,
             "status": status,
             "kind": "tree" if p["name"] == "tree" else "other",
         })

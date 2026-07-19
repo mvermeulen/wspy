@@ -638,14 +638,22 @@ sampling mode:**
     `doc/phoronix_hook_investigation.md`'s "Implementation Update" section): `scripts/pts_hooks/{pre,
     post}_test_run.sh` (PTS `result_notifier` hook scripts, sub-millisecond TSV checkpoints to a fixed
     staging path — verified against the real installed module that a hook subprocess's environment is
-    *replaced*, not inherited, which rules out passing the wspy run directory down directly),
-    `workload/phoronix/run_test.sh` (relocates the staging log into `<rundir>/pts_hooks.log` once
-    `wspy-run` returns, degrading to no-op when hooks aren't registered), and
+    *replaced*, not inherited, which rules out passing the wspy run directory down directly), and
     `scripts/setup_phoronix_hooks.sh` (one-time host registration helper, `setup_perf.sh`-style
-    check-then-prompt, not run against any real host by this change). This closes the "capture the raw
-    material now" half so ongoing Phoronix runs stop losing it retroactively; **still open**: actually
-    registering the hooks on a real host, and teaching `wspy-phoronix-segment.py` to prefer
-    `pts_hooks.log` over the composite.xml/log-timestamp correlation it uses today.
+    check-then-prompt). **Registered on this host and rewired (2026-07-19,** same doc's "Follow-up"
+    section**):** relocation of the staging log into a `<pass-name>.pts_hooks.log` artifact (recorded in
+    `manifest.json`'s `passes[]`) now lives in `wspy-run`'s own `run_pass()`, per-pass rather than once at
+    the end of a whole invocation — the first cut of this lived only in `workload/phoronix/run_test.sh`,
+    which meant Phoronix runs launched via the web launcher's preset path or `wspy-queue` (both go through
+    `wspy-run` directly, not that script) silently lost their hook capture; moving it into `wspy-run`
+    itself covers every front end that funnels through it. `run_test.sh` no longer does any relocation of
+    its own. The web launcher's *custom checklist* run path (`web/joblib.py`'s `execute_custom_run()`,
+    plus `execute_profile_run()`'s supplementary plot-data passes) calls `wspy` directly rather than
+    through `wspy-run`, so it needed its own Python-side equivalent
+    (`_archive_stale_pts_hooks_log()`/`_capture_pts_hooks_log()`, `web/joblib.py`) — now wired in too, same
+    day, same per-pass artifact shape (`"pts_hooks_log"` in `manifest.json`). Every real launch path in
+    the codebase now captures hook data the same way. **Still open**: teaching `wspy-phoronix-segment.py`
+    to prefer `pts_hooks.log` over the composite.xml/log-timestamp correlation it uses today.
 
 **Tier 7 — testing:**
 
