@@ -174,7 +174,10 @@ already uses (a real AMD-only consistency fix — the human-text L2 lines previo
 (`topdown_formula_version`, `MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION` 1.6.0 → 1.7.0), `null`
 when a run collects no topdown counters. Folding `--topdown-backend`'s own cpu-cycles-normalized L3
 detail (`l1_bound`/`l2_bound`/`l3_bound`/`dram_bound`/`store_bound`) into this same slots-normalized
-hierarchy remains open — see "4.2 — remaining work" below.
+hierarchy remains open — see "4.2 — remaining work" below. `wspy-plot`'s new `topdown-detail` template
+(`plot.c`) charts the 9 new columns on their own, since they aren't claimed by the pre-existing
+`topdown` template (which only matches the 4 L1 columns) and would otherwise all land in the generic
+fallback plot.
 
 **Combined GPU-workload profiling:** `wspy-run gpu-compute` builtin profile (tree tracing + system +
 power + both GPU backends + topdown on one shared `--interval` timeline, for workloads a

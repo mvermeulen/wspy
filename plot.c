@@ -38,7 +38,7 @@
 #include <getopt.h>
 
 #define MAX_CSV_FIELDS 128
-#define MAX_TEMPLATE_METRICS 8
+#define MAX_TEMPLATE_METRICS 9
 #define MAX_PATH_LEN 4096
 #define MAX_NAME_LEN 256
 
@@ -82,6 +82,20 @@ struct plot_template {
 static const struct plot_template templates[] = {
   { "topdown", "Topdown Breakdown", "% of pipeline slots",
     { "retire","frontend","backend","speculate" }, 2, "points" },
+  /* topdown.c's print_topdown() L1->L2 hierarchical schema (INVESTIGATION.md's
+   * 4.2 Tier 1, "Hierarchical topdown schema" item): these 9 columns are
+   * always emitted together (one print_topdown() call, unconditionally, on
+   * any --topdown/--topdown2 run) but aren't claimed by the "topdown"
+   * template above (which only matches the 4 L1 columns), so without this
+   * template they'd all land in the generic fallback plot instead of getting
+   * a chart that actually reads as a breakdown. min_match=4 (not all 9)
+   * follows the same "don't require every column" convention as every other
+   * template here, even though in practice these 9 columns co-occur or are
+   * all absent together. */
+  { "topdown-detail", "Topdown L1->L2 Detail", "% of pipeline slots",
+    { "contention_pct","retire_ucode_pct","retire_fastpath_pct","frontend_latency_pct",
+      "frontend_bandwidth_pct","backend_cpu_pct","backend_memory_pct","spec_branch_pct",
+      "spec_pipeline_pct" }, 4, "points" },
   { "memory-bound", "Memory Boundedness", "% of cycles",
     { "l1_bound","l2_bound","l3_bound","dram_bound","store_bound" }, 2, "points" },
   { "cache-miss", "Cache Miss Rates", "miss rate (%)",
