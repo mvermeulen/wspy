@@ -92,7 +92,7 @@ TOPLEVEL_MARKER_FILES = ARTIFACT_FILES + (RUN_MANIFEST_NAME, SUMMARY_NAME)
 # offered as a datalist in the UI; wspy-run itself is still the source of
 # truth and rejects anything else, so this list is a convenience, not a gate.
 BUILTIN_PROFILES = ("quick", "deep-cpu", "deep-cpu-intel", "deep-gpu",
-                     "tree-heavy", "ibs-basic", "ibs-memory-deep")
+                     "tree-heavy", "ibs-basic", "ibs-memory-deep", "gpu-compute")
 
 # ALL_GROUPS/counter_group_flags/COLUMN_TO_GROUP/resolve_column_group/
 # autofit_checklist_for_custom_plots/PROFILE_PLOTTABLE_COLUMNS/
@@ -779,15 +779,32 @@ POWER_EACCES_HINT = (
 )
 
 
+# Preset names whose own wspy-run passes open --power (hand-derived from
+# load_builtin_profile() in wspy-run, same "not otherwise discoverable from
+# Python without parsing wspy-run's bash" reasoning as PROFILE_PLOTTABLE_COLUMNS
+# above). deep-cpu's systemtime pass carries --power (see wspy-run's own
+# comment there: "--power rides along on systemtime... since systemtime
+# already opens zero hardware counters, --power is a genuinely free
+# addition"), and gpu-compute's single pass does too. deep-gpu's systemtime
+# pass deliberately does NOT carry it -- a pre-existing asymmetry between
+# deep-cpu and deep-gpu, not introduced or changed here. This table used to
+# be empty (the docstring below claimed "no preset uses --power"), which
+# silently skipped the power probe for every deep-cpu run despite deep-cpu
+# having used --power all along.
+POWER_PRESET_NAMES = {"deep-cpu", "gpu-compute"}
+
+
 def power_probes_for_request(cfg, preset, checklist):
     """Returns [(label, flags)] -- at most one entry, since --power has no
     profile variants the way IBS does -- for whether this request would
-    actually invoke --power. No BUILTIN_PROFILES preset uses --power today,
-    so only custom mode's checklist can trigger this; kept list-shaped for
-    symmetry with ibs_probes_for_request() and in case a future preset adds
-    one. [] when power isn't in play for this request at all."""
+    actually invoke --power: a preset in POWER_PRESET_NAMES (or a composite
+    list containing one), or the Run tab's power checklist row in custom
+    mode. [] when power isn't in play for this request at all."""
     preset = (preset or "").strip()
     if preset:
+        names = {p.strip() for p in preset.split(",")}
+        if names & POWER_PRESET_NAMES:
+            return [("power", ["--power", "--no-ipc", "--csv"])]
         return []
 
     power = (checklist or {}).get("power") or {}
@@ -853,6 +870,91 @@ def probe_power(wspy_bin, label, flags):
     entry["measured"] = measured
     entry["requested"] = requested
     return entry
+
+
+# GPU backends are a build-time link (AMDGPU=1 for amd_smi/amd_sysfs,
+# NVIDIA=1 for NVML), unlike IBS/power which are always compiled in and
+# gated only by runtime perf access. A GPU flag on a build lacking its
+# backend doesn't fail or warn loudly -- topdown.c/wspy.c print one
+# "GPU support not built (rebuild with AMDGPU=1/NVIDIA=1): --gpu-foo ignored"
+# line and continue, so the run "succeeds" with every GPU column silently
+# absent or zero, discoverable today only by noticing empty GPU data in the
+# report afterward (confirmed: this is exactly how a real yquake2 run's
+# gpu.csv ended up all-zero, unnoticed until looked at directly). The Check
+# button catches this up front the same way probe_ibs()/probe_power() catch
+# their own runtime-only failure modes, just with a build check instead of
+# an open attempt, since a not-built backend needs a rebuild, not root/setcap.
+GPU_BUILD_UNSUPPORTED_RE = re.compile(
+    r"GPU support not built \(rebuild with (AMDGPU=1|NVIDIA=1)\): (\S+) ignored")
+
+# Preset name -> the --gpu-* flags its own wspy-run passes use (hand-derived
+# from load_builtin_profile(), same reasoning as POWER_PRESET_NAMES/
+# PROFILE_PLOTTABLE_COLUMNS above -- a preset's own flags aren't otherwise
+# discoverable from Python without parsing wspy-run's bash). deep-gpu's
+# gpu_busy/gpu_metrics passes use the AMD sysfs backend only; gpu-compute's
+# single pass uses AMD sysfs + NVML both.
+PRESET_GPU_FLAGS = {
+    "deep-gpu": ["--gpu-busy", "--gpu-metrics"],
+    "gpu-compute": ["--gpu-busy", "--gpu-metrics", "--gpu-nvidia"],
+}
+
+
+def gpu_flags_for_request(preset, checklist):
+    """Returns the --gpu-* flags this request would actually invoke -- a
+    composite preset's own known GPU flags (PRESET_GPU_FLAGS), or the Run
+    tab's GPU checklist row in custom mode. [] when no GPU flag is in play."""
+    preset = (preset or "").strip()
+    if preset:
+        flags = []
+        for name in [p.strip() for p in preset.split(",")]:
+            for flag in PRESET_GPU_FLAGS.get(name, []):
+                if flag not in flags:
+                    flags.append(flag)
+        return flags
+
+    gpu = (checklist or {}).get("gpu") or {}
+    if not gpu.get("enabled"):
+        return []
+    flags = []
+    if gpu.get("busy"):
+        flags.append("--gpu-busy")
+    if gpu.get("metrics"):
+        flags.append("--gpu-metrics")
+    if gpu.get("smi"):
+        flags.append("--gpu-smi")
+    # The checklist has no NVIDIA sub-option yet (the GPU card only exposes
+    # the three AMD sysfs/SMI flags) -- checked defensively in case that
+    # changes, harmless no-op today since gpu.get("nvidia") is always falsy.
+    if gpu.get("nvidia"):
+        flags.append("--gpu-nvidia")
+    return flags
+
+
+def check_gpu_build(wspy_bin, flags):
+    """Runs `wspy <flags> -- true` once (a trivial, always-successful
+    workload -- no hardware GPU needed, this only checks whether the binary
+    itself was linked with AMDGPU=1/NVIDIA=1) and reports, per requested
+    flag, ok/warn/unknown. [] when no GPU flag is in play for this request."""
+    if not flags:
+        return []
+    argv = [wspy_bin] + list(flags) + ["--", "true"]
+    entry_base = {"command": shell_preview(argv)}
+    rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=15)
+    results = []
+    if timed_out or rc is None:
+        detail = "probe timed out after 15s" if timed_out else f"failed to launch {wspy_bin}"
+        for flag in flags:
+            results.append({**entry_base, "flag": flag, "status": "unknown", "detail": detail})
+        return results
+    unsupported = {flag: macro for macro, flag in GPU_BUILD_UNSUPPORTED_RE.findall(output or "")}
+    for flag in flags:
+        if flag in unsupported:
+            results.append({**entry_base, "flag": flag, "status": "warn",
+                             "detail": f"GPU support not built -- rebuild wspy with {unsupported[flag]}"})
+        else:
+            results.append({**entry_base, "flag": flag, "status": "ok",
+                             "detail": "built with GPU support (hardware/driver availability not checked here)"})
+    return results
 
 
 # Subcommands that take one or more test/suite names as trailing positional
@@ -3535,6 +3637,9 @@ class Handler(BaseHTTPRequestHandler):
 
         power_probes = power_probes_for_request(cfg, body.get("preset"), body.get("checklist"))
         result["power"] = [probe_power(cfg["wspy_bin"], label, flags) for label, flags in power_probes]
+
+        gpu_flags = gpu_flags_for_request(body.get("preset"), body.get("checklist"))
+        result["gpu_build"] = check_gpu_build(cfg["wspy_bin"], gpu_flags)
 
         test_names = parse_phoronix_test_names(workload)
         if not test_names:
