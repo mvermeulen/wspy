@@ -612,7 +612,18 @@ static int classify_io_wait_syscall(long long nr,int *is_write){
 // one bucket instead of two -- there's no read/write-style distinction
 // among these, every one of them just means "waiting for an fd/event").
 static const long poll_syscalls[] = {
-  SYS_poll, SYS_ppoll, SYS_select, SYS_pselect6, SYS_epoll_wait, SYS_epoll_pwait,
+#ifdef SYS_poll
+  SYS_poll,
+#endif
+  SYS_ppoll,
+#ifdef SYS_select
+  SYS_select,
+#endif
+  SYS_pselect6,
+#ifdef SYS_epoll_wait
+  SYS_epoll_wait,
+#endif
+  SYS_epoll_pwait,
 };
 
 static int classify_poll_syscall(long long nr){
