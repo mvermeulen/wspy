@@ -831,6 +831,11 @@ static void populate_manifest_common(struct manifest_info *minfo){
   }
   minfo->counters_unavailable_count = ngaps;
   minfo->counters_unavailable = gaps;
+  // Formula/version metadata (TOPDOWN_FORMULA_VERSION, wspy.h): NULL when
+  // this run collected no topdown counters at all, matching output_path/
+  // tree_output_path's own "measured vs not applicable" convention above.
+  minfo->topdown_formula_version =
+    (counter_mask & (COUNTER_TOPDOWN|COUNTER_TOPDOWN2)) ? TOPDOWN_FORMULA_VERSION : NULL;
   // Core/thread affinity control (affinity.h): the resolved placement is
   // part of a run's provenance, not just implicit in how it was launched --
   // static, since populate_manifest_common()'s two callers (main()'s

@@ -18,7 +18,7 @@
  * breaks existing readers, MINOR when a field is added in a backward
  * compatible way, PATCH for fixes that don't change the shape. Consumers
  * should warn (not silently misparse) on an unrecognized MAJOR version. */
-#define MANIFEST_SCHEMA_VERSION "1.6.0"
+#define MANIFEST_SCHEMA_VERSION "1.7.0"
 
 /* One counter that setup_counters() (topdown.c) tried and failed to open via
  * perf_event_open, as recorded by coverage.c. Kept as its own small struct
@@ -128,6 +128,12 @@ struct manifest_info {
   int counters_measured;
   int counters_unavailable_count;
   const struct manifest_counter_gap *counters_unavailable; /* array, length counters_unavailable_count */
+  /* Formula/version metadata for topdown.c's print_topdown() hierarchical
+   * (L1->L2) percentage decomposition (TOPDOWN_FORMULA_VERSION, wspy.h) --
+   * NULL when this run's counter_mask includes neither COUNTER_TOPDOWN nor
+   * COUNTER_TOPDOWN2, matching the "measured vs not applicable" convention
+   * output_path/tree_output_path already use above. */
+  const char *topdown_formula_version;
   /* Native multi-pass counter execution (--passes=<list>, multipass.h): 0/NULL
    * for a normal run. counter_mask above is the union of every pass's mask
    * when npasses > 0; counters_requested/measured above are still the

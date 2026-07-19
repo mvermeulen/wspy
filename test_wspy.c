@@ -944,6 +944,12 @@ void test_topdown_confidence(void) {
     assert(strstr(contents, "40.0,") != NULL);   // retiring % of slots
     assert(strstr(contents, "0.50,") != NULL);   // overall confidence: min() pulled down by backend
     assert(strstr(contents, "100.0,") != NULL);  // sanity: sum matches slots exactly
+    // New L1->L2 hierarchical columns (INVESTIGATION.md's 4.2 "Hierarchical
+    // topdown schema"): this fixture has no L2 raw events (core.topdown-
+    // mem-bound etc.) and Intel has no SMT-contention counter, so all 9 new
+    // trailing columns should read 0.0 -- checked as one exact suffix so the
+    // match is bound to position, not just presence.
+    assert(strstr(contents, " 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,") != NULL);
     free(contents);
 
     outfile = fopen(tmp_out, "w");
@@ -997,9 +1003,12 @@ void test_topdown_confidence(void) {
         int commas = 0;
         char *p;
         for (p = contents; *p; p++) if (*p == ',') commas++;
-        // retire, frontend, backend, speculate, confidence, sanity == 6 fields
-        if (commas != 6) {
-            fprintf(stderr, "FAIL: expected 6 CSV columns when topdown counters are unavailable, got %d (row: %s)\n", commas, contents);
+        // retire, frontend, backend, speculate, confidence, sanity (6) +
+        // contention_pct, retire_ucode_pct, retire_fastpath_pct,
+        // frontend_latency_pct, frontend_bandwidth_pct, backend_cpu_pct,
+        // backend_memory_pct, spec_branch_pct, spec_pipeline_pct (9) == 15 fields
+        if (commas != 15) {
+            fprintf(stderr, "FAIL: expected 15 CSV columns when topdown counters are unavailable, got %d (row: %s)\n", commas, contents);
             exit(1);
         }
     }
@@ -1064,6 +1073,14 @@ void test_arm_topdown_equivalence(void) {
     assert(strstr(contents, "25.0,") != NULL); // backend
     assert(strstr(contents, "10.0,") != NULL); // speculate = (op_spec-op_retired)/slots
     assert(strstr(contents, "110.0,") != NULL); // sanity intentionally highlights overlap risk
+    // New L1->L2 hierarchical columns: contention_pct=0.0 (ARM has no SMT-
+    // contention counter), retire_ucode_pct/retire_fastpath_pct=0.0 (ARM
+    // never splits retire), frontend_latency=12.0%/bandwidth=3.0% (of
+    // frontend's 150000), backend_cpu=15.0%/memory=10.0% (of backend's
+    // 250000), spec_branch=4.0%/pipeline=6.0% (of speculation's 100000) --
+    // all as % of slots_no_contention (== slots here, no contention
+    // adjustment on ARM). Checked as one exact suffix, bound to position.
+    assert(strstr(contents, " 0.0, 0.0, 0.0,12.0, 3.0,15.0,10.0, 4.0, 6.0,") != NULL);
     free(contents);
 
     remove(tmp_out);
@@ -1071,6 +1088,76 @@ void test_arm_topdown_equivalence(void) {
     cpu_info = saved_cpu_info;
 
     printf("PASS: ARM topdown-equivalent decomposition\n");
+}
+
+// AMD is the only vendor that currently populates SMT contention (de_no_
+// dispatch_per_slot.smt_contention), which drives both the new contention_pct
+// CSV column (a fraction of *raw* slots) and slots_no_contention (the
+// denominator every other L1/L2 percentage in this row is a fraction of).
+void test_topdown_amd_contention(void) {
+    struct cpu_info fake_cpu;
+    struct cpu_info *saved_cpu_info;
+    struct cpu_core_info coreinfo[1];
+    struct counter_group cgroup;
+    struct counter_info cinfo[6];
+    char *contents;
+    const char *tmp_out = "/tmp/test_wspy_amd_contention.txt";
+
+    printf("Testing AMD topdown SMT-contention decomposition...\n");
+
+    saved_cpu_info = cpu_info;
+    memset(&fake_cpu, 0, sizeof(fake_cpu));
+    memset(coreinfo, 0, sizeof(coreinfo));
+    fake_cpu.vendor = VENDOR_AMD;
+    coreinfo[0].vendor = CORE_AMD_ZEN;  // 6 slots/cycle
+    fake_cpu.coreinfo = coreinfo;
+    cpu_info = &fake_cpu;
+
+    memset(cinfo, 0, sizeof(cinfo));
+    cinfo[0].label = "cpu-cycles";
+    cinfo[0].value = 100000; cinfo[0].time_enabled = 1000000; cinfo[0].time_running = 1000000;
+    // slots = cpu-cycles * 6 = 600000
+    cinfo[1].label = "ex_ret_ops";
+    cinfo[1].value = 240000; cinfo[1].time_enabled = 1000000; cinfo[1].time_running = 1000000;
+    cinfo[2].label = "de_no_dispatch_per_slot.no_ops_from_frontend";
+    cinfo[2].value = 120000; cinfo[2].time_enabled = 1000000; cinfo[2].time_running = 1000000;
+    cinfo[3].label = "de_no_dispatch_per_slot.backend_stalls";
+    cinfo[3].value = 180000; cinfo[3].time_enabled = 1000000; cinfo[3].time_running = 1000000;
+    // 60000 of the raw 600000 slots lost to SMT contention -> 10.0%
+    cinfo[4].label = "de_no_dispatch_per_slot.smt_contention";
+    cinfo[4].value = 60000; cinfo[4].time_enabled = 1000000; cinfo[4].time_running = 1000000;
+    // speculation = de_src_op_disp.all - ex_ret_ops = 300000-240000 = 60000
+    cinfo[5].label = "de_src_op_disp.all";
+    cinfo[5].value = 300000; cinfo[5].time_enabled = 1000000; cinfo[5].time_running = 1000000;
+
+    memset(&cgroup, 0, sizeof(cgroup));
+    cgroup.label = "topdown";
+    cgroup.ncounters = 6;
+    cgroup.cinfo = cinfo;
+    cgroup.mask = COUNTER_TOPDOWN;
+
+    outfile = fopen(tmp_out, "w");
+    if (!outfile) { fprintf(stderr, "FAIL: could not open temp file\n"); exit(1); }
+    print_topdown(&cgroup, PRINT_CSV, COUNTER_TOPDOWN);
+    fclose(outfile);
+
+    contents = slurp_file(tmp_out);
+    assert(contents != NULL);
+    // slots_no_contention = 600000-60000 = 540000: retiring=240000/540000=
+    // 44.4%, frontend=120000/540000=22.2%, backend=180000/540000=33.3%,
+    // speculate=60000/540000=11.1%, confidence=1.00 (nothing multiplexed),
+    // sanity=600000/540000=111.1% (this fixture isn't a clean decomposition,
+    // not the point of this test) -- then contention_pct=60000/600000=10.0%
+    // (fraction of *raw* slots), and the 8 L2 columns at 0.0 (this fixture
+    // supplies no L2 raw events, e.g. ex_no_retire.*/ex_ret_brn_misp).
+    assert(strstr(contents, "44.4,22.2,33.3,11.1,1.00,111.1,10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,") != NULL);
+    free(contents);
+
+    remove(tmp_out);
+    outfile = NULL;
+    cpu_info = saved_cpu_info;
+
+    printf("PASS: AMD topdown SMT-contention decomposition\n");
 }
 
 void test_arm_pmu_report(void) {
@@ -1211,6 +1298,7 @@ int main(int argc, char **argv) {
     test_provenance();
     test_topdown_confidence();
     test_arm_topdown_equivalence();
+    test_topdown_amd_contention();
     test_arm_pmu_report();
     test_read_counters_multiplex_scaling();
     return 0;

@@ -1953,6 +1953,26 @@ void print_ipc(struct counter_group *cgroup,enum output_format oformat){
   }
 }
 
+// Hierarchical (parent->child) topdown schema, v1 (INVESTIGATION.md's 4.2 Tier 1,
+// "Hierarchical topdown schema" item, TOPDOWN_FORMULA_VERSION in wspy.h): L1 nodes
+// (retire/frontend/backend/speculate) are unprefixed CSV columns; L2 nodes are named
+// "<parent>_<child>_pct" (retire_ucode/retire_fastpath, frontend_latency/frontend_bandwidth,
+// backend_cpu/backend_memory, spec_branch/spec_pipeline) so the hierarchy is self-describing
+// from column names alone, without a separate schema document. Every L1 and L2 percentage
+// (in both CSV and PRINT_NORMAL text) is expressed as a fraction of the same contention-
+// adjusted denominator, slots_no_contention -- this is the denominator that drives every
+// high/low classification and the sanity check below. contention_pct is the one deliberate
+// exception: it's a fraction of the *raw* slots denominator, since its purpose is expressing
+// how much of the raw total was lost to contention in the first place; every other adjusted
+// percentage is recoverable from its raw equivalent via raw_pct = adj_pct*(1-contention_pct/100).
+// L2 fields a vendor doesn't populate (e.g. ARM never computes retire_ucode/retire_fastpath)
+// report 0.0 rather than omitting the column -- same "0 = not available or genuinely zero"
+// convention used elsewhere in this codebase (e.g. proctree.c's -X/-B fields).
+// v1 scope is L1->L2 only: --topdown-backend's own l1_bound/l2_bound/l3_bound/dram_bound/
+// store_bound detail (print_topdown_be() below) is a real TMA-style L3, but it's computed
+// against a different denominator (that group's own cpu-cycles reading, in a separate perf
+// counter group) and isn't folded into this hierarchy yet -- a documented fast-follow, not
+// an oversight.
 void print_topdown(struct counter_group *cgroup,enum output_format oformat,int mask){
   unsigned long slots=0;
   unsigned long slots_no_contention = 0;
@@ -1989,6 +2009,8 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
 
   if (oformat == PRINT_CSV_HEADER){
     fprintf(outfile,"retire,frontend,backend,speculate,confidence,sanity,");
+    fprintf(outfile,"contention_pct,retire_ucode_pct,retire_fastpath_pct,frontend_latency_pct,"
+	    "frontend_bandwidth_pct,backend_cpu_pct,backend_memory_pct,spec_branch_pct,spec_pipeline_pct,");
   }
 
   switch(cpu_info->vendor){
@@ -2151,6 +2173,29 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
     fprintf(outfile,"%4.1f,",speculation_pct);
     fprintf(outfile,"%4.2f,",confidence);
     fprintf(outfile,"%4.1f,",sanity_pct);
+    {
+      // See the comment block above print_topdown(): contention_pct is a
+      // fraction of raw slots, every other L2 column is a fraction of
+      // slots_no_contention, matching L1's own denominator.
+      double contention_pct       = slots ? (double) contention/slots*100 : 0.0;
+      double retire_ucode_pct     = slots_no_contention ? (double) retire_ucode/slots_no_contention*100 : 0.0;
+      double retire_fastpath_pct  = slots_no_contention ? (double) retire_fastpath/slots_no_contention*100 : 0.0;
+      double frontend_latency_pct   = slots_no_contention ? (double) frontend_latency/slots_no_contention*100 : 0.0;
+      double frontend_bandwidth_pct = slots_no_contention ? (double) frontend_bandwidth/slots_no_contention*100 : 0.0;
+      double backend_cpu_pct      = slots_no_contention ? (double) backend_cpu/slots_no_contention*100 : 0.0;
+      double backend_memory_pct   = slots_no_contention ? (double) backend_memory/slots_no_contention*100 : 0.0;
+      double spec_branch_pct      = slots_no_contention ? (double) speculation_branches/slots_no_contention*100 : 0.0;
+      double spec_pipeline_pct    = slots_no_contention ? (double) speculation_pipeline/slots_no_contention*100 : 0.0;
+      fprintf(outfile,"%4.1f,",contention_pct);
+      fprintf(outfile,"%4.1f,",retire_ucode_pct);
+      fprintf(outfile,"%4.1f,",retire_fastpath_pct);
+      fprintf(outfile,"%4.1f,",frontend_latency_pct);
+      fprintf(outfile,"%4.1f,",frontend_bandwidth_pct);
+      fprintf(outfile,"%4.1f,",backend_cpu_pct);
+      fprintf(outfile,"%4.1f,",backend_memory_pct);
+      fprintf(outfile,"%4.1f,",spec_branch_pct);
+      fprintf(outfile,"%4.1f,",spec_pipeline_pct);
+    }
     return;
   }
 
@@ -2172,9 +2217,9 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
 	fprintf(outfile,"\n");
 	if (retire_ucode && frontend_bandwidth){
 	  fprintf(outfile,"-- ucode             %-14lu #    %4.1f%%\n",
-		  retire_ucode,(double) retire_ucode/slots*100);
+		  retire_ucode,(double) retire_ucode/slots_no_contention*100);
 	  fprintf(outfile,"-- fastpath          %-14lu #    %4.1f%%\n",
-		  retire_fastpath,(double) retire_fastpath/slots*100);
+		  retire_fastpath,(double) retire_fastpath/slots_no_contention*100);
 	}		
 	fprintf(outfile,"frontend             %-14lu # %4.1f%% (%4.1lf%%)",
 		frontend,(double) frontend/slots*100, (double) frontend/slots_no_contention*100);
@@ -2189,9 +2234,9 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
 	fprintf(outfile,"\n");
 	if (frontend_latency && frontend_bandwidth){
 	  fprintf(outfile,"-- latency           %-14lu #    %4.1f%%\n",
-		  frontend_latency,(double) frontend_latency/slots*100);
+		  frontend_latency,(double) frontend_latency/slots_no_contention*100);
 	  fprintf(outfile,"-- bandwidth         %-14lu #    %4.1f%%\n",
-		  frontend_bandwidth,(double) frontend_bandwidth/slots*100);
+		  frontend_bandwidth,(double) frontend_bandwidth/slots_no_contention*100);
 	}	
 	fprintf(outfile,"backend              %-14lu # %4.1f%% (%4.1lf%%)",
 		backend,(double) backend/slots*100, (double) backend/slots_no_contention*100);
@@ -2206,9 +2251,9 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
 	fprintf(outfile,"\n");
 	if (backend_memory && backend_cpu){
 	  fprintf(outfile,"-- cpu               %-14lu #    %4.1f%%\n",
-		  backend_cpu,(double) backend_cpu/slots*100);
+		  backend_cpu,(double) backend_cpu/slots_no_contention*100);
 	  fprintf(outfile,"-- memory            %-14lu #    %4.1f%%\n",
-		  backend_memory,(double) backend_memory/slots*100);
+		  backend_memory,(double) backend_memory/slots_no_contention*100);
 	}
 	fprintf(outfile,"speculation          %-14lu # %4.1f%% (%4.1lf%%)",
 		speculation,(double) speculation/slots*100, (double) speculation/slots_no_contention*100);
@@ -2223,9 +2268,9 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
 	fprintf(outfile,"\n");
 	if (speculation_pipeline && speculation_branches){
 	  fprintf(outfile,"-- branch mispredict %-14lu #    %4.1lf%%\n",
-		  speculation_branches,(double) speculation_branches/slots*100);
+		  speculation_branches,(double) speculation_branches/slots_no_contention*100);
 	  fprintf(outfile,"-- pipeline restart  %-14lu #    %4.1f%%\n",
-		  speculation_pipeline,(double) speculation_pipeline/slots*100);
+		  speculation_pipeline,(double) speculation_pipeline/slots_no_contention*100);
 	}
 	fprintf(outfile,"smt-contention       %-14lu # %4.1f%% ( 0.0%%)\n",contention,(double) contention/slots*100);
 	fprintf(outfile,"sanity check         %4.1f%% of slots", sanity_pct);
