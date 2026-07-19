@@ -595,13 +595,18 @@ sampling mode:**
 19. Collector-plugin implementation (perf stat / trace-cmd / GPU tools as collectors behind the
     `collector` field, normalization path) — the schema seam shipped in 4.0; this is the actual
     implementation of wrapping a non-wspy collector.
+20. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
+    CSVs into per-test-case/per-trial datasets by correlating run manifests with PTS results, composite.xml,
+    and log timestamps. Integrate with the built-in PTS `result_notifier` hooks for sub-millisecond precision
+    checkpointing and zero-overhead timing. See the detailed report at
+    [phoronix_hook_investigation.md](file:///home/mev/.gemini/antigravity-cli/brain/5ee99331-0f26-4bbb-8d11-ea886947fbe1/phoronix_hook_investigation.md) for design and prototypes.
 
 **Tier 7 — testing:**
 
-20. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
+21. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
     guardrails — needs deterministic micro-workloads and 4.1's normalized store plus 4.2's
     stats/confidence infrastructure.
-21. Contributor guide for adding a collector/metric/schema bump safely.
+22. Contributor guide for adding a collector/metric/schema bump safely.
 
 ## 4.4 priorities
 Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
