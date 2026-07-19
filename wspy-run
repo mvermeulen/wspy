@@ -231,10 +231,16 @@ load_builtin_profile(){
       # deep-cpu's CPU sweep, collapsed onto --passes the same way -- see the
       # comment there -- plus the two GPU interval passes, which (like
       # systemtime/amdtopdown) stay their own wspy invocation since --passes
-      # doesn't cover --interval.
+      # doesn't cover --interval. systemtime carries --power for the same
+      # reason deep-cpu's does (see that profile's own comment): it already
+      # opens zero hardware counters, so --power is a free addition there,
+      # landing pkg_watts/pkg_joules in the same CSV as cpu/freq for
+      # wspy-plot's power-vs-utilization/power-vs-frequency templates --
+      # this was a pre-existing asymmetry between the two profiles, not a
+      # deliberate omission (INVESTIGATION.md's "4.2 -- remaining work").
       PASS_NAMES=(systemtime counters amdtopdown gpu_busy gpu_metrics)
       PASS_FLAGS=(
-        "--csv --interval 1 --no-rusage --no-software --system --no-ipc"
+        "--csv --interval 1 --no-rusage --no-software --system --no-ipc --power"
         "--passes=software,branch,ipc,topdown2,cache2,cache3,memory,float,topdown-frontend,topdown-optlb"
         "--csv --interval 1 --topdown --no-rusage --no-software --no-ipc"
         "--csv --interval 1 --gpu-busy --no-ipc --no-rusage --no-software"
