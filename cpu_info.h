@@ -39,6 +39,21 @@ struct counter_group {
 enum cpu_core_type {
   CORE_UNKNOWN,
   CORE_ARM_GENERIC,
+  CORE_ARM_CORTEX_A53,
+  CORE_ARM_CORTEX_A57,
+  CORE_ARM_CORTEX_A72,
+  CORE_ARM_NEOVERSE_N1,
+  CORE_ARM_NEOVERSE_V1,
+  CORE_ARM_NEOVERSE_N2,
+  CORE_ARM_NEOVERSE_V2,
+  CORE_ARM_CORTEX_A78,
+  CORE_ARM_CORTEX_X1,
+  CORE_ARM_CORTEX_A710,
+  CORE_ARM_CORTEX_X2,
+  CORE_ARM_CORTEX_A510,
+  CORE_ARM_CORTEX_A520,
+  CORE_ARM_CORTEX_A720,
+  CORE_ARM_CORTEX_X4,
   CORE_AMD_UNKNOWN, CORE_AMD_ZEN, CORE_AMD_ZEN5,
   CORE_INTEL_UNKNOWN, CORE_INTEL_ATOM, CORE_INTEL_CORE
 };
@@ -148,5 +163,24 @@ struct cpu_core_info {
   int ncounters;
   struct counter_info *counters;
 };
+
+static inline int is_arm_core_type(enum cpu_core_type vendor) {
+  return (vendor == CORE_ARM_GENERIC ||
+          vendor == CORE_ARM_CORTEX_A53 ||
+          vendor == CORE_ARM_CORTEX_A57 ||
+          vendor == CORE_ARM_CORTEX_A72 ||
+          vendor == CORE_ARM_NEOVERSE_N1 ||
+          vendor == CORE_ARM_NEOVERSE_V1 ||
+          vendor == CORE_ARM_NEOVERSE_N2 ||
+          vendor == CORE_ARM_NEOVERSE_V2 ||
+          vendor == CORE_ARM_CORTEX_A78 ||
+          vendor == CORE_ARM_CORTEX_X1 ||
+          vendor == CORE_ARM_CORTEX_A710 ||
+          vendor == CORE_ARM_CORTEX_X2 ||
+          vendor == CORE_ARM_CORTEX_A510 ||
+          vendor == CORE_ARM_CORTEX_A520 ||
+          vendor == CORE_ARM_CORTEX_A720 ||
+          vendor == CORE_ARM_CORTEX_X4);
+}
 
 void print_cpu_pmu_report(FILE *fp);

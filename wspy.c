@@ -72,9 +72,9 @@ int exit_with_child_flag = 0;
 int multipass_flag = 0;
 unsigned int passes_requested_mask = 0;
 int multiplex_flag = 0; // --multiplex: --passes opens all requested groups in one pass instead of bin-packing N
+int gpu_busy_requested = 0;
 #if AMDGPU
 int gpu_smi_requested = 0; /* legacy */
-int gpu_busy_requested = 0;
 int gpu_metrics_requested = 0;
 int gpu_device_index = -1; /* -1 = auto-select (lowest-numbered sysfs card / SMI device 0) */
 #endif
@@ -399,13 +399,12 @@ int parse_options(int argc,char *const argv[]){
  #endif
       break;
         case 49: // --gpu-busy
-    #if AMDGPU
-      gpu_busy_requested = 1;
-      system_mask |= SYSTEM_GPU; /* ensure GPU init */
-    #else
-      warning("GPU support not built (rebuild with AMDGPU=1): --gpu-busy ignored\n");
-    #endif
-      break;
+          gpu_busy_requested = 1;
+          system_mask |= SYSTEM_GPU; /* ensure GPU init */
+#if !AMDGPU
+          warning("GPU support not built (rebuild with AMDGPU=1): using iGPU fallback if available\n");
+#endif
+          break;
         case 50: // --gpu-metrics
     #if AMDGPU
       gpu_metrics_requested = 1;
@@ -1209,9 +1208,11 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       fatal("--passes is incompatible with --power (power/energy-pkg is a cumulative counter with"
             " its own separate system-wide budget, and scale-multiplication across separately-timed"
             " re-executions of the child isn't a defined merge)\n");
+    if (gpu_busy_requested)
+      fatal("--passes is incompatible with --gpu-busy\n");
 #if AMDGPU
-    if (gpu_smi_requested || gpu_busy_requested || gpu_metrics_requested)
-      fatal("--passes is incompatible with --gpu-smi/--gpu-busy/--gpu-metrics\n");
+    if (gpu_smi_requested || gpu_metrics_requested)
+      fatal("--passes is incompatible with --gpu-smi/--gpu-metrics\n");
 #endif
 #if NVIDIA
     if (gpu_nvidia_requested)
@@ -1323,7 +1324,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     ((cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN)||
      (cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN5)||
      (cpu_info->coreinfo[i].vendor == CORE_INTEL_CORE)||
-     (cpu_info->coreinfo[i].vendor == CORE_ARM_GENERIC))){
+     (is_arm_core_type(cpu_info->coreinfo[i].vendor)))){
 	setup_counter_groups(&cpu_info->coreinfo[i].core_specific_counters);
   bind_core_counter_groups(cpu_info->coreinfo[i].core_specific_counters,
          i,cpu_info->coreinfo[i].pmu_type);

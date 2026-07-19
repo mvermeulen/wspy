@@ -612,7 +612,18 @@ static int classify_io_wait_syscall(long long nr,int *is_write){
 // one bucket instead of two -- there's no read/write-style distinction
 // among these, every one of them just means "waiting for an fd/event").
 static const long poll_syscalls[] = {
-  SYS_poll, SYS_ppoll, SYS_select, SYS_pselect6, SYS_epoll_wait, SYS_epoll_pwait,
+#ifdef SYS_poll
+  SYS_poll,
+#endif
+  SYS_ppoll,
+#ifdef SYS_select
+  SYS_select,
+#endif
+  SYS_pselect6,
+#ifdef SYS_epoll_wait
+  SYS_epoll_wait,
+#endif
+  SYS_epoll_pwait,
 };
 
 static int classify_poll_syscall(long long nr){
@@ -1488,6 +1499,30 @@ void setup_counters(struct counter_group *counter_group_list){
   for (cgroup = counter_group_list;cgroup;cgroup = cgroup->next){
     debug("Setting up %s counters\n",cgroup->label);
     for (i=0;i<cgroup->ncounters;i++){
+      if (cgroup->mask & COUNTER_POWER && cgroup->cinfo[i].device_type == 9999) {
+	status = open(fallback_power_path, O_RDONLY);
+	if (status == -1){
+	  error("unable to open fallback power sysfs path %s, name=%s, errno=%d - %s\n",
+		fallback_power_path,cgroup->cinfo[i].label,errno,strerror(errno));
+	  cgroup->cinfo[i].fd = -1;
+	  coverage_note(cgroup->label,cgroup->cinfo[i].label,0,errno);
+	  nerror++;
+	} else {
+	  cgroup->cinfo[i].fd = status;
+	  char init_buf[64];
+	  int n = read(cgroup->cinfo[i].fd, init_buf, sizeof(init_buf) - 1);
+	  if (n > 0) {
+	    init_buf[n] = '\0';
+	    cgroup->cinfo[i].last_read = strtoull(init_buf, NULL, 10);
+	  } else {
+	    cgroup->cinfo[i].last_read = 0;
+	  }
+	  coverage_note(cgroup->label,cgroup->cinfo[i].label,1,0);
+	  debug("   create %s fallback power counter from sysfs %s, fd=%d, init_val=%lu\n",
+		cgroup->label,fallback_power_path,cgroup->cinfo[i].fd,cgroup->cinfo[i].last_read);
+	}
+	continue;
+      }
       if (cpu_info->vendor == VENDOR_INTEL){
 	group_id = intel_group_id;
       } else {
@@ -1560,6 +1595,10 @@ void start_counters(struct counter_group *counter_group_list){
     debug("Starting %s counters\n",cgroup->label);  
     for (i=0;i<cgroup->ncounters;i++){
       if (cgroup->cinfo[i].fd != -1){
+        if (cgroup->mask & COUNTER_POWER && cgroup->cinfo[i].device_type == 9999) {
+          debug("   started %s fallback power counter\n",cgroup->label);
+          continue;
+        }
 	status = ioctl(cgroup->cinfo[i].fd,PERF_EVENT_IOC_ENABLE,0);
 	if (status != 0){
 	  error("unable to start %s counter %s, errno=%d,%s\n",
@@ -1586,7 +1625,27 @@ void read_counters(struct counter_group *counter_group_list,int stop_counters){
     debug("Stopping %s counters\n",cgroup->label);
     for (i=0;i<cgroup->ncounters;i++){
       if (cgroup->cinfo[i].fd != -1){
-	status = read(cgroup->cinfo[i].fd,&rf,sizeof(rf));
+        if (cgroup->mask & COUNTER_POWER && cgroup->cinfo[i].device_type == 9999) {
+          char buf[64];
+          lseek(cgroup->cinfo[i].fd, 0, SEEK_SET);
+          int n = read(cgroup->cinfo[i].fd, buf, sizeof(buf) - 1);
+          if (n <= 0) {
+            status = -1;
+          } else {
+            buf[n] = '\0';
+            unsigned long long uj = strtoull(buf, NULL, 10);
+            rf.value = uj;
+            struct timespec t;
+            clock_gettime(CLOCK_MONOTONIC, &t);
+            uint64_t ns = (uint64_t)t.tv_sec * 1000000000ULL + t.tv_nsec;
+            rf.time_enabled = ns;
+            rf.time_running = ns;
+            rf.id = 0;
+            status = sizeof(rf);
+          }
+        } else {
+	  status = read(cgroup->cinfo[i].fd,&rf,sizeof(rf));
+        }
 	if (status == -1){
 	  error("unable to read %s counter %s, errno=%d - %s\n",
 		cgroup->label,cgroup->cinfo[i].label,errno,strerror(errno));
@@ -1643,16 +1702,23 @@ void read_counters(struct counter_group *counter_group_list,int stop_counters){
 	    cgroup->cinfo[i].scaled_value = (double) cgroup->cinfo[i].value * cgroup->cinfo[i].scale;
 
 	  if (stop_counters){
-	    status = ioctl(cgroup->cinfo[i].fd,PERF_EVENT_IOC_DISABLE,0);
+            if (cgroup->mask & COUNTER_POWER && cgroup->cinfo[i].device_type == 9999) {
+              close(cgroup->cinfo[i].fd);
+              cgroup->cinfo[i].fd = -1;
+              debug("   stopped fallback %s counter, value=%lu\n",
+                    cgroup->label, cgroup->cinfo[i].value);
+            } else {
+	      status = ioctl(cgroup->cinfo[i].fd,PERF_EVENT_IOC_DISABLE,0);
 	  
-	    if (status != 0){
-	      error("unable to stop %s counter %s, errno=%d,%s\n",
-		    cgroup->label,cgroup->cinfo[i].label,errno,strerror(errno));
-	    } else {
-	      debug("   stopped %s counter, name=%s, value=%lu enabled=%lu running=%lu\n",
-		    cgroup->label,cgroup->cinfo[i].label,cgroup->cinfo[i].value,
-		    rf.time_enabled,rf.time_running);
-	    }
+	      if (status != 0){
+	        error("unable to stop %s counter %s, errno=%d,%s\n",
+		      cgroup->label,cgroup->cinfo[i].label,errno,strerror(errno));
+	      } else {
+	        debug("   stopped %s counter, name=%s, value=%lu enabled=%lu running=%lu\n",
+		      cgroup->label,cgroup->cinfo[i].label,cgroup->cinfo[i].value,
+		      rf.time_enabled,rf.time_running);
+	      }
+            }
 	  }
 	}
       }

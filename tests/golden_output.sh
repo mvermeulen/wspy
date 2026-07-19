@@ -442,15 +442,86 @@ $(cat "$file")"
   fi
 }
 
-TREE_SIMPLE=$(mktemp /tmp/wspy_golden_tree_simple.XXXXXX)
-TREE_FORK=$(mktemp /tmp/wspy_golden_tree_fork.XXXXXX)
-trap 'rm -f "$TREE_SIMPLE" "$TREE_FORK"' EXIT
+TMPDIR=$(mktemp -d /tmp/wspy_golden_tree.XXXXXX)
+trap 'rm -rf "$TMPDIR"' EXIT
+TREE_SIMPLE="$TMPDIR/simple"
+TREE_FORK="$TMPDIR/fork"
+TREE_SYSCALLS="$TMPDIR/syscalls"
 
 "$WSPY" --no-ipc --tree "$TREE_SIMPLE" -- /bin/true >/dev/null 2>&1
 check_tree_grammar "$TREE_SIMPLE" "single-process"
 
 "$WSPY" --no-ipc --tree "$TREE_FORK" -- /bin/sh -c '/bin/true & wait' >/dev/null 2>&1
 check_tree_grammar "$TREE_FORK" "forking-workload"
+
+echo "Testing tree syscall telemetry detail..."
+cat > "$TMPDIR/syscalls_workload.c" <<'EOF'
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <sys/wait.h>
+#include <poll.h>
+#include <time.h>
+#include <sys/syscall.h>
+#include <linux/futex.h>
+
+int main(void) {
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s >= 0) {
+        struct sockaddr_in addr;
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(9999);
+        addr.sin_addr.s_addr = htonl(0x7F000001);
+        connect(s, (struct sockaddr*)&addr, sizeof(addr));
+        close(s);
+    }
+    struct timespec ts = {0, 10000000};
+    nanosleep(&ts, NULL);
+    pid_t pid = fork();
+    if (pid == 0) {
+        exit(0);
+    } else if (pid > 0) {
+        int status;
+        wait4(pid, &status, 0, NULL);
+    }
+    struct pollfd pfd;
+    pfd.fd = 0;
+    pfd.events = POLLIN;
+    poll(&pfd, 1, 1);
+    int futex_val = 0;
+    struct timespec futex_ts = {0, 1000000};
+    syscall(SYS_futex, &futex_val, FUTEX_WAIT_PRIVATE, 0, &futex_ts, NULL, 0);
+    int pipefds[2];
+    if (pipe(pipefds) == 0) {
+        char buf[4] = "abc";
+        if (write(pipefds[1], buf, 3) > 0) {}
+        if (read(pipefds[0], buf, 3) > 0) {}
+        close(pipefds[0]);
+        close(pipefds[1]);
+    }
+    return 0;
+}
+EOF
+
+if gcc -O2 "$TMPDIR/syscalls_workload.c" -o "$TMPDIR/syscalls_workload" >/dev/null 2>&1; then
+  "$WSPY" --no-ipc --tree "$TREE_SYSCALLS" --tree-cmdline --tree-open --tree-futex --tree-vmsize --tree-io --tree-io-wait --tree-schedstat --tree-connect --tree-wait --tree-poll --tree-nanosleep -- "$TMPDIR/syscalls_workload" >/dev/null 2>&1
+  check_tree_grammar "$TREE_SYSCALLS" "syscall-telemetry-grammar"
+  
+  for event in futex io_wait connect nanosleep wait poll io schedstat vmsize; do
+    CHECKS=$((CHECKS + 1))
+    if ! grep -q " $event " "$TREE_SYSCALLS"; then
+      fail "tree telemetry [$event]: event '$event' not found in tree log"
+    else
+      echo "  tree telemetry [$event]: OK"
+    fi
+  done
+else
+  fail "tree telemetry [compilation]: failed to compile test workload"
+fi
 
 echo ""
 echo "=== $CHECKS checks run, $FAILURES failed ==="

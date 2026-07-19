@@ -233,6 +233,78 @@ void print_cpu_pmu_report(FILE *fp){
   }
 }
 
+static enum cpu_core_type resolve_arm_core_type(unsigned int implementer, unsigned int part) {
+  if (implementer == 0x41) { /* ARM Ltd */
+    switch (part) {
+      case 0xd03: return CORE_ARM_CORTEX_A53;
+      case 0xd07: return CORE_ARM_CORTEX_A57;
+      case 0xd08: return CORE_ARM_CORTEX_A72;
+      case 0xd0c: return CORE_ARM_NEOVERSE_N1;
+      case 0xd40: return CORE_ARM_NEOVERSE_V1;
+      case 0xd49: return CORE_ARM_NEOVERSE_N2;
+      case 0xd4f: return CORE_ARM_NEOVERSE_V2;
+      case 0xd41: return CORE_ARM_CORTEX_A78;
+      case 0xd44: return CORE_ARM_CORTEX_X1;
+      case 0xd47: return CORE_ARM_CORTEX_A710;
+      case 0xd48: return CORE_ARM_CORTEX_X2;
+      case 0xd4a: return CORE_ARM_CORTEX_A510;
+      case 0xd80: return CORE_ARM_CORTEX_A520;
+      case 0xd81: return CORE_ARM_CORTEX_A720;
+      case 0xd82: return CORE_ARM_CORTEX_X4;
+    }
+  }
+  return CORE_ARM_GENERIC;
+}
+
+static int read_cpuinfo_core_fields(int corenum, unsigned int *implementer, unsigned int *part) {
+  FILE *fp = fopen("/proc/cpuinfo", "r");
+  if (!fp) return -1;
+  char line[256];
+  int current_processor = -1;
+  unsigned int found_impl = 0;
+  unsigned int found_part = 0;
+  int impl_seen = 0;
+  int part_seen = 0;
+
+  while (fgets(line, sizeof(line), fp)) {
+    if (!strncmp(line, "processor", 9)) {
+      char *colon = strchr(line, ':');
+      if (colon) {
+        current_processor = atoi(colon + 1);
+        impl_seen = 0;
+        part_seen = 0;
+      }
+    }
+    if (current_processor == corenum) {
+      if (!strncmp(line, "CPU implementer", 15)) {
+        char *colon = strchr(line, ':');
+        if (colon) {
+          colon++;
+          while (*colon == ' ' || *colon == '\t') colon++;
+          found_impl = (unsigned int)strtoul(colon, NULL, 0);
+          impl_seen = 1;
+        }
+      } else if (!strncmp(line, "CPU part", 8)) {
+        char *colon = strchr(line, ':');
+        if (colon) {
+          colon++;
+          while (*colon == ' ' || *colon == '\t') colon++;
+          found_part = (unsigned int)strtoul(colon, NULL, 0);
+          part_seen = 1;
+        }
+      }
+      if (impl_seen && part_seen) {
+        *implementer = found_impl;
+        *part = found_part;
+        fclose(fp);
+        return 0;
+      }
+    }
+  }
+  fclose(fp);
+  return -1;
+}
+
 int inventory_cpu(void){
 #ifdef __x86_64__
   unsigned int eax,ebx,ecx,edx;
@@ -318,7 +390,12 @@ int inventory_cpu(void){
   // specify the core type
   for (i=0;i<cpu_info->num_cores;i++){
     if (cpu_info->vendor == VENDOR_ARM){
-      cpu_info->coreinfo[i].vendor = CORE_ARM_GENERIC;
+      unsigned int impl = 0, part = 0;
+      if (read_cpuinfo_core_fields(i, &impl, &part) == 0) {
+        cpu_info->coreinfo[i].vendor = resolve_arm_core_type(impl, part);
+      } else {
+        cpu_info->coreinfo[i].vendor = CORE_ARM_GENERIC;
+      }
     } else if (cpu_info->vendor == VENDOR_AMD){
       if ((cpu_info->family == 0x17) || (cpu_info->family == 0x19)){
 	// Zen
@@ -448,6 +525,51 @@ int main(void){
     switch(cpu_info->coreinfo[i].vendor){
     case CORE_ARM_GENERIC:
       printf("ARM");
+      break;
+    case CORE_ARM_CORTEX_A53:
+      printf("Cortex-A53");
+      break;
+    case CORE_ARM_CORTEX_A57:
+      printf("Cortex-A57");
+      break;
+    case CORE_ARM_CORTEX_A72:
+      printf("Cortex-A72");
+      break;
+    case CORE_ARM_NEOVERSE_N1:
+      printf("Neoverse-N1");
+      break;
+    case CORE_ARM_NEOVERSE_V1:
+      printf("Neoverse-V1");
+      break;
+    case CORE_ARM_NEOVERSE_N2:
+      printf("Neoverse-N2");
+      break;
+    case CORE_ARM_NEOVERSE_V2:
+      printf("Neoverse-V2");
+      break;
+    case CORE_ARM_CORTEX_A78:
+      printf("Cortex-A78");
+      break;
+    case CORE_ARM_CORTEX_X1:
+      printf("Cortex-X1");
+      break;
+    case CORE_ARM_CORTEX_A710:
+      printf("Cortex-A710");
+      break;
+    case CORE_ARM_CORTEX_X2:
+      printf("Cortex-X2");
+      break;
+    case CORE_ARM_CORTEX_A510:
+      printf("Cortex-A510");
+      break;
+    case CORE_ARM_CORTEX_A520:
+      printf("Cortex-A520");
+      break;
+    case CORE_ARM_CORTEX_A720:
+      printf("Cortex-A720");
+      break;
+    case CORE_ARM_CORTEX_X4:
+      printf("Cortex-X4");
       break;
     case CORE_AMD_ZEN:
       printf("Zen");
