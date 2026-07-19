@@ -12,14 +12,32 @@ set -euo pipefail
 #
 # Registration has two independent pieces PTS itself keeps in two
 # different files:
-#   1. modules-data/result-notifier/module-settings.ini -- which
+#   1. modules-data/result_notifier/module-settings.ini -- which
 #      executable runs for each result_notifier hook point (a plain
 #      key=value ini file PTS's own pts_module::module_config_save()
 #      already merges non-destructively; this is the same file
 #      `phoronix-test-suite module-setup result_notifier` would write).
+#      The directory MUST be the underscored "result_notifier", matching
+#      the module's literal PHP class name (pts_module::read_option()
+#      resolves the directory from pts_module_manager's current-module
+#      string, which is exactly that class name) -- not a hyphenated
+#      "result-notifier". A hyphenated directory is silently never read,
+#      so registration appears to succeed but the hooks never actually
+#      fire (verified against the installed pts-core/objects/client/
+#      pts_module.php).
 #   2. user-config.xml's <AutoLoadModules> list -- whether result_notifier
 #      loads automatically on every `phoronix-test-suite` invocation at
 #      all (without this, the hooks above are configured but never fire).
+#
+# Note separately: even with this fixed, phoronix-test-suite's own bundled
+# result_notifier.php (pts-core/modules/) has had a fatal-error bug of its
+# own whenever a real hook script is configured, reported/fixed upstream at
+# https://github.com/phoronix-test-suite/phoronix-test-suite/issues/925 and
+# https://github.com/phoronix-test-suite/phoronix-test-suite/pull/924 -- a
+# host without that upstream fix (or an equivalent local patch to
+# /usr/share/phoronix-test-suite/pts-core/modules/result_notifier.php) will
+# see phoronix-test-suite itself crash as soon as the hooks below are
+# actually registered and fire, not just silently fail to run them.
 
 SCRIPT_NAME=$(basename "$0")
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,7 +46,7 @@ POST_HOOK="${SCRIPT_DIR}/pts_hooks/post_test_run.sh"
 
 PTS_USER_PATH="${PTS_USER_PATH:-$HOME/.phoronix-test-suite}"
 USER_CONFIG="${PTS_USER_PATH}/user-config.xml"
-MODULE_SETTINGS_DIR="${PTS_USER_PATH}/modules-data/result-notifier"
+MODULE_SETTINGS_DIR="${PTS_USER_PATH}/modules-data/result_notifier"
 MODULE_SETTINGS="${MODULE_SETTINGS_DIR}/module-settings.ini"
 
 usage(){
@@ -66,7 +84,7 @@ check_module_settings(){
   cur_pre=$(read_ini_value pre_test_run_process || true)
   cur_post=$(read_ini_value post_test_run_process || true)
 
-  echo "result-notifier module-settings.ini: $MODULE_SETTINGS"
+  echo "result_notifier module-settings.ini: $MODULE_SETTINGS"
   echo "  pre_test_run_process:  current='${cur_pre:-<unset>}' desired='$PRE_HOOK'"
   echo "  post_test_run_process: current='${cur_post:-<unset>}' desired='$POST_HOOK'"
 
