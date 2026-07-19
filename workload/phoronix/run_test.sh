@@ -7,6 +7,16 @@ WSPY_RUN=${WSPY_RUN:="/home/mev/source/wspy/wspy-run"}
 WSPY_PLOT=${WSPY_PLOT:="/home/mev/source/wspy/wspy-plot"}
 PROCTREE=${PROCTREE:="/home/mev/source/wspy/proctree"}
 OUTROOT=${OUTROOT:="."}
+# Fixed staging path scripts/pts_hooks/{pre,post}_test_run.sh write to, if
+# registered (phoronix-test-suite's result_notifier module) -- must match
+# those scripts' own default exactly, since PTS invokes them with a
+# replaced environment that can't carry this value down from here (see
+# doc/phoronix_hook_investigation.md and pts_hooks/pre_test_run.sh's own
+# comment for why). Not present at all if the hooks aren't registered on
+# this host (scripts/setup_phoronix_hooks.sh) -- degrades to no
+# pts_hooks.log artifact, same measured-vs-unavailable idiom as everywhere
+# else in this codebase.
+WSPY_PTS_HOOK_LOG=${WSPY_PTS_HOOK_LOG:="/tmp/wspy_pts_hooks.log"}
 
 # One directory for this run: <OUTROOT>/phoronix/<TESTNAME>/<RUN_ID>, via
 # wspy-run's unified output layout (INVESTIGATION_4.0.md "Run artifact
@@ -15,8 +25,20 @@ OUTROOT=${OUTROOT:="."}
 STAMP="$(date -u +%Y%m%dT%H%M%S)"
 NS="$(date -u +%N)"
 RUN_ID="${STAMP}.${NS:0:3}-$$"
+RUNDIR="${OUTROOT}/phoronix/${TESTNAME}/${RUN_ID}"
 
 RUN_INDEX="${OUTROOT}/phoronix/run-index.jsonl"
+
+# A stale staging file left over from an interrupted previous run (one that
+# never reached the relocation step below) would otherwise get silently
+# misattributed to this run -- archive it out of the way rather than lose
+# or misattribute it. Not expected in normal operation (phoronix runs are
+# not run concurrently on this host, matching wspy-queue's own
+# one-at-a-time assumption elsewhere).
+if [ -s "$WSPY_PTS_HOOK_LOG" ]; then
+    mv "$WSPY_PTS_HOOK_LOG" "${WSPY_PTS_HOOK_LOG}.stale-$$"
+    echo "run_test.sh: found a stale $WSPY_PTS_HOOK_LOG from an earlier run, moved aside to ${WSPY_PTS_HOOK_LOG}.stale-$$" >&2
+fi
 
 if [ $(grep -c Intel /proc/cpuinfo) -gt 0 ]; then
     # software/branch, topdown, ipc/l2, backend -- Intel doesn't have the
@@ -44,7 +66,6 @@ else
         --run-id "$RUN_ID" -o "$OUTROOT" --run-index "$RUN_INDEX" \
         "$PROFILE" -- \
         phoronix-test-suite batch-run $TESTNAME
-    RUNDIR="${OUTROOT}/phoronix/${TESTNAME}/${RUN_ID}"
     # Renders every *.csv in $RUNDIR that has a "time" column against the
     # shared plot templates (wspy-plot, INVESTIGATION_4.0.md's "What shipped
     # in 4.1"), replacing the old gnuplot.sh's two hardcoded filenames -- output
@@ -80,4 +101,16 @@ else
         "$PROCTREE" $PROCTREE_FLAGS -M -N -P "${RUNDIR}/process.tree.txt" > "${RUNDIR}/process.tree.summary.txt"
         "$PROCTREE" "${RUNDIR}/process.tree.txt" > "${RUNDIR}/process.tree.simple.txt"
     fi
+fi
+
+# Relocate the pts_hooks staging log (if the result_notifier hooks are
+# registered on this host -- scripts/setup_phoronix_hooks.sh) into the run
+# directory as a real artifact, and clear the staging path for the next
+# invocation. By the time control returns here, phoronix-test-suite (and
+# every hook subprocess PTS spawned) has fully exited, so this is not a
+# race against anything still writing. Nothing to do, silently, if the
+# hooks aren't registered -- same degrade-don't-fail idiom as the
+# wspy-plot/proctree steps above.
+if [ -s "$WSPY_PTS_HOOK_LOG" ]; then
+    mv "$WSPY_PTS_HOOK_LOG" "${RUNDIR}/pts_hooks.log"
 fi

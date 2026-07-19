@@ -621,9 +621,20 @@ sampling mode:**
     implementation of wrapping a non-wspy collector.
 20. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
     CSVs into per-test-case/per-trial datasets by correlating run manifests with PTS results, composite.xml,
-    and log timestamps. Integrate with the built-in PTS `result_notifier` hooks for sub-millisecond precision
-    checkpointing and zero-overhead timing. See the detailed report at
-    [phoronix_hook_investigation.md](file:///home/mev/source/wspy/doc/phoronix_hook_investigation.md) for design and prototypes.
+    and log timestamps. See the detailed report at
+    [phoronix_hook_investigation.md](file:///home/mev/source/wspy/doc/phoronix_hook_investigation.md) for
+    design and prototypes. **Capture instrumentation landed ahead of the full item** (2026-07-19,
+    `doc/phoronix_hook_investigation.md`'s "Implementation Update" section): `scripts/pts_hooks/{pre,
+    post}_test_run.sh` (PTS `result_notifier` hook scripts, sub-millisecond TSV checkpoints to a fixed
+    staging path — verified against the real installed module that a hook subprocess's environment is
+    *replaced*, not inherited, which rules out passing the wspy run directory down directly),
+    `workload/phoronix/run_test.sh` (relocates the staging log into `<rundir>/pts_hooks.log` once
+    `wspy-run` returns, degrading to no-op when hooks aren't registered), and
+    `scripts/setup_phoronix_hooks.sh` (one-time host registration helper, `setup_perf.sh`-style
+    check-then-prompt, not run against any real host by this change). This closes the "capture the raw
+    material now" half so ongoing Phoronix runs stop losing it retroactively; **still open**: actually
+    registering the hooks on a real host, and teaching `wspy-phoronix-segment.py` to prefer
+    `pts_hooks.log` over the composite.xml/log-timestamp correlation it uses today.
 
 **Tier 7 — testing:**
 
