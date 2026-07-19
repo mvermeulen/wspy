@@ -34,8 +34,10 @@
 #include "affinity.h"
 #if AMDGPU
 #include "amd_sysfs.h"
+#include "amd_smi.h"
 extern int gpu_busy_requested;
 extern int gpu_metrics_requested;
+extern int gpu_smi_requested;
 #endif
 #if NVIDIA
 #include "nvidia_nvml.h"
@@ -3139,6 +3141,34 @@ void timer_callback(int signum){
         fprintf(outfile,"gpu activity         %u%%\n", amd_sysfs_get_gpu_activity());
         fprintf(outfile,"gpu power            %.2f W\n", amd_sysfs_get_gpu_power());
         fprintf(outfile,"gpu freq             %u MHz\n", amd_sysfs_get_gpu_freq());
+      }
+    }
+  }
+  // wspy.c's CSV header/aggregate-row print already cover --gpu-smi
+  // (gpu_smi_requested); timer_callback() never read amd_smi here, so a
+  // periodic --gpu-smi --interval row was silently missing the 4 columns
+  // the header claims (gpu_smi_temp/gpu_smi_activity/gpu_smi_vram_used/
+  // gpu_smi_vram_total) -- see INVESTIGATION.md's "4.2 -- remaining work"
+  // Tier 1. Mirrors wspy.c's own gpu_smi_requested block exactly (both CSV
+  // and human-format branches), positioned after gpu_metrics/before NVIDIA
+  // to match the header's column order.
+  if (gpu_smi_requested){
+    amd_smi_metrics();
+    amd_smi_memory();
+    if (csvflag){
+      fprintf(outfile,"%u,%u,%u,%u,",
+        amd_smi_metrics_valid() ? amd_smi_get_temp() : 0,
+        amd_smi_metrics_valid() ? amd_smi_get_activity() : 0,
+        amd_smi_memory_valid() ? amd_smi_get_vram_used() : 0,
+        amd_smi_memory_valid() ? amd_smi_get_vram_total() : 0);
+    } else {
+      if (amd_smi_metrics_valid()){
+        fprintf(outfile,"gpu smi temp         %u C\n", amd_smi_get_temp());
+        fprintf(outfile,"gpu smi activity     %u%%\n", amd_smi_get_activity());
+      }
+      if (amd_smi_memory_valid()){
+        fprintf(outfile,"gpu vram used        %u MB\n", amd_smi_get_vram_used());
+        fprintf(outfile,"gpu vram total       %u MB\n", amd_smi_get_vram_total());
       }
     }
   }
