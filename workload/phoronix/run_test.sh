@@ -35,10 +35,14 @@ else
     # not because it runs slower, but because an hour of process-tree records
     # is already more than is practical to publish/browse. The counter passes
     # have no such cap -- some phoronix tests legitimately take a while, and
-    # that's fine to just wait out.
+    # that's fine to just wait out. PROFILE lets a caller pick a different
+    # wspy-run profile instead (e.g. "gpu-compute" for a GPU-bound/latency-
+    # driven workload -- see wspy-run --list) while keeping today's sweep as
+    # the default.
+    PROFILE=${PROFILE:-"deep-cpu,tree-heavy"}
     "$WSPY_RUN" --wspy "$WSPY" --suite phoronix --benchmark "$TESTNAME" \
         --run-id "$RUN_ID" -o "$OUTROOT" --run-index "$RUN_INDEX" \
-        deep-cpu,tree-heavy -- \
+        "$PROFILE" -- \
         phoronix-test-suite batch-run $TESTNAME
     RUNDIR="${OUTROOT}/phoronix/${TESTNAME}/${RUN_ID}"
     # Renders every *.csv in $RUNDIR that has a "time" column against the
@@ -46,15 +50,34 @@ else
     # in 4.1"), replacing the old gnuplot.sh's two hardcoded filenames -- output
     # lands in $RUNDIR/plots/, wspy-run's own unified-output-layout convention.
     "$WSPY_PLOT" --rundir "$RUNDIR"
-    # tree-heavy's --tree pass writes the raw process.tree.txt record; render it
-    # into a human-readable reconstructed tree (same "run the tool automatically"
-    # treatment wspy-plot just got for CSVs, replacing this script's old habit of
-    # only running proctree by hand). Guarded on the file existing/non-empty since
-    # a --tree pass can time out or fail without producing one. -C matches
-    # tree-heavy's own --tree-cmdline; -M/-N/-P (vmsize+rss/thread count/ppid)
-    # are unconditional since that data is always in the raw file regardless of
-    # any flag (see proctree.c's parse_stat()), so there's nothing to gate them on.
+    # A --tree pass (tree-heavy or gpu-compute) writes the raw
+    # process.tree.txt record; render it into two human-readable views (same
+    # "run the tool automatically" treatment wspy-plot just got for CSVs,
+    # replacing this script's old habit of only running proctree by hand).
+    # Guarded on the file existing/non-empty since a --tree pass can time out
+    # or fail without producing one.
     if [ -s "${RUNDIR}/process.tree.txt" ]; then
-        "$PROCTREE" -C -M -N -P "${RUNDIR}/process.tree.txt" > "${RUNDIR}/process.tree.summary.txt"
+        # Which proctree flags match this run's own --tree pass depends on
+        # which profile produced it -- tree-heavy captures --tree-cmdline
+        # only; gpu-compute captures the syscall-latency set (futex/io-wait/
+        # connect/wait/poll/nanosleep) instead, no cmdline. Neither is
+        # discoverable from here without parsing wspy-run's own bash config
+        # (same reasoning web/joblib.py's execute_profile_run() documents for
+        # its own equivalent lookup), so this mirrors those fixed choices
+        # directly -- update alongside wspy-run's load_builtin_profile() if
+        # either ever changes, or a future profile adds its own --tree pass.
+        # -M/-N/-P (vmsize+rss/thread count/ppid) are unconditional on the
+        # summary view since that data is always in the raw file regardless
+        # of any flag (see proctree.c's parse_stat()), so there's nothing to
+        # gate them on; the simple view deliberately omits them (and
+        # everything else) -- just cpu=/start=/finish= per process, easier to
+        # read as a pure process hierarchy than the fully-annotated summary.
+        case ",$PROFILE," in
+            *,gpu-compute,*) PROCTREE_FLAGS="-X -B -K -J -L -Z" ;;
+            *,tree-heavy,*)  PROCTREE_FLAGS="-C" ;;
+            *)               PROCTREE_FLAGS="" ;;
+        esac
+        "$PROCTREE" $PROCTREE_FLAGS -M -N -P "${RUNDIR}/process.tree.txt" > "${RUNDIR}/process.tree.summary.txt"
+        "$PROCTREE" "${RUNDIR}/process.tree.txt" > "${RUNDIR}/process.tree.simple.txt"
     fi
 fi
