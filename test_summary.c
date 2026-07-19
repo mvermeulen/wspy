@@ -16,6 +16,7 @@ static struct summary_opts default_opts(void){
   opts.group_by = GROUP_COMMAND;
   opts.outlier_z = 2.0;
   opts.min_runs = 1;
+  opts.max_cv = 5.0;
   return opts;
 }
 
@@ -99,11 +100,17 @@ static void insert_metric_null(sqlite3 *db,int run_id,const char *metric_name){
 
 /* Finds the CSV data line beginning with "group,metric," (test data here
  * never puts a comma/quote in a group or metric name, so no CSV-quoting
- * awareness is needed to locate it) and parses its numeric fields.
- * Returns 1 if found. */
+ * awareness is needed to locate it) and parses its numeric fields, plus
+ * verdict as a plain (unquoted) token -- the "%31[^,]" scan doesn't
+ * understand print_csv_field()'s quoting, so a verdict containing a comma
+ * itself (WARN:thin,noisy) isn't parseable this way; those cases are
+ * checked directly against the raw buffer with strstr() instead (see
+ * test_summarize_verdict_thin_and_noisy_both_fire below). verdict_buf must
+ * be caller-allocated, >=32 bytes. Returns 1 if found. */
 static int find_csv_row(const char *buf,const char *group,const char *metric,
                          int *n,double *min_v,double *max_v,double *mean_v,
-                         double *median_v,double *stddev_v,double *cv,int *outlier_count){
+                         double *median_v,double *stddev_v,double *cv,
+                         double *ci_low,double *ci_high,char *verdict_buf,int *outlier_count){
   char prefix[256];
   const char *line = buf;
   size_t prefix_len;
@@ -114,8 +121,8 @@ static int find_csv_row(const char *buf,const char *group,const char *metric,
     const char *eol = strchr(line,'\n');
     size_t linelen = eol ? (size_t)(eol - line) : strlen(line);
     if (linelen >= prefix_len && !strncmp(line,prefix,prefix_len)){
-      sscanf(line + prefix_len,"%d,%lf,%lf,%lf,%lf,%lf,%lf,%d,",
-             n,min_v,max_v,mean_v,median_v,stddev_v,cv,outlier_count);
+      sscanf(line + prefix_len,"%d,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%31[^,],%d,",
+             n,min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high,verdict_buf,outlier_count);
       return 1;
     }
     line = eol ? eol + 1 : NULL;
@@ -184,6 +191,74 @@ static void test_compute_stats_two_samples_never_flagged(void){
   printf("test_compute_stats_two_samples_never_flagged passed\n");
 }
 
+static void test_t_critical_95_table_and_fallback(void){
+  assert(fabs(t_critical_95(1) - 12.706) < 1e-9);
+  assert(fabs(t_critical_95(30) - 2.042) < 1e-9);
+  assert(fabs(t_critical_95(31) - 1.96) < 1e-9); /* beyond the table -> normal approximation */
+  assert(fabs(t_critical_95(500) - 1.96) < 1e-9);
+  printf("test_t_critical_95_table_and_fallback passed\n");
+}
+
+static void test_compute_ci95_single_sample_is_zero_width(void){
+  double ci_low,ci_high;
+  /* n<2: stddev is 0 by compute_stats()'s own convention, so the interval
+   * must degenerate to the point value without consulting the t-table
+   * (df=0 has no entry). */
+  compute_ci95(42.0,0.0,1,&ci_low,&ci_high);
+  assert(ci_low == 42.0 && ci_high == 42.0);
+  printf("test_compute_ci95_single_sample_is_zero_width passed\n");
+}
+
+static void test_compute_ci95_matches_formula(void){
+  double ci_low,ci_high,expected_margin;
+  /* Same values as test_compute_stats_basic (mean=3, stddev=sqrt(2.5), n=5)
+   * -- confirms compute_ci95() actually wires mean +/- t*stddev/sqrt(n)
+   * together correctly, not an independently-sourced expected number. */
+  compute_ci95(3.0,sqrt(2.5),5,&ci_low,&ci_high);
+  expected_margin = t_critical_95(4) * sqrt(2.5) / sqrt(5.0);
+  assert(fabs(ci_low - (3.0 - expected_margin)) < 1e-9);
+  assert(fabs(ci_high - (3.0 + expected_margin)) < 1e-9);
+  assert(ci_low < 3.0 && ci_high > 3.0);
+  printf("test_compute_ci95_matches_formula passed\n");
+}
+
+static void test_compute_verdict_pass(void){
+  char verdict[24];
+  compute_verdict(5,2.0,5.0,verdict,sizeof(verdict)); /* n>=3, cv < max_cv */
+  assert(strcmp(verdict,"PASS") == 0);
+  printf("test_compute_verdict_pass passed\n");
+}
+
+static void test_compute_verdict_thin_only(void){
+  char verdict[24];
+  compute_verdict(2,0.0,5.0,verdict,sizeof(verdict)); /* n<3, cv well under max_cv */
+  assert(strcmp(verdict,"WARN:thin") == 0);
+  printf("test_compute_verdict_thin_only passed\n");
+}
+
+static void test_compute_verdict_noisy_only(void){
+  char verdict[24];
+  compute_verdict(10,50.0,5.0,verdict,sizeof(verdict)); /* n>=3, cv far over max_cv */
+  assert(strcmp(verdict,"WARN:noisy") == 0);
+  printf("test_compute_verdict_noisy_only passed\n");
+}
+
+static void test_compute_verdict_thin_and_noisy(void){
+  char verdict[24];
+  compute_verdict(2,50.0,5.0,verdict,sizeof(verdict));
+  assert(strcmp(verdict,"WARN:thin,noisy") == 0);
+  printf("test_compute_verdict_thin_and_noisy passed\n");
+}
+
+static void test_compute_verdict_boundary_not_noisy(void){
+  char verdict[24];
+  /* Exactly at --max-cv: the check is strictly-greater-than, so the
+   * boundary itself is not flagged. */
+  compute_verdict(5,5.0,5.0,verdict,sizeof(verdict));
+  assert(strcmp(verdict,"PASS") == 0);
+  printf("test_compute_verdict_boundary_not_noisy passed\n");
+}
+
 static void test_parse_group_by(void){
   enum group_by g;
 
@@ -230,7 +305,8 @@ static void test_summarize_averages_per_run_and_groups_by_command(void){
   size_t size;
   FILE *fp;
   int n,outliers;
-  double min_v,max_v,mean_v,median_v,stddev_v,cv;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high;
+  char verdict[32];
 
   /* workloadA: 3 runs, one aggregate "ipc" value each -> stats span those
    * 3 per-run values directly. */
@@ -254,13 +330,15 @@ static void test_summarize_averages_per_run_and_groups_by_command(void){
   assert(summarize(db,&opts,fp,&totals) == 0);
   fclose(fp);
 
-  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,&outliers));
+  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,
+                       &ci_low,&ci_high,verdict,&outliers));
   assert(n == 3);
   assert(fabs(min_v - 1.0) < 1e-9);
   assert(fabs(max_v - 1.2) < 1e-9);
   assert(fabs(mean_v - 1.1) < 1e-9);
 
-  assert(find_csv_row(buf,"/bin/workloadA","cache_miss",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,&outliers));
+  assert(find_csv_row(buf,"/bin/workloadA","cache_miss",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,
+                       &ci_low,&ci_high,verdict,&outliers));
   assert(n == 1);
   assert(fabs(mean_v - 20.0) < 1e-9); /* the one run's 3 ticks averaged */
 
@@ -309,7 +387,8 @@ static void test_summarize_hostname_filter(void){
   size_t size;
   FILE *fp;
   int n,outliers;
-  double min_v,max_v,mean_v,median_v,stddev_v,cv;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high;
+  char verdict[32];
 
   insert_run(db,1,"r1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
   insert_metric(db,1,"ipc",1.0);
@@ -323,7 +402,8 @@ static void test_summarize_hostname_filter(void){
   assert(summarize(db,&opts,fp,&totals) == 0);
   fclose(fp);
 
-  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,&outliers));
+  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,
+                       &ci_low,&ci_high,verdict,&outliers));
   assert(n == 1);
   assert(fabs(min_v - 2.0) < 1e-9 && fabs(max_v - 2.0) < 1e-9 && fabs(mean_v - 2.0) < 1e-9);
   assert(stddev_v == 0.0);
@@ -387,6 +467,180 @@ static void test_summarize_min_runs_skips_thin_buckets(void){
   free(buf);
   sqlite3_close(db);
   printf("test_summarize_min_runs_skips_thin_buckets passed\n");
+}
+
+static void test_summarize_verdict_pass_low_cv_enough_runs(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf;
+  size_t size;
+  FILE *fp;
+  int n,outliers,i;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high;
+  char verdict[32];
+
+  for (i = 0; i < 4; i++){
+    char run_id[8],start_time[32];
+    snprintf(run_id,sizeof(run_id),"r%d",i);
+    snprintf(start_time,sizeof(start_time),"2026-01-01T00:0%d:00Z",i);
+    insert_run(db,i + 1,run_id,"host1","/bin/workloadA",NULL,start_time);
+    insert_metric(db,i + 1,"ipc",1.0); /* identical values -> cv=0, n=4>=3 */
+  }
+
+  opts.csvflag = 1;
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,
+                       &ci_low,&ci_high,verdict,&outliers));
+  assert(strcmp(verdict,"PASS") == 0);
+  assert(totals.groups_warned == 0);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_summarize_verdict_pass_low_cv_enough_runs passed\n");
+}
+
+static void test_summarize_verdict_thin_when_fewer_than_three_runs(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf;
+  size_t size;
+  FILE *fp;
+  int n,outliers;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high;
+  char verdict[32];
+
+  insert_run(db,1,"r1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"ipc",1.0);
+  insert_run(db,2,"r2","host1","/bin/workloadA",NULL,"2026-01-01T00:01:00Z");
+  insert_metric(db,2,"ipc",1.0); /* n=2: identical values, cv=0 -- isolates "thin" from "noisy" */
+
+  opts.csvflag = 1;
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,
+                       &ci_low,&ci_high,verdict,&outliers));
+  assert(n == 2);
+  assert(strcmp(verdict,"WARN:thin") == 0);
+  assert(totals.groups_warned == 1);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_summarize_verdict_thin_when_fewer_than_three_runs passed\n");
+}
+
+static void test_summarize_verdict_noisy_when_cv_exceeds_default_max_cv(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf;
+  size_t size;
+  FILE *fp;
+  int n,outliers;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high;
+  char verdict[32];
+
+  /* n=3 (clears the "thin" threshold), but CV ~9.1% is well over the
+   * default --max-cv of 5.0. */
+  insert_run(db,1,"r1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"ipc",1.0);
+  insert_run(db,2,"r2","host1","/bin/workloadA",NULL,"2026-01-01T00:01:00Z");
+  insert_metric(db,2,"ipc",1.1);
+  insert_run(db,3,"r3","host1","/bin/workloadA",NULL,"2026-01-01T00:02:00Z");
+  insert_metric(db,3,"ipc",1.2);
+
+  opts.csvflag = 1;
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,
+                       &ci_low,&ci_high,verdict,&outliers));
+  assert(n == 3);
+  assert(cv > 5.0);
+  assert(strcmp(verdict,"WARN:noisy") == 0);
+  assert(totals.groups_warned == 1);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_summarize_verdict_noisy_when_cv_exceeds_default_max_cv passed\n");
+}
+
+static void test_summarize_max_cv_flag_raises_noisy_threshold(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf;
+  size_t size;
+  FILE *fp;
+  int n,outliers;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high;
+  char verdict[32];
+
+  /* Same ~9.1%-CV data as the default-threshold test above, but with
+   * --max-cv raised past it -- confirms the flag actually changes the
+   * verdict, not just that the default threshold does something. */
+  insert_run(db,1,"r1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"ipc",1.0);
+  insert_run(db,2,"r2","host1","/bin/workloadA",NULL,"2026-01-01T00:01:00Z");
+  insert_metric(db,2,"ipc",1.1);
+  insert_run(db,3,"r3","host1","/bin/workloadA",NULL,"2026-01-01T00:02:00Z");
+  insert_metric(db,3,"ipc",1.2);
+
+  opts.csvflag = 1;
+  opts.max_cv = 20.0;
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,
+                       &ci_low,&ci_high,verdict,&outliers));
+  assert(strcmp(verdict,"PASS") == 0);
+  assert(totals.groups_warned == 0);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_summarize_max_cv_flag_raises_noisy_threshold passed\n");
+}
+
+/* verdict "WARN:thin,noisy" contains a literal comma, so print_csv_field()
+ * quotes it -- find_csv_row()'s unquoting-unaware parser can't extract it
+ * (see its own comment), so this checks the raw CSV text directly instead. */
+static void test_summarize_verdict_thin_and_noisy_both_fire(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf;
+  size_t size;
+  FILE *fp;
+
+  insert_run(db,1,"r1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"ipc",1.0);
+  insert_run(db,2,"r2","host1","/bin/workloadA",NULL,"2026-01-01T00:01:00Z");
+  insert_metric(db,2,"ipc",100.0); /* n=2 (thin) and wildly noisy */
+
+  opts.csvflag = 1;
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  assert(strstr(buf,"\"WARN:thin,noisy\"") != NULL);
+  assert(totals.groups_warned == 1);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_summarize_verdict_thin_and_noisy_both_fire passed\n");
 }
 
 static void test_summarize_group_by_cpu_vendor_unknown_bucket(void){
@@ -716,6 +970,14 @@ int main(void){
   test_compute_stats_even_count_median();
   test_compute_stats_outlier_detected();
   test_compute_stats_two_samples_never_flagged();
+  test_t_critical_95_table_and_fallback();
+  test_compute_ci95_single_sample_is_zero_width();
+  test_compute_ci95_matches_formula();
+  test_compute_verdict_pass();
+  test_compute_verdict_thin_only();
+  test_compute_verdict_noisy_only();
+  test_compute_verdict_thin_and_noisy();
+  test_compute_verdict_boundary_not_noisy();
   test_parse_group_by();
   test_metric_wanted();
   test_print_csv_field_quoting();
@@ -724,6 +986,11 @@ int main(void){
   test_summarize_hostname_filter();
   test_summarize_metric_filter();
   test_summarize_min_runs_skips_thin_buckets();
+  test_summarize_verdict_pass_low_cv_enough_runs();
+  test_summarize_verdict_thin_when_fewer_than_three_runs();
+  test_summarize_verdict_noisy_when_cv_exceeds_default_max_cv();
+  test_summarize_max_cv_flag_raises_noisy_threshold();
+  test_summarize_verdict_thin_and_noisy_both_fire();
   test_summarize_group_by_cpu_vendor_unknown_bucket();
   test_summarize_null_only_metric_excluded();
   test_summarize_show_runs_lists_contributors();

@@ -53,6 +53,24 @@
  * hostname:run_id already known by other means (e.g. from a run-index file
  * directly), and --show-runs is useful on its own as a "which runs made up
  * this row" audit even without immediately tracing one.
+ *
+ * ci95_low/ci95_high (a 95% confidence interval of the mean, Student's t,
+ * compute_ci95()) and verdict (PASS, or WARN:thin/WARN:noisy/WARN:thin,noisy,
+ * compute_verdict()) are 4.2's "Repeatability policy + confidence metadata"
+ * item -- default output for every reported bucket alongside the pre-existing
+ * mean/stddev/cv_percent, no flag needed. "thin" means n < VERDICT_MIN_RUNS_
+ * FOR_CONFIDENCE (3, the same threshold outlier flagging already uses);
+ * "noisy" means cv_percent exceeds --max-cv (default 5.0, a single global
+ * threshold, not per-metric). --strict now also fails on any WARN verdict,
+ * matching wspy-validate's own --strict convention. See INVESTIGATION.md's
+ * "Repeatability policy + confidence metadata deep-dive" for the full design,
+ * including a caveat that a workload wrapping its own multi-trial benchmark
+ * harness (Phoronix's adaptive-N, SPEC's fixed multi-run high/low/median) can
+ * trigger WARN:noisy from the harness's own internal repeat-count variance as
+ * much as from real measurement noise -- this tool has no visibility into
+ * what happens inside the wrapped child process to tell the two apart, and
+ * deliberately doesn't try to (stays harness-agnostic, same as everywhere
+ * else in this tool).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -68,6 +86,14 @@
  * nothing for this tool to summarize. */
 #define METRIC_VALUES_MIN_SCHEMA_VERSION 2
 
+/* Repeatability-verdict "thin" threshold -- reuses, rather than invents, the
+ * exact n>=3 threshold compute_stats() already applies to outlier flagging
+ * ("flagging with fewer samples has no real meaning"). Independent of
+ * --min-runs: --min-runs controls whether a bucket is shown at all, this
+ * controls whether it's shown *with* a confidence caveat attached. See
+ * INVESTIGATION.md's "Repeatability policy + confidence metadata deep-dive". */
+#define VERDICT_MIN_RUNS_FOR_CONFIDENCE 3
+
 enum group_by { GROUP_COMMAND, GROUP_HOSTNAME, GROUP_CPU_VENDOR };
 
 struct summary_opts {
@@ -78,6 +104,7 @@ struct summary_opts {
   int nmetrics;                 /* 0 = all metrics */
   enum group_by group_by;
   double outlier_z;
+  double max_cv;      /* --max-cv: CV percent threshold above which a bucket's verdict is WARN:noisy */
   int min_runs;
   int csvflag;
   int quiet;
@@ -89,6 +116,7 @@ struct summary_opts {
 struct summary_totals {
   int groups_reported;
   int groups_skipped_min_runs;
+  int groups_warned;   /* of groups_reported, how many carried a non-PASS verdict */
   int rows_scanned;
 };
 
@@ -164,6 +192,69 @@ static int compute_stats(const double *values,int n,double outlier_z,
   }
   free(sorted);
   return outlier_count;
+}
+
+/* Two-tailed 95% critical values of Student's t, indexed by df=n-1 for
+ * df=1..T95_TABLE_MAX_DF; df beyond the table falls back to the normal
+ * approximation z=1.96 rather than growing the table further -- t and z are
+ * close enough there, and wspy-level repeat counts this high are rare in
+ * practice. No stats library is linked (summary.c only pulls in sqlite3/
+ * math.h), so this is a small hardcoded table, the same idiom as
+ * validate.c's sanity_bounds[] or topdown.c's event tables, not a
+ * general-purpose distribution routine. */
+#define T95_TABLE_MAX_DF 30
+static const double t95_table[T95_TABLE_MAX_DF] = {
+  12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228,
+   2.201, 2.179, 2.160, 2.145, 2.131, 2.120, 2.110, 2.101, 2.093, 2.086,
+   2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045, 2.042,
+};
+
+static double t_critical_95(int df){
+  if (df < 1) return 0.0; /* compute_ci95() never reaches this for n<2 */
+  if (df <= T95_TABLE_MAX_DF) return t95_table[df - 1];
+  return 1.96;
+}
+
+/* 95% CI of the mean via mean +/- t_critical_95(n-1) * stddev/sqrt(n). n<2
+ * (stddev==0 by compute_stats()'s own "nothing to vary against" convention)
+ * degenerates to a zero-width interval without consulting the table, since
+ * df=0 has no entry -- the formula would produce the same result anyway
+ * once stddev is 0, this just avoids needing a t(df=0) lookup. Not
+ * configurable (no --confidence-level) -- matches compute_stats()'s own
+ * stddev being fixed at sample (n-1) with no user-facing knob. */
+static void compute_ci95(double mean,double stddev,int n,double *ci_low_out,double *ci_high_out){
+  double margin;
+
+  if (n < 2){
+    *ci_low_out = mean;
+    *ci_high_out = mean;
+    return;
+  }
+  margin = t_critical_95(n - 1) * stddev / sqrt((double)n);
+  *ci_low_out = mean - margin;
+  *ci_high_out = mean + margin;
+}
+
+/* Repeatability-policy verdict for an emitted bucket: "PASS", or "WARN:"
+ * plus a comma-separated reason list. "thin" is n < VERDICT_MIN_RUNS_FOR_
+ * CONFIDENCE; "noisy" is cv_percent exceeding the (single, global,
+ * --max-cv-controlled) threshold -- not per-metric, see validate.c's
+ * per-column sanity_bounds[] for the precedent a future per-metric override
+ * table would follow, deliberately not built here without real data to
+ * justify differentiated thresholds. Caveat (INVESTIGATION.md's
+ * "Repeatability policy + confidence metadata deep-dive"): a workload that
+ * wraps its own multi-trial benchmark harness (Phoronix's adaptive-N,
+ * SPEC's fixed multi-run high/low/median) can trigger WARN:noisy from the
+ * harness's own internal repeat-count variance as much as from real
+ * measurement noise -- wspy has no visibility into what happens inside the
+ * wrapped child process to tell the two apart. */
+static void compute_verdict(int n,double cv_percent,double max_cv,char *verdict_out,size_t verdict_size){
+  int thin = (n < VERDICT_MIN_RUNS_FOR_CONFIDENCE);
+  int noisy = (cv_percent > max_cv);
+
+  if (!thin && !noisy){ snprintf(verdict_out,verdict_size,"PASS"); return; }
+  if (thin && noisy){ snprintf(verdict_out,verdict_size,"WARN:thin,noisy"); return; }
+  snprintf(verdict_out,verdict_size,"WARN:%s",thin ? "thin" : "noisy");
 }
 
 static void print_csv_field(FILE *out,const char *s){
@@ -276,11 +367,12 @@ static void format_contributing_runs(const struct bucket *b,char *buf,size_t buf
  * still is). */
 static void emit_bucket(const struct bucket *b,const struct summary_opts *opts,FILE *out,
                          struct summary_totals *totals){
-  double min_v,max_v,mean_v,median_v,stddev_v,cv;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high;
   int *outlier_flags;
   int outlier_count,i;
   char outlier_ids[512];
   char contributing_runs[4096];
+  char verdict[24];
   size_t used = 0;
 
   if (b->n < opts->min_runs){
@@ -300,19 +392,24 @@ static void emit_bucket(const struct bucket *b,const struct summary_opts *opts,F
   if (opts->show_runs) format_contributing_runs(b,contributing_runs,sizeof(contributing_runs));
 
   cv = (mean_v != 0.0) ? (stddev_v / fabs(mean_v)) * 100.0 : 0.0;
+  compute_ci95(mean_v,stddev_v,b->n,&ci_low,&ci_high);
+  compute_verdict(b->n,cv,opts->max_cv,verdict,sizeof(verdict));
+  if (strcmp(verdict,"PASS") != 0) totals->groups_warned++;
 
   if (opts->csvflag){
     print_csv_field(out,b->group_val); fputc(',',out);
     print_csv_field(out,b->metric_name); fputc(',',out);
-    fprintf(out,"%d,%.6g,%.6g,%.6g,%.6g,%.6g,%.4g,%d,",
-            b->n,min_v,max_v,mean_v,median_v,stddev_v,cv,outlier_count);
+    fprintf(out,"%d,%.6g,%.6g,%.6g,%.6g,%.6g,%.4g,%.6g,%.6g,",
+            b->n,min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high);
+    print_csv_field(out,verdict); fputc(',',out);
+    fprintf(out,"%d,",outlier_count);
     print_csv_field(out,outlier_ids);
     if (opts->show_runs){ fputc(',',out); print_csv_field(out,contributing_runs); }
     fputc('\n',out);
   } else {
-    fprintf(out,"%-28.28s %-24.24s %4d %10.6g %10.6g %10.6g %10.6g %10.6g %7.2f%% %3d  %s",
-            b->group_val,b->metric_name,b->n,min_v,max_v,mean_v,median_v,stddev_v,cv,outlier_count,
-            outlier_ids);
+    fprintf(out,"%-28.28s %-24.24s %4d %10.6g %10.6g %10.6g %10.6g %10.6g %7.2f%% %10.6g %10.6g %-16s %3d  %s",
+            b->group_val,b->metric_name,b->n,min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high,verdict,
+            outlier_count,outlier_ids);
     if (opts->show_runs) fprintf(out,"  %s",contributing_runs);
     fputc('\n',out);
   }
@@ -547,12 +644,14 @@ static void usage(const char *prog){
     "  --group-by <col>       command (default), hostname, or cpu_vendor\n"
     "  --outlier-stddev <n>   z-score threshold for flagging outliers (default 2.0)\n"
     "  --min-runs <n>         only report (group,metric) buckets with >= n runs (default 1)\n"
+    "  --max-cv <percent>     CV%% above which a bucket's verdict is WARN:noisy (default 5.0)\n"
     "  --csv                  machine-readable CSV output instead of the human table\n"
     "  --show-runs            append every contributing run's hostname:run_id to each\n"
     "                         bucket (traceability: chase a surprising number to its runs)\n"
     "  -q, --quiet            suppress the trailing summary line\n"
     "  -s, --strict           exit non-zero if any bucket was skipped for --min-runs,\n"
-    "                         or if nothing matched at all\n"
+    "                         if any reported bucket's verdict is WARN, or if nothing\n"
+    "                         matched at all\n"
     "  -h, --help              show this help\n"
     "\n"
     "  --trace <host>:<run_id>  standalone mode: resolve one run (as named by\n"
@@ -561,9 +660,15 @@ static void usage(const char *prog){
     "                         still exist on disk. Ignores every other option\n"
     "                         above except --db. Prints key=value lines.\n"
     "\n"
+    "Every reported bucket carries a 95%% confidence interval of the mean (ci95_low/\n"
+    "ci95_high, Student's t) and a repeatability verdict (PASS, or WARN:thin for\n"
+    "n<3 runs and/or WARN:noisy for CV over --max-cv) alongside min/max/mean/\n"
+    "median/stddev/cv_percent -- all default output, no flag needed.\n"
+    "\n"
     "Exit status: 0 normally (1 with --strict if any bucket still needs more\n"
-    "runs, or nothing matched; 1 with --trace if no such run is recorded),\n"
-    "2 on a usage error or if the database could not be opened.\n",
+    "runs or carried a WARN verdict, or nothing matched; 1 with --trace if no\n"
+    "such run is recorded), 2 on a usage error or if the database could not be\n"
+    "opened.\n",
     prog);
 }
 
@@ -582,6 +687,7 @@ int main(int argc,char **argv){
     { "group-by",       required_argument, 0, 'g' },
     { "outlier-stddev", required_argument, 0, 'z' },
     { "min-runs",       required_argument, 0, 'n' },
+    { "max-cv",         required_argument, 0, 'X' },
     { "csv",            no_argument,       0, 'C' },
     { "show-runs",      no_argument,       0, 'R' },
     { "trace",          required_argument, 0, 'T' },
@@ -597,6 +703,7 @@ int main(int argc,char **argv){
   opts.group_by = GROUP_COMMAND;
   opts.outlier_z = 2.0;
   opts.min_runs = 1;
+  opts.max_cv = 5.0;
 
   while ((opt = getopt_long(argc,argv,"qsh",long_options,NULL)) != -1){
     switch (opt){
@@ -613,6 +720,7 @@ int main(int argc,char **argv){
     case 'g': group_by_str = optarg; break;
     case 'z': opts.outlier_z = atof(optarg); break;
     case 'n': opts.min_runs = atoi(optarg); break;
+    case 'X': opts.max_cv = atof(optarg); break;
     case 'C': opts.csvflag = 1; break;
     case 'R': opts.show_runs = 1; break;
     case 'T': opts.trace_key = optarg; break;
@@ -662,12 +770,14 @@ int main(int argc,char **argv){
   memset(&totals,0,sizeof(totals));
 
   if (opts.csvflag){
-    printf("group,metric,n,min,max,mean,median,stddev,cv_percent,outlier_count,outlier_run_ids");
+    printf("group,metric,n,min,max,mean,median,stddev,cv_percent,ci95_low,ci95_high,verdict,"
+           "outlier_count,outlier_run_ids");
     if (opts.show_runs) printf(",contributing_runs");
     printf("\n");
   } else {
-    printf("%-28s %-24s %4s %10s %10s %10s %10s %10s %8s %3s  %s",
-           "group","metric","n","min","max","mean","median","stddev","cv","out","outlier run(s)");
+    printf("%-28s %-24s %4s %10s %10s %10s %10s %10s %8s %10s %10s %-16s %3s  %s",
+           "group","metric","n","min","max","mean","median","stddev","cv",
+           "ci95_low","ci95_high","verdict","out","outlier run(s)");
     if (opts.show_runs) printf("  %s","contributing runs (host:run_id)");
     printf("\n");
   }
@@ -679,10 +789,13 @@ int main(int argc,char **argv){
   sqlite3_close(db);
 
   if (!opts.quiet)
-    printf("wspy-summary: %d group(s) reported, %d skipped (< %d run(s)), %d run-metric row(s) scanned\n",
-           totals.groups_reported,totals.groups_skipped_min_runs,opts.min_runs,totals.rows_scanned);
+    printf("wspy-summary: %d group(s) reported (%d with WARN), %d skipped (< %d run(s)), "
+           "%d run-metric row(s) scanned\n",
+           totals.groups_reported,totals.groups_warned,totals.groups_skipped_min_runs,
+           opts.min_runs,totals.rows_scanned);
 
-  if (opts.strict && (totals.groups_skipped_min_runs > 0 || totals.groups_reported == 0)) return 1;
+  if (opts.strict && (totals.groups_skipped_min_runs > 0 || totals.groups_reported == 0 ||
+                       totals.groups_warned > 0)) return 1;
   return 0;
 }
 #endif /* TEST_SUMMARY */
