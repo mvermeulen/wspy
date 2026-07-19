@@ -1,5 +1,5 @@
 #!/bin/bash
-# Smoke test for wspy-analyze (INVESTIGATION_4.0.md's "Local LLM (Ollama)
+# Smoke test for wspy-analyze (INVESTIGATION.md's "Local LLM (Ollama)
 # narrative-analysis deep-dive"). Not part of run_tests.sh/make test -- like
 # test_amd_smi.sh, this needs external state (a real wspy-validate build,
 # and for the live-call section, a running Ollama daemon with at least one

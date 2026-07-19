@@ -2,7 +2,7 @@
 # tests/wspy_queue_smoke.sh - smoke tests for wspy-queue and the job file
 # format it shares with web/server.py (web/joblib.py).
 #
-# INVESTIGATION_4.0.md's "What shipped in 4.1", "Deployment/hosting design
+# INVESTIGATION.md's "What shipped in 4.1", "Deployment/hosting design
 # note": exercises
 # the pending -> running -> done/failed job lifecycle, the requeue path, and
 # job portability (a job file copied verbatim into a second, independent

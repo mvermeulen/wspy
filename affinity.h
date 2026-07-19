@@ -1,5 +1,5 @@
 /*
- * affinity.h - core/thread affinity control (INVESTIGATION_4.0.md's
+ * affinity.h - core/thread affinity control (INVESTIGATION.md's
  * "Core/thread affinity control" item): pin the launched workload to a
  * selected set of logical CPUs via sched_setaffinity() on the forked child,
  * before execve, in topdown.c's launch_child().

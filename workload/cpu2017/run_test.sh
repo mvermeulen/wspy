@@ -11,7 +11,7 @@ PROCTREE=${PROCTREE:="/home/mev/source/wspy/proctree"}
 OUTROOT=${OUTROOT:="."}
 
 # One directory for this whole invocation: <OUTROOT>/cpu2017/<TESTNAME>/<RUN_ID>,
-# via wspy-run's unified output layout (INVESTIGATION_4.0.md "Run artifact
+# via wspy-run's unified output layout (INVESTIGATION.md "Run artifact
 # foundation" -- suite/benchmark/run_id/{...,manifest.json}). The run id is
 # computed here, not left to wspy-run's own default, so the build log below
 # and the gnuplot step at the end can both find the directory without
@@ -48,7 +48,7 @@ else
         runcpu --config ${SPECCONFIG} --action=validate --tune base --iterations 3 $TESTNAME \
         2>&1 | tee "${RUNDIR}/amd.${TESTNAME}.out"
     # Renders every *.csv in $RUNDIR that has a "time" column against the
-    # shared plot templates (wspy-plot, INVESTIGATION_4.0.md's "What shipped
+    # shared plot templates (wspy-plot, INVESTIGATION.md's "What shipped
     # in 4.1"), replacing the old gnuplot.sh's two hardcoded filenames -- output
     # lands in $RUNDIR/plots/, wspy-run's own unified-output-layout convention.
     "$WSPY_PLOT" --rundir "$RUNDIR"

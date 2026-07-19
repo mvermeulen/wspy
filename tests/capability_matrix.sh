@@ -1,7 +1,7 @@
 #!/bin/bash
 # tests/capability_matrix.sh - capability-matrix smoke tests.
 #
-# INVESTIGATION_4.0.md, "Testing and documentation" track: "Capability-matrix
+# INVESTIGATION.md, "Testing and documentation" track: "Capability-matrix
 # smoke tests (CPU vendor/family x GPU build x key option bundles,
 # graceful-degradation paths) -- run_tests.sh already does a version of this
 # (AMDGPU-build vs not); formalize it as new tracks add more axes."
@@ -227,7 +227,7 @@ echo ""
 echo "=== Modifier bundles (per-core, interval, tree variants) ==="
 # --per-core combined with any counter group used to produce a CSV header
 # with only the base/coverage columns while each per-core row appended that
-# group's values as extra, unheaded columns (INVESTIGATION_4.0.md's
+# group's values as extra, unheaded columns (INVESTIGATION.md's
 # "Fix the known --per-core CSV column-count mismatch" item). wspy.c's
 # per_core_csv now re-architects the aflag/csv print flow into one row per
 # active core, tagged with a "core" column, so header and row column counts
@@ -261,23 +261,23 @@ trap 'rm -f "$TREE_OUT"' EXIT
 run_bundle "tree-basic"                0 --no-ipc --tree "$TREE_OUT" -- /bin/true
 # --tree-vmsize was a pure no-op for a long stretch of this codebase's history;
 # it now drives a real /proc/<pid>/status scrape (peak RSS + anon/file/shmem
-# RSS composition + swap) -- see INVESTIGATION_4.0.md's "Concrete design:
+# RSS composition + swap) -- see doc/INVESTIGATION_ARCHIVE.md's "Concrete design:
 # memory footprint detail via /proc/<pid>/status" -- so this bundle now
 # exercises real behavior, not just a flag that used to be accepted and ignored.
 run_bundle "tree-cmdline-open-futex-vmsize"  0 --no-ipc --tree "$TREE_OUT" --tree-cmdline --tree-open --tree-futex --tree-vmsize -- /bin/true
 # --tree-io needs no syscall tracing (plain /proc/<pid>/io scrape at exit);
 # --tree-io-wait extends --tree-futex's ptrace mechanism onto a small
-# read/write syscall table -- see INVESTIGATION_4.0.md's "Concrete design:
+# read/write syscall table -- see doc/INVESTIGATION_ARCHIVE.md's "Concrete design:
 # blocking I/O + /proc/<pid>/io byte counters".
 run_bundle "tree-io-io-wait"           0 --no-ipc --tree "$TREE_OUT" --tree-io --tree-io-wait -- /bin/true
 # --tree-schedstat needs no syscall tracing either (plain /proc/<pid>/schedstat
-# scrape at exit, same shape as --tree-io) -- see INVESTIGATION_4.0.md's
+# scrape at exit, same shape as --tree-io) -- see INVESTIGATION.md's
 # "Concrete design: /proc/<pid>/schedstat run-delay/timeslice capture".
 run_bundle "tree-schedstat"            0 --no-ipc --tree "$TREE_OUT" --tree-schedstat -- /bin/true
 # --tree-connect/--tree-wait/--tree-poll/--tree-nanosleep: same per-pid
 # entry/exit-timing mechanism --tree-io-wait already established (no new
 # ptrace_arch macros), just four more syscall families -- see
-# INVESTIGATION_4.0.md's "Concrete design: --tree-connect/--tree-wait/
+# doc/INVESTIGATION_ARCHIVE.md's "Concrete design: --tree-connect/--tree-wait/
 # --tree-poll/--tree-nanosleep".
 run_bundle "tree-syscall-latency-expansion" 0 --no-ipc --tree "$TREE_OUT" --tree-connect --tree-wait --tree-poll --tree-nanosleep -- /bin/true
 
@@ -334,7 +334,7 @@ run_bundle "passes-multi-group" 0 --csv --no-ipc \
 # multiplexed) pass instead of bin-packed into N -- still graceful
 # degradation (exit 0, no fatal error, matching CSV column counts), now
 # relying on read_counters()'s time_running/time_enabled scaling
-# (INVESTIGATION_4.0.md's "What shipped in 4.1", the multiplex-scaling
+# (INVESTIGATION.md's "What shipped in 4.1", the multiplex-scaling
 # correctness fix) to keep the values correct.
 run_bundle "passes-multiplex" 0 --csv --no-ipc \
   --passes=ipc,topdown,cache2,cache3,branch,memory,tlb,opcache,software --multiplex -- /bin/true

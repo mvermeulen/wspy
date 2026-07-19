@@ -15,7 +15,7 @@
  * This header exists so ptrace_loop() (topdown.c) can read "the syscall
  * number" and "syscall argument 2" (used for SYS_openat's pathname
  * pointer) without embedding x86_64 field names directly -- see
- * INVESTIGATION_4.0.md's "Arch-neutral ptrace register-access macros" row.
+ * INVESTIGATION.md's "Arch-neutral ptrace register-access macros" row.
  * Both the x86_64 and aarch64 branches have been fully exercised and
  * verified on real hardware platforms.
  */

@@ -1,7 +1,7 @@
 /*
  * summary.c - wspy-summary: generates a per-metric summary table (min/max/
  * mean/median/stddev/outlier flags) across repeated wspy runs recorded in
- * a normalized store (wspy-store --db <path>) -- INVESTIGATION_4.0.md's
+ * a normalized store (wspy-store --db <path>) -- INVESTIGATION.md's
  * 4.1 Tier 1 "summary table generator (min/max/median/mean/stddev/outlier
  * flags) from indexed data" item, closing the "a summary page can be
  * regenerated from data only (no manual copy/paste)" criterion deferred
@@ -36,7 +36,7 @@
  * bump, only adds one.
  *
  * --show-runs and --trace are the "Traceability links (summary row ->
- * manifest -> raw CSV -> plots -> tree artifacts)" item (INVESTIGATION_4.0.md's
+ * manifest -> raw CSV -> plots -> tree artifacts)" item (INVESTIGATION.md's
  * "What shipped in 4.1"), closing the other criterion deferred from 4.0 ("every
  * published benchmark row can be traced back to command line, environment,
  * and raw artifacts" -- see "Success criteria for a 4.0 kickoff"). --show-runs

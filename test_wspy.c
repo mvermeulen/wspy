@@ -737,7 +737,7 @@ void test_write_manifest() {
     assert(strstr(contents, "\"field\": \"bios_vendor\"") != NULL);
     assert(strstr(contents, "\"reason\": \"No such file or directory\"") != NULL);
 
-    // Structured configuration provenance (INVESTIGATION_4.0.md's "What
+    // Structured configuration provenance (INVESTIGATION.md's "What
     // shipped in 4.1"):
     // preset/configuration round-trip as given, and both options appear in
     // order as { "name", "value" } objects.
@@ -867,7 +867,7 @@ void test_append_run_index() {
     assert(strstr(line0, "\"cpu_governor_uniform\":true") != NULL);
     assert(strstr(line0, "\"environment_coverage\":{\"captured\":6,\"probed\":9}") != NULL);
 
-    // Structured configuration provenance (INVESTIGATION_4.0.md's "What
+    // Structured configuration provenance (INVESTIGATION.md's "What
     // shipped in 4.1"):
     // compact form, preset/configuration given, no options this time.
     assert(strstr(line0, "\"schema_version\":\"" RUN_INDEX_SCHEMA_VERSION "\"") != NULL);
@@ -1131,7 +1131,7 @@ static void write_fake_perf_read(int fd, uint64_t value, uint64_t time_enabled, 
     assert(lseek(fd, 0, SEEK_SET) == 0);
 }
 
-// INVESTIGATION_4.0.md's "What shipped in 4.1", the multiplex-scaling
+// INVESTIGATION.md's "What shipped in 4.1", the multiplex-scaling
 // correctness fix: a counter multiplexed off the PMU for
 // part of a window must have its raw count extrapolated to the full window,
 // not just its confidence flagged. Drives read_counters() against a real

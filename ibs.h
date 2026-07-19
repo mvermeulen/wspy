@@ -12,7 +12,7 @@
  * are all read from /sys/bus/event_source/devices/{ibs_fetch,ibs_op}/* at
  * runtime instead of hardcoded, since both format fields and caps flags
  * vary across kernel versions and CPU generations (see
- * INVESTIGATION_4.0.md's "Zen5/IBS deep-dive": Zen5 caps differ from Zen4,
+ * INVESTIGATION.md's "Zen5/IBS deep-dive": Zen5 caps differ from Zen4,
  * and future generations will add more).
  *
  * This is deliberately scoped to discovery only -- it doesn't build
@@ -81,7 +81,7 @@ void print_ibs_capability_report(const struct ibs_capabilities *ibs);
  * "ibs-basic" opens ibs_fetch+ibs_op unfiltered. "ibs-memory-deep" adds
  * l3missonly+ldlat filtering to ibs_op (and l3missonly+fetchlat to
  * ibs_fetch where the kernel/CPU exposes those fields), which is documented
- * to skew the effective sampling period/rate -- see INVESTIGATION_4.0.md's
+ * to skew the effective sampling period/rate -- see INVESTIGATION.md's
  * "Zen5/IBS deep-dive". That skew must be visible in output rather than
  * just in code comments, so ibs-memory-deep also opens a second, unfiltered
  * ibs_op counter purely as a baseline: the filtered/unfiltered ratio is the

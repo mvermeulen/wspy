@@ -1,6 +1,6 @@
 """
 web/joblib.py -- shared run-building logic for web/server.py and wspy-queue
-(INVESTIGATION_4.0.md's "What shipped in 4.1", "Deployment/hosting design note").
+(INVESTIGATION.md's "What shipped in 4.1", "Deployment/hosting design note").
 
 Everything in here is pure/stdlib-only and has no server-process dependency
 (no HTTP, no threading requirement, no in-memory state beyond what a caller
@@ -47,7 +47,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 PROFILE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
-# Core/thread affinity control (INVESTIGATION_4.0.md's "Core/thread affinity
+# Core/thread affinity control (INVESTIGATION.md's "Core/thread affinity
 # control" item, wspy.c's --affinity=<spec>/affinity.h): mirrors the C
 # parser's accepted grammar (affinity_parse_spec()) exactly, so a malformed
 # spec is rejected here (400) rather than only surfacing as wspy's own
@@ -72,7 +72,7 @@ RUN_MANIFEST_NAME = "manifest.json"
 SUMMARY_NAME = "summary.txt"
 
 # ---------------------------------------------------------------------------
-# Item 9 (INVESTIGATION_4.0.md): the configuration/option checklist that
+# Item 9 (INVESTIGATION.md): the configuration/option checklist that
 # generalizes item 7's preset-only wspy-run launcher into the real
 # preset/configuration/option hierarchy the "deep-dive" section describes.
 # A "configuration" here is one of the doc's own examples (a process tree, an
@@ -401,7 +401,7 @@ def parse_optional_int(value, lo, hi):
 def _config_options(section):
     """Turns one checklist category's raw sub-dict (e.g. checklist["counters"])
     into the launcher-vocabulary (name,value) pairs recorded via wspy's
-    --config-option (INVESTIGATION_4.0.md's "What shipped in 4.1", structured
+    --config-option (INVESTIGATION.md's "What shipped in 4.1", structured
     configuration provenance) -- the same keys/values the Run tab checklist itself uses,
     not a re-derivation from the wspy flags build_configuration_passes()
     also produces. "enabled" is omitted (implied by the pass existing at
@@ -424,7 +424,7 @@ def _config_options(section):
     return options
 
 
-# Structured configuration provenance's (INVESTIGATION_4.0.md's "What shipped
+# Structured configuration provenance's (INVESTIGATION.md's "What shipped
 # in 4.1") launcher-vocabulary category name (recorded
 # via --config-name, see build_pass_argv()) back to the Run tab checklist key
 # that produced it -- the read-side counterpart to build_configuration_passes()'s
@@ -683,7 +683,7 @@ def build_pass_argv(wspy_bin, rundir, p, manifest_on, run_index_path, affinity=N
     when manifest recording is on. Also threads p's "category"/"options"
     (see build_configuration_passes()) through as --config-name/
     --config-option -- structured configuration provenance
-    (INVESTIGATION_4.0.md's "What shipped in 4.1"), the checklist's own vocabulary rather
+    (INVESTIGATION.md's "What shipped in 4.1"), the checklist's own vocabulary rather
     than wspy's flags, recorded in the pass's manifest/run-index regardless
     of whether manifest_on/run_index_path are set for *this* pass (it's
     cheap metadata, not gated on those toggles the way the file paths are).
@@ -1221,7 +1221,7 @@ def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_ar
 
 
 # ---------------------------------------------------------------------------
-# Job files (INVESTIGATION_4.0.md's "What shipped in 4.1", "Deployment/hosting design note").
+# Job files (INVESTIGATION.md's "What shipped in 4.1", "Deployment/hosting design note").
 #
 # A job is a spec-only JSON document -- "what should run", captured before
 # any run directory or output exists -- built from exactly the same
@@ -1258,7 +1258,7 @@ def make_job_id():
 
 def resolve_toggles(cfg, toggles):
     """The manifest/run-index/store-ingest toggle chips (item 9's mockup-
-    feedback item, see INVESTIGATION_4.0.md line ~336), resolved against a
+    feedback item, see INVESTIGATION.md line ~336), resolved against a
     cfg dict's run_index_file path -- shared by server.py's Run tab
     (Handler._parse_toggles(), wrapping this around body["toggles"]) and
     wspy-queue (wrapping it around a job's own "toggles" object), so both

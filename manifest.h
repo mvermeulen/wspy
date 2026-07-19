@@ -40,7 +40,7 @@ struct manifest_config_option {
   const char *value;
 };
 
-/* Structured configuration provenance (INVESTIGATION_4.0.md, "What shipped in
+/* Structured configuration provenance (INVESTIGATION.md, "What shipped in
  * 4.1"): which named preset (if any) and/or launcher-vocabulary configuration category
  * and options produced this run. wspy itself has no notion of presets or
  * configurations -- that vocabulary belongs to a front end (wspy-run's
@@ -90,7 +90,7 @@ struct manifest_info {
    * non-wspy collector (perf stat, trace-cmd, a GPU vendor tool) feeding the
    * same manifest+normalization path would populate its own name here rather
    * than requiring a breaking schema change to add the concept. See
-   * INVESTIGATION_4.0.md's "Collector-plugin architecture" row. */
+   * INVESTIGATION.md's "Collector-plugin architecture" row. */
   const char *collector;
   struct timespec start_time;
   struct timespec finish_time;
@@ -106,7 +106,7 @@ struct manifest_info {
   const char *output_path;   /* -o <file>, NULL if output went to stdout   */
   const char *tree_output_path; /* --tree <file>, NULL if not used         */
   const char *manifest_path; /* path this manifest itself is written to    */
-  /* Core/thread affinity control (INVESTIGATION_4.0.md's "Core/thread
+  /* Core/thread affinity control (INVESTIGATION.md's "Core/thread
    * affinity control" item, affinity.h): the resolved placement is part of
    * a run's provenance, not just implicit in how it was launched.
    * affinity_mode is one of affinity.h's affinity_mode_name() strings

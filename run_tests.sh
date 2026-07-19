@@ -261,7 +261,7 @@ rm test_ledger_stale_index.jsonl test_ledger_stale_list.txt test_ledger_stale.ou
 echo "  wspy-ledger stale-run handling: OK"
 
 # wspy-store: normalized SQLite run catalog + per-run metric_values ingested
-# from a run index + manifest + CSV output (INVESTIGATION_4.0.md's 4.1
+# from a run index + manifest + CSV output (INVESTIGATION.md's 4.1
 # "canonical metrics schema + normalized store" item)
 echo "Testing wspy-store ingestion of a run index + manifest..."
 rm -f test_store_index.jsonl test_store_manifest.json test_store_output.csv test_store.db
@@ -337,7 +337,7 @@ fi
 rm -f test_store_index.jsonl test_store_manifest.json test_store_output.csv test_store.db test_store.out
 echo "  wspy-store: OK"
 
-# wspy-plot: shared plotting templates (INVESTIGATION_4.0.md's "What shipped
+# wspy-plot: shared plotting templates (INVESTIGATION.md's "What shipped
 # in 4.1"), replacing workload/phoronix/gnuplot.sh. Template-matching logic itself
 # is covered by test_plot.c's unit tests; this integration check only needs
 # to confirm the CLI plumbing (directory scanning, --out-dir creation) works
@@ -741,7 +741,7 @@ else
 fi
 
 # Golden output-contract tests + capability-matrix smoke tests
-# (INVESTIGATION_4.0.md "Testing and documentation" track): formalized,
+# (INVESTIGATION.md "Testing and documentation" track): formalized,
 # broader versions of the CSV-column-order/GPU-build-vs-not checks above.
 # Run once here against the non-AMDGPU build; run again below against the
 # AMDGPU=1 build if ROCm is available, so both ends of the GPU-build axis
@@ -758,7 +758,7 @@ if ! ./tests/capability_matrix.sh; then
     exit 1
 fi
 
-# wspy-queue/job-file smoke tests (INVESTIGATION_4.0.md's "What shipped in
+# wspy-queue/job-file smoke tests (INVESTIGATION.md's "What shipped in
 # 4.1", "Deployment/hosting design note"): fake wspy/wspy-run/wspy-plot/wspy-store binaries, so
 # this needs no build/GPU axis and no root/perf access -- run once here
 # rather than per-build like golden_output.sh/capability_matrix.sh above.

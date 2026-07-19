@@ -5,7 +5,7 @@
  * any perf_event_open() calls are made (unlike coverage.c, which reports
  * what actually happened after setup_counters() tried to open everything).
  *
- * INVESTIGATION_4.0.md's "Counter-fit preflight" item: availability/
+ * INVESTIGATION.md's "Counter-fit preflight" item: availability/
  * NMI-watchdog handling already exists at runtime (topdown.c's
  * check_nmi_watchdog(), coverage.c); this surfaces the same fit information
  * before a run instead of discovering it (as silent undercounting, since

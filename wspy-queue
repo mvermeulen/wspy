@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-wspy-queue - job/queue processor for wspy (INVESTIGATION_4.0.md item 13,
+wspy-queue - job/queue processor for wspy (INVESTIGATION.md item 13,
 "Deployment/hosting design note").
 
 Answers item 13's three concrete use cases beyond "launch one run and watch

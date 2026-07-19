@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 wspy-analyze -- local-LLM (Ollama) narrative analysis of wspy run artifacts
-(INVESTIGATION_4.0.md's 4.4 priority list, "Local LLM (Ollama) narrative
+(INVESTIGATION.md's 4.4 priority list, "Local LLM (Ollama) narrative
 analysis of run artifacts"; see that doc's "Local LLM (Ollama)
 narrative-analysis deep-dive" for the full design this prototype follows).
 

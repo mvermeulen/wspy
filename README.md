@@ -319,8 +319,10 @@ See `./web/server.py --help` for the full option list.
 * `rocm/` - small standalone C++ utilities (`smi_monitor`, `smi_info`) for exploring the ROCm
   SMI API directly; not linked into wspy
 * `archive/` - older version of the tool, kept for reference
-* `INVESTIGATION_4.0.md` - the project's own development log/backlog: what's shipped, what's
+* `INVESTIGATION.md` - the project's own development log/backlog: what's shipped, what's
   planned next and why, organized by release
+* `doc/INVESTIGATION_ARCHIVE.md` - full design write-ups and validation narratives for work
+  `INVESTIGATION.md` records as already shipped, moved out of the way of the open backlog
 
 ## License
 

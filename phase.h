@@ -3,7 +3,7 @@
  * detection over --interval's periodic samples, classifying each interval
  * tick as warmup/steady/degraded.
  *
- * INVESTIGATION_4.0.md's "Interval (--interval) -> automatic phase-boundary
+ * INVESTIGATION.md's "Interval (--interval) -> automatic phase-boundary
  * detection (warmup/steady/degraded)" item -- named prerequisite for
  * phase-aware topdown (4.2) and phase-aware IBS. This is the basic-marker-
  * detection half only: a per-tick phase label (report-layer addition to

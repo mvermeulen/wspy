@@ -1,7 +1,7 @@
 #!/bin/bash
 # tests/golden_output.sh - golden output-contract tests.
 #
-# INVESTIGATION_4.0.md, "Testing and documentation" track: "Golden
+# INVESTIGATION.md, "Testing and documentation" track: "Golden
 # output-contract tests (CSV header/order, summary fragments, tree format) --
 # cheapest regression guard; run_tests.sh already checks CSV column order for
 # existing fields -- extend the same pattern as new fields land." This file

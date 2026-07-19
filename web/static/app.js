@@ -144,7 +144,7 @@
   }
 
   // ---------------------------------------------------------------------
-  // Run tab: CPU affinity card (item 20, INVESTIGATION_4.0.md's "Core/thread
+  // Run tab: CPU affinity card (item 20, INVESTIGATION.md's "Core/thread
   // affinity control") -- independent of preset vs. custom mode, same as
   // custom plots above, since --affinity applies to every pass alike.
   // ---------------------------------------------------------------------

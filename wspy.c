@@ -58,7 +58,7 @@ int versionflag = 0;
 int capabilitiesflag = 0;
 int preflightflag = 0;
 int listaffinityflag = 0;
-/* Core/thread affinity control (INVESTIGATION_4.0.md's "Core/thread
+/* Core/thread affinity control (INVESTIGATION.md's "Core/thread
  * affinity control" item, affinity.h): defaults to AFFINITY_ALL, i.e. "every
  * CPU currently visible to this process" -- today's implicit behavior with
  * no --affinity given at all, made an explicit (no-op) choice in the spec
@@ -88,7 +88,7 @@ char *tree_output_path = NULL;
 char *manifest_path = NULL;
 char *run_index_path = NULL;
 
-/* Structured configuration provenance (INVESTIGATION_4.0.md's "What shipped in
+/* Structured configuration provenance (INVESTIGATION.md's "What shipped in
  * 4.1"): purely
  * metadata passed through from a front end (wspy-run's builtin profiles, the
  * web launcher) via --preset-name/--config-name/--config-option -- wspy
@@ -627,8 +627,9 @@ int parse_options(int argc,char *const argv[]){
       // pure no-op for a long stretch of this codebase's history. Now
       // actually wired up: topdown.c reads a passive /proc/<pid>/status
       // scrape (VmHWM/RssAnon/RssFile/RssShmem/VmSwap) gated on this flag,
-      // same shape as --tree-io/--tree-schedstat. See INVESTIGATION_4.0.md's
-      // "Concrete design: memory footprint detail via /proc/<pid>/status".
+      // same shape as --tree-io/--tree-schedstat. See
+      // doc/INVESTIGATION_ARCHIVE.md's "Concrete design: memory footprint
+      // detail via /proc/<pid>/status".
       tree_vmsize = 1;
       break;
     default:
@@ -880,7 +881,7 @@ static int exit_code_epilogue(void){
 // --multiplex swaps the plan builder for multipass_plan_build_multiplexed(),
 // which always produces exactly one pass covering every requested group and
 // leans on the kernel's own PMU multiplexing plus read_counters()'s
-// time_running/time_enabled scaling (INVESTIGATION_4.0.md's "What shipped in
+// time_running/time_enabled scaling (INVESTIGATION.md's "What shipped in
 // 4.1", the multiplex-scaling correctness fix) to
 // keep the values correct despite oversubscription -- one workload execution
 // instead of N, at the cost of lower per-counter confidence. Not the
@@ -1122,7 +1123,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t                            \"performance-counters\") in the manifest/run-index;\n"
 	    "\t                            metadata only\n"
 	    "\t--config-option <k>=<v>   - record one launcher-vocabulary option (repeatable);\n"
-	    "\t                            metadata only -- see INVESTIGATION_4.0.md's\n"
+	    "\t                            metadata only -- see INVESTIGATION.md's\n"
 	    "\t                            \"What shipped in 4.1\", \"structured configuration\n"
 	    "\t                            provenance\"\n"
 	    "\t--exit-with-child         - exit with the launched command's exit status\n"

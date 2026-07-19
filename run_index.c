@@ -143,7 +143,7 @@ int append_run_index(const char *path,const struct manifest_info *info){
   json_write_string(fp,info->affinity_cpus ? info->affinity_cpus : "");
   fprintf(fp,"}},");
 
-  /* Structured configuration provenance (INVESTIGATION_4.0.md's "What shipped
+  /* Structured configuration provenance (INVESTIGATION.md's "What shipped
    * in 4.1"): see
    * manifest.c's write_config_provenance() for the pretty-printed sibling of
    * this same data. preset/configuration null, options [] for a plain

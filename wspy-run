@@ -5,7 +5,7 @@
 # Collapses the repeated multi-pass wspy invocations historically hand-written in
 # workload/*/run_test.sh (e.g. running the same command 7-8 times with different
 # counter flag combinations to avoid multiplexing) into one reusable entry point.
-# See INVESTIGATION_4.0.md, "Common workload wrapper / profile-driven launcher".
+# See INVESTIGATION.md, "Common workload wrapper / profile-driven launcher".
 set -euo pipefail
 
 SCRIPT_NAME=$(basename "$0")
@@ -117,7 +117,7 @@ Options:
   --dry-run                Print the wspy command for each pass without running it
   -h, --help                Show this help
 
-Unified output layout (INVESTIGATION_4.0.md, "Run artifact foundation"):
+Unified output layout (INVESTIGATION.md, "Run artifact foundation"):
   Passing --suite and --benchmark switches from flat <outdir>/<prefix><pass>.<ext>
   output to a per-run directory tree, so publishing tools don't need suite-specific
   logic to find a run's files:
@@ -185,7 +185,7 @@ load_builtin_profile(){
       # The five non-interval counter passes this profile used to run as
       # five separate wspy invocations (software_branch, ipc_topdown,
       # l2_float, frontend, opcache) now collapse onto one native --passes
-      # invocation (wspy.c's run_multipass(), INVESTIGATION_4.0.md's 4.1
+      # invocation (wspy.c's run_multipass(), INVESTIGATION.md's 4.1
       # Tier 1 "Native multi-pass counter execution" item) -- wspy itself
       # bin-packs them into however many hardware-PMU-fitting sub-passes are
       # needed and merges the result into one CSV/manifest record, instead
@@ -253,7 +253,7 @@ load_builtin_profile(){
       # unbounded -- a slow workload is fine to just wait out for those.
       # TODO: this fixed 3600s is a blunt stand-in for an actual estimate;
       # e.g. phoronix-test-suite has a run-time estimate command that could
-      # size this per-workload instead (see INVESTIGATION_4.0.md).
+      # size this per-workload instead (see INVESTIGATION.md).
       PASS_TIMEOUTS=(3600)
       ;;
     ibs-basic)
@@ -405,7 +405,7 @@ run_pass(){
   if [ -n "$RUN_INDEX" ]; then
     cmd+=(--run-index "$RUN_INDEX")
   fi
-  # Structured configuration provenance (INVESTIGATION_4.0.md item 16): wspy
+  # Structured configuration provenance (INVESTIGATION.md item 16): wspy
   # itself has no notion of presets/configurations, so wspy-run -- the front
   # end that does -- passes its own vocabulary through as metadata. PROFILE is
   # only set for a named builtin profile (comma-composed lists included

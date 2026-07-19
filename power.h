@@ -11,7 +11,7 @@
  * Joules-per-LSB scale are all read from
  * /sys/bus/event_source/devices/{power,power_core}/* at runtime instead of
  * hardcoded, since none of this is guaranteed stable across kernel versions.
- * See INVESTIGATION_4.0.md's "Concrete design: CPU energy/power via the
+ * See doc/INVESTIGATION_ARCHIVE.md's "Concrete design: CPU energy/power via the
  * power/power_core perf PMUs" for the full writeup.
  *
  * Much simpler than ibs.h: power/power_core each expose exactly one format
@@ -21,8 +21,9 @@
  *
  * V1 scope is package-level only: power_core (per-core energy) is probed
  * for --capabilities discovery but never opened as a real counter -- see
- * power_counter_group()'s comment and INVESTIGATION_4.0.md's Tier 11
- * follow-up note (4.2 priorities) for the deferred per-core work.
+ * power_counter_group()'s comment and INVESTIGATION.md's "4.2 -- remaining
+ * work", "Per-core energy (power_core) support" for the deferred per-core
+ * work.
  */
 #ifndef _WSPY_POWER_H
 #define _WSPY_POWER_H 1

@@ -1,6 +1,6 @@
 /*
  * ledger.c - wspy-ledger: the "coverage ledger" idea from
- * INVESTIGATION_4.0.md ("Run artifact foundation" track): for a suite of
+ * INVESTIGATION.md ("Run artifact foundation" track): for a suite of
  * workloads (e.g. a SPEC CPU2017 or Phoronix benchmark list), report each
  * workload's status -- done / skipped / unsupported / needs-tool-support --
  * generated from a shared --run-index file instead of the hand-maintained
@@ -515,7 +515,7 @@ static int record_succeeded(const struct json_value *record){
 }
 
 /* Checks a run-index record's "schema_version" against RUN_INDEX_SCHEMA_VERSION
- * (INVESTIGATION_4.0.md's "run-index schema validation on ingest" item --
+ * (INVESTIGATION.md's "run-index schema validation on ingest" item --
  * the write side has been versioned since run_index.c shipped, but nothing
  * read it back and noticed a mismatch until now). Only warns on a MAJOR
  * version difference, mirroring validate.c's check_schema_version() for

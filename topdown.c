@@ -397,7 +397,7 @@ int launch_child(int argc,char *const argv[],char *const envp[]){
   if (pipe(child_pipe) == -1) fatal("pipe creation failed\n");
   switch(child = fork()){
   case 0: // child
-    // Core/thread affinity control (affinity.h, INVESTIGATION_4.0.md's
+    // Core/thread affinity control (affinity.h, INVESTIGATION.md's
     // "Core/thread affinity control" item): applied to the child itself,
     // before PTRACE_TRACEME/execve, so it's inherited across the exec into
     // the actual workload. affinity_active is 0 for the default AFFINITY_ALL
@@ -549,7 +549,7 @@ struct ptrace_pid_entry {
   // -- blocked-reading (waiting on upstream data) and blocked-writing
   // (downstream backpressure) are kept separate rather than lumped into one
   // bucket the way futex's single bucket is, since they're different
-  // bottleneck stories. See INVESTIGATION_4.0.md's "Concrete design:
+  // bottleneck stories. See doc/INVESTIGATION_ARCHIVE.md's "Concrete design:
   // blocking I/O + /proc/<pid>/io byte counters".
   int io_wait_is_write;
   unsigned long long io_read_wait_count;
@@ -559,7 +559,7 @@ struct ptrace_pid_entry {
   // --tree-connect/--tree-nanosleep/--tree-wait/--tree-poll accumulators:
   // same shape as --tree-futex's single bucket (no read/write-style split
   // needed for any of these) -- entry->exit duration is the signal, no op
-  // argument to decode. See INVESTIGATION_4.0.md's "Concrete design:
+  // argument to decode. See doc/INVESTIGATION_ARCHIVE.md's "Concrete design:
   // --tree-connect/--tree-wait/--tree-poll/--tree-nanosleep".
   unsigned long long connect_count;
   double connect_seconds;
@@ -572,7 +572,7 @@ struct ptrace_pid_entry {
   struct ptrace_pid_entry *next;
 };
 
-// --tree-io-wait's syscall table (INVESTIGATION_4.0.md's "Generalizing
+// --tree-io-wait's syscall table (INVESTIGATION.md's "Generalizing
 // tree_open" design fork): which syscalls count as candidate blocking I/O,
 // and which accumulator bucket (read vs write) each belongs to. A syscall
 // not in this table is simply not tracked -- no fatal-combination rule with
@@ -861,7 +861,7 @@ void ptrace_loop(void){
 	  }
 	  // --tree-connect/--tree-nanosleep/--tree-wait/--tree-poll: same
 	  // "only emitted when nonzero" idiom and "before exit" placement as
-	  // --tree-futex/--tree-io-wait above -- see INVESTIGATION_4.0.md's
+	  // --tree-futex/--tree-io-wait above -- see INVESTIGATION.md's
 	  // "Concrete design: --tree-connect/--tree-wait/--tree-poll/
 	  // --tree-nanosleep".
 	  if (tree_connect){
@@ -1609,7 +1609,7 @@ void read_counters(struct counter_group *counter_group_list,int stop_counters){
 	  cgroup->cinfo[i].last_time_running = rf.time_running;
 	  cgroup->cinfo[i].last_time_enabled = rf.time_enabled;
 
-	  // Correctness fix (INVESTIGATION_4.0.md's "What shipped in 4.1"): when a
+	  // Correctness fix (INVESTIGATION.md's "What shipped in 4.1"): when a
 	  // counter was multiplexed off the PMU for part of this window,
 	  // the raw count only reflects what happened while it *was*
 	  // scheduled -- extrapolate to the full window instead of
@@ -2915,7 +2915,7 @@ void print_software(struct counter_group *cgroup,enum output_format oformat){
 
 // prints AMD IBS counts plus the sampling skew/quality annotations
 // (l3missonly/ldlat/fetchlat requested-vs-applied, accepted-vs-filtered
-// ratio) described in INVESTIGATION_4.0.md's "Zen5/IBS deep-dive" -- these
+// ratio) described in INVESTIGATION.md's "Zen5/IBS deep-dive" -- these
 // must be visible in output, not just in code comments, since l3missonly/
 // ldlat filtering is documented to skew the effective sampling period.
 void print_ibs(struct counter_group *cgroup,enum output_format oformat){
@@ -2963,7 +2963,7 @@ void print_ibs(struct counter_group *cgroup,enum output_format oformat){
 
   if (op_unf_ci) fprintf(outfile,"ibs_op_unfiltered    %-14lu\n",op_unf_ci->value);
   if (accepted_ratio >= 0)
-    fprintf(outfile,"ibs_op_accepted      %5.1f%%          # filtered/unfiltered ratio -- l3missonly/ldlat filtering skews the effective sampling period, see INVESTIGATION_4.0.md\n",
+    fprintf(outfile,"ibs_op_accepted      %5.1f%%          # filtered/unfiltered ratio -- l3missonly/ldlat filtering skews the effective sampling period, see INVESTIGATION.md\n",
 	    accepted_ratio*100.0);
   if (op_ev.ldlat_applied)
     fprintf(outfile,"ibs_ldlat_threshold  %-14u# cycles; hardware drops below-threshold loads before they're counted\n",op_ev.ldlat_threshold);

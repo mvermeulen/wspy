@@ -3,7 +3,7 @@
  * wspy run manifest (see manifest.h) and the output files it references.
  *
  * This is the "basic validation/quality checks... required files present,
- * non-empty CSV, exit status, sanity ranges" item from INVESTIGATION_4.0.md
+ * non-empty CSV, exit status, sanity ranges" item from INVESTIGATION.md
  * ("Run artifact foundation" track) -- the manifest and coverage work it
  * consumes already ships (manifest.c, coverage.c); this is the first reader
  * in the tree that parses a manifest.json back rather than just writing one.

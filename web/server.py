@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-wspy web launcher + report browser (INVESTIGATION_4.0.md's "What shipped in 4.1").
+wspy web launcher + report browser (INVESTIGATION.md's "What shipped in 4.1").
 
 Two launchers on one page:
 
@@ -318,7 +318,7 @@ def discover_manifest_paths(output_root, limit=100):
 
 
 # ---------------------------------------------------------------------------
-# Historical run index browser/search (INVESTIGATION_4.0.md's "What shipped in
+# Historical run index browser/search (INVESTIGATION.md's "What shipped in
 # 4.1") -- discover_reports() above is the homepage's cheap, mtime-only recent
 # list; this is the fuller searchable index over every run directory. Reads
 # straight off disk (directory scan + each run's own manifest(s)), not
@@ -525,7 +525,7 @@ def run_sync(argv, cwd=None, timeout=120):
         return None, f"[error] failed to launch {argv[0]}: {e}", False
 
 
-# Core/thread affinity control's discovery counterpart (INVESTIGATION_4.0.md's
+# Core/thread affinity control's discovery counterpart (INVESTIGATION.md's
 # "Core/thread affinity control" item): parses `wspy --list-affinity`'s
 # output (affinity.c's affinity_print_report() -- a small CSV-shaped per-cpu
 # table plus L3-domain and core-type summaries, see CLAUDE.md's affinity.c
@@ -580,7 +580,7 @@ def parse_affinity_topology_output(output):
 # it's read-only discovery like the Discovery tab's capabilities/preflight
 # checks, just surfaced next to the Run button since that's the moment this
 # information is actually useful. No estimator exists yet for cpu2017/
-# pbbsbench/arbitrary commands (INVESTIGATION_4.0.md's "What shipped in 4.1",
+# pbbsbench/arbitrary commands (INVESTIGATION.md's "What shipped in 4.1",
 # estimated runtime display's own scoping note), so those degrade to "no
 # estimate available" rather than guessing.
 # ---------------------------------------------------------------------------
@@ -1041,7 +1041,7 @@ def parse_phoronix_info_fields(output):
 
 
 def estimate_phoronix_runtime(fields):
-    """Applies the "check" button's runtime-source rule (INVESTIGATION_4.0.md
+    """Applies the "check" button's runtime-source rule (INVESTIGATION.md
     item 18's original design note): not installed, or installed but never
     run -> the profile's own generic estimate; installed and already run at
     least once on this host -> the host's own measured average, a better
@@ -1166,7 +1166,7 @@ def read_manifest_workload(manifest_path):
 
 def read_manifest_config_provenance(manifest_path):
     """Best-effort: pull a manifest.json's structured configuration
-    provenance (INVESTIGATION_4.0.md's "What shipped in 4.1", manifest.c's
+    provenance (INVESTIGATION.md's "What shipped in 4.1", manifest.c's
     write_config_provenance()) back out -- {"preset": str|None,
     "configuration": str|None, "options": [(name,value), ...]} -- or None if
     the manifest is missing/unreadable, or the run was never launched with
@@ -1238,7 +1238,7 @@ def guess_content_type(filename):
 
 
 # ---------------------------------------------------------------------------
-# Curation studio (INVESTIGATION_4.0.md's "What shipped in 4.1"): review every artifact a run
+# Curation studio (INVESTIGATION.md's "What shipped in 4.1"): review every artifact a run
 # collected on one page and curate a subset of it -- select, reorder, and
 # annotate per configuration -- into a block sequence that #10's export will
 # later consume. State lives in <rundir>/curation.json, one more file the run
@@ -1321,7 +1321,7 @@ def new_block(kind, source_file=None, source_kind=None, title=None, ai_generated
         # see collect_run_files() below) is model-written prose, not human commentary --
         # this flag rides along through studio edits/saves/export so it stays labeled
         # AI-generated even after its text is copied into this block's own commentary
-        # field (INVESTIGATION_4.0.md's Ollama deep-dive, design decision #7: "never
+        # field (INVESTIGATION.md's Ollama deep-dive, design decision #7: "never
         # silently substituted as the human's own curated commentary in an export").
         "ai_generated": ai_generated,
     }
@@ -1337,7 +1337,7 @@ def ai_artifact_label(filename):
     offer something more useful than the bare filename, and so a block built
     from actual model output (aianalysis.*/aiprompt.critique.*, not the
     deterministically-rendered aiprompt.txt itself) carries an AI-generated
-    marker from the moment it's added. See INVESTIGATION_4.0.md's Ollama
+    marker from the moment it's added. See INVESTIGATION.md's Ollama
     deep-dive, design decision #7."""
     if filename == "aiprompt.txt":
         return "AI analysis: rendered prompt", False
@@ -1526,7 +1526,7 @@ def render_curated_section(rundir, base_url, suite, benchmark, run_id):
 
 
 # ---------------------------------------------------------------------------
-# Publish-ready export (INVESTIGATION_4.0.md's "What shipped in 4.1"): renders
+# Publish-ready export (INVESTIGATION.md's "What shipped in 4.1"): renders
 # the curation studio's curated block sequence into a format ready to paste elsewhere, rather than a bulk
 # data dump. Three targets, in the doc's own recommended-default order:
 #
@@ -1741,7 +1741,7 @@ def render_export_page(rundir, base_url, suite, benchmark, run_id, fmt):
         f'(<code>{base_url}</code>), which only resolves while this server keeps running at this '
         'address. For WordPress or another CMS, re-upload the image to that platform\'s media '
         'library first and swap in the resulting URL before publishing (see '
-        '<code>INVESTIGATION_4.0.md</code>\'s "What shipped in 4.1").</p>'
+        '<code>INVESTIGATION.md</code>\'s "What shipped in 4.1").</p>'
     ) if has_image else ""
 
     body = f"""
@@ -1833,7 +1833,7 @@ def render_run_tab(prefill, cfg):
   <h1>Run</h1>
   <p class="config-label">Pick a named <code>wspy-run</code> preset, or build a custom run from the
      configuration checklist below. Per the preset/configuration/option hierarchy
-     (<code>INVESTIGATION_4.0.md</code>): a preset is atomic -- picking one runs it exactly as
+     (<code>INVESTIGATION.md</code>): a preset is atomic -- picking one runs it exactly as
      <code>wspy-run</code> defines it and the checklist below is ignored; set preset back to
      "(custom)" to compose configurations directly instead. Each enabled configuration below becomes
      its own separate <code>wspy</code> invocation into the same run directory.</p>
@@ -1962,7 +1962,7 @@ def render_run_tab(prefill, cfg):
 
       <div class="config-card config-reserved">
         <label class="config-toggle"><input type="checkbox" disabled> <strong>/proc extras</strong>
-          <span class="muted">(reserved for 4.2 Tier 3 &mdash; not implemented yet)</span></label>
+          <span class="muted">(reserved for a future release &mdash; not implemented yet)</span></label>
       </div>
     </div>
 
@@ -2033,7 +2033,7 @@ def render_run_tab(prefill, cfg):
       <span class="muted">(writes a job file to <code>{html.escape(cfg["jobs_dir"])}/pending/</code>
         &mdash; process it later with <code>wspy-queue run</code>, from this machine, cron, or after
         copying the job file to another machine with wspy checked out; see
-        <code>INVESTIGATION_4.0.md</code>'s "What shipped in 4.1")</span>
+        <code>INVESTIGATION.md</code>'s "What shipped in 4.1")</span>
     </label>
 
     <fieldset class="preview">
@@ -2684,7 +2684,7 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
     workload = run_manifest.get("command") or None
     workload_str = shlex.join(workload) if workload else None
 
-    # INVESTIGATION_4.0.md's "What shipped in 4.1", "Browse-reports": relate
+    # INVESTIGATION.md's "What shipped in 4.1", "Browse-reports": relate
     # this report's artifacts back to the preset/configuration/option choices
     # that produced them (structured configuration provenance's
     # configuration_provenance, recorded per-pass since each pass is its own
@@ -3209,7 +3209,7 @@ class Handler(BaseHTTPRequestHandler):
     @staticmethod
     def _parse_toggles(cfg, body):
         """The Run tab's defaults-on toggle chips (manifest/run-index/store-
-        ingest -- a mockup-feedback item, see INVESTIGATION_4.0.md's "What
+        ingest -- a mockup-feedback item, see INVESTIGATION.md's "What
         shipped in 4.1"). Returns (manifest_on, run_index_path_or_None, store_ingest).
         Thin wrapper over joblib.resolve_toggles() (shared with wspy-queue)."""
         return resolve_toggles(cfg, body.get("toggles"))
@@ -3254,7 +3254,7 @@ class Handler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _parse_affinity(body):
-        """The Run tab's CPU affinity card (INVESTIGATION_4.0.md's "Core/
+        """The Run tab's CPU affinity card (INVESTIGATION.md's "Core/
         thread affinity control" item, wspy.c's --affinity=<spec>): validates
         body["affinity"] against the same grammar affinity.h's C parser
         accepts, mirroring _parse_custom_plots()'s "reject here, not deep
@@ -3551,7 +3551,7 @@ class Handler(BaseHTTPRequestHandler):
                                "resolved_checklist": checklist})
 
     def _enqueue_job(self, cfg, body):
-        """Item 13 (INVESTIGATION_4.0.md, "Deployment/hosting design note"),
+        """Item 13 (INVESTIGATION.md, "Deployment/hosting design note"),
         use case (a): the Run tab's "queue instead of run now" toggle. Builds
         the exact same portable job document `wspy-queue add` itself creates
         (joblib.build_job()/validate_job()) from the same preset/checklist/
@@ -3659,7 +3659,7 @@ class Handler(BaseHTTPRequestHandler):
             result["phoronix"] = {
                 "detected": False,
                 "note": "not a phoronix-test-suite command -- no runtime estimator for this "
-                        "workload yet (INVESTIGATION_4.0.md's estimated runtime display)",
+                        "workload yet (INVESTIGATION.md's estimated runtime display)",
             }
             self._send_json(200, result)
             return

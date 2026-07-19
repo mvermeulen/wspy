@@ -11,7 +11,7 @@ OUTROOT=${OUTROOT:="."}
 OUTROOT="$(cd "$OUTROOT" && pwd)"
 
 # One directory for this run: <OUTROOT>/pbbsbench/<BENCHMARK>/<RUN_ID>, via
-# wspy-run's unified output layout (INVESTIGATION_4.0.md "Run artifact
+# wspy-run's unified output layout (INVESTIGATION.md "Run artifact
 # foundation"). Computed here so the raw baseline run below lands in the same
 # directory as the instrumented passes.
 STAMP="$(date -u +%Y%m%dT%H%M%S)"
