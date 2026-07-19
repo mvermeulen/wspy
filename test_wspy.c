@@ -897,6 +897,7 @@ void test_append_run_index() {
 // Declared in topdown.c (linked in via test_topdown.o) but not exposed
 // through wspy.h since only print_metrics() is part of the public surface.
 extern void print_topdown(struct counter_group *cgroup, enum output_format oformat, int mask);
+extern void print_topdown_be(struct counter_group *cgroup, enum output_format oformat, int mask);
 
 void test_topdown_confidence(void) {
     struct cpu_info fake_cpu;
@@ -1160,6 +1161,132 @@ void test_topdown_amd_contention(void) {
     printf("PASS: AMD topdown SMT-contention decomposition\n");
 }
 
+// INVESTIGATION.md's 4.2 Tier 1, "Full L1->L2->L3 topdown hierarchy" item:
+// print_topdown_be()'s new *_slots_pct columns read topdown.c's module-static
+// shared_slots_no_contention, populated by a prior print_topdown() call on
+// the *same* row (see that function's own comment on the ordering guarantee
+// this depends on). Drives print_topdown() first to populate it, then
+// print_topdown_be() on a separate synthetic cgroup (a genuinely different
+// perf counter group in real wspy), and checks the 5 new trailing columns
+// land on print_topdown()'s denominator, not print_topdown_be()'s own
+// independent cpu-cycles reading.
+void test_topdown_be_shared_denominator(void) {
+    struct cpu_info fake_cpu;
+    struct cpu_info *saved_cpu_info;
+    struct counter_group l1_cgroup, be_cgroup;
+    struct counter_info l1_cinfo[5], be_cinfo[6];
+    char *contents;
+    const char *tmp_out = "/tmp/test_wspy_topdown_be.txt";
+
+    printf("Testing print_topdown_be() slots_pct columns share print_topdown()'s denominator...\n");
+
+    saved_cpu_info = cpu_info;
+    memset(&fake_cpu, 0, sizeof(fake_cpu));
+    fake_cpu.vendor = VENDOR_INTEL;
+    cpu_info = &fake_cpu;
+
+    // First, populate shared_slots_no_contention via a real print_topdown()
+    // call: slots=1,000,000 (Intel: slots_no_contention == slots, no
+    // contention counter exists on Intel).
+    memset(l1_cinfo, 0, sizeof(l1_cinfo));
+    l1_cinfo[0].label = "slots";
+    l1_cinfo[0].value = 1000000; l1_cinfo[0].time_enabled = 1000000; l1_cinfo[0].time_running = 1000000;
+    l1_cinfo[1].label = "core.topdown-retiring";
+    l1_cinfo[1].value = 400000; l1_cinfo[1].time_enabled = 1000000; l1_cinfo[1].time_running = 1000000;
+    l1_cinfo[2].label = "core.topdown-fe-bound";
+    l1_cinfo[2].value = 300000; l1_cinfo[2].time_enabled = 1000000; l1_cinfo[2].time_running = 1000000;
+    l1_cinfo[3].label = "core.topdown-be-bound";
+    l1_cinfo[3].value = 250000; l1_cinfo[3].time_enabled = 1000000; l1_cinfo[3].time_running = 1000000;
+    l1_cinfo[4].label = "core.topdown-bad-spec";
+    l1_cinfo[4].value = 50000; l1_cinfo[4].time_enabled = 1000000; l1_cinfo[4].time_running = 1000000;
+    memset(&l1_cgroup, 0, sizeof(l1_cgroup));
+    l1_cgroup.label = "topdown";
+    l1_cgroup.ncounters = 5;
+    l1_cgroup.cinfo = l1_cinfo;
+    l1_cgroup.mask = COUNTER_TOPDOWN;
+
+    outfile = fopen(tmp_out, "w");
+    if (!outfile) { fprintf(stderr, "FAIL: could not open temp file\n"); exit(1); }
+    print_topdown(&l1_cgroup, PRINT_CSV, COUNTER_TOPDOWN);
+    fclose(outfile);
+    remove(tmp_out);
+
+    // Separate synthetic "topdown-be" cgroup, its own independent
+    // cpu-cycles=500,000 -- deliberately different from slots_no_contention
+    // above, so a test that accidentally read the wrong denominator would
+    // produce visibly different percentages.
+    memset(be_cinfo, 0, sizeof(be_cinfo));
+    be_cinfo[0].label = "cpu-cycles";
+    be_cinfo[0].value = 500000; be_cinfo[0].time_enabled = 1000000; be_cinfo[0].time_running = 1000000;
+    be_cinfo[1].label = "exe_activity.bound_on_loads";
+    be_cinfo[1].value = 300000; be_cinfo[1].time_enabled = 1000000; be_cinfo[1].time_running = 1000000;
+    be_cinfo[2].label = "exe_activity.bound_on_stores";
+    be_cinfo[2].value = 50000; be_cinfo[2].time_enabled = 1000000; be_cinfo[2].time_running = 1000000;
+    be_cinfo[3].label = "memory_activity.stalls_l1d_miss";
+    be_cinfo[3].value = 250000; be_cinfo[3].time_enabled = 1000000; be_cinfo[3].time_running = 1000000;
+    be_cinfo[4].label = "memory_activity.stalls_l2_miss";
+    be_cinfo[4].value = 150000; be_cinfo[4].time_enabled = 1000000; be_cinfo[4].time_running = 1000000;
+    be_cinfo[5].label = "memory_activity.stalls_l3_miss";
+    be_cinfo[5].value = 100000; be_cinfo[5].time_enabled = 1000000; be_cinfo[5].time_running = 1000000;
+    memset(&be_cgroup, 0, sizeof(be_cgroup));
+    be_cgroup.label = "topdown-be";
+    be_cgroup.ncounters = 6;
+    be_cgroup.cinfo = be_cinfo;
+    be_cgroup.mask = COUNTER_TOPDOWN_BE;
+
+    outfile = fopen(tmp_out, "w");
+    if (!outfile) { fprintf(stderr, "FAIL: could not open temp file\n"); exit(1); }
+    print_topdown_be(&be_cgroup, PRINT_CSV, COUNTER_TOPDOWN_BE);
+    fclose(outfile);
+
+    contents = slurp_file(tmp_out);
+    assert(contents != NULL);
+    // l1_bound=300000-250000=50000, l2_bound=250000-150000=100000,
+    // l3_bound=150000-100000=50000, dram_bound=100000, store_bound=50000.
+    // Original columns: % of this group's own cpu-cycles (500000) ->
+    // 10.0,20.0,10.0,20.0,10.0. New columns: % of the *shared*
+    // slots_no_contention (1,000,000) from print_topdown() above ->
+    // 5.0,10.0,5.0,10.0,5.0 -- half the original percentages, since the
+    // shared denominator is exactly 2x this group's own cpu-cycles here.
+    assert(strstr(contents, "10.0,20.0,10.0,20.0,10.0, 5.0,10.0, 5.0,10.0, 5.0,") != NULL);
+    free(contents);
+    remove(tmp_out);
+
+    // Now force shared_slots_no_contention_valid back to 0: a print_topdown()
+    // call with an unrecognized vendor hits its "default: return;" branch,
+    // which runs *after* the reset-to-invalid at the top of that function
+    // but *before* the set-to-valid after its vendor switch -- exactly the
+    // "topdown counters weren't available/requested this row" case
+    // print_topdown_be()'s own new columns need to degrade gracefully for
+    // (e.g. --topdown-backend used without --topdown/--topdown2).
+    fake_cpu.vendor = VENDOR_UNKNOWN;
+    outfile = fopen(tmp_out, "w");
+    if (!outfile) { fprintf(stderr, "FAIL: could not open temp file\n"); exit(1); }
+    print_topdown(&l1_cgroup, PRINT_CSV, COUNTER_TOPDOWN);
+    fclose(outfile);
+    remove(tmp_out);
+    fake_cpu.vendor = VENDOR_INTEL;
+
+    outfile = fopen(tmp_out, "w");
+    if (!outfile) { fprintf(stderr, "FAIL: could not open temp file\n"); exit(1); }
+    print_topdown_be(&be_cgroup, PRINT_CSV, COUNTER_TOPDOWN_BE);
+    fclose(outfile);
+
+    contents = slurp_file(tmp_out);
+    assert(contents != NULL);
+    // Original cpu-cycles-based columns are unaffected by the shared state
+    // at all; the 5 new slots_pct columns must degrade to 0.0 rather than
+    // reading a stale value from the first print_topdown_be() call above.
+    assert(strstr(contents, "10.0,20.0,10.0,20.0,10.0, 0.0, 0.0, 0.0, 0.0, 0.0,") != NULL);
+    free(contents);
+
+    remove(tmp_out);
+    outfile = NULL;
+    cpu_info = saved_cpu_info;
+
+    printf("PASS: print_topdown_be() slots_pct columns share print_topdown()'s denominator\n");
+}
+
 void test_arm_pmu_report(void) {
     struct cpu_info fake_cpu;
     struct cpu_info *saved_cpu_info;
@@ -1299,6 +1426,7 @@ int main(int argc, char **argv) {
     test_topdown_confidence();
     test_arm_topdown_equivalence();
     test_topdown_amd_contention();
+    test_topdown_be_shared_denominator();
     test_arm_pmu_report();
     test_read_counters_multiplex_scaling();
     return 0;
