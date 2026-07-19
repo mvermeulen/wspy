@@ -71,6 +71,36 @@ static void build_csv_record(char *buf,size_t bufsize,const char *hostname,const
     RUN_INDEX_SCHEMA_VERSION,run_id,hostname,start_time,start_time,command0,output_json);
 }
 
+/* Like build_record(), but with options.affinity and configuration_provenance
+ * populated (INVESTIGATION.md's "Comparison matrix mode deep-dive") --
+ * build_record() itself deliberately omits both, which already exercises
+ * the "older record / no launcher involved" degrade-to-NULL path for every
+ * other test in this file. options_str lets a caller supply the
+ * configuration_provenance.options[] array body directly (e.g.
+ * "{\"name\":\"affinity_axis\",\"value\":\"nosmt\"}"), empty string for none. */
+static void build_record_with_provenance(char *buf,size_t bufsize,const char *hostname,const char *run_id,
+                                          const char *start_time,const char *command0,
+                                          const char *affinity_mode,const char *options_str){
+  snprintf(buf,bufsize,
+    "{\"schema_version\":\"%s\",\"run_id\":\"%s\",\"collector\":\"wspy\",\"wspy_version\":\"4.2\","
+    "\"hostname\":\"%s\",\"cpu_vendor\":\"AMD\",\"cpu_family\":25,\"cpu_model\":1,"
+    "\"environment\":{\"virt_role\":\"host\",\"hypervisor_vendor\":null,\"microcode_version\":null,"
+    "\"bios_vendor\":null,\"bios_version\":null,\"bios_date\":null,\"cpu_governor\":null,"
+    "\"cpu_scaling_driver\":null,\"cpu_governor_uniform\":false,\"memory_total_kb\":null,"
+    "\"compiler_version\":null,\"libc_version\":null},"
+    "\"environment_coverage\":{\"captured\":0,\"probed\":9},"
+    "\"start_time\":\"%s\",\"finish_time\":\"%s\",\"elapsed_seconds\":1.0,"
+    "\"command\":[\"%s\"],"
+    "\"exit_status\":{\"known\":true,\"exited\":true,\"exit_code\":0,\"signaled\":false,\"term_signal\":null},"
+    "\"options\":{\"counter_mask\":\"0x1\",\"per_core\":false,\"system\":true,\"csv\":false,\"tree\":false,"
+    "\"interval_seconds\":0,\"affinity\":{\"requested\":\"%s\",\"mode\":\"%s\",\"cpus\":\"0,2,4,6\"}},"
+    "\"configuration_provenance\":{\"preset\":\"deep-cpu\",\"configuration\":null,\"options\":[%s]},"
+    "\"counter_coverage\":{\"requested\":4,\"measured\":4},"
+    "\"output_files\":{\"output_path\":null,\"tree_output_path\":null,\"manifest_path\":null}}\n",
+    RUN_INDEX_SCHEMA_VERSION,run_id,hostname,start_time,start_time,command0,
+    affinity_mode,affinity_mode,options_str);
+}
+
 static void write_manifest_file(const char *path,const char *command0,const char *start_time,
                                  const char *kernel_release,int num_cores,int is_hybrid){
   FILE *fp = fopen(path,"w");
@@ -136,6 +166,149 @@ static void test_upsert_insert_and_reingest_no_duplicate(void){
 
   sqlite3_close(db);
   printf("PASS: upsert_run insert/re-ingest\n");
+}
+
+static void test_upsert_run_ingests_affinity_and_config_provenance(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_stmt *stmt;
+
+  printf("Testing upsert_run ingests affinity/configuration_provenance...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  build_record_with_provenance(buf,sizeof(buf),"host1","run1","2026-07-19T00:00:00.000Z","/bin/true",
+                                "nosmt","{\"name\":\"affinity_axis\",\"value\":\"nosmt\"},"
+                                "{\"name\":\"compiler\",\"value\":\"gcc13\"}");
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,0,&stats);
+  json_free(root);
+  assert(stats.records_new == 1);
+
+  assert(sqlite3_prepare_v2(db,
+    "SELECT preset_name,config_name,affinity_mode,affinity_requested,affinity_cpus FROM runs;",
+    -1,&stmt,NULL) == SQLITE_OK);
+  assert(sqlite3_step(stmt) == SQLITE_ROW);
+  assert(!strcmp((const char *)sqlite3_column_text(stmt,0),"deep-cpu"));
+  assert(sqlite3_column_type(stmt,1) == SQLITE_NULL); /* configuration was null */
+  assert(!strcmp((const char *)sqlite3_column_text(stmt,2),"nosmt"));
+  assert(!strcmp((const char *)sqlite3_column_text(stmt,3),"nosmt"));
+  assert(!strcmp((const char *)sqlite3_column_text(stmt,4),"0,2,4,6"));
+  sqlite3_finalize(stmt);
+
+  assert(sqlite3_prepare_v2(db,
+    "SELECT option_name,option_value FROM run_config_options ORDER BY option_name;",
+    -1,&stmt,NULL) == SQLITE_OK);
+  assert(sqlite3_step(stmt) == SQLITE_ROW);
+  assert(!strcmp((const char *)sqlite3_column_text(stmt,0),"affinity_axis"));
+  assert(!strcmp((const char *)sqlite3_column_text(stmt,1),"nosmt"));
+  assert(sqlite3_step(stmt) == SQLITE_ROW);
+  assert(!strcmp((const char *)sqlite3_column_text(stmt,0),"compiler"));
+  assert(!strcmp((const char *)sqlite3_column_text(stmt,1),"gcc13"));
+  assert(sqlite3_step(stmt) == SQLITE_DONE); /* exactly two options, no more */
+  sqlite3_finalize(stmt);
+
+  sqlite3_close(db);
+  printf("PASS: upsert_run ingests affinity/configuration_provenance\n");
+}
+
+/* Re-ingesting a run whose config-option value changed (e.g. a corrected
+ * run-index record) must update the stored value, not duplicate the row or
+ * silently keep the stale one -- replace_run_config_options()'s
+ * DELETE-then-INSERT shape, not the ON CONFLICT clause, is what actually
+ * guarantees this (the ON CONFLICT clause only matters for a duplicate
+ * name *within* one record's own options[] array); this test exercises the
+ * whole re-ingest path end to end regardless of which mechanism does it. */
+static void test_upsert_run_config_options_value_updates_on_reingest(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_stmt *stmt;
+  int count = -1;
+
+  printf("Testing run_config_options value updates on re-ingest, no duplication...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  build_record_with_provenance(buf,sizeof(buf),"host1","run1","2026-07-19T00:00:00.000Z","/bin/true",
+                                "all","{\"name\":\"compiler\",\"value\":\"gcc12\"}");
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,0,&stats);
+  json_free(root);
+
+  build_record_with_provenance(buf,sizeof(buf),"host1","run1","2026-07-19T00:00:00.000Z","/bin/true",
+                                "all","{\"name\":\"compiler\",\"value\":\"gcc13\"}");
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,0,&stats);
+  json_free(root);
+
+  assert(sqlite3_prepare_v2(db,"SELECT COUNT(*) FROM run_config_options;",-1,&stmt,NULL) == SQLITE_OK);
+  assert(sqlite3_step(stmt) == SQLITE_ROW);
+  count = sqlite3_column_int(stmt,0);
+  sqlite3_finalize(stmt);
+  assert(count == 1); /* not two -- re-ingest replaces, doesn't accumulate */
+
+  assert(sqlite3_prepare_v2(db,"SELECT option_value FROM run_config_options WHERE option_name='compiler';",
+                             -1,&stmt,NULL) == SQLITE_OK);
+  assert(sqlite3_step(stmt) == SQLITE_ROW);
+  assert(!strcmp((const char *)sqlite3_column_text(stmt,0),"gcc13"));
+  sqlite3_finalize(stmt);
+
+  sqlite3_close(db);
+  printf("PASS: run_config_options value updates on re-ingest, no duplication\n");
+}
+
+/* build_record() (no affinity/configuration_provenance at all in the JSON,
+ * as if from an older wspy) already exercises this implicitly for every
+ * other test in this file -- an explicit test here pins the behavior down
+ * rather than leaving it as an accidental side effect of what build_record()
+ * happens to omit. */
+static void test_upsert_run_missing_provenance_degrades_to_null(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_stmt *stmt;
+  int n = -1;
+
+  printf("Testing upsert_run degrades to NULL when affinity/configuration_provenance are absent...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  build_record(buf,sizeof(buf),"host1","run1","2026-07-19T00:00:00.000Z","/bin/true",0,NULL);
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,0,&stats);
+  json_free(root);
+
+  assert(sqlite3_prepare_v2(db,
+    "SELECT preset_name,config_name,affinity_mode,affinity_requested,affinity_cpus FROM runs;",
+    -1,&stmt,NULL) == SQLITE_OK);
+  assert(sqlite3_step(stmt) == SQLITE_ROW);
+  assert(sqlite3_column_type(stmt,0) == SQLITE_NULL);
+  assert(sqlite3_column_type(stmt,1) == SQLITE_NULL);
+  assert(sqlite3_column_type(stmt,2) == SQLITE_NULL);
+  assert(sqlite3_column_type(stmt,3) == SQLITE_NULL);
+  assert(sqlite3_column_type(stmt,4) == SQLITE_NULL);
+  sqlite3_finalize(stmt);
+
+  assert(sqlite3_prepare_v2(db,"SELECT COUNT(*) FROM run_config_options;",-1,&stmt,NULL) == SQLITE_OK);
+  assert(sqlite3_step(stmt) == SQLITE_ROW);
+  n = sqlite3_column_int(stmt,0);
+  sqlite3_finalize(stmt);
+  assert(n == 0);
+
+  sqlite3_close(db);
+  printf("PASS: upsert_run degrades to NULL when affinity/configuration_provenance are absent\n");
 }
 
 static void test_collision_detected_and_not_overwritten(void){
@@ -766,9 +939,77 @@ static void test_schema_migration_v1_to_v2(void){
   printf("PASS: schema migration v1 to v2\n");
 }
 
+static void test_schema_migration_v2_to_v3(void){
+  sqlite3 *db;
+  sqlite3_stmt *stmt;
+  int user_version = 0;
+
+  printf("Testing ensure_schema migrates a v2-shaped database to v3...\n");
+  assert(sqlite3_open(":memory:",&db) == SQLITE_OK);
+
+  /* The exact v2 shape (metric_values exists, but no preset_name/config_name,
+   * no affinity_ columns, no run_config_options table yet) -- mirrors a real
+   * database created by wspy-store before this item's ingestion support
+   * existed. */
+  assert(sqlite3_exec(db,
+    "CREATE TABLE store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+    "CREATE TABLE ingest_sources (path TEXT PRIMARY KEY, last_byte_offset INTEGER NOT NULL DEFAULT 0,"
+    " last_size INTEGER NOT NULL DEFAULT 0, last_ingested_at TEXT);"
+    "CREATE TABLE runs (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, hostname TEXT NOT NULL,"
+    " run_index_schema_version TEXT NOT NULL, collector TEXT NOT NULL, wspy_version TEXT,"
+    " cpu_vendor TEXT, cpu_family INTEGER, cpu_model INTEGER, start_time TEXT NOT NULL,"
+    " finish_time TEXT, elapsed_seconds REAL, command TEXT NOT NULL, exit_known INTEGER,"
+    " exit_exited INTEGER, exit_code INTEGER, exit_signaled INTEGER, exit_term_signal INTEGER,"
+    " per_core INTEGER, system_flag INTEGER, csv_flag INTEGER, tree_flag INTEGER,"
+    " interval_seconds INTEGER, counter_mask TEXT, counter_mask_int INTEGER,"
+    " counters_requested INTEGER, counters_measured INTEGER, output_path TEXT,"
+    " tree_output_path TEXT, manifest_path TEXT, manifest_ingested INTEGER NOT NULL DEFAULT 0,"
+    " kernel_release TEXT, num_cores INTEGER, num_cores_available INTEGER, is_hybrid INTEGER,"
+    " metrics_ingested INTEGER NOT NULL DEFAULT 0, metrics_row_count INTEGER,"
+    " source_run_index_path TEXT NOT NULL, ingested_at TEXT NOT NULL, UNIQUE(hostname, run_id));"
+    "CREATE TABLE metric_values (id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, row_index INTEGER NOT NULL,"
+    " tick_time REAL, core INTEGER, phase TEXT, metric_name TEXT NOT NULL, value REAL,"
+    " is_percent INTEGER NOT NULL DEFAULT 0, raw_text TEXT NOT NULL);"
+    "INSERT INTO runs (run_id,hostname,run_index_schema_version,collector,start_time,command,"
+    " source_run_index_path,ingested_at) VALUES"
+    " ('r1','h1','1.5.0','wspy','2026-01-01T00:00:00Z','/bin/true','idx.jsonl','2026-01-01T00:00:00Z');"
+    "PRAGMA user_version=2;",NULL,NULL,NULL) == SQLITE_OK);
+
+  assert(ensure_schema(db) == 0);
+
+  assert(sqlite3_prepare_v2(db,"PRAGMA user_version;",-1,&stmt,NULL) == SQLITE_OK);
+  assert(sqlite3_step(stmt) == SQLITE_ROW);
+  user_version = sqlite3_column_int(stmt,0);
+  sqlite3_finalize(stmt);
+  assert(user_version == STORE_SCHEMA_VERSION);
+
+  /* The pre-existing row survived, and the new columns are usable (NULL,
+   * not an error). */
+  assert(sqlite3_prepare_v2(db,
+    "SELECT run_id,preset_name,affinity_mode FROM runs;",-1,&stmt,NULL) == SQLITE_OK);
+  assert(sqlite3_step(stmt) == SQLITE_ROW);
+  assert(!strcmp((const char *)sqlite3_column_text(stmt,0),"r1"));
+  assert(sqlite3_column_type(stmt,1) == SQLITE_NULL);
+  assert(sqlite3_column_type(stmt,2) == SQLITE_NULL);
+  sqlite3_finalize(stmt);
+
+  /* run_config_options exists and is usable. */
+  assert(sqlite3_exec(db,
+    "INSERT INTO run_config_options (run_id,option_name,option_value) VALUES (1,'compiler','gcc13');",
+    NULL,NULL,NULL) == SQLITE_OK);
+
+  assert(ensure_schema(db) == 0); /* no-op at current version */
+
+  sqlite3_close(db);
+  printf("PASS: schema migration v2 to v3\n");
+}
+
 int main(void){
   test_ensure_schema_idempotent();
   test_upsert_insert_and_reingest_no_duplicate();
+  test_upsert_run_ingests_affinity_and_config_provenance();
+  test_upsert_run_config_options_value_updates_on_reingest();
+  test_upsert_run_missing_provenance_degrades_to_null();
   test_collision_detected_and_not_overwritten();
   test_malformed_line_and_schema_mismatch();
   test_schema_major_mismatch_warns_once();
@@ -785,6 +1026,7 @@ int main(void){
   test_ingest_csv_metrics_reingest_idempotent();
   test_ingest_csv_metrics_skipped_conditions();
   test_schema_migration_v1_to_v2();
+  test_schema_migration_v2_to_v3();
 
   printf("\nAll test_store tests passed.\n");
   return 0;

@@ -28,7 +28,7 @@
 #include "run_index.h"
 #include "manifest.h"
 
-#define STORE_SCHEMA_VERSION 2
+#define STORE_SCHEMA_VERSION 3
 
 static int now_iso8601(char *buf,size_t bufsize);
 
@@ -79,6 +79,11 @@ static const char *SCHEMA_DDL =
   "  num_cores INTEGER,"
   "  num_cores_available INTEGER,"
   "  is_hybrid INTEGER,"
+  "  preset_name TEXT,"
+  "  config_name TEXT,"
+  "  affinity_mode TEXT,"
+  "  affinity_requested TEXT,"
+  "  affinity_cpus TEXT,"
   "  metrics_ingested INTEGER NOT NULL DEFAULT 0,"
   "  metrics_row_count INTEGER,"
   "  source_run_index_path TEXT NOT NULL,"
@@ -91,6 +96,12 @@ static const char *SCHEMA_DDL =
   "  arg_index INTEGER NOT NULL,"
   "  arg_value TEXT NOT NULL,"
   "  PRIMARY KEY (run_id, arg_index)"
+  ");"
+  "CREATE TABLE IF NOT EXISTS run_config_options ("
+  "  run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,"
+  "  option_name TEXT NOT NULL,"
+  "  option_value TEXT NOT NULL,"
+  "  PRIMARY KEY (run_id, option_name)"
   ");"
   "CREATE TABLE IF NOT EXISTS run_environment ("
   "  run_id INTEGER PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,"
@@ -148,6 +159,28 @@ static const char *MIGRATION_V1_TO_V2 =
   "  raw_text TEXT NOT NULL"
   ");"
   "CREATE INDEX IF NOT EXISTS idx_metric_values_run_metric ON metric_values(run_id,metric_name);";
+
+/* Applied when an existing database is found at STORE_SCHEMA_VERSION 2 --
+ * adds structured-configuration-provenance/affinity grouping support
+ * (INVESTIGATION.md's "Comparison matrix mode deep-dive": preset_name/
+ * config_name/affinity_* were already present in every run-index record,
+ * just never ingested; run_config_options is the new open-ended
+ * name/value child table for --config-option k=v pairs). ensure_schema()
+ * only reaches this at user_version==2, so (like MIGRATION_V1_TO_V2) it's
+ * safe to run exactly once -- the ADD COLUMN statements would error on a
+ * second run. */
+static const char *MIGRATION_V2_TO_V3 =
+  "ALTER TABLE runs ADD COLUMN preset_name TEXT;"
+  "ALTER TABLE runs ADD COLUMN config_name TEXT;"
+  "ALTER TABLE runs ADD COLUMN affinity_mode TEXT;"
+  "ALTER TABLE runs ADD COLUMN affinity_requested TEXT;"
+  "ALTER TABLE runs ADD COLUMN affinity_cpus TEXT;"
+  "CREATE TABLE IF NOT EXISTS run_config_options ("
+  "  run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,"
+  "  option_name TEXT NOT NULL,"
+  "  option_value TEXT NOT NULL,"
+  "  PRIMARY KEY (run_id, option_name)"
+  ");";
 
 struct store_stats {
   int records_seen;
@@ -256,9 +289,24 @@ static int ensure_schema(sqlite3 *db){
       }
     }
   } else if (user_version == 1){
-    fprintf(stderr,"wspy-store: migrating database from schema version 1 to %d "
-                    "(adding metric_values)\n",STORE_SCHEMA_VERSION);
+    fprintf(stderr,"wspy-store: migrating database from schema version 1 to 2 "
+                    "(adding metric_values)\n");
     if (sqlite3_exec(db,MIGRATION_V1_TO_V2,NULL,NULL,&errmsg) != SQLITE_OK){
+      fprintf(stderr,"wspy-store: migration to schema version 2 failed: %s\n",
+              errmsg ? errmsg : "unknown error");
+      sqlite3_free(errmsg);
+      return -1;
+    }
+    if (sqlite3_exec(db,MIGRATION_V2_TO_V3,NULL,NULL,&errmsg) != SQLITE_OK){
+      fprintf(stderr,"wspy-store: migration to schema version %d failed: %s\n",
+              STORE_SCHEMA_VERSION,errmsg ? errmsg : "unknown error");
+      sqlite3_free(errmsg);
+      return -1;
+    }
+  } else if (user_version == 2){
+    fprintf(stderr,"wspy-store: migrating database from schema version 2 to %d "
+                    "(adding configuration-provenance/affinity grouping support)\n",STORE_SCHEMA_VERSION);
+    if (sqlite3_exec(db,MIGRATION_V2_TO_V3,NULL,NULL,&errmsg) != SQLITE_OK){
       fprintf(stderr,"wspy-store: migration to schema version %d failed: %s\n",
               STORE_SCHEMA_VERSION,errmsg ? errmsg : "unknown error");
       sqlite3_free(errmsg);
@@ -389,6 +437,53 @@ static void replace_run_command_args(sqlite3 *db,sqlite3_int64 run_row_id,const 
     sqlite3_bind_int64(ins,1,run_row_id);
     sqlite3_bind_int(ins,2,(int)i);
     sqlite3_bind_text(ins,3,item->u.string,-1,SQLITE_TRANSIENT);
+    sqlite3_step(ins);
+    sqlite3_reset(ins);
+  }
+  sqlite3_finalize(ins);
+}
+
+/* Same DELETE-then-INSERT idempotent-reingest shape as
+ * replace_run_command_args() above, for configuration_provenance's
+ * open-ended options[] array (name/value pairs from --config-option k=v --
+ * INVESTIGATION.md's "Comparison matrix mode deep-dive"). preset_name/
+ * config_name/affinity_* are small, fixed-cardinality fields bound directly
+ * on the runs row in upsert_run() instead -- this table is only for the
+ * genuinely open-ended part, keyed by option name (not array index) since a
+ * given option name is meant to appear at most once per run. */
+static void replace_run_config_options(sqlite3 *db,sqlite3_int64 run_row_id,const struct json_value *record){
+  const struct json_value *cp = json_object_get(record,"configuration_provenance");
+  const struct json_value *opts = cp ? json_object_get(cp,"options") : NULL;
+  sqlite3_stmt *del,*ins;
+  size_t i,n;
+
+  if (sqlite3_prepare_v2(db,"DELETE FROM run_config_options WHERE run_id=?;",-1,&del,NULL) == SQLITE_OK){
+    sqlite3_bind_int64(del,1,run_row_id);
+    sqlite3_step(del);
+    sqlite3_finalize(del);
+  }
+  if (!opts || opts->type != JSON_ARRAY) return;
+  n = json_array_len(opts);
+  /* ON CONFLICT DO UPDATE (not a plain INSERT, unlike replace_run_command_args()'s
+   * arg_index-keyed insert, which can never collide within one call): wspy.c's
+   * --config-option parsing never deduplicates repeated keys, so the same
+   * option_name can legitimately appear twice in one record's options[] --
+   * last value in array order wins, rather than the second occurrence
+   * silently failing a PRIMARY KEY constraint and getting dropped. */
+  if (sqlite3_prepare_v2(db,
+      "INSERT INTO run_config_options (run_id,option_name,option_value) VALUES (?,?,?) "
+      "ON CONFLICT(run_id,option_name) DO UPDATE SET option_value=excluded.option_value;",
+      -1,&ins,NULL) != SQLITE_OK) return;
+  for (i = 0; i < n; i++){
+    const struct json_value *item = json_array_get(opts,i);
+    const char *name,*value;
+    if (!item || item->type != JSON_OBJECT) continue;
+    name = json_get_string(item,"name",NULL);
+    value = json_get_string(item,"value",NULL);
+    if (!name || !value) continue;
+    sqlite3_bind_int64(ins,1,run_row_id);
+    sqlite3_bind_text(ins,2,name,-1,SQLITE_TRANSIENT);
+    sqlite3_bind_text(ins,3,value,-1,SQLITE_TRANSIENT);
     sqlite3_step(ins);
     sqlite3_reset(ins);
   }
@@ -681,14 +776,25 @@ static void upsert_run(sqlite3 *db,const struct json_value *record,const char *s
   if (counter_mask_str) counter_mask_int = strtoul(counter_mask_str,NULL,16);
   now_iso8601(now_buf,sizeof(now_buf));
 
+  /* affinity is nested under options.affinity (run_index.c); configuration_provenance
+   * is a top-level sibling of options -- both present in every run-index record
+   * regardless of whether --affinity/--preset-name/--config-name were given
+   * (defaulted to "all"/NULL there, same convention followed here). See
+   * INVESTIGATION.md's "Comparison matrix mode deep-dive". */
+  {
+  const struct json_value *affinity = options ? json_object_get(options,"affinity") : NULL;
+  const struct json_value *config_prov = json_object_get(record,"configuration_provenance");
+
   if (sqlite3_prepare_v2(db,
       "INSERT INTO runs (run_id,hostname,run_index_schema_version,collector,wspy_version,"
       "cpu_vendor,cpu_family,cpu_model,start_time,finish_time,elapsed_seconds,command,"
       "exit_known,exit_exited,exit_code,exit_signaled,exit_term_signal,"
       "per_core,system_flag,csv_flag,tree_flag,interval_seconds,"
       "counter_mask,counter_mask_int,counters_requested,counters_measured,"
-      "output_path,tree_output_path,manifest_path,source_run_index_path,ingested_at) "
-      "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+      "output_path,tree_output_path,manifest_path,"
+      "preset_name,config_name,affinity_mode,affinity_requested,affinity_cpus,"
+      "source_run_index_path,ingested_at) "
+      "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
       "ON CONFLICT(hostname,run_id) DO UPDATE SET "
       "run_index_schema_version=excluded.run_index_schema_version,collector=excluded.collector,"
       "wspy_version=excluded.wspy_version,cpu_vendor=excluded.cpu_vendor,"
@@ -702,6 +808,9 @@ static void upsert_run(sqlite3 *db,const struct json_value *record,const char *s
       "counter_mask_int=excluded.counter_mask_int,counters_requested=excluded.counters_requested,"
       "counters_measured=excluded.counters_measured,output_path=excluded.output_path,"
       "tree_output_path=excluded.tree_output_path,manifest_path=excluded.manifest_path,"
+      "preset_name=excluded.preset_name,config_name=excluded.config_name,"
+      "affinity_mode=excluded.affinity_mode,affinity_requested=excluded.affinity_requested,"
+      "affinity_cpus=excluded.affinity_cpus,"
       "source_run_index_path=excluded.source_run_index_path,ingested_at=excluded.ingested_at;",
       -1,&stmt,NULL) != SQLITE_OK){
     stats->records_malformed++;
@@ -736,8 +845,13 @@ static void upsert_run(sqlite3 *db,const struct json_value *record,const char *s
   bind_text_or_null(stmt,27,outfiles ? json_get_string(outfiles,"output_path",NULL) : NULL);
   bind_text_or_null(stmt,28,outfiles ? json_get_string(outfiles,"tree_output_path",NULL) : NULL);
   bind_text_or_null(stmt,29,outfiles ? json_get_string(outfiles,"manifest_path",NULL) : NULL);
-  sqlite3_bind_text(stmt,30,source_path,-1,SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt,31,now_buf,-1,SQLITE_TRANSIENT);
+  bind_text_or_null(stmt,30,config_prov ? json_get_string(config_prov,"preset",NULL) : NULL);
+  bind_text_or_null(stmt,31,config_prov ? json_get_string(config_prov,"configuration",NULL) : NULL);
+  bind_text_or_null(stmt,32,affinity ? json_get_string(affinity,"mode",NULL) : NULL);
+  bind_text_or_null(stmt,33,affinity ? json_get_string(affinity,"requested",NULL) : NULL);
+  bind_text_or_null(stmt,34,affinity ? json_get_string(affinity,"cpus",NULL) : NULL);
+  sqlite3_bind_text(stmt,35,source_path,-1,SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt,36,now_buf,-1,SQLITE_TRANSIENT);
 
   if (sqlite3_step(stmt) != SQLITE_DONE){
     sqlite3_finalize(stmt);
@@ -745,6 +859,7 @@ static void upsert_run(sqlite3 *db,const struct json_value *record,const char *s
     return;
   }
   sqlite3_finalize(stmt);
+  }
 
   run_row_id = existed ? 0 : sqlite3_last_insert_rowid(db);
   if (existed){
@@ -761,6 +876,7 @@ static void upsert_run(sqlite3 *db,const struct json_value *record,const char *s
   }
 
   replace_run_command_args(db,run_row_id,record);
+  replace_run_config_options(db,run_row_id,record);
   upsert_run_environment(db,run_row_id,record);
 
   if (enrich_manifest){

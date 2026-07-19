@@ -27,6 +27,7 @@ RUN_ID=""
 UNIFIED=0
 RUNROOT=""
 AFFINITY=""
+CONFIG_OPTIONS=()
 
 declare -A PASS_EXT PASS_OUTFILE PASS_MANIFEST PASS_IS_TREE PASS_STATUS
 
@@ -113,6 +114,14 @@ Options:
                             --affinity=<spec> (all/thread=<id>/nosmt/domain=<id>/
                             cpuset=<c0,c1,...>; run --wspy's own --list-affinity
                             to see this host's core/L3-domain ids)
+  --config-option <k>=<v>  Metadata-only tag forwarded to every pass's own
+                            --config-option <k>=<v> (repeatable) -- e.g. a
+                            wspy-sweep cell's axis tag, or a uniform context
+                            label (compiler/kernel/governor-as-observed);
+                            recorded via wspy's structured configuration
+                            provenance, queryable later via wspy-summary
+                            --group-by-option <k>. Never affects what a pass
+                            actually does.
   --list                   List builtin profiles and their passes, then exit
   --dry-run                Print the wspy command for each pass without running it
   -h, --help                Show this help
@@ -404,6 +413,16 @@ run_pass(){
   if [ -n "$AFFINITY" ]; then
     cmd+=(--affinity "$AFFINITY")
   fi
+  # --config-option (repeatable, top-level, INVESTIGATION.md's "Comparison
+  # matrix mode deep-dive", piece 2): unlike --preset-name/--config-name
+  # below (this script's own vocabulary, always auto-emitted), these are
+  # caller-supplied metadata -- a wspy-sweep cell's own axis tag, or a
+  # human's uniform context label (compiler/kernel/governor-as-observed) --
+  # forwarded through unchanged to every pass exactly like --affinity
+  # already is, not derived from anything this script knows about.
+  for opt in "${CONFIG_OPTIONS[@]+"${CONFIG_OPTIONS[@]}"}"; do
+    cmd+=(--config-option "$opt")
+  done
   if [ -n "$MANIFEST_DIR" ]; then
     manifest_file="${MANIFEST_DIR}/${PREFIX}${name}.manifest.json"
     cmd+=(--manifest "$manifest_file")
@@ -568,6 +587,9 @@ while [ $# -gt 0 ]; do
     --affinity)
       [ $# -ge 2 ] || { echo "$SCRIPT_NAME: $1 requires an argument" >&2; exit 1; }
       AFFINITY="$2"; shift 2 ;;
+    --config-option)
+      [ $# -ge 2 ] || { echo "$SCRIPT_NAME: $1 requires an argument" >&2; exit 1; }
+      CONFIG_OPTIONS+=("$2"); shift 2 ;;
     --list)
       LIST_ONLY=1; shift ;;
     --dry-run)
