@@ -54,7 +54,11 @@ struct power_capabilities {
                         * discovery-only in v1, doesn't gate this */
   struct power_pmu pkg;   /* power/energy-pkg */
   struct power_pmu core;  /* power_core/energy-core -- discovery only, see above */
+  int is_fallback;
+  char fallback_path[256];
 };
+
+extern char fallback_power_path[256];
 
 /* Probes /sys/bus/event_source/devices/{power,power_core} and returns the
  * discovered capabilities. Never fails -- an absent PMU (no RAPL-equivalent

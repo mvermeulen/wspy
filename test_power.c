@@ -93,7 +93,7 @@ static void test_power_not_present(void){
   rmdir_recursive(FAKE_SYSFS_BASE);
   mkdir_or_die(FAKE_SYSFS_BASE);
 
-  power = power_probe_at(FAKE_SYSFS_BASE);
+  power = power_probe_at(FAKE_SYSFS_BASE, "/tmp/nonexistent");
   assert(power.supported == 0);
   assert(power.pkg.present == 0);
   assert(power.pkg.type == -1);
@@ -117,7 +117,7 @@ static void test_power_fully_present(void){
   make_fake_pmu("power_core",15,"config:0-7","energy-core","event=0x01",
                 "2.3283064365386962890625e-10","Joules");
 
-  power = power_probe_at(FAKE_SYSFS_BASE);
+  power = power_probe_at(FAKE_SYSFS_BASE, "/tmp/nonexistent");
   assert(power.supported == 1);
 
   assert(power.pkg.present == 1);
@@ -148,7 +148,7 @@ static void test_power_pkg_only(void){
   make_fake_pmu("power",14,"config:0-7","energy-pkg","event=0x02",
                 "2.3283064365386962890625e-10","Joules");
 
-  power = power_probe_at(FAKE_SYSFS_BASE);
+  power = power_probe_at(FAKE_SYSFS_BASE, "/tmp/nonexistent");
   assert(power.pkg.present == 1);
   assert(power.core.present == 0);
   assert(power.supported == 1); /* only pkg is required */
@@ -165,7 +165,7 @@ static void test_power_missing_event_file(void){
   rmdir_recursive(FAKE_SYSFS_BASE);
   make_fake_pmu("power",14,"config:0-7",NULL,NULL,NULL,NULL);
 
-  power = power_probe_at(FAKE_SYSFS_BASE);
+  power = power_probe_at(FAKE_SYSFS_BASE, "/tmp/nonexistent");
   assert(power.pkg.present == 1);
   assert(power.pkg.event_present == 0);
   assert(power.supported == 0);
@@ -182,7 +182,7 @@ static void test_power_scale_defaults_to_one(void){
   rmdir_recursive(FAKE_SYSFS_BASE);
   make_fake_pmu("power",14,"config:0-7","energy-pkg","event=0x02",NULL,NULL);
 
-  power = power_probe_at(FAKE_SYSFS_BASE);
+  power = power_probe_at(FAKE_SYSFS_BASE, "/tmp/nonexistent");
   assert(power.pkg.event_present == 1);
   assert(power.pkg.scale == 1.0);
   assert(power.pkg.unit[0] == '\0');
@@ -200,7 +200,7 @@ static void test_power_build_pkg_event(void){
   rmdir_recursive(FAKE_SYSFS_BASE);
   make_fake_pmu("power",14,"config:0-7","energy-pkg","event=0x02",
                 "2.3283064365386962890625e-10","Joules");
-  power = power_probe_at(FAKE_SYSFS_BASE);
+  power = power_probe_at(FAKE_SYSFS_BASE, "/tmp/nonexistent");
 
   ev = power_build_pkg_event(&power.pkg);
   assert(ev.valid == 1);
@@ -219,7 +219,7 @@ static void test_power_build_pkg_event_shifted(void){
 
   rmdir_recursive(FAKE_SYSFS_BASE);
   make_fake_pmu("power",14,"config:8-15","energy-pkg","event=0x03",NULL,NULL);
-  power = power_probe_at(FAKE_SYSFS_BASE);
+  power = power_probe_at(FAKE_SYSFS_BASE, "/tmp/nonexistent");
 
   ev = power_build_pkg_event(&power.pkg);
   assert(ev.valid == 1);
@@ -237,7 +237,7 @@ static void test_power_build_pkg_event_absent(void){
 
   rmdir_recursive(FAKE_SYSFS_BASE);
   mkdir_or_die(FAKE_SYSFS_BASE);
-  power = power_probe_at(FAKE_SYSFS_BASE);
+  power = power_probe_at(FAKE_SYSFS_BASE, "/tmp/nonexistent");
 
   ev = power_build_pkg_event(&power.pkg);
   assert(ev.valid == 0);
@@ -273,6 +273,32 @@ static void test_power_counter_group_structural(void){
   printf("PASS: power_counter_group structural invariants\n");
 }
 
+static void test_power_hwmon_fallback(void){
+  struct power_capabilities power;
+
+  printf("Testing power_probe_at: hwmon fallback...\n");
+
+  rmdir_recursive(FAKE_SYSFS_BASE);
+  mkdir_or_die(FAKE_SYSFS_BASE);
+  
+  #define FAKE_HWMON_BASE "/tmp/test_power_hwmon"
+  rmdir_recursive(FAKE_HWMON_BASE);
+  mkdir_or_die(FAKE_HWMON_BASE);
+  mkdir_or_die(FAKE_HWMON_BASE "/hwmon0");
+  
+  write_file(FAKE_HWMON_BASE "/hwmon0/energy1_input", "15000000\n");
+  write_file(FAKE_HWMON_BASE "/hwmon0/name", "scmi_sensors\n");
+
+  power = power_probe_at(FAKE_SYSFS_BASE, FAKE_HWMON_BASE);
+  assert(power.supported == 1);
+  assert(power.is_fallback == 1);
+  assert(strcmp(power.fallback_path, FAKE_HWMON_BASE "/hwmon0/energy1_input") == 0);
+
+  rmdir_recursive(FAKE_SYSFS_BASE);
+  rmdir_recursive(FAKE_HWMON_BASE);
+  printf("PASS: power_probe_at hwmon fallback\n");
+}
+
 int main(void){
   test_power_not_present();
   test_power_fully_present();
@@ -283,6 +309,7 @@ int main(void){
   test_power_build_pkg_event_shifted();
   test_power_build_pkg_event_absent();
   test_power_counter_group_structural();
+  test_power_hwmon_fallback();
 
   printf("\nAll test_power tests passed.\n");
   return 0;

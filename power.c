@@ -11,6 +11,8 @@
 #include "power.h"
 #include "error.h"
 
+char fallback_power_path[256];
+
 /* Reads the first line of path (trailing newline/CR stripped) into buf.
  * Returns 0 on success, -1 if the file couldn't be opened/read. */
 static int read_sysfs_line(const char *path,char *buf,size_t bufsize){
@@ -122,21 +124,61 @@ static void probe_power_pmu_at(const char *sysfs_base,const char *pmu_name,
   read_sysfs_line(path,pmu->unit,sizeof(pmu->unit)); /* leaves unit[0]==0 on failure */
 }
 
-static struct power_capabilities power_probe_at(const char *sysfs_base){
+static int find_hwmon_energy_path_at(const char *hwmon_base, char *out_path, size_t out_size) {
+  DIR *dir = opendir(hwmon_base);
+  if (!dir) return -1;
+  struct dirent *de;
+  while ((de = readdir(dir)) != NULL) {
+    if (de->d_name[0] == '.') continue;
+    char path[350];
+    snprintf(path, sizeof(path), "%s/%s", hwmon_base, de->d_name);
+    
+    // Look for energy1_input to energy4_input
+    int i;
+    for (i = 1; i <= 4; i++) {
+      char filepath[512];
+      snprintf(filepath, sizeof(filepath), "%s/energy%d_input", path, i);
+      if (access(filepath, F_OK) == 0) {
+        snprintf(out_path, out_size, "%s", filepath);
+        closedir(dir);
+        return 0;
+      }
+    }
+  }
+  closedir(dir);
+  return -1;
+}
+
+static struct power_capabilities power_probe_at(const char *sysfs_base, const char *hwmon_base){
   struct power_capabilities power;
 
   memset(&power,0,sizeof(power));
   probe_power_pmu_at(sysfs_base,"power","energy-pkg",&power.pkg);
   probe_power_pmu_at(sysfs_base,"power_core","energy-core",&power.core);
   power.supported = power.pkg.present && power.pkg.event_present;
+
+  if (!power.supported) {
+    char path[256];
+    if (find_hwmon_energy_path_at(hwmon_base, path, sizeof(path)) == 0) {
+      power.supported = 1;
+      power.is_fallback = 1;
+      snprintf(power.fallback_path, sizeof(power.fallback_path), "%s", path);
+    }
+  }
+
   return power;
 }
 
 struct power_capabilities power_probe(void){
-  return power_probe_at("/sys/bus/event_source/devices");
+  return power_probe_at("/sys/bus/event_source/devices", "/sys/class/hwmon");
 }
 
 void print_power_capability_report(const struct power_capabilities *power){
+  if (power->is_fallback) {
+    fprintf(outfile,"CPU power/energy capability report: supported (fallback hwmon)\n");
+    fprintf(outfile,"  fallback path: %s\n", power->fallback_path);
+    return;
+  }
   fprintf(outfile,"CPU power/energy capability report: %s\n",
           power->supported ? "supported (package)" : "not supported");
   if (power->pkg.present)
@@ -191,6 +233,22 @@ struct counter_group *power_counter_group(char *name){
     warning("CPU power/energy (power/energy-pkg) not supported on this host/kernel -- "
             "--power produces no counters\n");
     return NULL;
+  }
+
+  if (caps.is_fallback) {
+    snprintf(fallback_power_path, sizeof(fallback_power_path), "%s", caps.fallback_path);
+    cgroup = calloc(1,sizeof(struct counter_group));
+    cgroup->label = strdup(name);
+    cgroup->type_id = PERF_TYPE_RAW;
+    cgroup->mask = COUNTER_POWER;
+    cgroup->ncounters = 1;
+    cgroup->cinfo = calloc(1,sizeof(struct counter_info));
+    cgroup->cinfo[0].label = strdup("pkg_joules");
+    cgroup->cinfo[0].device_type = 9999; /* fallback marker */
+    cgroup->cinfo[0].config = 0;
+    cgroup->cinfo[0].is_group_leader = 1;
+    cgroup->cinfo[0].scale = 0.000001; /* microjoules to Joules */
+    return cgroup;
   }
 
   ev = power_build_pkg_event(&caps.pkg);
