@@ -2465,6 +2465,14 @@ def render_analyze_card(suite, benchmark, run_id):
     <button type="button" id="analyze-discover-models">Discover installed models</button>
   </div>
   <div id="analyze-model-chips" class="add-buttons"></div>
+  <div class="row" style="margin-top: 0.5rem;">
+    <label>Prompt Template
+      <select id="analyze-template">
+        <option value="perf_analysis.tmpl">Default (perf_analysis.tmpl)</option>
+        <option value="perf_analysis2.tmpl">Structured (perf_analysis2.tmpl)</option>
+      </select>
+    </label>
+  </div>
   <div class="chips">
     <label class="chip"><input type="checkbox" id="analyze-all-models"> query every installed model (--all-models)</label>
     <label class="chip"><input type="checkbox" id="analyze-critique"> also ask for prompt critique (--critique)</label>
@@ -3432,6 +3440,7 @@ class Handler(BaseHTTPRequestHandler):
                   if isinstance(m, str) and m.strip()]
         all_models = bool(body.get("all_models"))
         critique = bool(body.get("critique"))
+        template = body.get("template")
 
         argv = [cfg["wspy_analyze_bin"], "--rundir", rundir]
         for m in models:
@@ -3440,6 +3449,10 @@ class Handler(BaseHTTPRequestHandler):
             argv.append("--all-models")
         if critique:
             argv.append("--critique")
+        if template:
+            if template in ("perf_analysis.tmpl", "perf_analysis2.tmpl"):
+                template_path = os.path.join(os.path.dirname(cfg["wspy_analyze_bin"]), "prompts", template)
+                argv += ["--prompt-template", template_path]
 
         key = run_key(suite, benchmark, run_id)
         state = RunState(rundir)
