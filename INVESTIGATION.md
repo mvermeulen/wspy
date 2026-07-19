@@ -232,12 +232,34 @@ comment there is now accurate rather than aspirational). The existing "Device in
 AMD-only (`--gpu-device`); NVIDIA always uses its default device (`--gpu-nvidia-device` has no
 checklist field yet), noted inline in the card.
 
+**AMD IBS filtered-vs-unfiltered validation, and a real bug it surfaced:** attempting the
+long-carried-forward "compare filtered vs. unfiltered IBS sample distributions on real hardware"
+validation immediately hit `--ibs-memory-deep`'s filtered `ibs_op` counter failing to open
+(`errno=22`/`EINVAL`) on real Zen5 hardware (family 1a model 70). A bit-by-bit `perf_event_open()`
+sweep of the `ldlat` config field (bypassing wspy entirely) found a clean, reproducible threshold:
+every value 100–127 is rejected, every value ≥ 128 succeeds — the kernel enforces a real minimum
+load-latency threshold of 128 for `ibs_op`. `ibs.h`'s `IBS_DEFAULT_LDLAT_THRESHOLD` was **120**,
+below that minimum, so every `--ibs-memory-deep` run that didn't explicitly override `--ibs-ldlat`
+had been silently failing to open the filtered counter (degrading to 2/3 measured — not a fatal
+error, so this went unnoticed). Fixed: default bumped to 128. `IBS_DEFAULT_FETCHLAT_THRESHOLD`
+(also 120) is deliberately left unchanged — no hardware available during this validation exposed a
+working `fetchlat` sysfs format field on `ibs_fetch` to test the same way (fetch-latency and
+op-load-latency are different hardware mechanisms, not assumed to share a minimum; see "Known gaps"
+below). With the fix, the originally-requested comparison itself now works: a deliberately
+cache-unfriendly pointer-chase workload (256MB randomized permutation cycle, defeats prefetching)
+showed `ibs_op_accepted_ratio` averaging ~6.8% across 3 trials (0.0630/0.0662/0.0750) versus ~2.6%
+for an idle `sleep` baseline (0.0425/0.0190/0.0176) over 3 trials each — non-overlapping ranges,
+confirming the l3missonly+ldlat filter's accepted-ratio signal genuinely tracks real memory-bound
+behavior rather than just sampling noise.
+
 ## Known gaps (still open)
+- **AMD IBS `fetchlat` threshold minimum unverified:** unlike `ibs_op`'s `ldlat` field (see above,
+  now fixed), no host available during that validation exposed a working `fetchlat` sysfs format
+  field on `ibs_fetch` to test whether it has an analogous hardware-enforced minimum below
+  `IBS_DEFAULT_FETCHLAT_THRESHOLD`'s current value of 120. Worth the same bit-sweep treatment once
+  hardware with a live `fetchlat` field is available.
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
-- **AMD IBS filtering skew:** L3-miss-only/load-latency filtering is documented to skew IBS's sampling
-  period, but no session has yet compared filtered vs. unfiltered sample distributions on real
-  hardware side by side — `ibs-memory-deep`'s real-hardware validation used its defaults only.
 - **GPU multi-device enumeration:** `--gpu-busy`/`--gpu-metrics`/`--gpu-smi`/`--gpu-device=<idx>` on an
   `AMDGPU=1` build haven't been exercised against a real multi-GPU host to confirm device
   enumeration/selection beyond what `./run_tests.sh`'s ROCm-header-gated build check covers.
@@ -374,9 +396,8 @@ has). Ordered in dependency tiers; items within a tier are independently startab
 **Tier 1 — real-hardware validation carried forward (no code change, just testing — see "Known gaps"
 above for detail):**
 
-1. Compare AMD IBS filtered vs. unfiltered sample distributions on real hardware.
-2. Exercise GPU device enumeration/selection on a real multi-GPU host.
-3. Exercise `wspy-validate`/`wspy-ledger` against a real run-index file with interrupted runs and
+1. Exercise GPU device enumeration/selection on a real multi-GPU host.
+2. Exercise `wspy-validate`/`wspy-ledger` against a real run-index file with interrupted runs and
    mixed schema versions accumulated at scale.
 
 **Tier 2 — stats/confidence layer:**

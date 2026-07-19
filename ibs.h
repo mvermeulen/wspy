@@ -104,9 +104,24 @@ struct ibs_profile_params {
 };
 
 /* wspy's own starting-point defaults when a param above is left at 0 -- not
- * hardware-mandated values, just this tool's default, override via the CLI. */
+ * hardware-mandated values, just this tool's default, override via the CLI.
+ *
+ * IBS_DEFAULT_LDLAT_THRESHOLD confirmed on real Zen5 hardware (family 1a
+ * model 70): the kernel rejects ibs_op's config1 (ldlat) field with EINVAL
+ * for any value below 128 -- a bit-by-bit perf_event_open() sweep found
+ * every value 100-127 fails and every value >= 128 succeeds, a clean
+ * threshold, not a fuzzy/load-dependent one. The previous default of 120
+ * was below that minimum, so every --ibs-memory-deep run that didn't
+ * override --ibs-ldlat explicitly silently failed to open the filtered
+ * ibs_op counter (degrading to 2/3 measured, not a fatal error, so this
+ * went unnoticed) -- see INVESTIGATION.md's "Shipped since 4.1" for the
+ * validation writeup. IBS_DEFAULT_FETCHLAT_THRESHOLD is left unchanged: no
+ * hardware available during that validation exposed a working "fetchlat"
+ * sysfs format field to test the same way (ibs_fetch's own filtering is
+ * fetch-latency-based, a different hardware mechanism from ibs_op's
+ * load-latency threshold, so the two aren't assumed to share a minimum). */
 #define IBS_DEFAULT_MAXCNT             0x1000
-#define IBS_DEFAULT_LDLAT_THRESHOLD    120
+#define IBS_DEFAULT_LDLAT_THRESHOLD    128
 #define IBS_DEFAULT_FETCHLAT_THRESHOLD 120
 
 extern enum ibs_profile ibs_collection_profile;
