@@ -189,3 +189,57 @@ PTS runs often include significant idle gaps between tests to allow components t
 **Impact**:
 * **Without segmentation**: These gaps heavily pollute the aggregate metrics, pulling down average power draw and diluting IPC measurements.
 * **With Strategy A**: **Gaps are completely discarded**. Since the slicing algorithm cuts only the active windows matching `[elapsed_start, elapsed_finish]`, the idle time data is thrown away, ensuring the per-run metrics remain clean and uncontaminated.
+
+---
+
+## 7. Implementation Update (2026-07-19): Hook Capture Landed, Environment Assumption Corrected
+
+Section 4's "How to exploit this with `wspy`" sketch assumed a hook script could reach further context
+(e.g. by reading environment inherited from whatever launched `phoronix-test-suite`) beyond the
+`PTS_EXTERNAL_TEST_*` variables it documented. **Verified against the actual installed module**
+(`/usr/share/phoronix-test-suite/pts-core/modules/result_notifier.php`, not just its own setup-comment
+header) that this is not the case: every hook is launched via PHP's
+`proc_open($cmd_value, $descriptor_spec, $pipes, null, $env_vars)`, and `$env_vars` there is a small
+array built fresh from the `pts_test_result`/`pts_test_run_manager` object being processed — per PHP's
+own `proc_open()` semantics, passing a non-null `env_vars` argument **replaces** the child process's
+environment rather than extending it. A hook script therefore only ever sees the documented
+`PTS_EXTERNAL_TEST_*` variables (confirmed exhaustively from the module source: `PTS_EXTERNAL_TEST_HOOK`,
+and for the per-trial hooks `_IDENTIFIER`/`_RUN_POSITION`/`_RUN_COUNT`/`_ARGS`/`_DESCRIPTION`/
+`_RESULT_SET`/`_RESULT`/`_HASH`/`_STD_DEV_PERCENT`/optionally `_CACHE_SHARE`) — nothing exported by
+`wspy`/`wspy-run`/the shell that originally launched `phoronix-test-suite` reaches it. This rules out
+pointing a hook at "the current wspy run directory" via inherited environment; the checkpoint log must
+be written to a fixed, well-known path instead, with relocation into the run directory happening as a
+separate step once the whole `phoronix-test-suite` invocation (and therefore `wspy`) has exited.
+
+Also verified: hook registration lives in **two separate files**, not just `user-config.xml` as Section
+4 implied — `~/.phoronix-test-suite/modules-data/result-notifier/module-settings.ini` (a plain
+`key=value` file, written by `pts_module::module_config_save()`, non-destructively merged with any
+existing entries) holds which script runs for each hook point; `user-config.xml`'s
+`<Modules><AutoLoadModules>` list separately controls whether the module loads automatically at all.
+Both need to be set for the hooks to actually fire on a normal `phoronix-test-suite` invocation.
+
+**What's landed** (Strategy A, corrected for the above): `scripts/pts_hooks/pre_test_run.sh` and
+`post_test_run.sh` log a `START`/`FINISH` TSV line (timestamp, hash, run position/count, test
+identifier/args, plus result/stddev on `FINISH`) to a fixed staging path
+(`${WSPY_PTS_HOOK_LOG:-/tmp/wspy_pts_hooks.log}`) on every hook invocation.
+`workload/phoronix/run_test.sh` — the actual script this project's real Phoronix runs go through —
+computes its unified run directory up front (previously only computed inside the non-Intel branch, after
+the `wspy-run` call), archives any stale leftover staging file from an interrupted earlier run before
+starting (rather than silently misattributing it), and relocates the staging file into
+`<rundir>/pts_hooks.log` once `wspy-run` returns — a no-op, not a failure, on a host where the hooks
+aren't registered, same measured-vs-unavailable idiom used throughout this codebase.
+`scripts/setup_phoronix_hooks.sh` is the one-time registration helper (mirrors `setup_perf.sh`'s
+check-then-prompt shape: reports current vs. desired state for both files above, applies only on
+per-change confirmation or `-y`) — not run automatically against any real host by this change, since it
+edits a user's actual Phoronix Test Suite installation state, not this repository. Verified end-to-end
+with fake `wspy-run`/hook-invocation harnesses (normal capture-and-relocate path, and the stale-leftover
+path) and, separately, the registration helper's write logic against a sandboxed `PTS_USER_PATH`
+(preserves unrelated existing `module-settings.ini` keys, idempotent re-run, correct `AutoLoadModules`
+XML surgery) — no real host's `~/.phoronix-test-suite` was modified during this validation.
+
+**What's still open** (the actual remainder of 4.3 Tier 6 item 20): nothing yet consumes
+`pts_hooks.log` — `scripts/wspy-phoronix-segment.py` still only implements the composite.xml/test-log
+timestamp-correlation approach from Sections 1-3. Teaching it to prefer `pts_hooks.log` when present
+(higher precision, no composite.xml hash-mapping indirection needed since the log already carries the
+test identifier/args directly) is the next real step, once hooks have been registered on at least one
+host and produced real data to validate the format against.
