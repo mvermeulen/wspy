@@ -773,9 +773,10 @@ POWER_EACCES_ERRNO = "13"
 POWER_EACCES_HINT = (
     "power/energy-pkg needs root or the CAP_PERFMON capability, stricter than "
     "perf_event_paranoid alone covers (confirmed: --ibs-basic opens fine at the same "
-    "paranoid level that denies this) -- either run wspy under sudo, or grant it once via "
-    "`sudo setcap cap_perfmon+ep <path to wspy>`; scripts/setup_perf.sh's sysctl changes "
-    "won't fix this on their own"
+    "paranoid level that denies this) -- either run wspy under sudo, or run "
+    "`scripts/setup_perf.sh` (it now checks/grants CAP_PERFMON on the wspy binary "
+    "alongside its existing sysctl checks -- note the grant is tied to that exact binary "
+    "file and needs re-running after every rebuild)"
 )
 
 
