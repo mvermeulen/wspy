@@ -786,12 +786,12 @@ POWER_EACCES_HINT = (
 # comment there: "--power rides along on systemtime... since systemtime
 # already opens zero hardware counters, --power is a genuinely free
 # addition"), and gpu-compute's single pass does too. deep-gpu's systemtime
-# pass deliberately does NOT carry it -- a pre-existing asymmetry between
-# deep-cpu and deep-gpu, not introduced or changed here. This table used to
-# be empty (the docstring below claimed "no preset uses --power"), which
-# silently skipped the power probe for every deep-cpu run despite deep-cpu
-# having used --power all along.
-POWER_PRESET_NAMES = {"deep-cpu", "gpu-compute"}
+# pass now carries it as well (INVESTIGATION.md's "4.2 -- remaining work" --
+# fixed a pre-existing asymmetry between deep-cpu and deep-gpu, not a
+# deliberate difference). This table used to be empty (the docstring below
+# claimed "no preset uses --power"), which silently skipped the power probe
+# for every deep-cpu run despite deep-cpu having used --power all along.
+POWER_PRESET_NAMES = {"deep-cpu", "deep-gpu", "gpu-compute"}
 
 
 def power_probes_for_request(cfg, preset, checklist):

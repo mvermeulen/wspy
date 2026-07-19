@@ -214,6 +214,14 @@ itself — consistent with this codebase's existing precedent for inherently-tim
 test. The narrowed window (a handful of instructions between the wait returning and the
 `sigprocmask()` call) is not claimed to be mathematically zero.
 
+**`deep-gpu` now carries `--power`:** `wspy-run`'s `deep-gpu` systemtime pass was missing `--power`
+even though it's the exact same zero-hardware-counter shape as `deep-cpu`'s systemtime pass (which
+already carried it) — a pre-existing asymmetry, not a deliberate difference. Added, matching
+`deep-cpu` exactly; also fixed `web/server.py`'s `POWER_PRESET_NAMES` (the Check button's power probe
+had been silently skipping `deep-gpu`) and `web/joblib.py`'s `PROFILE_PLOTTABLE_COLUMNS` (so a custom
+plot referencing `pkg_joules`/`pkg_watts` under `deep-gpu` doesn't spin up a redundant supplementary
+pass for data the profile's own systemtime pass already collects).
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -355,9 +363,7 @@ has). Ordered in dependency tiers; items within a tier are independently startab
 
 **Tier 1 — bug fixes surfaced during 4.2 testing (small, independent, worth clearing first):**
 
-1. `deep-gpu`'s `wspy-run` systemtime pass doesn't carry `--power` the way `deep-cpu`'s does — a
-   pre-existing asymmetry between the two profiles.
-2. The web launcher's custom-checklist GPU card has no `--gpu-nvidia` checkbox — only AMD's
+1. The web launcher's custom-checklist GPU card has no `--gpu-nvidia` checkbox — only AMD's
    busy/metrics/smi flags are exposed there, so a custom (non-preset) run can't opt into NVIDIA GPU
    monitoring; only presets that hardcode it (`gpu-compute`) get NVIDIA data.
 
