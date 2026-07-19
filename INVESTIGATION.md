@@ -652,8 +652,21 @@ sampling mode:**
     through `wspy-run`, so it needed its own Python-side equivalent
     (`_archive_stale_pts_hooks_log()`/`_capture_pts_hooks_log()`, `web/joblib.py`) — now wired in too, same
     day, same per-pass artifact shape (`"pts_hooks_log"` in `manifest.json`). Every real launch path in
-    the codebase now captures hook data the same way. **Still open**: teaching `wspy-phoronix-segment.py`
-    to prefer `pts_hooks.log` over the composite.xml/log-timestamp correlation it uses today.
+    the codebase now captures hook data the same way. **Real-host testing (2026-07-19, same doc's
+    "Real-Host Findings" section) found registration had never actually worked at all**: two compounding
+    bugs, one ours (`setup_phoronix_hooks.sh` wrote a hyphenated `modules-data/result-notifier/` directory;
+    PTS's own module lookup resolves the underscored `result_notifier`, matching the module's literal PHP
+    class name, so registration silently no-opped — fixed), one upstream (PTS's bundled
+    `result_notifier.php` unconditionally dereferences a null `test_result_buffer` and calls a
+    nonexistent `pts_test_result::get_result()`, fatally crashing `phoronix-test-suite` itself as soon as
+    *any* real hook script is configured — filed and fixed upstream at
+    [phoronix-test-suite/phoronix-test-suite#924](https://github.com/phoronix-test-suite/phoronix-test-suite/pull/924)
+    / [#925](https://github.com/phoronix-test-suite/phoronix-test-suite/issues/925), verified live). Until
+    that upstream fix ships in a release, registering the hooks on an unpatched PTS install turns "no
+    telemetry" into "the benchmark run crashes with zero results" — a locally-patched
+    `result_notifier.php` (applied and verified on this project's dev host) is the stopgap. **Still open**:
+    teaching `wspy-phoronix-segment.py` to prefer `pts_hooks.log` over the composite.xml/log-timestamp
+    correlation it uses today.
 
 **Tier 7 — testing:**
 

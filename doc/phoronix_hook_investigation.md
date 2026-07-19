@@ -212,11 +212,16 @@ be written to a fixed, well-known path instead, with relocation into the run dir
 separate step once the whole `phoronix-test-suite` invocation (and therefore `wspy`) has exited.
 
 Also verified: hook registration lives in **two separate files**, not just `user-config.xml` as Section
-4 implied — `~/.phoronix-test-suite/modules-data/result-notifier/module-settings.ini` (a plain
+4 implied — `~/.phoronix-test-suite/modules-data/result_notifier/module-settings.ini` (a plain
 `key=value` file, written by `pts_module::module_config_save()`, non-destructively merged with any
 existing entries) holds which script runs for each hook point; `user-config.xml`'s
 `<Modules><AutoLoadModules>` list separately controls whether the module loads automatically at all.
-Both need to be set for the hooks to actually fire on a normal `phoronix-test-suite` invocation.
+Both need to be set for the hooks to actually fire on a normal `phoronix-test-suite` invocation. **The
+directory must be the underscored `result_notifier`**, matching the module's literal PHP class name —
+`scripts/setup_phoronix_hooks.sh` originally wrote a hyphenated `result-notifier` directory instead
+(fixed 2026-07-19, see Section 9 below), which PTS's own `pts_module::read_option()` silently never
+reads: registration appeared to succeed but the hooks never actually fired, on any host that had run the
+original version of that script.
 
 **What's landed** (Strategy A, corrected for the above): `scripts/pts_hooks/pre_test_run.sh` and
 `post_test_run.sh` log a `START`/`FINISH` TSV line (timestamp, hash, run position/count, test
@@ -299,3 +304,84 @@ follow-up above, driven through a real `execute_custom_run()` call: captured cor
 With this, every real launch path in the codebase (`workload/phoronix/run_test.sh`, the web launcher's
 preset path, the web launcher's custom checklist path, `wspy-queue`'s preset and custom-checklist jobs)
 captures Phoronix hook data the same way, regardless of which one runs a given Phoronix workload.
+
+## 9. Real-Host Findings (2026-07-19): Registration Never Actually Worked, Plus an Upstream PTS Bug
+
+Registering the hooks on a real host (`scripts/setup_phoronix_hooks.sh`, confirmed present in
+`user-config.xml`'s `<AutoLoadModules>` and in `module-settings.ini`) still produced **zero** hook
+capture on a real `wspy-run`-launched `coremark` run — `manifest.json`'s `pts_hooks_log` fields all read
+`null`, and no staging file was ever created at `/tmp/wspy_pts_hooks.log`, despite `phoronix-test-suite`'s
+own startup banner confirming "The result_notifier module for providing external hooks has been loaded."
+Root-caused via direct inspection of the installed PTS source
+(`pts-core/objects/client/pts_module.php`, `pts-core/modules/result_notifier.php`), to two separate,
+compounding bugs:
+
+**Bug 1 (ours, now fixed): wrong module-data directory name.** `scripts/setup_phoronix_hooks.sh` wrote
+`module-settings.ini` under `~/.phoronix-test-suite/modules-data/result-notifier/` (hyphenated).
+`pts_module::read_option()` resolves the directory from the *literal PHP class name* of the currently
+executing module — `result_notifier` (underscored, matching `class result_notifier extends
+pts_module_interface`) — via `pts_module_manager::get_current_module()`. A hyphenated directory is simply
+never read: `read_option()` silently returns empty, `process_user_config_external_hook_process()`'s outer
+`!empty($cmd_value)` check fails, and the hook is never invoked at all — no error, no crash, just quiet
+no-op. This is why "no evidence of the hooks" was the only symptom; nothing was actually broken loudly.
+Fixed in `scripts/setup_phoronix_hooks.sh` (and this doc's Section 7 reference above) to use the
+underscored `modules-data/result_notifier/` directory. A host that ran the old buggy version of this
+script has a stale, harmless `modules-data/result-notifier/` directory sitting unread on disk — safe to
+leave or remove by hand, PTS never looks at it either way.
+
+**Bug 2 (upstream, not ours): `result_notifier.php` itself crashes as soon as bug 1 is fixed.** With the
+directory name corrected and a real hook script configured, live testing against `phoronix-test-suite`
+v10.8.6 (PHP 8.3, real `pts/coremark-1.0.1` runs) reproduced an uncaught PHP fatal error consistently:
+
+- With `pre_test_run_process` configured: `Call to a member function get_count() on null` in
+  `result_notifier.php`, thrown on the very first `__pre_test_run` call, before any trial even starts —
+  the whole `phoronix-test-suite` process dies with zero results.
+- With only `post_test_run_process` configured (no pre-hook): all 3 trials complete and the result
+  average is computed normally, then the *same* fatal error is thrown at `__post_test_run` time.
+
+Root cause (both hit the same underlying pattern): `process_user_config_external_hook_process()`
+unconditionally dereferences `$passed_obj->test_result_buffer` (null both pre-run, since no trial has
+happened yet, and — for a simple single-way test like `coremark` — even post-run, since only entries
+under `generated_result_buffers` necessarily get their own `test_result_buffer` populated, not the
+request object itself) and calls `$passed_obj->get_result()` (a method that doesn't exist on
+`pts_test_result` at all — the real accessor is `$passed_obj->active->get_result()`,
+`pts_test_result_buffer_active`, which `pts_test_execution.php` itself uses directly elsewhere). Since
+either bug alone is a fatal, uncatchable PHP error, this code path can never have run to completion
+against a real hook script before — plausibly why neither has been noticed since the module's 2010–2011
+copyright, given this is a rarely-used, purely-optional feature.
+
+**This means the whole hook-capture approach (Sections 4–8 above) was non-functional against this PTS
+version the entire time**, independent of and prior to any of this project's own wiring work — not a
+wspy-side regression, a pre-existing incompatibility that registering the hooks correctly (bug 1's fix)
+would have newly *exposed* as a crash rather than newly caused.
+
+**Fix, filed upstream:** a minimal patch guarding both accesses (`instanceof` checks, degrading to sane
+defaults — run position 1, empty result set, result/stddev 0 — when the data isn't populated yet, the
+same "check before use" idiom this module already applies elsewhere) is up as
+[phoronix-test-suite/phoronix-test-suite#924](https://github.com/phoronix-test-suite/phoronix-test-suite/pull/924),
+with [#925](https://github.com/phoronix-test-suite/phoronix-test-suite/issues/925) as the companion bug
+report. Verified live end-to-end with the patch applied: all 3 coremark trials complete, both hooks fire
+without error, and the configured script receives real `START`/`FINISH` lines with the documented
+`PTS_EXTERNAL_TEST_*` fields populated (hash, run position, run count, test identifier).
+
+**Practical implication for this project, until upstream merges/releases:** registering the hooks
+(`scripts/setup_phoronix_hooks.sh`, now pointing at the correct directory) on a host running an unpatched
+PTS will make real Phoronix benchmark runs crash with zero results the moment the hooks actually fire —
+substantially worse than today's silent no-op. `setup_phoronix_hooks.sh` deliberately still does *not*
+detect or guard against this on its own (that would mean parsing/patching a vendored PHP file from a bash
+script, well outside this project's scope) — registering the hooks on any given host remains a manual,
+informed choice, same as it always was, just now actually consequential rather than inert. A host that
+wants the hooks working before an upstream release can apply the same patch locally to its own installed
+`/usr/share/phoronix-test-suite/pts-core/modules/result_notifier.php` (or wherever the local install
+lives) — this is exactly what was done and verified on this project's own development host, and reverted
+back to the stock file afterward pending the upstream fix landing for real.
+
+One more discovered nuance, independent of either bug above: `__pre_test_run`/`__post_test_run` fire
+**once per test option** (i.e. once per `phoronix-test-suite batch-run <test>` test-profile-variant, not
+once per individual trial run within it) — contrary to Section 4's original assumption that they'd fire
+"immediately before and after every individual trial run." `PTS_EXTERNAL_TEST_RUN_POSITION` in particular
+is therefore not a genuine per-trial index in practice (it degrades to a constant `1` under this project's
+own fix, since `test_result_buffer` is never actually populated at either of these firing points for a
+simple test); a real per-trial position/count would need `__interim_test_run` instead (not currently
+registered by `scripts/setup_phoronix_hooks.sh`), which per PTS's own module-setup description fires
+between trials rather than once around the whole test option.
