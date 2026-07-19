@@ -922,9 +922,6 @@ def gpu_flags_for_request(preset, checklist):
         flags.append("--gpu-metrics")
     if gpu.get("smi"):
         flags.append("--gpu-smi")
-    # The checklist has no NVIDIA sub-option yet (the GPU card only exposes
-    # the three AMD sysfs/SMI flags) -- checked defensively in case that
-    # changes, harmless no-op today since gpu.get("nvidia") is always falsy.
     if gpu.get("nvidia"):
         flags.append("--gpu-nvidia")
     return flags
@@ -1919,16 +1916,20 @@ def render_run_tab(prefill, cfg):
 
       <div class="config-card" data-config="gpu">
         <label class="config-toggle"><input type="checkbox" id="gpu_enabled"{chk(sec('gpu').get('enabled'))}> <strong>GPU metrics</strong>
-          <span class="muted">(needs an AMDGPU=1 build; otherwise wspy warns and continues)</span></label>
+          <span class="muted">(AMD rows need an AMDGPU=1 build, NVIDIA needs NVIDIA=1; otherwise wspy warns and continues)</span></label>
         <div class="config-options">
           <label class="inline-check"><input type="checkbox" id="gpu_busy"{chk(chk_default('gpu', 'busy', False))}> busy % <code>--gpu-busy</code></label>
           <label class="inline-check"><input type="checkbox" id="gpu_metrics"{chk(chk_default('gpu', 'metrics', False))}> extended metrics <code>--gpu-metrics</code></label>
           <label class="inline-check"><input type="checkbox" id="gpu_smi"{chk(chk_default('gpu', 'smi', False))}> ROCm SMI <code>--gpu-smi</code></label>
+          <label class="inline-check"><input type="checkbox" id="gpu_nvidia"{chk(chk_default('gpu', 'nvidia', False))}> NVIDIA NVML <code>--gpu-nvidia</code></label>
           <div class="row">
             <label>Device index <input type="text" id="gpu_device" value="{val('gpu', 'device')}" placeholder="(default)"></label>
             <label>Interval seconds <input type="text" id="gpu_interval" value="{val('gpu', 'interval_secs')}" placeholder="(aggregate)"></label>
             <label class="inline-check"><input type="checkbox" id="gpu_csv"{chk(chk_default('gpu', 'csv', True))}> CSV output</label>
           </div>
+          <p class="muted">Device index applies to the AMD backends only (<code>--gpu-device</code>) --
+             NVIDIA always uses its own default device (<code>--gpu-nvidia-device</code> has no
+             checklist field yet).</p>
         </div>
       </div>
 

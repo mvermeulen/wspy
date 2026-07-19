@@ -194,6 +194,23 @@ class BuildConfigurationPassesTest(unittest.TestCase):
         checklist = {"power": {"enabled": False}}
         self.assertEqual(joblib.build_configuration_passes("/tmp/rundir", checklist), [])
 
+    def test_gpu_nvidia_checkbox_adds_gpu_nvidia_flag(self):
+        checklist = {"gpu": {"enabled": True, "nvidia": True}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        self.assertIn("--gpu-nvidia", passes[0]["flags"])
+
+    def test_gpu_nvidia_combines_with_amd_backends(self):
+        checklist = {"gpu": {"enabled": True, "busy": True, "nvidia": True}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        self.assertIn("--gpu-busy", passes[0]["flags"])
+        self.assertIn("--gpu-nvidia", passes[0]["flags"])
+
+    def test_gpu_enabled_with_no_backends_produces_no_pass(self):
+        checklist = {"gpu": {"enabled": True}}
+        self.assertEqual(joblib.build_configuration_passes("/tmp/rundir", checklist), [])
+
 
 class ConfigOptionsTest(unittest.TestCase):
     def test_skips_enabled_and_none_and_empty(self):
