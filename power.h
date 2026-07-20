@@ -110,7 +110,12 @@ extern char fallback_power_path[256];
  * than an error. */
 struct power_capabilities power_probe(void);
 
-void print_power_capability_report(const struct power_capabilities *power);
+/* access is 1/0/-1 (opened fine / failed / nothing to test) and
+ * access_errno only meaningful when access==0 -- see power.c's own comment
+ * on why this is computed by the caller (a real setup_counters() attempt
+ * via a throwaway power_counter_group(), wspy.c's run_capabilities_probe())
+ * rather than in here. */
+void print_power_capability_report(const struct power_capabilities *power,int access,int access_errno);
 
 /* One PMU event ready for perf_event_open(): resolved dynamic type plus the
  * assembled config word. valid==0 means the PMU/event isn't present

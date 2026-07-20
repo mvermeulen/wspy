@@ -726,7 +726,38 @@ static int run_capabilities_probe(void){
   print_ibs_capability_report(&ibs);
 
   power = power_probe();
-  print_power_capability_report(&power);
+  {
+    // Sysfs presence (power_probe() above) doesn't guarantee the package
+    // counter actually opens -- RAPL/energy-pkg access needs root or
+    // CAP_PERFMON specifically, a stricter gate than perf_event_paranoid
+    // that sysfs presence alone can't reveal (mirrors web/joblib.py's
+    // probe_power() check, which tests this by launching a real `wspy
+    // --power` run from outside the process; --capabilities can just
+    // attempt the real open directly since it needs no workload to
+    // launch). Reuses power_counter_group()/setup_counters() -- the exact
+    // path a real --power run takes -- rather than a hand-rolled duplicate
+    // perf_event_open() call, since this host's dynamic PMU type can
+    // coincidentally collide with a sentinel like PERF_TYPE_L3
+    // (cpu_info.h) and take a different code path than expected. Standalone
+    // (not linked into cpu_info->systemwide_counters): nothing later in
+    // this probe reads, prints, or closes that list again.
+    int access = -1;
+    int access_errno = 0;
+    struct counter_group *pgroup = power.supported ? power_counter_group("power") : NULL;
+
+    if (pgroup){
+      struct coverage_entry *ce;
+
+      setup_counters(pgroup);
+      for (ce = coverage_entries; ce; ce = ce->next){
+        if (!strcmp(ce->group_label,"power")){
+          access = ce->available;
+          access_errno = ce->open_errno;
+        }
+      }
+    }
+    print_power_capability_report(&power,access,access_errno);
+  }
 
 #if AMDGPU
   // GPU device enumeration -- lists every AMD card/device this host can
