@@ -275,8 +275,10 @@ SYSTEM_COLUMN_NAMES = {"load", "runnable", "cpu", "idle", "iowait", "irq", "freq
                         "swap_free_mb", "committed_as_mb"}
 # --power's own columns (power.c/topdown.c's print_power()) -- same "not an
 # ALL_GROUPS entry" reasoning as SYSTEM_COLUMN_NAMES above: --power isn't a
-# counter_mask bit build_configuration_passes()'s "counters" section
-# handles, it's its own checklist card (see that section below).
+# counter_mask bit, it's a "power" checkbox inside both the "counters" and
+# "system" checklist sections (build_configuration_passes() folds it into
+# whichever pass it's checked in), so resolve_column_group() reports it via
+# its own sentinel rather than either of those two directly.
 POWER_COLUMN_NAMES = {"pkg_joules", "pkg_watts"}
 
 
@@ -350,15 +352,31 @@ def autofit_checklist_for_custom_plots(checklist, custom_plots):
         system["csv"] = True
 
     if needs_power:
-        power = checklist.setdefault("power", {})
-        if not power.get("enabled"):
-            power["enabled"] = True
-            notes.append("auto-enabled 'CPU power' for a custom plot")
-        if not str(power.get("interval_secs") or "").strip():
-            power["interval_secs"] = "1"
-            notes.append("auto-set a 1s interval on 'CPU power' so the custom plot has a "
+        # --power has no card of its own -- it's a checkbox inside
+        # 'Performance counters' and 'System metrics' (build_configuration_
+        # passes() folds it into whichever pass it's checked in, since a
+        # separate power-only wspy invocation was never anything more than
+        # those same two passes with only --power selected). Prefer
+        # 'System metrics' when it's already in play (either this same
+        # custom-plot request also needs a system column, or the caller's
+        # checklist already has it enabled) -- otherwise fold into
+        # 'Performance counters', auto-enabling it same as needed_groups
+        # above.
+        target_key = "system" if (needs_system or (checklist.get("system") or {}).get("enabled")) \
+            else "counters"
+        target_label = "System metrics" if target_key == "system" else "Performance counters"
+        target = checklist.setdefault(target_key, {})
+        if not target.get("enabled"):
+            target["enabled"] = True
+            notes.append(f"auto-enabled '{target_label}' for a custom plot")
+        if not target.get("power"):
+            target["power"] = True
+            notes.append(f"auto-checked 'power' within '{target_label}' for a custom plot")
+        if not str(target.get("interval_secs") or "").strip():
+            target["interval_secs"] = "1"
+            notes.append(f"auto-set a 1s interval on '{target_label}' so the custom plot has a "
                           "time series to chart")
-        power["csv"] = True
+        target["csv"] = True
 
     if unresolved:
         notes.append("column(s) " + ", ".join(sorted(unresolved)) +
@@ -535,11 +553,13 @@ CATEGORY_TO_CHECKLIST_KEY = {
 _BOOL_OPTION_KEYS = {
     "tree": {"cmdline", "open", "futex", "io", "io_wait", "schedstat", "vmsize",
              "connect", "wait", "poll", "nanosleep", "software"},
-    "counters": {"per_core", "rusage", "csv"},
-    "system": {"csv"},
+    "counters": {"per_core", "rusage", "csv", "power"},
+    "system": {"csv", "power"},
     "gpu": {"busy", "metrics", "smi", "csv"},
     "ibs": set(),
-    "power": {"csv"},
+    "power": {"csv"},  # legacy: an old manifest's "power" category (before
+                        # power was folded into counters/system) still
+                        # round-trips through this key for backward compat.
 }
 
 
@@ -600,14 +620,25 @@ def build_configuration_passes(rundir, checklist):
     real wspy flags -- used identically by the preview endpoint and the real
     executor, so a preview is never a paraphrase of what actually runs.
     Returns a list of {"name","category","options","flags","csv","timeout"}
-    dicts, in the fixed tree/counters/system/gpu/ibs/power order, one per *enabled
+    dicts, in the fixed tree/counters/system/gpu/ibs order, one per *enabled
     and non-empty* configuration (an enabled configuration with nothing
     meaningful selected, e.g. "counters" with no groups checked, is silently
     skipped rather than producing a no-op wspy invocation). "category" is
     the launcher-vocabulary configuration name (item 16's structured
     configuration provenance, --config-name) -- stable across the legacy
     "amdtopdown"/"systemtime" pass-name aliases below, unlike "name" (the
-    output filename stem), which is not."""
+    output filename stem), which is not.
+
+    --power has no configuration/pass of its own: it's a "power" checkbox
+    inside both the "counters" and "system" sections, folded into whichever
+    pass it's checked in rather than issued as a separate wspy invocation --
+    a standalone power-only pass was never anything more than one of these
+    two passes with only --power selected, and per-core energy (power_core,
+    power.c) specifically *needs* --power and --per-core in the same wspy
+    process to ever produce core_joules/core_watts at all, which two
+    separate passes could never do. Checking it in both sections at once
+    just measures power twice (redundant, not incorrect); nothing here
+    reconciles that for the caller."""
     checklist = checklist or {}
     passes = []
 
@@ -651,18 +682,20 @@ def build_configuration_passes(rundir, checklist):
     counters = checklist.get("counters") or {}
     if counters.get("enabled"):
         group_flags, selected = counter_group_flags(counters.get("groups"))
-        if selected:
+        power_wanted = bool(counters.get("power"))
+        if selected or power_wanted:
             interval = parse_optional_int(counters.get("interval_secs"), 1, 3600)
             per_core = bool(counters.get("per_core")) and interval is not None
             rusage_on = bool(counters.get("rusage"))
             csv = bool(counters.get("csv", True))
-            # --passes rejects --interval/--per-core outright (wspy.c, see
-            # CLAUDE.md's wspy.c entry) -- so interval mode always uses plain
-            # flags (potentially multiplexed by the kernel across >1 group,
-            # same as any ordinary wspy invocation would be); aggregate mode
-            # only needs --passes' bin-packing once >=2 groups are requested,
-            # since a single group never multiplexes against itself.
-            if interval is None and len(selected) >= 2:
+            # --passes rejects --interval/--per-core/--power outright (wspy.c,
+            # see CLAUDE.md's wspy.c entry) -- so interval mode, or a power
+            # checkbox, always uses plain flags (potentially multiplexed by
+            # the kernel across >1 group, same as any ordinary wspy
+            # invocation would be); aggregate mode with no power only needs
+            # --passes' bin-packing once >=2 groups are requested, since a
+            # single group never multiplexes against itself.
+            if interval is None and len(selected) >= 2 and not power_wanted:
                 ordered = [n for n in GROUP_NAMES if n in selected]
                 flags = [f"--passes={','.join(ordered)}"]
             else:
@@ -671,16 +704,21 @@ def build_configuration_passes(rundir, checklist):
                     flags += ["--interval", str(interval)]
                 if per_core:
                     flags.append("--per-core")
+                if power_wanted:
+                    flags.append("--power")
             flags.append("--rusage" if rusage_on else "--no-rusage")
             if csv:
                 flags.append("--csv")
             # Reuse the well-known "amdtopdown" name for exactly the case
             # that name always meant elsewhere in this codebase: an
-            # interval, CSV, topdown-only sweep. wspy-plot (item 12) matches
+            # interval, CSV, topdown-only sweep (never power-folded, since
+            # that name predates this checkbox and shouldn't silently start
+            # meaning something wider). wspy-plot (item 12) matches
             # templates against a CSV's header, not its filename, so this
             # naming is now just continuity with older reports, not a
             # requirement for plotting to fire.
-            name = "amdtopdown" if (interval is not None and csv and selected == {"topdown"}) else "counters"
+            name = "amdtopdown" if (interval is not None and csv and selected == {"topdown"}
+                                     and not power_wanted) else "counters"
             passes.append({"name": name, "category": "performance-counters",
                             "options": _config_options(counters),
                             "flags": flags, "csv": csv, "timeout": None})
@@ -689,14 +727,18 @@ def build_configuration_passes(rundir, checklist):
     if system.get("enabled"):
         interval = parse_optional_int(system.get("interval_secs"), 1, 3600)
         csv = bool(system.get("csv", True))
+        power_wanted = bool(system.get("power"))
         flags = ["--system", "--no-ipc", "--no-rusage", "--no-software"]
         if interval is not None:
             flags += ["--interval", str(interval)]
+        if power_wanted:
+            flags.append("--power")
         if csv:
             flags.append("--csv")
         # Same reasoning as "amdtopdown" above -- kept for continuity with
-        # older reports, not because wspy-plot needs this literal filename.
-        name = "systemtime" if (interval is not None and csv) else "system"
+        # older reports, not because wspy-plot needs this literal filename;
+        # never used once power's folded in, same as "amdtopdown" above.
+        name = "systemtime" if (interval is not None and csv and not power_wanted) else "system"
         passes.append({"name": name, "category": "system-metrics",
                         "options": _config_options(system),
                         "flags": flags, "csv": csv, "timeout": None})
@@ -749,19 +791,6 @@ def build_configuration_passes(rundir, checklist):
             flags.append("--csv")
         passes.append({"name": "ibs", "category": "ibs",
                         "options": _config_options(ibs),
-                        "flags": flags, "csv": csv, "timeout": None})
-
-    power = checklist.get("power") or {}
-    if power.get("enabled"):
-        interval = parse_optional_int(power.get("interval_secs"), 1, 3600)
-        csv = bool(power.get("csv", True))
-        flags = ["--power", "--no-ipc", "--no-rusage", "--no-software"]
-        if interval is not None:
-            flags += ["--interval", str(interval)]
-        if csv:
-            flags.append("--csv")
-        passes.append({"name": "power", "category": "power",
-                        "options": _config_options(power),
                         "flags": flags, "csv": csv, "timeout": None})
 
     return passes

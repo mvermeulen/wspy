@@ -70,11 +70,13 @@
         per_core: getChecked("counters_per_core"),
         rusage: getChecked("counters_rusage"),
         csv: getChecked("counters_csv"),
+        power: getChecked("counters_power"),
       },
       system: {
         enabled: getChecked("system_enabled"),
         interval_secs: getValue("system_interval"),
         csv: getChecked("system_csv"),
+        power: getChecked("system_power"),
       },
       gpu: {
         enabled: getChecked("gpu_enabled"),
@@ -93,11 +95,6 @@
         maxcnt: getValue("ibs_maxcnt"),
         ldlat: getValue("ibs_ldlat"),
         fetchlat: getValue("ibs_fetchlat"),
-      },
-      power: {
-        enabled: getChecked("power_enabled"),
-        interval_secs: getValue("power_interval"),
-        csv: getChecked("power_csv"),
       },
     };
   }
@@ -309,6 +306,10 @@
       var ci = byId("counters_interval");
       if (ci && !ci.value) ci.value = counters.interval_secs;
     }
+    if (counters.power) {
+      var cp = byId("counters_power");
+      if (cp) cp.checked = true;
+    }
     var system = resolved.system || {};
     if (system.enabled) {
       var se = byId("system_enabled");
@@ -318,14 +319,9 @@
       var si = byId("system_interval");
       if (si && !si.value) si.value = system.interval_secs;
     }
-    var power = resolved.power || {};
-    if (power.enabled) {
-      var pe = byId("power_enabled");
-      if (pe) pe.checked = true;
-    }
-    if (power.interval_secs) {
-      var pi = byId("power_interval");
-      if (pi && !pi.value) pi.value = power.interval_secs;
+    if (system.power) {
+      var sp = byId("system_power");
+      if (sp) sp.checked = true;
     }
   }
 

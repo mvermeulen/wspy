@@ -799,8 +799,11 @@ def power_probes_for_request(cfg, preset, checklist):
     """Returns [(label, flags)] -- at most one entry, since --power has no
     profile variants the way IBS does -- for whether this request would
     actually invoke --power: a preset in POWER_PRESET_NAMES (or a composite
-    list containing one), or the Run tab's power checklist row in custom
-    mode. [] when power isn't in play for this request at all."""
+    list containing one), or the Run tab's "package power" checkbox
+    (checked under either "Performance counters" or "System metrics" --
+    it has no card of its own, see build_configuration_passes()'s own
+    comment) in custom mode. [] when power isn't in play for this request
+    at all."""
     preset = (preset or "").strip()
     if preset:
         names = {p.strip() for p in preset.split(",")}
@@ -808,16 +811,20 @@ def power_probes_for_request(cfg, preset, checklist):
             return [("power", ["--power", "--no-ipc", "--csv"])]
         return []
 
-    power = (checklist or {}).get("power") or {}
-    if not power.get("enabled"):
+    counters = (checklist or {}).get("counters") or {}
+    system = (checklist or {}).get("system") or {}
+    wants_power = (counters.get("enabled") and counters.get("power")) or \
+        (system.get("enabled") and system.get("power"))
+    if not wants_power:
         return []
     # Placeholder rundir: build_configuration_passes() only ever uses it to
     # spell a --tree pass's output path into that pass's flags text -- never
-    # touches the filesystem -- so this is safe purely to get the power
-    # pass's real flags, matching exactly what a real custom run would invoke.
+    # touches the filesystem -- so this is safe purely to get the real pass
+    # flags, matching exactly what a real custom run would invoke (whichever
+    # of "counters"/"system" power actually got folded into).
     placeholder_rundir = os.path.join(cfg["output_root"], "<check>", "<check>", "<check>")
     for p in build_configuration_passes(placeholder_rundir, checklist):
-        if p["category"] == "power":
+        if "--power" in p["flags"]:
             return [("power", p["flags"])]
     return []
 
@@ -1990,11 +1997,19 @@ def render_run_tab(prefill, cfg):
             <label class="inline-check"><input type="checkbox" id="counters_per_core"{chk(chk_default('counters', 'per_core', False))}> per-core (interval only)</label>
             <label class="inline-check"><input type="checkbox" id="counters_rusage"{chk(chk_default('counters', 'rusage', False))}> include rusage</label>
             <label class="inline-check"><input type="checkbox" id="counters_csv"{chk(chk_default('counters', 'csv', True))}> CSV output</label>
+            <label class="inline-check"><input type="checkbox" id="counters_power"{chk(chk_default('counters', 'power', False))}> package power <code>--power</code>
+              <span class="muted">(<code>power</code>/<code>energy-pkg</code> dynamic PMU, RAPL-equivalent -- needs root or CAP_PERFMON)</span></label>
           </div>
           <p class="muted">2+ groups with no interval given automatically bin-pack via native
              multi-pass execution (<code>--passes</code>, wspy's own PMU-fit arithmetic); giving an
              interval always uses plain flags for a single re-execution (per-core available then;
-             <code>--passes</code> rejects <code>--interval</code>/<code>--per-core</code> outright).</p>
+             <code>--passes</code> rejects <code>--interval</code>/<code>--per-core</code>/<code>--power</code>
+             outright, so checking "package power" here also forces plain flags even with 2+ groups
+             and no interval). Check "package power" <strong>here</strong> (rather than under "System
+             metrics" below) specifically to combine it with per-core in the same run -- that's the
+             only way to get per-core energy (<code>core_joules</code>/<code>core_watts</code>) at
+             all, since <code>--power</code> and <code>--per-core</code> only combine when given to
+             the same <code>wspy</code> invocation.</p>
         </div>
       </div>
 
@@ -2003,6 +2018,11 @@ def render_run_tab(prefill, cfg):
         <div class="config-options">
           <label>Interval seconds <input type="text" id="system_interval" value="{val('system', 'interval_secs')}" placeholder="(aggregate)"></label>
           <label class="inline-check"><input type="checkbox" id="system_csv"{chk(chk_default('system', 'csv', True))}> CSV output</label>
+          <label class="inline-check"><input type="checkbox" id="system_power"{chk(chk_default('system', 'power', False))}> package power <code>--power</code></label>
+          <p class="muted">"package power" here folds <code>--power</code> into this same
+             system-wide pass instead of a separate re-execution of the workload -- use this
+             one unless you also want per-core energy, which needs the checkbox under
+             "Performance counters" instead (see that card's note).</p>
         </div>
       </div>
 
@@ -2041,15 +2061,6 @@ def render_run_tab(prefill, cfg):
             <label><code>--ibs-ldlat</code> <input type="text" id="ibs_ldlat" value="{val('ibs', 'ldlat')}" placeholder="(default)"></label>
             <label><code>--ibs-fetchlat</code> <input type="text" id="ibs_fetchlat" value="{val('ibs', 'fetchlat')}" placeholder="(default)"></label>
           </div>
-        </div>
-      </div>
-
-      <div class="config-card" data-config="power">
-        <label class="config-toggle"><input type="checkbox" id="power_enabled"{chk(sec('power').get('enabled'))}> <strong>CPU power</strong>
-          <span class="muted">(<code>power</code>/<code>energy-pkg</code> dynamic PMU, RAPL-equivalent -- needs root or CAP_PERFMON)</span></label>
-        <div class="config-options">
-          <label>Interval seconds <input type="text" id="power_interval" value="{val('power', 'interval_secs')}" placeholder="(aggregate)"></label>
-          <label class="inline-check"><input type="checkbox" id="power_csv"{chk(chk_default('power', 'csv', True))}> CSV output</label>
         </div>
       </div>
 

@@ -175,24 +175,40 @@ class BuildConfigurationPassesTest(unittest.TestCase):
         self.assertEqual(categories["amdtopdown"], "performance-counters")
         self.assertEqual(categories["systemtime"], "system-metrics")
 
-    def test_power_defaults_to_aggregate_no_interval(self):
-        checklist = {"power": {"enabled": True}}
+    def test_counters_power_checkbox_adds_power_flag(self):
+        # power has no card/pass of its own -- it's a checkbox inside
+        # "counters" (and "system", see below), folded into that same pass.
+        checklist = {"counters": {"enabled": True, "groups": ["topdown"], "power": True}}
         passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
         self.assertEqual(len(passes), 1)
         self.assertIn("--power", passes[0]["flags"])
-        self.assertNotIn("--interval", passes[0]["flags"])
-        self.assertEqual(passes[0]["category"], "power")
+        self.assertEqual(passes[0]["category"], "performance-counters")
 
-    def test_power_interval_given_adds_interval_flag(self):
-        checklist = {"power": {"enabled": True, "interval_secs": "1"}}
+    def test_counters_power_forces_plain_flags_over_passes_bin_packing(self):
+        # --passes fatals against --power (wspy.c), so checking "power" must
+        # bypass the --passes bin-packing branch even with 2+ groups and no
+        # interval given.
+        checklist = {"counters": {"enabled": True, "groups": ["topdown", "cache2"], "power": True}}
         passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
         self.assertEqual(len(passes), 1)
-        idx = passes[0]["flags"].index("--interval")
-        self.assertEqual(passes[0]["flags"][idx + 1], "1")
+        flags = passes[0]["flags"]
+        self.assertIn("--power", flags)
+        self.assertFalse(any(f.startswith("--passes=") for f in flags))
 
-    def test_power_disabled_produces_no_pass(self):
-        checklist = {"power": {"enabled": False}}
-        self.assertEqual(joblib.build_configuration_passes("/tmp/rundir", checklist), [])
+    def test_system_power_checkbox_adds_power_flag(self):
+        checklist = {"system": {"enabled": True, "power": True}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        self.assertIn("--power", passes[0]["flags"])
+        self.assertEqual(passes[0]["category"], "system-metrics")
+
+    def test_power_unchecked_produces_no_power_flag_anywhere(self):
+        checklist = {"counters": {"enabled": True, "groups": ["topdown"]},
+                     "system": {"enabled": True}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 2)
+        for p in passes:
+            self.assertNotIn("--power", p["flags"])
 
     def test_gpu_nvidia_checkbox_adds_gpu_nvidia_flag(self):
         checklist = {"gpu": {"enabled": True, "nvidia": True}}
@@ -328,24 +344,37 @@ class ResolveColumnGroupTest(unittest.TestCase):
 
 
 class AutofitChecklistForCustomPlotsTest(unittest.TestCase):
-    def test_power_column_autofits_power_checklist(self):
+    def test_power_column_autofits_into_counters_by_default(self):
+        # No system column/section in play, so power folds into
+        # "Performance counters" by default (auto-enabling it).
         checklist, notes = joblib.autofit_checklist_for_custom_plots(
             {}, [{"name": "power-plot", "columns": ["pkg_watts"]}])
-        self.assertTrue(checklist["power"]["enabled"])
-        self.assertEqual(checklist["power"]["interval_secs"], "1")
-        self.assertTrue(checklist["power"]["csv"])
+        self.assertTrue(checklist["counters"]["enabled"])
+        self.assertTrue(checklist["counters"]["power"])
+        self.assertEqual(checklist["counters"]["interval_secs"], "1")
+        self.assertTrue(checklist["counters"]["csv"])
+        self.assertNotIn("system", checklist)
         self.assertTrue(any("power" in n.lower() for n in notes))
 
-    def test_power_column_leaves_counters_untouched(self):
+    def test_power_column_folds_into_system_when_system_also_requested(self):
         checklist, _ = joblib.autofit_checklist_for_custom_plots(
-            {}, [{"name": "power-plot", "columns": ["pkg_joules"]}])
+            {}, [{"name": "combo-plot", "columns": ["load", "pkg_watts"]}])
+        self.assertTrue(checklist["system"]["enabled"])
+        self.assertTrue(checklist["system"]["power"])
         self.assertNotIn("counters", checklist)
 
-    def test_already_enabled_power_is_not_reported_as_a_change(self):
-        checklist, notes = joblib.autofit_checklist_for_custom_plots(
-            {"power": {"enabled": True, "interval_secs": "5"}},
+    def test_power_column_folds_into_already_enabled_system(self):
+        checklist, _ = joblib.autofit_checklist_for_custom_plots(
+            {"system": {"enabled": True}},
             [{"name": "power-plot", "columns": ["pkg_watts"]}])
-        self.assertEqual(checklist["power"]["interval_secs"], "5")  # not overwritten
+        self.assertTrue(checklist["system"]["power"])
+        self.assertNotIn("counters", checklist)
+
+    def test_already_enabled_counters_power_is_not_reported_as_a_change(self):
+        checklist, notes = joblib.autofit_checklist_for_custom_plots(
+            {"counters": {"enabled": True, "power": True, "interval_secs": "5"}},
+            [{"name": "power-plot", "columns": ["pkg_watts"]}])
+        self.assertEqual(checklist["counters"]["interval_secs"], "5")  # not overwritten
         self.assertFalse(any("power" in n.lower() for n in notes))
 
 
@@ -375,15 +404,27 @@ class ChecklistFromProvenanceTest(unittest.TestCase):
         self.assertIs(restored["csv"], True)
         self.assertIs(restored["enabled"], True)
 
-    def test_power_round_trips_through_build_configuration_passes(self):
-        checklist = {"power": {"enabled": True, "interval_secs": "1", "csv": True}}
+    def test_counters_power_round_trips_through_build_configuration_passes(self):
+        checklist = {"counters": {"enabled": True, "groups": ["topdown"], "power": True,
+                                   "interval_secs": "1", "csv": True}}
         passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
         self.assertEqual(len(passes), 1)
         p = passes[0]
-        self.assertEqual(p["category"], "power")
-        restored = joblib.checklist_section_from_options("power", p["options"])
+        self.assertEqual(p["category"], "performance-counters")
+        restored = joblib.checklist_section_from_options("counters", p["options"])
+        self.assertIs(restored["power"], True)
         self.assertEqual(restored["interval_secs"], "1")
         self.assertIs(restored["csv"], True)
+        self.assertIs(restored["enabled"], True)
+
+    def test_system_power_round_trips_through_build_configuration_passes(self):
+        checklist = {"system": {"enabled": True, "power": True, "csv": True}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        p = passes[0]
+        self.assertEqual(p["category"], "system-metrics")
+        restored = joblib.checklist_section_from_options("system", p["options"])
+        self.assertIs(restored["power"], True)
         self.assertIs(restored["enabled"], True)
 
     def test_bool_options_round_trip_both_ways(self):
