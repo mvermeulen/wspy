@@ -196,6 +196,11 @@ void amd_sysfs_finalize(void)
 {
 }
 
+int amd_sysfs_gpu_busy_valid(void)
+{
+	return amd_sysfs_has_gpu_busy;
+}
+
 int amd_sysfs_gpu_busy_percent(void)
 {
 	FILE *fp;

@@ -133,6 +133,7 @@ struct amd_sysfs_device {
  void amd_sysfs_initialize(int device_index); /* device_index < 0 => auto-select lowest-numbered AMD card */
  void amd_sysfs_finalize(void);
  int amd_sysfs_gpu_busy_percent(void);
+ int amd_sysfs_gpu_busy_valid(void); /* whether gpu_busy_percent was found for the selected device */
  void amd_sysfs_gpu_metrics(void);
  int amd_sysfs_scan_devices(struct amd_sysfs_device *devices, int max_devices);
  int amd_sysfs_selected_device(void); /* -1 if none selected */

@@ -87,6 +87,36 @@ static void write_environment(FILE *fp,const struct provenance_info *prov){
  * manifest_config_provenance comment). preset/
  * configuration are null when the run wasn't launched via a known preset/
  * configuration; options is always present, just [] when none were given. */
+/* Writes the "gpu" object nested inside "options" (see manifest.h's
+ * manifest_gpu_info comment for what these fields mean and why they're
+ * provenance-only). */
+static void write_gpu_provenance(FILE *fp,const struct manifest_gpu_info *gpu){
+  int amd_requested = gpu->gpu_busy_requested || gpu->gpu_metrics_requested || gpu->gpu_smi_requested;
+
+  fprintf(fp,"    \"gpu\": {\n");
+  fprintf(fp,"      \"requested\": {\n");
+  fprintf(fp,"        \"busy\": %s,\n",gpu->gpu_busy_requested ? "true" : "false");
+  fprintf(fp,"        \"metrics\": %s,\n",gpu->gpu_metrics_requested ? "true" : "false");
+  fprintf(fp,"        \"smi\": %s,\n",gpu->gpu_smi_requested ? "true" : "false");
+  fprintf(fp,"        \"nvidia\": %s\n",gpu->gpu_nvidia_requested ? "true" : "false");
+  fprintf(fp,"      },\n");
+  /* Gated on the requested flags, not the index's sign -- a struct that's
+   * simply zero-initialized (no GPU flag ever set) must read null here too,
+   * not "device 0", so this can't rely on the caller having set -1 by hand. */
+  if (amd_requested && gpu->amd_device_index >= 0) fprintf(fp,"      \"amd_device_index\": %d,\n",gpu->amd_device_index);
+  else fprintf(fp,"      \"amd_device_index\": null,\n");
+  if (gpu->gpu_nvidia_requested && gpu->nvidia_device_index >= 0) fprintf(fp,"      \"nvidia_device_index\": %d,\n",gpu->nvidia_device_index);
+  else fprintf(fp,"      \"nvidia_device_index\": null,\n");
+  fprintf(fp,"      \"backend_valid\": {\n");
+  fprintf(fp,"        \"amd_sysfs_busy\": %s,\n",gpu->amd_sysfs_busy_valid ? "true" : "false");
+  fprintf(fp,"        \"amd_sysfs_metrics\": %s,\n",gpu->amd_sysfs_metrics_valid ? "true" : "false");
+  fprintf(fp,"        \"amd_smi_metrics\": %s,\n",gpu->amd_smi_metrics_valid ? "true" : "false");
+  fprintf(fp,"        \"amd_smi_memory\": %s,\n",gpu->amd_smi_memory_valid ? "true" : "false");
+  fprintf(fp,"        \"nvidia_metrics\": %s\n",gpu->nvidia_metrics_valid ? "true" : "false");
+  fprintf(fp,"      }\n");
+  fprintf(fp,"    }\n");
+}
+
 static void write_config_provenance(FILE *fp,const struct manifest_config_provenance *cp){
   int i;
 
@@ -207,7 +237,8 @@ int write_manifest(const char *path,const struct manifest_info *info){
   fprintf(fp,"      \"cpus\": ");
   json_write_string(fp,info->affinity_cpus ? info->affinity_cpus : "");
   fprintf(fp,"\n");
-  fprintf(fp,"    }\n");
+  fprintf(fp,"    },\n");
+  write_gpu_provenance(fp,&info->gpu);
   fprintf(fp,"  },\n");
 
   fprintf(fp,"  \"counter_coverage\": {\n");

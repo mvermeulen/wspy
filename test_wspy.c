@@ -723,6 +723,13 @@ void test_write_manifest() {
     minfo.config_provenance.configuration = "performance-counters";
     minfo.config_provenance.noptions = 2;
     minfo.config_provenance.options = options;
+    minfo.gpu.gpu_metrics_requested = 1;
+    minfo.gpu.amd_device_index = 1;
+    minfo.gpu.nvidia_device_index = -1;
+    minfo.gpu.amd_sysfs_busy_valid = 1;
+    minfo.gpu.amd_sysfs_metrics_valid = 1;
+    minfo.gpu.amd_smi_metrics_valid = 0;
+    minfo.gpu.amd_smi_memory_valid = 1;
 
     if (write_manifest(manifest_out, &minfo) != 0) {
         fprintf(stderr, "FAIL: write_manifest returned an error\n");
@@ -787,6 +794,25 @@ void test_write_manifest() {
     assert(strstr(contents, "\"name\": \"counter_groups\", \"value\": \"topdown\"") != NULL);
     assert(strstr(contents, "\"name\": \"interval_seconds\", \"value\": \"1\"") != NULL);
 
+    // GPU telemetry provenance (INVESTIGATION.md's 4.2 Tier 1 "manifest/
+    // index/profile pipeline extended to GPU runs" item): only --gpu-metrics
+    // was requested, so it alone is true; amd_device_index round-trips as a
+    // bare number, nvidia_device_index (-1, not requested) as null, and
+    // backend_valid reflects each backend's own last-read outcome
+    // independently (amd_smi_metrics failed while amd_sysfs_metrics/
+    // amd_smi_memory succeeded -- a real combination confirmed on hardware).
+    assert(strstr(contents, "\"busy\": false") != NULL);
+    assert(strstr(contents, "\"metrics\": true") != NULL);
+    assert(strstr(contents, "\"smi\": false") != NULL);
+    assert(strstr(contents, "\"nvidia\": false") != NULL);
+    assert(strstr(contents, "\"amd_device_index\": 1") != NULL);
+    assert(strstr(contents, "\"nvidia_device_index\": null") != NULL);
+    assert(strstr(contents, "\"amd_sysfs_busy\": true") != NULL);
+    assert(strstr(contents, "\"amd_sysfs_metrics\": true") != NULL);
+    assert(strstr(contents, "\"amd_smi_metrics\": false") != NULL);
+    assert(strstr(contents, "\"amd_smi_memory\": true") != NULL);
+    assert(strstr(contents, "\"nvidia_metrics\": false") != NULL);
+
     free(contents);
     remove(manifest_out);
 
@@ -807,6 +833,12 @@ void test_write_manifest() {
     assert(strstr(contents, "\"preset\": null") != NULL);
     assert(strstr(contents, "\"configuration\": null") != NULL);
     assert(strstr(contents, "\"options\": [\n    ]") != NULL);
+    // No GPU flag given at all (a zeroed struct, same as a plain wspy
+    // invocation with no --gpu-* flags): both device indices must be null,
+    // not garbage/0-looks-like-device-0, and every requested/backend_valid
+    // flag reads false.
+    assert(strstr(contents, "\"amd_device_index\": null") != NULL);
+    assert(strstr(contents, "\"nvidia_device_index\": null") != NULL);
     free(contents);
     remove(manifest_out);
 
@@ -858,6 +890,13 @@ void test_append_run_index() {
     fill_fake_provenance(&minfo.provenance);
     minfo.config_provenance.preset = "deep-cpu";
     minfo.config_provenance.configuration = "performance-counters";
+    minfo.gpu.gpu_metrics_requested = 1;
+    minfo.gpu.amd_device_index = 1;
+    minfo.gpu.nvidia_device_index = -1;
+    minfo.gpu.amd_sysfs_busy_valid = 1;
+    minfo.gpu.amd_sysfs_metrics_valid = 1;
+    minfo.gpu.amd_smi_metrics_valid = 0;
+    minfo.gpu.amd_smi_memory_valid = 1;
 
     if (append_run_index(index_out, &minfo) != 0) {
         fprintf(stderr, "FAIL: append_run_index returned an error (first record)\n");
@@ -912,6 +951,14 @@ void test_append_run_index() {
     // compact form, preset/configuration given, no options this time.
     assert(strstr(line0, "\"schema_version\":\"" RUN_INDEX_SCHEMA_VERSION "\"") != NULL);
     assert(strstr(line0, "\"configuration_provenance\":{\"preset\":\"deep-cpu\",\"configuration\":\"performance-counters\",\"options\":[]}") != NULL);
+
+    // GPU telemetry provenance: compact form, mirroring the manifest's own
+    // pretty-printed shape (see test_write_manifest() for the same scenario
+    // in that form).
+    assert(strstr(line0, "\"gpu\":{\"requested\":{\"busy\":false,\"metrics\":true,\"smi\":false,\"nvidia\":false},"
+                         "\"amd_device_index\":1,\"nvidia_device_index\":null,"
+                         "\"backend_valid\":{\"amd_sysfs_busy\":true,\"amd_sysfs_metrics\":true,"
+                         "\"amd_smi_metrics\":false,\"amd_smi_memory\":true,\"nvidia_metrics\":false}}") != NULL);
 
     // Each line must be independently valid, self-contained JSON (a curly
     // brace per line, no shared array wrapper).
