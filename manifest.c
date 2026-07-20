@@ -117,6 +117,45 @@ static void write_gpu_provenance(FILE *fp,const struct manifest_gpu_info *gpu){
   fprintf(fp,"    }\n");
 }
 
+/* Writes the top-level "cgroup" object (see manifest.h's
+ * manifest_cgroup_info comment for what these fields mean and why this is
+ * a top-level object alongside "environment" rather than nested inside
+ * "options" -- unlike GPU flags, cgroup membership isn't a wspy CLI
+ * choice, it's an observed fact about the execution context). */
+static void write_cgroup_provenance(FILE *fp,const struct manifest_cgroup_info *cg){
+  fprintf(fp,"  \"cgroup\": {\n");
+  fprintf(fp,"    \"available\": %s,\n",cg->available ? "true" : "false");
+  fprintf(fp,"    \"path\": ");
+  if (cg->path) json_write_string(fp,cg->path); else fputs("null",fp);
+  fprintf(fp,",\n");
+
+  fprintf(fp,"    \"cpu_max\": { \"available\": %s",cg->cpu_max_available ? "true" : "false");
+  if (cg->cpu_max_available){
+    fprintf(fp,", \"quota_us\": %lld, \"period_us\": %lld",cg->cpu_quota_us,cg->cpu_period_us);
+  }
+  fprintf(fp," },\n");
+
+  fprintf(fp,"    \"cpu_weight\": { \"available\": %s",cg->cpu_weight_available ? "true" : "false");
+  if (cg->cpu_weight_available) fprintf(fp,", \"value\": %d",cg->cpu_weight);
+  fprintf(fp," },\n");
+
+  fprintf(fp,"    \"memory_max_bytes\": { \"available\": %s",cg->memory_max_available ? "true" : "false");
+  if (cg->memory_max_available) fprintf(fp,", \"value\": %lld",cg->memory_max_bytes);
+  fprintf(fp," },\n");
+
+  fprintf(fp,"    \"memory_high_bytes\": { \"available\": %s",cg->memory_high_available ? "true" : "false");
+  if (cg->memory_high_available) fprintf(fp,", \"value\": %lld",cg->memory_high_bytes);
+  fprintf(fp," },\n");
+
+  fprintf(fp,"    \"throttle\": { \"available\": %s",cg->throttle_available ? "true" : "false");
+  if (cg->throttle_available){
+    fprintf(fp,", \"nr_periods_delta\": %llu, \"nr_throttled_delta\": %llu, \"throttled_usec_delta\": %llu",
+            cg->nr_periods_delta,cg->nr_throttled_delta,cg->throttled_usec_delta);
+  }
+  fprintf(fp," }\n");
+  fprintf(fp,"  },\n");
+}
+
 static void write_config_provenance(FILE *fp,const struct manifest_config_provenance *cp){
   int i;
 
@@ -217,6 +256,8 @@ int write_manifest(const char *path,const struct manifest_info *info){
   fprintf(fp,"  },\n");
 
   write_environment(fp,&info->provenance);
+
+  write_cgroup_provenance(fp,&info->cgroup);
 
   write_config_provenance(fp,&info->config_provenance);
 

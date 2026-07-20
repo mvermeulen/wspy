@@ -45,6 +45,7 @@ test_plot
 test_affinity
 test_gpu_fusion
 test_core_report
+test_cgroup
 libwspy_profiler.so
 test_hip_init
 test_hip_kernel
