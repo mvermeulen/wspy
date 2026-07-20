@@ -513,7 +513,7 @@ echo "  wspy-run --list: OK"
 
 echo "Testing wspy-run --dry-run..."
 DRYOUT=$(./wspy-run --dry-run -o test_wspy_run_dry --wspy ./wspy quick -- /bin/true)
-if ! echo "$DRYOUT" | grep -q -- "--ipc --system --rusage"; then
+if ! echo "$DRYOUT" | grep -q -- "--counters=ipc --system --rusage"; then
     echo "FAIL: wspy-run --dry-run did not print the expected quick-profile flags"
     exit 1
 fi
@@ -525,7 +525,7 @@ echo "  wspy-run --dry-run: OK"
 
 echo "Testing wspy-run zen-portable/zen4plus-deep composition..."
 ZENOUT=$(./wspy-run --dry-run -o test_wspy_run_zen --wspy ./wspy zen-portable -- /bin/true)
-if ! echo "$ZENOUT" | grep -q -- "\[run\].*--ipc --system --rusage"; then
+if ! echo "$ZENOUT" | grep -q -- "\[run\].*--counters=ipc --system --rusage"; then
     echo "FAIL: zen-portable's dry-run did not include quick's 'run' pass"
     exit 1
 fi
@@ -553,8 +553,8 @@ fi
 echo "  wspy-run zen-portable/zen4plus-deep composition: OK"
 
 # Real execution of a builtin profile is not exercised here: every builtin
-# profile enables at least one hardware/software counter (quick uses --ipc,
-# tree-heavy uses --software, ...), which requires perf permissions this
+# profile enables at least one hardware/software counter (quick uses
+# --counters=ipc, tree-heavy uses --counters=software, ...), which requires perf permissions this
 # suite otherwise avoids depending on (see the --no-ipc-only tests above and
 # below). --dry-run above already validates builtin profile flag assembly;
 # the --config test below validates real pass execution mechanics using

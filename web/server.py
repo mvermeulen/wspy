@@ -72,7 +72,7 @@ from joblib import (  # noqa: E402,F401
 
 # The one fixed configuration item 6 knows about -- matches wspy-run's
 # deep-cpu/deep-gpu "amdtopdown" pass exactly (wspy-run, load_builtin_profile()).
-WSPY_FIXED_ARGS = ["--csv", "--interval", "1", "--topdown",
+WSPY_FIXED_ARGS = ["--csv", "--interval", "1", "--counters=topdown",
                     "--no-rusage", "--no-software", "--no-ipc"]
 CSV_NAME = "amdtopdown.csv"
 MANIFEST_NAME = "amdtopdown.manifest.json"
@@ -1959,7 +1959,7 @@ def render_run_tab(prefill, cfg):
           <div class="option-group-label">General</div>
           <div class="option-grid">
             <label class="group-check"><input type="checkbox" id="tree_cmdline"{chk(chk_default('tree', 'cmdline', False))}> full command lines <code>--tree-cmdline</code></label>
-            <label class="group-check"><input type="checkbox" id="tree_software"{chk(chk_default('tree', 'software', True))}> software counters too <code>--software</code></label>
+            <label class="group-check"><input type="checkbox" id="tree_software"{chk(chk_default('tree', 'software', True))}> software counters too (on by default; unchecking adds <code>--no-software</code>)</label>
           </div>
           <div class="option-group-label">Latency (blocking-time measurements)</div>
           <div class="option-grid">

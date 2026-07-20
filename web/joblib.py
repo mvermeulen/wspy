@@ -158,11 +158,15 @@ def _capture_pts_hooks_log(emit, rundir, name):
 # ---------------------------------------------------------------------------
 
 # (group name, default_on) -- default_on groups (ipc/software) need an
-# explicit --no-<name> when left unchecked; the rest need an explicit
-# --<name> when checked. Mirrors wspy.h's COUNTER_* set and is also the exact
-# token vocabulary multipass.c's multipass_group_names[] uses for
-# --passes=<list>, so the same list drives both the plain-flags and
-# --passes-bin-packed branches below without a second table to keep in sync.
+# explicit --no-<name> when left unchecked; the rest are named in one
+# --counters=<list> flag when checked (wspy's --counters=<list>, the
+# recommended replacement for the individual --<name> boolean flags this
+# module used to emit one at a time -- see counter_group_flags() below).
+# Mirrors wspy.h's COUNTER_* set and is also the exact token vocabulary
+# multipass.c's multipass_group_names[] uses for --passes=<list> (which
+# --counters=<list> itself reuses), so the same list drives the plain-flags,
+# --counters=-based, and --passes-bin-packed branches below without a second
+# table to keep in sync.
 ALL_GROUPS = [
     ("ipc", True),
     ("topdown", False),
@@ -189,16 +193,21 @@ GROUP_DEFAULT_ON = {name for name, default_on in ALL_GROUPS if default_on}
 
 def counter_group_flags(requested_groups):
     """Whitelist-filters requested_groups against ALL_GROUPS and returns
-    (flags, selected_set) -- flags is the minimal --<name>/--no-<name> list
-    needed to reach exactly that selection from wspy's own defaults (ipc and
-    software on, everything else off), in ALL_GROUPS' fixed order so the
-    result is deterministic regardless of the client's array order."""
+    (flags, selected_set) -- flags is the minimal flag list needed to reach
+    exactly that selection from wspy's own defaults (ipc and software on,
+    everything else off): one --counters=<list> naming every selected
+    non-default-on group (wspy's own recommended replacement for the
+    individual --<name> boolean flags this used to emit one at a time), plus
+    a --no-<name> for any default-on group the caller left unchecked. Order
+    is ALL_GROUPS' fixed order so the result is deterministic regardless of
+    the client's array order."""
     selected = {g for g in (requested_groups or []) if g in GROUP_NAME_SET}
+    to_enable = [name for name, default_on in ALL_GROUPS if name in selected and not default_on]
     flags = []
+    if to_enable:
+        flags.append(f"--counters={','.join(to_enable)}")
     for name, default_on in ALL_GROUPS:
-        if name in selected and not default_on:
-            flags.append(f"--{name}")
-        elif name not in selected and default_on:
+        if name not in selected and default_on:
             flags.append(f"--no-{name}")
     return flags, selected
 
@@ -616,7 +625,12 @@ def build_configuration_passes(rundir, checklist):
             flags.append("--tree-poll")
         if tree.get("nanosleep"):
             flags.append("--tree-nanosleep")
-        flags.append("--software" if tree.get("software", True) else "--no-software")
+        # software is on by default, so enabling it needs no flag at all;
+        # only the off case needs an explicit --no-software (--counters=
+        # is purely additive -- there's no way to turn a default-on group
+        # off through it, same reasoning as counter_group_flags() below).
+        if not tree.get("software", True):
+            flags.append("--no-software")
         flags.append("--no-ipc")
         timeout = parse_optional_int(tree.get("timeout_secs"), 1, 86400)
         passes.append({"name": "tree", "category": "process-tree",

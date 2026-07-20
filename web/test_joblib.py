@@ -118,7 +118,7 @@ class BuildConfigurationPassesTest(unittest.TestCase):
         passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
         self.assertEqual(len(passes), 1)
         self.assertNotIn("--passes=topdown", passes[0]["flags"])
-        self.assertIn("--topdown", passes[0]["flags"])
+        self.assertIn("--counters=topdown", passes[0]["flags"])
 
     def test_multi_group_no_interval_bin_packs_via_passes(self):
         checklist = {"counters": {"enabled": True, "groups": ["topdown", "branch"]}}
