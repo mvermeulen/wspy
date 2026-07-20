@@ -56,7 +56,8 @@
  *
  * ci95_low/ci95_high (a 95% confidence interval of the mean, Student's t,
  * compute_ci95()) and verdict (PASS, or WARN:thin/WARN:noisy/WARN:thin,noisy,
- * compute_verdict()) are 4.2's "Repeatability policy + confidence metadata"
+ * plus a combinable "mixed-pmu" reason -- see below -- compute_verdict())
+ * are 4.2's "Repeatability policy + confidence metadata"
  * item -- default output for every reported bucket alongside the pre-existing
  * mean/stddev/cv_percent, no flag needed. "thin" means n < VERDICT_MIN_RUNS_
  * FOR_CONFIDENCE (3, the same threshold outlier flagging already uses);
@@ -71,6 +72,32 @@
  * what happens inside the wrapped child process to tell the two apart, and
  * deliberately doesn't try to (stays harness-agnostic, same as everywhere
  * else in this tool).
+ *
+ * "mixed-pmu" (INVESTIGATION.md's 4.2 Tier 1, "PMU-capability-aware
+ * comparability warnings" item) is a distinct verdict reason, combinable
+ * with thin/noisy, for a different kind of untrustworthy bucket: not noisy
+ * data, but data that was never measured the same way in the first place.
+ * "PMU capability" here is deliberately coverage.c's own vocabulary (see
+ * CLAUDE.md's coverage.c entry) -- runs.cpu_vendor/counters_requested/
+ * counters_measured, already stored per run by store.c, no new schema. A
+ * bucket is flagged when its contributing runs don't all share the same
+ * (cpu_vendor, counters_requested, counters_measured) triple: different
+ * cpu_vendor means the same-named CSV column (e.g. "retire") was likely
+ * computed from genuinely different raw hardware events -- see topdown.c's
+ * per-vendor formula tables -- not just a different machine; different
+ * counters_requested means the runs weren't even asking for the same
+ * counters (e.g. one used --topdown, another --topdown2, for the same
+ * "retire" column name); different counters_measured (with requested held
+ * equal) means one run's counter setup degraded (permission denial,
+ * multiplexing) while another's didn't. wspy-validate already warns about
+ * partial coverage *within* one run; this is the complementary check this
+ * codebase had no visibility into before -- a bucket blending a fully-
+ * measured run with a degraded one, which validate.c (never aggregates
+ * across runs) can't see. Deliberately exact-match, not a numeric
+ * closeness threshold like --max-cv's noisy check: there's no principled
+ * "how different is different enough" for a coverage triple the way there
+ * is for a percentage, so any deviation from the bucket's first-seen
+ * signature flags it (see bucket_add()/struct bucket's pmu_* fields).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -277,14 +304,27 @@ static void compute_ci95(double mean,double stddev,int n,double *ci_low_out,doub
  * SPEC's fixed multi-run high/low/median) can trigger WARN:noisy from the
  * harness's own internal repeat-count variance as much as from real
  * measurement noise -- wspy has no visibility into what happens inside the
- * wrapped child process to tell the two apart. */
-static void compute_verdict(int n,double cv_percent,double max_cv,char *verdict_out,size_t verdict_size){
+ * wrapped child process to tell the two apart. "mixed_pmu" is a distinct,
+ * independently-combinable reason -- see this file's header comment on
+ * "mixed-pmu" for what it means and why it's exact-match rather than a
+ * numeric threshold like noisy's. Reasons are joined in a fixed order
+ * (thin, noisy, mixed-pmu) regardless of which combination fired, so the
+ * verdict string is deterministic rather than depending on evaluation
+ * order. */
+static void compute_verdict(int n,double cv_percent,double max_cv,int mixed_pmu,
+                             char *verdict_out,size_t verdict_size){
   int thin = (n < VERDICT_MIN_RUNS_FOR_CONFIDENCE);
   int noisy = (cv_percent > max_cv);
+  size_t used;
 
-  if (!thin && !noisy){ snprintf(verdict_out,verdict_size,"PASS"); return; }
-  if (thin && noisy){ snprintf(verdict_out,verdict_size,"WARN:thin,noisy"); return; }
-  snprintf(verdict_out,verdict_size,"WARN:%s",thin ? "thin" : "noisy");
+  if (!thin && !noisy && !mixed_pmu){ snprintf(verdict_out,verdict_size,"PASS"); return; }
+  snprintf(verdict_out,verdict_size,"WARN:");
+  used = strlen(verdict_out);
+  if (thin) used += (size_t)snprintf(verdict_out+used,verdict_size-used,"thin");
+  if (noisy) used += (size_t)snprintf(verdict_out+used,verdict_size-used,"%snoisy",
+                                       used > 5 ? "," : "");
+  if (mixed_pmu) used += (size_t)snprintf(verdict_out+used,verdict_size-used,"%smixed-pmu",
+                                           used > 5 ? "," : "");
 }
 
 static void print_csv_field(FILE *out,const char *s){
@@ -312,6 +352,16 @@ struct bucket {
   char **run_ids;
   char **hostnames;
   int n,cap;
+  /* "mixed-pmu" verdict tracking (see this file's header comment): the
+   * (cpu_vendor,counters_requested,counters_measured) signature of the
+   * first contributing run, and whether any later run's signature
+   * differed. pmu_signature_set guards the first add specifically (there's
+   * no "no value yet" sentinel for an arbitrary vendor string the way 0
+   * would work for the int fields alone). */
+  char pmu_vendor[64];
+  int pmu_requested,pmu_measured;
+  int pmu_signature_set;
+  int pmu_mixed;
 };
 
 static void bucket_reset(struct bucket *b,const char *group_val,const char *secondary_val,
@@ -324,9 +374,15 @@ static void bucket_reset(struct bucket *b,const char *group_val,const char *seco
   snprintf(b->group_val,sizeof(b->group_val),"%s",group_val);
   snprintf(b->secondary_val,sizeof(b->secondary_val),"%s",secondary_val);
   snprintf(b->metric_name,sizeof(b->metric_name),"%s",metric_name);
+  b->pmu_vendor[0] = '\0';
+  b->pmu_requested = 0;
+  b->pmu_measured = 0;
+  b->pmu_signature_set = 0;
+  b->pmu_mixed = 0;
 }
 
-static void bucket_add(struct bucket *b,double value,const char *run_id,const char *hostname){
+static void bucket_add(struct bucket *b,double value,const char *run_id,const char *hostname,
+                        const char *cpu_vendor,int counters_requested,int counters_measured){
   if (b->n == b->cap){
     b->cap = b->cap ? b->cap * 2 : 8;
     b->values = realloc(b->values,sizeof(double) * (size_t)b->cap);
@@ -337,6 +393,17 @@ static void bucket_add(struct bucket *b,double value,const char *run_id,const ch
   b->run_ids[b->n] = strdup(run_id);
   b->hostnames[b->n] = strdup(hostname);
   b->n++;
+
+  if (!b->pmu_signature_set){
+    snprintf(b->pmu_vendor,sizeof(b->pmu_vendor),"%s",cpu_vendor);
+    b->pmu_requested = counters_requested;
+    b->pmu_measured = counters_measured;
+    b->pmu_signature_set = 1;
+  } else if (strcmp(b->pmu_vendor,cpu_vendor) != 0 ||
+             b->pmu_requested != counters_requested ||
+             b->pmu_measured != counters_measured){
+    b->pmu_mixed = 1;
+  }
 }
 
 static void bucket_free_contents(struct bucket *b){
@@ -405,7 +472,7 @@ static void emit_bucket(const struct bucket *b,const struct summary_opts *opts,F
   int outlier_count,i;
   char outlier_ids[512];
   char contributing_runs[4096];
-  char verdict[24];
+  char verdict[32]; /* longest possible: "WARN:thin,noisy,mixed-pmu" (25 chars) + NUL */
   size_t used = 0;
 
   if (b->n < opts->min_runs){
@@ -426,7 +493,7 @@ static void emit_bucket(const struct bucket *b,const struct summary_opts *opts,F
 
   cv = (mean_v != 0.0) ? (stddev_v / fabs(mean_v)) * 100.0 : 0.0;
   compute_ci95(mean_v,stddev_v,b->n,&ci_low,&ci_high);
-  compute_verdict(b->n,cv,opts->max_cv,verdict,sizeof(verdict));
+  compute_verdict(b->n,cv,opts->max_cv,b->pmu_mixed,verdict,sizeof(verdict));
   if (strcmp(verdict,"PASS") != 0) totals->groups_warned++;
 
   if (opts->csvflag){
@@ -477,7 +544,9 @@ static int summarize(sqlite3 *db,const struct summary_opts *opts,FILE *out,struc
   snprintf(sql,sizeof(sql),
     "SELECT %s AS group_val, rco.option_value AS secondary_val, "
     "r.run_id AS run_id, r.hostname AS run_hostname, "
-    "mv.metric_name AS metric_name, AVG(mv.value) AS avg_value "
+    "mv.metric_name AS metric_name, AVG(mv.value) AS avg_value, "
+    "r.cpu_vendor AS run_cpu_vendor, r.counters_requested AS run_counters_requested, "
+    "r.counters_measured AS run_counters_measured "
     "FROM metric_values mv JOIN runs r ON r.id = mv.run_id "
     "LEFT JOIN run_environment e ON e.run_id = r.id "
     "LEFT JOIN run_config_options rco ON rco.run_id = r.id AND rco.option_name = ?3 "
@@ -503,11 +572,15 @@ static int summarize(sqlite3 *db,const struct summary_opts *opts,FILE *out,struc
     const unsigned char *hostname_raw = sqlite3_column_text(stmt,3);
     const unsigned char *metric_raw = sqlite3_column_text(stmt,4);
     double value = sqlite3_column_double(stmt,5);
+    const unsigned char *cpu_vendor_raw = sqlite3_column_text(stmt,6);
+    int counters_requested = sqlite3_column_int(stmt,7);
+    int counters_measured = sqlite3_column_int(stmt,8);
     const char *group_val = group_raw ? (const char *)group_raw : "(unknown)";
     const char *secondary_val = secondary_raw ? (const char *)secondary_raw : "(unknown)";
     const char *run_id = run_id_raw ? (const char *)run_id_raw : "?";
     const char *hostname = hostname_raw ? (const char *)hostname_raw : "?";
     const char *metric_name = metric_raw ? (const char *)metric_raw : "?";
+    const char *cpu_vendor = cpu_vendor_raw ? (const char *)cpu_vendor_raw : "(unknown)";
 
     if (!metric_wanted(opts,metric_name)) continue;
     totals->rows_scanned++;
@@ -518,7 +591,7 @@ static int summarize(sqlite3 *db,const struct summary_opts *opts,FILE *out,struc
       bucket_reset(&cur,group_val,secondary_val,metric_name);
       have_bucket = 1;
     }
-    bucket_add(&cur,value,run_id,hostname);
+    bucket_add(&cur,value,run_id,hostname,cpu_vendor,counters_requested,counters_measured);
   }
   if (have_bucket){ emit_bucket(&cur,opts,out,totals); bucket_free_contents(&cur); }
 
@@ -717,8 +790,12 @@ static void usage(const char *prog){
     "\n"
     "Every reported bucket carries a 95%% confidence interval of the mean (ci95_low/\n"
     "ci95_high, Student's t) and a repeatability verdict (PASS, or WARN:thin for\n"
-    "n<3 runs and/or WARN:noisy for CV over --max-cv) alongside min/max/mean/\n"
-    "median/stddev/cv_percent -- all default output, no flag needed.\n"
+    "n<3 runs, WARN:noisy for CV over --max-cv, and/or WARN:mixed-pmu when the\n"
+    "bucket's contributing runs don't all share the same cpu_vendor/counter\n"
+    "coverage -- same-named columns computed from genuinely different hardware\n"
+    "or a different counter-collection setup, not just repeat-to-repeat noise)\n"
+    "alongside min/max/mean/median/stddev/cv_percent -- all default output, no\n"
+    "flag needed.\n"
     "\n"
     "Exit status: 0 normally (1 with --strict if any bucket still needs more\n"
     "runs or carried a WARN verdict, or nothing matched; 1 with --trace if no\n"
