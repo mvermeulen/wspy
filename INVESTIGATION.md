@@ -568,7 +568,13 @@ has). Ordered in dependency tiers; items within a tier are independently startab
 
 1. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
     containerized environments.
-2. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
+2. Per-core (`--per-core`) → imbalance/hot-core diagnostics, core-class summaries — a post-hoc report
+    over an existing `--per-core --csv` file (cross-core min/max/mean/stddev per metric, grouped by
+    core type/L3 domain when the host's topology is heterogeneous, via `affinity.c`'s existing
+    discovery). Process/thread migration diagnostics (did a process's threads actually move between
+    cores during the run) is a separate, harder capability -- nothing today samples which core a
+    process ran on over time, so it needs new instrumentation (periodic `/proc/<pid>/stat` sampling or
+    scheduler tracepoints), not just new analysis of data already collected; split out to 4.4.
 3. `proctree` → JSON export + an interactive, filterable web viewer (built on the existing
     `web/server.py` report infrastructure) + run-to-run tree diff. A real run's tree is hundreds to
     thousands of processes, so a static Graphviz render is the wrong primary deliverable — it turns
@@ -808,6 +814,11 @@ Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
 5. Optional live TUI (run progress, interval metrics, throttling/skew warnings) — a terminal-side
    surface, unrelated to and not superseded by 4.1's web interface work; nice-to-have, CLI-first model
    stays primary.
+6. Process/thread migration diagnostics (did a process's threads actually move between cores during
+   the run) — split out of 4.2's "Per-core imbalance/hot-core diagnostics" item, since it needs new
+   instrumentation (periodic `/proc/<pid>/stat` `processor`-field sampling, or scheduler tracepoints)
+   rather than just new analysis of data `--per-core` already collects. Natural pairing with 4.3's
+   lower-overhead tracing backend if that lands first, but not a hard dependency.
 
 ## Open questions for prioritization
 Each carries a recommendation; treat these as the current default, not a closed decision. (Several
