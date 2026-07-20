@@ -485,6 +485,25 @@ remaining-work list below (Graphviz export for an already-filtered small subtree
 optional secondary output, not implemented — the interactive viewer is the main way to view a whole
 run's tree).
 
+**`wspy-core-report`: per-core imbalance/hot-core/core-class diagnostics:** a new standalone binary
+(`core_report.c`) that reports cross-core min/max/mean/stddev/coefficient-of-variation for every metric
+column in an existing `--per-core --csv` file, naming the "hot" (max) and "cold" (min) core by index —
+a post-hoc report over an already-collected artifact (matching `wspy-validate`/`wspy-plot`'s own
+pattern), not a live collection-time feature. When this host's cores aren't all the same type
+(`cpu_info.c`'s per-core `vendor` field — ARM big.LITTLE, Intel Atom+Core hybrid, both already
+differentiated per-core; AMD Zen5/Zen5c hybrid parts are not yet, a pre-existing gap this tool doesn't
+work around), an additional breakdown groups the same stats by core class instead of lumping every core
+together. Must be run on the same host that collected the CSV (or one with identical topology) — core
+classes are re-detected fresh via `inventory_cpu()`, there's no per-core class column in the CSV itself.
+The class-grouping logic (`gather_core_values()`/`distinct_classes_present()`) takes a plain
+class-per-core-index array rather than reading `cpu_info` directly, so it's exercised in
+`test_core_report.c` against a synthetic heterogeneous-host assignment without needing real or fake
+hardware topology. `--csv` output mirrors the human report's fields
+(`metric,scope,scope_value,n,min,min_core,max,max_core,mean,stddev,cv_percent`); `--metric <name>`
+filters to specific columns. Process/thread migration diagnostics (did a process's threads move between
+cores during the run) was split out of this item into its own 4.4 backlog entry during design — it
+needs new instrumentation nothing today provides, not just new analysis of data already collected.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -625,53 +644,46 @@ has). Ordered in dependency tiers; items within a tier are independently startab
 
 1. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
     containerized environments.
-2. Per-core (`--per-core`) → imbalance/hot-core diagnostics, core-class summaries — a post-hoc report
-    over an existing `--per-core --csv` file (cross-core min/max/mean/stddev per metric, grouped by
-    core type/L3 domain when the host's topology is heterogeneous, via `affinity.c`'s existing
-    discovery). Process/thread migration diagnostics (did a process's threads actually move between
-    cores during the run) is a separate, harder capability -- nothing today samples which core a
-    process ran on over time, so it needs new instrumentation (periodic `/proc/<pid>/stat` sampling or
-    scheduler tracepoints), not just new analysis of data already collected; split out to 4.4.
 
 **Tier 2 — characterization prerequisites:**
 
-3. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
+2. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
     switch/I-O) — needs 4.1's normalized store schema (`wspy-store`) to draw features from.
-4. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
+3. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
     stability) + confidence + top-2 alternatives.
 
 **Tier 3 — launcher/infra follow-ups:**
 
-5. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
+4. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
     They still shell out to `wspy` once per pass today; 4.1's multi-pass execution work scoped this
     collapse as a documented follow-up, not part of that item.
-6. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
+5. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
     of running it now" checkbox) is visible today only via `wspy-queue list`/`show`, not from the web
     UI itself. Bundle in sharing structured configuration provenance with the job format
     (`web/joblib.py`'s job schema and `manifest.h`'s `configuration_provenance` are designed to be
     close in shape but aren't wired together yet).
-7. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
+6. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
     raw/filename-aligned today (comparing actual artifacts across runs, curated or not); annotating a
     comparison itself, or aligning curated block titles across the compared runs, is still open.
 
 **Tier 4 — docs/testing/release process:**
 
-8. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
+7. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
     output).
-9. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
-10. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
+8. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
+9. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
     constant (e.g. `phoronix-test-suite` reportedly has a run-time-estimate command) — today's
     constant is a blunt stand-in; the real constraint is capping process-record data volume for
     publishing, not workload runtime, so a per-workload estimate would size it more accurately than
     one constant across every suite.
-11. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
+10. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
     that catches the class of drift found during the v4.0 release audit: `doc/ARTIFACT_CONTRACT.md`'s
     schema-version examples had silently fallen behind `MANIFEST_SCHEMA_VERSION`/
     `RUN_INDEX_SCHEMA_VERSION`, and `README.md` was missing a whole tool's section. Concretely:
     grep-based checks that doc-quoted schema versions and the documented tool/flag list match the
     actual header constants and `Makefile` binary list, so this doesn't require a manual audit at
     every release again.
-12. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
+11. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
     `MINOR`, grep for stale version-string references across docs, run the full test matrix including
     the `AMDGPU=1` variant, tag, label every merged PR since the last tag, draft release notes from
     the merged-PR list) as a repeatable script or documented checklist instead of redoing it by hand,
