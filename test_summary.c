@@ -34,6 +34,7 @@ static sqlite3 *open_memory_db(void){
     "CREATE TABLE runs (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, hostname TEXT NOT NULL, "
     "command TEXT NOT NULL, cpu_vendor TEXT, start_time TEXT NOT NULL, "
     "affinity_mode TEXT, preset_name TEXT, config_name TEXT, "
+    "counters_requested INTEGER, counters_measured INTEGER, "
     "manifest_path TEXT, output_path TEXT, tree_output_path TEXT);"
     "CREATE TABLE metric_values (id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, "
     "metric_name TEXT NOT NULL, value REAL);"
@@ -113,6 +114,33 @@ static void insert_run(sqlite3 *db,int id,const char *run_id,const char *hostnam
   if (cpu_vendor) sqlite3_bind_text(stmt,5,cpu_vendor,-1,SQLITE_TRANSIENT);
   else sqlite3_bind_null(stmt,5);
   sqlite3_bind_text(stmt,6,start_time,-1,SQLITE_TRANSIENT);
+  assert(sqlite3_step(stmt) == SQLITE_DONE);
+  sqlite3_finalize(stmt);
+}
+
+/* Like insert_run(), plus counters_requested/counters_measured -- for the
+ * "mixed-pmu" verdict tests below, which need to control those alongside
+ * cpu_vendor. Every other fixture uses plain insert_run() and leaves both
+ * columns NULL (sqlite3_column_int() reads NULL as 0 uniformly), so they
+ * all share the same (vendor,0,0) signature and never trigger mixed-pmu
+ * by accident. */
+static void insert_run_with_pmu(sqlite3 *db,int id,const char *run_id,const char *hostname,
+                                 const char *command,const char *cpu_vendor,const char *start_time,
+                                 int counters_requested,int counters_measured){
+  sqlite3_stmt *stmt;
+  assert(sqlite3_prepare_v2(db,
+    "INSERT INTO runs (id,run_id,hostname,command,cpu_vendor,start_time,"
+    "counters_requested,counters_measured) VALUES (?,?,?,?,?,?,?,?);",
+    -1,&stmt,NULL) == SQLITE_OK);
+  sqlite3_bind_int(stmt,1,id);
+  sqlite3_bind_text(stmt,2,run_id,-1,SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt,3,hostname,-1,SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt,4,command,-1,SQLITE_TRANSIENT);
+  if (cpu_vendor) sqlite3_bind_text(stmt,5,cpu_vendor,-1,SQLITE_TRANSIENT);
+  else sqlite3_bind_null(stmt,5);
+  sqlite3_bind_text(stmt,6,start_time,-1,SQLITE_TRANSIENT);
+  sqlite3_bind_int(stmt,7,counters_requested);
+  sqlite3_bind_int(stmt,8,counters_measured);
   assert(sqlite3_step(stmt) == SQLITE_DONE);
   sqlite3_finalize(stmt);
 }
@@ -263,40 +291,56 @@ static void test_compute_ci95_matches_formula(void){
 }
 
 static void test_compute_verdict_pass(void){
-  char verdict[24];
-  compute_verdict(5,2.0,5.0,verdict,sizeof(verdict)); /* n>=3, cv < max_cv */
+  char verdict[32];
+  compute_verdict(5,2.0,5.0,0,verdict,sizeof(verdict)); /* n>=3, cv < max_cv, not mixed */
   assert(strcmp(verdict,"PASS") == 0);
   printf("test_compute_verdict_pass passed\n");
 }
 
 static void test_compute_verdict_thin_only(void){
-  char verdict[24];
-  compute_verdict(2,0.0,5.0,verdict,sizeof(verdict)); /* n<3, cv well under max_cv */
+  char verdict[32];
+  compute_verdict(2,0.0,5.0,0,verdict,sizeof(verdict)); /* n<3, cv well under max_cv */
   assert(strcmp(verdict,"WARN:thin") == 0);
   printf("test_compute_verdict_thin_only passed\n");
 }
 
 static void test_compute_verdict_noisy_only(void){
-  char verdict[24];
-  compute_verdict(10,50.0,5.0,verdict,sizeof(verdict)); /* n>=3, cv far over max_cv */
+  char verdict[32];
+  compute_verdict(10,50.0,5.0,0,verdict,sizeof(verdict)); /* n>=3, cv far over max_cv */
   assert(strcmp(verdict,"WARN:noisy") == 0);
   printf("test_compute_verdict_noisy_only passed\n");
 }
 
 static void test_compute_verdict_thin_and_noisy(void){
-  char verdict[24];
-  compute_verdict(2,50.0,5.0,verdict,sizeof(verdict));
+  char verdict[32];
+  compute_verdict(2,50.0,5.0,0,verdict,sizeof(verdict));
   assert(strcmp(verdict,"WARN:thin,noisy") == 0);
   printf("test_compute_verdict_thin_and_noisy passed\n");
 }
 
 static void test_compute_verdict_boundary_not_noisy(void){
-  char verdict[24];
+  char verdict[32];
   /* Exactly at --max-cv: the check is strictly-greater-than, so the
    * boundary itself is not flagged. */
-  compute_verdict(5,5.0,5.0,verdict,sizeof(verdict));
+  compute_verdict(5,5.0,5.0,0,verdict,sizeof(verdict));
   assert(strcmp(verdict,"PASS") == 0);
   printf("test_compute_verdict_boundary_not_noisy passed\n");
+}
+
+static void test_compute_verdict_mixed_pmu_only(void){
+  char verdict[32];
+  compute_verdict(5,2.0,5.0,1,verdict,sizeof(verdict)); /* n>=3, cv low, but mixed_pmu set */
+  assert(strcmp(verdict,"WARN:mixed-pmu") == 0);
+  printf("test_compute_verdict_mixed_pmu_only passed\n");
+}
+
+static void test_compute_verdict_all_three_reasons(void){
+  char verdict[32];
+  compute_verdict(2,50.0,5.0,1,verdict,sizeof(verdict));
+  /* Fixed reason order (thin, noisy, mixed-pmu) regardless of internal
+   * evaluation order -- see compute_verdict()'s own comment. */
+  assert(strcmp(verdict,"WARN:thin,noisy,mixed-pmu") == 0);
+  printf("test_compute_verdict_all_three_reasons passed\n");
 }
 
 static void test_parse_group_by(void){
@@ -686,6 +730,112 @@ static void test_summarize_verdict_thin_and_noisy_both_fire(void){
   free(buf);
   sqlite3_close(db);
   printf("test_summarize_verdict_thin_and_noisy_both_fire passed\n");
+}
+
+/* INVESTIGATION.md's 4.2 Tier 1 "PMU-capability-aware comparability
+ * warnings" item: a bucket blending runs from two different cpu_vendor
+ * values (same command, same metric name -- e.g. two hosts' "retire"
+ * column, computed from genuinely different per-vendor raw events) must
+ * be flagged, even with plenty of runs and low variance (n=3, identical
+ * values -> cv=0, would otherwise be a clean PASS). */
+static void test_summarize_verdict_mixed_pmu_different_vendor(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf;
+  size_t size;
+  FILE *fp;
+
+  insert_run_with_pmu(db,1,"r1","host1","/bin/workloadA","AMD","2026-01-01T00:00:00Z",9,9);
+  insert_metric(db,1,"retire",50.0);
+  insert_run_with_pmu(db,2,"r2","host2","/bin/workloadA","AMD","2026-01-01T00:01:00Z",9,9);
+  insert_metric(db,2,"retire",50.0);
+  insert_run_with_pmu(db,3,"r3","host3","/bin/workloadA","Intel","2026-01-01T00:02:00Z",9,9);
+  insert_metric(db,3,"retire",50.0);
+
+  opts.csvflag = 1;
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  assert(strstr(buf,",WARN:mixed-pmu,") != NULL);
+  assert(totals.groups_warned == 1);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_summarize_verdict_mixed_pmu_different_vendor passed\n");
+}
+
+/* Same vendor, but one run's counter setup measured fewer counters than it
+ * requested (e.g. a permission-denied counter this run, none the others) --
+ * wspy-validate already flags this *within* one run's own manifest, but
+ * summarize() aggregating a degraded run alongside clean ones is something
+ * only this cross-run view can see. */
+static void test_summarize_verdict_mixed_pmu_different_coverage(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf;
+  size_t size;
+  FILE *fp;
+
+  insert_run_with_pmu(db,1,"r1","host1","/bin/workloadA","AMD","2026-01-01T00:00:00Z",9,9);
+  insert_metric(db,1,"ipc",1.0);
+  insert_run_with_pmu(db,2,"r2","host1","/bin/workloadA","AMD","2026-01-01T00:01:00Z",9,6);
+  insert_metric(db,2,"ipc",1.0);
+  insert_run_with_pmu(db,3,"r3","host1","/bin/workloadA","AMD","2026-01-01T00:02:00Z",9,9);
+  insert_metric(db,3,"ipc",1.0);
+
+  opts.csvflag = 1;
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  assert(strstr(buf,",WARN:mixed-pmu,") != NULL);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_summarize_verdict_mixed_pmu_different_coverage passed\n");
+}
+
+/* Sanity check for the opposite case: identical (vendor,requested,measured)
+ * signature across every contributing run must never spuriously flag
+ * mixed-pmu, even across different hostnames/run_ids. */
+static void test_summarize_verdict_same_pmu_signature_not_mixed(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf;
+  size_t size;
+  FILE *fp;
+  int n,outliers;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high;
+  char verdict[32];
+
+  insert_run_with_pmu(db,1,"r1","host1","/bin/workloadA","AMD","2026-01-01T00:00:00Z",9,9);
+  insert_metric(db,1,"retire",50.0);
+  insert_run_with_pmu(db,2,"r2","host2","/bin/workloadA","AMD","2026-01-01T00:01:00Z",9,9);
+  insert_metric(db,2,"retire",51.0);
+  insert_run_with_pmu(db,3,"r3","host3","/bin/workloadA","AMD","2026-01-01T00:02:00Z",9,9);
+  insert_metric(db,3,"retire",49.0);
+
+  opts.csvflag = 1;
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  assert(strstr(buf,"mixed-pmu") == NULL);
+  assert(find_csv_row(buf,"/bin/workloadA","retire",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,
+                       &ci_low,&ci_high,verdict,&outliers));
+  assert(strcmp(verdict,"PASS") == 0);
+  assert(totals.groups_warned == 0);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_summarize_verdict_same_pmu_signature_not_mixed passed\n");
 }
 
 static void test_summarize_group_by_cpu_vendor_unknown_bucket(void){
@@ -1201,6 +1351,8 @@ int main(void){
   test_compute_verdict_noisy_only();
   test_compute_verdict_thin_and_noisy();
   test_compute_verdict_boundary_not_noisy();
+  test_compute_verdict_mixed_pmu_only();
+  test_compute_verdict_all_three_reasons();
   test_parse_group_by();
   test_metric_wanted();
   test_print_csv_field_quoting();
@@ -1214,6 +1366,9 @@ int main(void){
   test_summarize_verdict_noisy_when_cv_exceeds_default_max_cv();
   test_summarize_max_cv_flag_raises_noisy_threshold();
   test_summarize_verdict_thin_and_noisy_both_fire();
+  test_summarize_verdict_mixed_pmu_different_vendor();
+  test_summarize_verdict_mixed_pmu_different_coverage();
+  test_summarize_verdict_same_pmu_signature_not_mixed();
   test_summarize_group_by_affinity_mode();
   test_summarize_group_by_cpu_governor_via_environment_join();
   test_summarize_group_by_option_composes_with_primary_group();

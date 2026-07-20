@@ -199,6 +199,20 @@ than hand-written flag strings. `zen-portable` avoids `--power` (AMD Family 19h+
 assumes Family 19h+ hardware where both are real, with `l3missonly` degrading gracefully (not failing)
 on Zen4. Verified end-to-end on real Zen5 hardware.
 
+**PMU-capability-aware comparability warnings:** `wspy-summary`'s repeatability verdict gains a fourth,
+independently-combinable reason, `mixed-pmu` — a bucket's contributing runs are compared by
+`(cpu_vendor,counters_requested,counters_measured)` signature (`summary.c`'s `struct bucket` `pmu_*`
+fields, sourced from three columns the query already reads off `store.c`'s `runs` table, no new schema),
+and any deviation from the first-seen signature flags the bucket. Deliberately exact-match rather than a
+numeric threshold like `noisy`'s `--max-cv`: different `cpu_vendor` means a same-named CSV column was
+likely computed from genuinely different raw hardware events; different `counters_requested` means the
+contributing runs weren't even asking for the same counters (e.g. `--topdown` vs `--topdown2`); different
+`counters_measured` (with `counters_requested` equal) means one run's counter setup degraded while
+another's didn't — the cross-run aggregation blind spot `wspy-validate`'s own per-manifest coverage
+warning can't see. Verified end-to-end on real hardware: two real runs of the same workload (one
+`--topdown`, one `--topdown2`) correctly produced `WARN:thin,noisy,mixed-pmu` via `wspy-store`/
+`wspy-summary`.
+
 **Combined GPU-workload profiling:** `wspy-run gpu-compute` builtin profile (tree tracing + system +
 power + both GPU backends + topdown on one shared `--interval` timeline, for workloads a
 separate-re-execution-per-category profile like `deep-gpu` can't correlate tick-for-tick); surfaced
@@ -399,8 +413,8 @@ What appears confirmed from current Linux perf/PMU behavior for AMD Family 1Ah (
 Caveat: if upstream kernel/perf exposes new Zen5-specific generic mappings or PMU caps, update
 presets and coverage logic without changing the report schema.
 
-→ Informed 4.2's "Zen-family preset packs" (shipped). Also informs 4.2's "PMU-capability-aware
-comparability warnings" and "AMD IBS sampling-mode support" (icache/TLB/dcache/L2/L3/branch rate
+→ Informed 4.2's "Zen-family preset packs" and "PMU-capability-aware comparability warnings" (both
+shipped). Also informs 4.2's "AMD IBS sampling-mode support" (icache/TLB/dcache/L2/L3/branch rate
 estimates decoded from real per-sample tag data, not just counting-mode sample counts); and 4.3's
 "IBS-derived memory-path bottleneck decomposition," which depends on IBS sampling-mode support
 existing first.
@@ -500,8 +514,7 @@ has). Ordered in dependency tiers; items within a tier are independently startab
 
 **Tier 1 — topdown/IBS refinement (interdependent; sets up 4.3's attribution work):**
 
-1. PMU-capability-aware comparability warnings.
-2. AMD IBS *sampling*-mode support: mmap'ing the perf ring buffer and requesting `PERF_SAMPLE_RAW`
+1. AMD IBS *sampling*-mode support: mmap'ing the perf ring buffer and requesting `PERF_SAMPLE_RAW`
     so each individual IBS sample's tagged register data is available, not just a count of how many
     fired — a genuinely new capability, not an extension of the counting-mode `ibs-basic`/
     `ibs-memory-deep` profiles. Nothing in wspy today reads a perf mmap ring buffer at all; every
@@ -519,7 +532,7 @@ has). Ordered in dependency tiers; items within a tier are independently startab
     and generalizes directly; the new work is the mmap/ring-buffer read path itself, per-sample record
     parsing, and the rate-aggregation/report layer built on top. Feeds 4.3's "IBS-derived memory-path
     bottleneck decomposition," which assumes this sampling capability already exists.
-3. Per-core energy (`power_core`) support: `--power` currently reports package-level `pkg_joules`/
+2. Per-core energy (`power_core`) support: `--power` currently reports package-level `pkg_joules`/
     `pkg_watts` only — `power_core`'s own `cpumask` (one representative logical CPU per physical core)
     means a real per-core breakdown needs opening N events, one pinned per primary-thread CPU, and
     aggregating them into `--per-core`'s existing per-core row shape, a separate unit of work layered
@@ -529,58 +542,58 @@ has). Ordered in dependency tiers; items within a tier are independently startab
 
 **Tier 2 — GPU fusion:**
 
-4. ROCm SMI + sysfs fusion layer (one stream, source precedence, per-metric validity flags) —
+3. ROCm SMI + sysfs fusion layer (one stream, source precedence, per-metric validity flags) —
     merges the two existing independent GPU paths (`amd_smi.c`, `amd_sysfs.c`).
-5. Same manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory
+4. Same manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory
     activity) — reuses the 4.0 foundation rather than a parallel GPU-only pipeline. Closes the
     "Minimum metadata set for publishable" open question's GPU caveat (see "Open questions" below).
 
 **Tier 3 — `/proc` and tree enrichment remainder (independent, moderate value, low risk):**
 
-6. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
+5. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
     containerized environments.
-7. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
-8. `proctree` → JSON/Graphviz export + run-to-run tree diff.
+6. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
+7. `proctree` → JSON/Graphviz export + run-to-run tree diff.
 
 **Tier 4 — characterization prerequisites:**
 
-9. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
+8. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
     switch/I-O) — needs 4.1's normalized store schema (`wspy-store`) to draw features from.
-10. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
+9. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
     stability) + confidence + top-2 alternatives.
 
 **Tier 5 — launcher/infra follow-ups:**
 
-11. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
+10. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
     They still shell out to `wspy` once per pass today; 4.1's multi-pass execution work scoped this
     collapse as a documented follow-up, not part of that item.
-12. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
+11. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
     of running it now" checkbox) is visible today only via `wspy-queue list`/`show`, not from the web
     UI itself. Bundle in sharing structured configuration provenance with the job format
     (`web/joblib.py`'s job schema and `manifest.h`'s `configuration_provenance` are designed to be
     close in shape but aren't wired together yet).
-13. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
+12. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
     raw/filename-aligned today (comparing actual artifacts across runs, curated or not); annotating a
     comparison itself, or aligning curated block titles across the compared runs, is still open.
 
 **Tier 6 — docs/testing/release process:**
 
-14. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
+13. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
     output).
-15. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
-16. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
+14. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
+15. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
     constant (e.g. `phoronix-test-suite` reportedly has a run-time-estimate command) — today's
     constant is a blunt stand-in; the real constraint is capping process-record data volume for
     publishing, not workload runtime, so a per-workload estimate would size it more accurately than
     one constant across every suite.
-17. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
+16. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
     that catches the class of drift found during the v4.0 release audit: `doc/ARTIFACT_CONTRACT.md`'s
     schema-version examples had silently fallen behind `MANIFEST_SCHEMA_VERSION`/
     `RUN_INDEX_SCHEMA_VERSION`, and `README.md` was missing a whole tool's section. Concretely:
     grep-based checks that doc-quoted schema versions and the documented tool/flag list match the
     actual header constants and `Makefile` binary list, so this doesn't require a manual audit at
     every release again.
-18. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
+17. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
     `MINOR`, grep for stale version-string references across docs, run the full test matrix including
     the `AMDGPU=1` variant, tag, label every merged PR since the last tag, draft release notes from
     the merged-PR list) as a repeatable script or documented checklist instead of redoing it by hand,
@@ -601,7 +614,10 @@ topdown/IBS attribution, static-site publishing, and a lower-overhead tracing ba
 
 1. Baselines and regression/anomaly detection.
 2. Machine/environment comparability scoring — depends on provenance capture (shipped, `provenance.c`)
-   existing across enough runs to score against.
+   existing across enough runs to score against. Broader than 4.2's (shipped) "PMU-capability-aware
+   comparability warnings": that item is a narrow, immediate per-bucket exact-match check on
+   `(cpu_vendor,counters_requested,counters_measured)`; this item is the deferred, scored version across
+   the fuller provenance surface (BIOS, microcode, governor, memory, virtualization, etc.).
 3. Distribution-first reporting (quantiles, clustering prep).
 4. Clustering + nearest-neighbor + cluster profile cards, coverage-aware distance (common-subspace
    only when data coverage differs).
