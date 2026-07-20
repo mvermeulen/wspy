@@ -18,7 +18,7 @@
  * breaks existing readers, MINOR when a field is added in a backward
  * compatible way, PATCH for fixes that don't change the shape. Consumers
  * should warn (not silently misparse) on an unrecognized MAJOR version. */
-#define MANIFEST_SCHEMA_VERSION "1.7.0"
+#define MANIFEST_SCHEMA_VERSION "1.8.0"
 
 /* One counter that setup_counters() (topdown.c) tried and failed to open via
  * perf_event_open, as recorded by coverage.c. Kept as its own small struct
@@ -58,6 +58,43 @@ struct manifest_config_provenance {
   const char *configuration;   /* e.g. "performance-counters", NULL if none  */
   int noptions;
   const struct manifest_config_option *options; /* array, length noptions   */
+};
+
+/* GPU telemetry provenance (INVESTIGATION.md's 4.2 Tier 1 "manifest/index/
+ * profile pipeline extended to GPU runs" item). Deliberately provenance-only
+ * -- which flag(s) were requested, which device index actually got selected,
+ * and whether each backend produced valid data on this run's last read --
+ * not a duplicate of the measured busy/temp/activity/power/freq/VRAM values
+ * themselves, which stay CSV-only like every other metric this codebase
+ * collects. All-zero/-1 (the default, e.g. a build without AMDGPU/NVIDIA, or
+ * a run that never touched a GPU flag) means "not applicable", not a gap --
+ * most runs don't request any GPU flag at all. amd_device_index is shared by
+ * amd_sysfs.c/amd_smi.c (both are initialized with the same --gpu-device
+ * value); nvidia_device_index is the --gpu-nvidia-device counterpart. */
+struct manifest_gpu_info {
+  int gpu_busy_requested;     /* --gpu-busy    */
+  int gpu_metrics_requested;  /* --gpu-metrics (fused sysfs+SMI stream) */
+  int gpu_smi_requested;      /* --gpu-smi (legacy, raw SMI columns)    */
+  int gpu_nvidia_requested;   /* --gpu-nvidia  */
+
+  int amd_device_index;       /* resolved selected AMD device index, -1 if
+                                  none selected or no AMD GPU flag requested */
+  int nvidia_device_index;    /* resolved selected NVIDIA device index, -1
+                                  if none selected or --gpu-nvidia not given */
+
+  /* Whether each backend actually produced valid data on this run's final
+   * read (the same read already reflected in the last CSV row/human
+   * output) -- lets a manifest-only reader tell "GPU flag given but this
+   * host/driver never actually worked" apart from "GPU flag given and it
+   * worked", without needing the CSV. amd_sysfs_busy_valid reflects
+   * whether the sysfs gpu_busy_percent file was found for the selected
+   * device at init time (--gpu-busy has no later per-read failure mode to
+   * distinguish); the rest reflect the last actual read's success. */
+  int amd_sysfs_busy_valid;
+  int amd_sysfs_metrics_valid;
+  int amd_smi_metrics_valid;
+  int amd_smi_memory_valid;
+  int nvidia_metrics_valid;
 };
 
 struct manifest_exit_status {
@@ -152,6 +189,9 @@ struct manifest_info {
    * above): all-NULL/zero unless a front end passed --preset-name/
    * --config-name/--config-option. */
   struct manifest_config_provenance config_provenance;
+  /* GPU telemetry provenance (see manifest_gpu_info above): all-zero/-1
+   * unless a --gpu-* flag was given. */
+  struct manifest_gpu_info gpu;
 };
 
 /* Writes the manifest as JSON to path. Returns 0 on success, -1 if the file

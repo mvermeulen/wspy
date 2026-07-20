@@ -871,6 +871,45 @@ static void populate_manifest_common(struct manifest_info *minfo){
   minfo->config_provenance.configuration = config_provenance_configuration;
   minfo->config_provenance.noptions = config_provenance_noptions;
   minfo->config_provenance.options = config_provenance_options;
+
+  // GPU telemetry provenance (manifest.h's manifest_gpu_info): which
+  // flag(s)/device(s) were requested and whether each backend actually
+  // produced valid data on its last read -- see that struct's own comment
+  // for why this is provenance-only, not a duplicate of the CSV's measured
+  // values.
+  minfo->gpu.gpu_busy_requested = gpu_busy_requested;
+#if AMDGPU
+  minfo->gpu.gpu_metrics_requested = gpu_metrics_requested;
+  minfo->gpu.gpu_smi_requested = gpu_smi_requested;
+  if (gpu_busy_requested || gpu_metrics_requested){
+    minfo->gpu.amd_device_index = amd_sysfs_selected_device();
+  } else if (gpu_smi_requested){
+    minfo->gpu.amd_device_index = amd_smi_selected_device();
+  } else {
+    minfo->gpu.amd_device_index = -1;
+  }
+  minfo->gpu.amd_sysfs_busy_valid = (gpu_busy_requested || gpu_metrics_requested) ? amd_sysfs_gpu_busy_valid() : 0;
+  minfo->gpu.amd_sysfs_metrics_valid = gpu_metrics_requested ? amd_sysfs_gpu_metrics_valid() : 0;
+  minfo->gpu.amd_smi_metrics_valid = (gpu_smi_requested || gpu_metrics_requested) ? amd_smi_metrics_valid() : 0;
+  minfo->gpu.amd_smi_memory_valid = (gpu_smi_requested || gpu_metrics_requested) ? amd_smi_memory_valid() : 0;
+#else
+  minfo->gpu.gpu_metrics_requested = 0;
+  minfo->gpu.gpu_smi_requested = 0;
+  minfo->gpu.amd_device_index = -1;
+  minfo->gpu.amd_sysfs_busy_valid = 0;
+  minfo->gpu.amd_sysfs_metrics_valid = 0;
+  minfo->gpu.amd_smi_metrics_valid = 0;
+  minfo->gpu.amd_smi_memory_valid = 0;
+#endif
+#if NVIDIA
+  minfo->gpu.gpu_nvidia_requested = gpu_nvidia_requested;
+  minfo->gpu.nvidia_device_index = gpu_nvidia_requested ? nvidia_nvml_selected_device() : -1;
+  minfo->gpu.nvidia_metrics_valid = gpu_nvidia_requested ? nvidia_nvml_metrics_valid() : 0;
+#else
+  minfo->gpu.gpu_nvidia_requested = 0;
+  minfo->gpu.nvidia_device_index = -1;
+  minfo->gpu.nvidia_metrics_valid = 0;
+#endif
 }
 
 // --exit-with-child's return-code logic, shared between main()'s single-pass

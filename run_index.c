@@ -141,7 +141,30 @@ int append_run_index(const char *path,const struct manifest_info *info){
   json_write_string(fp,info->affinity_mode ? info->affinity_mode : "all");
   fprintf(fp,",\"cpus\":");
   json_write_string(fp,info->affinity_cpus ? info->affinity_cpus : "");
-  fprintf(fp,"}},");
+  fprintf(fp,"},");
+
+  /* GPU telemetry provenance (see manifest.c's matching write_gpu_provenance()
+   * for the pretty-printed sibling of this same data, and manifest.h's
+   * manifest_gpu_info comment for what these fields mean). */
+  fprintf(fp,"\"gpu\":{\"requested\":{\"busy\":%s,\"metrics\":%s,\"smi\":%s,\"nvidia\":%s},",
+	  info->gpu.gpu_busy_requested ? "true" : "false",
+	  info->gpu.gpu_metrics_requested ? "true" : "false",
+	  info->gpu.gpu_smi_requested ? "true" : "false",
+	  info->gpu.gpu_nvidia_requested ? "true" : "false");
+  /* Gated on the requested flags, not the index's sign -- see manifest.c's
+   * matching write_gpu_provenance() comment. */
+  if ((info->gpu.gpu_busy_requested || info->gpu.gpu_metrics_requested || info->gpu.gpu_smi_requested)
+      && info->gpu.amd_device_index >= 0) fprintf(fp,"\"amd_device_index\":%d,",info->gpu.amd_device_index);
+  else fprintf(fp,"\"amd_device_index\":null,");
+  if (info->gpu.gpu_nvidia_requested && info->gpu.nvidia_device_index >= 0) fprintf(fp,"\"nvidia_device_index\":%d,",info->gpu.nvidia_device_index);
+  else fprintf(fp,"\"nvidia_device_index\":null,");
+  fprintf(fp,"\"backend_valid\":{\"amd_sysfs_busy\":%s,\"amd_sysfs_metrics\":%s,\"amd_smi_metrics\":%s,\"amd_smi_memory\":%s,\"nvidia_metrics\":%s}}",
+	  info->gpu.amd_sysfs_busy_valid ? "true" : "false",
+	  info->gpu.amd_sysfs_metrics_valid ? "true" : "false",
+	  info->gpu.amd_smi_metrics_valid ? "true" : "false",
+	  info->gpu.amd_smi_memory_valid ? "true" : "false",
+	  info->gpu.nvidia_metrics_valid ? "true" : "false");
+  fprintf(fp,"},");
 
   /* Structured configuration provenance (INVESTIGATION.md's "What shipped
    * in 4.1"): see
