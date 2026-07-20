@@ -41,7 +41,7 @@ CONFIG_OPTIONS=()
 
 declare -A PASS_EXT PASS_OUTFILE PASS_MANIFEST PASS_IS_TREE PASS_STATUS PASS_PTSLOG
 
-BUILTIN_PROFILES=(quick deep-cpu deep-cpu-intel deep-gpu tree-heavy ibs-basic ibs-memory-deep gpu-compute)
+BUILTIN_PROFILES=(quick deep-cpu deep-cpu-intel deep-gpu tree-heavy ibs-basic ibs-memory-deep gpu-compute zen-portable zen4plus-deep)
 
 usage(){
   cat <<EOF
@@ -95,6 +95,22 @@ Builtin profiles:
               -- for a GPU-bound/latency-driven workload (a renderer, a
               Vulkan compute host loop) where deep-gpu's separate per-category
               passes can't be correlated tick-for-tick against each other
+  zen-portable     quick + ibs-basic composed (AMD, any Zen generation) --
+              a fast, broadly-compatible default: quick's aggregate ipc/
+              system summary plus a real AMD IBS interval time series,
+              deliberately avoiding --power (RAPL/energy-pkg needs AMD
+              Family 19h+, so Zen1/2 would just warn) and IBS l3missonly
+              filtering (a Zen5-only hardware feature, see the Zen5/IBS
+              deep-dive in INVESTIGATION.md) so it runs warning-free across
+              the whole Zen family
+  zen4plus-deep    deep-cpu + ibs-memory-deep composed (AMD Family 19h+,
+              i.e. Zen4/Zen5) -- deep-cpu's full topdown/cache/branch sweep
+              (already includes --power, real on Family 19h+) plus IBS with
+              l3missonly+ldlat memory-path filtering, which needs a Zen5
+              feature check to actually apply (Zen4 still runs this
+              cleanly, just without l3missonly -- ibs.c degrades to
+              unfiltered rather than failing, see the run's own skew
+              annotations)
 
 Options:
   -o, --outdir <dir>       Directory to write pass output files into (default: .;
@@ -319,6 +335,21 @@ load_builtin_profile(){
       PASS_FLAGS=(
         "--tree ${OUTDIR}/${PREFIX}process.tree.txt --tree-futex --tree-io-wait --tree-connect --tree-wait --tree-poll --tree-nanosleep --system --power --gpu-busy --gpu-metrics --gpu-nvidia --topdown --no-ipc --interval 1 --csv"
       )
+      ;;
+    zen-portable)
+      # Composed from two already-tested profiles (INVESTIGATION.md's 4.2
+      # Tier 1, "Zen-family preset packs" item) rather than duplicating
+      # their flag strings by hand -- load_profiles() (below) already does
+      # exactly this concatenation for a user-supplied comma list, so this
+      # just calls it with a fixed spec instead of inventing a second
+      # composition mechanism. See usage() above for the "why these two,
+      # why not --power/l3missonly" rationale.
+      load_profiles "quick,ibs-basic"
+      return
+      ;;
+    zen4plus-deep)
+      load_profiles "deep-cpu,ibs-memory-deep"
+      return
       ;;
     *)
       echo "$SCRIPT_NAME: unknown profile: $profile (try --list)" >&2

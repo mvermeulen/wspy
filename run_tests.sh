@@ -496,6 +496,19 @@ if ! ./wspy-run --list | grep -q "^deep-cpu:"; then
     echo "FAIL: wspy-run --list did not show the deep-cpu profile"
     exit 1
 fi
+# INVESTIGATION.md's 4.2 Tier 1 "Zen-family preset packs" item: zen-portable/
+# zen4plus-deep are composed from existing profiles via load_profiles(), not
+# hand-written flag strings -- --list confirms the composition actually
+# concatenates the constituent profiles' own passes (quick's "run" +
+# ibs-basic's "ibs"; deep-cpu's three passes + ibs-memory-deep's "ibs").
+if ! ./wspy-run --list | grep -q "^zen-portable:"; then
+    echo "FAIL: wspy-run --list did not show the zen-portable profile"
+    exit 1
+fi
+if ! ./wspy-run --list | grep -q "^zen4plus-deep:"; then
+    echo "FAIL: wspy-run --list did not show the zen4plus-deep profile"
+    exit 1
+fi
 echo "  wspy-run --list: OK"
 
 echo "Testing wspy-run --dry-run..."
@@ -509,6 +522,35 @@ if [ -e test_wspy_run_dry ]; then
     exit 1
 fi
 echo "  wspy-run --dry-run: OK"
+
+echo "Testing wspy-run zen-portable/zen4plus-deep composition..."
+ZENOUT=$(./wspy-run --dry-run -o test_wspy_run_zen --wspy ./wspy zen-portable -- /bin/true)
+if ! echo "$ZENOUT" | grep -q -- "\[run\].*--ipc --system --rusage"; then
+    echo "FAIL: zen-portable's dry-run did not include quick's 'run' pass"
+    exit 1
+fi
+if ! echo "$ZENOUT" | grep -q -- "\[ibs\].*--ibs-basic"; then
+    echo "FAIL: zen-portable's dry-run did not include ibs-basic's 'ibs' pass"
+    exit 1
+fi
+if echo "$ZENOUT" | grep -q -- "--power\|l3missonly\|ibs-memory-deep"; then
+    echo "FAIL: zen-portable should stay Zen-family-portable (no --power, no IBS l3missonly filtering)"
+    exit 1
+fi
+ZEN4OUT=$(./wspy-run --dry-run -o test_wspy_run_zen4 --wspy ./wspy zen4plus-deep -- /bin/true)
+if ! echo "$ZEN4OUT" | grep -q -- "\[systemtime\].*--power"; then
+    echo "FAIL: zen4plus-deep's dry-run did not include deep-cpu's --power systemtime pass"
+    exit 1
+fi
+if ! echo "$ZEN4OUT" | grep -q -- "\[ibs\].*--ibs-memory-deep"; then
+    echo "FAIL: zen4plus-deep's dry-run did not include ibs-memory-deep's 'ibs' pass"
+    exit 1
+fi
+if [ -e test_wspy_run_zen ] || [ -e test_wspy_run_zen4 ]; then
+    echo "FAIL: wspy-run --dry-run should not create the output directory"
+    exit 1
+fi
+echo "  wspy-run zen-portable/zen4plus-deep composition: OK"
 
 # Real execution of a builtin profile is not exercised here: every builtin
 # profile enables at least one hardware/software counter (quick uses --ipc,

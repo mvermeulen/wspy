@@ -191,6 +191,14 @@ unsigned-subtraction underflow risks in `print_topdown_be()`'s own `l2_bound`/`l
 has no `COUNTER_TOPDOWN_BE` raw events at all, so `print_topdown_be()` is never called there, unchanged
 from before this item.
 
+**Zen-family preset packs:** `wspy-run`'s `zen-portable` (`quick`+`ibs-basic`) and `zen4plus-deep`
+(`deep-cpu`+`ibs-memory-deep`) builtin profiles, the first defined purely as a composition of other
+builtin profiles (`load_profiles()`, the same machinery that resolves a user-supplied comma list) rather
+than hand-written flag strings. `zen-portable` avoids `--power` (AMD Family 19h+ only) and IBS
+`l3missonly` filtering (Zen5-only) so it runs warning-free across the whole Zen family; `zen4plus-deep`
+assumes Family 19h+ hardware where both are real, with `l3missonly` degrading gracefully (not failing)
+on Zen4. Verified end-to-end on real Zen5 hardware.
+
 **Combined GPU-workload profiling:** `wspy-run gpu-compute` builtin profile (tree tracing + system +
 power + both GPU backends + topdown on one shared `--interval` timeline, for workloads a
 separate-re-execution-per-category profile like `deep-gpu` can't correlate tick-for-tick); surfaced
@@ -391,10 +399,11 @@ What appears confirmed from current Linux perf/PMU behavior for AMD Family 1Ah (
 Caveat: if upstream kernel/perf exposes new Zen5-specific generic mappings or PMU caps, update
 presets and coverage logic without changing the report schema.
 
-→ Informs 4.2's "Zen-family preset packs," "PMU-capability-aware comparability warnings," and "AMD IBS
-sampling-mode support" (icache/TLB/dcache/L2/L3/branch rate estimates decoded from real per-sample tag
-data, not just counting-mode sample counts); and 4.3's "IBS-derived memory-path bottleneck
-decomposition," which depends on IBS sampling-mode support existing first.
+→ Informed 4.2's "Zen-family preset packs" (shipped). Also informs 4.2's "PMU-capability-aware
+comparability warnings" and "AMD IBS sampling-mode support" (icache/TLB/dcache/L2/L3/branch rate
+estimates decoded from real per-sample tag data, not just counting-mode sample counts); and 4.3's
+"IBS-derived memory-path bottleneck decomposition," which depends on IBS sampling-mode support
+existing first.
 
 ### Topdown deep-dive
 Advancements worth adopting, in priority order for `wspy` specifically:
@@ -491,10 +500,8 @@ has). Ordered in dependency tiers; items within a tier are independently startab
 
 **Tier 1 — topdown/IBS refinement (interdependent; sets up 4.3's attribution work):**
 
-1. Zen-family preset packs (`zen-portable`, `zen4plus-deep`) — convenience layer now that IBS
-    capability probing exists.
-2. PMU-capability-aware comparability warnings.
-3. AMD IBS *sampling*-mode support: mmap'ing the perf ring buffer and requesting `PERF_SAMPLE_RAW`
+1. PMU-capability-aware comparability warnings.
+2. AMD IBS *sampling*-mode support: mmap'ing the perf ring buffer and requesting `PERF_SAMPLE_RAW`
     so each individual IBS sample's tagged register data is available, not just a count of how many
     fired — a genuinely new capability, not an extension of the counting-mode `ibs-basic`/
     `ibs-memory-deep` profiles. Nothing in wspy today reads a perf mmap ring buffer at all; every
@@ -512,7 +519,7 @@ has). Ordered in dependency tiers; items within a tier are independently startab
     and generalizes directly; the new work is the mmap/ring-buffer read path itself, per-sample record
     parsing, and the rate-aggregation/report layer built on top. Feeds 4.3's "IBS-derived memory-path
     bottleneck decomposition," which assumes this sampling capability already exists.
-4. Per-core energy (`power_core`) support: `--power` currently reports package-level `pkg_joules`/
+3. Per-core energy (`power_core`) support: `--power` currently reports package-level `pkg_joules`/
     `pkg_watts` only — `power_core`'s own `cpumask` (one representative logical CPU per physical core)
     means a real per-core breakdown needs opening N events, one pinned per primary-thread CPU, and
     aggregating them into `--per-core`'s existing per-core row shape, a separate unit of work layered
@@ -522,58 +529,58 @@ has). Ordered in dependency tiers; items within a tier are independently startab
 
 **Tier 2 — GPU fusion:**
 
-5. ROCm SMI + sysfs fusion layer (one stream, source precedence, per-metric validity flags) —
+4. ROCm SMI + sysfs fusion layer (one stream, source precedence, per-metric validity flags) —
     merges the two existing independent GPU paths (`amd_smi.c`, `amd_sysfs.c`).
-6. Same manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory
+5. Same manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory
     activity) — reuses the 4.0 foundation rather than a parallel GPU-only pipeline. Closes the
     "Minimum metadata set for publishable" open question's GPU caveat (see "Open questions" below).
 
 **Tier 3 — `/proc` and tree enrichment remainder (independent, moderate value, low risk):**
 
-7. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
+6. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
     containerized environments.
-8. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
-9. `proctree` → JSON/Graphviz export + run-to-run tree diff.
+7. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
+8. `proctree` → JSON/Graphviz export + run-to-run tree diff.
 
 **Tier 4 — characterization prerequisites:**
 
-10. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
+9. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
     switch/I-O) — needs 4.1's normalized store schema (`wspy-store`) to draw features from.
-11. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
+10. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
     stability) + confidence + top-2 alternatives.
 
 **Tier 5 — launcher/infra follow-ups:**
 
-12. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
+11. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
     They still shell out to `wspy` once per pass today; 4.1's multi-pass execution work scoped this
     collapse as a documented follow-up, not part of that item.
-13. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
+12. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
     of running it now" checkbox) is visible today only via `wspy-queue list`/`show`, not from the web
     UI itself. Bundle in sharing structured configuration provenance with the job format
     (`web/joblib.py`'s job schema and `manifest.h`'s `configuration_provenance` are designed to be
     close in shape but aren't wired together yet).
-14. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
+13. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
     raw/filename-aligned today (comparing actual artifacts across runs, curated or not); annotating a
     comparison itself, or aligning curated block titles across the compared runs, is still open.
 
 **Tier 6 — docs/testing/release process:**
 
-15. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
+14. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
     output).
-16. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
-17. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
+15. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
+16. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
     constant (e.g. `phoronix-test-suite` reportedly has a run-time-estimate command) — today's
     constant is a blunt stand-in; the real constraint is capping process-record data volume for
     publishing, not workload runtime, so a per-workload estimate would size it more accurately than
     one constant across every suite.
-18. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
+17. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
     that catches the class of drift found during the v4.0 release audit: `doc/ARTIFACT_CONTRACT.md`'s
     schema-version examples had silently fallen behind `MANIFEST_SCHEMA_VERSION`/
     `RUN_INDEX_SCHEMA_VERSION`, and `README.md` was missing a whole tool's section. Concretely:
     grep-based checks that doc-quoted schema versions and the documented tool/flag list match the
     actual header constants and `Makefile` binary list, so this doesn't require a manual audit at
     every release again.
-19. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
+18. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
     `MINOR`, grep for stale version-string references across docs, run the full test matrix including
     the `AMDGPU=1` variant, tag, label every merged PR since the last tag, draft release notes from
     the merged-PR list) as a repeatable script or documented checklist instead of redoing it by hand,
