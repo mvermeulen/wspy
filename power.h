@@ -19,11 +19,31 @@
  * the way IBS's l3missonly/ldlat filters need) and one real event apiece
  * (energy-pkg/energy-core), so there's no profile/filter machinery here.
  *
- * V1 scope is package-level only: power_core (per-core energy) is probed
- * for --capabilities discovery but never opened as a real counter -- see
- * power_counter_group()'s comment and INVESTIGATION.md's "4.2 -- remaining
- * work", "Per-core energy (power_core) support" for the deferred per-core
- * work.
+ * Per-core energy (power_core) support (INVESTIGATION.md's 4.2 Tier 1,
+ * "Per-core energy support" item): power_core is a real per-physical-core
+ * RAPL-equivalent counter, but its own sysfs cpumask (parsed by
+ * power_probe_at() into struct power_capabilities.core_cpus) lists only one
+ * representative logical CPU per physical core -- confirmed live (AMD
+ * Zen5, SMT2): "0,2,4,...,30" out of 32 logical CPUs. power_core_counter_
+ * group() (wspy.c's --per-core setup) opens a real event only on those
+ * representative CPUs; every other per-core-enabled CPU still gets a
+ * structurally identical group (same "core_joules" column, so --per-core's
+ * CSV header/row column counts stay in lockstep across every row) but with
+ * its one counter marked POWER_CORE_NOT_APPLICABLE_DEVICE_TYPE so
+ * setup_counters() (topdown.c) skips perf_event_open() and coverage_note()
+ * for it entirely -- not "requested but failed" (which would skew
+ * counters_requested/measured and preflight.c's budget estimate), genuinely
+ * never attempted, same as an SMT sibling simply not being a valid read
+ * point for this specific PMU. Reads 0.0 on those rows -- the same
+ * "0 = not available/not applicable, documented" convention used
+ * throughout this codebase (e.g. proctree.c's -X/-B fields), applied here
+ * to "not applicable to this specific CPU" rather than "not applicable to
+ * this vendor". print_power_core() (topdown.c, dispatched via the new,
+ * internal-only COUNTER_POWER_CORE mask bit -- never a user-facing flag,
+ * never in COUNTER_ALL, set automatically only when --power and --per-core
+ * are both already in effect) emits core_joules/core_watts as new trailing
+ * per-core-row columns, alongside (not replacing) the existing systemwide
+ * pkg_joules/pkg_watts columns power_counter_group() already produces.
  */
 #ifndef _WSPY_POWER_H
 #define _WSPY_POWER_H 1
@@ -32,6 +52,19 @@
  * own comment for why wspy.h isn't included here directly. */
 
 #define POWER_MAX_FORMAT_FIELDS 4
+
+/* Bound on the number of power_core/cpumask representative CPUs tracked --
+ * one entry per physical core, not per logical CPU, so this is generous
+ * even for large multi-socket hosts (256 physical cores). */
+#define POWER_MAX_CORE_CPUS 256
+
+/* setup_counters() (topdown.c) special-cases this device_type value to skip
+ * perf_event_open()/coverage_note() entirely for a power_core counter on a
+ * CPU that isn't one of power_core's own cpumask-listed representative
+ * CPUs -- see this file's top comment. Distinct from the pre-existing
+ * (unnamed, left as-is) 9999 hwmon-fallback marker setup_counters() already
+ * checks at the same point. */
+#define POWER_CORE_NOT_APPLICABLE_DEVICE_TYPE 9998
 
 struct power_format_field {
   char name[32];
@@ -50,13 +83,24 @@ struct power_pmu {
 };
 
 struct power_capabilities {
-  int supported;      /* pkg.present && pkg.event_present -- power_core is
-                        * discovery-only in v1, doesn't gate this */
+  int supported;      /* pkg.present && pkg.event_present -- power_core's
+                        * own per-core support is tracked separately below */
   struct power_pmu pkg;   /* power/energy-pkg */
-  struct power_pmu core;  /* power_core/energy-core -- discovery only, see above */
+  struct power_pmu core;  /* power_core/energy-core */
+  /* power_core's own cpumask (comma/range list, e.g. "0,2,4-6"), parsed at
+   * probe time -- the representative logical CPUs power_core can actually
+   * be read from, one per physical core. Empty (ncore_cpus == 0) when
+   * power_core itself isn't present. */
+  int core_cpus[POWER_MAX_CORE_CPUS];
+  int ncore_cpus;
   int is_fallback;
   char fallback_path[256];
 };
+
+/* 1 if cpu is one of power_core's own cpumask-listed representative CPUs
+ * (a real power_core event can be opened there), 0 otherwise (an SMT
+ * sibling or any other non-representative CPU). */
+int power_core_cpu_is_representative(const struct power_capabilities *caps,int cpu);
 
 extern char fallback_power_path[256];
 
@@ -80,6 +124,9 @@ struct power_event {
   unsigned long config;
 };
 struct power_event power_build_pkg_event(const struct power_pmu *pkg);
+/* Same shape as power_build_pkg_event(), built from a power_core struct
+ * power_pmu (caps.core) instead of the package one. */
+struct power_event power_build_core_event(const struct power_pmu *core);
 
 /* struct counter_group is defined in cpu_info.h, which this header
  * deliberately doesn't include (see the top-of-file comment) -- forward
@@ -92,5 +139,23 @@ struct counter_group;
  * with a warning if power/energy-pkg isn't present on this host/kernel,
  * matching how ibs_counter_group() returns NULL for unsupported IBS. */
 struct counter_group *power_counter_group(char *name);
+
+/* Builds one power_core (COUNTER_POWER_CORE) counter_group for --power
+ * --per-core: one counting event, "core_joules", bound to target_cpu
+ * (cgroup->target_cpu, picked up by setup_counters()'s existing
+ * aflag+target_cpu>=0 per-CPU-system-wide-open path with no changes
+ * there). caps must be an already-probed struct power_capabilities (the
+ * caller already has one from deciding whether --power is even usable at
+ * all -- this doesn't re-probe). When target_cpu is one of caps's own
+ * power_core cpumask CPUs, the counter is real (device_type/config/scale
+ * from power_build_core_event()); otherwise it's marked
+ * POWER_CORE_NOT_APPLICABLE_DEVICE_TYPE so setup_counters() skips it
+ * entirely -- see this file's top comment. Returns NULL (with a warning)
+ * only if power_core isn't present/usable on this host/kernel at all --
+ * the caller is expected to only call this when caps.core.present &&
+ * caps.core.event_present, so this is a defensive fallback, not the
+ * common path. */
+struct counter_group *power_core_counter_group(char *name,const struct power_capabilities *caps,
+                                                int target_cpu);
 
 #endif

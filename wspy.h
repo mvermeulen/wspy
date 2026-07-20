@@ -83,6 +83,16 @@ extern struct timespec start_time,finish_time;
  * generic "probe everything" run doesn't need to also open a real energy
  * counter. */
 #define COUNTER_POWER       0x200000
+/* Per-core energy (power_core/energy-core, see power.h), INVESTIGATION.md's
+ * 4.2 Tier 1 "Per-core energy support" item. Internal-only: never a
+ * user-facing flag, never folded into COUNTER_ALL -- set automatically
+ * (wspy.c's main(), --per-core setup) only when --power and --per-core are
+ * both already in effect. Needs its own bit (not reused from COUNTER_POWER)
+ * because it's a structurally different group -- print_metrics() (topdown.c)
+ * dispatches print_power() vs print_power_core() by mask, same as every
+ * other pair of related-but-differently-shaped groups (e.g. COUNTER_TOPDOWN
+ * vs COUNTER_TOPDOWN_BE). */
+#define COUNTER_POWER_CORE  0x400000
 
 /* every counter type wspy knows how to request; used by --capabilities to
  * probe the full set regardless of what counter flags were also given */

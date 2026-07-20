@@ -200,6 +200,46 @@ void test_coverage() {
     printf("PASS: counter coverage tracking\n");
 }
 
+// INVESTIGATION.md's 4.2 Tier 1 "Per-core energy support" item:
+// power_core_counter_group() (power.c) marks a non-representative-CPU
+// counter with POWER_CORE_NOT_APPLICABLE_DEVICE_TYPE and pre-sets fd=-1;
+// setup_counters() (topdown.c) must skip perf_event_open() *and*
+// coverage_note() entirely for it -- not "requested but failed", which
+// would skew counters_requested/measured and preflight.c's budget estimate
+// for every SMT-sibling CPU a real hybrid --per-core run has. A real
+// perf_event_open() attempt on this synthetic group would also just fail
+// in this test environment regardless of privilege (device_type 9998 isn't
+// a real dynamic PMU type), so this specifically proves the *skip* path
+// was taken, not merely that the open failed.
+void test_power_core_skip_not_attempted(void) {
+    struct counter_group cgroup;
+    struct counter_info cinfo[1];
+
+    printf("Testing power_core skip counter -- setup_counters() doesn't attempt or count it...\n");
+
+    memset(&cinfo, 0, sizeof(cinfo));
+    cinfo[0].label = "core_joules";
+    cinfo[0].device_type = POWER_CORE_NOT_APPLICABLE_DEVICE_TYPE;
+    cinfo[0].fd = -1; /* power_core_counter_group() always pre-sets this for a skip counter */
+
+    memset(&cgroup, 0, sizeof(cgroup));
+    cgroup.label = "power-core";
+    cgroup.type_id = PERF_TYPE_RAW;
+    cgroup.mask = COUNTER_POWER_CORE;
+    cgroup.target_cpu = 1;
+    cgroup.ncounters = 1;
+    cgroup.cinfo = cinfo;
+
+    coverage_reset();
+    setup_counters(&cgroup);
+
+    assert(coverage_requested == 0);
+    assert(coverage_measured == 0);
+    assert(cgroup.cinfo[0].fd == -1);
+
+    printf("PASS: power_core skip counter not attempted/not counted\n");
+}
+
 // Sets up a synthetic (not host-derived) provenance_info: a mix of available
 // and unavailable fields, so manifest/run-index JSON assertions don't depend
 // on what the CI/dev machine actually has (BIOS DMI files, a live cpufreq
@@ -1419,6 +1459,7 @@ int main(int argc, char **argv) {
     test_write_manifest();
     test_append_run_index();
     test_coverage();
+    test_power_core_skip_not_attempted();
     test_preflight();
     test_multipass();
     test_multipass_raw_event_parsing();

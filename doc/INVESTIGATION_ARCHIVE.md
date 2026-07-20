@@ -313,11 +313,12 @@ from `COUNTER_ALL`**, following the IBS precedent — `--capabilities` gets its 
 **CSV/human output:** `pkg_joules` (cumulative delta over the run) plus a derived `pkg_watts`
 (`pkg_joules / elapsed_seconds`). System-wide only (like software counters/IBS), not per-core, for v1.
 
-**V1 scope deliberately excludes `power_core` (per-core energy):** unlike `energy-pkg`, `power_core`'s
-own `cpumask` means getting a real per-core breakdown requires opening N events, one pinned per
-primary-thread CPU, and aggregating into `--per-core`'s existing per-core row shape — a separate unit of
-work, not a bigger version of the same call. `power_core` is still probed for `--capabilities` discovery
-but never opened as a real counter.
+**V1 scope deliberately excluded `power_core` (per-core energy):** unlike `energy-pkg`, `power_core`'s
+own `cpumask` meant a real per-core breakdown needed opening N events, one pinned per representative
+CPU, and aggregating into `--per-core`'s existing per-core row shape — a separate unit of work, not a
+bigger version of the same call. Shipped since (INVESTIGATION.md's "4.2 — remaining work" → "Shipped
+since 4.1", "Per-core energy support" item) — see `CLAUDE.md`'s `power.c` entry for the full mechanism
+and real-hardware validation.
 
 **Validated against real hardware on the dev host:** the sysfs-derived `--capabilities` report, graceful
 degradation without `CAP_PERFMON`, and (via `sudo`) real non-zero `pkg_joules`/`pkg_watts` values from a

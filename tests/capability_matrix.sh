@@ -255,6 +255,12 @@ run_bundle "interval-per-core"        0 --csv --per-core --interval 1        -- 
 # print already covers it with no interval-specific plumbing of its own --
 # this bundle exercises exactly that path end to end.
 run_bundle "power-interval"           0 --csv --no-ipc --power --interval 1  -- sleep 1
+# INVESTIGATION.md's 4.2 Tier 1 "Per-core energy support" item: power_core's
+# per-core wiring (power_core_counter_group(), wspy.c) -- exit-code/no-fatal
+# contract only, same as per-core-topdown above; see tests/golden_output.sh's
+# "per-core-power" assert_csv_header/assert_csv_columns_match cases for the
+# actual column-shape check across all four power/power_core support states.
+run_bundle "per-core-power"           0 --csv --no-ipc --per-core --power    -- /bin/true
 
 TREE_OUT=$(mktemp /tmp/wspy_capmatrix_tree.XXXXXX)
 trap 'rm -f "$TREE_OUT"' EXIT

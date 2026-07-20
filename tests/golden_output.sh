@@ -74,6 +74,20 @@ if [ -e /sys/bus/event_source/devices/power/events/energy-pkg ]; then
 fi
 echo "Detected CPU power/energy-pkg PMU: $has_power_pmu"
 
+# power_core/energy-core (per-core RAPL-equivalent, INVESTIGATION.md's 4.2
+# Tier 1 "Per-core energy support" item) is checked independently of
+# has_power_pmu above -- power_core_counter_group()'s own per-core wiring
+# (wspy.c's main()) is gated purely on power_core's own present/event_present
+# state, not on whether the package event also succeeded, so on a
+# hypothetical host with one but not the other these two flags genuinely
+# diverge (real hardware so far always has both together, but the check
+# shouldn't assume that).
+has_power_core_pmu="no"
+if [ -e /sys/bus/event_source/devices/power_core/events/energy-core ]; then
+  has_power_core_pmu="yes"
+fi
+echo "Detected CPU per-core power/energy-core PMU: $has_power_core_pmu"
+
 # assert_csv_header <label> <flags...> -- <expected exact header line>
 assert_csv_header() {
   local label="$1"; shift
@@ -186,6 +200,38 @@ if [ "$has_power_pmu" = "yes" ]; then
 else
   assert_csv_header "power-unsupported" --no-ipc --power -- "${BASE}counters_measured,counters_requested,"
 fi
+# INVESTIGATION.md's 4.2 Tier 1 "Per-core energy support" item: power_core's
+# new core_joules/core_watts columns land on a per-core "core," row (before
+# the systemwide pkg_joules/pkg_watts power already prints), but -- unlike
+# the plain "power"/"power-unsupported" case above -- the "core," column's
+# very presence is gated on has_power_core_pmu alone, independent of
+# has_power_pmu: wspy.c's per-core wiring only ever populates
+# core_specific_counters via power_core_counter_group() succeeding, which
+# needs power_core's own present/event_present state, not the package
+# event's. --power --per-core with *no* other counter group and power_core
+# unsupported therefore falls all the way back to the plain (non-per-core)
+# aggregate row shape -- per_core_csv (wspy.c) never triggers at all, since
+# nothing populated any core's core_specific_counters -- rather than a
+# per-core row with just a bare "core," column. Real hardware so far always
+# has power_core exactly when it has power (both flags move together), but
+# this covers all four combinations correctly rather than assuming that.
+if [ "$has_power_core_pmu" = "yes" ]; then
+  if [ "$has_power_pmu" = "yes" ]; then
+    assert_csv_header "per-core-power" --no-ipc --per-core --power -- \
+      "${BASE}core,core_joules,core_watts,pkg_joules,pkg_watts,counters_measured,counters_requested,"
+  else
+    assert_csv_header "per-core-power-core-only" --no-ipc --per-core --power -- \
+      "${BASE}core,core_joules,core_watts,counters_measured,counters_requested,"
+  fi
+elif [ "$has_power_pmu" = "yes" ]; then
+  # power_core unsupported -- falls back to the plain aggregate "power" shape,
+  # --per-core has no effect at all for this combination (see comment above).
+  assert_csv_header "per-core-power-pkg-only-no-per-core-effect" --no-ipc --per-core --power -- \
+    "${BASE}pkg_joules,pkg_watts,counters_measured,counters_requested,"
+else
+  assert_csv_header "per-core-power-unsupported" --no-ipc --per-core --power -- \
+    "${BASE}counters_measured,counters_requested,"
+fi
 
 echo ""
 echo "=== CSV header contract (exact match, --interval phase-boundary detection) ==="
@@ -294,6 +340,13 @@ assert_csv_columns_match "kitchen-sink-combined" \
 # so this combination is checked here like any other flag bundle.
 assert_csv_columns_match "per-core-topdown" --no-ipc --per-core --topdown
 assert_csv_columns_match "per-core-software" --no-ipc --per-core --software
+# INVESTIGATION.md's 4.2 Tier 1 "Per-core energy support" item: power_core's
+# new core_joules/core_watts columns land on every per-core row regardless
+# of host power_core support (power_core_counter_group() returning NULL for
+# every core degrades to zero extra columns, same "measured vs unavailable"
+# shape as the other per-core bundles above) -- checked here generically
+# rather than with an exact-string pin, same reasoning as those two.
+assert_csv_columns_match "per-core-power" --no-ipc --per-core --power
 
 echo ""
 echo "=== CSV interval periodic-row column-count contract (vendor-neutral) ==="
