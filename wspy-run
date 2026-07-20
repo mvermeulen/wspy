@@ -187,9 +187,9 @@ Config file format:
   produce CSV output. Example:
 
     # deep-cpu-ish, without the GPU/tree passes
-    software_branch --rusage --software --branch --no-ipc
-    ipc_topdown      --ipc --topdown2 --no-rusage --no-software
-    amdtopdown       --csv --interval 1 --topdown --no-rusage --no-software --no-ipc
+    software_branch --rusage --counters=software,branch --no-ipc
+    ipc_topdown      --counters=ipc,topdown2 --no-rusage --no-software
+    amdtopdown       --csv --interval 1 --counters=topdown --no-rusage --no-software --no-ipc
 
 Each pass's output is written to <outdir>/<prefix><pass-name>.<ext>, where
 <ext> is "csv" if the pass's flags include --csv, else "txt".
@@ -220,7 +220,7 @@ load_builtin_profile(){
   case "$profile" in
     quick)
       PASS_NAMES=(run)
-      PASS_FLAGS=("--ipc --system --rusage")
+      PASS_FLAGS=("--counters=ipc --system --rusage")
       ;;
     deep-cpu)
       # The five non-interval counter passes this profile used to run as
@@ -256,16 +256,16 @@ load_builtin_profile(){
       PASS_FLAGS=(
         "--csv --interval 1 --no-rusage --no-software --system --no-ipc --power"
         "--passes=software,branch,ipc,topdown2,cache2,cache3,memory,float,topdown-frontend,topdown-optlb"
-        "--csv --interval 1 --topdown --no-rusage --no-software --no-ipc"
+        "--csv --interval 1 --counters=topdown --no-rusage --no-software --no-ipc"
       )
       ;;
     deep-cpu-intel)
       PASS_NAMES=(software_branch topdown ipc_l2 backend)
       PASS_FLAGS=(
-        "--rusage --software --branch --no-ipc"
-        "--topdown2 --no-rusage --no-software --no-ipc"
-        "--ipc --cache2 --no-rusage --no-software"
-        "--no-ipc --no-rusage --topdown-backend"
+        "--rusage --counters=software,branch --no-ipc"
+        "--counters=topdown2 --no-rusage --no-software --no-ipc"
+        "--counters=ipc,cache2 --no-rusage --no-software"
+        "--no-ipc --no-rusage --counters=topdown-backend"
       )
       ;;
     deep-gpu)
@@ -283,14 +283,14 @@ load_builtin_profile(){
       PASS_FLAGS=(
         "--csv --interval 1 --no-rusage --no-software --system --no-ipc --power"
         "--passes=software,branch,ipc,topdown2,cache2,cache3,memory,float,topdown-frontend,topdown-optlb"
-        "--csv --interval 1 --topdown --no-rusage --no-software --no-ipc"
+        "--csv --interval 1 --counters=topdown --no-rusage --no-software --no-ipc"
         "--csv --interval 1 --gpu-busy --no-ipc --no-rusage --no-software"
         "--csv --interval 1 --gpu-metrics --no-ipc --no-rusage --no-software"
       )
       ;;
     tree-heavy)
       PASS_NAMES=(tree)
-      PASS_FLAGS=("--tree ${OUTDIR}/${PREFIX}process.tree.txt --tree-cmdline --software --no-ipc")
+      PASS_FLAGS=("--tree ${OUTDIR}/${PREFIX}process.tree.txt --tree-cmdline --counters=software --no-ipc")
       # workload/*/run_test.sh used to wrap only this one $WSPY invocation in
       # `timeout 3600`, never the others -- not because ptrace tracing runs
       # slower, but because an hour's worth of process-tree records is
@@ -333,7 +333,7 @@ load_builtin_profile(){
       # data; wspy itself just warns and continues otherwise.
       PASS_NAMES=(gpu_compute)
       PASS_FLAGS=(
-        "--tree ${OUTDIR}/${PREFIX}process.tree.txt --tree-futex --tree-io-wait --tree-connect --tree-wait --tree-poll --tree-nanosleep --system --power --gpu-busy --gpu-metrics --gpu-nvidia --topdown --no-ipc --interval 1 --csv"
+        "--tree ${OUTDIR}/${PREFIX}process.tree.txt --tree-futex --tree-io-wait --tree-connect --tree-wait --tree-poll --tree-nanosleep --system --power --gpu-busy --gpu-metrics --gpu-nvidia --counters=topdown --no-ipc --interval 1 --csv"
       )
       ;;
     zen-portable)

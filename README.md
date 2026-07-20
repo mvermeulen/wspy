@@ -45,8 +45,8 @@ wspy [options] -- <command> [args...]
 ```
 
 Everything after `--` (or the first non-option argument) is treated as the child command to
-launch and instrument. Running `wspy` with invalid/missing arguments prints the full,
-current option list.
+launch and instrument. Run `wspy --help` (or `-h`) for the full, current option list; invalid or
+missing arguments instead print a short usage line pointing at `--help`.
 
 Some of the more commonly used options:
 
@@ -96,14 +96,23 @@ Some of the more commonly used options:
 * System-wide metrics
   * `--system` / `-s` - report load average, CPU time (`/proc/stat`), and network
     (`/proc/net/dev`) counters, plus GPU metrics if a `--gpu-*` option is also given
-* Performance counters (combine as needed; `--ipc` is on by default)
-  * `--ipc` / `-i` - instructions-per-cycle
-  * `--topdown` / `-t`, `--topdown2`, `--topdown-frontend`, `--topdown-backend`, `--topdown-optlb`
-    - Intel/AMD topdown methodology counters at various levels; on ARM, `--topdown`
-      reports a topdown-equivalent decomposition from ARM PMU raw events
-  * `--branch` / `-b`, `--dcache`, `--icache`, `--cache1`, `--cache2` / `-c`, `--cache3`,
-    `--tlb`, `--memory`, `--opcache`, `--float` - individual hardware counter groups
-  * `--software` - software counters (page faults, context switches, ...)
+* Performance counters (`--ipc` and `--software` are on by default; `--no-ipc`/`--no-software`
+  to turn either off)
+  * `--counters=<list>` - **the recommended way to select counter groups**: a comma-separated
+    list of group names, e.g. `--counters=topdown,cache2`. Additive, same as every flag below.
+    Valid names: `ipc`, `topdown`, `topdown2`, `topdown-frontend`, `topdown-backend`,
+    `topdown-optlb`, `branch`, `dcache`, `icache`, `cache1` (currently a no-op), `cache2`,
+    `cache3`, `tlb`, `memory`, `opcache`, `float`, `software`
+  * Individual `--<name>` flags (and their short forms below) still work identically for each
+    group name above, but are deprecated in favor of `--counters=<name>` -- each now warns once
+    used; silence with `--no-deprecation-warnings` or `WSPY_NO_DEPRECATION_WARNINGS=1`
+    * `--ipc` / `-i` - instructions-per-cycle
+    * `--topdown` / `-t`, `--topdown2`, `--topdown-frontend`, `--topdown-backend`, `--topdown-optlb`
+      - Intel/AMD topdown methodology counters at various levels; on ARM, `--topdown`
+        reports a topdown-equivalent decomposition from ARM PMU raw events
+    * `--branch` / `-b`, `--dcache`, `--icache`, `--cache1`, `--cache2` / `-c`, `--cache3`,
+      `--tlb`, `--memory`, `--opcache`, `--float` - individual hardware counter groups
+    * `--software` - software counters (page faults, context switches, ...)
 
 ARM notes:
 
@@ -133,7 +142,7 @@ Examples:
 
 ```
 sudo ./wspy -- sleep 1                      # default IPC counters around `sleep 1`
-sudo ./wspy --csv --topdown -- myapp arg1   # CSV output with topdown counters
+sudo ./wspy --csv --counters=topdown -- myapp arg1   # CSV output with topdown counters
 sudo ./wspy --tree tree.out -- myapp        # record the process tree while myapp runs
 ./proctree tree.out                         # display the tree recorded above
 sudo ./wspy --system --gpu-busy -- myapp    # system + GPU metrics (needs AMDGPU=1 build)
