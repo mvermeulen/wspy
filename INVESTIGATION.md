@@ -504,6 +504,30 @@ filters to specific columns. Process/thread migration diagnostics (did a process
 cores during the run) was split out of this item into its own 4.4 backlog entry during design — it
 needs new instrumentation nothing today provides, not just new analysis of data already collected.
 
+**cgroup identity + limits + `cpu.stat` throttling in the manifest/run-index:** a new module
+(`cgroup.c`/`cgroup.h`) adds a top-level `"cgroup"` object to both documents
+(`MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION` 1.8.0 → 1.9.0) — cgroup v2 identity (the unified-
+hierarchy path from `/proc/self/cgroup`'s `"0::"` line), resource limits (`cpu.max`'s quota/period,
+`cpu.weight`, `memory.max`/`memory.high`), and CPU-throttling stats (`cpu.stat`'s `nr_periods`/
+`nr_throttled`/`throttled_usec`) — needed for fair comparison of runs in containerized environments,
+where a cpu.max quota or an ongoing throttling episode can explain a degraded result that has nothing
+to do with the workload itself. cgroup v2 (unified hierarchy) only; a pure cgroup v1 host degrades the
+whole thing to unavailable, and every limit field degrades independently (a real, confirmed-live case:
+a desktop terminal-emulator's leaf cgroup had `memory.max`/`memory.high` but no `cpu.max`/`cpu.weight`/
+throttling fields at all, since the cpu controller wasn't enabled on it). Identity/limits are read once;
+`cpu.stat`'s cumulative counters are read twice — once near workload launch (right before the
+`--passes`/single-pass fork, so it applies uniformly to both paths), once at manifest-write time — and
+the *delta* is what's reported (throttling during this run specifically, not since the cgroup's own
+creation), mirroring `read_counters()`'s before/after idiom for perf counters rather than
+`provenance.c`'s one-shot facts. `cgroup_state`/`cgroup_throttle_baseline` are module-owned run-lifetime
+state (`cgroup.h`, mirroring `affinity.h`'s `requested_affinity`/`affinity_active` precedent) rather
+than `wspy.c`-local globals. `manifest_cgroup_info` (`manifest.h`) is a deliberately leaner,
+manifest-facing projection of `cgroup.c`'s own structs, matching `manifest_gpu_info`'s own precedent of
+not reusing the collecting module's internal struct directly. Tested against fake `/proc/self/cgroup`+
+`/sys/fs/cgroup` fixtures (`test_cgroup.c`, mirroring `ibs.c`/`power.c`/`affinity.c`'s own testable-`_at()`
+convention), including a regression fixture for the real no-cpu-controller case found during
+development.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -640,45 +664,40 @@ motivation and per-syscall design rationale. What remains open from this track:
 Everything from 4.2's original scope that hasn't shipped yet (see "Shipped since 4.1" above for what
 has). Ordered in dependency tiers; items within a tier are independently startable.
 
-**Tier 1 — `/proc` and tree enrichment remainder (independent, moderate value, low risk):**
+**Tier 1 — characterization prerequisites:**
 
-1. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
-    containerized environments.
-
-**Tier 2 — characterization prerequisites:**
-
-2. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
+1. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
     switch/I-O) — needs 4.1's normalized store schema (`wspy-store`) to draw features from.
-3. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
+2. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
     stability) + confidence + top-2 alternatives.
 
-**Tier 3 — launcher/infra follow-ups:**
+**Tier 2 — launcher/infra follow-ups:**
 
-4. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
+3. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
     They still shell out to `wspy` once per pass today; 4.1's multi-pass execution work scoped this
     collapse as a documented follow-up, not part of that item.
-5. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
+4. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
     raw/filename-aligned today (comparing actual artifacts across runs, curated or not); annotating a
     comparison itself, or aligning curated block titles across the compared runs, is still open.
 
-**Tier 4 — docs/testing/release process:**
+**Tier 3 — docs/testing/release process:**
 
-6. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
+5. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
     output).
-7. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
-8. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
+6. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
+7. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
     constant (e.g. `phoronix-test-suite` reportedly has a run-time-estimate command) — today's
     constant is a blunt stand-in; the real constraint is capping process-record data volume for
     publishing, not workload runtime, so a per-workload estimate would size it more accurately than
     one constant across every suite.
-9. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
+8. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
     that catches the class of drift found during the v4.0 release audit: `doc/ARTIFACT_CONTRACT.md`'s
     schema-version examples had silently fallen behind `MANIFEST_SCHEMA_VERSION`/
     `RUN_INDEX_SCHEMA_VERSION`, and `README.md` was missing a whole tool's section. Concretely:
     grep-based checks that doc-quoted schema versions and the documented tool/flag list match the
     actual header constants and `Makefile` binary list, so this doesn't require a manual audit at
     every release again.
-10. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
+9. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
     `MINOR`, grep for stale version-string references across docs, run the full test matrix including
     the `AMDGPU=1` variant, tag, label every merged PR since the last tag, draft release notes from
     the merged-PR list) as a repeatable script or documented checklist instead of redoing it by hand,
@@ -717,8 +736,8 @@ topdown/IBS attribution, static-site publishing, and a lower-overhead tracing ba
    "IBS-derived memory-path bottleneck decomposition" item (Tier 3 below). Moved here (was the last
    item in 4.2 Tier 1) rather than left at the tail of 4.2: it's a large, genuinely new capability on
    its own, not a small extension squeezed in after the rest of 4.2 wrapped up, and it has no
-   dependency on anything else in 4.2's own remaining work (`/proc`/tree enrichment,
-   characterization prerequisites, launcher/infra, docs/testing/release) — only on already-shipped
+   dependency on anything else in 4.2's own remaining work (characterization prerequisites,
+   launcher/infra, docs/testing/release) — only on already-shipped
    4.0/4.2 IBS capability-discovery work (`ibs.c`), so it's equally startable as 4.3's own first item.
 
 **Tier 2 — needs 4.1's normalized store/history:**
