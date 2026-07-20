@@ -161,6 +161,9 @@ int launch_child(int argc,char *const argv[],char *const envp[]);
 void timer_callback(int signum);
 void ptrace_setup(pid_t child_pid);
 void ptrace_loop(void);
+#if AMDGPU
+void print_gpu_metrics(enum output_format oformat);
+#endif
 // system.c
 void read_system(void);
 void print_system(enum output_format oformat);
