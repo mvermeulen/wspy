@@ -560,7 +560,15 @@ has). Ordered in dependency tiers; items within a tier are independently startab
 2. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
     containerized environments.
 3. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
-4. `proctree` → JSON/Graphviz export + run-to-run tree diff.
+4. `proctree` → JSON export + an interactive, filterable web viewer (built on the existing
+    `web/server.py` report infrastructure) + run-to-run tree diff. A real run's tree is hundreds to
+    thousands of processes, so a static Graphviz render is the wrong primary deliverable — it turns
+    into an unreadable hairball at that scale and bakes one fixed set of annotations into the image
+    with no way to toggle which ones show. JSON is still the right interchange format (feeds whatever
+    viewer consumes it); the viewer itself wants collapsible/expandable subtrees, search/filter by
+    `comm`/pid, and per-node annotation columns (futex/io-wait/vmsize/etc.) toggled on and off rather
+    than fixed at render time. Graphviz export can stay as an optional secondary output for an
+    already-filtered small subtree, not the main way to view a whole run's tree.
 
 **Tier 3 — characterization prerequisites:**
 
