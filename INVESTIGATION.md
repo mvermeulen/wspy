@@ -428,6 +428,27 @@ fails/`amd_sysfs_metrics`+`amd_smi_memory`-succeed combination the fusion layer 
 round-trips correctly into both JSON documents. This closes out 4.2's GPU fusion work entirely (both
 the fusion layer above and this item).
 
+**System-wide disk I/O stats:** a new `SYSTEM_DISK` bit (`system.c`) reports per-block-device read/
+write bytes and time-in-I/O deltas, scraped from `/sys/block/<dev>/stat` (devices enumerated via
+`/proc/partitions`, filtered to whole disks) — the same per-device breakdown `SYSTEM_NETWORK` already
+gives for `/proc/net/dev`, as three new `disk <dev> read,disk <dev> write,disk <dev> time,` CSV/header
+columns per device rather than `archive/wspy2.0/diskstats.c`'s old separate `disk-<dev>.csv`-per-device
+approach. Default-on in `system_mask` like `SYSTEM_NETWORK`/`SYSTEM_FREQ`/`SYSTEM_TEMP` (only printed
+when `--system`/`-s` is given, no separate CLI flag). `wspy-plot` gained two matching fallback plots
+(`disk-io` for the byte counters, `disk-time` for the time-in-I/O column — kept separate since bytes and
+milliseconds don't share a useful scale, `plot.c`'s `add_disk_fallback_match()`), and the web launcher's
+custom-plot column autofit (`web/joblib.py`) recognizes `disk <dev> ...` columns via the same `"system"`
+sentinel `net <iface>` already resolves to. Verified live: real `dd`-driven writes to the root
+filesystem showed `disk nvme0n1 write`/`disk nvme0n1 time` tracking actual bytes written and I/O time
+tick-for-tick, while a tmpfs-backed write correctly showed zero disk activity. Device enumeration
+excludes `loop`/`ram`/`zram` names unconditionally (`is_virtual_disk_device()`) — found via the same
+live testing: a real dev host's 35 snap-package loop devices pushed a realistic `--system --power
+--counters=topdown --interval` CSV to 137 columns, past `plot.c`'s `MAX_CSV_FIELDS` (128) cap, which
+silently truncated header parsing and dropped the `topdown-detail` plot with no error; filtering
+brought the same CSV to 35 columns and restored correct plotting. Loop devices' own `/sys/block/loopN/
+stat` also never reflects real backing-file I/O (always `read=0/write=0/time=0`), so this is the
+correct default independent of the column-budget concern.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -584,19 +605,7 @@ has). Ordered in dependency tiers; items within a tier are independently startab
     `comm`/pid, and per-node annotation columns (futex/io-wait/vmsize/etc.) toggled on and off rather
     than fixed at render time. Graphviz export can stay as an optional secondary output for an
     already-filtered small subtree, not the main way to view a whole run's tree.
-4. System-wide disk I/O stats — a new `SYSTEM_DISK` bit (`system.c`), per-block-device read/write/
-    time-in-I/O counters scraped from `/sys/block/<dev>/stat` (devices enumerated via
-    `/proc/partitions`), the same per-device breakdown `SYSTEM_NETWORK` already gives for
-    `/proc/net/dev`. No such metric exists today at any level — `--tree-io`'s `/proc/<pid>/io`
-    counters (`topdown.c`) are the closest existing thing, but that's a per-traced-process byte count,
-    not a system-wide/per-device view of actual disk activity or queue time. `archive/wspy2.0/
-    diskstats.c` built this once (device enumeration + per-device stat-file scraping + its own
-    gnuplot script) before the 2.0→3.0 rewrite dropped it; worth reusing the enumeration approach
-    rather than the old fixed-column parsing, since `/sys/block/<dev>/stat`'s field count has grown
-    since that code was written, and emitting it as ordinary `SYSTEM_*` CSV/header columns (one row
-    per device, or one column set per device) rather than the old version's separate `disk-<dev>.csv`
-    file per device, matching every other system metric's CSV/human-output convention.
-5. System-wide memory pressure stats — a new `SYSTEM_MEM` bit (`system.c`), time-series `/proc/
+4. System-wide memory pressure stats — a new `SYSTEM_MEM` bit (`system.c`), time-series `/proc/
     meminfo` fields (`MemFree`/`Cached`/`Dirty`/`Writeback`/`SwapFree`/`Committed_AS`, etc.) alongside
     the existing load-average/CPU/network system metrics. Distinct from `--tree-vmsize`'s per-process
     RSS/swap snapshot (`topdown.c`) — this is host-wide memory pressure, useful for spotting a
@@ -607,43 +616,43 @@ has). Ordered in dependency tiers; items within a tier are independently startab
 
 **Tier 2 — characterization prerequisites:**
 
-6. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
+5. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
     switch/I-O) — needs 4.1's normalized store schema (`wspy-store`) to draw features from.
-7. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
+6. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
     stability) + confidence + top-2 alternatives.
 
 **Tier 3 — launcher/infra follow-ups:**
 
-8. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
+7. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
     They still shell out to `wspy` once per pass today; 4.1's multi-pass execution work scoped this
     collapse as a documented follow-up, not part of that item.
-9. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
+8. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
     of running it now" checkbox) is visible today only via `wspy-queue list`/`show`, not from the web
     UI itself. Bundle in sharing structured configuration provenance with the job format
     (`web/joblib.py`'s job schema and `manifest.h`'s `configuration_provenance` are designed to be
     close in shape but aren't wired together yet).
-10. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
+9. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
     raw/filename-aligned today (comparing actual artifacts across runs, curated or not); annotating a
     comparison itself, or aligning curated block titles across the compared runs, is still open.
 
 **Tier 4 — docs/testing/release process:**
 
-11. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
+10. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
     output).
-12. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
-13. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
+11. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
+12. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
     constant (e.g. `phoronix-test-suite` reportedly has a run-time-estimate command) — today's
     constant is a blunt stand-in; the real constraint is capping process-record data volume for
     publishing, not workload runtime, so a per-workload estimate would size it more accurately than
     one constant across every suite.
-14. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
+13. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
     that catches the class of drift found during the v4.0 release audit: `doc/ARTIFACT_CONTRACT.md`'s
     schema-version examples had silently fallen behind `MANIFEST_SCHEMA_VERSION`/
     `RUN_INDEX_SCHEMA_VERSION`, and `README.md` was missing a whole tool's section. Concretely:
     grep-based checks that doc-quoted schema versions and the documented tool/flag list match the
     actual header constants and `Makefile` binary list, so this doesn't require a manual audit at
     every release again.
-15. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
+14. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
     `MINOR`, grep for stale version-string references across docs, run the full test matrix including
     the `AMDGPU=1` variant, tag, label every merged PR since the last tag, draft release notes from
     the merged-PR list) as a repeatable script or documented checklist instead of redoing it by hand,

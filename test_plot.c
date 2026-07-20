@@ -182,6 +182,49 @@ static void test_network_fallback_absent_when_no_net_columns(void){
   printf("PASS: no network-io bucket appears when there's nothing to put in it\n");
 }
 
+static void test_disk_fallback_match(void){
+  char line[] = "time,load,runnable,disk nvme0n1 read,disk nvme0n1 write,disk nvme0n1 time,"
+                "disk sda read,disk sda write,disk sda time,";
+  char *fields[MAX_CSV_FIELDS];
+  int n,time_col,claimed[MAX_CSV_FIELDS] = {0};
+  struct plot_match matches[MAX_CSV_FIELDS];
+  int nmatches;
+
+  printf("Testing add_disk_fallback_match() splits byte counters from time-in-I/O...\n");
+  n = split_csv_line(line,fields,MAX_CSV_FIELDS);
+  time_col = find_col(fields,n,"time");
+
+  nmatches = add_disk_fallback_match(fields,n,time_col,claimed,matches,MAX_CSV_FIELDS,0);
+  assert(nmatches == 2);
+  assert(!strcmp(matches[0].name,"disk-io"));
+  assert(matches[0].ncols == 4); /* nvme0n1 read/write, sda read/write */
+  assert(!strcmp(matches[1].name,"disk-time"));
+  assert(matches[1].ncols == 2); /* nvme0n1 time, sda time */
+
+  nmatches = add_fallback_match(fields,n,time_col,-1,-1,claimed,matches,MAX_CSV_FIELDS,nmatches);
+  assert(nmatches == 3);
+  assert(!strcmp(matches[2].name,"metrics"));
+  assert(matches[2].ncols == 2); /* load, runnable -- disk columns already claimed above */
+  printf("PASS: disk-io/disk-time buckets split byte counters from time-in-I/O, leftovers get the fallback\n");
+}
+
+static void test_disk_fallback_absent_when_no_disk_columns(void){
+  char line[] = "time,retire,frontend,backend,speculate,";
+  char *fields[MAX_CSV_FIELDS];
+  int n,time_col,claimed[MAX_CSV_FIELDS] = {0};
+  struct plot_match matches[MAX_CSV_FIELDS];
+  int nmatches;
+
+  printf("Testing add_disk_fallback_match() is a no-op without any 'disk ' column...\n");
+  n = split_csv_line(line,fields,MAX_CSV_FIELDS);
+  time_col = find_col(fields,n,"time");
+  nmatches = match_templates(fields,n,time_col,matches,MAX_CSV_FIELDS,claimed,0);
+  assert(nmatches == 1);
+  nmatches = add_disk_fallback_match(fields,n,time_col,claimed,matches,MAX_CSV_FIELDS,nmatches);
+  assert(nmatches == 1); /* unchanged -- no "disk " column to claim */
+  printf("PASS: no disk-io/disk-time bucket appears when there's nothing to put in it\n");
+}
+
 static void test_coverage_columns_excluded_from_fallback(void){
   /* counters_measured/counters_requested (coverage.c's per-row bookkeeping,
    * present regardless of counter group) must never show up as a plotted
@@ -615,6 +658,8 @@ int main(void){
   test_memory_bound_detail_template();
   test_system_cpu_template();
   test_network_fallback_absent_when_no_net_columns();
+  test_disk_fallback_match();
+  test_disk_fallback_absent_when_no_disk_columns();
   test_coverage_columns_excluded_from_fallback();
   test_ibs_template_matches_memory_deep_shaped_header();
   test_ibs_template_matches_basic_shaped_header();

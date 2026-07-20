@@ -120,6 +120,7 @@ extern unsigned int counter_mask;
 #define SYSTEM_NETWORK      0x8
 #define SYSTEM_FREQ         0x10
 #define SYSTEM_TEMP         0x20
+#define SYSTEM_DISK         0x40
 
 extern unsigned int system_mask;
 

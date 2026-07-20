@@ -261,7 +261,10 @@ COLUMN_TO_GROUP = {
 # so resolve_column_group() reports these via the "system" sentinel instead,
 # toggling the checklist's separate "system" configuration rather than a
 # counters group. "net <iface>" is one column per interface discovered on
-# this host, so it's matched by prefix rather than listed by name.
+# this host, so it's matched by prefix rather than listed by name; "disk
+# <dev> read"/"disk <dev> write"/"disk <dev> time" (system.c's SYSTEM_DISK,
+# INVESTIGATION.md's 4.2 Tier 1 "System-wide disk I/O stats" item) are the
+# same per-device shape, one device per host, matched by prefix too.
 SYSTEM_COLUMN_NAMES = {"load", "runnable", "cpu", "idle", "iowait", "irq", "freq", "cpu_temp"}
 # --power's own columns (power.c/topdown.c's print_power()) -- same "not an
 # ALL_GROUPS entry" reasoning as SYSTEM_COLUMN_NAMES above: --power isn't a
@@ -275,7 +278,7 @@ def resolve_column_group(column_name):
     --flag must be enabled to produce column_name in a wspy CSV, or None if
     column_name isn't a column this tool recognizes (a typo, or a
     workload-specific name nothing here can auto-detect)."""
-    if column_name in SYSTEM_COLUMN_NAMES or column_name.startswith("net "):
+    if column_name in SYSTEM_COLUMN_NAMES or column_name.startswith("net ") or column_name.startswith("disk "):
         return "system"
     if column_name in POWER_COLUMN_NAMES:
         return "power"
@@ -375,14 +378,14 @@ PROFILE_PLOTTABLE_COLUMNS = {
     # so pkg_joules/pkg_watts land in the same CSV as cpu/freq -- POWER_COLUMN_NAMES
     # here, not just SYSTEM_COLUMN_NAMES, since --power is its own checklist card
     # (see resolve_column_group()'s "power" sentinel above), not a system_mask bit.
-    "deep-cpu": SYSTEM_COLUMN_NAMES | POWER_COLUMN_NAMES | {"net *",
+    "deep-cpu": SYSTEM_COLUMN_NAMES | POWER_COLUMN_NAMES | {"net *", "disk *",
                  "retire", "frontend", "backend", "speculate", "confidence", "sanity"},
     "deep-cpu-intel": set(),
     # systemtime now also collects --power, matching deep-cpu's own systemtime
     # pass (a pre-existing asymmetry between the two profiles, fixed --
     # INVESTIGATION.md's "4.2 -- remaining work"), so POWER_COLUMN_NAMES
     # belongs here too now.
-    "deep-gpu": SYSTEM_COLUMN_NAMES | POWER_COLUMN_NAMES | {"net *",
+    "deep-gpu": SYSTEM_COLUMN_NAMES | POWER_COLUMN_NAMES | {"net *", "disk *",
                  "retire", "frontend", "backend", "speculate", "confidence", "sanity",
                  "gpu_busy", "gpu_temp", "gpu_activity", "gpu_power", "gpu_freq"},
     "tree-heavy": set(),
@@ -395,7 +398,7 @@ PROFILE_PLOTTABLE_COLUMNS = {
     # none of its columns are plottable and spin up a redundant duplicate
     # pass collecting data gpu-compute's own pass already produces.
     "gpu-compute": SYSTEM_COLUMN_NAMES | POWER_COLUMN_NAMES | {
-                 "net *", "retire", "frontend", "backend", "speculate", "confidence", "sanity",
+                 "net *", "disk *", "retire", "frontend", "backend", "speculate", "confidence", "sanity",
                  "gpu_busy", "gpu_temp", "gpu_activity", "gpu_power", "gpu_freq",
                  "nv_gpu_busy", "nv_vram_used_mb", "nv_vram_total_mb"},
 }
@@ -430,7 +433,8 @@ def build_supplementary_plot_passes(rundir, profile_spec, custom_plots):
     missing = set()
     for cp in custom_plots:
         for c in cp.get("columns", []):
-            if not (c in covered or (c.startswith("net ") and "net *" in covered)):
+            if not (c in covered or (c.startswith("net ") and "net *" in covered) or
+                    (c.startswith("disk ") and "disk *" in covered)):
                 missing.add(c)
     if not missing:
         return [], []

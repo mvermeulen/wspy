@@ -345,6 +345,73 @@ static int add_network_fallback_match(char * const *header_fields,int header_n,
   return n + 1;
 }
 
+/* Appends up to two plots covering every column whose name starts with
+ * "disk " (system.c's per-block-device read/write byte counters and
+ * time-in-I/O counters, e.g. "disk nvme0n1 read" -- one device's worth of
+ * columns per device discovered on this host, so like "net <iface>" above
+ * the exact names can't be a fixed template entry). Split into "disk-io"
+ * (the " read"/" write" byte-count columns) and "disk-time" (the " time"
+ * time-in-I/O-ms columns) rather than one combined plot, since bytes and
+ * milliseconds don't share a useful scale any more than network bytes and
+ * --system's load-average/percentage columns do (add_network_fallback_match()'s
+ * same reasoning, applied to disk's own two different units instead of one).
+ * Returns the new total match count (unchanged if no "disk " column is
+ * present). */
+static int add_disk_fallback_match(char * const *header_fields,int header_n,
+                                    int time_col,int *claimed,
+                                    struct plot_match *matches,int max_matches,int n){
+  struct plot_match *pm;
+  int i;
+
+  if (n < max_matches){
+    pm = &matches[n];
+    pm->ncols = 0;
+    pm->y2label[0] = '\0';
+    for (i = 0; i < header_n; i++){
+      size_t len;
+      if (claimed[i] || !*header_fields[i]) continue;
+      if (strncmp(header_fields[i],"disk ",5)) continue;
+      len = strlen(header_fields[i]);
+      if (len >= 5 && !strcmp(header_fields[i] + len - 5," time")) continue; /* disk-time's own bucket */
+      if (pm->ncols < MAX_CSV_FIELDS) pm->cols[pm->ncols++] = i;
+    }
+    if (pm->ncols > 0){
+      for (i = 0; i < pm->ncols; i++) claimed[pm->cols[i]] = 1;
+      snprintf(pm->name,sizeof(pm->name),"disk-io");
+      snprintf(pm->title,sizeof(pm->title),"Disk I/O");
+      snprintf(pm->ylabel,sizeof(pm->ylabel),"bytes");
+      pm->style = "lines";
+      pm->time_col = time_col;
+      n++;
+    }
+  }
+
+  if (n < max_matches){
+    pm = &matches[n];
+    pm->ncols = 0;
+    pm->y2label[0] = '\0';
+    for (i = 0; i < header_n; i++){
+      size_t len;
+      if (claimed[i] || !*header_fields[i]) continue;
+      if (strncmp(header_fields[i],"disk ",5)) continue;
+      len = strlen(header_fields[i]);
+      if (len < 5 || strcmp(header_fields[i] + len - 5," time")) continue;
+      if (pm->ncols < MAX_CSV_FIELDS) pm->cols[pm->ncols++] = i;
+    }
+    if (pm->ncols > 0){
+      for (i = 0; i < pm->ncols; i++) claimed[pm->cols[i]] = 1;
+      snprintf(pm->name,sizeof(pm->name),"disk-time");
+      snprintf(pm->title,sizeof(pm->title),"Disk Time-in-I/O");
+      snprintf(pm->ylabel,sizeof(pm->ylabel),"ms");
+      pm->style = "lines";
+      pm->time_col = time_col;
+      n++;
+    }
+  }
+
+  return n;
+}
+
 /* Appends one generic "metrics" plot covering every metric column (i.e.
  * not "time"/"core"/"phase", not empty-named, not excluded bookkeeping,
  * not already claimed by a firing template or the network-io bucket above)
@@ -679,6 +746,8 @@ static int build_plot_matches(char * const *header_fields,int header_n,int time_
     nmatches = match_templates(header_fields,header_n,time_col,matches,max_matches,claimed,nmatches);
     nmatches = add_network_fallback_match(header_fields,header_n,time_col,claimed,
                                            matches,max_matches,nmatches);
+    nmatches = add_disk_fallback_match(header_fields,header_n,time_col,claimed,
+                                        matches,max_matches,nmatches);
     nmatches = add_fallback_match(header_fields,header_n,time_col,core_col,phase_col,
                                    claimed,matches,max_matches,nmatches);
   }
@@ -764,6 +833,10 @@ static void print_template_catalog(void){
   }
   printf("  %-14s %-28s (any \"net <iface>\" column, e.g. --system's per-interface byte counters)\n",
          "network-io","Network I/O (fallback)");
+  printf("  %-14s %-28s (any \"disk <dev> read\"/\"disk <dev> write\" column, --system's per-device byte counters)\n",
+         "disk-io","Disk I/O (fallback)");
+  printf("  %-14s %-28s (any \"disk <dev> time\" column, --system's per-device time-in-I/O counters)\n",
+         "disk-time","Disk Time-in-I/O (fallback)");
   printf("  %-14s %-28s (any metric column left unclaimed by the above)\n","metrics","Other Metrics (fallback)");
 }
 

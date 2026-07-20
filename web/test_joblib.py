@@ -309,6 +309,11 @@ class ResolveColumnGroupTest(unittest.TestCase):
     def test_system_network_column_prefix(self):
         self.assertEqual(joblib.resolve_column_group("net eth0"), "system")
 
+    def test_system_disk_column_prefix(self):
+        self.assertEqual(joblib.resolve_column_group("disk nvme0n1 read"), "system")
+        self.assertEqual(joblib.resolve_column_group("disk nvme0n1 write"), "system")
+        self.assertEqual(joblib.resolve_column_group("disk nvme0n1 time"), "system")
+
     def test_power_columns(self):
         self.assertEqual(joblib.resolve_column_group("pkg_joules"), "power")
         self.assertEqual(joblib.resolve_column_group("pkg_watts"), "power")
