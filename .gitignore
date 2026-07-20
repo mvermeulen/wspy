@@ -15,6 +15,7 @@ wspy-ledger
 wspy-store
 wspy-summary
 wspy-plot
+wspy-core-report
 
 # Backup files
 *.bak
@@ -43,6 +44,7 @@ test_summary
 test_plot
 test_affinity
 test_gpu_fusion
+test_core_report
 libwspy_profiler.so
 test_hip_init
 test_hip_kernel
