@@ -657,33 +657,28 @@ has). Ordered in dependency tiers; items within a tier are independently startab
 4. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
     They still shell out to `wspy` once per pass today; 4.1's multi-pass execution work scoped this
     collapse as a documented follow-up, not part of that item.
-5. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
-    of running it now" checkbox) is visible today only via `wspy-queue list`/`show`, not from the web
-    UI itself. Bundle in sharing structured configuration provenance with the job format
-    (`web/joblib.py`'s job schema and `manifest.h`'s `configuration_provenance` are designed to be
-    close in shape but aren't wired together yet).
-6. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
+5. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
     raw/filename-aligned today (comparing actual artifacts across runs, curated or not); annotating a
     comparison itself, or aligning curated block titles across the compared runs, is still open.
 
 **Tier 4 — docs/testing/release process:**
 
-7. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
+6. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
     output).
-8. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
-9. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
+7. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
+8. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
     constant (e.g. `phoronix-test-suite` reportedly has a run-time-estimate command) — today's
     constant is a blunt stand-in; the real constraint is capping process-record data volume for
     publishing, not workload runtime, so a per-workload estimate would size it more accurately than
     one constant across every suite.
-10. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
+9. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
     that catches the class of drift found during the v4.0 release audit: `doc/ARTIFACT_CONTRACT.md`'s
     schema-version examples had silently fallen behind `MANIFEST_SCHEMA_VERSION`/
     `RUN_INDEX_SCHEMA_VERSION`, and `README.md` was missing a whole tool's section. Concretely:
     grep-based checks that doc-quoted schema versions and the documented tool/flag list match the
     actual header constants and `Makefile` binary list, so this doesn't require a manual audit at
     every release again.
-11. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
+10. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
     `MINOR`, grep for stale version-string references across docs, run the full test matrix including
     the `AMDGPU=1` variant, tag, label every merged PR since the last tag, draft release notes from
     the merged-PR list) as a repeatable script or documented checklist instead of redoing it by hand,
@@ -879,6 +874,11 @@ Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
    instrumentation (periodic `/proc/<pid>/stat` `processor`-field sampling, or scheduler tracepoints)
    rather than just new analysis of data `--per-core` already collects. Natural pairing with 4.3's
    lower-overhead tracing backend if that lands first, but not a hard dependency.
+7. Job-browsing view in the web UI — pushed out of 4.2 (2026-07-20). A queued job (`wspy-queue add`,
+   or the Run tab's "Queue instead of running it now" checkbox) is visible today only via
+   `wspy-queue list`/`show`, not from the web UI itself. Bundle in sharing structured configuration
+   provenance with the job format (`web/joblib.py`'s job schema and `manifest.h`'s
+   `configuration_provenance` are designed to be close in shape but aren't wired together yet).
 
 ## Open questions for prioritization
 Each carries a recommendation; treat these as the current default, not a closed decision. (Several
