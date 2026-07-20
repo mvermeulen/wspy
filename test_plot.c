@@ -165,6 +165,30 @@ static void test_system_cpu_template(void){
   printf("PASS: system-cpu template matches, network columns split out, leftovers get the fallback\n");
 }
 
+static void test_memory_pressure_template(void){
+  char line[] = "time,load,runnable,mem_free_mb,mem_cached_mb,mem_dirty_mb,mem_writeback_mb,"
+                "swap_free_mb,committed_as_mb,";
+  char *fields[MAX_CSV_FIELDS];
+  int n,time_col,claimed[MAX_CSV_FIELDS] = {0};
+  struct plot_match matches[MAX_CSV_FIELDS];
+  int nmatches;
+
+  printf("Testing memory-pressure template matching (SYSTEM_MEM-shaped header)...\n");
+  n = split_csv_line(line,fields,MAX_CSV_FIELDS);
+  time_col = find_col(fields,n,"time");
+
+  nmatches = match_templates(fields,n,time_col,matches,MAX_CSV_FIELDS,claimed,0);
+  assert(nmatches == 1);
+  assert(!strcmp(matches[0].name,"memory-pressure"));
+  assert(matches[0].ncols == 6); /* all 6 SYSTEM_MEM columns, not load/runnable */
+
+  nmatches = add_fallback_match(fields,n,time_col,-1,-1,claimed,matches,MAX_CSV_FIELDS,nmatches);
+  assert(nmatches == 2);
+  assert(!strcmp(matches[1].name,"metrics"));
+  assert(matches[1].ncols == 2); /* load, runnable -- mem columns already claimed above */
+  printf("PASS: memory-pressure template claims all 6 SYSTEM_MEM columns, leftovers get the fallback\n");
+}
+
 static void test_network_fallback_absent_when_no_net_columns(void){
   char line[] = "time,retire,frontend,backend,speculate,";
   char *fields[MAX_CSV_FIELDS];
@@ -657,6 +681,7 @@ int main(void){
   test_topdown_detail_template();
   test_memory_bound_detail_template();
   test_system_cpu_template();
+  test_memory_pressure_template();
   test_network_fallback_absent_when_no_net_columns();
   test_disk_fallback_match();
   test_disk_fallback_absent_when_no_disk_columns();
