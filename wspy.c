@@ -33,6 +33,7 @@
 #include "phase.h"
 #include "multipass.h"
 #include "affinity.h"
+#include "cgroup.h"
 
 int aflag = 0;
 int oflag = 0;
@@ -1055,6 +1056,35 @@ static void populate_manifest_common(struct manifest_info *minfo){
   minfo->gpu.nvidia_device_index = -1;
   minfo->gpu.nvidia_metrics_valid = 0;
 #endif
+
+  // cgroup identity/limits/throttling (manifest.h's manifest_cgroup_info,
+  // cgroup.h): cgroup_state/cgroup_throttle_baseline were captured once,
+  // near workload launch, right before the --passes/single-pass fork --
+  // take the matching end-of-run throttle reading here and report the
+  // delta (throttling during this run specifically), same "measured vs
+  // unavailable" idiom as everything else in this function.
+  {
+    struct cgroup_throttle throttle_end,throttle_delta;
+
+    cgroup_read_throttle(&cgroup_state,&throttle_end);
+    cgroup_throttle_delta(&cgroup_throttle_baseline,&throttle_end,&throttle_delta);
+
+    minfo->cgroup.available = cgroup_state.available;
+    minfo->cgroup.path = cgroup_state.available ? cgroup_state.path : NULL;
+    minfo->cgroup.cpu_max_available = cgroup_state.cpu_max_available;
+    minfo->cgroup.cpu_quota_us = cgroup_state.cpu_quota_us;
+    minfo->cgroup.cpu_period_us = cgroup_state.cpu_period_us;
+    minfo->cgroup.cpu_weight_available = cgroup_state.cpu_weight_available;
+    minfo->cgroup.cpu_weight = cgroup_state.cpu_weight;
+    minfo->cgroup.memory_max_available = cgroup_state.memory_max_available;
+    minfo->cgroup.memory_max_bytes = cgroup_state.memory_max_bytes;
+    minfo->cgroup.memory_high_available = cgroup_state.memory_high_available;
+    minfo->cgroup.memory_high_bytes = cgroup_state.memory_high_bytes;
+    minfo->cgroup.throttle_available = throttle_delta.available;
+    minfo->cgroup.nr_periods_delta = throttle_delta.nr_periods;
+    minfo->cgroup.nr_throttled_delta = throttle_delta.nr_throttled;
+    minfo->cgroup.throttled_usec_delta = throttle_delta.throttled_usec;
+  }
 }
 
 // --exit-with-child's return-code logic, shared between main()'s single-pass
@@ -1567,6 +1597,17 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   setup_raw_events();
 
   coverage_reset();
+
+  // cgroup identity/limits/throttling baseline (cgroup.h, INVESTIGATION.md's
+  // 4.2 Tier 1 "cgroup identity + limits in manifest, cpu.stat throttling
+  // stats" item): captured here, right before the --passes/single-pass
+  // fork below, so it applies uniformly to both paths and the throttle
+  // baseline is as close to workload launch as this common point allows --
+  // populate_manifest_common() takes the matching end-of-run reading and
+  // reports the delta (throttling during this run specifically, not since
+  // the cgroup's own creation).
+  cgroup_collect_identity_and_limits(&cgroup_state);
+  cgroup_read_throttle(&cgroup_state,&cgroup_throttle_baseline);
 
   // Native multi-pass counter execution (--passes=<list>): re-launches the
   // workload once per automatically-sized pass and merges the result into

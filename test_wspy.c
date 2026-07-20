@@ -730,6 +730,20 @@ void test_write_manifest() {
     minfo.gpu.amd_sysfs_metrics_valid = 1;
     minfo.gpu.amd_smi_metrics_valid = 0;
     minfo.gpu.amd_smi_memory_valid = 1;
+    minfo.cgroup.available = 1;
+    minfo.cgroup.path = "/user.slice/user-1000.slice/session-2.scope";
+    minfo.cgroup.cpu_max_available = 1;
+    minfo.cgroup.cpu_quota_us = 200000;
+    minfo.cgroup.cpu_period_us = 100000;
+    minfo.cgroup.cpu_weight_available = 0; /* e.g. cpu controller not enabled on this leaf */
+    minfo.cgroup.memory_max_available = 1;
+    minfo.cgroup.memory_max_bytes = -1; /* "max", unlimited */
+    minfo.cgroup.memory_high_available = 1;
+    minfo.cgroup.memory_high_bytes = 1073741824LL;
+    minfo.cgroup.throttle_available = 1;
+    minfo.cgroup.nr_periods_delta = 42;
+    minfo.cgroup.nr_throttled_delta = 7;
+    minfo.cgroup.throttled_usec_delta = 123456;
 
     if (write_manifest(manifest_out, &minfo) != 0) {
         fprintf(stderr, "FAIL: write_manifest returned an error\n");
@@ -813,6 +827,22 @@ void test_write_manifest() {
     assert(strstr(contents, "\"amd_smi_memory\": true") != NULL);
     assert(strstr(contents, "\"nvidia_metrics\": false") != NULL);
 
+    // cgroup identity/limits/throttling (INVESTIGATION.md's 4.2 Tier 1
+    // "cgroup identity + limits in manifest, cpu.stat throttling stats"
+    // item): path/limits round-trip, cpu_weight (unavailable this time --
+    // e.g. cpu controller not enabled on this leaf) reads "available":
+    // false with no "value" key at all (not a bare 0/null placeholder),
+    // and the throttle delta (not the raw start/end snapshots) is what's
+    // reported.
+    assert(strstr(contents, "\"available\": true,\n    \"path\": \"/user.slice/user-1000.slice/session-2.scope\"") != NULL);
+    assert(strstr(contents, "\"cpu_max\": { \"available\": true, \"quota_us\": 200000, \"period_us\": 100000 }") != NULL);
+    assert(strstr(contents, "\"cpu_weight\": { \"available\": false }") != NULL);
+    assert(strstr(contents, "\"cpu_weight\": { \"available\": false, \"value\"") == NULL);
+    assert(strstr(contents, "\"memory_max_bytes\": { \"available\": true, \"value\": -1 }") != NULL);
+    assert(strstr(contents, "\"memory_high_bytes\": { \"available\": true, \"value\": 1073741824 }") != NULL);
+    assert(strstr(contents, "\"throttle\": { \"available\": true, \"nr_periods_delta\": 42, "
+                            "\"nr_throttled_delta\": 7, \"throttled_usec_delta\": 123456 }") != NULL);
+
     free(contents);
     remove(manifest_out);
 
@@ -839,6 +869,10 @@ void test_write_manifest() {
     // flag reads false.
     assert(strstr(contents, "\"amd_device_index\": null") != NULL);
     assert(strstr(contents, "\"nvidia_device_index\": null") != NULL);
+    // No cgroup path either (a zeroed struct, same as a host with no
+    // cgroup v2 unified hierarchy): available false, path null, no other
+    // cgroup sub-object claims to have a value.
+    assert(strstr(contents, "\"cgroup\": {\n    \"available\": false,\n    \"path\": null") != NULL);
     free(contents);
     remove(manifest_out);
 
@@ -897,6 +931,19 @@ void test_append_run_index() {
     minfo.gpu.amd_sysfs_metrics_valid = 1;
     minfo.gpu.amd_smi_metrics_valid = 0;
     minfo.gpu.amd_smi_memory_valid = 1;
+    minfo.cgroup.available = 1;
+    minfo.cgroup.path = "/user.slice/user-1000.slice/session-2.scope";
+    minfo.cgroup.cpu_max_available = 1;
+    minfo.cgroup.cpu_quota_us = 200000;
+    minfo.cgroup.cpu_period_us = 100000;
+    minfo.cgroup.memory_max_available = 1;
+    minfo.cgroup.memory_max_bytes = -1;
+    minfo.cgroup.memory_high_available = 1;
+    minfo.cgroup.memory_high_bytes = 1073741824LL;
+    minfo.cgroup.throttle_available = 1;
+    minfo.cgroup.nr_periods_delta = 42;
+    minfo.cgroup.nr_throttled_delta = 7;
+    minfo.cgroup.throttled_usec_delta = 123456;
 
     if (append_run_index(index_out, &minfo) != 0) {
         fprintf(stderr, "FAIL: append_run_index returned an error (first record)\n");
@@ -959,6 +1006,16 @@ void test_append_run_index() {
                          "\"amd_device_index\":1,\"nvidia_device_index\":null,"
                          "\"backend_valid\":{\"amd_sysfs_busy\":true,\"amd_sysfs_metrics\":true,"
                          "\"amd_smi_metrics\":false,\"amd_smi_memory\":true,\"nvidia_metrics\":false}}") != NULL);
+
+    // cgroup identity/limits/throttling: compact form, mirroring the
+    // manifest's own pretty-printed shape.
+    assert(strstr(line0, "\"cgroup\":{\"available\":true,\"path\":\"/user.slice/user-1000.slice/session-2.scope\","
+                         "\"cpu_max\":{\"available\":true,\"quota_us\":200000,\"period_us\":100000},"
+                         "\"cpu_weight\":{\"available\":false},"
+                         "\"memory_max_bytes\":{\"available\":true,\"value\":-1},"
+                         "\"memory_high_bytes\":{\"available\":true,\"value\":1073741824},"
+                         "\"throttle\":{\"available\":true,\"nr_periods_delta\":42,"
+                         "\"nr_throttled_delta\":7,\"throttled_usec_delta\":123456}}") != NULL);
 
     // Each line must be independently valid, self-contained JSON (a curly
     // brace per line, no shared array wrapper).

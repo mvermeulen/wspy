@@ -18,7 +18,7 @@
  * breaks existing readers, MINOR when a field is added in a backward
  * compatible way, PATCH for fixes that don't change the shape. Consumers
  * should warn (not silently misparse) on an unrecognized MAJOR version. */
-#define MANIFEST_SCHEMA_VERSION "1.8.0"
+#define MANIFEST_SCHEMA_VERSION "1.9.0"
 
 /* One counter that setup_counters() (topdown.c) tried and failed to open via
  * perf_event_open, as recorded by coverage.c. Kept as its own small struct
@@ -58,6 +58,48 @@ struct manifest_config_provenance {
   const char *configuration;   /* e.g. "performance-counters", NULL if none  */
   int noptions;
   const struct manifest_config_option *options; /* array, length noptions   */
+};
+
+/* cgroup v2 identity + resource limits + CPU-throttling delta over the
+ * measurement window (INVESTIGATION.md's 4.2 Tier 1 "cgroup identity +
+ * limits in manifest, cpu.stat throttling stats" item, cgroup.h). A
+ * deliberately leaner, manifest-facing projection of cgroup.h's own
+ * struct cgroup_info/cgroup_throttle -- mirroring manifest_gpu_info's own
+ * precedent of not reusing the collecting module's internal struct
+ * directly -- so manifest.h stays self contained (no cgroup.h include
+ * needed here). available=0 means no cgroup v2 unified hierarchy was
+ * found at all (e.g. a pure cgroup v1 host); path is NULL in that case.
+ * Each limit/throttle field degrades independently -- a leaf cgroup with
+ * the cpu controller not enabled (a real, confirmed-live case: a desktop
+ * session's terminal-emulator scope has memory.max but no cpu.max/
+ * cpu.weight/cpu.stat throttling fields at all) leaves just that field's
+ * own *_available at 0, not the whole struct. */
+struct manifest_cgroup_info {
+  int available;
+  const char *path;            /* NULL if !available */
+
+  int cpu_max_available;
+  long long cpu_quota_us;      /* -1 = unlimited ("max") */
+  long long cpu_period_us;
+
+  int cpu_weight_available;
+  int cpu_weight;
+
+  int memory_max_available;
+  long long memory_max_bytes;  /* -1 = unlimited ("max") */
+
+  int memory_high_available;
+  long long memory_high_bytes; /* -1 = not set ("max") */
+
+  /* Delta over the measurement window (baseline taken near workload
+   * launch, final reading taken at manifest-write time) -- not since the
+   * cgroup's own creation. available requires both readings to have
+   * succeeded (implies cpu.max/cpu.stat's throttling fields were present,
+   * i.e. the cpu controller was enabled on this cgroup). */
+  int throttle_available;
+  unsigned long long nr_periods_delta;
+  unsigned long long nr_throttled_delta;
+  unsigned long long throttled_usec_delta;
 };
 
 /* GPU telemetry provenance (INVESTIGATION.md's 4.2 Tier 1 "manifest/index/
@@ -192,6 +234,8 @@ struct manifest_info {
   /* GPU telemetry provenance (see manifest_gpu_info above): all-zero/-1
    * unless a --gpu-* flag was given. */
   struct manifest_gpu_info gpu;
+  /* cgroup identity/limits/throttling (see manifest_cgroup_info above). */
+  struct manifest_cgroup_info cgroup;
 };
 
 /* Writes the manifest as JSON to path. Returns 0 on success, -1 if the file

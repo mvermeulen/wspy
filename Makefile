@@ -1,8 +1,8 @@
 CC=gcc
 CFLAGS=-g
 PROG = wspy cpu_info amd_smi
-SRCS = wspy.c cpu_info.c error.c json_util.c json_reader.c manifest.c run_index.c coverage.c provenance.c ibs.c power.c preflight.c phase.c multipass.c affinity.c gpu_fusion.c proctree.c system.c topdown.c amd_smi.c amd_sysfs.c nvidia_nvml.c validate.c core_report.c
-OBJS = wspy.o cpu_info.o error.o json_util.o json_reader.o manifest.o run_index.o coverage.o provenance.o ibs.o power.o preflight.o phase.o multipass.o affinity.o gpu_fusion.o proctree.o system.o topdown.o amd_smi.o
+SRCS = wspy.c cpu_info.c error.c json_util.c json_reader.c manifest.c run_index.c coverage.c provenance.c ibs.c power.c preflight.c phase.c multipass.c affinity.c gpu_fusion.c cgroup.c proctree.c system.c topdown.c amd_smi.c amd_sysfs.c nvidia_nvml.c validate.c core_report.c
+OBJS = wspy.o cpu_info.o error.o json_util.o json_reader.o manifest.o run_index.o coverage.o provenance.o ibs.o power.o preflight.o phase.o multipass.o affinity.o gpu_fusion.o cgroup.o proctree.o system.o topdown.o amd_smi.o
 LIBS = -lpthread -lm
 STORE_LIBS = -lsqlite3
 
@@ -49,8 +49,8 @@ endif
 
 all:	wspy cpu_info proctree wspy-validate wspy-ledger wspy-store wspy-summary wspy-plot wspy-core-report $(GPU_BINS)
 
-wspy:	wspy.o topdown.o error.o system.o json_util.o manifest.o run_index.o coverage.o provenance.o ibs.o power.o preflight.o phase.o multipass.o affinity.o gpu_fusion.o cpu_info.c cpu_info.h
-	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c $(GPU_SRCS) error.o system.o json_util.o manifest.o run_index.o coverage.o provenance.o ibs.o power.o preflight.o phase.o multipass.o affinity.o gpu_fusion.o $(LIBS)
+wspy:	wspy.o topdown.o error.o system.o json_util.o manifest.o run_index.o coverage.o provenance.o ibs.o power.o preflight.o phase.o multipass.o affinity.o gpu_fusion.o cgroup.o cpu_info.c cpu_info.h
+	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c $(GPU_SRCS) error.o system.o json_util.o manifest.o run_index.o coverage.o provenance.o ibs.o power.o preflight.o phase.o multipass.o affinity.o gpu_fusion.o cgroup.o $(LIBS)
 
 proctree:	proctree.o error.o json_util.o json_reader.o
 	$(CC) -o proctree proctree.o error.o json_util.o json_reader.o -lm
@@ -104,7 +104,7 @@ clean:
 	-rm *~ *.o *.bak
 
 clobber:	clean
-	-rm wspy cpu_info amd_smi amd_sysfs nvidia_nvml proctree wspy-validate wspy-ledger wspy-store wspy-summary wspy-plot wspy-core-report test_hip_init test_hip_kernel test_proctree test_wspy test_validate test_ledger test_ibs test_power test_phase test_store test_summary test_plot test_affinity test_gpu_fusion test_core_report libwspy_profiler.so
+	-rm wspy cpu_info amd_smi amd_sysfs nvidia_nvml proctree wspy-validate wspy-ledger wspy-store wspy-summary wspy-plot wspy-core-report test_hip_init test_hip_kernel test_proctree test_wspy test_validate test_ledger test_ibs test_power test_phase test_store test_summary test_plot test_affinity test_gpu_fusion test_core_report test_cgroup libwspy_profiler.so
 
 # DO NOT DELETE
 
@@ -135,7 +135,7 @@ plot.o: plot.c
 # etc. left over from an `AMDGPU=1` build of wspy in the same tree, which would
 # reference gpu_busy_requested/gpu_metrics_requested symbols that this build
 # doesn't define and fail to link.
-test_wspy: test_wspy.c wspy.c wspy.h cpu_info.h error.h manifest.h manifest.c run_index.h run_index.c json_util.h json_util.c coverage.h coverage.c provenance.h provenance.c ibs.h ibs.c power.h power.c preflight.h preflight.c phase.h phase.c multipass.h multipass.c affinity.h affinity.c
+test_wspy: test_wspy.c wspy.c wspy.h cpu_info.h error.h manifest.h manifest.c run_index.h run_index.c json_util.h json_util.c coverage.h coverage.c provenance.h provenance.c ibs.h ibs.c power.h power.c preflight.h preflight.c phase.h phase.c multipass.h multipass.c affinity.h affinity.c cgroup.h cgroup.c
 	$(CC) -g -DAMDGPU=0 -DNVIDIA=0 -c -o test_error.o error.c
 	$(CC) -g -DAMDGPU=0 -DNVIDIA=0 -c -o test_cpu_info.o cpu_info.c
 	$(CC) -g -DAMDGPU=0 -DNVIDIA=0 -c -o test_system.o system.c
@@ -151,7 +151,8 @@ test_wspy: test_wspy.c wspy.c wspy.h cpu_info.h error.h manifest.h manifest.c ru
 	$(CC) -g -DAMDGPU=0 -DNVIDIA=0 -c -o test_phase_probe.o phase.c
 	$(CC) -g -DAMDGPU=0 -DNVIDIA=0 -c -o test_multipass_probe.o multipass.c
 	$(CC) -g -DAMDGPU=0 -DNVIDIA=0 -c -o test_affinity_probe.o affinity.c
-	$(CC) -o test_wspy -g -DAMDGPU=0 -DNVIDIA=0 -DTEST_WSPY test_wspy.c test_error.o test_cpu_info.o test_system.o test_topdown.o test_json_util.o test_manifest.o test_run_index.o test_coverage.o test_provenance.o test_ibs_probe.o test_power_probe.o test_preflight_probe.o test_phase_probe.o test_multipass_probe.o test_affinity_probe.o -lpthread -lm
+	$(CC) -g -DAMDGPU=0 -DNVIDIA=0 -c -o test_cgroup_probe.o cgroup.c
+	$(CC) -o test_wspy -g -DAMDGPU=0 -DNVIDIA=0 -DTEST_WSPY test_wspy.c test_error.o test_cpu_info.o test_system.o test_topdown.o test_json_util.o test_manifest.o test_run_index.o test_coverage.o test_provenance.o test_ibs_probe.o test_power_probe.o test_preflight_probe.o test_phase_probe.o test_multipass_probe.o test_affinity_probe.o test_cgroup_probe.o -lpthread -lm
 
 test_proctree: test_proctree.c proctree.c error.h error.o json_util.c json_reader.c json_util.h json_reader.h
 	$(CC) -o test_proctree $(CFLAGS) -DTEST_PROCTREE test_proctree.c error.o json_util.c json_reader.c $(LIBS)
@@ -189,7 +190,10 @@ test_gpu_fusion: test_gpu_fusion.c gpu_fusion.c gpu_fusion.h
 test_core_report: test_core_report.c core_report.c cpu_info.h error.c error.h
 	$(CC) -o test_core_report $(CFLAGS) -DTEST_CORE_REPORT test_core_report.c error.c -lm
 
-test: test_wspy test_proctree test_validate test_ledger test_ibs test_power test_phase test_store test_summary test_plot test_affinity test_gpu_fusion test_core_report
+test_cgroup: test_cgroup.c cgroup.c cgroup.h
+	$(CC) -o test_cgroup $(CFLAGS) test_cgroup.c
+
+test: test_wspy test_proctree test_validate test_ledger test_ibs test_power test_phase test_store test_summary test_plot test_affinity test_gpu_fusion test_core_report test_cgroup
 	./test_wspy
 	./test_proctree
 	./test_validate
@@ -203,3 +207,4 @@ test: test_wspy test_proctree test_validate test_ledger test_ibs test_power test
 	./test_affinity
 	./test_gpu_fusion
 	./test_core_report
+	./test_cgroup

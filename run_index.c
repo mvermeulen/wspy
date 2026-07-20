@@ -101,6 +101,29 @@ int append_run_index(const char *path,const struct manifest_info *info){
   fprintf(fp,"\"environment_coverage\":{\"captured\":%d,\"probed\":%d},",
 	  provenance_count_available(&info->provenance),PROVENANCE_TRACKED_FIELD_COUNT);
 
+  /* cgroup identity/limits/throttling (see manifest.c's matching
+   * write_cgroup_provenance() for the pretty-printed sibling of this same
+   * data, and manifest.h's manifest_cgroup_info comment for what these
+   * fields mean). */
+  fprintf(fp,"\"cgroup\":{\"available\":%s,\"path\":",info->cgroup.available ? "true" : "false");
+  json_write_string_or_null(fp,info->cgroup.path);
+  fprintf(fp,",\"cpu_max\":{\"available\":%s",info->cgroup.cpu_max_available ? "true" : "false");
+  if (info->cgroup.cpu_max_available){
+    fprintf(fp,",\"quota_us\":%lld,\"period_us\":%lld",info->cgroup.cpu_quota_us,info->cgroup.cpu_period_us);
+  }
+  fprintf(fp,"},\"cpu_weight\":{\"available\":%s",info->cgroup.cpu_weight_available ? "true" : "false");
+  if (info->cgroup.cpu_weight_available) fprintf(fp,",\"value\":%d",info->cgroup.cpu_weight);
+  fprintf(fp,"},\"memory_max_bytes\":{\"available\":%s",info->cgroup.memory_max_available ? "true" : "false");
+  if (info->cgroup.memory_max_available) fprintf(fp,",\"value\":%lld",info->cgroup.memory_max_bytes);
+  fprintf(fp,"},\"memory_high_bytes\":{\"available\":%s",info->cgroup.memory_high_available ? "true" : "false");
+  if (info->cgroup.memory_high_available) fprintf(fp,",\"value\":%lld",info->cgroup.memory_high_bytes);
+  fprintf(fp,"},\"throttle\":{\"available\":%s",info->cgroup.throttle_available ? "true" : "false");
+  if (info->cgroup.throttle_available){
+    fprintf(fp,",\"nr_periods_delta\":%llu,\"nr_throttled_delta\":%llu,\"throttled_usec_delta\":%llu",
+	    info->cgroup.nr_periods_delta,info->cgroup.nr_throttled_delta,info->cgroup.throttled_usec_delta);
+  }
+  fprintf(fp,"}},");
+
   fprintf(fp,"\"start_time\":\"%s\",",start_buf);
   fprintf(fp,"\"finish_time\":\"%s\",",finish_buf);
   fprintf(fp,"\"elapsed_seconds\":%.3f,",elapsed);

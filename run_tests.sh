@@ -100,7 +100,7 @@ if command -v python3 > /dev/null 2>&1; then
     fi
 fi
 for expected in \
-    '"schema_version": "1.8.0"' \
+    '"schema_version": "1.9.0"' \
     '"collector": "wspy"' \
     '"wspy_version"' \
     '"argv": \["/bin/true"\]' \
@@ -209,7 +209,7 @@ assert records[1]['exit_status']['exit_code'] == 1
     fi
 fi
 for expected in \
-    '"schema_version":"1.8.0"' \
+    '"schema_version":"1.9.0"' \
     '"collector":"wspy"' \
     '"wspy_version"' \
     '"command":\["/bin/true"\]' \
