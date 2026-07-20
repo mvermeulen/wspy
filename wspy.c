@@ -60,6 +60,15 @@ int capabilitiesflag = 0;
 int preflightflag = 0;
 int listaffinityflag = 0;
 int helpflag = 0;
+/* Set once, at the top of parse_options(), before the individual
+ * counter-group flags below get a chance to fire -- a plain "was
+ * --no-deprecation-warnings given" check inside the getopt_long loop would
+ * depend on argv order (a warning already printed for an earlier flag
+ * can't be un-printed once --no-deprecation-warnings is reached later on
+ * the same command line), so this is decided by a small pre-scan instead.
+ * See deprecation_warnings_should_suppress()/warn_deprecated_counter_flag()
+ * below. */
+int deprecation_warnings_suppressed = 0;
 /* Core/thread affinity control (INVESTIGATION.md's "Core/thread
  * affinity control" item, affinity.h): defaults to AFFINITY_ALL, i.e. "every
  * CPU currently visible to this process" -- today's implicit behavior with
@@ -165,12 +174,48 @@ static void add_config_provenance_option(const char *arg){
   config_provenance_noptions++;
 }
 
+// Deprecation of the per-counter-group boolean flags (--dcache, --topdown,
+// --branch, etc.) in favor of --counters=<list>, which reuses the same
+// canonical group names --passes=<list> already established
+// (multipass_group_names[], multipass.h). This is deliberately a soft
+// deprecation -- the old flags keep working identically, they just now
+// warn -- so existing scripts/wspy-run profiles/tests aren't broken, but a
+// grep for this warning text (or for `deprecated` in captured logs) finds
+// every remaining old-style call site to migrate at leisure.
+//
+// Suppressed either by --no-deprecation-warnings or the
+// WSPY_NO_DEPRECATION_WARNINGS environment variable (any non-empty, non-
+// "0" value) -- decided by deprecation_warnings_should_suppress() below,
+// called once at the very top of parse_options(), before the getopt_long
+// loop that would otherwise fire a warning for an earlier deprecated flag
+// before reaching --no-deprecation-warnings later in the same argv.
+static int deprecation_warnings_should_suppress(int argc,char *const argv[]){
+  const char *env = getenv("WSPY_NO_DEPRECATION_WARNINGS");
+  int i;
+
+  if (env && env[0] && strcmp(env,"0") != 0) return 1;
+  for (i = 1; i < argc; i++){
+    if (!strcmp(argv[i],"--no-deprecation-warnings")) return 1;
+  }
+  return 0;
+}
+
+static void warn_deprecated_counter_flag(const char *old_flag,const char *counters_name){
+  if (deprecation_warnings_suppressed) return;
+  warning("%s is deprecated -- use --counters=%s instead (silence with"
+	  " --no-deprecation-warnings or WSPY_NO_DEPRECATION_WARNINGS=1)\n",
+	  old_flag,counters_name);
+}
+
 int parse_options(int argc,char *const argv[]){
   FILE *fp;
   int opt;
   int i;
   int value;
   unsigned int lev;
+
+  deprecation_warnings_suppressed = deprecation_warnings_should_suppress(argc,argv);
+
   // Every entry's 4th field is the value getopt_long() returns when that
   // option is matched -- picked arbitrarily as options were added, which
   // twice collided with a value getopt_long() itself reserves: '?' (63,
@@ -191,6 +236,7 @@ int parse_options(int argc,char *const argv[]){
     { "capabilities", no_argument, 0, 54 },
     { "config-name", required_argument, 0, 69 },
     { "config-option", required_argument, 0, 70 },
+    { "counters", required_argument, 0, 93 },
     { "csv", no_argument, 0, 3 },
     { "cache1", no_argument, 0, 39 },
     { "no-cache1", no_argument, 0, 40 },
@@ -275,6 +321,7 @@ int parse_options(int argc,char *const argv[]){
     { "arm-mem-align-tlb", no_argument, 0, 77 },
     { "no-arm-mem-align-tlb", no_argument, 0, 78 },
     { "help", no_argument, 0, 'h' },
+    { "no-deprecation-warnings", no_argument, 0, 94 },
     { 0,0,0,0 },
   };
   // 'S' was in this string with no matching case below (a stray, never
@@ -289,12 +336,14 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 4: // --branch
     case 'b':
+      warn_deprecated_counter_flag("--branch","branch");
       counter_mask |= COUNTER_BRANCH;
       break;
     case 5: // --no-branch
       counter_mask &= (~COUNTER_BRANCH);
       break;
     case 39: // --cache1
+      warn_deprecated_counter_flag("--cache1","cache1");
       counter_mask |= COUNTER_L1CACHE;
       break;
     case 40:
@@ -302,24 +351,28 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 6: // --cache2
     case 'c':
+      warn_deprecated_counter_flag("--cache2","cache2");
       counter_mask |= COUNTER_L2CACHE;
       break;
     case 7: // --no-cache2
       counter_mask &= (~COUNTER_L2CACHE);
       break;
     case 8: // --cache3
+      warn_deprecated_counter_flag("--cache3","cache3");
       counter_mask |= COUNTER_L3CACHE;
       break;
     case 9: // --no-cache3
       counter_mask &= (~COUNTER_L3CACHE);
       break;
     case 10: // --dcache
+      warn_deprecated_counter_flag("--dcache","dcache");
       counter_mask |= COUNTER_DCACHE;
       break;
     case 11: // --no-dcache
       counter_mask &= (~COUNTER_DCACHE);
       break;
     case 12: // --icache
+      warn_deprecated_counter_flag("--icache","icache");
       counter_mask |= COUNTER_ICACHE;
       break;
     case 13: // --no-icache
@@ -327,6 +380,7 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 14: // --ipc
     case 'i':
+      warn_deprecated_counter_flag("--ipc","ipc");
       counter_mask |= COUNTER_IPC;
       break;
     case 15: // --no-ipc
@@ -334,12 +388,14 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 16: // --memory
     case 'm':
+      warn_deprecated_counter_flag("--memory","memory");
       counter_mask |= COUNTER_MEMORY;
       break;
     case 17: // --no-memory
       counter_mask &= (~COUNTER_MEMORY);
       break;
     case 18: // --opcache
+      warn_deprecated_counter_flag("--opcache","opcache");
       counter_mask |= COUNTER_OPCACHE;
       break;
     case 19: // --no-opcache
@@ -367,12 +423,14 @@ int parse_options(int argc,char *const argv[]){
       xflag = 0;
       break;
     case 23: // --software
+      warn_deprecated_counter_flag("--software","software");
       counter_mask |= COUNTER_SOFTWARE;
       break;
     case 24: // --no-software
       counter_mask &= (~COUNTER_SOFTWARE);
       break;
     case 25: // --tlb
+      warn_deprecated_counter_flag("--tlb","tlb");
       counter_mask |= COUNTER_TLB;
       break;
     case 26: // --no-tlb
@@ -380,48 +438,56 @@ int parse_options(int argc,char *const argv[]){
       break;
     case 27: // --topdown
     case 't':
+      warn_deprecated_counter_flag("--topdown","topdown");
       counter_mask |= COUNTER_TOPDOWN;
       break;
     case 28: // --no-topdown
       counter_mask &= (~COUNTER_TOPDOWN);
       break;
     case 29: // --topdown2
+      warn_deprecated_counter_flag("--topdown2","topdown2");
       counter_mask |= COUNTER_TOPDOWN2;
       break;
     case 30: // --no-topdown2
       counter_mask &= (~COUNTER_TOPDOWN2);
       break;
     case 42: // --topdown-frontend
+      warn_deprecated_counter_flag("--topdown-frontend","topdown-frontend");
       counter_mask |= COUNTER_TOPDOWN_FE;
       break;
     case 43: // --no-topdown-frontend
       counter_mask &= (~COUNTER_TOPDOWN_FE);
       break;
     case 46: // --topdown-backend
+      warn_deprecated_counter_flag("--topdown-backend","topdown-backend");
       counter_mask |= COUNTER_TOPDOWN_BE;
       break;
     case 47: // --no-topdown-backend
       counter_mask &= (~COUNTER_TOPDOWN_BE);
-      break;      
+      break;
     case 44: // --topdown-optlb
+      warn_deprecated_counter_flag("--topdown-optlb","topdown-optlb");
       counter_mask |= COUNTER_TOPDOWN_OP;
       break;
     case 45: // --no-topdown-optlb
       counter_mask &= (~COUNTER_TOPDOWN_OP);
       break;
     case 73: // --arm-dcache-mem
+      warn_deprecated_counter_flag("--arm-dcache-mem","arm-dcache-mem");
       counter_mask |= COUNTER_ARM_DCACHE_MEM;
       break;
     case 74: // --no-arm-dcache-mem
       counter_mask &= (~COUNTER_ARM_DCACHE_MEM);
       break;
     case 75: // --arm-icache-tlb
+      warn_deprecated_counter_flag("--arm-icache-tlb","arm-icache-tlb");
       counter_mask |= COUNTER_ARM_ICACHE_TLB;
       break;
     case 76: // --no-arm-icache-tlb
       counter_mask &= (~COUNTER_ARM_ICACHE_TLB);
       break;
     case 77: // --arm-mem-align-tlb
+      warn_deprecated_counter_flag("--arm-mem-align-tlb","arm-mem-align-tlb");
       counter_mask |= COUNTER_ARM_MEM_ALIGN_TLB;
       break;
     case 78: // --no-arm-mem-align-tlb
@@ -576,6 +642,27 @@ int parse_options(int argc,char *const argv[]){
     case 70: // --config-option
       add_config_provenance_option(optarg);
       break;
+    case 93: { // --counters=<list>
+      char *copy = strdup(optarg);
+      char *tok,*saveptr;
+      unsigned int bit;
+
+      for (tok = strtok_r(copy,",",&saveptr); tok; tok = strtok_r(NULL,",",&saveptr)){
+	if (!multipass_lookup_group_name(tok,&bit)){
+	  fatal("--counters: unrecognized counter group name '%s' (see --help for the valid list)\n",tok);
+	}
+	counter_mask |= bit;
+      }
+      free(copy);
+      break;
+    }
+    case 94: // --no-deprecation-warnings
+      // Already applied by deprecation_warnings_should_suppress()'s
+      // pre-scan at the top of this function, regardless of where on the
+      // command line this flag appears -- nothing left to do here except
+      // accept it as a recognized flag (getopt_long would otherwise treat
+      // it as unrecognized and correctly fail the whole parse).
+      break;
     case 71: { // --affinity
       struct affinity_spec parsed;
       if (affinity_parse_spec(optarg,&parsed) != 0){
@@ -604,6 +691,7 @@ int parse_options(int argc,char *const argv[]){
       else set_error_level(ERROR_LEVEL_DEBUG);
       break;
     case 33: // --float
+      warn_deprecated_counter_flag("--float","float");
       counter_mask |= COUNTER_FLOAT;
       break;
     case 34:
@@ -1223,7 +1311,10 @@ static void print_full_usage(FILE *out,const char *prog){
 	  "\t--no-phase-detect         - disable automatic phase (warmup/steady/degraded)\n"
 	  "\t                            detection on --interval samples (on by default)\n"
 	  "\t--verbose or -v           - print verbose information\n"
-	  "\t--system                  - system-wide metrics (load, cpu, freq, gpu, network)\n"
+	  "\t--system or -s            - system-wide metrics (load, cpu, freq, gpu, network)\n"
+	  "\t--no-deprecation-warnings - silence the deprecation warnings below (or set\n"
+	  "\t                            WSPY_NO_DEPRECATION_WARNINGS=1); no effect on what\n"
+	  "\t                            this run collects\n"
 	  "\n"
 	  "Process tree (--tree <file> and its telemetry sub-flags):\n"
 	  "\t--tree <file>             - create CSV of processes\n"
@@ -1252,26 +1343,39 @@ static void print_full_usage(FILE *out,const char *prog){
 	  "\t                            \"What shipped in 4.1\", \"structured configuration\n"
 	  "\t                            provenance\"\n"
 	  "\n"
-	  "Performance counter groups (each also has a --no-<flag> to turn it back off,\n"
-	  "e.g. --no-ipc, --no-software -- not listed separately below):\n"
-	  "\t--software or -s          - software counters\n"
-	  "\t--ipc or -i               - IPC counters\n"
-	  "\t--branch or -b            - branch counters\n"
-	  "\t--dcache                  - L1 dcache counters\n"
-	  "\t--icache                  - L1 icache counters\n"
-	  "\t--cache1                  - currently a no-op (not wired to any counter group --\n"
-	  "\t                            use --dcache/--icache instead)\n"
-	  "\t--cache2 or -c            - L2 cache counters\n"
-	  "\t--cache3                  - L3 cache counters\n"
-	  "\t--memory                  - memory counters\n"
-	  "\t--opcache                 - opcache counters\n"
-	  "\t--tlb                     - TLB counters\n"
-	  "\t--float                   - floating point counters\n"
-	  "\t--topdown or -t           - topdown counters, level 1\n"
-	  "\t--topdown2                - topdown counters, level 2\n"
-	  "\t--topdown-frontend        - topdown related to fe\n"
-	  "\t--topdown-backend         - topdown related to be\n"
-	  "\t--topdown-optlb           - topdown related to opcache, dtlb\n"
+	  "Performance counter groups:\n"
+	  "\t--counters=<list>         - comma-separated counter group names (below), e.g.\n"
+	  "\t                            --counters=topdown,cache2,software -- the recommended\n"
+	  "\t                            way to select counter groups; adds to whatever's\n"
+	  "\t                            already on (ipc is on by default, --no-ipc to drop\n"
+	  "\t                            it), same as every flag below\n"
+	  "\n"
+	  "\tThe flags below are DEPRECATED in favor of --counters=<name> (each still works\n"
+	  "\tidentically, but now warns -- see --no-deprecation-warnings above if the warning\n"
+	  "\titself is unwanted). Each also has a --no-<flag> to turn it back off, e.g.\n"
+	  "\t--no-ipc, --no-software -- not listed separately below.\n"
+	  "\t--software                - <name>=software - software counters (note: -s is\n"
+	  "\t                            --system, not --software -- see Run control above)\n"
+	  "\t--ipc or -i               - <name>=ipc - IPC counters\n"
+	  "\t--branch or -b            - <name>=branch - branch counters\n"
+	  "\t--dcache                  - <name>=dcache - L1 dcache counters\n"
+	  "\t--icache                  - <name>=icache - L1 icache counters\n"
+	  "\t--cache1                  - <name>=cache1 - currently a no-op (not wired to any\n"
+	  "\t                            counter group -- use --counters=dcache,icache instead)\n"
+	  "\t--cache2 or -c            - <name>=cache2 - L2 cache counters\n"
+	  "\t--cache3                  - <name>=cache3 - L3 cache counters\n"
+	  "\t--memory                  - <name>=memory - memory counters\n"
+	  "\t--opcache                 - <name>=opcache - opcache counters\n"
+	  "\t--tlb                     - <name>=tlb - TLB counters\n"
+	  "\t--float                   - <name>=float - floating point counters\n"
+	  "\t--topdown or -t           - <name>=topdown - topdown counters, level 1\n"
+	  "\t--topdown2                - <name>=topdown2 - topdown counters, level 2\n"
+	  "\t--topdown-frontend        - <name>=topdown-frontend - topdown related to fe\n"
+	  "\t--topdown-backend         - <name>=topdown-backend - topdown related to be\n"
+	  "\t--topdown-optlb           - <name>=topdown-optlb - topdown related to opcache, dtlb\n"
+	  "\t--arm-dcache-mem          - <name>=arm-dcache-mem - ARM raw dcache/memory events\n"
+	  "\t--arm-icache-tlb          - <name>=arm-icache-tlb - ARM raw icache/TLB events\n"
+	  "\t--arm-mem-align-tlb       - <name>=arm-mem-align-tlb - ARM raw memory-alignment/TLB events\n"
 	  "\n"
 	  "AMD IBS (Instruction-Based Sampling):\n"
 	  "\t--ibs-basic               - unfiltered ibs_fetch/ibs_op sample counts\n"
