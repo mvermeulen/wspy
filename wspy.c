@@ -59,6 +59,7 @@ int versionflag = 0;
 int capabilitiesflag = 0;
 int preflightflag = 0;
 int listaffinityflag = 0;
+int helpflag = 0;
 /* Core/thread affinity control (INVESTIGATION.md's "Core/thread
  * affinity control" item, affinity.h): defaults to AFFINITY_ALL, i.e. "every
  * CPU currently visible to this process" -- today's implicit behavior with
@@ -170,6 +171,19 @@ int parse_options(int argc,char *const argv[]){
   int i;
   int value;
   unsigned int lev;
+  // Every entry's 4th field is the value getopt_long() returns when that
+  // option is matched -- picked arbitrarily as options were added, which
+  // twice collided with a value getopt_long() itself reserves: '?' (63,
+  // returned for any unrecognized option or missing required argument) and
+  // 'S' (83, one of this program's own short options, see the optstring
+  // below). Either collision meant a genuinely bad/malformed flag matched
+  // the wrong case in the switch below instead of falling through to
+  // `default: return 1` -- confirmed live: `wspy --bogus-flag --no-ipc --
+  // true` printed getopt_long's own "unrecognized option" line, then ran
+  // the workload anyway, because '?' (63) matched --no-phase-detect's val
+  // and was treated as a harmless flag instead of an error. New values
+  // here should stay clear of 0, ':' (58), '?' (63), and any character
+  // used in the short-option string below.
   static struct option long_options[] = {
     { "affinity", required_argument, 0, 71 },
     { "branch", no_argument, 0, 4 },
@@ -185,7 +199,7 @@ int parse_options(int argc,char *const argv[]){
     { "cache3", no_argument, 0, 8 }, 
     { "no-cache3", no_argument, 0, 9 },
     { "dcache", no_argument, 0, 10 },
-    { "no-cache", no_argument, 0, 11 },
+    { "no-dcache", no_argument, 0, 11 },
     { "exit-with-child", no_argument, 0, 55 },
     { "float",no_argument,0,33 },
     /* GPU options always recognized so we can warn if not built with AMDGPU/NVIDIA */
@@ -216,7 +230,7 @@ int parse_options(int argc,char *const argv[]){
     { "passes", required_argument, 0, 65 },
     { "per-core", no_argument, 0, 20 },
     { "phase-detect", no_argument, 0, 62 },
-    { "no-phase-detect", no_argument, 0, 63 },
+    { "no-phase-detect", no_argument, 0, 91 }, // was 63 ('?') -- see comment above
     { "power", no_argument, 0, 87 },
     { "no-power", no_argument, 0, 88 },
     { "preflight", no_argument, 0, 61 },
@@ -247,7 +261,7 @@ int parse_options(int argc,char *const argv[]){
     { "tree-io",no_argument,0, 80 },
     { "tree-io-wait",no_argument,0, 81 },
     { "tree-schedstat",no_argument,0, 82 },
-    { "tree-connect",no_argument,0, 83 },
+    { "tree-connect",no_argument,0, 92 }, // was 83 ('S') -- see comment above
     { "tree-nanosleep",no_argument,0, 84 },
     { "tree-wait",no_argument,0, 85 },
     { "tree-poll",no_argument,0, 86 },
@@ -260,9 +274,15 @@ int parse_options(int argc,char *const argv[]){
     { "no-arm-icache-tlb", no_argument, 0, 76 },
     { "arm-mem-align-tlb", no_argument, 0, 77 },
     { "no-arm-mem-align-tlb", no_argument, 0, 78 },
+    { "help", no_argument, 0, 'h' },
     { 0,0,0,0 },
   };
-  while ((opt = getopt_long(argc,argv,"+abcio:rsStv",long_options,NULL)) != -1){
+  // 'S' was in this string with no matching case below (a stray, never
+  // documented, never handled short option -- typing -S silently matched
+  // whatever long option happened to have val 83, see the comment above)
+  // -- removed rather than given a handler, since nothing ever intended it
+  // to do anything.
+  while ((opt = getopt_long(argc,argv,"+abcio:hrstv",long_options,NULL)) != -1){
     switch (opt){
     case 3: //--csv
       csvflag = 1;
@@ -433,6 +453,9 @@ int parse_options(int argc,char *const argv[]){
             case 51: // --version
           versionflag = 1;
           break;
+    case 'h': // --help
+      helpflag = 1;
+      break;
     case 52: // --manifest
       manifest_path = optarg;
       break;
@@ -480,7 +503,7 @@ int parse_options(int argc,char *const argv[]){
     case 62: // --phase-detect
       phase_flag = 1;
       break;
-    case 63: // --no-phase-detect
+    case 91: // --no-phase-detect
       phase_flag = 0;
       break;
     case 87: // --power
@@ -618,7 +641,7 @@ int parse_options(int argc,char *const argv[]){
     case 82: // --tree-schedstat
       tree_schedstat = 1;
       break;
-    case 83: // --tree-connect
+    case 92: // --tree-connect
       tree_connect = 1;
       trace_syscall = 1;
       break;
@@ -651,6 +674,9 @@ int parse_options(int argc,char *const argv[]){
     default:
       return 1;
     }
+  }
+  if (helpflag){
+    return 6; // no workload command needed -- print full usage and exit 0
   }
   if (versionflag){
     return 2;
@@ -1148,6 +1174,142 @@ static int run_multipass(char *const envp[]){
   return exit_code_epilogue();
 }
 
+// Full option reference (wspy --help): grouped into sections rather than
+// one flat list, since this has grown to cover discovery probes, run
+// control, process-tree telemetry, run-artifact metadata, counter groups,
+// IBS, power, and (build-conditional) GPU flags. Printed on an explicit
+// --help/-h (exit 0) -- an actual usage error instead prints a short
+// pointer to --help (see main()'s `if (i)` handling), so a typo doesn't
+// bury itself under this whole reference.
+static void print_full_usage(FILE *out,const char *prog){
+  fprintf(out,
+	  "usage: %s [options] -- <command> [args...]\n"
+	  "\n"
+	  "Discovery / capability probes (no workload command or root needed):\n"
+	  "\t--help or -h              - show this message and exit\n"
+	  "\t--version                 - show version and exit\n"
+	  "\t--capabilities            - probe available counters for this host/kernel and exit\n"
+	  "\t--preflight               - check counter-fit for the given flags and exit\n"
+	  "\t--list-affinity           - list core/thread/L3-domain/core-type topology and exit\n"
+	  "\n"
+	  "Run control:\n"
+	  "\t--affinity=<spec>         - pin the workload to selected CPUs: all (default),\n"
+	  "\t                            thread=<id>, nosmt (one thread per core), domain=<id>\n"
+	  "\t                            (one L3-sharing core-complex), coretype=<id> (one\n"
+	  "\t                            microarchitecture/core type, e.g. only the \"big\" or\n"
+	  "\t                            only the \"little\" cores on a big.LITTLE ARM part --\n"
+	  "\t                            ARM only, see --list-affinity), or cpuset=<c0,c1,...>\n"
+	  "\t                            (explicit list/ranges)\n"
+	  "\t--per-core or -a          - metrics per core\n"
+	  "\t--rusage or -r            - show getrusage(2) information\n"
+	  "\t-o <file>                 - send output to file\n"
+	  "\t--csv                     - create csv output\n"
+	  "\t--exit-with-child         - exit with the launched command's exit status\n"
+	  "\t--passes=<list>           - re-launch the workload once per automatically-sized\n"
+	  "\t                            pass covering the comma-separated counter group\n"
+	  "\t                            names in <list> (e.g. ipc,topdown,cache2,software),\n"
+	  "\t                            merging the result into one CSV/manifest -- avoids\n"
+	  "\t                            multiplexing when <list> exceeds the available\n"
+	  "\t                            hardware PMU slots. Incompatible with --interval,\n"
+	  "\t                            --per-core, --tree, --ibs-*, --gpu-*, --power.\n"
+	  "\t--multiplex               - with --passes, open every requested counter group\n"
+	  "\t                            in a single pass instead of bin-packing N passes,\n"
+	  "\t                            relying on the kernel to multiplex and on wspy's\n"
+	  "\t                            own time_running/time_enabled scaling to keep the\n"
+	  "\t                            reported values correct. Trades some precision\n"
+	  "\t                            (more multiplexing = lower per-counter confidence)\n"
+	  "\t                            for a single workload execution. Off by default.\n"
+	  "\t--interval <sec>          - read every <sec> seconds\n"
+	  "\t--no-phase-detect         - disable automatic phase (warmup/steady/degraded)\n"
+	  "\t                            detection on --interval samples (on by default)\n"
+	  "\t--verbose or -v           - print verbose information\n"
+	  "\t--system                  - system-wide metrics (load, cpu, freq, gpu, network)\n"
+	  "\n"
+	  "Process tree (--tree <file> and its telemetry sub-flags):\n"
+	  "\t--tree <file>             - create CSV of processes\n"
+	  "\t--tree-cmdline            - record full command lines\n"
+	  "\t--tree-futex              - record per-pid/thread blocking futex-wait time\n"
+	  "\t--tree-io                 - record per-pid /proc/<pid>/io byte counters\n"
+	  "\t--tree-io-wait            - record per-pid/thread blocking I/O (read/write) wait time\n"
+	  "\t--tree-schedstat          - record per-pid/thread run-queue delay + timeslice count\n"
+	  "\t--tree-vmsize             - record peak RSS + anon/file/shmem RSS composition + swap\n"
+	  "\t--tree-connect            - record per-pid/thread connect() setup latency\n"
+	  "\t--tree-wait               - record per-pid/thread time blocked in wait4/waitid\n"
+	  "\t--tree-poll               - record per-pid/thread time blocked in poll/select/epoll_wait\n"
+	  "\t--tree-nanosleep          - record per-pid/thread deliberate nanosleep/clock_nanosleep time\n"
+	  "\n"
+	  "Run artifact metadata:\n"
+	  "\t--manifest <file>         - write a JSON run manifest to <file>\n"
+	  "\t--run-index <file>        - append a JSON run-index record to <file>\n"
+	  "\t--preset-name <name>      - record a launcher's named preset (e.g. wspy-run's own\n"
+	  "\t                            profile name) in the manifest/run-index; metadata\n"
+	  "\t                            only, doesn't affect what this run does\n"
+	  "\t--config-name <name>      - record a launcher's configuration category (e.g.\n"
+	  "\t                            \"performance-counters\") in the manifest/run-index;\n"
+	  "\t                            metadata only\n"
+	  "\t--config-option <k>=<v>   - record one launcher-vocabulary option (repeatable);\n"
+	  "\t                            metadata only -- see INVESTIGATION.md's\n"
+	  "\t                            \"What shipped in 4.1\", \"structured configuration\n"
+	  "\t                            provenance\"\n"
+	  "\n"
+	  "Performance counter groups (each also has a --no-<flag> to turn it back off,\n"
+	  "e.g. --no-ipc, --no-software -- not listed separately below):\n"
+	  "\t--software or -s          - software counters\n"
+	  "\t--ipc or -i               - IPC counters\n"
+	  "\t--branch or -b            - branch counters\n"
+	  "\t--dcache                  - L1 dcache counters\n"
+	  "\t--icache                  - L1 icache counters\n"
+	  "\t--cache1                  - currently a no-op (not wired to any counter group --\n"
+	  "\t                            use --dcache/--icache instead)\n"
+	  "\t--cache2 or -c            - L2 cache counters\n"
+	  "\t--cache3                  - L3 cache counters\n"
+	  "\t--memory                  - memory counters\n"
+	  "\t--opcache                 - opcache counters\n"
+	  "\t--tlb                     - TLB counters\n"
+	  "\t--float                   - floating point counters\n"
+	  "\t--topdown or -t           - topdown counters, level 1\n"
+	  "\t--topdown2                - topdown counters, level 2\n"
+	  "\t--topdown-frontend        - topdown related to fe\n"
+	  "\t--topdown-backend         - topdown related to be\n"
+	  "\t--topdown-optlb           - topdown related to opcache, dtlb\n"
+	  "\n"
+	  "AMD IBS (Instruction-Based Sampling):\n"
+	  "\t--ibs-basic               - unfiltered ibs_fetch/ibs_op sample counts\n"
+	  "\t--ibs-memory-deep         - ibs_op with l3missonly+ldlat filtering (skews\n"
+	  "\t                            sampling period -- see output annotations/docs)\n"
+	  "\t--ibs-maxcnt <n>          - override IBS sampling interval (MaxCnt, via sample_period)\n"
+	  "\t--ibs-ldlat <n>           - override ibs-memory-deep load-latency threshold (cycles)\n"
+	  "\t--ibs-fetchlat <n>        - override ibs-memory-deep fetch-latency threshold (cycles)\n"
+	  "\n"
+	  "CPU power/energy:\n"
+	  "\t--power                   - CPU package energy/power (power/energy-pkg dynamic PMU,\n"
+	  "\t                            RAPL-equivalent): pkg_joules/pkg_watts, system-wide only\n"
+#if AMDGPU
+	  "\n"
+	  "GPU metrics (AMD, this build):\n"
+	  "\t--gpu-smi                 - get gpu information from smi interface (legacy, raw SMI\n"
+	  "\t                            columns only -- see --gpu-metrics for the fused stream)\n"
+	  "\t--gpu-busy                - read instantaneous GPU busy percent (sysfs)\n"
+	  "\t--gpu-metrics             - fused GPU metrics (sysfs + SMI, gpu_fusion.c): temp/\n"
+	  "\t                            activity/power/freq/VRAM in one column set, with a\n"
+	  "\t                            gpu_temp_source/gpu_activity_source column recording\n"
+	  "\t                            which backend supplied the value (sysfs preferred,\n"
+	  "\t                            SMI as fallback/VRAM-only source)\n"
+	  "\t--gpu-device=<idx>        - select AMD GPU device <idx> for the above (default:\n"
+	  "\t                            lowest-numbered card / SMI device 0); see the device\n"
+	  "\t                            list printed by --capabilities on multi-GPU hosts\n"
+#endif
+#if NVIDIA
+	  "\n"
+	  "GPU metrics (NVIDIA, this build):\n"
+	  "\t--gpu-nvidia              - read GPU busy percent + VRAM used/total (NVML)\n"
+	  "\t--gpu-nvidia-device=<idx> - select NVIDIA GPU device <idx> for the above (default:\n"
+	  "\t                            device 0); see the device list printed by\n"
+	  "\t                            --capabilities on multi-GPU hosts\n"
+#endif
+	  ,prog);
+}
+
 #ifndef TEST_WSPY
 int main(int argc,char *const argv[],char *const envp[]){
 #else
@@ -1165,6 +1327,10 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   clocks_per_second = sysconf(_SC_CLK_TCK);
   
   i = parse_options(argc,argv);
+  if (i == 6){
+    print_full_usage(stdout,argv[0]);
+    return 0;
+  }
   if (i == 2){
     fprintf(stdout,"wspy %d.%d.%d\n",WSPY_VERSION_MAJOR,WSPY_VERSION_MINOR,WSPY_VERSION_PATCH);
     return 0;
@@ -1179,112 +1345,12 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     return run_affinity_report_probe();
   }
   if (i){
-      fatal("usage: %s -[abcistv][-o <file>] <cmd><args>...\n"
-	    "\t--version                 - show version and exit\n"
-	    "\t--capabilities            - probe available counters for this host/kernel and exit\n"
-	    "\t--preflight               - check counter-fit for the given flags and exit (no root needed)\n"
-	    "\t--list-affinity           - list core/thread/L3-domain/core-type topology and exit\n"
-	    "\t                            (no root needed)\n"
-	    "\t--affinity=<spec>         - pin the workload to selected CPUs: all (default),\n"
-	    "\t                            thread=<id>, nosmt (one thread per core), domain=<id>\n"
-	    "\t                            (one L3-sharing core-complex), coretype=<id> (one\n"
-	    "\t                            microarchitecture/core type, e.g. only the \"big\" or\n"
-	    "\t                            only the \"little\" cores on a big.LITTLE ARM part --\n"
-	    "\t                            ARM only, see --list-affinity), or cpuset=<c0,c1,...>\n"
-	    "\t                            (explicit list/ranges)\n"
-	    "\t--per-core or -a          - metrics per core\n"
-	    "\t--rusage or -r            - show getrusage(2) information\n"
-	    "\t--tree <file>             - create CSV of processes\n"
-	    "\t--tree-cmdline            - record full command lines\n"
-	    "\t--tree-futex              - record per-pid/thread blocking futex-wait time\n"
-	    "\t--tree-io                 - record per-pid /proc/<pid>/io byte counters\n"
-	    "\t--tree-io-wait            - record per-pid/thread blocking I/O (read/write) wait time\n"
-	    "\t--tree-schedstat          - record per-pid/thread run-queue delay + timeslice count\n"
-	    "\t--tree-vmsize             - record peak RSS + anon/file/shmem RSS composition + swap\n"
-	    "\t--tree-connect            - record per-pid/thread connect() setup latency\n"
-	    "\t--tree-wait               - record per-pid/thread time blocked in wait4/waitid\n"
-	    "\t--tree-poll               - record per-pid/thread time blocked in poll/select/epoll_wait\n"
-	    "\t--tree-nanosleep          - record per-pid/thread deliberate nanosleep/clock_nanosleep time\n"
-	    "\t-o <file>                 - send output to file\n"
-	    "\t--csv                     - create csv output\n"
-	    "\t--manifest <file>         - write a JSON run manifest to <file>\n"
-	    "\t--run-index <file>        - append a JSON run-index record to <file>\n"
-	    "\t--preset-name <name>      - record a launcher's named preset (e.g. wspy-run's own\n"
-	    "\t                            profile name) in the manifest/run-index; metadata\n"
-	    "\t                            only, doesn't affect what this run does\n"
-	    "\t--config-name <name>      - record a launcher's configuration category (e.g.\n"
-	    "\t                            \"performance-counters\") in the manifest/run-index;\n"
-	    "\t                            metadata only\n"
-	    "\t--config-option <k>=<v>   - record one launcher-vocabulary option (repeatable);\n"
-	    "\t                            metadata only -- see INVESTIGATION.md's\n"
-	    "\t                            \"What shipped in 4.1\", \"structured configuration\n"
-	    "\t                            provenance\"\n"
-	    "\t--exit-with-child         - exit with the launched command's exit status\n"
-	    "\t--passes=<list>           - re-launch the workload once per automatically-sized\n"
-	    "\t                            pass covering the comma-separated counter group\n"
-	    "\t                            names in <list> (e.g. ipc,topdown,cache2,software),\n"
-	    "\t                            merging the result into one CSV/manifest -- avoids\n"
-	    "\t                            multiplexing when <list> exceeds the available\n"
-	    "\t                            hardware PMU slots. Incompatible with --interval,\n"
-	    "\t                            --per-core, --tree, --ibs-*, --gpu-*.\n"
-	    "\t--multiplex               - with --passes, open every requested counter group\n"
-	    "\t                            in a single pass instead of bin-packing N passes,\n"
-	    "\t                            relying on the kernel to multiplex and on wspy's\n"
-	    "\t                            own time_running/time_enabled scaling to keep the\n"
-	    "\t                            reported values correct. Trades some precision\n"
-	    "\t                            (more multiplexing = lower per-counter confidence)\n"
-	    "\t                            for a single workload execution. Off by default.\n"
-	    "\t--interval <sec>          - read every <sec> seconds\n"
-	    "\t--no-phase-detect         - disable automatic phase (warmup/steady/degraded)\n"
-	    "\t                            detection on --interval samples (on by default)\n"
-	    "\t--verbose or -v           - print verbose information\n"
-	    "\t--system                  - system-wide metrics (load, cpu, freq, gpu, network)\n"
-	    "\n"
-	    "\t--software or -s          - software counters\n"
-	    "\t--ipc or i                - IPC counters\n"
-	    "\t--branch or -b            - branch counters\n"
-	    "\t--dcache                  - L1 dcache counters\n"
-	    "\t--icache                  - L1 icache counters\n"
-	    "\t--cache1                  - L1 cache counters\n"
-	    "\t--cache2 or -c            - L2 cache counters\n"
-	    "\t--cache3                  - L3 cache counters\n"
-	    "\t--memory                  - memory counters\n"
-	    "\t--opcache                 - opcache counters\n"
-	    "\t--tlb                     - TLB counters\n"
-	    "\t--float                   - floating point counters\n"
-	    "\t--topdown or -t           - topdown counters, level 1\n"
-	    "\t--topdown2                - topdown counters, level 2\n"
-	    "\t--topdown-frontend        - topdown related to fe\n"
-	    "\t--topdown-backend         - topdown related to be\n"
-	    "\t--topdown-optlb           - topdown related to opcache, dtlb\n"
-	    "\t--ibs-basic               - AMD IBS: unfiltered ibs_fetch/ibs_op sample counts\n"
-	    "\t--ibs-memory-deep         - AMD IBS: ibs_op with l3missonly+ldlat filtering (skews\n"
-	    "\t                            sampling period -- see output annotations/docs)\n"
-	    "\t--ibs-maxcnt <n>          - override IBS sampling interval (MaxCnt, via sample_period)\n"
-	    "\t--ibs-ldlat <n>           - override ibs-memory-deep load-latency threshold (cycles)\n"
-	    "\t--ibs-fetchlat <n>        - override ibs-memory-deep fetch-latency threshold (cycles)\n"
-	    "\t--power                   - CPU package energy/power (power/energy-pkg dynamic PMU,\n"
-	    "\t                            RAPL-equivalent): pkg_joules/pkg_watts, system-wide only\n"
-#if AMDGPU
-	    "\t--gpu-smi                 - get gpu information from smi interface (legacy, raw SMI\n"
-      "\t                            columns only -- see --gpu-metrics for the fused stream)\n"
-      "\t--gpu-busy                - read instantaneous GPU busy percent (sysfs)\n"
-      "\t--gpu-metrics             - fused GPU metrics (sysfs + SMI, gpu_fusion.c): temp/\n"
-      "\t                            activity/power/freq/VRAM in one column set, with a\n"
-      "\t                            gpu_temp_source/gpu_activity_source column recording\n"
-      "\t                            which backend supplied the value (sysfs preferred,\n"
-      "\t                            SMI as fallback/VRAM-only source)\n"
-      "\t--gpu-device=<idx>        - select AMD GPU device <idx> for the above (default:\n"
-      "\t                            lowest-numbered card / SMI device 0); see the device\n"
-      "\t                            list printed by --capabilities on multi-GPU hosts\n"
-#endif
-#if NVIDIA
-      "\t--gpu-nvidia              - read GPU busy percent + VRAM used/total (NVML)\n"
-      "\t--gpu-nvidia-device=<idx> - select NVIDIA GPU device <idx> for the above (default:\n"
-      "\t                            device 0); see the device list printed by\n"
-      "\t                            --capabilities on multi-GPU hosts\n"
-#endif
-	    ,argv[0]);
+    // A real usage error (bad flag, missing command) -- short and to the
+    // point, not the full reference (that's what --help is for). Kept out
+    // of print_full_usage() itself since this path always exits nonzero
+    // via fatal(), while --help always exits 0.
+    fatal("usage: %s [options] -- <command> [args...]\n"
+	  "Run '%s --help' for the full list of options.\n",argv[0],argv[0]);
   }
 
   // --passes' merge semantics only cover the common aggregate case; each of
