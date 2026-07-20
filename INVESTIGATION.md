@@ -412,6 +412,22 @@ still correctly reported `sysfs`/`sysfs` sources plus a real VRAM reading from S
 VRAM call. Extending the manifest/index/profile pipeline to GPU runs (the fusion tier's other item)
 remains open — see "4.2 — remaining work" below.
 
+**GPU telemetry provenance in the manifest/run-index:** `struct manifest_gpu_info` (`manifest.h`) adds
+an `options.gpu` object to both documents (`MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION` 1.7.0 →
+1.8.0) — which `--gpu-*` flag(s) were requested, the resolved AMD/NVIDIA device index, and whether each
+backend (`amd_sysfs`/`amd_smi`/`nvidia`) actually produced valid data on this run's last read.
+Deliberately provenance-only, not a duplicate of the measured busy/temp/activity/power/freq/VRAM values
+themselves (those stay CSV-only, same as every other metric this codebase collects — no manifest field
+duplicates measured data, not even `--power`'s `pkg_joules`/`pkg_watts`), the same role
+`counters_requested`/`counters_measured` already play for perf counters. Device-index fields are gated
+on the `requested` flags rather than the index's sign, so a zero-initialized struct (no GPU flag given
+at all) reports `null` rather than looking like "device 0". Closes the "Minimum metadata set for
+publishable" open question's GPU caveat (see "Open questions" below) — on provenance terms, not by
+capturing the measured values. Verified live on real AMD GPU hardware: the same `amd_smi_metrics`-
+fails/`amd_sysfs_metrics`+`amd_smi_memory`-succeed combination the fusion layer above confirmed live
+round-trips correctly into both JSON documents. This closes out 4.2's GPU fusion work entirely (both
+the fusion layer above and this item).
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -548,19 +564,12 @@ motivation and per-syscall design rationale. What remains open from this track:
 Everything from 4.2's original scope that hasn't shipped yet (see "Shipped since 4.1" above for what
 has). Ordered in dependency tiers; items within a tier are independently startable.
 
-**Tier 1 — GPU fusion:**
+**Tier 1 — `/proc` and tree enrichment remainder (independent, moderate value, low risk):**
 
-1. Manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory activity) —
-    reuses the 4.0 foundation rather than a parallel GPU-only pipeline, and reads naturally off the
-    now-shipped fusion layer's fields (temp/activity/power/freq/VRAM + source). Closes the "Minimum
-    metadata set for publishable" open question's GPU caveat (see "Open questions" below).
-
-**Tier 2 — `/proc` and tree enrichment remainder (independent, moderate value, low risk):**
-
-2. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
+1. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
     containerized environments.
-3. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
-4. `proctree` → JSON export + an interactive, filterable web viewer (built on the existing
+2. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
+3. `proctree` → JSON export + an interactive, filterable web viewer (built on the existing
     `web/server.py` report infrastructure) + run-to-run tree diff. A real run's tree is hundreds to
     thousands of processes, so a static Graphviz render is the wrong primary deliverable — it turns
     into an unreadable hairball at that scale and bakes one fixed set of annotations into the image
@@ -570,45 +579,45 @@ has). Ordered in dependency tiers; items within a tier are independently startab
     than fixed at render time. Graphviz export can stay as an optional secondary output for an
     already-filtered small subtree, not the main way to view a whole run's tree.
 
-**Tier 3 — characterization prerequisites:**
+**Tier 2 — characterization prerequisites:**
 
-5. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
+4. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
     switch/I-O) — needs 4.1's normalized store schema (`wspy-store`) to draw features from.
-6. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
+5. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
     stability) + confidence + top-2 alternatives.
 
-**Tier 4 — launcher/infra follow-ups:**
+**Tier 3 — launcher/infra follow-ups:**
 
-7. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
+6. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
     They still shell out to `wspy` once per pass today; 4.1's multi-pass execution work scoped this
     collapse as a documented follow-up, not part of that item.
-8. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
+7. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
     of running it now" checkbox) is visible today only via `wspy-queue list`/`show`, not from the web
     UI itself. Bundle in sharing structured configuration provenance with the job format
     (`web/joblib.py`'s job schema and `manifest.h`'s `configuration_provenance` are designed to be
     close in shape but aren't wired together yet).
-9. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
+8. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
     raw/filename-aligned today (comparing actual artifacts across runs, curated or not); annotating a
     comparison itself, or aligning curated block titles across the compared runs, is still open.
 
-**Tier 5 — docs/testing/release process:**
+**Tier 4 — docs/testing/release process:**
 
-10. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
+9. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
     output).
-11. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
-12. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
+10. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
+11. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
     constant (e.g. `phoronix-test-suite` reportedly has a run-time-estimate command) — today's
     constant is a blunt stand-in; the real constraint is capping process-record data volume for
     publishing, not workload runtime, so a per-workload estimate would size it more accurately than
     one constant across every suite.
-13. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
+12. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
     that catches the class of drift found during the v4.0 release audit: `doc/ARTIFACT_CONTRACT.md`'s
     schema-version examples had silently fallen behind `MANIFEST_SCHEMA_VERSION`/
     `RUN_INDEX_SCHEMA_VERSION`, and `README.md` was missing a whole tool's section. Concretely:
     grep-based checks that doc-quoted schema versions and the documented tool/flag list match the
     actual header constants and `Makefile` binary list, so this doesn't require a manual audit at
     every release again.
-14. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
+13. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
     `MINOR`, grep for stale version-string references across docs, run the full test matrix including
     the `AMDGPU=1` variant, tag, label every merged PR since the last tag, draft release notes from
     the merged-PR list) as a repeatable script or documented checklist instead of redoing it by hand,
@@ -647,7 +656,7 @@ topdown/IBS attribution, static-site publishing, and a lower-overhead tracing ba
    "IBS-derived memory-path bottleneck decomposition" item (Tier 3 below). Moved here (was the last
    item in 4.2 Tier 1) rather than left at the tail of 4.2: it's a large, genuinely new capability on
    its own, not a small extension squeezed in after the rest of 4.2 wrapped up, and it has no
-   dependency on anything else in 4.2's own remaining work (GPU fusion, `/proc`/tree enrichment,
+   dependency on anything else in 4.2's own remaining work (`/proc`/tree enrichment,
    characterization prerequisites, launcher/infra, docs/testing/release) — only on already-shipped
    4.0/4.2 IBS capability-discovery work (`ibs.c`), so it's equally startable as 4.3's own first item.
 
@@ -822,9 +831,12 @@ since 4.1" above rather than a stale "resolved" note here.)
   don't let the interactive-backend question block 4.3's static-site work.
 - **Minimum metadata set for a run to be "publishable":** every field the original recommendation
   named is captured (timestamps, command line, host/CPU/kernel, provenance, schema version, output
-  file list, `wspy-validate` pass/fail) — one open caveat remains: GPU data (busy/clocks/power/temp/
-  memory activity) is CSV-only today, `struct manifest_info` (`manifest.h`) has no GPU fields at all,
-  so it's absent from the manifest/run-index host block; see 4.2's GPU-fusion tier. "Benchmark
+  file list, `wspy-validate` pass/fail). GPU provenance now lands in `struct manifest_info` too
+  (`options.gpu` — which `--gpu-*` flag(s)/device(s) were used, whether each backend actually produced
+  valid data) — deliberately provenance-only, by design: the actual measured busy/temp/activity/power/
+  freq/VRAM *values* stay CSV-only, matching every other metric this codebase collects (no manifest
+  field duplicates measured data, not even `--power`'s `pkg_joules`/`pkg_watts`). So this caveat is
+  resolved on its own terms, not left open. "Benchmark
   name/suite" is intentionally out of `wspy`'s own scope — it's `wspy-run`/`workload/*`'s job, not the
   manifest's.
 
