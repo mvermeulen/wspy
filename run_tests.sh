@@ -42,7 +42,49 @@ if [ ! -s test_proctree.out ]; then
     echo "FAIL: Proctree output is empty"
     exit 1
 fi
-rm test_tree.out test_proctree.out
+
+# Proctree --json export (INVESTIGATION.md 4.2 Tier 1, "proctree JSON export + interactive viewer + run-to-run diff")
+echo "Testing proctree --json export..."
+./proctree --json test_tree.out > test_tree.json
+if [ ! -s test_tree.json ]; then
+    echo "FAIL: proctree --json output is empty"
+    exit 1
+fi
+if ! grep -q '"schema_version"' test_tree.json || ! grep -q '"tree"' test_tree.json || ! grep -q '"summary"' test_tree.json; then
+    echo "FAIL: proctree --json output missing expected top-level keys"
+    exit 1
+fi
+python3 -c "import json,sys; json.load(open(sys.argv[1]))" test_tree.json
+if [ $? -ne 0 ]; then
+    echo "FAIL: proctree --json output is not valid JSON"
+    exit 1
+fi
+
+# Proctree --diff round trip: a tree diffed against itself should report no
+# differences at all (added/removed/changed), and proctree should exit 0 --
+# the same "diff(1)" exit-code convention a real difference (exercised by
+# tests/golden_output.sh's own proctree coverage, if any is added there)
+# would report as 1.
+echo "Testing proctree --diff --json (tree vs itself)..."
+./proctree --diff --json test_tree.json test_tree.json > test_tree_diff.json
+diff_rc=$?
+if [ $diff_rc -ne 0 ]; then
+    echo "FAIL: proctree --diff exited $diff_rc comparing a tree against itself"
+    exit 1
+fi
+python3 -c "
+import json,sys
+d = json.load(open('test_tree_diff.json'))
+assert d['diff_tree']['status'] == 'same', d['diff_tree']['status']
+assert all(e['status'] == 'matched' for e in d['summary_diff']), d['summary_diff']
+print('ok')
+"
+if [ $? -ne 0 ]; then
+    echo "FAIL: proctree --diff of a tree against itself reported a difference"
+    exit 1
+fi
+
+rm test_tree.out test_proctree.out test_tree.json test_tree_diff.json
 
 # Manifest output
 echo "Testing wspy --manifest output..."

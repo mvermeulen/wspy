@@ -444,3 +444,83 @@ table.compare th, table.compare td {
 table.compare th.row-label { white-space: nowrap; background: var(--panel); }
 table.compare thead th { background: var(--panel); }
 img.compare-plot { max-width: 320px; }
+
+/* proctree viewer (item 3): interactive tree viewer + tree-diff view,
+ * web/static/proctree_viewer.js. Prefixed .ptv- throughout so this doesn't
+ * collide with any other page's class names. */
+#ptv-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+}
+#ptv-controls > p.muted { width: 100%; margin: 0 0 0.25rem 0; }
+.ptv-search {
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  min-width: 16rem;
+}
+.ptv-col-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+#ptv-root {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  overflow-x: auto;
+}
+.ptv-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.1rem 0;
+  white-space: nowrap;
+}
+.ptv-toggle {
+  cursor: pointer;
+  width: 1em;
+  display: inline-block;
+  color: var(--muted);
+  user-select: none;
+}
+.ptv-label { font-weight: 600; }
+.ptv-label.ptv-match { background: var(--accent); color: var(--accent-fg); border-radius: 3px; padding: 0 0.2em; }
+.ptv-metric { color: var(--muted); }
+.ptv-children { border-left: 1px dotted var(--border); margin-left: 0.4em; }
+
+.ptv-status-badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border-radius: 4px;
+  padding: 0 0.4em;
+  text-transform: uppercase;
+}
+.ptv-status-added { background: #1a7f37; color: #fff; }
+.ptv-status-removed { background: #cf222e; color: #fff; }
+.ptv-status-changed { background: #9a6700; color: #fff; }
+.ptv-status-same { background: var(--panel); color: var(--muted); }
+
+table.ptv-summary-diff {
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  width: 100%;
+  margin-top: 0.25rem;
+}
+table.ptv-summary-diff th, table.ptv-summary-diff td {
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.6rem;
+  text-align: left;
+}
+table.ptv-summary-diff thead, table.ptv-summary-diff tr:first-child { background: var(--panel); }
+tr.ptv-badge-added td { background: rgba(26, 127, 55, 0.12); }
+tr.ptv-badge-removed td { background: rgba(207, 34, 46, 0.12); }
+tr.ptv-badge-matched td { background: transparent; }

@@ -473,5 +473,32 @@ class ChecklistFromProvenanceTest(unittest.TestCase):
         self.assertIsNone(checklist)
 
 
+class ParseRunKeyTest(unittest.TestCase):
+    def test_valid_key(self):
+        self.assertEqual(joblib.parse_run_key("suite/bench/run1"), ("suite", "bench", "run1"))
+
+    def test_wrong_segment_count(self):
+        self.assertIsNone(joblib.parse_run_key("suite/bench"))
+        self.assertIsNone(joblib.parse_run_key("suite/bench/run1/extra"))
+
+    def test_rejects_dotdot_segment(self):
+        self.assertIsNone(joblib.parse_run_key("suite/../run1"))
+
+    def test_rejects_invalid_characters(self):
+        self.assertIsNone(joblib.parse_run_key("suite/bench/run one"))
+
+
+class BuildProctreeJsonDiffArgvTest(unittest.TestCase):
+    def test_json_argv(self):
+        self.assertEqual(
+            joblib.build_proctree_json_argv("./proctree", "/r/process.tree.txt"),
+            ["./proctree", "--json", "/r/process.tree.txt"])
+
+    def test_diff_argv(self):
+        self.assertEqual(
+            joblib.build_proctree_diff_argv("./proctree", "/tmp/a.json", "/tmp/b.json"),
+            ["./proctree", "--diff", "--json", "/tmp/a.json", "/tmp/b.json"])
+
+
 if __name__ == "__main__":
     unittest.main()
