@@ -42,6 +42,7 @@ test_store
 test_summary
 test_plot
 test_affinity
+test_gpu_fusion
 libwspy_profiler.so
 test_hip_init
 test_hip_kernel

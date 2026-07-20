@@ -35,6 +35,7 @@
 #if AMDGPU
 #include "amd_sysfs.h"
 #include "amd_smi.h"
+#include "gpu_fusion.h"
 extern int gpu_busy_requested;
 extern int gpu_metrics_requested;
 extern int gpu_smi_requested;
@@ -3288,6 +3289,57 @@ void print_power_core(struct counter_group *cgroup,enum output_format oformat){
   fprintf(outfile,"core_watts           %-14.3f# average over this measurement window\n",watts);
 }
 
+#if AMDGPU
+// --gpu-metrics's fused ROCm-SMI + sysfs stream (gpu_fusion.c, INVESTIGATION.md's
+// 4.2 "GPU fusion" tier): a single set of columns for temp/activity/power/freq/
+// VRAM, replacing the earlier two-independent-column-sets shape (gpu_temp/
+// gpu_activity/gpu_power/gpu_freq from sysfs, gpu_smi_temp/gpu_smi_activity/
+// gpu_smi_vram_used/gpu_smi_vram_total from SMI, printed side by side with no
+// reconciliation whenever both --gpu-metrics and --gpu-smi were given). --gpu-smi
+// keeps its own separate columns unchanged for raw/debug access to that backend
+// alone; this is the one call site all 4 GPU-metrics print locations (CSV
+// header, per-core CSV row, aggregate CSV row, human output, both in wspy.c and
+// topdown.c's timer_callback()) now share, instead of four hand-duplicated
+// copies that previously had to be kept in sync by hand (see timer_callback()'s
+// own comment about the column-ordering bug that shipped before this).
+void print_gpu_metrics(enum output_format oformat){
+  if (oformat == PRINT_CSV_HEADER){
+    fprintf(outfile,"gpu_temp,gpu_activity,gpu_power,gpu_freq,gpu_vram_used,gpu_vram_total,gpu_temp_source,gpu_activity_source,");
+    return;
+  }
+
+  gpu_fusion_update();
+
+  if (oformat == PRINT_CSV){
+    fprintf(outfile,"%d,%u,%.2f,%u,%u,%u,%s,%s,",
+      gpu_fusion_temp_valid() ? gpu_fusion_get_temp() : 0,
+      gpu_fusion_activity_valid() ? gpu_fusion_get_activity() : 0,
+      gpu_fusion_power_valid() ? gpu_fusion_get_power() : 0.0,
+      gpu_fusion_freq_valid() ? gpu_fusion_get_freq() : 0,
+      gpu_fusion_vram_valid() ? gpu_fusion_get_vram_used() : 0,
+      gpu_fusion_vram_valid() ? gpu_fusion_get_vram_total() : 0,
+      gpu_metric_source_name(gpu_fusion_temp_valid() ? gpu_fusion_temp_source() : GPU_SOURCE_NONE),
+      gpu_metric_source_name(gpu_fusion_activity_valid() ? gpu_fusion_activity_source() : GPU_SOURCE_NONE));
+    return;
+  }
+
+  if (gpu_fusion_temp_valid())
+    fprintf(outfile,"gpu temp             %d C (%s)\n",
+      gpu_fusion_get_temp(),gpu_metric_source_name(gpu_fusion_temp_source()));
+  if (gpu_fusion_activity_valid())
+    fprintf(outfile,"gpu activity         %u%% (%s)\n",
+      gpu_fusion_get_activity(),gpu_metric_source_name(gpu_fusion_activity_source()));
+  if (gpu_fusion_power_valid())
+    fprintf(outfile,"gpu power            %.2f W\n",gpu_fusion_get_power());
+  if (gpu_fusion_freq_valid())
+    fprintf(outfile,"gpu freq             %u MHz\n",gpu_fusion_get_freq());
+  if (gpu_fusion_vram_valid()){
+    fprintf(outfile,"gpu vram used        %u MB\n",gpu_fusion_get_vram_used());
+    fprintf(outfile,"gpu vram total       %u MB\n",gpu_fusion_get_vram_total());
+  }
+}
+#endif
+
 void print_metrics(struct counter_group *counter_group_list,enum output_format oformat){
   struct counter_group *cgroup;
   for (cgroup = counter_group_list;cgroup;cgroup = cgroup->next){
@@ -3396,25 +3448,7 @@ void timer_callback(int signum){
     }
   }
   if (gpu_metrics_requested){
-    amd_sysfs_gpu_metrics();
-    if (csvflag){
-      if (amd_sysfs_gpu_metrics_valid()){
-        fprintf(outfile,"%d,%u,%.2f,%u,",
-          amd_sysfs_get_gpu_temp(),
-          amd_sysfs_get_gpu_activity(),
-          amd_sysfs_get_gpu_power(),
-          amd_sysfs_get_gpu_freq());
-      } else {
-        fprintf(outfile,"0,0,0.00,0,");
-      }
-    } else {
-      if (amd_sysfs_gpu_metrics_valid()){
-        fprintf(outfile,"gpu temp             %d C\n", amd_sysfs_get_gpu_temp());
-        fprintf(outfile,"gpu activity         %u%%\n", amd_sysfs_get_gpu_activity());
-        fprintf(outfile,"gpu power            %.2f W\n", amd_sysfs_get_gpu_power());
-        fprintf(outfile,"gpu freq             %u MHz\n", amd_sysfs_get_gpu_freq());
-      }
-    }
+    print_gpu_metrics(csvflag?PRINT_CSV:PRINT_NORMAL);
   }
   // wspy.c's CSV header/aggregate-row print already cover --gpu-smi
   // (gpu_smi_requested); timer_callback() never read amd_smi here, so a

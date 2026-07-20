@@ -866,7 +866,7 @@ if [ -e "/opt/rocm/include/amd_smi/amdsmi.h" ] || [ -e "/usr/include/amd_smi/amd
         
         # Test standalone GPU metrics (CSV)
         OUTPUT=$(./wspy --gpu-metrics --csv -- sleep 0.1 2>/dev/null | head -1)
-        if echo "$OUTPUT" | grep -q "elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,gpu_temp,gpu_activity,gpu_power,gpu_freq,ipc"; then
+        if echo "$OUTPUT" | grep -q "elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,gpu_temp,gpu_activity,gpu_power,gpu_freq,gpu_vram_used,gpu_vram_total,gpu_temp_source,gpu_activity_source,ipc"; then
             echo "  GPU metrics CSV column order: OK"
         else
             echo "FAIL: GPU metrics columns not in expected position"
@@ -928,7 +928,7 @@ if [ -e "/opt/rocm/include/amd_smi/amdsmi.h" ] || [ -e "/usr/include/amd_smi/amd
         
         # Test standalone GPU metrics (CSV)
         OUTPUT=$(./wspy --gpu-metrics --csv -- sleep 0.1 2>/dev/null | head -1)
-        if echo "$OUTPUT" | grep -q "elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,gpu_temp,gpu_activity,gpu_power,gpu_freq,ipc"; then
+        if echo "$OUTPUT" | grep -q "elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,gpu_temp,gpu_activity,gpu_power,gpu_freq,gpu_vram_used,gpu_vram_total,gpu_temp_source,gpu_activity_source,ipc"; then
             echo "  GPU metrics CSV column order: OK"
         else
             echo "FAIL: GPU metrics columns not in expected position"
@@ -947,10 +947,10 @@ if [ -e "/opt/rocm/include/amd_smi/amdsmi.h" ] || [ -e "/usr/include/amd_smi/amd
         
         # Test GPU metrics values are numeric
         OUTPUT=$(./wspy --gpu-metrics --csv -- sleep 0.1 2>/dev/null | tail -1)
-        TEMP=$(echo "$OUTPUT" | cut -d',' -f4)
-        ACTIVITY=$(echo "$OUTPUT" | cut -d',' -f5)
-        POWER=$(echo "$OUTPUT" | cut -d',' -f6)
-        FREQ=$(echo "$OUTPUT" | cut -d',' -f7)
+        TEMP=$(echo "$OUTPUT" | cut -d',' -f12)
+        ACTIVITY=$(echo "$OUTPUT" | cut -d',' -f13)
+        POWER=$(echo "$OUTPUT" | cut -d',' -f14)
+        FREQ=$(echo "$OUTPUT" | cut -d',' -f15)
         if [ "$TEMP" -ge 0 ] 2>/dev/null && [ "$ACTIVITY" -ge 0 ] 2>/dev/null && [ "$FREQ" -ge 0 ] 2>/dev/null; then
             echo "  GPU metrics values numeric: OK"
         else

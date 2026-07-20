@@ -17,6 +17,7 @@
 #if AMDGPU
 #include "amd_smi.h"
 #include "amd_sysfs.h"
+#include "gpu_fusion.h"
 #endif
 #if NVIDIA
 #include "nvidia_nvml.h"
@@ -1195,9 +1196,14 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "\t--power                   - CPU package energy/power (power/energy-pkg dynamic PMU,\n"
 	    "\t                            RAPL-equivalent): pkg_joules/pkg_watts, system-wide only\n"
 #if AMDGPU
-	    "\t--gpu-smi                 - get gpu information from smi interface\n"
+	    "\t--gpu-smi                 - get gpu information from smi interface (legacy, raw SMI\n"
+      "\t                            columns only -- see --gpu-metrics for the fused stream)\n"
       "\t--gpu-busy                - read instantaneous GPU busy percent (sysfs)\n"
-      "\t--gpu-metrics             - read detailed GPU metrics (sysfs)\n"
+      "\t--gpu-metrics             - fused GPU metrics (sysfs + SMI, gpu_fusion.c): temp/\n"
+      "\t                            activity/power/freq/VRAM in one column set, with a\n"
+      "\t                            gpu_temp_source/gpu_activity_source column recording\n"
+      "\t                            which backend supplied the value (sysfs preferred,\n"
+      "\t                            SMI as fallback/VRAM-only source)\n"
       "\t--gpu-device=<idx>        - select AMD GPU device <idx> for the above (default:\n"
       "\t                            lowest-numbered card / SMI device 0); see the device\n"
       "\t                            list printed by --capabilities on multi-GPU hosts\n"
@@ -1274,9 +1280,14 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 
 #if AMDGPU
   if (system_mask & SYSTEM_GPU){
-    /* Only invoke SMI APIs when explicitly requested */
-    if (gpu_smi_requested){
+    /* --gpu-metrics's fused stream (gpu_fusion.c) needs amd_smi initialized
+     * too now (for VRAM, and as a temp/activity fallback), so this is
+     * shared with --gpu-smi's own init rather than gated on gpu_smi_requested
+     * alone -- avoided as a double-init by only ever calling it once here. */
+    if (gpu_smi_requested || gpu_metrics_requested){
       amd_smi_initialize(gpu_device_index);
+    }
+    if (gpu_smi_requested){
       amd_smi_metrics();
       amd_smi_memory();
     }
@@ -1469,7 +1480,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       fprintf(outfile,"gpu_busy,");
     }
     if (gpu_metrics_requested){
-      fprintf(outfile,"gpu_temp,gpu_activity,gpu_power,gpu_freq,");
+      print_gpu_metrics(PRINT_CSV_HEADER);
     }
     if (gpu_smi_requested){
       fprintf(outfile,"gpu_smi_temp,gpu_smi_activity,gpu_smi_vram_used,gpu_smi_vram_total,");
@@ -1586,16 +1597,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
         fprintf(outfile,"%d,",busy);
       }
       if (gpu_metrics_requested){
-        amd_sysfs_gpu_metrics();
-        if (amd_sysfs_gpu_metrics_valid()){
-          fprintf(outfile,"%d,%u,%.2f,%u,",
-            amd_sysfs_get_gpu_temp(),
-            amd_sysfs_get_gpu_activity(),
-            amd_sysfs_get_gpu_power(),
-            amd_sysfs_get_gpu_freq());
-        } else {
-          fprintf(outfile,"0,0,0.00,0,");
-        }
+        print_gpu_metrics(PRINT_CSV);
       }
       if (gpu_smi_requested){
         amd_smi_metrics();
@@ -1639,16 +1641,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       fprintf(outfile,"%d,",busy);
     }
     if (gpu_metrics_requested){
-      amd_sysfs_gpu_metrics();
-      if (amd_sysfs_gpu_metrics_valid()){
-        fprintf(outfile,"%d,%u,%.2f,%u,",
-          amd_sysfs_get_gpu_temp(),
-          amd_sysfs_get_gpu_activity(),
-          amd_sysfs_get_gpu_power(),
-          amd_sysfs_get_gpu_freq());
-      } else {
-        fprintf(outfile,"0,0,0.00,0,");
-      }
+      print_gpu_metrics(PRINT_CSV);
     }
     if (gpu_smi_requested){
       amd_smi_metrics();
@@ -1685,13 +1678,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       fprintf(outfile,"gpu busy             %d%%\n",busy_final);
     }
     if (gpu_metrics_requested){
-      amd_sysfs_gpu_metrics();
-      if (amd_sysfs_gpu_metrics_valid()){
-        fprintf(outfile,"gpu temp             %d C\n", amd_sysfs_get_gpu_temp());
-        fprintf(outfile,"gpu activity         %u%%\n", amd_sysfs_get_gpu_activity());
-        fprintf(outfile,"gpu power            %.2f W\n", amd_sysfs_get_gpu_power());
-        fprintf(outfile,"gpu freq             %u MHz\n", amd_sysfs_get_gpu_freq());
-      }
+      print_gpu_metrics(PRINT_NORMAL);
     }
     if (gpu_smi_requested){
       amd_smi_metrics();
@@ -1751,7 +1738,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   }
 
 #if AMDGPU
-  if (gpu_smi_requested)
+  if (gpu_smi_requested || gpu_metrics_requested)
     amd_smi_finalize();
   if (gpu_busy_requested || gpu_metrics_requested)
     amd_sysfs_finalize();
