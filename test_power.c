@@ -273,6 +273,150 @@ static void test_power_counter_group_structural(void){
   printf("PASS: power_counter_group structural invariants\n");
 }
 
+/* INVESTIGATION.md's 4.2 Tier 1 "Per-core energy support" item:
+ * power_core's own cpumask (comma/range list) tells us which logical CPUs
+ * a real per-core event can actually be opened on. */
+static void test_power_core_cpumask_parsing(void){
+  struct power_capabilities power;
+  char path[512];
+
+  printf("Testing power_probe_at: power_core/cpumask parsed into core_cpus[]...\n");
+
+  rmdir_recursive(FAKE_SYSFS_BASE);
+  make_fake_pmu("power",14,"config:0-7","energy-pkg","event=0x02",
+                "2.3283064365386962890625e-10","Joules");
+  make_fake_pmu("power_core",15,"config:0-7","energy-core","event=0x01",
+                "2.3283064365386962890625e-10","Joules");
+  snprintf(path,sizeof(path),"%s/power_core/cpumask",FAKE_SYSFS_BASE);
+  write_file(path,"0,2,4-6\n"); /* mixes plain commas and a range, like mark_cpus_for_pmu()'s grammar */
+
+  power = power_probe_at(FAKE_SYSFS_BASE, "/tmp/nonexistent");
+  assert(power.ncore_cpus == 5); /* 0,2,4,5,6 */
+  assert(power_core_cpu_is_representative(&power,0));
+  assert(power_core_cpu_is_representative(&power,2));
+  assert(power_core_cpu_is_representative(&power,4));
+  assert(power_core_cpu_is_representative(&power,5));
+  assert(power_core_cpu_is_representative(&power,6));
+  assert(!power_core_cpu_is_representative(&power,1));
+  assert(!power_core_cpu_is_representative(&power,3));
+  assert(!power_core_cpu_is_representative(&power,7));
+
+  rmdir_recursive(FAKE_SYSFS_BASE);
+  printf("PASS: power_probe_at power_core/cpumask parsing\n");
+}
+
+static void test_power_core_cpumask_absent_when_power_core_absent(void){
+  struct power_capabilities power;
+
+  printf("Testing power_probe_at: no power_core -- ncore_cpus stays 0, no cpumask read attempted...\n");
+
+  rmdir_recursive(FAKE_SYSFS_BASE);
+  make_fake_pmu("power",14,"config:0-7","energy-pkg","event=0x02",
+                "2.3283064365386962890625e-10","Joules");
+
+  power = power_probe_at(FAKE_SYSFS_BASE, "/tmp/nonexistent");
+  assert(power.core.present == 0);
+  assert(power.ncore_cpus == 0);
+  assert(!power_core_cpu_is_representative(&power,0));
+
+  rmdir_recursive(FAKE_SYSFS_BASE);
+  printf("PASS: power_probe_at power_core absent -- no cpumask\n");
+}
+
+static void test_power_build_core_event(void){
+  struct power_capabilities power;
+  struct power_event ev;
+
+  printf("Testing power_build_core_event: event value placed at the format field's bit location...\n");
+
+  rmdir_recursive(FAKE_SYSFS_BASE);
+  make_fake_pmu("power_core",15,"config:0-7","energy-core","event=0x01",
+                "2.3283064365386962890625e-10","Joules");
+  power = power_probe_at(FAKE_SYSFS_BASE, "/tmp/nonexistent");
+
+  ev = power_build_core_event(&power.core);
+  assert(ev.valid == 1);
+  assert(ev.type == 15);
+  assert(ev.config == 0x01);
+
+  rmdir_recursive(FAKE_SYSFS_BASE);
+  printf("PASS: power_build_core_event bit placement\n");
+}
+
+static void test_power_core_counter_group_representative(void){
+  struct power_capabilities power;
+  struct counter_group *cgroup;
+  char path[512];
+
+  printf("Testing power_core_counter_group: representative CPU gets a real event...\n");
+
+  rmdir_recursive(FAKE_SYSFS_BASE);
+  make_fake_pmu("power_core",15,"config:0-7","energy-core","event=0x01",
+                "2.3283064365386962890625e-10","Joules");
+  snprintf(path,sizeof(path),"%s/power_core/cpumask",FAKE_SYSFS_BASE);
+  write_file(path,"0,2\n");
+  power = power_probe_at(FAKE_SYSFS_BASE, "/tmp/nonexistent");
+
+  cgroup = power_core_counter_group("power-core",&power,2);
+  assert(cgroup != NULL);
+  assert(cgroup->ncounters == 1);
+  assert(!strcmp(cgroup->label,"power-core"));
+  assert(cgroup->mask == COUNTER_POWER_CORE);
+  assert(cgroup->target_cpu == 2);
+  assert(!strcmp(cgroup->cinfo[0].label,"core_joules"));
+  assert(cgroup->cinfo[0].is_group_leader == 1);
+  assert(cgroup->cinfo[0].device_type == 15); /* real dynamic type, not the skip sentinel */
+  assert(cgroup->cinfo[0].config == 0x01);
+  assert(cgroup->cinfo[0].scale > 2.3e-10 && cgroup->cinfo[0].scale < 2.4e-10);
+
+  rmdir_recursive(FAKE_SYSFS_BASE);
+  printf("PASS: power_core_counter_group representative CPU\n");
+}
+
+static void test_power_core_counter_group_not_representative(void){
+  struct power_capabilities power;
+  struct counter_group *cgroup;
+  char path[512];
+
+  printf("Testing power_core_counter_group: non-representative CPU is skip-marked, not attempted...\n");
+
+  rmdir_recursive(FAKE_SYSFS_BASE);
+  make_fake_pmu("power_core",15,"config:0-7","energy-core","event=0x01",
+                "2.3283064365386962890625e-10","Joules");
+  snprintf(path,sizeof(path),"%s/power_core/cpumask",FAKE_SYSFS_BASE);
+  write_file(path,"0,2\n");
+  power = power_probe_at(FAKE_SYSFS_BASE, "/tmp/nonexistent");
+
+  /* CPU 1 is an SMT sibling of 0/2 in this fixture -- not in the cpumask. */
+  cgroup = power_core_counter_group("power-core",&power,1);
+  assert(cgroup != NULL); /* group still exists -- same column set every row needs, see power.h */
+  assert(cgroup->ncounters == 1);
+  assert(cgroup->target_cpu == 1);
+  assert(!strcmp(cgroup->cinfo[0].label,"core_joules")); /* identical column name/position either way */
+  assert(cgroup->cinfo[0].device_type == POWER_CORE_NOT_APPLICABLE_DEVICE_TYPE);
+  assert(cgroup->cinfo[0].fd == -1); /* pre-set so read_counters()'s existing fd!=-1 guard skips it */
+
+  rmdir_recursive(FAKE_SYSFS_BASE);
+  printf("PASS: power_core_counter_group non-representative CPU\n");
+}
+
+static void test_power_core_counter_group_unsupported(void){
+  struct power_capabilities power;
+  struct counter_group *cgroup;
+
+  printf("Testing power_core_counter_group: power_core itself absent -- NULL, not a crash...\n");
+
+  rmdir_recursive(FAKE_SYSFS_BASE);
+  mkdir_or_die(FAKE_SYSFS_BASE);
+  power = power_probe_at(FAKE_SYSFS_BASE, "/tmp/nonexistent");
+
+  cgroup = power_core_counter_group("power-core",&power,0);
+  assert(cgroup == NULL);
+
+  rmdir_recursive(FAKE_SYSFS_BASE);
+  printf("PASS: power_core_counter_group unsupported\n");
+}
+
 static void test_power_hwmon_fallback(void){
   struct power_capabilities power;
 
@@ -309,6 +453,12 @@ int main(void){
   test_power_build_pkg_event_shifted();
   test_power_build_pkg_event_absent();
   test_power_counter_group_structural();
+  test_power_core_cpumask_parsing();
+  test_power_core_cpumask_absent_when_power_core_absent();
+  test_power_build_core_event();
+  test_power_core_counter_group_representative();
+  test_power_core_counter_group_not_representative();
+  test_power_core_counter_group_unsupported();
   test_power_hwmon_fallback();
 
   printf("\nAll test_power tests passed.\n");

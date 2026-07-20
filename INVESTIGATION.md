@@ -213,6 +213,24 @@ warning can't see. Verified end-to-end on real hardware: two real runs of the sa
 `--topdown`, one `--topdown2`) correctly produced `WARN:thin,noisy,mixed-pmu` via `wspy-store`/
 `wspy-summary`.
 
+**Per-core energy (`power_core`) support:** `--power --per-core` now opens a real `power_core`/
+`energy-core` event per representative CPU (`power_core`'s own sysfs `cpumask` — one representative
+logical CPU per physical core, e.g. the 16 even-numbered CPUs out of 32 on a real Zen5/SMT2 host) and
+adds new `core_joules`/`core_watts` trailing columns to `--per-core`'s row shape, alongside (not
+replacing) the existing systemwide `pkg_joules`/`pkg_watts`. Every per-core-eligible CPU gets a
+structurally identical group (same column set every row needs); a CPU that isn't one of `power_core`'s
+representative CPUs gets a placeholder counter marked with a new sentinel
+(`POWER_CORE_NOT_APPLICABLE_DEVICE_TYPE`, `power.h`) that `setup_counters()` skips before even attempting
+`perf_event_open()` — genuinely never-attempted, not "requested but failed", so it doesn't skew
+`counters_requested`/`counters_measured` or `preflight.c`'s budget estimate. `--power` alone (no
+`--per-core`) is completely unaffected. Confirmed on real Zen5 hardware (root): representative CPUs
+showed real nonzero values correlating with actual scheduling activity, sibling CPUs read exactly
+`0.000`, `pkg_joules`/`pkg_watts` stayed unchanged across every row, and coverage counts confirmed
+exactly 16 representative attempts (not 32). Also confirmed, a genuine finding: summed per-core energy
+across representative CPUs was roughly 16× smaller than package energy for the same window —
+core-domain energy is a real, meaningfully smaller subset of package energy (excludes uncore/IO/memory-
+controller/L3/idle-package power), not a units bug; see `CLAUDE.md`'s `power.c` entry.
+
 **Combined GPU-workload profiling:** `wspy-run gpu-compute` builtin profile (tree tracing + system +
 power + both GPU backends + topdown on one shared `--interval` timeline, for workloads a
 separate-re-execution-per-category profile like `deep-gpu` can't correlate tick-for-tick); surfaced
@@ -532,68 +550,61 @@ has). Ordered in dependency tiers; items within a tier are independently startab
     and generalizes directly; the new work is the mmap/ring-buffer read path itself, per-sample record
     parsing, and the rate-aggregation/report layer built on top. Feeds 4.3's "IBS-derived memory-path
     bottleneck decomposition," which assumes this sampling capability already exists.
-2. Per-core energy (`power_core`) support: `--power` currently reports package-level `pkg_joules`/
-    `pkg_watts` only — `power_core`'s own `cpumask` (one representative logical CPU per physical core)
-    means a real per-core breakdown needs opening N events, one pinned per primary-thread CPU, and
-    aggregating them into `--per-core`'s existing per-core row shape, a separate unit of work layered
-    on top of the shipped package-level design (see `doc/INVESTIGATION_ARCHIVE.md`'s power deep-dive).
-    `power_core` is currently probed for `--capabilities` discovery only, never opened as a real
-    counter.
 
 **Tier 2 — GPU fusion:**
 
-3. ROCm SMI + sysfs fusion layer (one stream, source precedence, per-metric validity flags) —
+2. ROCm SMI + sysfs fusion layer (one stream, source precedence, per-metric validity flags) —
     merges the two existing independent GPU paths (`amd_smi.c`, `amd_sysfs.c`).
-4. Same manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory
+3. Same manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory
     activity) — reuses the 4.0 foundation rather than a parallel GPU-only pipeline. Closes the
     "Minimum metadata set for publishable" open question's GPU caveat (see "Open questions" below).
 
 **Tier 3 — `/proc` and tree enrichment remainder (independent, moderate value, low risk):**
 
-5. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
+4. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
     containerized environments.
-6. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
-7. `proctree` → JSON/Graphviz export + run-to-run tree diff.
+5. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
+6. `proctree` → JSON/Graphviz export + run-to-run tree diff.
 
 **Tier 4 — characterization prerequisites:**
 
-8. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
+7. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
     switch/I-O) — needs 4.1's normalized store schema (`wspy-store`) to draw features from.
-9. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
+8. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
     stability) + confidence + top-2 alternatives.
 
 **Tier 5 — launcher/infra follow-ups:**
 
-10. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
+9. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
     They still shell out to `wspy` once per pass today; 4.1's multi-pass execution work scoped this
     collapse as a documented follow-up, not part of that item.
-11. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
+10. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
     of running it now" checkbox) is visible today only via `wspy-queue list`/`show`, not from the web
     UI itself. Bundle in sharing structured configuration provenance with the job format
     (`web/joblib.py`'s job schema and `manifest.h`'s `configuration_provenance` are designed to be
     close in shape but aren't wired together yet).
-12. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
+11. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
     raw/filename-aligned today (comparing actual artifacts across runs, curated or not); annotating a
     comparison itself, or aligning curated block titles across the compared runs, is still open.
 
 **Tier 6 — docs/testing/release process:**
 
-13. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
+12. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
     output).
-14. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
-15. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
+13. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
+14. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
     constant (e.g. `phoronix-test-suite` reportedly has a run-time-estimate command) — today's
     constant is a blunt stand-in; the real constraint is capping process-record data volume for
     publishing, not workload runtime, so a per-workload estimate would size it more accurately than
     one constant across every suite.
-16. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
+15. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
     that catches the class of drift found during the v4.0 release audit: `doc/ARTIFACT_CONTRACT.md`'s
     schema-version examples had silently fallen behind `MANIFEST_SCHEMA_VERSION`/
     `RUN_INDEX_SCHEMA_VERSION`, and `README.md` was missing a whole tool's section. Concretely:
     grep-based checks that doc-quoted schema versions and the documented tool/flag list match the
     actual header constants and `Makefile` binary list, so this doesn't require a manual audit at
     every release again.
-17. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
+16. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
     `MINOR`, grep for stale version-string references across docs, run the full test matrix including
     the `AMDGPU=1` variant, tag, label every merged PR since the last tag, draft release notes from
     the merged-PR list) as a repeatable script or documented checklist instead of redoing it by hand,

@@ -110,6 +110,22 @@ int clocks_per_second;
 int command_line_argc;
 char **command_line_argv;
 
+// Shared by --per-core's main counter-group setup loop and the power_core
+// per-core-energy wiring below (INVESTIGATION.md's 4.2 Tier 1, "Per-core
+// energy support" item) -- one core is "per-core eligible" if it's both
+// available to this process and a vendor/core type wspy's own per-core raw
+// events actually support (CORE_INTEL_ATOM is deliberately excluded here,
+// same as the main loop -- see INVESTIGATION.md's 4.3 "Core-class-aware
+// topdown" entry for why). Kept as one predicate so the two call sites
+// can't silently drift apart on which cores end up with a per-core row.
+static int core_is_per_core_eligible(int i){
+  return cpu_info->coreinfo[i].is_available &&
+    ((cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN)||
+     (cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN5)||
+     (cpu_info->coreinfo[i].vendor == CORE_INTEL_CORE)||
+     (is_arm_core_type(cpu_info->coreinfo[i].vendor)));
+}
+
 static void bind_core_counter_groups(struct counter_group *list,int cpu,unsigned int pmu_type){
   struct counter_group *cgroup;
   int i;
@@ -1325,11 +1341,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   // set up either system-wide or core-specific counters
   if (aflag){
     for (i=0;i<cpu_info->num_cores;i++){
-      if (cpu_info->coreinfo[i].is_available &&
-    ((cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN)||
-     (cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN5)||
-     (cpu_info->coreinfo[i].vendor == CORE_INTEL_CORE)||
-     (is_arm_core_type(cpu_info->coreinfo[i].vendor)))){
+      if (core_is_per_core_eligible(i)){
 	setup_counter_groups(&cpu_info->coreinfo[i].core_specific_counters);
   bind_core_counter_groups(cpu_info->coreinfo[i].core_specific_counters,
          i,cpu_info->coreinfo[i].pmu_type);
@@ -1356,14 +1368,39 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     }
   }
 
-  // CPU package energy (power/energy-pkg, power.c) is only system-wide too --
-  // it's one cumulative machine-wide RAPL-equivalent register, not a
-  // per-core countable event, so --per-core has no natural meaning here
-  // either.
+  // CPU package energy (power/energy-pkg, power.c): the package-level
+  // counter above is always system-wide (one cumulative machine-wide
+  // RAPL-equivalent register, no per-core meaning of its own) -- but
+  // power_core/energy-core (INVESTIGATION.md's 4.2 Tier 1, "Per-core
+  // energy support" item) is a genuinely per-core measurement, so when
+  // --per-core is also in effect, additionally append a power_core-backed
+  // group onto every per-core-enabled CPU's own core_specific_counters
+  // chain -- real event on power_core's own cpumask-listed representative
+  // CPUs, a structurally identical but never-opened placeholder on every
+  // other CPU (see power.h's top comment for why every per-core row needs
+  // the same column set regardless). Strictly additive: pkg_joules/
+  // pkg_watts above are completely unaffected either way.
   if (counter_mask & COUNTER_POWER){
     if ((cgroup = power_counter_group("power"))){
       cgroup->next = cpu_info->systemwide_counters;
       cpu_info->systemwide_counters = cgroup;
+    }
+    if (aflag){
+      struct power_capabilities power_caps = power_probe();
+      if (power_caps.core.present && power_caps.core.event_present){
+        // core_is_per_core_eligible(), not "already has core_specific_
+        // counters" -- power_core must still attach (and trigger per_core_
+        // csv's row shape below) even when --power is the *only* counter
+        // group requested, i.e. nothing else populated core_specific_
+        // counters for this core yet.
+        for (i=0;i<cpu_info->num_cores;i++){
+          if (!core_is_per_core_eligible(i)) continue;
+          if ((cgroup = power_core_counter_group("power-core",&power_caps,i))){
+            cgroup->next = cpu_info->coreinfo[i].core_specific_counters;
+            cpu_info->coreinfo[i].core_specific_counters = cgroup;
+          }
+        }
+      }
     }
   }
 

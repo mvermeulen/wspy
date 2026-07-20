@@ -124,6 +124,49 @@ static void probe_power_pmu_at(const char *sysfs_base,const char *pmu_name,
   read_sysfs_line(path,pmu->unit,sizeof(pmu->unit)); /* leaves unit[0]==0 on failure */
 }
 
+/* Parses a sysfs cpumask/cpulist-style comma/range list ("0,2,4-6") into
+ * caps->core_cpus/ncore_cpus, up to POWER_MAX_CORE_CPUS entries -- mirrors
+ * cpu_info.c's mark_cpus_for_pmu() grammar (not shared directly: that
+ * function is static and writes straight into cpu_info->coreinfo[], a
+ * different concern this file has no reason to depend on cpu_info.h for).
+ * Malformed/trailing garbage just stops parsing early (whatever was
+ * already parsed stays valid) rather than discarding everything -- same
+ * spirit as mark_cpus_for_pmu()'s own tolerance. */
+static void parse_power_core_cpumask(const char *cpulist,struct power_capabilities *caps){
+  const char *p = cpulist;
+
+  caps->ncore_cpus = 0;
+  while (*p && caps->ncore_cpus < POWER_MAX_CORE_CPUS){
+    char *endptr;
+    long low = strtol(p,&endptr,10);
+    long high = low;
+
+    if (endptr == p) break;
+    p = endptr;
+    if (*p == '-'){
+      p++;
+      high = strtol(p,&endptr,10);
+      if (endptr == p) break;
+      p = endptr;
+    }
+
+    while (low <= high && caps->ncore_cpus < POWER_MAX_CORE_CPUS){
+      caps->core_cpus[caps->ncore_cpus++] = (int)low;
+      low++;
+    }
+
+    if (*p == ',') p++;
+    while (*p == ' ' || *p == '\t') p++;
+  }
+}
+
+int power_core_cpu_is_representative(const struct power_capabilities *caps,int cpu){
+  int i;
+  for (i = 0; i < caps->ncore_cpus; i++)
+    if (caps->core_cpus[i] == cpu) return 1;
+  return 0;
+}
+
 static int find_hwmon_energy_path_at(const char *hwmon_base, char *out_path, size_t out_size) {
   DIR *dir = opendir(hwmon_base);
   if (!dir) return -1;
@@ -157,6 +200,13 @@ static struct power_capabilities power_probe_at(const char *sysfs_base, const ch
   probe_power_pmu_at(sysfs_base,"power_core","energy-core",&power.core);
   power.supported = power.pkg.present && power.pkg.event_present;
 
+  if (power.core.present){
+    char path[350];
+    char line[1024]; /* a real cpumask can list many representative CPUs */
+    snprintf(path,sizeof(path),"%s/power_core/cpumask",sysfs_base);
+    if (read_sysfs_line(path,line,sizeof(line)) == 0) parse_power_core_cpumask(line,&power);
+  }
+
   if (!power.supported) {
     char path[256];
     if (find_hwmon_energy_path_at(hwmon_base, path, sizeof(path)) == 0) {
@@ -188,39 +238,51 @@ void print_power_capability_report(const struct power_capabilities *power){
   else
     fprintf(outfile,"  %-10s not present\n","power");
   if (power->core.present)
-    fprintf(outfile,"  %-10s available (type=%d), event=0x%lx, scale=%g %s -- per-core"
-            " breakdown not yet collected (v1 is package-level only)\n",
+    fprintf(outfile,"  %-10s available (type=%d), event=0x%lx, scale=%g %s -- %d representative"
+            " CPU(s) (--power --per-core opens a real per-core event there)\n",
             "power_core",power->core.type,power->core.event,power->core.scale,
-            power->core.unit[0] ? power->core.unit : "(unit unknown)");
+            power->core.unit[0] ? power->core.unit : "(unit unknown)",power->ncore_cpus);
   else
     fprintf(outfile,"  %-10s not present\n","power_core");
 }
 
-struct power_event power_build_pkg_event(const struct power_pmu *pkg){
+/* Shared by power_build_pkg_event()/power_build_core_event() -- both PMUs
+ * have the exact same one-format-field ("event") shape, differing only in
+ * which struct power_pmu they read. pmu_name is just for the degrade
+ * warning below, so it's clear which PMU's format field was unrecognized. */
+static struct power_event build_power_event(const struct power_pmu *pmu,const char *pmu_name){
   struct power_event ev;
   const struct power_format_field *f;
   int lo,hi;
 
   memset(&ev,0,sizeof(ev));
-  if (!pkg->present || !pkg->event_present) return ev;
+  if (!pmu->present || !pmu->event_present) return ev;
   ev.valid = 1;
-  ev.type = pkg->type;
+  ev.type = pmu->type;
 
-  f = find_format(pkg,"event");
+  f = find_format(pmu,"event");
   if (f && parse_config_location(f->location,&lo,&hi) == 0){
     unsigned long mask = (hi >= 63) ? (~0UL << lo) : (((1UL << (hi-lo+1)) - 1) << lo);
-    ev.config = (pkg->event << lo) & mask;
+    ev.config = (pmu->event << lo) & mask;
   } else {
     /* format field missing/unparseable -- degrade to placing the event
      * value at bit 0 rather than dropping the counter entirely, same
      * graceful-degradation spirit as ibs.c's apply_format_field() warning
      * (though that one leaves the bit range untouched since it's one of
      * several optional filters; here it's the only field this event has). */
-    warning("power PMU's 'event' format field has unrecognized location -- placing raw"
-            " event value at bit 0\n");
-    ev.config = pkg->event;
+    warning("%s PMU's 'event' format field has unrecognized location -- placing raw"
+            " event value at bit 0\n",pmu_name);
+    ev.config = pmu->event;
   }
   return ev;
+}
+
+struct power_event power_build_pkg_event(const struct power_pmu *pkg){
+  return build_power_event(pkg,"power");
+}
+
+struct power_event power_build_core_event(const struct power_pmu *core){
+  return build_power_event(core,"power_core");
 }
 
 struct counter_group *power_counter_group(char *name){
@@ -269,5 +331,43 @@ struct counter_group *power_counter_group(char *name){
   cgroup->cinfo[0].config = ev.config;
   cgroup->cinfo[0].is_group_leader = 1;
   cgroup->cinfo[0].scale = caps.pkg.scale;
+  return cgroup;
+}
+
+struct counter_group *power_core_counter_group(char *name,const struct power_capabilities *caps,
+                                                int target_cpu){
+  struct counter_group *cgroup;
+
+  if (!caps->core.present || !caps->core.event_present){
+    warning("CPU per-core power/energy (power_core/energy-core) not supported on this host/kernel -- "
+            "--power --per-core produces no per-core breakdown\n");
+    return NULL;
+  }
+
+  cgroup = calloc(1,sizeof(struct counter_group));
+  cgroup->label = strdup(name);
+  cgroup->type_id = PERF_TYPE_RAW;
+  cgroup->mask = COUNTER_POWER_CORE;
+  cgroup->target_cpu = target_cpu; /* picked up by setup_counters()'s existing aflag+target_cpu>=0 path */
+  cgroup->ncounters = 1;
+  cgroup->cinfo = calloc(1,sizeof(struct counter_info));
+  cgroup->cinfo[0].label = strdup("core_joules");
+  cgroup->cinfo[0].is_group_leader = 1;
+
+  if (power_core_cpu_is_representative(caps,target_cpu)){
+    struct power_event ev = power_build_core_event(&caps->core);
+    cgroup->cinfo[0].device_type = ev.type;
+    cgroup->cinfo[0].config = ev.config;
+    cgroup->cinfo[0].scale = caps->core.scale;
+  } else {
+    /* target_cpu isn't one of power_core's own cpumask-listed representative
+     * CPUs -- see this file's top comment. setup_counters() (topdown.c)
+     * checks this exact sentinel and skips perf_event_open()/coverage_note()
+     * entirely for this counter; fd is set here (not left at calloc's 0,
+     * which is a real fd/stdin) so read_counters() already treats it as
+     * nothing-to-read, same as any other never-attempted counter. */
+    cgroup->cinfo[0].device_type = POWER_CORE_NOT_APPLICABLE_DEVICE_TYPE;
+    cgroup->cinfo[0].fd = -1;
+  }
   return cgroup;
 }

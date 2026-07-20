@@ -1499,6 +1499,18 @@ void setup_counters(struct counter_group *counter_group_list){
   for (cgroup = counter_group_list;cgroup;cgroup = cgroup->next){
     debug("Setting up %s counters\n",cgroup->label);
     for (i=0;i<cgroup->ncounters;i++){
+      // Per-core energy (power_core, see power.h/power.c's entry in
+      // CLAUDE.md): this counter isn't on one of power_core's own
+      // cpumask-listed representative CPUs, so there's genuinely nothing to
+      // open here -- not "requested but failed" (which would skew
+      // counters_requested/measured and preflight.c's budget estimate via
+      // coverage_note() below), just not applicable to this specific CPU.
+      // fd is already -1 (power_core_counter_group() sets it at creation
+      // time), so read_counters()'s existing fd!=-1 guard already treats
+      // this the same as any other never-attempted counter with no further
+      // changes needed there.
+      if (cgroup->mask & COUNTER_POWER_CORE &&
+          cgroup->cinfo[i].device_type == POWER_CORE_NOT_APPLICABLE_DEVICE_TYPE) continue;
       if (cgroup->mask & COUNTER_POWER && cgroup->cinfo[i].device_type == 9999) {
 	status = open(fallback_power_path, O_RDONLY);
 	if (status == -1){
@@ -3240,6 +3252,42 @@ void print_power(struct counter_group *cgroup,enum output_format oformat){
   fprintf(outfile,"pkg_watts            %-14.3f# average over this measurement window\n",watts);
 }
 
+// Per-core energy (power_core/energy-core, power.c), INVESTIGATION.md's
+// 4.2 Tier 1 "Per-core energy support" item. Same joules+derived-watts
+// shape as print_power() above, just for one core's own counter_group
+// (--per-core's core_specific_counters, not systemwide_counters) --
+// core_joules/core_watts are new trailing columns alongside (not
+// replacing) print_power()'s existing pkg_joules/pkg_watts, which still
+// print unchanged, once, from the systemwide group every per-core row
+// already repeats. On a CPU that isn't one of power_core's own
+// cpumask-listed representative CPUs, this counter was never opened at
+// all (power_core_counter_group()/setup_counters(), power.c/topdown.c) --
+// cinfo->scaled_value/time_enabled stay at their calloc'd 0, so this
+// degrades to 0.0/0.0 the same way a permission-denied counter already
+// would, no special-casing needed here.
+void print_power_core(struct counter_group *cgroup,enum output_format oformat){
+  struct counter_info *cinfo = find_ci_label(cgroup,"core_joules");
+  double joules = 0.0,watts = 0.0;
+
+  if (oformat == PRINT_CSV_HEADER){
+    fprintf(outfile,"core_joules,core_watts,");
+    return;
+  }
+
+  if (cinfo){
+    joules = cinfo->scaled_value;
+    if (cinfo->time_enabled > 0) watts = joules / ((double) cinfo->time_enabled / 1000000000.0);
+  }
+
+  if (oformat == PRINT_CSV){
+    fprintf(outfile,"%.3f,%.3f,",joules,watts);
+    return;
+  }
+
+  fprintf(outfile,"core_joules          %-14.3f# Joules (per-core RAPL-equivalent energy counter)\n",joules);
+  fprintf(outfile,"core_watts           %-14.3f# average over this measurement window\n",watts);
+}
+
 void print_metrics(struct counter_group *counter_group_list,enum output_format oformat){
   struct counter_group *cgroup;
   for (cgroup = counter_group_list;cgroup;cgroup = cgroup->next){
@@ -3286,6 +3334,8 @@ void print_metrics(struct counter_group *counter_group_list,enum output_format o
       print_ibs(cgroup,oformat);
     } else if (cgroup->mask & COUNTER_POWER){
       print_power(cgroup,oformat);
+    } else if (cgroup->mask & COUNTER_POWER_CORE){
+      print_power_core(cgroup,oformat);
     }
   }
 }
