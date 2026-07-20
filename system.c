@@ -15,11 +15,26 @@
 #include "amd_sysfs.h"
 #endif
 
-unsigned int system_mask = SYSTEM_LOADAVG|SYSTEM_CPU|SYSTEM_NETWORK|SYSTEM_FREQ|SYSTEM_TEMP;
+unsigned int system_mask = SYSTEM_LOADAVG|SYSTEM_CPU|SYSTEM_NETWORK|SYSTEM_FREQ|SYSTEM_TEMP|SYSTEM_DISK;
 
 struct netinfo {
   char *name;
   unsigned long bytes, last_bytes, prev_bytes;
+};
+
+// one whole block device (archive/wspy2.0/diskstats.c did this once, dropped
+// in the 2.0->3.0 rewrite -- this reuses its /proc/partitions enumeration
+// approach but reads deltas straight into ordinary SYSTEM_* CSV/header
+// columns instead of that version's own per-device disk-<dev>.csv file)
+struct diskinfo {
+  char *name;
+  char statfile[300];
+  // sectors are always counted in 512-byte units by the kernel regardless of
+  // the device's own logical block size, so no blocksize lookup is needed
+  // (unlike archive/wspy2.0/diskstats.c's BLKSSZGET ioctl)
+  unsigned long read_sectors, last_read_sectors, prev_read_sectors;
+  unsigned long write_sectors, last_write_sectors, prev_write_sectors;
+  unsigned long io_ms, last_io_ms, prev_io_ms;
 };
 
 // system state
@@ -33,6 +48,8 @@ struct system_state {
   } cpu;
   int num_net;
   struct netinfo *netinfo;
+  int num_disk;
+  struct diskinfo *diskinfo;
   double freq_mhz; // average current frequency across online cpus with cpufreq
   double cpu_temp_c; // average CPU package/die temperature across discovered hwmon sensors
   struct gpu {
@@ -83,6 +100,68 @@ void setup_net_info(void){
   if (system_state.num_net == 0){
     free(system_state.netinfo);
     system_state.netinfo = NULL;
+  }
+}
+
+// device-name prefixes worth excluding from disk I/O collection by default:
+// loop (snap/squashfs mounts -- confirmed live on a real dev host to number
+// in the dozens, each permanently read=0/write=0/time=0 since the loop
+// driver's own /sys/block/loopN/stat never reflects the backing file's real
+// I/O), ram/zram (RAM-backed, not physical disk activity at all). Not a
+// user-toggleable filter -- these names are never what "disk I/O stats"
+// means, the same "measured vs unavailable" curation judgment amd_sysfs.c's
+// vendor-id scan already makes for GPU enumeration. Filtering these out also
+// keeps real-world CSV width away from plot.c's MAX_CSV_FIELDS cap -- a
+// snap-heavy desktop's 30+ loop devices previously pushed a --system
+// --power --counters=topdown CSV past 128 columns, silently truncating
+// wspy-plot's header parsing and dropping the topdown-detail plot entirely.
+static int is_virtual_disk_device(const char *name){
+  return !strncmp(name,"loop",4) || !strncmp(name,"ram",3) || !strncmp(name,"zram",4);
+}
+
+// read /proc/partitions and initialize the system_state structure for whole
+// block devices (not partitions -- /sys/block/<name> only has a top-level
+// entry for a whole disk, a partition like sda1 lives at
+// /sys/block/sda/sda1 instead, so the access() check below naturally
+// filters partitions out without needing to parse the name itself)
+void setup_disk_info(void){
+  FILE *fp;
+  char buffer[1024];
+  char path[300];
+  int major,minor;
+  long blocks;
+  char name[32];
+  int capacity = 0;
+  if ((fp = fopen("/proc/partitions","r")) == NULL) return;
+  while (fgets(buffer,sizeof(buffer),fp) != NULL){
+    if (sscanf(buffer,"%d %d %ld %31s",&major,&minor,&blocks,name) != 4) continue;
+    if (is_virtual_disk_device(name)) continue;
+    snprintf(path,sizeof(path),"/sys/block/%s",name);
+    if (access(path,F_OK) != 0) continue; // not a whole disk (e.g. a partition), skip
+    if (system_state.num_disk >= capacity){
+      int newcap = capacity ? capacity * 2 : 4;
+      struct diskinfo *newlist = realloc(system_state.diskinfo,newcap * sizeof(struct diskinfo));
+      if (newlist == NULL){
+        fclose(fp);
+        return;
+      }
+      if (newcap > capacity){
+        memset(newlist + capacity,0,(newcap - capacity)*sizeof(struct diskinfo));
+      }
+      system_state.diskinfo = newlist;
+      capacity = newcap;
+    }
+    system_state.diskinfo[system_state.num_disk].name = strdup(name);
+    snprintf(system_state.diskinfo[system_state.num_disk].statfile,
+             sizeof(system_state.diskinfo[system_state.num_disk].statfile),
+             "/sys/block/%s/stat",name);
+    debug("parsed block device: %s\n",name);
+    system_state.num_disk++;
+  }
+  fclose(fp);
+  if (system_state.num_disk == 0){
+    free(system_state.diskinfo);
+    system_state.diskinfo = NULL;
   }
 }
 
@@ -340,6 +419,35 @@ void read_system(void){
       fclose(fp);
     }
   }
+  if (system_mask & SYSTEM_DISK){
+    unsigned long int reads_completed,reads_merged,sectors_read,ms_reading;
+    unsigned long int writes_completed,writes_merged,sectors_written,ms_writing;
+    unsigned long int ios_in_progress,ms_doing_io,weighted_ms_doing_io;
+    if (system_state.diskinfo == NULL) setup_disk_info();
+    for (i=0;i<system_state.num_disk;i++){
+      if ((fp = fopen(system_state.diskinfo[i].statfile,"r")) == NULL) continue;
+      if (fgets(buffer,sizeof(buffer),fp) != NULL){
+        if (sscanf(buffer,"%lu %lu %lu %lu %lu %lu %lu %lu %lu %lu %lu",
+                   &reads_completed,&reads_merged,&sectors_read,&ms_reading,
+                   &writes_completed,&writes_merged,&sectors_written,&ms_writing,
+                   &ios_in_progress,&ms_doing_io,&weighted_ms_doing_io) == 11){
+          system_state.diskinfo[i].prev_read_sectors = system_state.diskinfo[i].last_read_sectors;
+          system_state.diskinfo[i].prev_write_sectors = system_state.diskinfo[i].last_write_sectors;
+          system_state.diskinfo[i].prev_io_ms = system_state.diskinfo[i].last_io_ms;
+          system_state.diskinfo[i].last_read_sectors = sectors_read;
+          system_state.diskinfo[i].last_write_sectors = sectors_written;
+          system_state.diskinfo[i].last_io_ms = ms_doing_io;
+          system_state.diskinfo[i].read_sectors =
+            system_state.diskinfo[i].last_read_sectors - system_state.diskinfo[i].prev_read_sectors;
+          system_state.diskinfo[i].write_sectors =
+            system_state.diskinfo[i].last_write_sectors - system_state.diskinfo[i].prev_write_sectors;
+          system_state.diskinfo[i].io_ms =
+            system_state.diskinfo[i].last_io_ms - system_state.diskinfo[i].prev_io_ms;
+        }
+      }
+      fclose(fp);
+    }
+  }
   if (system_mask & SYSTEM_GPU){
     system_state.gpu.prev_busy_percent = system_state.gpu.last_busy_percent;
     system_state.gpu.last_busy_percent = read_gpu_busy_percent();
@@ -404,6 +512,12 @@ void print_system(enum output_format oformat){
       if (system_state.netinfo == NULL) setup_net_info();
       for (i=0;i<system_state.num_net;i++) fprintf(outfile,"net %s,",system_state.netinfo[i].name);
     }
+    if (system_mask & SYSTEM_DISK){
+      if (system_state.diskinfo == NULL) setup_disk_info();
+      for (i=0;i<system_state.num_disk;i++)
+        fprintf(outfile,"disk %s read,disk %s write,disk %s time,",
+                system_state.diskinfo[i].name,system_state.diskinfo[i].name,system_state.diskinfo[i].name);
+    }
     if (system_mask & SYSTEM_GPU) fprintf(outfile,"gpu_busy,");
     break;
   case PRINT_CSV:
@@ -424,6 +538,17 @@ void print_system(enum output_format oformat){
       if (system_state.netinfo == NULL) setup_net_info();
       for (i=0;i<system_state.num_net;i++){
 	fprintf(outfile,"%lu,",system_state.netinfo[i].bytes);
+      }
+    }
+    if (system_mask & SYSTEM_DISK){
+      if (system_state.diskinfo == NULL) setup_disk_info();
+      for (i=0;i<system_state.num_disk;i++){
+        // sectors are always 512-byte units regardless of the device's own
+        // logical block size (see linux/Documentation/ABI/.../sysfs-block)
+        fprintf(outfile,"%lu,%lu,%lu,",
+                system_state.diskinfo[i].read_sectors * 512,
+                system_state.diskinfo[i].write_sectors * 512,
+                system_state.diskinfo[i].io_ms);
       }
     }
     if (system_mask & SYSTEM_GPU){
@@ -455,6 +580,16 @@ void print_system(enum output_format oformat){
       if (system_state.netinfo == NULL) setup_net_info();
       for (i=0;i<system_state.num_net;i++){
 	fprintf(outfile,"%-14s       %lu\n",system_state.netinfo[i].name,system_state.netinfo[i].bytes);
+      }
+    }
+    if (system_mask & SYSTEM_DISK){
+      if (system_state.diskinfo == NULL) setup_disk_info();
+      for (i=0;i<system_state.num_disk;i++){
+        fprintf(outfile,"disk %-10s      read %10lu  write %10lu  time %8lu ms\n",
+                system_state.diskinfo[i].name,
+                system_state.diskinfo[i].read_sectors * 512,
+                system_state.diskinfo[i].write_sectors * 512,
+                system_state.diskinfo[i].io_ms);
       }
     }
     if (system_mask & SYSTEM_GPU){
