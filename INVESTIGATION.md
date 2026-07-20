@@ -584,46 +584,66 @@ has). Ordered in dependency tiers; items within a tier are independently startab
     `comm`/pid, and per-node annotation columns (futex/io-wait/vmsize/etc.) toggled on and off rather
     than fixed at render time. Graphviz export can stay as an optional secondary output for an
     already-filtered small subtree, not the main way to view a whole run's tree.
+4. System-wide disk I/O stats — a new `SYSTEM_DISK` bit (`system.c`), per-block-device read/write/
+    time-in-I/O counters scraped from `/sys/block/<dev>/stat` (devices enumerated via
+    `/proc/partitions`), the same per-device breakdown `SYSTEM_NETWORK` already gives for
+    `/proc/net/dev`. No such metric exists today at any level — `--tree-io`'s `/proc/<pid>/io`
+    counters (`topdown.c`) are the closest existing thing, but that's a per-traced-process byte count,
+    not a system-wide/per-device view of actual disk activity or queue time. `archive/wspy2.0/
+    diskstats.c` built this once (device enumeration + per-device stat-file scraping + its own
+    gnuplot script) before the 2.0→3.0 rewrite dropped it; worth reusing the enumeration approach
+    rather than the old fixed-column parsing, since `/sys/block/<dev>/stat`'s field count has grown
+    since that code was written, and emitting it as ordinary `SYSTEM_*` CSV/header columns (one row
+    per device, or one column set per device) rather than the old version's separate `disk-<dev>.csv`
+    file per device, matching every other system metric's CSV/human-output convention.
+5. System-wide memory pressure stats — a new `SYSTEM_MEM` bit (`system.c`), time-series `/proc/
+    meminfo` fields (`MemFree`/`Cached`/`Dirty`/`Writeback`/`SwapFree`/`Committed_AS`, etc.) alongside
+    the existing load-average/CPU/network system metrics. Distinct from `--tree-vmsize`'s per-process
+    RSS/swap snapshot (`topdown.c`) — this is host-wide memory pressure, useful for spotting a
+    workload driving the whole machine into reclaim/swap rather than just its own footprint.
+    `archive/wspy2.0/memstats.c` did this once (a fixed label table matched line-by-line against
+    `/proc/meminfo`); the rewrite should follow the same CSV/header-symmetric convention every other
+    `SYSTEM_*` metric already uses rather than that version's own separate `meminfo.csv` file.
 
 **Tier 2 — characterization prerequisites:**
 
-4. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
+6. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
     switch/I-O) — needs 4.1's normalized store schema (`wspy-store`) to draw features from.
-5. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
+7. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
     stability) + confidence + top-2 alternatives.
 
 **Tier 3 — launcher/infra follow-ups:**
 
-6. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
+8. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
     They still shell out to `wspy` once per pass today; 4.1's multi-pass execution work scoped this
     collapse as a documented follow-up, not part of that item.
-7. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
+9. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
     of running it now" checkbox) is visible today only via `wspy-queue list`/`show`, not from the web
     UI itself. Bundle in sharing structured configuration provenance with the job format
     (`web/joblib.py`'s job schema and `manifest.h`'s `configuration_provenance` are designed to be
     close in shape but aren't wired together yet).
-8. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
+10. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
     raw/filename-aligned today (comparing actual artifacts across runs, curated or not); annotating a
     comparison itself, or aligning curated block titles across the compared runs, is still open.
 
 **Tier 4 — docs/testing/release process:**
 
-9. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
+11. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
     output).
-10. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
-11. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
+12. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
+13. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
     constant (e.g. `phoronix-test-suite` reportedly has a run-time-estimate command) — today's
     constant is a blunt stand-in; the real constraint is capping process-record data volume for
     publishing, not workload runtime, so a per-workload estimate would size it more accurately than
     one constant across every suite.
-12. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
+14. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
     that catches the class of drift found during the v4.0 release audit: `doc/ARTIFACT_CONTRACT.md`'s
     schema-version examples had silently fallen behind `MANIFEST_SCHEMA_VERSION`/
     `RUN_INDEX_SCHEMA_VERSION`, and `README.md` was missing a whole tool's section. Concretely:
     grep-based checks that doc-quoted schema versions and the documented tool/flag list match the
     actual header constants and `Makefile` binary list, so this doesn't require a manual audit at
     every release again.
-13. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
+15. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
     `MINOR`, grep for stale version-string references across docs, run the full test matrix including
     the `AMDGPU=1` variant, tag, label every merged PR since the last tag, draft release notes from
     the merged-PR list) as a repeatable script or documented checklist instead of redoing it by hand,
