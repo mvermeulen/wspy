@@ -43,6 +43,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -68,6 +69,7 @@ from joblib import (  # noqa: E402,F401
     execute_profile_run, execute_custom_run, write_custom_run_manifest,
     write_custom_run_summary, LOG_NAME, PLOTS_DIR_NAME, RUN_MANIFEST_NAME, SUMMARY_NAME,
     NAME_RE, resolve_toggles, checklist_from_pass_provenance, valid_affinity_spec,
+    parse_run_key, build_proctree_json_argv, build_proctree_diff_argv,
 )
 
 # The one fixed configuration item 6 knows about -- matches wspy-run's
@@ -80,6 +82,7 @@ PNG_NAME = "amdtopdown.png"  # legacy root-level plot name from the retired gnup
                               # reports on disk from before item 12 may still have one there.
 # LOG_NAME/RUN_MANIFEST_NAME/SUMMARY_NAME/NAME_RE/PROFILE_TOKEN_RE come from
 # joblib.py (import block above).
+TREE_TXT_NAME = "process.tree.txt"  # fixed filename every --tree pass writes (joblib.py)
 ARTIFACT_FILES = (CSV_NAME, MANIFEST_NAME, PNG_NAME, LOG_NAME)
 
 # RUN_MANIFEST_NAME's presence in a run directory is what distinguishes an
@@ -2304,7 +2307,8 @@ def render_index(cfg, prefill):
         "<table class=\"reports\"><thead><tr><th></th><th>when</th><th>suite</th>"
         "<th>benchmark</th><th>run</th></tr></thead><tbody>" + "".join(rows) +
         "</tbody></table>"
-        '<button type="submit">Compare selected</button>'
+        '<button type="submit">Compare selected</button> '
+        '<button type="submit" formaction="/tree-diff">Tree diff selected</button>'
         "</form>" if rows else "<p class=\"muted\">No runs yet.</p>"
     )
 
@@ -2422,7 +2426,8 @@ def render_history(cfg, qs):
         "<th>benchmark</th><th>run</th><th>workload</th><th>status</th><th>host</th>"
         "<th>vendor</th><th>elapsed</th></tr></thead><tbody>" + "".join(rows) +
         "</tbody></table>"
-        '<button type="submit">Compare selected</button>'
+        '<button type="submit">Compare selected</button> '
+        '<button type="submit" formaction="/tree-diff">Tree diff selected</button>'
         "</form>"
     ) if rows else '<p class="muted">No runs match these filters.</p>'
 
@@ -2750,6 +2755,10 @@ def render_fixed_report(rundir, suite, benchmark, run_id):
     else:
         parts.append('<p class="muted">No manifest found; can\'t restore workload command.</p>')
 
+    if os.path.isfile(os.path.join(rundir, TREE_TXT_NAME)):
+        tree_url = f"/tree-viewer/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+        parts.append(f'<p><a href="{tree_url}">Interactive tree viewer</a></p>')
+
     parts.append(render_analyze_card(suite, benchmark, run_id))
 
     raw = ["<h2>Artifacts</h2><ul class=\"artifacts\">"]
@@ -2821,6 +2830,10 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
                       f'<span class="muted">{note}</span></p>')
     else:
         parts.append('<p class="muted">No workload command recorded in manifest.json.</p>')
+
+    if os.path.isfile(os.path.join(rundir, TREE_TXT_NAME)):
+        tree_url = f"/tree-viewer/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+        parts.append(f'<p><a href="{tree_url}">Interactive tree viewer</a></p>')
 
     parts.append(render_analyze_card(suite, benchmark, run_id))
 
@@ -2940,8 +2953,8 @@ def render_compare(output_root, keys):
     runs = []
     seen = set()
     for key in keys:
-        segs = key.split("/")
-        if len(segs) != 3 or not all(valid_segment(s) for s in segs) or key in seen:
+        segs = parse_run_key(key)
+        if segs is None or key in seen:
             continue
         seen.add(key)
         suite, benchmark, run_id = segs
@@ -3014,6 +3027,72 @@ def render_compare(output_root, keys):
 </section>
 """
     return page("wspy compare", body)
+
+
+def render_tree_viewer(suite, benchmark, run_id):
+    """Item 3's interactive tree viewer page: a thin HTML shell -- the
+    actual rendering (collapsible tree, search/filter, column toggles)
+    happens client-side in proctree_viewer.js, which fetches this run's
+    tree via /api/tree-json/<suite>/<benchmark>/<run_id> on load. Kept as
+    its own static file rather than folded into the shared app.js so every
+    other page doesn't pay for this page-specific JS (see CLAUDE.md's web/
+    entry)."""
+    json_url = f"/api/tree-json/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    report_url = f"/report/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    body = f"""
+<section class="panel">
+  <h1>Process tree: {html.escape(suite)} / {html.escape(benchmark)} / {html.escape(run_id)}</h1>
+  <p><a href="{report_url}">Back to report</a></p>
+  <div id="ptv-controls"></div>
+  <div id="ptv-root"><p class="muted">Loading tree...</p></div>
+</section>
+<script>window.PTV_CONFIG = {json.dumps({"mode": "single", "jsonUrl": json_url})};</script>
+<script src="/static/proctree_viewer.js"></script>
+"""
+    return page(f"process tree: {benchmark}/{run_id}", body)
+
+
+def render_tree_diff(cfg, keys):
+    """Item 3's run-to-run tree diff view: mirrors render_compare()'s own
+    "select at least two runs" fallback shape, but needs exactly two runs
+    (a structural tree diff, unlike the N-way artifact-list compare above)
+    and both must have a process.tree.txt to diff at all."""
+    output_root = cfg["output_root"]
+    runs = []
+    seen = set()
+    for key in keys:
+        segs = parse_run_key(key)
+        if segs is None or key in seen:
+            continue
+        seen.add(key)
+        suite, benchmark, run_id = segs
+        rundir = os.path.join(output_root, suite, benchmark, run_id)
+        if not os.path.isfile(os.path.join(rundir, TREE_TXT_NAME)):
+            continue
+        runs.append({"suite": suite, "benchmark": benchmark, "run_id": run_id, "key": key})
+
+    if len(runs) != 2:
+        body = ('<section class="panel"><h1>Tree diff</h1>'
+                '<p class="muted">Select exactly two runs with a process tree '
+                '(<code>process.tree.txt</code>, i.e. run with the process-tree '
+                'configuration/preset enabled) from the homepage report list to diff '
+                'them.</p><p><a href="/">Back to launcher</a></p></section>')
+        return page("wspy tree diff", body)
+
+    json_url = (f"/api/tree-diff-json?a={_urlescape(runs[0]['key'])}&b={_urlescape(runs[1]['key'])}")
+    labels = [f"{r['suite']}/{r['benchmark']}/{r['run_id']}" for r in runs]
+    body = f"""
+<section class="panel">
+  <h1>Tree diff</h1>
+  <p>A: <code>{html.escape(labels[0])}</code> vs B: <code>{html.escape(labels[1])}</code></p>
+  <p><a href="/">Back to launcher</a></p>
+  <div id="ptv-controls"></div>
+  <div id="ptv-root"><p class="muted">Loading diff...</p></div>
+</section>
+<script>window.PTV_CONFIG = {json.dumps({"mode": "diff", "jsonUrl": json_url})};</script>
+<script src="/static/proctree_viewer.js"></script>
+"""
+    return page("wspy tree diff", body)
 
 
 # ---------------------------------------------------------------------------
@@ -3106,6 +3185,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, out)
             return
 
+        m = re.match(r"^/tree-viewer/([^/]+)/([^/]+)/([^/]+)$", path)
+        if m:
+            suite, benchmark, run_id = m.groups()
+            if not all(valid_segment(x) for x in (suite, benchmark, run_id)):
+                self._send(400, "invalid path")
+                return
+            rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+            if not os.path.isfile(os.path.join(rundir, TREE_TXT_NAME)):
+                self._send(404, f"no {TREE_TXT_NAME} in this run directory")
+                return
+            self._send(200, render_tree_viewer(suite, benchmark, run_id))
+            return
+
         m = re.match(r"^/studio/([^/]+)/([^/]+)/([^/]+)$", path)
         if m:
             suite, benchmark, run_id = m.groups()
@@ -3171,10 +3263,24 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, render_history(cfg, qs))
             return
 
+        if path == "/tree-diff":
+            keys = qs.get("r", [])
+            self._send(200, render_tree_diff(cfg, keys))
+            return
+
         m = re.match(r"^/files/([^/]+)/([^/]+)/([^/]+)/(.+)$", path)
         if m:
             suite, benchmark, run_id, filename = m.groups()
             self._serve_artifact(cfg["output_root"], suite, benchmark, run_id, filename)
+            return
+
+        m = re.match(r"^/api/tree-json/([^/]+)/([^/]+)/([^/]+)$", path)
+        if m:
+            self._api_tree_json(cfg, *m.groups())
+            return
+
+        if path == "/api/tree-diff-json":
+            self._api_tree_diff_json(cfg, qs)
             return
 
         m = re.match(r"^/api/run/([^/]+)/([^/]+)/([^/]+)/events$", path)
@@ -3286,6 +3392,107 @@ class Handler(BaseHTTPRequestHandler):
             return
         with open(path, "rb") as f:
             self._send(200, f.read(), content_type=guess_content_type(filename))
+
+    def _api_tree_json(self, cfg, suite, benchmark, run_id):
+        """Item 3's on-demand JSON endpoint: runs proctree --json against
+        this run's process.tree.txt and returns the parsed result. No
+        artifact is written to disk (per the confirmed design decision) --
+        this always reflects the current process.tree.txt, computed fresh
+        on each request, same synchronous-subprocess shape as the
+        _discovery_* endpoints (run_sync -> _send_json), just reached via
+        GET with path segments (like /files, /report) rather than POST with
+        a JSON body, since there's nothing to post."""
+        if not all(valid_segment(x) for x in (suite, benchmark, run_id)):
+            self._send_json(400, {"error": "invalid path"})
+            return
+        rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+        tree_txt = os.path.join(rundir, TREE_TXT_NAME)
+        if not (os.path.isfile(tree_txt) and os.path.getsize(tree_txt) > 0):
+            self._send_json(404, {"error": f"no {TREE_TXT_NAME} in this run directory"})
+            return
+        argv = build_proctree_json_argv(cfg["proctree_bin"], tree_txt)
+        rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=60)
+        if timed_out:
+            self._send_json(504, {"error": "proctree --json timed out", "command": shell_preview(argv)})
+            return
+        if rc != 0:
+            self._send_json(500, {"error": f"proctree exited {rc}", "command": shell_preview(argv),
+                                   "output": output})
+            return
+        try:
+            data = json.loads(output)
+        except ValueError as e:
+            self._send_json(500, {"error": f"proctree --json produced invalid JSON: {e}",
+                                   "command": shell_preview(argv)})
+            return
+        self._send_json(200, {"command": shell_preview(argv), "data": data})
+
+    def _api_tree_diff_json(self, cfg, qs):
+        """Item 3's tree-diff counterpart to _api_tree_json above: resolves
+        both runs' process.tree.txt, runs proctree --json for each into a
+        temp file (proctree --diff itself only accepts already-exported
+        JSON, per proctree.c's own design -- see CLAUDE.md), then runs
+        proctree --diff --json against the two temp files and returns its
+        output the same way."""
+        a_key = qs.get("a", [None])[0]
+        b_key = qs.get("b", [None])[0]
+        a_segs = parse_run_key(a_key) if a_key else None
+        b_segs = parse_run_key(b_key) if b_key else None
+        if a_segs is None or b_segs is None:
+            self._send_json(400, {"error": "both a and b must be <suite>/<benchmark>/<run_id>"})
+            return
+
+        output_root = cfg["output_root"]
+        tree_txt_a = os.path.join(output_root, *a_segs, TREE_TXT_NAME)
+        tree_txt_b = os.path.join(output_root, *b_segs, TREE_TXT_NAME)
+        for label, path in (("a", tree_txt_a), ("b", tree_txt_b)):
+            if not (os.path.isfile(path) and os.path.getsize(path) > 0):
+                self._send_json(404, {"error": f"no {TREE_TXT_NAME} in run {label}"})
+                return
+
+        tmp_a = tmp_b = None
+        try:
+            commands = []
+            jsons = {}
+            for label, tree_txt in (("a", tree_txt_a), ("b", tree_txt_b)):
+                argv = build_proctree_json_argv(cfg["proctree_bin"], tree_txt)
+                commands.append(shell_preview(argv))
+                rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=60)
+                if timed_out or rc != 0:
+                    self._send_json(500, {"error": f"proctree --json (run {label}) failed",
+                                           "command": shell_preview(argv), "output": output})
+                    return
+                jsons[label] = output
+
+            tmp_a = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+            tmp_a.write(jsons["a"])
+            tmp_a.close()
+            tmp_b = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+            tmp_b.write(jsons["b"])
+            tmp_b.close()
+
+            diff_argv = build_proctree_diff_argv(cfg["proctree_bin"], tmp_a.name, tmp_b.name)
+            commands.append(shell_preview(diff_argv))
+            rc, output, timed_out = run_sync(diff_argv, cwd=REPO_ROOT, timeout=60)
+            if timed_out:
+                self._send_json(504, {"error": "proctree --diff timed out", "command": commands})
+                return
+            # proctree --diff exits 1 (not an error) when the two trees differ --
+            # only a missing/crashed binary (no stdout at all) is a real failure.
+            try:
+                data = json.loads(output)
+            except ValueError as e:
+                self._send_json(500, {"error": f"proctree --diff produced invalid JSON: {e}",
+                                       "command": commands, "output": output})
+                return
+            self._send_json(200, {"command": commands, "data": data})
+        finally:
+            for tmp in (tmp_a, tmp_b):
+                if tmp is not None:
+                    try:
+                        os.unlink(tmp.name)
+                    except OSError:
+                        pass
 
     @staticmethod
     def _parse_workload_and_ids(body):

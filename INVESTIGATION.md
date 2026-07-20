@@ -465,6 +465,26 @@ web launcher's custom-plot column autofit lists the 6 names directly in `SYSTEM_
 than prefix-matching, since there's no per-device/per-interface variation. Verified live: a Python
 process touching a 300MB buffer moved `mem_free_mb` measurably across `--interval` ticks on a 62GB host.
 
+**`proctree` JSON export + interactive viewer + run-to-run diff:** `proctree --json <tree-file>` emits
+one JSON document (per-`comm` summary + full process tree, every field unconditional rather than gated
+by `-M`/`-N`/`-P`/`-U`/`-X`/etc.'s text-mode toggles) instead of the text tree/summary — the interchange
+format both the new web viewer and `--diff` mode consume, versioned via `PROCTREE_JSON_SCHEMA_VERSION`
+(see `doc/ARTIFACT_CONTRACT.md`'s "Tree JSON export"). `proctree --diff [--json] <a.json> <b.json>`
+matches subtrees structurally (ancestor-`comm`-path, disambiguated by sibling occurrence order, since
+pids never correspond across two separate runs), reporting `added`/`removed`/`changed`/`same` per node
+plus a `comm`-keyed `summary_diff` overview; exits 1 if any difference was found, 0 if the trees matched
+exactly. `web/server.py` gained an on-demand `GET /api/tree-json/<suite>/<benchmark>/<run_id>` (shells
+out to `proctree --json`, no artifact written to disk) feeding a new client-side-rendered
+`/tree-viewer/<suite>/<benchmark>/<run_id>` page (`web/static/proctree_viewer.js`: collapsible tree,
+search/filter by `comm`/pid, auto-detected column toggles for whichever `--tree-*` annotations this run
+actually collected), linked from every report that has a `process.tree.txt`. `GET /tree-diff?r=...&r=...`
+reuses the homepage's/`/history`'s existing run-selection checkboxes (a second "Tree diff selected"
+button alongside "Compare selected") to drive the same viewer against `GET /api/tree-diff-json`'s merged
+diff tree, rendering per-node added/removed/changed/same badges. Drops this item from 4.2 Tier 1's
+remaining-work list below (Graphviz export for an already-filtered small subtree remains a possible
+optional secondary output, not implemented — the interactive viewer is the main way to view a whole
+run's tree).
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -612,55 +632,46 @@ has). Ordered in dependency tiers; items within a tier are independently startab
     cores during the run) is a separate, harder capability -- nothing today samples which core a
     process ran on over time, so it needs new instrumentation (periodic `/proc/<pid>/stat` sampling or
     scheduler tracepoints), not just new analysis of data already collected; split out to 4.4.
-3. `proctree` → JSON export + an interactive, filterable web viewer (built on the existing
-    `web/server.py` report infrastructure) + run-to-run tree diff. A real run's tree is hundreds to
-    thousands of processes, so a static Graphviz render is the wrong primary deliverable — it turns
-    into an unreadable hairball at that scale and bakes one fixed set of annotations into the image
-    with no way to toggle which ones show. JSON is still the right interchange format (feeds whatever
-    viewer consumes it); the viewer itself wants collapsible/expandable subtrees, search/filter by
-    `comm`/pid, and per-node annotation columns (futex/io-wait/vmsize/etc.) toggled on and off rather
-    than fixed at render time. Graphviz export can stay as an optional secondary output for an
-    already-filtered small subtree, not the main way to view a whole run's tree.
 
 **Tier 2 — characterization prerequisites:**
 
-4. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
+3. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
     switch/I-O) — needs 4.1's normalized store schema (`wspy-store`) to draw features from.
-5. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
+4. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
     stability) + confidence + top-2 alternatives.
 
 **Tier 3 — launcher/infra follow-ups:**
 
-6. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
+5. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
     They still shell out to `wspy` once per pass today; 4.1's multi-pass execution work scoped this
     collapse as a documented follow-up, not part of that item.
-7. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
+6. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
     of running it now" checkbox) is visible today only via `wspy-queue list`/`show`, not from the web
     UI itself. Bundle in sharing structured configuration provenance with the job format
     (`web/joblib.py`'s job schema and `manifest.h`'s `configuration_provenance` are designed to be
     close in shape but aren't wired together yet).
-8. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
+7. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
     raw/filename-aligned today (comparing actual artifacts across runs, curated or not); annotating a
     comparison itself, or aligning curated block titles across the compared runs, is still open.
 
 **Tier 4 — docs/testing/release process:**
 
-9. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
+8. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
     output).
-10. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
-11. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
+9. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
+10. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
     constant (e.g. `phoronix-test-suite` reportedly has a run-time-estimate command) — today's
     constant is a blunt stand-in; the real constraint is capping process-record data volume for
     publishing, not workload runtime, so a per-workload estimate would size it more accurately than
     one constant across every suite.
-12. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
+11. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
     that catches the class of drift found during the v4.0 release audit: `doc/ARTIFACT_CONTRACT.md`'s
     schema-version examples had silently fallen behind `MANIFEST_SCHEMA_VERSION`/
     `RUN_INDEX_SCHEMA_VERSION`, and `README.md` was missing a whole tool's section. Concretely:
     grep-based checks that doc-quoted schema versions and the documented tool/flag list match the
     actual header constants and `Makefile` binary list, so this doesn't require a manual audit at
     every release again.
-13. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
+12. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
     `MINOR`, grep for stale version-string references across docs, run the full test matrix including
     the `AMDGPU=1` variant, tag, label every merged PR since the last tag, draft release notes from
     the merged-PR list) as a repeatable script or documented checklist instead of redoing it by hand,

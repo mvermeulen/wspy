@@ -45,7 +45,27 @@
 #include <getopt.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 #include "error.h"
+#include "json_util.h"
+#include "json_reader.h"
+
+/* SemVer of the --json/--diff --json document *shape* (independent of any
+ * wspy manifest/run-index schema version) -- bump when fields are added/
+ * removed/renamed in print_json()/run_diff()'s JSON output, matching
+ * MANIFEST_SCHEMA_VERSION's (manifest.h) versioning convention. */
+#define PROCTREE_JSON_SCHEMA_VERSION "1.0.0"
+
+/* getopt_long() values for --json/--diff/--diff-threshold: deliberately
+ * >=256 rather than reusing a short-option letter (the short optstring
+ * below is nearly fully allocated) -- this avoids the exact getopt_long
+ * val-collision bug CLAUDE.md documents was found and fixed in wspy.c
+ * (--no-phase-detect/--tree-connect had colliding vals with '?'/a stray
+ * 'S', so a malformed flag matched the wrong case instead of falling
+ * through to the usage error). */
+#define OPT_JSON 256
+#define OPT_DIFF 257
+#define OPT_DIFF_THRESHOLD 258
 
 FILE *process_file = NULL;
 int treeflag = 1;
@@ -65,6 +85,9 @@ int kflag = 0;
 int jflag = 0;
 int lflag = 0;
 int zflag = 0;
+int json_flag = 0; // --json: emit one JSON document instead of the text tree/summary
+int diff_flag = 0; // --diff: run-to-run tree diff mode (takes two --json-exported files)
+double diff_threshold = 0.01; // --diff-threshold <seconds>: matched-node |delta utime+stime| above which a node counts as "changed"
 int output_width = 80;
 int print_cmdline = 0;
 int clocks_per_second;
@@ -565,6 +588,26 @@ int comm_compare(const void *c1,const void *c2){
   else return strcmp(comm1->comm,comm2->comm);
 }
 
+/* Runs collect_process_totals() over the whole tree and returns the
+ * resulting per-comm rollup as a sorted (comm_compare()), malloc'd array of
+ * *count_out entries -- shared by print_statistics()'s text summary and
+ * print_summary_json()'s JSON summary array so the two can't drift apart
+ * on what "totals per command name" means. Caller frees the returned array. */
+static struct comm_info *build_comm_table(int *count_out){
+  struct comm_info *ci;
+  int count = 0;
+
+  collect_process_totals(root_process);
+  struct comm_info *comm_table = malloc(num_comm_info*sizeof(struct comm_info));
+  for (ci=comm_totals;ci;ci=ci->next){
+    comm_table[count] = *ci;
+    count++;
+  }
+  qsort(comm_table,num_comm_info,sizeof(struct comm_info),comm_compare);
+  *count_out = count;
+  return comm_table;
+}
+
 static void print_statistics(){
   int count;
   int i;
@@ -590,18 +633,9 @@ static void print_statistics(){
   double total_wait_seconds = 0,total_poll_seconds = 0;
 
   printf("%d processes\n",total_processes);
-  
-  struct comm_info *ci;
-  collect_process_totals(root_process);
-  // format and sort
-  struct comm_info *comm_table = malloc(num_comm_info*sizeof(struct comm_info));
-  count = 0;
-  for (ci=comm_totals;ci;ci=ci->next){
-    *(&comm_table[count]) = *ci;
-    count++;
-  }
-  qsort(comm_table,num_comm_info,sizeof(struct comm_info),comm_compare);
-  for (i=0;i<num_comm_info;i++){
+
+  struct comm_info *comm_table = build_comm_table(&count);
+  for (i=0;i<count;i++){
     printf("\t%3d %-20s %8.2f %8.2f",
 	   comm_table[i].count,
 	   comm_table[i].comm,
@@ -717,6 +751,7 @@ static void print_statistics(){
 	   total_poll_seconds,total_poll_count);
   }
   printf("\n");
+  free(comm_table);
 }
 
 static void print_tree(struct process_info *pinfo,int level){
@@ -808,6 +843,583 @@ static void print_tree(struct process_info *pinfo,int level){
   }
 }
 
+/* ---- --json export (INVESTIGATION.md 4.2 Tier 1, "proctree JSON export + interactive viewer + run-to-run diff") ----
+ *
+ * Every field on struct process_info is emitted unconditionally, unlike
+ * text mode's -C/-M/-N/-P/-U/-X/-B/-I/-D/-R/-K/-J/-L/-Z toggles (which only
+ * gate what gets *printed*, never what's collected) -- the whole point of
+ * JSON is letting a viewer toggle columns client-side rather than baking a
+ * fixed set of annotations in at generation time, so nothing is
+ * pre-filtered here. A field that was never collected this run (e.g.
+ * futex_wait_seconds without --tree-futex) is simply 0/null, the same
+ * "indistinguishable from a genuine zero" convention documented on struct
+ * process_info's own fields.
+ */
+
+static void json_write_string_or_null(FILE *out,const char *s){
+  if (s) json_write_string(out,s);
+  else fprintf(out,"null");
+}
+
+static void print_process_json(FILE *out,struct process_info *pinfo){
+  struct process_info *eldest;
+  int first;
+
+  fprintf(out,"{");
+  fprintf(out,"\"pid\":%u,",pinfo->pid);
+  fprintf(out,"\"comm\":"); json_write_string_or_null(out,pinfo->comm); fprintf(out,",");
+  fprintf(out,"\"cmdline\":"); json_write_string_or_null(out,pinfo->cmdline); fprintf(out,",");
+  fprintf(out,"\"ppid\":%u,",pinfo->ppid);
+  fprintf(out,"\"cpu\":%u,",pinfo->processor);
+  fprintf(out,"\"start\":%.6f,",pinfo->start);
+  fprintf(out,"\"finish\":%.6f,",pinfo->finish);
+  fprintf(out,"\"utime_seconds\":%.6f,",(double) pinfo->utime/clocks_per_second);
+  fprintf(out,"\"stime_seconds\":%.6f,",(double) pinfo->stime/clocks_per_second);
+  fprintf(out,"\"vsize_kb\":%lu,",(unsigned long)((pinfo->vsize+512)/1024));
+  fprintf(out,"\"rss_kb\":%lu,",(unsigned long)((pinfo->rss*page_size+512)/1024));
+  fprintf(out,"\"num_threads\":%u,",pinfo->num_threads);
+  fprintf(out,"\"exit_code\":%u,",pinfo->exit_code);
+  fprintf(out,"\"futex_wait_count\":%llu,",pinfo->futex_wait_count);
+  fprintf(out,"\"futex_wait_seconds\":%.6f,",pinfo->futex_wait_seconds);
+  fprintf(out,"\"io_read_wait_count\":%llu,",pinfo->io_read_wait_count);
+  fprintf(out,"\"io_read_wait_seconds\":%.6f,",pinfo->io_read_wait_seconds);
+  fprintf(out,"\"io_write_wait_count\":%llu,",pinfo->io_write_wait_count);
+  fprintf(out,"\"io_write_wait_seconds\":%.6f,",pinfo->io_write_wait_seconds);
+  fprintf(out,"\"io_rchar\":%llu,",pinfo->io_rchar);
+  fprintf(out,"\"io_wchar\":%llu,",pinfo->io_wchar);
+  fprintf(out,"\"io_syscr\":%llu,",pinfo->io_syscr);
+  fprintf(out,"\"io_syscw\":%llu,",pinfo->io_syscw);
+  fprintf(out,"\"io_read_bytes\":%llu,",pinfo->io_read_bytes);
+  fprintf(out,"\"io_write_bytes\":%llu,",pinfo->io_write_bytes);
+  fprintf(out,"\"io_cancelled_write_bytes\":%llu,",pinfo->io_cancelled_write_bytes);
+  fprintf(out,"\"sched_rundelay_seconds\":%.6f,",pinfo->sched_rundelay_seconds);
+  fprintf(out,"\"sched_nr_timeslices\":%llu,",pinfo->sched_nr_timeslices);
+  fprintf(out,"\"vm_hwm_kb\":%lu,",pinfo->vm_hwm_kb);
+  fprintf(out,"\"rss_anon_kb\":%lu,",pinfo->rss_anon_kb);
+  fprintf(out,"\"rss_file_kb\":%lu,",pinfo->rss_file_kb);
+  fprintf(out,"\"rss_shmem_kb\":%lu,",pinfo->rss_shmem_kb);
+  fprintf(out,"\"vm_swap_kb\":%lu,",pinfo->vm_swap_kb);
+  fprintf(out,"\"connect_count\":%llu,",pinfo->connect_count);
+  fprintf(out,"\"connect_seconds\":%.6f,",pinfo->connect_seconds);
+  fprintf(out,"\"nanosleep_count\":%llu,",pinfo->nanosleep_count);
+  fprintf(out,"\"nanosleep_seconds\":%.6f,",pinfo->nanosleep_seconds);
+  fprintf(out,"\"wait_count\":%llu,",pinfo->wait_count);
+  fprintf(out,"\"wait_seconds\":%.6f,",pinfo->wait_seconds);
+  fprintf(out,"\"poll_count\":%llu,",pinfo->poll_count);
+  fprintf(out,"\"poll_seconds\":%.6f,",pinfo->poll_seconds);
+
+  fprintf(out,"\"children\":[");
+  first = 1;
+  if (pinfo->children){
+    for (eldest=pinfo->children;eldest->older_sibling != NULL;eldest=eldest->older_sibling);
+    while (eldest){
+      if (!first) fprintf(out,",");
+      print_process_json(out,eldest);
+      first = 0;
+      eldest = eldest->younger_sibling;
+    }
+  }
+  fprintf(out,"]");
+  fprintf(out,"}");
+}
+
+static void print_comm_info_json(FILE *out,struct comm_info *ci){
+  fprintf(out,"{");
+  fprintf(out,"\"comm\":"); json_write_string(out,ci->comm); fprintf(out,",");
+  fprintf(out,"\"count\":%u,",ci->count);
+  fprintf(out,"\"total_utime_seconds\":%.6f,",(double) ci->total_utime/clocks_per_second);
+  fprintf(out,"\"total_stime_seconds\":%.6f,",(double) ci->total_stime/clocks_per_second);
+  fprintf(out,"\"total_futex_wait_count\":%llu,",ci->total_futex_wait_count);
+  fprintf(out,"\"total_futex_wait_seconds\":%.6f,",ci->total_futex_wait_seconds);
+  fprintf(out,"\"total_io_read_wait_count\":%llu,",ci->total_io_read_wait_count);
+  fprintf(out,"\"total_io_read_wait_seconds\":%.6f,",ci->total_io_read_wait_seconds);
+  fprintf(out,"\"total_io_write_wait_count\":%llu,",ci->total_io_write_wait_count);
+  fprintf(out,"\"total_io_write_wait_seconds\":%.6f,",ci->total_io_write_wait_seconds);
+  fprintf(out,"\"total_io_read_bytes\":%llu,",ci->total_io_read_bytes);
+  fprintf(out,"\"total_io_write_bytes\":%llu,",ci->total_io_write_bytes);
+  fprintf(out,"\"total_sched_rundelay_seconds\":%.6f,",ci->total_sched_rundelay_seconds);
+  fprintf(out,"\"total_sched_nr_timeslices\":%llu,",ci->total_sched_nr_timeslices);
+  fprintf(out,"\"total_vm_hwm_kb\":%lu,",ci->total_vm_hwm_kb);
+  fprintf(out,"\"total_rss_anon_kb\":%lu,",ci->total_rss_anon_kb);
+  fprintf(out,"\"total_rss_file_kb\":%lu,",ci->total_rss_file_kb);
+  fprintf(out,"\"total_rss_shmem_kb\":%lu,",ci->total_rss_shmem_kb);
+  fprintf(out,"\"total_vm_swap_kb\":%lu,",ci->total_vm_swap_kb);
+  fprintf(out,"\"total_connect_count\":%llu,",ci->total_connect_count);
+  fprintf(out,"\"total_connect_seconds\":%.6f,",ci->total_connect_seconds);
+  fprintf(out,"\"total_nanosleep_count\":%llu,",ci->total_nanosleep_count);
+  fprintf(out,"\"total_nanosleep_seconds\":%.6f,",ci->total_nanosleep_seconds);
+  fprintf(out,"\"total_wait_count\":%llu,",ci->total_wait_count);
+  fprintf(out,"\"total_wait_seconds\":%.6f,",ci->total_wait_seconds);
+  fprintf(out,"\"total_poll_count\":%llu,",ci->total_poll_count);
+  fprintf(out,"\"total_poll_seconds\":%.6f",ci->total_poll_seconds);
+  fprintf(out,"}");
+}
+
+static void print_summary_json(FILE *out){
+  int count,i;
+  struct comm_info *comm_table = build_comm_table(&count);
+
+  fprintf(out,"[");
+  for (i=0;i<count;i++){
+    if (i) fprintf(out,",");
+    print_comm_info_json(out,&comm_table[i]);
+  }
+  fprintf(out,"]");
+  free(comm_table);
+}
+
+static void print_json(FILE *out,const char *source_file){
+  fprintf(out,"{");
+  fprintf(out,"\"schema_version\":"); json_write_string(out,PROCTREE_JSON_SCHEMA_VERSION); fprintf(out,",");
+  fprintf(out,"\"source_file\":"); json_write_string(out,source_file); fprintf(out,",");
+  fprintf(out,"\"process_count\":%d,",total_processes);
+  fprintf(out,"\"max_concurrent_processes\":%d,",max_num_processes);
+  fprintf(out,"\"summary\":");
+  print_summary_json(out);
+  fprintf(out,",\"tree\":");
+  if (root_process) print_process_json(out,root_process);
+  else fprintf(out,"null");
+  fprintf(out,"}\n");
+}
+
+/* ---- --diff: run-to-run tree diff (INVESTIGATION.md 4.2 Tier 1, same item) ----
+ *
+ * Takes two files already produced by --json (not raw wspy --tree output --
+ * see run_diff()) and matches subtrees structurally: pids never correspond
+ * across two separate runs, so matching is instead by ancestor-comm-path,
+ * disambiguated by same-comm sibling occurrence order (implemented as a
+ * direct recursive merge below, not a flattened global signature map).
+ *
+ * Add an entry here to diff another per-process metric -- mirrors this
+ * codebase's sanity_bounds[]/multipass_group_names[] table-driven idiom.
+ */
+struct diff_metric { const char *json_key; const char *label; };
+static const struct diff_metric diff_metrics[] = {
+  {"utime_seconds","utime"},
+  {"stime_seconds","stime"},
+  {"futex_wait_seconds","futex_wait"},
+  {"io_read_wait_seconds","io_read_wait"},
+  {"io_write_wait_seconds","io_write_wait"},
+  {"io_read_bytes","io_read_bytes"},
+  {"io_write_bytes","io_write_bytes"},
+  {"sched_rundelay_seconds","run_delay"},
+  {"connect_seconds","connect"},
+  {"nanosleep_seconds","nanosleep"},
+  {"wait_seconds","wait"},
+  {"poll_seconds","poll"},
+};
+#define NUM_DIFF_METRICS (sizeof(diff_metrics)/sizeof(diff_metrics[0]))
+#define DIFF_METRIC_UTIME 0
+#define DIFF_METRIC_STIME 1
+
+struct diff_node {
+  char *path;
+  char *comm;
+  const struct json_value *a; // node object from run A, or NULL if added
+  const struct json_value *b; // node object from run B, or NULL if removed
+  const char *status; // "matched", "added", or "removed"
+  int changed; // matched only: 1 if |delta utime+stime| exceeds the threshold
+  double delta[NUM_DIFF_METRICS]; // matched only: b-a per diff_metrics[] entry
+  struct diff_node **children;
+  size_t num_children;
+};
+
+// dynamically growable list of matched diff_node*, used to sort/cap the
+// human report's "changed" section without needing a second tree walk
+struct diff_node_list { struct diff_node **items; size_t count,capacity; };
+
+static void diff_node_list_add(struct diff_node_list *list,struct diff_node *node){
+  if (list->count == list->capacity){
+    list->capacity = list->capacity ? list->capacity*2 : 16;
+    list->items = realloc(list->items,list->capacity*sizeof(*list->items));
+  }
+  list->items[list->count++] = node;
+}
+
+static const char *diff_node_display_status(struct diff_node *dn){
+  if (strcmp(dn->status,"matched")) return dn->status;
+  return dn->changed ? "changed" : "same";
+}
+
+// one comm value's children on one side, in original (eldest-to-youngest) order
+struct comm_group { char *comm; const struct json_value **items; size_t count,capacity; };
+struct comm_group_table { struct comm_group *groups; size_t count,capacity; };
+
+static struct comm_group *comm_group_table_find_or_add(struct comm_group_table *t,const char *comm){
+  size_t i;
+  for (i=0;i<t->count;i++) if (!strcmp(t->groups[i].comm,comm)) return &t->groups[i];
+  if (t->count == t->capacity){
+    t->capacity = t->capacity ? t->capacity*2 : 8;
+    t->groups = realloc(t->groups,t->capacity*sizeof(*t->groups));
+  }
+  struct comm_group *g = &t->groups[t->count++];
+  g->comm = strdup(comm);
+  g->items = NULL;
+  g->count = 0;
+  g->capacity = 0;
+  return g;
+}
+
+static void comm_group_add_item(struct comm_group *g,const struct json_value *item){
+  if (g->count == g->capacity){
+    g->capacity = g->capacity ? g->capacity*2 : 8;
+    g->items = realloc(g->items,g->capacity*sizeof(*g->items));
+  }
+  g->items[g->count++] = item;
+}
+
+static void build_comm_group_table(const struct json_value *children_array,struct comm_group_table *t){
+  size_t n = json_array_len(children_array);
+  size_t i;
+  for (i=0;i<n;i++){
+    const struct json_value *child = json_array_get(children_array,i);
+    const char *comm = json_get_string(child,"comm","?");
+    comm_group_add_item(comm_group_table_find_or_add(t,comm),child);
+  }
+}
+
+static void free_comm_group_table(struct comm_group_table *t){
+  size_t i;
+  for (i=0;i<t->count;i++){
+    free(t->groups[i].comm);
+    free(t->groups[i].items);
+  }
+  free(t->groups);
+}
+
+static struct diff_node *merge_nodes(const struct json_value *a,const struct json_value *b,
+				     const char *parent_path,int occurrence,double threshold,
+				     struct diff_node_list *flat){
+  struct diff_node *node = calloc(1,sizeof(*node));
+  const char *comm = json_get_string(a ? a : b,"comm","?");
+  char path[1024];
+  size_t i;
+
+  if (occurrence > 0) snprintf(path,sizeof(path),"%s/%s#%d",parent_path,comm,occurrence);
+  else snprintf(path,sizeof(path),"%s/%s",parent_path,comm);
+  node->path = strdup(path);
+  node->comm = strdup(comm);
+  node->a = a;
+  node->b = b;
+
+  if (a && b){
+    node->status = "matched";
+    for (i=0;i<NUM_DIFF_METRICS;i++){
+      node->delta[i] = json_get_number(b,diff_metrics[i].json_key,0) -
+			json_get_number(a,diff_metrics[i].json_key,0);
+    }
+    node->changed = fabs(node->delta[DIFF_METRIC_UTIME]) +
+		     fabs(node->delta[DIFF_METRIC_STIME]) > threshold;
+    diff_node_list_add(flat,node);
+  } else if (a){
+    node->status = "removed";
+  } else {
+    node->status = "added";
+  }
+
+  struct comm_group_table ta = {0},tb = {0};
+  if (a) build_comm_group_table(json_object_get(a,"children"),&ta);
+  if (b) build_comm_group_table(json_object_get(b,"children"),&tb);
+
+  size_t cap = 8,n = 0;
+  struct diff_node **children = malloc(cap*sizeof(*children));
+  size_t gi,idx;
+
+  for (gi=0;gi<ta.count;gi++){
+    struct comm_group *ga = &ta.groups[gi];
+    struct comm_group *gb = NULL;
+    size_t bi;
+    for (bi=0;bi<tb.count;bi++){
+      if (!strcmp(tb.groups[bi].comm,ga->comm)){ gb = &tb.groups[bi]; break; }
+    }
+    size_t count_a = ga->count,count_b = gb ? gb->count : 0;
+    size_t maxc = count_a > count_b ? count_a : count_b;
+    for (idx=0;idx<maxc;idx++){
+      const struct json_value *ca = idx < count_a ? ga->items[idx] : NULL;
+      const struct json_value *cb = (gb && idx < count_b) ? gb->items[idx] : NULL;
+      if (n == cap){ cap *= 2; children = realloc(children,cap*sizeof(*children)); }
+      children[n++] = merge_nodes(ca,cb,node->path,(int)idx,threshold,flat);
+    }
+  }
+  for (gi=0;gi<tb.count;gi++){
+    struct comm_group *gb = &tb.groups[gi];
+    int found_in_a = 0;
+    size_t ai;
+    for (ai=0;ai<ta.count;ai++) if (!strcmp(ta.groups[ai].comm,gb->comm)){ found_in_a = 1; break; }
+    if (found_in_a) continue;
+    for (idx=0;idx<gb->count;idx++){
+      if (n == cap){ cap *= 2; children = realloc(children,cap*sizeof(*children)); }
+      children[n++] = merge_nodes(NULL,gb->items[idx],node->path,(int)idx,threshold,flat);
+    }
+  }
+  free_comm_group_table(&ta);
+  free_comm_group_table(&tb);
+
+  node->children = children;
+  node->num_children = n;
+  return node;
+}
+
+static void collect_topmost_changes(struct diff_node *dn,struct diff_node_list *added,struct diff_node_list *removed){
+  size_t i;
+  if (!strcmp(dn->status,"added")){ diff_node_list_add(added,dn); return; }
+  if (!strcmp(dn->status,"removed")){ diff_node_list_add(removed,dn); return; }
+  for (i=0;i<dn->num_children;i++) collect_topmost_changes(dn->children[i],added,removed);
+}
+
+static void diff_node_subtree_totals(struct diff_node *dn,int *count,double *cpu_seconds){
+  const struct json_value *side = dn->a ? dn->a : dn->b;
+  size_t i;
+  (*count)++;
+  if (side){
+    *cpu_seconds += json_get_number(side,"utime_seconds",0) + json_get_number(side,"stime_seconds",0);
+  }
+  for (i=0;i<dn->num_children;i++) diff_node_subtree_totals(dn->children[i],count,cpu_seconds);
+}
+
+static int changed_node_compare(const void *v1,const void *v2){
+  struct diff_node *const *n1 = v1;
+  struct diff_node *const *n2 = v2;
+  double c1 = fabs((*n1)->delta[DIFF_METRIC_UTIME]) + fabs((*n1)->delta[DIFF_METRIC_STIME]);
+  double c2 = fabs((*n2)->delta[DIFF_METRIC_UTIME]) + fabs((*n2)->delta[DIFF_METRIC_STIME]);
+  if (c1 > c2) return -1;
+  if (c1 < c2) return 1;
+  return 0;
+}
+
+#define MAX_DIFF_REPORT_ROWS 50
+
+static void print_diff_side_json(FILE *out,const struct json_value *node){
+  size_t i;
+  if (!node){ fprintf(out,"null"); return; }
+  fprintf(out,"{");
+  fprintf(out,"\"pid\":%.0f,",json_get_number(node,"pid",0));
+  fprintf(out,"\"comm\":"); json_write_string_or_null(out,json_get_string(node,"comm",NULL));
+  fprintf(out,",\"cmdline\":"); json_write_string_or_null(out,json_get_string(node,"cmdline",NULL));
+  for (i=0;i<NUM_DIFF_METRICS;i++){
+    fprintf(out,",\"%s\":%.6f",diff_metrics[i].json_key,json_get_number(node,diff_metrics[i].json_key,0));
+  }
+  fprintf(out,"}");
+}
+
+static void print_diff_node_json(FILE *out,struct diff_node *dn){
+  size_t i;
+  fprintf(out,"{");
+  fprintf(out,"\"path\":"); json_write_string(out,dn->path); fprintf(out,",");
+  fprintf(out,"\"comm\":"); json_write_string(out,dn->comm); fprintf(out,",");
+  fprintf(out,"\"status\":\"%s\",",diff_node_display_status(dn));
+  fprintf(out,"\"a\":"); print_diff_side_json(out,dn->a); fprintf(out,",");
+  fprintf(out,"\"b\":"); print_diff_side_json(out,dn->b);
+  if (!strcmp(dn->status,"matched")){
+    fprintf(out,",\"delta\":{");
+    for (i=0;i<NUM_DIFF_METRICS;i++){
+      if (i) fprintf(out,",");
+      fprintf(out,"\"%s\":%.6f",diff_metrics[i].json_key,dn->delta[i]);
+    }
+    fprintf(out,"}");
+  }
+  fprintf(out,",\"children\":[");
+  for (i=0;i<dn->num_children;i++){
+    if (i) fprintf(out,",");
+    print_diff_node_json(out,dn->children[i]);
+  }
+  fprintf(out,"]}");
+}
+
+// joins the two files' top-level "summary" arrays by comm name (not tree
+// position) -- a quick "did this command's aggregate behavior change at
+// all" overview, complementary to (not a replacement for) the structural
+// diff_tree above.
+static void print_summary_diff_json(FILE *out,const struct json_value *summary_a,const struct json_value *summary_b){
+  size_t na = json_array_len(summary_a),nb = json_array_len(summary_b);
+  int *b_matched = calloc(nb ? nb : 1,sizeof(int));
+  int first = 1;
+  size_t i,j;
+
+  fprintf(out,"[");
+  for (i=0;i<na;i++){
+    const struct json_value *ea = json_array_get(summary_a,i);
+    const char *comm = json_get_string(ea,"comm","?");
+    const struct json_value *eb = NULL;
+    for (j=0;j<nb;j++){
+      const struct json_value *cand = json_array_get(summary_b,j);
+      if (!strcmp(json_get_string(cand,"comm","?"),comm)){ eb = cand; b_matched[j] = 1; break; }
+    }
+    if (!first) fprintf(out,",");
+    first = 0;
+    fprintf(out,"{\"comm\":"); json_write_string(out,comm); fprintf(out,",");
+    fprintf(out,"\"status\":\"%s\",",eb ? "matched" : "removed");
+    fprintf(out,"\"count_a\":%.0f,",json_get_number(ea,"count",0));
+    fprintf(out,"\"count_b\":%.0f,",eb ? json_get_number(eb,"count",0) : 0.0);
+    fprintf(out,"\"total_utime_seconds_a\":%.6f,",json_get_number(ea,"total_utime_seconds",0));
+    fprintf(out,"\"total_utime_seconds_b\":%.6f,",eb ? json_get_number(eb,"total_utime_seconds",0) : 0.0);
+    fprintf(out,"\"total_stime_seconds_a\":%.6f,",json_get_number(ea,"total_stime_seconds",0));
+    fprintf(out,"\"total_stime_seconds_b\":%.6f",eb ? json_get_number(eb,"total_stime_seconds",0) : 0.0);
+    fprintf(out,"}");
+  }
+  for (j=0;j<nb;j++){
+    if (b_matched[j]) continue;
+    const struct json_value *eb = json_array_get(summary_b,j);
+    if (!first) fprintf(out,",");
+    first = 0;
+    fprintf(out,"{\"comm\":"); json_write_string(out,json_get_string(eb,"comm","?")); fprintf(out,",");
+    fprintf(out,"\"status\":\"added\",\"count_a\":0,");
+    fprintf(out,"\"count_b\":%.0f,",json_get_number(eb,"count",0));
+    fprintf(out,"\"total_utime_seconds_a\":0,\"total_utime_seconds_b\":%.6f,",json_get_number(eb,"total_utime_seconds",0));
+    fprintf(out,"\"total_stime_seconds_a\":0,\"total_stime_seconds_b\":%.6f",json_get_number(eb,"total_stime_seconds",0));
+    fprintf(out,"}");
+  }
+  fprintf(out,"]");
+  free(b_matched);
+}
+
+static int print_diff_text_summary(FILE *out,const struct json_value *summary_a,const struct json_value *summary_b){
+  size_t na = json_array_len(summary_a),nb = json_array_len(summary_b);
+  int *b_matched = calloc(nb ? nb : 1,sizeof(int));
+  int any_diff = 0;
+  size_t i,j;
+
+  fprintf(out,"Summary diff (by command name, not tree position):\n");
+  for (i=0;i<na;i++){
+    const struct json_value *ea = json_array_get(summary_a,i);
+    const char *comm = json_get_string(ea,"comm","?");
+    const struct json_value *eb = NULL;
+    for (j=0;j<nb;j++){
+      const struct json_value *cand = json_array_get(summary_b,j);
+      if (!strcmp(json_get_string(cand,"comm","?"),comm)){ eb = cand; b_matched[j] = 1; break; }
+    }
+    if (!eb){
+      fprintf(out,"  - %-20s count=%.0f (removed)\n",comm,json_get_number(ea,"count",0));
+      any_diff = 1;
+      continue;
+    }
+    double ua = json_get_number(ea,"total_utime_seconds",0),ub = json_get_number(eb,"total_utime_seconds",0);
+    double sa = json_get_number(ea,"total_stime_seconds",0),sb = json_get_number(eb,"total_stime_seconds",0);
+    double ca = json_get_number(ea,"count",0),cb = json_get_number(eb,"count",0);
+    if (ca != cb || fabs(ub-ua) > 1e-9 || fabs(sb-sa) > 1e-9){
+      fprintf(out,"  ~ %-20s count=%.0f->%.0f utime=%.3f->%.3f stime=%.3f->%.3f\n",
+	      comm,ca,cb,ua,ub,sa,sb);
+      any_diff = 1;
+    }
+  }
+  for (j=0;j<nb;j++){
+    if (b_matched[j]) continue;
+    const struct json_value *eb = json_array_get(summary_b,j);
+    fprintf(out,"  + %-20s count=%.0f (added)\n",json_get_string(eb,"comm","?"),json_get_number(eb,"count",0));
+    any_diff = 1;
+  }
+  free(b_matched);
+  fprintf(out,"\n");
+  return any_diff;
+}
+
+static void print_added_removed_subtree(FILE *out,struct diff_node *dn,const char *label){
+  int count = 0;
+  double cpu_seconds = 0;
+  diff_node_subtree_totals(dn,&count,&cpu_seconds);
+  fprintf(out,"  %s %s -- %d process%s, cpu_time=%.3fs\n",
+	  label,dn->path,count,count == 1 ? "" : "es",cpu_seconds);
+}
+
+// runs the full diff between two --json-exported files and writes either the
+// default human-readable report or, with json_flag, the merged diff tree as
+// JSON. Returns 0 if the two trees matched exactly (no added/removed/changed
+// nodes), 1 if any difference was found -- diff(1)'s own exit-code
+// convention, since a run-to-run diff with no differences is itself a
+// meaningful (and testable) answer.
+static int run_diff(const char *file_a,const char *file_b,int json_out,double threshold){
+  char errbuf[256];
+  struct json_value *root_a = json_parse_file(file_a,errbuf,sizeof(errbuf));
+  if (!root_a){
+    fatal("unable to parse %s as JSON (%s) -- did you forget to run '%s --json' first?\n",
+	  file_a,errbuf,"proctree");
+  }
+  struct json_value *root_b = json_parse_file(file_b,errbuf,sizeof(errbuf));
+  if (!root_b){
+    fatal("unable to parse %s as JSON (%s) -- did you forget to run '%s --json' first?\n",
+	  file_b,errbuf,"proctree");
+  }
+
+  const struct json_value *tree_a = json_object_get(root_a,"tree");
+  const struct json_value *tree_b = json_object_get(root_b,"tree");
+  const struct json_value *summary_a = json_object_get(root_a,"summary");
+  const struct json_value *summary_b = json_object_get(root_b,"summary");
+
+  struct diff_node_list flat = {0};
+  struct diff_node *root_diff = merge_nodes(tree_a,tree_b,"",0,threshold,&flat);
+
+  int any_changed = 0;
+  size_t i;
+  for (i=0;i<flat.count;i++) if (flat.items[i]->changed) any_changed = 1;
+
+  struct diff_node_list added = {0},removed = {0};
+  collect_topmost_changes(root_diff,&added,&removed);
+  int any_diff = any_changed || added.count > 0 || removed.count > 0;
+
+  if (json_out){
+    fprintf(stdout,"{");
+    fprintf(stdout,"\"schema_version\":"); json_write_string(stdout,PROCTREE_JSON_SCHEMA_VERSION); fprintf(stdout,",");
+    fprintf(stdout,"\"run_a\":{\"source_file\":"); json_write_string(stdout,file_a);
+    fprintf(stdout,",\"process_count\":%.0f,\"max_concurrent_processes\":%.0f},",
+	    json_get_number(root_a,"process_count",0),json_get_number(root_a,"max_concurrent_processes",0));
+    fprintf(stdout,"\"run_b\":{\"source_file\":"); json_write_string(stdout,file_b);
+    fprintf(stdout,",\"process_count\":%.0f,\"max_concurrent_processes\":%.0f},",
+	    json_get_number(root_b,"process_count",0),json_get_number(root_b,"max_concurrent_processes",0));
+    fprintf(stdout,"\"diff_metrics\":[");
+    for (i=0;i<NUM_DIFF_METRICS;i++){
+      if (i) fprintf(stdout,",");
+      json_write_string(stdout,diff_metrics[i].json_key);
+    }
+    fprintf(stdout,"],");
+    fprintf(stdout,"\"summary_diff\":"); print_summary_diff_json(stdout,summary_a,summary_b); fprintf(stdout,",");
+    fprintf(stdout,"\"diff_tree\":"); print_diff_node_json(stdout,root_diff);
+    fprintf(stdout,"}\n");
+  } else {
+    fprintf(stdout,"proctree diff: %s vs %s\n",file_a,file_b);
+    fprintf(stdout,"run A: %.0f processes (max concurrent %.0f)\n",
+	    json_get_number(root_a,"process_count",0),json_get_number(root_a,"max_concurrent_processes",0));
+    fprintf(stdout,"run B: %.0f processes (max concurrent %.0f)\n\n",
+	    json_get_number(root_b,"process_count",0),json_get_number(root_b,"max_concurrent_processes",0));
+
+    if (print_diff_text_summary(stdout,summary_a,summary_b)) any_diff = 1;
+
+    if (added.count || removed.count){
+      fprintf(stdout,"Added/removed subtrees:\n");
+      for (i=0;i<added.count;i++) print_added_removed_subtree(stdout,added.items[i],"+ added subtree:");
+      for (i=0;i<removed.count;i++) print_added_removed_subtree(stdout,removed.items[i],"- removed subtree:");
+      fprintf(stdout,"\n");
+    }
+
+    qsort(flat.items,flat.count,sizeof(*flat.items),changed_node_compare);
+    size_t num_changed = 0;
+    for (i=0;i<flat.count;i++) if (flat.items[i]->changed) num_changed++;
+    if (num_changed){
+      fprintf(stdout,"Changed (sorted by |delta utime+stime|, top %d):\n",MAX_DIFF_REPORT_ROWS);
+      size_t shown = 0;
+      for (i=0;i<flat.count && shown<MAX_DIFF_REPORT_ROWS;i++){
+	struct diff_node *dn = flat.items[i];
+	if (!dn->changed) continue;
+	fprintf(stdout,"  ~ %-40s utime=%.3f->%.3f (%+.3f) stime=%.3f->%.3f (%+.3f)\n",
+		dn->path,
+		json_get_number(dn->a,"utime_seconds",0),json_get_number(dn->b,"utime_seconds",0),
+		dn->delta[DIFF_METRIC_UTIME],
+		json_get_number(dn->a,"stime_seconds",0),json_get_number(dn->b,"stime_seconds",0),
+		dn->delta[DIFF_METRIC_STIME]);
+	shown++;
+      }
+      if (num_changed > shown){
+	fprintf(stdout,"  (+%zu more)\n",num_changed-shown);
+      }
+      fprintf(stdout,"\n");
+    }
+
+    fprintf(stdout,"summary: %zu subtree%s added, %zu removed, %zu matched (%zu changed beyond %.3fs threshold)\n",
+	    added.count,added.count == 1 ? "" : "s",removed.count,flat.count,num_changed,threshold);
+  }
+
+  return any_diff ? 1 : 0;
+}
+
 
 #ifndef TEST_PROCTREE
 int main(int argc,char *const argv[],char *const envp[]){
@@ -828,8 +1440,25 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   initialize_error_subsystem(argv[0],"-");
 
   // parse options
-  while ((opt = getopt(argc,argv,"+BbCcDdFfIiJjKkLlMmNnPpRrSsTtUuvw:XxZz")) != -1){
+  static struct option long_options[] = {
+    {"json",no_argument,0,OPT_JSON},
+    {"diff",no_argument,0,OPT_DIFF},
+    {"diff-threshold",required_argument,0,OPT_DIFF_THRESHOLD},
+    {0,0,0,0}
+  };
+  while ((opt = getopt_long(argc,argv,"+BbCcDdFfIiJjKkLlMmNnPpRrSsTtUuvw:XxZz",long_options,NULL)) != -1){
     switch(opt){
+    case OPT_JSON:
+      json_flag = 1;
+      break;
+    case OPT_DIFF:
+      diff_flag = 1;
+      break;
+    case OPT_DIFF_THRESHOLD:
+      if (sscanf(optarg,"%lf",&diff_threshold) != 1){
+	warning("bad diff threshold:%s ignored\n",optarg);
+      }
+      break;
     case 'B':
       bflag = 1;
       break;
@@ -946,7 +1575,8 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       break;
     default:
     usage:
-      fatal("usage: %s -[BbCcDdFfIiJjKkLlMmNnPpRrSsTtUuvXxZz][-w width] file\n"
+      fatal("usage: %s -[BbCcDdFfIiJjKkLlMmNnPpRrSsTtUuvXxZz][-w width] [--json] file\n"
+	    "       %s --diff [--json] [--diff-threshold secs] a.json b.json\n"
 	    "\t-B\tturn on I/O-wait-time printing (per-pid and summary totals)\n"
 	    "\t-b\tturn off I/O-wait-time printing (default)\n"
 	    "\t-C\tturn on longer command line\n"
@@ -996,10 +1626,35 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 	    "anything (beyond zeroes) if wspy was run with --tree-futex,\n"
 	    "--tree-io-wait, --tree-io, --tree-schedstat, --tree-vmsize,\n"
 	    "--tree-connect, --tree-nanosleep, --tree-wait, or --tree-poll\n"
-	    "respectively.\n",
-	    argv[0]);
+	    "respectively.\n"
+	    "\t--json\temit one JSON document (tree + per-comm summary) instead of\n"
+	    "\t\tthe text tree/summary above; ignores every -[BbCcDdFfIiJjKkLlMmNnPpRrRsSTtUuvXxZz]\n"
+	    "\t\ttoggle (JSON always includes every field, so a viewer can choose\n"
+	    "\t\twhich columns to show)\n"
+	    "\t--diff\trun-to-run tree diff: takes exactly two --json-exported files\n"
+	    "\t\t(not raw wspy --tree output) as the trailing arguments and\n"
+	    "\t\tmatches subtrees by ancestor-comm-path + sibling occurrence\n"
+	    "\t\torder; add --json for a machine-readable merged diff tree\n"
+	    "\t\tinstead of the default human-readable report; exits 1 if any\n"
+	    "\t\tdifference was found, 0 if the two trees matched exactly\n"
+	    "\t--diff-threshold secs\tminimum |delta utime+stime| for a matched\n"
+	    "\t\tnode to count as \"changed\" rather than \"same\" (default 0.01)\n",
+	    argv[0],argv[0]);
       break;
     }
+  }
+
+  if (diff_flag){
+    if (optind >= argc){
+      fatal("missing first JSON file (usage: %s --diff [--json] <a.json> <b.json>)\n",argv[0]);
+    }
+    if (optind+1 >= argc){
+      fatal("missing second JSON file (usage: %s --diff [--json] <a.json> <b.json>)\n",argv[0]);
+    }
+    if (argc > optind+2){
+      warning("extra arguments after %s %s ignored\n",argv[optind],argv[optind+1]);
+    }
+    return run_diff(argv[optind],argv[optind+1],json_flag,diff_threshold);
   }
 
   if (optind >= argc){
@@ -1069,8 +1724,12 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     }
   }
 
-  if (statflag) print_statistics();
-  if (treeflag) print_tree(root_process,0);
+  if (json_flag){
+    print_json(stdout,argv[optind]);
+  } else {
+    if (statflag) print_statistics();
+    if (treeflag) print_tree(root_process,0);
+  }
 
   return 0;
 }

@@ -52,8 +52,8 @@ all:	wspy cpu_info proctree wspy-validate wspy-ledger wspy-store wspy-summary ws
 wspy:	wspy.o topdown.o error.o system.o json_util.o manifest.o run_index.o coverage.o provenance.o ibs.o power.o preflight.o phase.o multipass.o affinity.o gpu_fusion.o cpu_info.c cpu_info.h
 	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c $(GPU_SRCS) error.o system.o json_util.o manifest.o run_index.o coverage.o provenance.o ibs.o power.o preflight.o phase.o multipass.o affinity.o gpu_fusion.o $(LIBS)
 
-proctree:	proctree.o error.o
-	$(CC) -o proctree proctree.o error.o
+proctree:	proctree.o error.o json_util.o json_reader.o
+	$(CC) -o proctree proctree.o error.o json_util.o json_reader.o -lm
 
 wspy-validate:	validate.o json_reader.o
 	$(CC) -o wspy-validate $(CFLAGS) validate.o json_reader.o -lm
@@ -120,7 +120,7 @@ preflight.o: preflight.h wspy.h cpu_info.h error.h
 phase.o: phase.h wspy.h cpu_info.h
 multipass.o: multipass.h wspy.h cpu_info.h error.h preflight.h
 affinity.o: affinity.h wspy.h cpu_info.h error.h
-proctree.o: error.h
+proctree.o: error.h json_util.h json_reader.h
 topdown.o: error.h wspy.h cpu_info.h coverage.h ptrace_arch.h phase.h affinity.h power.h
 validate.o: json_reader.h manifest.h provenance.h
 ledger.o: json_reader.h run_index.h manifest.h
@@ -150,8 +150,8 @@ test_wspy: test_wspy.c wspy.c wspy.h cpu_info.h error.h manifest.h manifest.c ru
 	$(CC) -g -DAMDGPU=0 -DNVIDIA=0 -c -o test_affinity_probe.o affinity.c
 	$(CC) -o test_wspy -g -DAMDGPU=0 -DNVIDIA=0 -DTEST_WSPY test_wspy.c test_error.o test_cpu_info.o test_system.o test_topdown.o test_json_util.o test_manifest.o test_run_index.o test_coverage.o test_provenance.o test_ibs_probe.o test_power_probe.o test_preflight_probe.o test_phase_probe.o test_multipass_probe.o test_affinity_probe.o -lpthread -lm
 
-test_proctree: test_proctree.c proctree.c error.h error.o
-	$(CC) -o test_proctree $(CFLAGS) -DTEST_PROCTREE test_proctree.c error.o $(LIBS)
+test_proctree: test_proctree.c proctree.c error.h error.o json_util.c json_reader.c json_util.h json_reader.h
+	$(CC) -o test_proctree $(CFLAGS) -DTEST_PROCTREE test_proctree.c error.o json_util.c json_reader.c $(LIBS)
 
 test_validate: test_validate.c validate.c json_reader.c json_reader.h manifest.h
 	$(CC) -o test_validate $(CFLAGS) -DTEST_VALIDATE test_validate.c json_reader.c -lm

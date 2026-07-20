@@ -849,6 +849,19 @@ def valid_relpath(s):
     return all(valid_segment(part) for part in s.split("/"))
 
 
+def parse_run_key(key):
+    """Parses a "<suite>/<benchmark>/<run_id>" key -- the shape /compare's
+    checkbox form (name="r") and the tree-diff view both use to
+    identify a run -- into (suite, benchmark, run_id), or None if it isn't
+    exactly three valid_segment()-passing components. Factored out of
+    render_compare()'s own inline key-splitting so a second call site
+    (the tree-diff view) doesn't need a third copy of the same check."""
+    segs = key.split("/")
+    if len(segs) != 3 or not all(valid_segment(s) for s in segs):
+        return None
+    return tuple(segs)
+
+
 def make_run_id():
     # Same shape as wspy-run's own <timestamp>.<ms>-<suffix> run ids (see
     # run_index.c's format_run_id()), but this server is long-running so a
@@ -965,6 +978,23 @@ def build_proctree_argv(proctree_bin, tree_txt_path, cmdline=False, futex=False,
         argv.append("-Z")
     argv.append(tree_txt_path)
     return argv
+
+
+def build_proctree_json_argv(proctree_bin, tree_txt_path):
+    """proctree --json (INVESTIGATION.md 4.2 Tier 1, "proctree JSON export +
+    interactive viewer + run-to-run diff"): emits one JSON document (tree +
+    per-comm summary) instead of the text views build_proctree_argv() above
+    produces, for the web viewer's on-demand /api/tree-json endpoint to
+    consume directly."""
+    return [proctree_bin, "--json", tree_txt_path]
+
+
+def build_proctree_diff_argv(proctree_bin, json_a_path, json_b_path):
+    """proctree --diff --json (run-to-run tree diff, same item): both
+    arguments must already be --json-exported files (see
+    build_proctree_json_argv() above), not raw process.tree.txt -- JSON is
+    the one interchange format both the diff and the viewer consume."""
+    return [proctree_bin, "--diff", "--json", json_a_path, json_b_path]
 
 
 def run_proctree_besteffort(emit, cfg, rundir, cmdline=False, futex=False, io=False, io_wait=False,

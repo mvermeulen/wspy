@@ -469,6 +469,78 @@ the reference reader):
   small, additive-only so far, and consumed by exactly one first-party reader (`proctree`). If a
   breaking change to the line grammar is ever needed, that would be the point to add one.
 
+### Tree JSON export (`proctree --json`)
+
+`INVESTIGATION.md`'s 4.2 Tier 1 "`proctree` → JSON export + interactive viewer + run-to-run diff"
+item. `proctree --json <tree-file>` parses the raw tree file exactly as the text-mode tool does, then
+emits one JSON document to stdout instead of the text tree/summary — this **is** the JSON interchange
+format the item's own web viewer and `--diff` mode both consume; there is no separate schema. Unlike
+text mode's `-C`/`-M`/`-N`/`-P`/`-U`/`-X`/`-B`/`-I`/`-D`/`-R`/`-K`/`-J`/`-L`/`-Z` toggles (which only
+gate what gets *printed*), every field on `struct process_info` is emitted unconditionally — a field
+never collected this run (e.g. `futex_wait_seconds` without `--tree-futex`) is simply `0`/`null`, the
+same "indistinguishable from a genuine zero" convention the raw tree file's own optional lines already
+have.
+
+Top level:
+
+```json
+{
+  "schema_version": "1.0.0",
+  "source_file": "<path given on the command line>",
+  "process_count": 155000,
+  "max_concurrent_processes": 42,
+  "summary": [ {"comm": "cc1", "count": 812, "total_utime_seconds": 340.2, ...}, ... ],
+  "tree": { "pid": 1234, "comm": "make", ..., "children": [ {...}, ... ] }
+}
+```
+
+`summary` is the same per-`comm` rollup `print_statistics()`'s text summary shows (`comm_info`,
+sorted the same way), one object per distinct command name. `tree` is the process hierarchy, root
+first, `children` in the same eldest-to-youngest order the text tree already prints; every node
+carries `pid`/`comm`/`cmdline`/`ppid`/`cpu`/`start`/`finish`/`utime_seconds`/`stime_seconds`/
+`vsize_kb`/`rss_kb`/`num_threads`/`exit_code` plus every futex/io_wait/io/schedstat/vmsize/connect/
+nanosleep/wait/poll field — see `proctree.c`'s `print_process_json()` for the authoritative field
+list. `PROCTREE_JSON_SCHEMA_VERSION` (`proctree.c`) versions this shape independently of
+`MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION` — bump it when a field is added/removed/renamed.
+
+### Tree diff JSON (`proctree --diff --json`)
+
+`proctree --diff [--json] <a.json> <b.json>` (same item) takes two **already-exported** `--json`
+files — not raw tree files — and matches subtrees structurally: pids never correspond across two
+separate runs, so matching is by ancestor-`comm`-path, disambiguated by same-`comm` sibling occurrence
+order, rather than by pid. Default output is a human-readable report; `--json` emits:
+
+```json
+{
+  "schema_version": "1.0.0",
+  "run_a": {"source_file": "...", "process_count": 1, "max_concurrent_processes": 1},
+  "run_b": {"source_file": "...", "process_count": 2, "max_concurrent_processes": 2},
+  "diff_metrics": ["utime_seconds", "stime_seconds", ...],
+  "summary_diff": [ {"comm": "cc1", "status": "matched", "count_a": 10, "count_b": 12, ...}, ... ],
+  "diff_tree": {
+    "path": "/make/cc1#3", "comm": "cc1", "status": "changed",
+    "a": {"pid": 100, "comm": "cc1", "utime_seconds": 1.2, ...},
+    "b": {"pid": 140, "comm": "cc1", "utime_seconds": 2.9, ...},
+    "delta": {"utime_seconds": 1.7, "stime_seconds": 0.04, ...},
+    "children": [ ... ]
+  }
+}
+```
+
+`summary_diff` joins the two files' top-level `summary` arrays by `comm` name (not tree position) —
+a quick "did this command's aggregate behavior change at all" overview, complementary to (not a
+replacement for) `diff_tree`'s structural diff. Every `diff_tree` node's `status` is one of `same`,
+`changed` (a matched node whose `|delta utime+stime|` exceeds `--diff-threshold`, default `0.01`s),
+`added`, or `removed`; an `added`/`removed` node's whole subtree is still included (so a viewer can
+expand it), and its `a`/`b` field is `null` on the missing side. `proctree --diff` exits 1 if any
+node differs (added/removed/changed), 0 if the two trees matched exactly — `diff(1)`'s own exit-code
+convention, since "no differences" is itself a meaningful, testable answer (see `run_tests.sh`).
+
+`web/server.py`'s `/tree-viewer/<suite>/<benchmark>/<run_id>` and `/tree-diff?r=...&r=...` pages
+(the interactive viewer) fetch these two shapes on demand via `/api/tree-json/...` and
+`/api/tree-diff-json?a=...&b=...` — both just shell out to `proctree --json`/`proctree --diff --json`
+synchronously, writing no new artifact to disk (a deliberate design choice: always fresh, never stale).
+
 ## Unified output layout (`wspy-run --suite <name> --benchmark <name>`)
 
 This is a `wspy-run` feature, not a `wspy` one — `wspy` itself has no concept of a suite or
