@@ -223,10 +223,27 @@ struct power_capabilities power_probe(void){
   return power_probe_at("/sys/bus/event_source/devices", "/sys/class/hwmon");
 }
 
-void print_power_capability_report(const struct power_capabilities *power){
+/* access/access_errno are the real perf_event_open()/open() outcome for the
+ * package counter, from coverage.c's coverage_note() bookkeeping --
+ * run_capabilities_probe() (wspy.c) builds a throwaway power_counter_group()
+ * and runs it through the real setup_counters() to get this, rather than
+ * this file hand-rolling a second perf_event_open() call: this host's
+ * "power" PMU dynamic type happened, live, to numerically collide with
+ * PERF_TYPE_L3 (cpu_info.h), which routes setup_counters() through
+ * different perf_event_open() args than the generic path -- a
+ * hand-duplicated call missed that and reported a misleading EINVAL where
+ * a real run gets EACCES, so this reuses the exact real code path instead.
+ * access: 1 = opened fine, 0 = failed (access_errno set), -1 = nothing to
+ * test (not supported at all -- no access line printed). */
+void print_power_capability_report(const struct power_capabilities *power,int access,int access_errno){
   if (power->is_fallback) {
     fprintf(outfile,"CPU power/energy capability report: supported (fallback hwmon)\n");
     fprintf(outfile,"  fallback path: %s\n", power->fallback_path);
+    if (access == 1)
+      fprintf(outfile,"  access     ok -- %s reads successfully\n",power->fallback_path);
+    else if (access == 0)
+      fprintf(outfile,"  access     denied -- %s: errno=%d - %s\n",
+              power->fallback_path,access_errno,strerror(access_errno));
     return;
   }
   fprintf(outfile,"CPU power/energy capability report: %s\n",
@@ -244,6 +261,14 @@ void print_power_capability_report(const struct power_capabilities *power){
             power->core.unit[0] ? power->core.unit : "(unit unknown)",power->ncore_cpus);
   else
     fprintf(outfile,"  %-10s not present\n","power_core");
+  /* Sysfs presence above doesn't guarantee perf_event_open() succeeds --
+   * RAPL/energy-pkg access needs root or CAP_PERFMON specifically, a
+   * stricter gate than the general perf_event_paranoid level. */
+  if (access == 1)
+    fprintf(outfile,"  %-10s access ok -- energy-pkg counter opens successfully\n","power");
+  else if (access == 0)
+    fprintf(outfile,"  %-10s access denied -- errno=%d - %s (run as root, or grant CAP_PERFMON"
+            " to this binary -- see scripts/setup_perf.sh)\n","power",access_errno,strerror(access_errno));
 }
 
 /* Shared by power_build_pkg_event()/power_build_core_event() -- both PMUs
