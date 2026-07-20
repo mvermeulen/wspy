@@ -812,8 +812,8 @@ Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
 ## Open questions for prioritization
 Each carries a recommendation; treat these as the current default, not a closed decision. (Several
 earlier open questions here — native multi-pass execution, ARM64 support, publication automation,
-core/thread affinity — have been resolved by shipped work; see "What shipped in 4.1" and "Shipped
-since 4.1" above rather than a stale "resolved" note here.)
+core/thread affinity, minimum metadata set for publishable — have been resolved by shipped work; see
+"What shipped in 4.1" and "Shipped since 4.1" above rather than a stale "resolved" note here.)
 
 - **Should `wspy-run`'s builtin profiles be refactored to be declaratively defined (as
   configurations+options) instead of today's hardcoded `PASS_NAMES`/`PASS_FLAGS` bash arrays in
@@ -829,16 +829,6 @@ since 4.1" above rather than a stale "resolved" note here.)
 - **Should the website stay static-only, or add an interactive backend?** Still open. Recommendation:
   static-first through 4.3, keep an optional Grafana-style backend as a 4.4 nice-to-have. Non-goal:
   don't let the interactive-backend question block 4.3's static-site work.
-- **Minimum metadata set for a run to be "publishable":** every field the original recommendation
-  named is captured (timestamps, command line, host/CPU/kernel, provenance, schema version, output
-  file list, `wspy-validate` pass/fail). GPU provenance now lands in `struct manifest_info` too
-  (`options.gpu` — which `--gpu-*` flag(s)/device(s) were used, whether each backend actually produced
-  valid data) — deliberately provenance-only, by design: the actual measured busy/temp/activity/power/
-  freq/VRAM *values* stay CSV-only, matching every other metric this codebase collects (no manifest
-  field duplicates measured data, not even `--power`'s `pkg_joules`/`pkg_watts`). So this caveat is
-  resolved on its own terms, not left open. "Benchmark
-  name/suite" is intentionally out of `wspy`'s own scope — it's `wspy-run`/`workload/*`'s job, not the
-  manifest's.
 
 ## External brainstorming references
 - ReBench — reproducible experiment configuration, resumable execution, explicit benchmark
