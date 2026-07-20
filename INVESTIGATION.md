@@ -394,6 +394,24 @@ uniform, human-supplied context tags, never swept; see `doc/INVESTIGATION_ARCHIV
 design: comparison matrix mode" for the full design and the scope rule ("only automate axes that are
 process-scoped and side-effect-free outside the measured run") governing what could ever be added here.
 
+**ROCm SMI + sysfs GPU fusion layer:** `--gpu-metrics` now merges `amd_sysfs.c` and `amd_smi.c` into one
+fused column set instead of requiring a separate `--gpu-smi` for VRAM — sysfs supplies temp/activity/
+power/freq (the actively-used path; `amd_smi.c` is documented "legacy"), SMI fills in temp/activity only
+when sysfs's reading failed, and SMI remains the sole VRAM source. New `gpu_temp_source`/
+`gpu_activity_source` columns record which backend actually supplied each value — the "per-metric
+validity flags" this item's original scope called for; power/freq/VRAM each have exactly one possible
+source, so they keep this codebase's usual zero-means-unmeasured convention instead of a redundant flag.
+The precedence logic itself (`gpu_fusion.c`'s `gpu_fusion_combine()`) is a pure, unit-tested function
+(`test_gpu_fusion.c`) separated from the hardware-dependent glue that reads the real backends, mirroring
+`power.c`/`ibs.c`'s own testability split. Also collapsed 4 previously hand-duplicated GPU-metrics print
+sites (CSV header, per-core CSV, aggregate CSV, human output, across `wspy.c` and `topdown.c`) into one
+shared `print_gpu_metrics()`, closing off the exact column-ordering bug class the `--gpu-smi --interval`
+fix above already ran into once. `--gpu-smi`'s own raw/legacy columns are unchanged. Verified live on
+real AMD GPU hardware: SMI's `gpu_metrics_info` call failed independently of sysfs, and the fused row
+still correctly reported `sysfs`/`sysfs` sources plus a real VRAM reading from SMI's separate (successful)
+VRAM call. Extending the manifest/index/profile pipeline to GPU runs (the fusion tier's other item)
+remains open — see "4.2 — remaining work" below.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -532,58 +550,57 @@ has). Ordered in dependency tiers; items within a tier are independently startab
 
 **Tier 1 — GPU fusion:**
 
-1. ROCm SMI + sysfs fusion layer (one stream, source precedence, per-metric validity flags) —
-    merges the two existing independent GPU paths (`amd_smi.c`, `amd_sysfs.c`).
-2. Same manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory
-    activity) — reuses the 4.0 foundation rather than a parallel GPU-only pipeline. Closes the
-    "Minimum metadata set for publishable" open question's GPU caveat (see "Open questions" below).
+1. Manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory activity) —
+    reuses the 4.0 foundation rather than a parallel GPU-only pipeline, and reads naturally off the
+    now-shipped fusion layer's fields (temp/activity/power/freq/VRAM + source). Closes the "Minimum
+    metadata set for publishable" open question's GPU caveat (see "Open questions" below).
 
 **Tier 2 — `/proc` and tree enrichment remainder (independent, moderate value, low risk):**
 
-3. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
+2. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
     containerized environments.
-4. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
-5. `proctree` → JSON/Graphviz export + run-to-run tree diff.
+3. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
+4. `proctree` → JSON/Graphviz export + run-to-run tree diff.
 
 **Tier 3 — characterization prerequisites:**
 
-6. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
+5. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
     switch/I-O) — needs 4.1's normalized store schema (`wspy-store`) to draw features from.
-7. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
+6. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
     stability) + confidence + top-2 alternatives.
 
 **Tier 4 — launcher/infra follow-ups:**
 
-8. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
+7. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
     They still shell out to `wspy` once per pass today; 4.1's multi-pass execution work scoped this
     collapse as a documented follow-up, not part of that item.
-9. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
+8. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
     of running it now" checkbox) is visible today only via `wspy-queue list`/`show`, not from the web
     UI itself. Bundle in sharing structured configuration provenance with the job format
     (`web/joblib.py`'s job schema and `manifest.h`'s `configuration_provenance` are designed to be
     close in shape but aren't wired together yet).
-10. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
+9. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
     raw/filename-aligned today (comparing actual artifacts across runs, curated or not); annotating a
     comparison itself, or aligning curated block titles across the compared runs, is still open.
 
 **Tier 5 — docs/testing/release process:**
 
-11. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
+10. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
     output).
-12. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
-13. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
+11. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
+12. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
     constant (e.g. `phoronix-test-suite` reportedly has a run-time-estimate command) — today's
     constant is a blunt stand-in; the real constraint is capping process-record data volume for
     publishing, not workload runtime, so a per-workload estimate would size it more accurately than
     one constant across every suite.
-14. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
+13. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
     that catches the class of drift found during the v4.0 release audit: `doc/ARTIFACT_CONTRACT.md`'s
     schema-version examples had silently fallen behind `MANIFEST_SCHEMA_VERSION`/
     `RUN_INDEX_SCHEMA_VERSION`, and `README.md` was missing a whole tool's section. Concretely:
     grep-based checks that doc-quoted schema versions and the documented tool/flag list match the
     actual header constants and `Makefile` binary list, so this doesn't require a manual audit at
     every release again.
-15. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
+14. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
     `MINOR`, grep for stale version-string references across docs, run the full test matrix including
     the `AMDGPU=1` variant, tag, label every merged PR since the last tag, draft release notes from
     the merged-PR list) as a repeatable script or documented checklist instead of redoing it by hand,
