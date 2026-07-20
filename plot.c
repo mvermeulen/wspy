@@ -114,6 +114,16 @@ static const struct plot_template templates[] = {
     { "L1-dcache miss","L1-icache miss","iTLB miss","dTLB miss","opcache miss" }, 1, "points" },
   { "system-cpu", "System CPU Time", "% of interval",
     { "cpu","idle","iowait","irq" }, 2, "lines" },
+  /* system.c's SYSTEM_MEM (INVESTIGATION.md's 4.2 Tier 1 "System-wide memory
+   * pressure stats" item) -- unlike net/disk, these are 6 fixed, always-
+   * co-occurring column names (no per-device/per-interface variation), so a
+   * real template fits here rather than a fallback bucket. All 6 share the
+   * same MB scale (free_kb/cached_kb/dirty_kb/writeback_kb/swap_free_kb/
+   * committed_as_kb, divided by 1024 at print time in system.c), unlike
+   * disk's byte-vs-ms split. */
+  { "memory-pressure", "Host Memory Pressure", "MB",
+    { "mem_free_mb","mem_cached_mb","mem_dirty_mb","mem_writeback_mb",
+      "swap_free_mb","committed_as_mb" }, 2, "lines" },
   { "ipc", "Instructions per Cycle", "IPC",
     { "ipc" }, 1, "points" },
   { "branch-miss", "Branch Miss Rate", "miss rate (%)",

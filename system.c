@@ -15,7 +15,7 @@
 #include "amd_sysfs.h"
 #endif
 
-unsigned int system_mask = SYSTEM_LOADAVG|SYSTEM_CPU|SYSTEM_NETWORK|SYSTEM_FREQ|SYSTEM_TEMP|SYSTEM_DISK;
+unsigned int system_mask = SYSTEM_LOADAVG|SYSTEM_CPU|SYSTEM_NETWORK|SYSTEM_FREQ|SYSTEM_TEMP|SYSTEM_DISK|SYSTEM_MEM;
 
 struct netinfo {
   char *name;
@@ -50,6 +50,13 @@ struct system_state {
   struct netinfo *netinfo;
   int num_disk;
   struct diskinfo *diskinfo;
+  // host-wide memory pressure (archive/wspy2.0/memstats.c did this once
+  // against a fixed 18-label table; this keeps the same /proc/meminfo
+  // source but narrows to the 6 fields INVESTIGATION.md's item calls out --
+  // absolute point-in-time gauges, not deltas, unlike net/disk's counters)
+  struct meminfo {
+    unsigned long free_kb,cached_kb,dirty_kb,writeback_kb,swap_free_kb,committed_as_kb;
+  } mem;
   double freq_mhz; // average current frequency across online cpus with cpufreq
   double cpu_temp_c; // average CPU package/die temperature across discovered hwmon sensors
   struct gpu {
@@ -448,6 +455,22 @@ void read_system(void){
       fclose(fp);
     }
   }
+  if (system_mask & SYSTEM_MEM){
+    if ((fp = fopen("/proc/meminfo","r"))){
+      while (fgets(buffer,sizeof(buffer),fp) != NULL){
+        // strncmp anchored at line start -- "Cached:"/"Writeback:" can't
+        // false-match "SwapCached:"/"WritebackTmp:" this way, since the
+        // byte right after the matched prefix differs ('S'/'T' vs ':')
+        if (!strncmp(buffer,"MemFree:",8)) sscanf(buffer+8,"%lu",&system_state.mem.free_kb);
+        else if (!strncmp(buffer,"Cached:",7)) sscanf(buffer+7,"%lu",&system_state.mem.cached_kb);
+        else if (!strncmp(buffer,"Dirty:",6)) sscanf(buffer+6,"%lu",&system_state.mem.dirty_kb);
+        else if (!strncmp(buffer,"Writeback:",10)) sscanf(buffer+10,"%lu",&system_state.mem.writeback_kb);
+        else if (!strncmp(buffer,"SwapFree:",9)) sscanf(buffer+9,"%lu",&system_state.mem.swap_free_kb);
+        else if (!strncmp(buffer,"Committed_AS:",13)) sscanf(buffer+13,"%lu",&system_state.mem.committed_as_kb);
+      }
+      fclose(fp);
+    }
+  }
   if (system_mask & SYSTEM_GPU){
     system_state.gpu.prev_busy_percent = system_state.gpu.last_busy_percent;
     system_state.gpu.last_busy_percent = read_gpu_busy_percent();
@@ -518,6 +541,8 @@ void print_system(enum output_format oformat){
         fprintf(outfile,"disk %s read,disk %s write,disk %s time,",
                 system_state.diskinfo[i].name,system_state.diskinfo[i].name,system_state.diskinfo[i].name);
     }
+    if (system_mask & SYSTEM_MEM)
+      fprintf(outfile,"mem_free_mb,mem_cached_mb,mem_dirty_mb,mem_writeback_mb,swap_free_mb,committed_as_mb,");
     if (system_mask & SYSTEM_GPU) fprintf(outfile,"gpu_busy,");
     break;
   case PRINT_CSV:
@@ -550,6 +575,15 @@ void print_system(enum output_format oformat){
                 system_state.diskinfo[i].write_sectors * 512,
                 system_state.diskinfo[i].io_ms);
       }
+    }
+    if (system_mask & SYSTEM_MEM){
+      fprintf(outfile,"%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,",
+              system_state.mem.free_kb / 1024.0,
+              system_state.mem.cached_kb / 1024.0,
+              system_state.mem.dirty_kb / 1024.0,
+              system_state.mem.writeback_kb / 1024.0,
+              system_state.mem.swap_free_kb / 1024.0,
+              system_state.mem.committed_as_kb / 1024.0);
     }
     if (system_mask & SYSTEM_GPU){
       fprintf(outfile,"%d,",system_state.gpu.busy_percent);
@@ -591,6 +625,14 @@ void print_system(enum output_format oformat){
                 system_state.diskinfo[i].write_sectors * 512,
                 system_state.diskinfo[i].io_ms);
       }
+    }
+    if (system_mask & SYSTEM_MEM){
+      fprintf(outfile,"mem free             %8.1f MB\n",system_state.mem.free_kb / 1024.0);
+      fprintf(outfile,"mem cached           %8.1f MB\n",system_state.mem.cached_kb / 1024.0);
+      fprintf(outfile,"mem dirty            %8.1f MB\n",system_state.mem.dirty_kb / 1024.0);
+      fprintf(outfile,"mem writeback        %8.1f MB\n",system_state.mem.writeback_kb / 1024.0);
+      fprintf(outfile,"swap free            %8.1f MB\n",system_state.mem.swap_free_kb / 1024.0);
+      fprintf(outfile,"committed            %8.1f MB\n",system_state.mem.committed_as_kb / 1024.0);
     }
     if (system_mask & SYSTEM_GPU){
       fprintf(outfile,"gpu busy             %d%%\n",system_state.gpu.busy_percent);

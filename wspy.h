@@ -121,6 +121,7 @@ extern unsigned int counter_mask;
 #define SYSTEM_FREQ         0x10
 #define SYSTEM_TEMP         0x20
 #define SYSTEM_DISK         0x40
+#define SYSTEM_MEM          0x80
 
 extern unsigned int system_mask;
 

@@ -314,6 +314,11 @@ class ResolveColumnGroupTest(unittest.TestCase):
         self.assertEqual(joblib.resolve_column_group("disk nvme0n1 write"), "system")
         self.assertEqual(joblib.resolve_column_group("disk nvme0n1 time"), "system")
 
+    def test_system_memory_pressure_columns(self):
+        for col in ("mem_free_mb", "mem_cached_mb", "mem_dirty_mb", "mem_writeback_mb",
+                    "swap_free_mb", "committed_as_mb"):
+            self.assertEqual(joblib.resolve_column_group(col), "system")
+
     def test_power_columns(self):
         self.assertEqual(joblib.resolve_column_group("pkg_joules"), "power")
         self.assertEqual(joblib.resolve_column_group("pkg_watts"), "power")

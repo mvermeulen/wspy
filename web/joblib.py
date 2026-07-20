@@ -265,7 +265,14 @@ COLUMN_TO_GROUP = {
 # <dev> read"/"disk <dev> write"/"disk <dev> time" (system.c's SYSTEM_DISK,
 # INVESTIGATION.md's 4.2 Tier 1 "System-wide disk I/O stats" item) are the
 # same per-device shape, one device per host, matched by prefix too.
-SYSTEM_COLUMN_NAMES = {"load", "runnable", "cpu", "idle", "iowait", "irq", "freq", "cpu_temp"}
+# mem_free_mb/mem_cached_mb/mem_dirty_mb/mem_writeback_mb/swap_free_mb/
+# committed_as_mb (system.c's SYSTEM_MEM, INVESTIGATION.md's 4.2 Tier 1
+# "System-wide memory pressure stats" item) are 6 fixed column names -- no
+# per-device/per-interface variation, so unlike net/disk they're listed here
+# directly rather than matched by prefix.
+SYSTEM_COLUMN_NAMES = {"load", "runnable", "cpu", "idle", "iowait", "irq", "freq", "cpu_temp",
+                        "mem_free_mb", "mem_cached_mb", "mem_dirty_mb", "mem_writeback_mb",
+                        "swap_free_mb", "committed_as_mb"}
 # --power's own columns (power.c/topdown.c's print_power()) -- same "not an
 # ALL_GROUPS entry" reasoning as SYSTEM_COLUMN_NAMES above: --power isn't a
 # counter_mask bit build_configuration_passes()'s "counters" section

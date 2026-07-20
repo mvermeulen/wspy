@@ -248,7 +248,7 @@ assert_csv_header "interval-per-core"       --per-core --interval 1         -- "
 echo ""
 echo "=== CSV header contract (host-specific, regex) ==="
 assert_csv_header_regex "system" --no-ipc --system -- \
-  'load,runnable,cpu,idle,iowait,irq,freq,cpu_temp,(net [^,]+,)+(disk [^,]+ read,disk [^,]+ write,disk [^,]+ time,)*elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,counters_measured,counters_requested,'
+  'load,runnable,cpu,idle,iowait,irq,freq,cpu_temp,(net [^,]+,)+(disk [^,]+ read,disk [^,]+ write,disk [^,]+ time,)*mem_free_mb,mem_cached_mb,mem_dirty_mb,mem_writeback_mb,swap_free_mb,committed_as_mb,elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,counters_measured,counters_requested,'
 
 if [ "$vendor" = "AMD" ]; then
   echo ""
@@ -425,6 +425,10 @@ assert_normal_contains "system-temp-label" --no-ipc --system -- \
   '^cpu temp +[0-9]+\.[0-9]+ C$'
 assert_normal_contains "system-loopback-iface" --no-ipc --system -- \
   '^lo +[0-9]'
+assert_normal_contains "system-mem-free-label" --no-ipc --system -- \
+  '^mem free +[0-9]+\.[0-9]+ MB$'
+assert_normal_contains "system-swap-free-label" --no-ipc --system -- \
+  '^swap free +[0-9]+\.[0-9]+ MB$'
 
 echo ""
 echo "=== Tree format contract ==="
