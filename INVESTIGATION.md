@@ -432,10 +432,10 @@ Caveat: if upstream kernel/perf exposes new Zen5-specific generic mappings or PM
 presets and coverage logic without changing the report schema.
 
 → Informed 4.2's "Zen-family preset packs" and "PMU-capability-aware comparability warnings" (both
-shipped). Also informs 4.2's "AMD IBS sampling-mode support" (icache/TLB/dcache/L2/L3/branch rate
-estimates decoded from real per-sample tag data, not just counting-mode sample counts); and 4.3's
-"IBS-derived memory-path bottleneck decomposition," which depends on IBS sampling-mode support
-existing first.
+shipped). Also informs 4.3's "AMD IBS sampling-mode support" (moved to the front of 4.3, see that
+section — icache/TLB/dcache/L2/L3/branch rate estimates decoded from real per-sample tag data, not just
+counting-mode sample counts) and that same phase's "IBS-derived memory-path bottleneck decomposition,"
+which depends on it existing first.
 
 ### Topdown deep-dive
 Advancements worth adopting, in priority order for `wspy` specifically:
@@ -530,81 +530,60 @@ motivation and per-syscall design rationale. What remains open from this track:
 Everything from 4.2's original scope that hasn't shipped yet (see "Shipped since 4.1" above for what
 has). Ordered in dependency tiers; items within a tier are independently startable.
 
-**Tier 1 — topdown/IBS refinement (interdependent; sets up 4.3's attribution work):**
+**Tier 1 — GPU fusion:**
 
-1. AMD IBS *sampling*-mode support: mmap'ing the perf ring buffer and requesting `PERF_SAMPLE_RAW`
-    so each individual IBS sample's tagged register data is available, not just a count of how many
-    fired — a genuinely new capability, not an extension of the counting-mode `ibs-basic`/
-    `ibs-memory-deep` profiles. Nothing in wspy today reads a perf mmap ring buffer at all; every
-    existing counter group (including IBS as currently implemented) is `read()`-based counting. Each
-    `IbsOpData`/`IbsOpData2`/`IbsOpData3`/`IbsDcLinAd` (op samples) and `IbsFetchCtl`/`IbsFetchLinAd`
-    (fetch samples) record carries tag bits this item would decode into per-tick rate estimates
-    comparable to (but independently sourced from) the equivalent hardware-counter groups already
-    reported: `DcMiss`/`L2Miss`/`NbIbsReqSrc` → dcache/L2/L3 miss and memory-source-of-fill rates;
-    `DcL1TlbMiss`/`DcL2TlbMiss` → data-TLB miss rates; fetch-side `IcMiss`/`L1TlbMiss`/`L2TlbMiss` →
-    icache/iTLB miss rates; `BrnMisp` (on branch ops) → branch misprediction rate. Valuable
-    specifically because it's a second, independently-sampled measurement of the same phenomena the
-    counting-mode groups already report — a real disagreement between the two is itself a signal (PMU
-    multiplexing skew, a counting-mode blind spot, or an IBS sampling-rate artifact), not just a fifth
-    way to get the same number. Format/sysfs-field discovery already exists (`ibs.c`'s `ibs_probe()`)
-    and generalizes directly; the new work is the mmap/ring-buffer read path itself, per-sample record
-    parsing, and the rate-aggregation/report layer built on top. Feeds 4.3's "IBS-derived memory-path
-    bottleneck decomposition," which assumes this sampling capability already exists.
-
-**Tier 2 — GPU fusion:**
-
-2. ROCm SMI + sysfs fusion layer (one stream, source precedence, per-metric validity flags) —
+1. ROCm SMI + sysfs fusion layer (one stream, source precedence, per-metric validity flags) —
     merges the two existing independent GPU paths (`amd_smi.c`, `amd_sysfs.c`).
-3. Same manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory
+2. Same manifest/index/profile pipeline extended to GPU runs (busy/clocks/power/temp/memory
     activity) — reuses the 4.0 foundation rather than a parallel GPU-only pipeline. Closes the
     "Minimum metadata set for publishable" open question's GPU caveat (see "Open questions" below).
 
-**Tier 3 — `/proc` and tree enrichment remainder (independent, moderate value, low risk):**
+**Tier 2 — `/proc` and tree enrichment remainder (independent, moderate value, low risk):**
 
-4. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
+3. cgroup identity + limits in manifest, `cpu.stat` throttling stats — needed for fair comparison in
     containerized environments.
-5. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
-6. `proctree` → JSON/Graphviz export + run-to-run tree diff.
+4. Per-core (`--per-core`) → imbalance/hot-core/migration diagnostics, core-class summaries.
+5. `proctree` → JSON/Graphviz export + run-to-run tree diff.
 
-**Tier 4 — characterization prerequisites:**
+**Tier 3 — characterization prerequisites:**
 
-7. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
+6. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
     switch/I-O) — needs 4.1's normalized store schema (`wspy-store`) to draw features from.
-8. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
+7. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
     stability) + confidence + top-2 alternatives.
 
-**Tier 5 — launcher/infra follow-ups:**
+**Tier 4 — launcher/infra follow-ups:**
 
-9. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
+8. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
     They still shell out to `wspy` once per pass today; 4.1's multi-pass execution work scoped this
     collapse as a documented follow-up, not part of that item.
-10. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
+9. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
     of running it now" checkbox) is visible today only via `wspy-queue list`/`show`, not from the web
     UI itself. Bundle in sharing structured configuration provenance with the job format
     (`web/joblib.py`'s job schema and `manifest.h`'s `configuration_provenance` are designed to be
     close in shape but aren't wired together yet).
-11. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
+10. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
     raw/filename-aligned today (comparing actual artifacts across runs, curated or not); annotating a
     comparison itself, or aligning curated block titles across the compared runs, is still open.
 
-**Tier 6 — docs/testing/release process:**
+**Tier 5 — docs/testing/release process:**
 
-12. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
+11. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
     output).
-13. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
-14. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
+12. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
+13. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
     constant (e.g. `phoronix-test-suite` reportedly has a run-time-estimate command) — today's
     constant is a blunt stand-in; the real constraint is capping process-record data volume for
     publishing, not workload runtime, so a per-workload estimate would size it more accurately than
     one constant across every suite.
-15. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
+14. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
     that catches the class of drift found during the v4.0 release audit: `doc/ARTIFACT_CONTRACT.md`'s
     schema-version examples had silently fallen behind `MANIFEST_SCHEMA_VERSION`/
     `RUN_INDEX_SCHEMA_VERSION`, and `README.md` was missing a whole tool's section. Concretely:
     grep-based checks that doc-quoted schema versions and the documented tool/flag list match the
     actual header constants and `Makefile` binary list, so this doesn't require a manual audit at
     every release again.
-16. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
+15. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
     `MINOR`, grep for stale version-string references across docs, run the full test matrix including
     the `AMDGPU=1` variant, tag, label every merged PR since the last tag, draft release notes from
     the merged-PR list) as a repeatable script or documented checklist instead of redoing it by hand,
@@ -621,28 +600,55 @@ general launcher enough that the item isn't worth carrying forward.
 Goal: use the normalized store built in 4.1 for regression detection, clustering, phase-aware
 topdown/IBS attribution, static-site publishing, and a lower-overhead tracing backend.
 
-**Tier 1 — needs 4.1's normalized store/history:**
+**Tier 1 — AMD IBS sampling-mode support (moved to the front of 4.3, 2026-07-20; see below):**
 
-1. Baselines and regression/anomaly detection.
-2. Machine/environment comparability scoring — depends on provenance capture (shipped, `provenance.c`)
+1. AMD IBS *sampling*-mode support: mmap'ing the perf ring buffer and requesting `PERF_SAMPLE_RAW`
+   so each individual IBS sample's tagged register data is available, not just a count of how many
+   fired — a genuinely new capability, not an extension of the counting-mode `ibs-basic`/
+   `ibs-memory-deep` profiles. Nothing in wspy today reads a perf mmap ring buffer at all; every
+   existing counter group (including IBS as currently implemented) is `read()`-based counting. Each
+   `IbsOpData`/`IbsOpData2`/`IbsOpData3`/`IbsDcLinAd` (op samples) and `IbsFetchCtl`/`IbsFetchLinAd`
+   (fetch samples) record carries tag bits this item would decode into per-tick rate estimates
+   comparable to (but independently sourced from) the equivalent hardware-counter groups already
+   reported: `DcMiss`/`L2Miss`/`NbIbsReqSrc` → dcache/L2/L3 miss and memory-source-of-fill rates;
+   `DcL1TlbMiss`/`DcL2TlbMiss` → data-TLB miss rates; fetch-side `IcMiss`/`L1TlbMiss`/`L2TlbMiss` →
+   icache/iTLB miss rates; `BrnMisp` (on branch ops) → branch misprediction rate. Valuable
+   specifically because it's a second, independently-sampled measurement of the same phenomena the
+   counting-mode groups already report — a real disagreement between the two is itself a signal (PMU
+   multiplexing skew, a counting-mode blind spot, or an IBS sampling-rate artifact), not just a fifth
+   way to get the same number. Format/sysfs-field discovery already exists (`ibs.c`'s `ibs_probe()`)
+   and generalizes directly; the new work is the mmap/ring-buffer read path itself, per-sample record
+   parsing, and the rate-aggregation/report layer built on top. Feeds this same phase's own
+   "IBS-derived memory-path bottleneck decomposition" item (Tier 3 below). Moved here (was the last
+   item in 4.2 Tier 1) rather than left at the tail of 4.2: it's a large, genuinely new capability on
+   its own, not a small extension squeezed in after the rest of 4.2 wrapped up, and it has no
+   dependency on anything else in 4.2's own remaining work (GPU fusion, `/proc`/tree enrichment,
+   characterization prerequisites, launcher/infra, docs/testing/release) — only on already-shipped
+   4.0/4.2 IBS capability-discovery work (`ibs.c`), so it's equally startable as 4.3's own first item.
+
+**Tier 2 — needs 4.1's normalized store/history:**
+
+2. Baselines and regression/anomaly detection.
+3. Machine/environment comparability scoring — depends on provenance capture (shipped, `provenance.c`)
    existing across enough runs to score against. Broader than 4.2's (shipped) "PMU-capability-aware
    comparability warnings": that item is a narrow, immediate per-bucket exact-match check on
    `(cpu_vendor,counters_requested,counters_measured)`; this item is the deferred, scored version across
    the fuller provenance surface (BIOS, microcode, governor, memory, virtualization, etc.).
-3. Distribution-first reporting (quantiles, clustering prep).
-4. Clustering + nearest-neighbor + cluster profile cards, coverage-aware distance (common-subspace
+4. Distribution-first reporting (quantiles, clustering prep).
+5. Clustering + nearest-neighbor + cluster profile cards, coverage-aware distance (common-subspace
    only when data coverage differs).
 
-**Tier 2 — topdown/attribution, needs 4.2's hierarchical schema + phase detection (shipped) + IBS
-sampling mode:**
+**Tier 3 — topdown/attribution, needs 4.2's hierarchical schema + phase detection (both shipped) +
+this phase's own IBS sampling mode (Tier 1 above):**
 
-5. Phase-aware topdown (warmup/steady/degraded segmentation, drift signal).
-6. Composite attribution (topdown + cache/TLB/IBS signals) — the "no blocking-syscall activity" vs.
+6. Phase-aware topdown (warmup/steady/degraded segmentation, drift signal).
+7. Composite attribution (topdown + cache/TLB/IBS signals) — the "no blocking-syscall activity" vs.
    "heavy blocking-syscall activity" split from the critical-path work (shipped, see "Shipped since
    4.1") is a direct input here, alongside topdown/cache/TLB/IBS.
-7. IBS-derived memory-path bottleneck decomposition (combine with topdown/cache) — needs 4.2's IBS
-   sampling-mode support first; today's counting-mode IBS has no per-sample tag data to decompose.
-8. Core-class-aware topdown (hybrid Intel Atom+Core; weighted aggregate) — **blocked on hardware
+8. IBS-derived memory-path bottleneck decomposition (combine with topdown/cache) — needs this phase's
+   own IBS sampling-mode support first (Tier 1 above); today's counting-mode IBS has no per-sample tag
+   data to decompose.
+9. Core-class-aware topdown (hybrid Intel Atom+Core; weighted aggregate) — **blocked on hardware
    access**: moved out of 4.2 (2026-07-19) since real Intel hybrid (Alder Lake/Raptor Lake) or ARM
    big.LITTLE hardware isn't reachable in the environment doing this work, and every line of
    core-type-specific raw-event/PMU-type code would ship unverified. Investigation before deferring
@@ -662,52 +668,52 @@ sampling mode:**
    that scope first if picked back up before hardware becomes available, since it needs no hardware to
    validate.
 
-**Tier 3 — publishing/reporting expansion, needs 4.1's report studio:**
+**Tier 4 — publishing/reporting expansion, needs 4.1's report studio:**
 
-9. Static-site publishing pipeline (per-benchmark + suite + cross-suite pages from templates). Distinct
+10. Static-site publishing pipeline (per-benchmark + suite + cross-suite pages from templates). Distinct
    from 4.1's per-run curation studio, not a replacement for it: the studio is where one report gets
    curated by a person; this is what turns *many* already-curated (or un-curated, template-driven)
    reports into a browsable site. Likely consumes the same export formats (WordPress/HTML/Markdown,
    4.1) rather than inventing a fourth.
-10. Characterization badges + similarity panels in reports — a new block type in 4.1's curation studio
+11. Characterization badges + similarity panels in reports — a new block type in 4.1's curation studio
     once 4.2's archetype scorecard exists to draw a badge from, not a separate report surface.
-11. Interactive tree/timeline drill-down, GPU phase overlays — the interactive counterpart to 4.1's
+12. Interactive tree/timeline drill-down, GPU phase overlays — the interactive counterpart to 4.1's
     static inclusion-depth mechanism (none/summary/excerpt/full) for the tree/interval blocks
     specifically; that mechanism stays the right default for a published, non-interactive report even
     once this exists.
 
-**Tier 4 — report-layer additions on data already collected in 4.0:**
+**Tier 5 — report-layer additions on data already collected in 4.0:**
 
-12. `--tree-open` → file-I/O topology summary (hot paths, open-failure rates, startup storms,
+13. `--tree-open` → file-I/O topology summary (hot paths, open-failure rates, startup storms,
     process→file maps) — `tree_open`/`SYS_openat` capture already exists (`topdown.c`).
-13. System (`--system`) → per-interface network attribution and local-vs-system-pressure
+14. System (`--system`) → per-interface network attribution and local-vs-system-pressure
     attribution, plus steal-time capture (user/system/iowait are already captured and printed —
     `system.c`'s existing `/proc/stat` parsing — this item is the missing steal column and the
     analysis layer on top of what's already there, not the raw mix itself).
-14. Tree/lifecycle enrichments (exit code/signal summary, spawn/exit burst indicators, optional
+15. Tree/lifecycle enrichments (exit code/signal summary, spawn/exit burst indicators, optional
     `comm`-pattern role tagging).
 
-**Tier 5 — GPU deeper profiling:**
+**Tier 6 — GPU deeper profiling:**
 
-15. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
+16. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
     heavier, optional trace-rich profile, same "default vs debug profile" pattern as IBS.
-16. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) —
+17. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) —
     depends on 4.2's GPU fusion layer providing consistent per-metric data first.
-17. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`,
+18. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`,
     extended once GPU runs feed the same index.
-18. Fold into general environment-comparability scoring (power cap, memory clock, thermal state,
+19. Fold into general environment-comparability scoring (power cap, memory clock, thermal state,
     driver version) — no separate "GPU comparability score" needed; one scoring mechanism, not two.
 
-**Tier 6 — infra:**
+**Tier 7 — infra:**
 
-19. Low-overhead tracing alternative to `ptrace` (`ftrace` tracepoints or minimal eBPF) for
+20. Low-overhead tracing alternative to `ptrace` (`ftrace` tracepoints or minimal eBPF) for
     `--tree`/`--tree-open` — `ptrace` context-switches on every syscall entry/exit, which skews the
     very counters being measured for I/O-heavy or fork-heavy workloads. Also the eventual fix for the
     observer-effect caveat noted under "Critical-path / synchronization-latency: what's left" above.
-20. Collector-plugin implementation (perf stat / trace-cmd / GPU tools as collectors behind the
+21. Collector-plugin implementation (perf stat / trace-cmd / GPU tools as collectors behind the
     `collector` field, normalization path) — the schema seam shipped in 4.0; this is the actual
     implementation of wrapping a non-wspy collector.
-21. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
+22. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
     CSVs into per-test-case/per-trial datasets by correlating run manifests with PTS results, composite.xml,
     and log timestamps. See the detailed report at
     [phoronix_hook_investigation.md](file:///home/mev/source/wspy/doc/phoronix_hook_investigation.md) for
@@ -745,12 +751,12 @@ sampling mode:**
     teaching `wspy-phoronix-segment.py` to prefer `pts_hooks.log` over the composite.xml/log-timestamp
     correlation it uses today.
 
-**Tier 7 — testing:**
+**Tier 8 — testing:**
 
-22. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
+23. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
     guardrails — needs deterministic micro-workloads and 4.1's normalized store plus 4.2's
     stats/confidence infrastructure.
-23. Contributor guide for adding a collector/metric/schema bump safely.
+24. Contributor guide for adding a collector/metric/schema bump safely.
 
 ## 4.4 priorities
 Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
