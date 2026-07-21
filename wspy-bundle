@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""
+wspy-bundle -- reproducibility bundle export (INVESTIGATION.md's 4.2
+backlog, "Reproducibility bundle export": a tarball of manifest + raw +
+derived artifacts per batch).
+
+Given one wspy-run/web-launcher run directory (<suite>/<benchmark>/<run_id>
+under an --output-root, or any directory holding a wspy manifest.json/
+amdtopdown.manifest.json), writes a single, portable .tar.gz bundling:
+  - manifest    the run-level manifest.json (or the older fixed-config
+                amdtopdown.manifest.json) plus every per-pass
+                <pass>.manifest.json
+  - raw         every per-pass <pass>.csv/<pass>.txt, process.tree.txt,
+                launch.log, <pass>.pts_hooks.log -- what actually happened
+  - derived     summary.txt, plots/*.png, process.tree.summary.txt,
+                curation.json, aiprompt.txt/aianalysis.*.txt/
+                aiprompt.critique.*.txt -- what wspy/the web launcher
+                computed from the raw output above
+
+so a run can be archived or handed to someone without access to this
+machine's live output-root or wspy-store database. The actual file
+enumeration (web/joblib.py's collect_run_files()) and bundling logic
+(build_reproducibility_bundle()) are shared with web/server.py's own
+"Download reproducibility bundle" link on the report page -- this script
+is a thin CLI wrapper over the identical function, same "thin client, no
+duplicated logic" convention as wspy-queue/wspy-analyze/wspy-sweep.
+
+Scoped to one run directory (the same unit every other per-run tool here
+already operates on: wspy-validate, wspy-summary --trace, wspy-analyze
+--rundir, the curation studio) -- bundling a whole sweep/suite is separate
+future work.
+
+At the tar root, the bundle also carries a new bundle_manifest.json index:
+schema_version, suite/benchmark/run_id, generated_at, and one
+{path,kind,sha256,size_bytes} entry per file (kind is "manifest"/"raw"/
+"derived", or "missing" for a file collect_run_files() listed but that
+vanished before archiving) -- sha256 so a recipient can verify the bundle
+wasn't corrupted/tampered with in transit, kind so a reader can tell "what
+happened" from "what was computed from it" without guessing from the
+filename.
+"""
+import argparse
+import os
+import sys
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(SCRIPT_DIR, "web"))
+import joblib  # noqa: E402 -- reuses collect_run_files()/build_reproducibility_bundle()
+
+
+def default_out_path(suite, benchmark, run_id):
+    return f"{suite}-{benchmark}-{run_id}.reproducibility.tar.gz"
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Bundle one wspy run directory's manifest/raw/derived artifacts "
+                    "into a single, portable, checksummed .tar.gz.")
+    ap.add_argument("--rundir", default=None,
+                     help="run directory to bundle directly (wspy-run --suite/--benchmark "
+                          "layout, or any directory holding a wspy manifest.json/"
+                          "amdtopdown.manifest.json). Mutually exclusive with "
+                          "--suite/--benchmark/--run-id.")
+    ap.add_argument("--output-root", default=None,
+                     help="output-root a run directory lives under -- combined with "
+                          "--suite/--benchmark/--run-id instead of --rundir")
+    ap.add_argument("--suite", default=None)
+    ap.add_argument("--benchmark", default=None)
+    ap.add_argument("--run-id", default=None)
+    ap.add_argument("--out", default=None,
+                     help="output .tar.gz path (default: "
+                          "<suite>-<benchmark>-<run_id>.reproducibility.tar.gz in the "
+                          "current directory; falls back to <rundir-basename>."
+                          "reproducibility.tar.gz when --rundir was given without "
+                          "--suite/--benchmark/--run-id)")
+    ap.add_argument("--dry-run", action="store_true",
+                     help="list what would be bundled (path + kind) without writing "
+                          "the tarball")
+    args = ap.parse_args()
+
+    if args.rundir:
+        if args.output_root or args.suite or args.benchmark or args.run_id:
+            ap.error("--rundir is mutually exclusive with --output-root/--suite/"
+                      "--benchmark/--run-id")
+        rundir = os.path.abspath(args.rundir)
+        suite = args.suite or "?"
+        benchmark = args.benchmark or "?"
+        run_id = args.run_id or os.path.basename(os.path.normpath(rundir))
+    else:
+        if not (args.output_root and args.suite and args.benchmark and args.run_id):
+            ap.error("either --rundir, or all of --output-root/--suite/--benchmark/--run-id, "
+                      "is required")
+        rundir = os.path.join(os.path.abspath(args.output_root), args.suite, args.benchmark,
+                               args.run_id)
+        suite, benchmark, run_id = args.suite, args.benchmark, args.run_id
+
+    if not os.path.isdir(rundir):
+        ap.error("%r is not a directory" % rundir)
+
+    tar_bytes, index = joblib.build_reproducibility_bundle(rundir, suite, benchmark, run_id)
+
+    if args.dry_run:
+        print("wspy-bundle: %d file(s) would be bundled from %s:" % (len(index["files"]), rundir),
+              file=sys.stderr)
+        for entry in index["files"]:
+            if entry["kind"] == "missing":
+                print("  MISSING  %s" % entry["path"], file=sys.stderr)
+            else:
+                print("  %-9s %8d bytes  %s" % (
+                    entry["kind"], entry["size_bytes"], entry["path"]), file=sys.stderr)
+        return 0
+
+    out_path = args.out or default_out_path(suite, benchmark, run_id)
+    with open(out_path, "wb") as f:
+        f.write(tar_bytes)
+    missing = [e["path"] for e in index["files"] if e["kind"] == "missing"]
+    print("wspy-bundle: %d file(s) (%d bytes) -> %s" % (
+        len(index["files"]) - len(missing), len(tar_bytes), out_path), file=sys.stderr)
+    if missing:
+        print("wspy-bundle: warning: %d file(s) listed but missing at bundle time: %s" % (
+            len(missing), ", ".join(missing)), file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

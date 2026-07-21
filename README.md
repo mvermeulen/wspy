@@ -375,6 +375,20 @@ A job file can be copied verbatim to another machine with wspy checked out and p
 
 See `./wspy-queue --help` for the full subcommand/option list.
 
+## wspy-bundle: reproducibility bundle export
+
+`wspy-bundle` packages one run directory's manifest(s), raw per-pass output, and derived artifacts
+(plots, summary, curation, AI narrative) into a single checksummed `.tar.gz`, so a run can be archived
+or handed off without access to the machine's live output-root or `store.db`. The same web launcher
+report page has a "Download reproducibility bundle" link that produces the identical archive.
+
+```
+./wspy-bundle --output-root web/runs --suite demo --benchmark coremark --run-id <run-id>
+./wspy-bundle --rundir /path/to/a/run/directory --dry-run    # list contents without writing
+```
+
+See `./wspy-bundle --help` for the full option list.
+
 ## Web launcher and report browser
 
 `web/server.py` is a stdlib-only Python web UI (no dependency, no build step) for launching runs

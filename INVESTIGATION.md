@@ -690,6 +690,19 @@ cards"), rather than describing a feature that doesn't exist — kept separate f
 unrelated, ARM PMU hardware "cluster" topology output (`cpu_info.c`), which is topology discovery,
 not an interpretive signal.
 
+**Reproducibility bundle export:** `wspy-bundle` (new, stdlib-only Python) bundles one run directory's
+manifest(s), raw per-pass output, and derived artifacts (plots, summary, curation, AI narrative) into
+a single checksummed `.tar.gz`, so a run can be archived or handed off without access to the machine's
+live output-root/`store.db`. Scoped to one run directory, the same unit every other per-run tool here
+already operates on — bundling a whole sweep/suite is separate future work. The actual enumeration/
+bundling logic (`collect_run_files()`, moved out of `web/server.py`; new `build_reproducibility_bundle()`)
+lives in `web/joblib.py`, shared with `web/server.py`'s own new "Download reproducibility bundle"
+report-page link (`GET /bundle/<suite>/<benchmark>/<run_id>/download`) — same "one shared
+implementation, two front ends" pattern the job queue already established. A `bundle_manifest.json`
+index at the tar root classifies every file as `manifest`/`raw`/`derived` and records its sha256, so a
+recipient can tell what's in the bundle and verify it wasn't corrupted in transit without needing this
+codebase's own conventions memorized. This closes out 4.2 entirely — see "4.2 — remaining work" below.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -823,14 +836,11 @@ motivation and per-syscall design rationale. What remains open from this track:
   tracing alternative to ptrace" entry is the eventual fix, not a documentation note.
 
 ## 4.2 — remaining work
-Everything from 4.2's original scope that hasn't shipped yet (see "Shipped since 4.1" above for what
-has). (Both original Tier 1 characterization-track items and the launcher/infra follow-ups tier have
-now shipped or moved elsewhere -- see "Shipped since 4.1" above and 4.3's infra tier for the
-`wspy-run`/`--passes` collapse -- so this is now a single remaining tier.)
-
-**Docs/testing/release process:**
-
-1. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
+4.2's original scope is now fully shipped -- see "Shipped since 4.1" above for the full list. Folding
+this into a proper "What shipped in 4.2" section (and pruning the phase's write-ups into
+`doc/INVESTIGATION_ARCHIVE.md`) is real editorial judgment deferred to the actual release-prep pass
+(`scripts/release_prep.sh`'s own phase 7 reminders), not done automatically the moment the last item
+lands.
 
 **Dropped, not deferred:** "Deeper Phoronix Test Suite awareness in the web UI" — its "read a Phoronix
 benchmark article and inventory its benchmarks" sub-item conflicts with Phoronix's site use policy
