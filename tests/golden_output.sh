@@ -244,6 +244,10 @@ assert_csv_header "interval-default-ipc"    --interval 1                    -- "
 assert_csv_header "interval-no-ipc"         --no-ipc --interval 1           -- "time,counters_measured,counters_requested,"
 assert_csv_header "interval-no-phase-detect" --interval 1 --no-phase-detect -- "time,ipc,counters_measured,counters_requested,"
 assert_csv_header "interval-per-core"       --per-core --interval 1         -- "time,core,ipc,counters_measured,counters_requested,"
+# --per-core-freq's core_freq_mhz column (cpu_info.c's live cpufreq read,
+# not a perf counter) sits right after "core," on every --per-core row,
+# aggregate or --interval alike -- see wspy.c's per_core_csv header block.
+assert_csv_header "interval-per-core-freq"  --per-core --per-core-freq --interval 1 -- "time,core,core_freq_mhz,ipc,counters_measured,counters_requested,"
 
 echo ""
 echo "=== CSV header contract (host-specific, regex) ==="
@@ -340,6 +344,13 @@ assert_csv_columns_match "kitchen-sink-combined" \
 # so this combination is checked here like any other flag bundle.
 assert_csv_columns_match "per-core-topdown" --no-ipc --per-core --topdown
 assert_csv_columns_match "per-core-software" --no-ipc --per-core --software
+# --per-core-freq's core_freq_mhz column (cpu_info.c's live cpufreq read) is
+# vendor-neutral (a plain sysfs read, not a raw event), but still needs a
+# real counter group present to exercise the per-core row shape at all --
+# --per-core-freq alone (no counter group) never populates any core's
+# core_specific_counters, so per_core_csv itself would never trigger; see
+# wspy.c's own fatal check for the "no --per-core at all" case instead.
+assert_csv_columns_match "per-core-freq" --no-ipc --per-core --per-core-freq --topdown
 # INVESTIGATION.md's 4.2 Tier 1 "Per-core energy support" item: power_core's
 # new core_joules/core_watts columns land on every per-core row regardless
 # of host power_core support (power_core_counter_group() returning NULL for
@@ -400,6 +411,11 @@ assert_csv_interval_rows_match "default-ipc" 3
 # like it does for the non-per-core cases above, and its nrows>=2 floor
 # is trivially satisfied (num_ticks * num_cores rows, not just num_ticks).
 assert_csv_interval_rows_match "per-core-topdown" 3 --topdown --no-rusage --no-software --no-ipc --per-core
+# --per-core-freq's core_freq_mhz value is a live sysfs read at print time,
+# not a perf counter -- exercised at every one of these per-core-per-tick
+# rows via topdown.c:timer_callback()'s new branch, same call site as the
+# counter columns right next to it.
+assert_csv_interval_rows_match "per-core-freq" 3 --topdown --no-rusage --no-software --no-ipc --per-core --per-core-freq
 # --gpu-nvidia's periodic-tick columns are populated by topdown.c's own
 # timer_callback(), a separate print call site from wspy.c's aggregate/tail
 # row -- exactly the kind of drift this helper exists to catch (see the

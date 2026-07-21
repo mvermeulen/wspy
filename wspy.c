@@ -36,6 +36,7 @@
 #include "cgroup.h"
 
 int aflag = 0;
+int per_core_freq = 0;
 int oflag = 0;
 int sflag = 0;
 int vflag = 0;
@@ -277,6 +278,7 @@ int parse_options(int argc,char *const argv[]){
     { "no-opcache", no_argument, 0, 19 },
     { "passes", required_argument, 0, 65 },
     { "per-core", no_argument, 0, 20 },
+    { "per-core-freq", no_argument, 0, 95 },
     { "phase-detect", no_argument, 0, 62 },
     { "no-phase-detect", no_argument, 0, 91 }, // was 63 ('?') -- see comment above
     { "power", no_argument, 0, 87 },
@@ -406,6 +408,9 @@ int parse_options(int argc,char *const argv[]){
     case 20: // --per-core
     case 'a':
       aflag = 1;
+      break;
+    case 95: // --per-core-freq
+      per_core_freq = 1;
       break;
     case 'o':
       fp = fopen(optarg,"w");
@@ -1320,6 +1325,8 @@ static void print_full_usage(FILE *out,const char *prog){
 	  "\t                            ARM only, see --list-affinity), or cpuset=<c0,c1,...>\n"
 	  "\t                            (explicit list/ranges)\n"
 	  "\t--per-core or -a          - metrics per core\n"
+	  "\t--per-core-freq           - add each core's live cpufreq reading (core_freq_mhz)\n"
+	  "\t                            to its --per-core row; requires --per-core/-a\n"
 	  "\t--rusage or -r            - show getrusage(2) information\n"
 	  "\t-o <file>                 - send output to file\n"
 	  "\t--csv                     - create csv output\n"
@@ -1518,6 +1525,13 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 #endif
   } else if (multiplex_flag){
     fatal("--multiplex only applies to --passes (it selects how --passes packs its requested counter groups)\n");
+  }
+
+  // --per-core-freq has no row to attach a per-core reading to without
+  // --per-core -- same "meaningless alone" fatal as --multiplex without
+  // --passes above, rather than a silent no-op.
+  if (per_core_freq && !aflag){
+    fatal("--per-core-freq is only meaningful together with --per-core/-a\n");
   }
 
   if (inventory_cpu() != 0){
@@ -1777,6 +1791,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 #endif
     if (per_core_csv){
       fprintf(outfile,"core,");
+      if (per_core_freq) fprintf(outfile,"core_freq_mhz,");
       print_metrics(cpu_info->coreinfo[first_core_with_counters].core_specific_counters,PRINT_CSV_HEADER);
     }
     print_metrics(cpu_info->systemwide_counters,PRINT_CSV_HEADER);
@@ -1916,6 +1931,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       }
 #endif
       fprintf(outfile,"%d,",i);
+      if (per_core_freq) fprintf(outfile,"%u,",cpu_core_current_freq_mhz(i));
       print_metrics(cpu_info->coreinfo[i].core_specific_counters,PRINT_CSV);
       print_metrics(cpu_info->systemwide_counters,PRINT_CSV);
       print_counter_coverage(PRINT_CSV);

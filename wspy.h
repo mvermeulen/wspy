@@ -19,6 +19,7 @@
 extern FILE *outfile;
 
 extern int aflag;
+extern int per_core_freq;
 extern int oflag;
 extern int sflag;
 extern int vflag;
