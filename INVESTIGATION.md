@@ -490,11 +490,11 @@ run's tree).
 column in an existing `--per-core --csv` file, naming the "hot" (max) and "cold" (min) core by index —
 a post-hoc report over an already-collected artifact (matching `wspy-validate`/`wspy-plot`'s own
 pattern), not a live collection-time feature. When this host's cores aren't all the same type
-(`cpu_info.c`'s per-core `vendor` field — ARM big.LITTLE, Intel Atom+Core hybrid, both already
-differentiated per-core; AMD Zen5/Zen5c hybrid parts are not yet, a pre-existing gap this tool doesn't
-work around), an additional breakdown groups the same stats by core class instead of lumping every core
-together. Must be run on the same host that collected the CSV (or one with identical topology) — core
-classes are re-detected fresh via `inventory_cpu()`, there's no per-core class column in the CSV itself.
+(`cpu_info.c`'s per-core `vendor` field — ARM big.LITTLE, Intel Atom+Core hybrid, AMD Zen5/Zen5c, all
+now differentiated per-core, see "AMD Zen5/Zen5c core detection" below), an additional breakdown groups
+the same stats by core class instead of lumping every core together. Must be run on the same host that
+collected the CSV (or one with identical topology) — core classes are re-detected fresh via
+`inventory_cpu()`, there's no per-core class column in the CSV itself.
 The class-grouping logic (`gather_core_values()`/`distinct_classes_present()`) takes a plain
 class-per-core-index array rather than reading `cpu_info` directly, so it's exercised in
 `test_core_report.c` against a synthetic heterogeneous-host assignment without needing real or fake
@@ -527,6 +527,31 @@ not reusing the collecting module's internal struct directly. Tested against fak
 `/sys/fs/cgroup` fixtures (`test_cgroup.c`, mirroring `ibs.c`/`power.c`/`affinity.c`'s own testable-`_at()`
 convention), including a regression fixture for the real no-cpu-controller case found during
 development.
+
+**AMD Zen5/Zen5c core detection + `wspy-core-report` web UI hook:** `cpu_info.c` previously classified
+every family-0x1a AMD core as `CORE_AMD_ZEN5` uniformly, unable to tell full Zen5 cores apart from the
+physically compact Zen5c cores on hybrid parts (e.g. Ryzen AI 300 "Strix Point") — cpuid family/model
+alone can't distinguish them. `resolve_amd_zen5_dense_cores()` closes this by clustering on per-core
+`cpufreq` max instead (any family-0x1a core whose max frequency reads below the highest seen among its
+siblings is reclassified `CORE_AMD_ZEN5C`), mirroring the heuristic `scripts/map_cpu_hierarchy.py`
+already used to label the same host's cores; degrades to leaving every core `CORE_AMD_ZEN5` when
+frequency data isn't readable, the usual measured-vs-unavailable idiom. Two consumers needed fixing to
+avoid silently mishandling the new class: `topdown.c`'s slots-per-cycle formula (Zen5c shares Zen5's
+8-wide core design, so it's folded into the same branch rather than falling through to an
+uninitialized `slots`) and `wspy.c`'s `core_is_per_core_eligible()` (without it, Zen5c cores would
+silently collect zero per-core counters). Verified live: `./cpu_info`'s Zen5/Zen5c split matches
+`map_cpu_hierarchy.py` exactly, CPU-for-CPU, on a Ryzen AI 9 HX 370 (4 Zen5 + 8 Zen5c cores). This also
+means `wspy-core-report`'s existing per-core-class breakdown (above) now actually fires a real
+Zen5-vs-Zen5c split, with no changes needed there beyond adding the class's display name.
+
+`wspy-core-report` itself had no web launcher hook until now — a new "Per-core class comparison"
+section on the Validate tab (`web/server.py`) runs it against a discovered or pasted `--per-core` CSV
+(`discover_percore_csv_paths()`, gated on a real `core` header column so a chip never points at a file
+that would just fail), with `--metric`/`--csv` options exposed. Report pages (both the fixed-config and
+`wspy-run`/checklist shapes) also gained a "Compare cores" link next to any `--per-core` CSV artifact
+(`core_report_link()`) that lands pre-filled on that Validate tab section via a new `core_report_csv`
+query param and `render_index()`'s `active_tab` — closing the loop from a `--per-core` run straight
+through to a core-class comparison without dropping to the CLI.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
@@ -780,7 +805,14 @@ this phase's own IBS sampling mode (Tier 1 above):**
    `cpu_info->is_hybrid` + topdown counters requested, warn when the collection mode can't account for
    the mix, no new raw-event code) was scoped and ready to implement when this was deferred — revisit
    that scope first if picked back up before hardware becomes available, since it needs no hardware to
-   validate.
+   validate. **Update (2026-07-20):** AMD Zen5/Zen5c per-core classification shipped (see "Shipped
+   since 4.1" above, real hardware was available for that vendor) and `--per-core` already collects
+   Zen5c counters (unlike the Atom exclusion above), so the "no existing per-core data to weight-
+   aggregate over" blocker is gone specifically for AMD — but the weighted-aggregate composite-topdown
+   analysis itself is still unimplemented for every vendor including AMD, and `--affinity=coretype=<id>`
+   is still ARM-only (x86 hybrid detection for that grouping remains the separate gap `affinity.c`
+   already documents). This item stays open; AMD is just no longer blocked on hardware access the way
+   Intel/ARM hybrid still are.
 
 **Tier 4 — publishing/reporting expansion, needs 4.1's report studio:**
 
