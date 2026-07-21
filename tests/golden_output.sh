@@ -243,7 +243,7 @@ echo "=== CSV header contract (exact match, --interval phase-boundary detection)
 assert_csv_header "interval-default-ipc"    --interval 1                    -- "time,phase,ipc,counters_measured,counters_requested,"
 assert_csv_header "interval-no-ipc"         --no-ipc --interval 1           -- "time,counters_measured,counters_requested,"
 assert_csv_header "interval-no-phase-detect" --interval 1 --no-phase-detect -- "time,ipc,counters_measured,counters_requested,"
-assert_csv_header "interval-per-core"       --per-core --interval 1         -- "time,counters_measured,counters_requested,"
+assert_csv_header "interval-per-core"       --per-core --interval 1         -- "time,core,ipc,counters_measured,counters_requested,"
 
 echo ""
 echo "=== CSV header contract (host-specific, regex) ==="
@@ -393,6 +393,13 @@ $out"
 assert_csv_interval_rows_match "topdown" 3 --topdown --no-rusage --no-software --no-ipc
 assert_csv_interval_rows_match "system"  3 --system --no-rusage --no-software --no-ipc
 assert_csv_interval_rows_match "default-ipc" 3
+# --per-core --interval: topdown.c:timer_callback()'s per-core branch
+# (INVESTIGATION.md's "fix the --per-core + --interval CSV shape gap")
+# emits one row per active core per tick instead of one systemwide row --
+# this helper's per-row column-count check catches drift there exactly
+# like it does for the non-per-core cases above, and its nrows>=2 floor
+# is trivially satisfied (num_ticks * num_cores rows, not just num_ticks).
+assert_csv_interval_rows_match "per-core-topdown" 3 --topdown --no-rusage --no-software --no-ipc --per-core
 # --gpu-nvidia's periodic-tick columns are populated by topdown.c's own
 # timer_callback(), a separate print call site from wspy.c's aggregate/tail
 # row -- exactly the kind of drift this helper exists to catch (see the

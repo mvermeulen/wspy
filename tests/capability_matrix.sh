@@ -244,11 +244,15 @@ run_bundle "interval-phase-detect"    0 --csv --interval 1                  -- s
 run_bundle "interval-no-phase-detect" 0 --csv --interval 1 --no-phase-detect -- sleep 1
 # --per-core disables phase detection outright (phase_detect_is_available()) --
 # it reads cpu_info->systemwide_counters, which is empty of per-core groups
-# under aflag. --per-core + --interval also still has the pre-existing,
-# separate CSV column-count mismatch above: timer_callback() only ever reads
-# cpu_info->systemwide_counters, so per_core_csv's new row shape deliberately
-# doesn't apply while --interval is active (see wspy.c's per_core_csv
-# comment) -- this combination isn't fixed by this bundle's sibling above.
+# under aflag. --per-core + --interval now shares per_core_csv's "core"-
+# columned row shape too: topdown.c:timer_callback() emits one row per
+# active core per tick instead of one systemwide row when aflag is set
+# (INVESTIGATION.md's "fix the --per-core + --interval CSV shape gap",
+# the interval-side follow-up to the aggregate fix above) -- see
+# tests/golden_output.sh's "interval-per-core" header case and
+# "per-core-topdown" assert_csv_interval_rows_match case for the actual
+# column-count-parity checks; this bundle still just checks the exit-code/
+# no-fatal/no-crash contract.
 run_bundle "interval-per-core"        0 --csv --per-core --interval 1        -- sleep 1
 # --power over --interval: power/energy-pkg links into systemwide_counters
 # like software/ibs, so timer_callback()'s existing generic per-tick read/
