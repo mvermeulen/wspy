@@ -924,12 +924,13 @@ static void test_extract_run_features_basic(void){
   assert(db != NULL);
   memset(&stats,0,sizeof(stats));
 
-  /* ipc/retire/frontend/backend/speculate present; dcache/branch/etc. not
-   * collected this run at all (no --dcache/--branch), so those features
-   * must degrade to unavailable rather than being silently omitted. */
+  /* ipc/retire/frontend/backend/speculate/contention_pct present; dcache/
+   * branch/etc. not collected this run at all (no --dcache/--branch), so
+   * those features must degrade to unavailable rather than being silently
+   * omitted. */
   write_file(csv_path,
-    "elapsed,ipc,retire,frontend,backend,speculate,counters_measured,counters_requested,\n"
-    "1.0,1.50,60.0,15.0,20.0,5.0,9,9,\n");
+    "elapsed,ipc,retire,frontend,backend,speculate,contention_pct,counters_measured,counters_requested,\n"
+    "1.0,1.50,60.0,15.0,20.0,5.0,8.5,9,9,\n");
   build_csv_record(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","/bin/true",csv_path);
 
   root = json_parse(buf,errbuf,sizeof(errbuf));
@@ -947,6 +948,8 @@ static void test_extract_run_features_basic(void){
   assert(!strcmp(coverage,"measured") && value > 59.9 && value < 60.1);
   assert(feature_row(db,run_id,"speculate_pct",&value,coverage,sizeof(coverage)));
   assert(!strcmp(coverage,"measured") && value > 4.9 && value < 5.1);
+  assert(feature_row(db,run_id,"smt_contention_pct",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && value > 8.4 && value < 8.6);
 
   /* Never collected this run -- unavailable, value NULL, not 0.0. */
   assert(feature_row(db,run_id,"dcache_miss_pct",&value,coverage,sizeof(coverage)));
@@ -1079,10 +1082,56 @@ static void test_extract_run_features_parallelism_proxy(void){
 
   assert(feature_row(db,run_id,"parallelism_proxy",&value,coverage,sizeof(coverage)));
   assert(!strcmp(coverage,"measured") && value > 0.5);
+  /* Both cores (2.0, 0.2) are above ACTIVE_CORE_IPC_THRESHOLD (0.05), so
+   * both count as active even though they're wildly imbalanced -- a
+   * distinct question from parallelism_proxy's own CV above. */
+  assert(feature_row(db,run_id,"active_core_count",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && value == 2.0);
 
   sqlite3_close(db);
   remove(csv_path);
   printf("PASS: extract_run_features parallelism_proxy\n");
+}
+
+static void test_extract_run_features_active_core_count_threshold(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_int64 run_id;
+  double value;
+  char coverage[16];
+  const char *csv_path = "/tmp/test_store_features_active_core_threshold.csv";
+
+  printf("Testing extract_run_features: active_core_count excludes cores at/below the IPC noise floor...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  /* 3 cores: two clearly active (1.0, 1.2), one essentially idle (0.02,
+   * below ACTIVE_CORE_IPC_THRESHOLD=0.05) -- active_core_count must read 2,
+   * not 3, or the noise floor isn't actually being applied. */
+  write_file(csv_path,
+    "elapsed,core,ipc,counters_measured,counters_requested,\n"
+    "1.0,0,1.0,9,9,\n"
+    "1.0,1,1.2,9,9,\n"
+    "1.0,2,0.02,9,9,\n");
+  build_csv_record(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","/bin/true",csv_path);
+
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,1,1,&stats);
+  json_free(root);
+
+  run_id = lookup_run_id(db,"run1");
+  assert(run_id > 0);
+
+  assert(feature_row(db,run_id,"active_core_count",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && value == 2.0);
+
+  sqlite3_close(db);
+  remove(csv_path);
+  printf("PASS: extract_run_features active_core_count threshold\n");
 }
 
 static void test_extract_run_features_single_core_unavailable(void){
@@ -1112,6 +1161,8 @@ static void test_extract_run_features_single_core_unavailable(void){
   assert(run_id > 0);
 
   assert(feature_row(db,run_id,"parallelism_proxy",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"unavailable"));
+  assert(feature_row(db,run_id,"active_core_count",&value,coverage,sizeof(coverage)));
   assert(!strcmp(coverage,"unavailable"));
 
   sqlite3_close(db);
@@ -1389,6 +1440,7 @@ int main(void){
   test_extract_run_features_rates();
   test_extract_run_features_phase_stability();
   test_extract_run_features_parallelism_proxy();
+  test_extract_run_features_active_core_count_threshold();
   test_extract_run_features_single_core_unavailable();
   test_extract_run_features_reingest_idempotent();
   test_schema_migration_v1_to_v2();

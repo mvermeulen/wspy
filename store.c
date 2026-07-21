@@ -37,7 +37,14 @@
  * (wspy.h) is versioned separately from MANIFEST_SCHEMA_VERSION. Recorded
  * on every run_features row so a later reader can tell which rule set
  * produced a given value. */
-#define FEATURE_SET_VERSION "1.0"
+#define FEATURE_SET_VERSION "1.1"
+
+/* Noise floor for active_core_count (below): a --per-core core averaging
+ * at or under this IPC is treated as not meaningfully participating in the
+ * workload, not as "active at a very low rate" -- deliberately simple v1
+ * starting point, same style preflight.c/phase.c already use for their own
+ * heuristics, not derived from a formal study. */
+#define ACTIVE_CORE_IPC_THRESHOLD 0.05
 
 static int now_iso8601(char *buf,size_t bufsize);
 
@@ -828,6 +835,7 @@ static const struct simple_metric_feature SIMPLE_METRIC_FEATURES[] = {
   { "branch_mispredict_pct", "branch miss" },
   { "itlb_miss_per1k",       "itlb2" },
   { "dtlb_miss_per1k",       "dtlb2" },
+  { "smt_contention_pct",    "contention_pct" },
 };
 #define NUM_SIMPLE_METRIC_FEATURES \
   (int)(sizeof(SIMPLE_METRIC_FEATURES)/sizeof(SIMPLE_METRIC_FEATURES[0]))
@@ -935,16 +943,27 @@ static void extract_run_features(sqlite3 *db,sqlite3_int64 run_row_id,struct sto
       upsert_feature(db,run_row_id,"phase_stability",0,0);
   }
 
-  /* parallelism_proxy: cross-core coefficient of variation of each core's
-   * own mean IPC (--per-core only; metric_values.core is NULL on every row
-   * of an aggregate or --interval-without---per-core run). Sample stddev
-   * (n-1 denominator), matching summary.c's compute_stats() convention;
-   * needs at least 2 cores to be meaningful, same n>=2 floor summary.c uses
-   * before reporting a stddev at all. */
+  /* parallelism_proxy / active_core_count: both read from the same
+   * per-core mean-IPC query (--per-core only; metric_values.core is NULL
+   * on every row of an aggregate or --interval-without---per-core run), so
+   * one query serves both rather than running it twice. They answer
+   * different questions: parallelism_proxy is the cross-core coefficient
+   * of variation (is work *balanced* across whichever cores were active --
+   * sample stddev, n-1 denominator, matching summary.c's compute_stats()
+   * convention; needs >=2 cores to be meaningful, same n>=2 floor
+   * summary.c uses before reporting a stddev at all); active_core_count is
+   * how many cores did meaningfully more than idle-level work at all
+   * (mean IPC above ACTIVE_CORE_IPC_THRESHOLD) -- meaningful even for a
+   * single active core, so it only needs n>=1. Grounded in real prior
+   * workload-clustering work (see INVESTIGATION.md's archetype-scorecard
+   * deep-dive) that used a similar "cores actively used" dimension as a
+   * first-class clustering input alongside topdown categories -- this is
+   * this codebase's own derived proxy for that idea, not a reproduction of
+   * that work's undisclosed exact formula. */
   {
     sqlite3_stmt *cstmt;
     double sum = 0,sumsq = 0;
-    long n = 0;
+    long n = 0,active = 0;
     if (sqlite3_prepare_v2(db,
         "SELECT AVG(value) FROM metric_values WHERE run_id=? AND metric_name='ipc' "
         "AND core IS NOT NULL GROUP BY core;",-1,&cstmt,NULL) == SQLITE_OK){
@@ -952,6 +971,7 @@ static void extract_run_features(sqlite3 *db,sqlite3_int64 run_row_id,struct sto
       while (sqlite3_step(cstmt) == SQLITE_ROW){
         double v = sqlite3_column_double(cstmt,0);
         sum += v; sumsq += v*v; n++;
+        if (v > ACTIVE_CORE_IPC_THRESHOLD) active++;
       }
       sqlite3_finalize(cstmt);
     }
@@ -966,6 +986,10 @@ static void extract_run_features(sqlite3 *db,sqlite3_int64 run_row_id,struct sto
     } else {
       upsert_feature(db,run_row_id,"parallelism_proxy",0,0);
     }
+    if (n >= 1)
+      upsert_feature(db,run_row_id,"active_core_count",1,(double)active);
+    else
+      upsert_feature(db,run_row_id,"active_core_count",0,0);
   }
 
   stats->features_extracted++;

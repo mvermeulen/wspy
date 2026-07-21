@@ -47,7 +47,7 @@ GPU_SRCS += nvidia_nvml.c
 GPU_BINS += nvidia_nvml
 endif
 
-all:	wspy cpu_info proctree wspy-validate wspy-ledger wspy-store wspy-summary wspy-plot wspy-core-report $(GPU_BINS)
+all:	wspy cpu_info proctree wspy-validate wspy-ledger wspy-store wspy-summary wspy-plot wspy-core-report wspy-archetype $(GPU_BINS)
 
 wspy:	wspy.o topdown.o error.o system.o json_util.o manifest.o run_index.o coverage.o provenance.o ibs.o power.o preflight.o phase.o multipass.o affinity.o gpu_fusion.o cgroup.o cpu_info.c cpu_info.h
 	$(CC) -o wspy $(CFLAGS) wspy.o topdown.o cpu_info.c $(GPU_SRCS) error.o system.o json_util.o manifest.o run_index.o coverage.o provenance.o ibs.o power.o preflight.o phase.o multipass.o affinity.o gpu_fusion.o cgroup.o $(LIBS)
@@ -72,6 +72,9 @@ wspy-plot:	plot.o
 
 wspy-core-report:	core_report.o error.o cpu_info.c cpu_info.h
 	$(CC) -o wspy-core-report $(CFLAGS) core_report.o cpu_info.c error.o -lm
+
+wspy-archetype:	archetype.o
+	$(CC) -o wspy-archetype $(CFLAGS) archetype.o $(STORE_LIBS) -lm
 
 cpu_info:	cpu_info.c error.o cpu_info.h
 	$(CC) -o cpu_info $(CFLAGS) -DTEST_CPU_INFO cpu_info.c error.o
@@ -104,7 +107,7 @@ clean:
 	-rm *~ *.o *.bak
 
 clobber:	clean
-	-rm wspy cpu_info amd_smi amd_sysfs nvidia_nvml proctree wspy-validate wspy-ledger wspy-store wspy-summary wspy-plot wspy-core-report test_hip_init test_hip_kernel test_proctree test_wspy test_validate test_ledger test_ibs test_power test_phase test_store test_summary test_plot test_affinity test_gpu_fusion test_core_report test_cgroup libwspy_profiler.so
+	-rm wspy cpu_info amd_smi amd_sysfs nvidia_nvml proctree wspy-validate wspy-ledger wspy-store wspy-summary wspy-plot wspy-core-report wspy-archetype test_hip_init test_hip_kernel test_proctree test_wspy test_validate test_ledger test_ibs test_power test_phase test_store test_summary test_plot test_affinity test_gpu_fusion test_core_report test_cgroup test_archetype libwspy_profiler.so
 
 # DO NOT DELETE
 
@@ -193,7 +196,10 @@ test_core_report: test_core_report.c core_report.c cpu_info.h error.c error.h
 test_cgroup: test_cgroup.c cgroup.c cgroup.h
 	$(CC) -o test_cgroup $(CFLAGS) test_cgroup.c
 
-test: test_wspy test_proctree test_validate test_ledger test_ibs test_power test_phase test_store test_summary test_plot test_affinity test_gpu_fusion test_core_report test_cgroup
+test_archetype: test_archetype.c archetype.c
+	$(CC) -o test_archetype $(CFLAGS) -DTEST_ARCHETYPE test_archetype.c $(STORE_LIBS) -lm
+
+test: test_wspy test_proctree test_validate test_ledger test_ibs test_power test_phase test_store test_summary test_plot test_affinity test_gpu_fusion test_core_report test_cgroup test_archetype
 	./test_wspy
 	./test_proctree
 	./test_validate
@@ -208,3 +214,4 @@ test: test_wspy test_proctree test_validate test_ledger test_ibs test_power test
 	./test_gpu_fusion
 	./test_core_report
 	./test_cgroup
+	./test_archetype
