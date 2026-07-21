@@ -195,6 +195,42 @@ class BuildConfigurationPassesTest(unittest.TestCase):
         self.assertIn("--power", flags)
         self.assertFalse(any(f.startswith("--passes=") for f in flags))
 
+    def test_counters_per_core_checkbox_adds_per_core_flag_with_no_interval(self):
+        # Regression test: per_core used to be gated on "interval is not
+        # None", so leaving the interval field blank (aggregate mode --
+        # the only mode that produces a wspy CSV with a "core" column,
+        # wspy-core-report's required input) silently dropped --per-core.
+        checklist = {"counters": {"enabled": True, "groups": ["topdown"], "per_core": True}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        self.assertIn("--per-core", passes[0]["flags"])
+        self.assertNotIn("--interval", passes[0]["flags"])
+
+    def test_counters_per_core_forces_aggregate_ignoring_interval(self):
+        # --per-core + --interval together still produce a CSV with no
+        # "core" column at the wspy.c level (per_core_csv excludes
+        # --interval) -- per-core must always win and drop --interval
+        # rather than silently building a CSV wspy-core-report can't read.
+        checklist = {"counters": {"enabled": True, "groups": ["topdown"],
+                                   "per_core": True, "interval_secs": "1"}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        flags = passes[0]["flags"]
+        self.assertIn("--per-core", flags)
+        self.assertNotIn("--interval", flags)
+
+    def test_counters_per_core_forces_plain_flags_over_passes_bin_packing(self):
+        # --passes fatals against --per-core (wspy.c), so checking
+        # "per-core" must bypass the --passes bin-packing branch even with
+        # 2+ groups and no interval given.
+        checklist = {"counters": {"enabled": True, "groups": ["topdown", "cache2"],
+                                   "per_core": True}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        flags = passes[0]["flags"]
+        self.assertIn("--per-core", flags)
+        self.assertFalse(any(f.startswith("--passes=") for f in flags))
+
     def test_system_power_checkbox_adds_power_flag(self):
         checklist = {"system": {"enabled": True, "power": True}}
         passes = joblib.build_configuration_passes("/tmp/rundir", checklist)

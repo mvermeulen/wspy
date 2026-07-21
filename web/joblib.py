@@ -685,17 +685,29 @@ def build_configuration_passes(rundir, checklist):
         power_wanted = bool(counters.get("power"))
         if selected or power_wanted:
             interval = parse_optional_int(counters.get("interval_secs"), 1, 3600)
-            per_core = bool(counters.get("per_core")) and interval is not None
+            per_core = bool(counters.get("per_core"))
+            # --per-core + --interval still produces a CSV with no "core"
+            # column at the wspy.c level (per_core_csv's column-count-mismatch
+            # fix deliberately excludes --interval -- timer_callback() only
+            # ever reads systemwide_counters, see wspy.c's per_core_csv
+            # comment), and wspy-core-report requires that column -- so a
+            # per-core request always forces aggregate here regardless of
+            # what the interval field holds. This isn't silent: the live
+            # command preview simply won't show --interval, so what runs
+            # always matches what's shown.
+            if per_core:
+                interval = None
             rusage_on = bool(counters.get("rusage"))
             csv = bool(counters.get("csv", True))
             # --passes rejects --interval/--per-core/--power outright (wspy.c,
-            # see CLAUDE.md's wspy.c entry) -- so interval mode, or a power
-            # checkbox, always uses plain flags (potentially multiplexed by
-            # the kernel across >1 group, same as any ordinary wspy
-            # invocation would be); aggregate mode with no power only needs
-            # --passes' bin-packing once >=2 groups are requested, since a
-            # single group never multiplexes against itself.
-            if interval is None and len(selected) >= 2 and not power_wanted:
+            # see CLAUDE.md's wspy.c entry) -- so interval mode, a per-core
+            # request, or a power checkbox, always uses plain flags
+            # (potentially multiplexed by the kernel across >1 group, same as
+            # any ordinary wspy invocation would be); aggregate mode with no
+            # per-core/power only needs --passes' bin-packing once >=2 groups
+            # are requested, since a single group never multiplexes against
+            # itself.
+            if interval is None and len(selected) >= 2 and not power_wanted and not per_core:
                 ordered = [n for n in GROUP_NAMES if n in selected]
                 flags = [f"--passes={','.join(ordered)}"]
             else:
