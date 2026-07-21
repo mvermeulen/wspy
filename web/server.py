@@ -814,7 +814,7 @@ POWER_EACCES_HINT = (
 # comment there: "--power rides along on systemtime... since systemtime
 # already opens zero hardware counters, --power is a genuinely free
 # addition"), and gpu-compute's single pass does too. deep-gpu's systemtime
-# pass now carries it as well (INVESTIGATION.md's "4.2 -- remaining work" --
+# pass now carries it as well (INVESTIGATION.md's "What shipped in 4.2" --
 # fixed a pre-existing asymmetry between deep-cpu and deep-gpu, not a
 # deliberate difference). This table used to be empty (the docstring below
 # claimed "no preset uses --power"), which silently skipped the power probe

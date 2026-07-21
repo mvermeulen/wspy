@@ -164,7 +164,7 @@ static const char *SCHEMA_DDL =
 /* Applied when an existing database is found at STORE_SCHEMA_VERSION 1
  * (the shape wspy-store originally shipped with, before metric_values
  * existed) -- test_store.c covers this migration end to end (see
- * INVESTIGATION.md's "Shipped since 4.1", "Testing"), rather than
+ * INVESTIGATION.md's "What shipped in 4.1", "Testing"), rather than
  * a second "no migration path yet" caveat. Safe to run exactly once
  * (ensure_schema() only reaches this at user_version==1); the ADD COLUMN
  * statements would error on a second run, which is why it's strictly

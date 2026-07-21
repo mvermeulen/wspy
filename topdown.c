@@ -3523,10 +3523,11 @@ void timer_callback(int signum){
   // (gpu_smi_requested); timer_callback() never read amd_smi here, so a
   // periodic --gpu-smi --interval row was silently missing the 4 columns
   // the header claims (gpu_smi_temp/gpu_smi_activity/gpu_smi_vram_used/
-  // gpu_smi_vram_total) -- see INVESTIGATION.md's "4.2 -- remaining work"
-  // Tier 1. Mirrors wspy.c's own gpu_smi_requested block exactly (both CSV
-  // and human-format branches), positioned after gpu_metrics/before NVIDIA
-  // to match the header's column order.
+  // gpu_smi_vram_total) -- see INVESTIGATION.md's "What shipped in 4.2",
+  // "ROCm SMI + sysfs GPU fusion layer". Mirrors wspy.c's own
+  // gpu_smi_requested block exactly (both CSV and human-format branches),
+  // positioned after gpu_metrics/before NVIDIA to match the header's
+  // column order.
   if (gpu_smi_requested){
     amd_smi_metrics();
     amd_smi_memory();

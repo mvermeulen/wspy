@@ -20,6 +20,7 @@ type below.
 | Tree file | `--tree <file>` | line-oriented, 4 line kinds | not versioned — grammar is small and append-only |
 | Run-directory manifest | `wspy-run --suite/--benchmark` | one JSON object, one per run directory | `layout_version` (`wspy-run`'s own generator, not a C header) |
 | Normalized store | `wspy-store --db <path>` | SQLite database (derived, not written by `wspy` itself) | `PRAGMA user_version` (`store.c`'s `STORE_SCHEMA_VERSION`) |
+| Reproducibility bundle | `wspy-bundle` (or the report page's "Download reproducibility bundle" link) | `.tar.gz`, one `bundle_manifest.json` index at the root | `BUNDLE_SCHEMA_VERSION` (`web/joblib.py`) |
 
 A single `wspy` run can produce any subset of these: `--manifest` and `--run-index` are independent
 (a run can use either, neither, or both), and the main output always exists (stdout if `-o` isn't
@@ -80,10 +81,24 @@ One JSON object, written once at the end of a run (`manifest.c:write_manifest()`
                     "cpu_governor_uniform": true, "memory_total_kb": 65894680,
                     "compiler_version": "...", "libc_version": "..." },
   "environment_coverage": { "captured": 9, "probed": 9, "unavailable": [] },
+  "cgroup": { "available": true, "path": "/user.slice/...",
+              "cpu_max": { "available": true, "quota_us": -1, "period_us": 100000 },
+              "cpu_weight": { "available": true, "value": 100 },
+              "memory_max_bytes": { "available": false },
+              "memory_high_bytes": { "available": false },
+              "throttle": { "available": true, "nr_periods_delta": 0,
+                             "nr_throttled_delta": 0, "throttled_usec_delta": 0 } },
   "configuration_provenance": { "preset": null, "configuration": null, "options": [] },
   "options": { "counter_mask": "0x3", "per_core": false, "system": false,
-               "csv": true, "tree": false, "interval_seconds": 0 },
+               "csv": true, "tree": false, "interval_seconds": 0,
+               "affinity": { "requested": null, "mode": "all", "cpus": "0-31" },
+               "gpu": { "requested": { "busy": false, "metrics": false, "smi": false, "nvidia": false },
+                        "amd_device_index": null, "nvidia_device_index": null,
+                        "backend_valid": { "amd_sysfs_busy": false, "amd_sysfs_metrics": false,
+                                            "amd_smi_metrics": false, "amd_smi_memory": false,
+                                            "nvidia_metrics": false } } },
   "counter_coverage": { "requested": 4, "measured": 4, "unavailable": [] },
+  "topdown_formula_version": null,
   "passes": [],
   "output_files": [
     { "kind": "output", "path": "results/run.csv" },
@@ -118,10 +133,41 @@ Field notes:
   (`{ "field": ..., "reason": ... }`); `hypervisor_vendor` and `cpu_scaling_driver` exist as fields
   but aren't in the tracked/coverage count (see `provenance.h`'s comment on
   `PROVENANCE_TRACKED_FIELD_COUNT`).
+- `cgroup` (top-level, `MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION` `1.8.0` → `1.9.0`) is cgroup
+  v2 (unified hierarchy only) identity/limits/CPU-throttling — sibling to `environment`, not nested
+  inside `options`, since cgroup membership is an observed fact about the execution context rather than
+  a `wspy` CLI choice. `available: false` (with `path: null`) means no cgroup v2 unified hierarchy was
+  found at all (e.g. a pure cgroup v1 host); every other field degrades independently even when the
+  cgroup itself is available — a real, confirmed-live case is a leaf cgroup with the cpu controller not
+  enabled, which has `memory_max_bytes`/`memory_high_bytes` but no `cpu_max`/`cpu_weight`/`throttle` at
+  all. `throttle`'s `nr_periods_delta`/`nr_throttled_delta`/`throttled_usec_delta` are a **delta over
+  the measurement window** (baseline taken near workload launch, final reading at manifest-write time),
+  not cumulative since the cgroup's own creation.
+- `options.affinity` (`MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION` `1.5.0` → `1.6.0`) records
+  the resolved `--affinity=<spec>` core/thread placement — `requested` is the literal CLI text (`null`
+  for the implicit `all` default), `mode` is one of `affinity_mode_name()`'s strings (`all`/`thread`/
+  `nosmt`/`domain`/`coretype`/`cpuset`), `cpus` is the final resolved cpu list in `"0,2-3,7"` form. All
+  three are **always populated, even for the `all` default** — a reader never has to cross-reference
+  `host.num_cores` to know what "all" meant on that host.
+- `options.gpu` (`MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION` `1.7.0` → `1.8.0`) is deliberately
+  provenance-only: which `--gpu-*` flag(s) were requested, the resolved AMD/NVIDIA device index
+  (`null` when that vendor's flags weren't requested at all, gated on the `requested` flags themselves
+  rather than the index's sign — a zero-initialized struct reads `null`, not "device 0"), and whether
+  each backend actually produced valid data on this run's *last* read. It never duplicates the measured
+  busy/temp/activity/power/freq/VRAM values themselves, which stay CSV-only like every other metric —
+  this is a coverage record (which device, did it work), the same role `counter_coverage` plays for
+  perf counters. All-zero/`null`/`false` for a build without `AMDGPU`/`NVIDIA` or a run that never
+  touched a GPU flag, not a gap.
 - `counter_coverage.unavailable` lists individual `perf_event_open` failures as
   `{ "group": ..., "counter": ..., "errno": N, "reason": "<strerror(N)>" }`. A nonzero list here
   does **not** by itself mean the run is bad — it means some counters degraded gracefully (see
   "Degrade, don't fail"). Common causes are covered in "Troubleshooting" below.
+- `topdown_formula_version` (`MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION` `1.6.0` → `1.7.0`)
+  records `TOPDOWN_FORMULA_VERSION` (`wspy.h`) — the version of `print_topdown()`'s L1→L2 percentage
+  decomposition formula, independent of `MANIFEST_SCHEMA_VERSION` itself (bump it when the event
+  mapping or denominator convention changes, not when a field is added elsewhere). `null` whenever this
+  run's `counter_mask` includes neither `COUNTER_TOPDOWN` nor `COUNTER_TOPDOWN2`, matching the
+  "measured vs not applicable" convention used throughout this doc.
 - `passes` is populated only for a native multi-pass counter execution run (`wspy --passes=<list>`,
   `multipass.h`/`multipass.c`, `INVESTIGATION.md`'s "What shipped in 4.1", "Native multi-pass
   counter execution") — `[]` for a normal run, otherwise one entry per automatically-sized pass:
@@ -183,12 +229,16 @@ details beyond the three path strings, no per-field environment gap list, just c
  "hostname":"...","cpu_vendor":"...","cpu_family":25,"cpu_model":97,
  "environment":{...same field set as manifest's "environment"...},
  "environment_coverage":{"captured":9,"probed":9},
+ "cgroup":{...same shape as the manifest's top-level "cgroup" object above...},
  "start_time":"...","finish_time":"...","elapsed_seconds":12.345,
  "command":["<argv0>","..."],
  "exit_status":{"known":true,"exited":true,"exit_code":0,"signaled":false,"term_signal":null},
- "options":{"counter_mask":"0x3","per_core":false,"system":false,"csv":true,"tree":false,"interval_seconds":0},
+ "options":{"counter_mask":"0x3","per_core":false,"system":false,"csv":true,"tree":false,"interval_seconds":0,
+            "affinity":{"requested":null,"mode":"all","cpus":"0-31"},
+            "gpu":{...same shape as the manifest's "options.gpu" object above...}},
  "configuration_provenance":{"preset":null,"configuration":null,"options":[]},
  "counter_coverage":{"requested":4,"measured":4},
+ "topdown_formula_version":null,
  "passes":[],
  "output_files":{"output_path":"results/run.csv","tree_output_path":null,"manifest_path":"results/run.manifest.json"}}
 ```
@@ -211,6 +261,11 @@ details beyond the three path strings, no per-field environment gap list, just c
 - `configuration_provenance` is the same structured configuration provenance as the manifest's field
   of the same name (see "Manifest" above) -- identical shape, just compact JSON instead of
   pretty-printed.
+- `cgroup`, `options.affinity`, `options.gpu`, and `topdown_formula_version` are identical in shape and
+  meaning to the manifest's own fields of the same names (see "Manifest" above for field notes) — the
+  run index carries the full structured object for each, not a leaner projection, since none of them
+  have a "counts only" summary that would make sense the way `counter_coverage`/`environment_coverage`
+  do.
 
 ## Normalized store (`wspy-store --db <path>`)
 
@@ -241,7 +296,11 @@ SQLite natively).
   is kept both as the original hex string (`"0x3"`) and pre-parsed into `counter_mask_int` (plain
   integer) so SQL bit-test queries (`counter_mask_int & 0x4`) work without a hex-parsing UDF.
   `kernel_release`/`num_cores`/`num_cores_available`/`is_hybrid` are populated only via manifest
-  enrichment (see below) — they're `NULL` until `manifest_ingested = 1`.
+  enrichment (see below) — they're `NULL` until `manifest_ingested = 1`. `preset_name`/`config_name`
+  (from `configuration_provenance.preset`/`.configuration`) and `affinity_mode`/`affinity_requested`/
+  `affinity_cpus` (from `options.affinity`) are bound directly onto this row too, straight from the
+  run-index record — both were ingested since 4.0/4.1 respectively but sat unused until `wspy-summary
+  --group-by`/`--group-by-option` (below) made them queryable.
 - `run_command_args` — one row per `argv` element, `(run_id, arg_index)` PK, so the full command
   line is queryable/joinable rather than only the denormalized `runs.command` (argv[0] only, for
   display).
@@ -249,6 +308,12 @@ SQLite natively).
   `captured`/`probed` counts. Populated straight from the run-index record's own `environment`/
   `environment_coverage` objects — **not** manifest enrichment, since the run index already carries
   this in full.
+- `run_config_options` — one row per `--config-option k=v` pair (`run_id, option_name, option_value`,
+  `PRIMARY KEY (run_id, option_name)`), the open-ended counterpart to `runs.preset_name`/`config_name`
+  above — a `wspy-sweep` cell's own axis tag, or any other caller-supplied context label. Populated
+  from the run-index record's `configuration_provenance.options[]` array via a DELETE-then-INSERT
+  idempotent replace on every (re-)ingest. `wspy-summary --group-by-option <name>` is the consumer
+  (see "Summary tables" below).
 - `metric_values` — one row per (CSV data row × non-dimension column), the long/tall metric-value
   fact table: `run_id` (FK), `row_index` (ordinal of the CSV data row), `tick_time`/`core`/`phase`
   (dimensions — see below), `metric_name` (the CSV header cell verbatim, e.g. `"ipc"`, `"retire"`,
@@ -256,6 +321,9 @@ SQLite natively).
   a trailing `%`), `raw_text` (the original cell text, always kept — auditable even when `value` is
   `NULL`). Indexed on `(run_id, metric_name)` for "give me this metric's series for this run" queries.
   `runs.metrics_ingested`/`runs.metrics_row_count` record whether/how much this landed for a given run.
+- `run_features` — one row per `(run_id, feature_name)` (`UNIQUE(run_id, feature_name)`, upserted on
+  re-extraction), a fixed, coverage-aware feature vocabulary derived from `metric_values`/`runs` — see
+  "Feature vocabulary" below for the full derivation-rule table.
 - `store_meta` — small descriptive key/value table (e.g. `created_at`); **not** the schema
   compatibility gate (see below).
 - `ingest_sources` — one row per ingested file path, tracking the last byte offset/size
@@ -338,9 +406,52 @@ runs either the fresh-database `SCHEMA_DDL` (`user_version == 0`) or exactly one
 `ALTER TABLE`/`CREATE TABLE IF NOT EXISTS` migration step per older version found (e.g.
 `MIGRATION_V1_TO_V2` adds `metric_values` and the two `runs.metrics_*` columns to a database created
 before this table existed), never both — see `CLAUDE.md`'s "New normalized-store field" entry for
-the pattern to follow when adding the next one. This is `wspy-store`'s first real migration;
-`test_store.c` covers its idempotency/migration behavior end to end (see `INVESTIGATION.md`'s
-"Shipped since 4.1", "Testing").
+the pattern to follow when adding the next one. `STORE_SCHEMA_VERSION` is currently `4`; three
+migrations exist so far (`V1_TO_V2` adds `metric_values`; `V2_TO_V3` adds structured-configuration-
+provenance/affinity columns on `runs` plus the `run_config_options` child table; `V3_TO_V4` adds
+`run_features`, see "Feature vocabulary" below) — `test_store.c` covers each one's idempotency/
+migration behavior end to end (see `INVESTIGATION.md`'s "What shipped in 4.1"/"What shipped in 4.2",
+"Testing").
+
+### Feature vocabulary (`run_features`)
+
+`extract_run_features()` (`store.c`) derives a fixed, coverage-aware feature vocabulary from
+`metric_values`/`runs` into `run_features` — one consistently-shaped input for characterization work
+(`wspy-archetype`, below; 4.3's regression detection/clustering) to score against, instead of each
+consumer re-solving "which columns exist this time" against the raw table itself
+(`INVESTIGATION.md`'s "What shipped in 4.2", "Feature normalization prerequisites"). Runs
+automatically after `upsert_run()`'s manifest-enrich/metrics-ingest steps (`--no-feature-extract` opts
+out, same convention as `--no-manifest-enrich`/`--no-metrics-ingest`); safe to call even when a
+particular ingest didn't add new CSV rows.
+
+Each row is `(run_id, feature_name, value, coverage, feature_set_version)`. `coverage` is `"measured"`
+or `"unavailable"` — a feature whose source column(s)/flag(s) weren't collected this run is
+`unavailable`/`value=NULL`, **never a silent zero** — the same "measured vs unavailable" idiom
+`coverage.c`/`provenance.c` use elsewhere, applied per feature instead of per run. `feature_set_version`
+(`FEATURE_SET_VERSION`, `store.c` — currently `"1.1"`) tags which derivation-rule vocabulary produced
+each row, versioned independently of `STORE_SCHEMA_VERSION` (the table shape can stay put while the
+rules evolve), same reasoning `TOPDOWN_FORMULA_VERSION` is versioned separately from
+`MANIFEST_SCHEMA_VERSION`.
+
+Two families of features:
+
+- **Plain metric averages** (`SIMPLE_METRIC_FEATURES[]`) — a straight `AVG(value)` over a named
+  `metric_values.metric_name`: `retire_pct`/`frontend_pct`/`backend_pct`/`speculate_pct` (topdown L1),
+  `dcache_miss_pct`/`icache_miss_pct`/`l2_miss_pct`/`l3_miss_pct`, `branch_mispredict_pct`,
+  `itlb_miss_per1k`/`dtlb_miss_per1k`, `smt_contention_pct` (AMD-only). Names come straight from
+  `topdown.c`'s own CSV header text, not an invented vocabulary. One query answers both value and
+  coverage together, since `AVG()` over zero rows or all-`NULL` cells both come back SQL `NULL`.
+- **Derived features** — one-off computations: `fault_rate`/`ctxswitch_rate` (rusage columns divided
+  by `elapsed_seconds`, always available regardless of `--interval`); `phase_stability` (fraction of
+  distinct `--interval` ticks `phase.c` classified `steady`, needs `--interval` + `COUNTER_IPC`);
+  `parallelism_proxy` (cross-core coefficient of variation of per-core mean IPC, needs `--per-core`,
+  `n>=2` cores); `active_core_count` (how many `--per-core` cores averaged more than a `0.05` IPC noise
+  floor, needs only `n>=1`) — the same per-core query `parallelism_proxy` runs, answering a different
+  question (*how many* cores did work vs. *how evenly balanced* work was across them).
+
+Deliberately out of scope: per-process I/O-rate features — `--tree-io`'s `rchar`/`wchar` live in the
+*tree* output file, which nothing ingests into the store today, so there's no `metric_values` column
+to derive them from.
 
 ## Summary tables (`wspy-summary --db <path>`)
 
@@ -353,14 +464,28 @@ generator", closing the "a summary page can be regenerated from data only" crite
 (`AVG(value)`) down to one number for that run — a no-op for the common single-row aggregate CSV
 shape, and the right collapse for a `--interval` run's ticks or a `--per-core` run's cores, without
 the tool needing to know which shape produced the data. Those per-run numbers are then grouped into
-`(group, metric)` buckets — `group` is workload command by default, or `hostname`/`cpu_vendor` via
-`--group-by` — and each bucket gets min/max/mean/median/stddev (sample, `n-1` denominator; 0 for
-`n<2` rather than undefined) plus a z-score outlier flag per run (`--outlier-stddev`, default 2.0;
-only evaluated for buckets with `n>=3` and nonzero stddev, since flagging is meaningless with fewer
-samples). `--command`/`--hostname` filter which runs contribute; `--metric` (repeatable) filters
-which metrics are reported. A bucket with fewer contributing runs than `--min-runs` is skipped
-(counted, not fatal — the usual degrade-don't-fail idiom); `--strict` exits 1 if any bucket was
-skipped this way, or if nothing matched at all.
+`(group, metric)` buckets — `group` is workload command by default, or `hostname`/`cpu_vendor`/
+`affinity_mode`/`preset_name`/`config_name`/`cpu_governor`/`virt_role` via `--group-by` (a fixed
+whitelist, safe to interpolate into SQL); `--group-by-option <name>` adds a *second*, independent
+grouping axis from an arbitrary `run_config_options.option_name` (an open-ended `--config-option` key,
+e.g. a `wspy-sweep` cell's own axis tag — not part of the fixed `--group-by` whitelist, since it names
+a caller-invented key rather than one of a known set) — and each bucket gets min/max/mean/median/
+stddev (sample, `n-1` denominator; 0 for `n<2` rather than undefined) plus a z-score outlier flag per
+run (`--outlier-stddev`, default 2.0; only evaluated for buckets with `n>=3` and nonzero stddev, since
+flagging is meaningless with fewer samples). `--command`/`--hostname` filter which runs contribute;
+`--metric` (repeatable) filters which metrics are reported. A bucket with fewer contributing runs than
+`--min-runs` is skipped (counted, not fatal — the usual degrade-don't-fail idiom); `--strict` exits 1
+if any bucket was skipped this way, if any reported bucket's `verdict` (below) is `WARN`, or if
+nothing matched at all.
+
+**Repeatability verdict:** every bucket also carries `cv_percent`, a 95% confidence interval of the
+mean (`ci95_low`/`ci95_high`), and a `verdict` column — `PASS`, or `WARN:` followed by a fixed-order,
+comma-joined reason list: `thin` (`n < 3` contributing runs), `noisy` (`cv_percent` over `--max-cv`,
+default `5.0`), and `mixed-pmu` (the bucket's contributing runs don't all share the identical
+`(cpu_vendor, counters_requested, counters_measured)` signature — exact-match, not a numeric closeness
+threshold, since there's no principled "how different is different enough" for a coverage triple).
+See `doc/PROFILE_COOKBOOK.md`'s "Reading confidence" for what each reason means and what to do about
+it — this doc only owns the format, not the interpretation.
 
 **Schema compatibility:** opens the database read-only and requires `PRAGMA user_version >= 2` (the
 schema version `metric_values` was introduced at — see "Normalized store" above); an older database
@@ -393,6 +518,54 @@ further resolves a `/report`/`/files` link whenever the paths happen to fall und
 `--output-root` — can parse a single resolved run without needing a JSON library on either side.
 Exit status is 1 (not 2) when the `(hostname,run_id)` pair isn't recorded in the store at all,
 mirroring `--strict`'s "still needs more data" convention rather than treating it as a usage error.
+
+## Archetype scorecard (`wspy-archetype --db <path>`)
+
+Another read-only query tool over the normalized store, alongside `wspy-summary` — never writes to
+`--db`, produces nothing persisted. Where `wspy-summary` asks "is this *number* trustworthy across
+repeated runs," `wspy-archetype` asks "what *kind* of workload was this single run" — classifying one
+run along four axes scored from its `run_features` row (`INVESTIGATION.md`'s "What shipped in 4.2",
+"Archetype scorecard"; see `doc/PROFILE_COOKBOOK.md`'s "Reading the archetype scorecard" for how to
+interpret the output, not just its shape).
+
+**Schema compatibility:** opens the database read-only and requires `PRAGMA user_version >= 4`
+(`ARCHETYPE_MIN_SCHEMA_VERSION`, `archetype.c` — the version `run_features` was introduced at, see
+"Feature vocabulary" above); an older database is refused with a clear message.
+
+**The four axes**, each independently `unknown`/`insufficient-data` when its source `run_features`
+row wasn't collected:
+
+- **`resource_dominance`** — the headline axis, and the only ranked one: `compute-bound`/
+  `frontend-bound`/`memory-bound`/`speculation-bound`, ranked from topdown L1 percentages
+  (`retire_pct`/`frontend_pct`/`backend_pct`/`speculate_pct`). Always reported with a top-2
+  `alternative` (label + percentage) alongside the primary — the margin between them is what drives
+  `confidence` below. `insufficient-data` (a terminal case — nothing else can be classified either,
+  since every other confidence tier depends on this axis) when none of the four topdown percentages
+  were collected.
+- **`parallelism_shape`** — `balanced-parallel`/`imbalanced`, from `parallelism_proxy` (needs
+  `--per-core`).
+- **`control_flow_style`** — `straight-line`/`branch-heavy`, from `branch_mispredict_pct` (needs
+  `--branch`).
+- **`runtime_stability`** — `steady`/`phased`/`erratic`, from `phase_stability` (needs `--interval`).
+
+**`confidence`** — `high`/`medium`/`low`/`insufficient-data`, plus a fixed-order `confidence_reasons`
+list. Driven by the `resource_dominance` margin (primary pct minus alternative pct — `high` needs
+`>= 20` points, `medium` needs `>= 10`) and how many of the 3 supporting axes had data (`high` needs
+`>= 2` known, `medium` needs `>= 1`); `narrow-margin` appears whenever the margin missed the `high`
+threshold, and one `missing-<axis>-data` reason per unavailable supporting axis, so a close call is
+distinguishable from missing data as the reason confidence isn't `high`.
+
+**Two CLI modes**, mirroring `wspy-summary`'s bulk/`--trace` duality:
+
+- Default (`score_runs()`) scores every run matching `--command`/`--hostname` filters, one row per run
+  (CSV: `hostname,run_id,command,resource_dominance,resource_dominance_pct,alternative,
+  alternative_pct,parallelism_shape,control_flow_style,runtime_stability,confidence,
+  confidence_reasons`, or a fixed-width human table) — an `INNER JOIN` against `run_features`, so a
+  run with **zero** `run_features` rows at all (e.g. ingested with `--no-feature-extract`, never
+  re-extracted) is **excluded**, not shown as all-`unknown` — those are different information.
+- `--run <hostname>:<run_id>` (`trace_run_archetype()`) prints one detailed scorecard as stable
+  `key=value` lines (same format convention as `wspy-summary --trace`), checking existence against
+  `runs` directly first so "found but nothing to score" and "not found" (exit 1) stay distinguishable.
 
 ## CSV output (`-o <file> --csv` or `--csv` to stdout)
 
@@ -598,6 +771,50 @@ own `--manifest` output next to it) is a small, unversioned-by-C-header JSON obj
   `deep-cpu,tree-heavy`) if a suite needs passes from more than one profile in the same run
   directory — this is how `workload/cpu2017`, `workload/phoronix`, and `workload/pbbsbench` do it.
 
+## Reproducibility bundle (`wspy-bundle`)
+
+`wspy-bundle` (stdlib-only Python, `INVESTIGATION.md`'s "What shipped in 4.2", "Reproducibility bundle
+export") is not something `wspy` itself writes — like `wspy-store`, it's a separate tool, taking one
+already-produced run directory (`--rundir <dir>`, or `--output-root`/`--suite`/`--benchmark`/`--run-id`)
+and packaging it into a single portable `.tar.gz`, so a run can be archived or handed off without
+access to the machine's live output-root/`store.db`. Scoped to one run directory — the same unit every
+other per-run tool in this doc already operates on — not a whole sweep/suite. The actual
+enumeration/bundling logic (`collect_run_files()`/`build_reproducibility_bundle()`, `web/joblib.py`) is
+shared with `web/server.py`'s "Download reproducibility bundle" report-page link
+(`GET /bundle/<suite>/<benchmark>/<run_id>/download`) — same "one shared implementation, two front
+ends" pattern the job queue already established.
+
+At the tar root, `bundle_manifest.json` (`BUNDLE_SCHEMA_VERSION`, `web/joblib.py` — currently `"1.0"`,
+following the same MAJOR/MINOR/PATCH convention as the C-header schema versions above but not tied to
+one) indexes the archive:
+
+```json
+{
+  "schema_version": "1.0",
+  "suite": "cpu2017", "benchmark": "503.bwaves_r", "run_id": "20260710T153000.123-48213",
+  "generated_at": "2026-07-21T12:00:00.000Z",
+  "files": [
+    { "path": "amdtopdown.manifest.json", "kind": "manifest", "sha256": "...", "size_bytes": 1024 },
+    { "path": "amdtopdown.csv", "kind": "raw", "sha256": "...", "size_bytes": 40960 },
+    { "path": "plots/amdtopdown.topdown.png", "kind": "derived", "sha256": "...", "size_bytes": 8192 },
+    { "path": "process.tree.txt", "kind": "missing" }
+  ]
+}
+```
+
+Every file `collect_run_files()` finds in the run directory (manifests, raw per-pass output,
+`process.tree.txt`/`launch.log`/`pts_hooks.log`, derived artifacts like `summary.txt`/`plots/*.png`/
+`curation.json`/`aianalysis.*.txt`) gets one `files[]` entry, `kind`-classified
+(`classify_bundle_kind()`) as `manifest` (a `*.manifest.json` file or the run-level `manifest.json`),
+`derived` (something computed from raw output — plots, summary, curation, AI narrative), or `raw`
+(everything else — a tool's own direct output) — so a recipient can tell "what happened" apart from
+"what was computed from it" without guessing from the filename. `sha256`/`size_bytes` let a recipient
+verify the bundle wasn't corrupted or tampered with in transit. A file `collect_run_files()` listed but
+that vanished or became unreadable between listing and archiving gets `kind: "missing"` (no `sha256`/
+`size_bytes`) rather than aborting the whole bundle — the same degrade-don't-fail idiom used throughout
+this doc, applied to bundling itself. `wspy-bundle --dry-run` lists what would be bundled (path, kind,
+size) without writing the tarball.
+
 ## Validation & coverage semantics
 
 Three related-but-distinct "how much of what we asked for did we get" signals exist; don't conflate
@@ -791,3 +1008,6 @@ Symptom-first; each entry names the underlying cause and where to look/what to r
   written down in this doc.
 - `INVESTIGATION.md` — "Run artifact foundation" and "Testing and documentation" tracks have the
   design rationale and history behind why these formats look the way they do.
+- `doc/PROFILE_COOKBOOK.md` — a reading guide for what the analytical signals in this doc's formats
+  *mean* and what to do when they fire (`wspy-summary`'s `verdict`, `wspy-archetype`'s `confidence`,
+  `phase.c`'s `phase` output, comparability) — this doc owns the shape, that one owns interpretation.

@@ -654,7 +654,7 @@ PROFILE_PLOTTABLE_COLUMNS = {
     "deep-cpu-intel": set(),
     # systemtime now also collects --power, matching deep-cpu's own systemtime
     # pass (a pre-existing asymmetry between the two profiles, fixed --
-    # INVESTIGATION.md's "4.2 -- remaining work"), so POWER_COLUMN_NAMES
+    # INVESTIGATION.md's "What shipped in 4.2"), so POWER_COLUMN_NAMES
     # belongs here too now.
     "deep-gpu": SYSTEM_COLUMN_NAMES | POWER_COLUMN_NAMES | {"net *", "disk *",
                  "retire", "frontend", "backend", "speculate", "confidence", "sanity",

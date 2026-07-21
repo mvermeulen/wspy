@@ -5,7 +5,7 @@ done** — moved out of `INVESTIGATION.md` so that document stays focused on wha
 here is active backlog; if an archived item needs revisiting (a follow-up, a v2, a newly-discovered
 gap), open a fresh entry in `INVESTIGATION.md` itself rather than editing history here.
 
-`INVESTIGATION.md`'s "Shipped since 4.1" section links back to specific entries in this file by name.
+`INVESTIGATION.md`'s "What shipped in 4.2" section links back to specific entries in this file by name.
 `CLAUDE.md` remains the authority on current mechanism/behavior for every file/tool named below — this
 archive is *why* a thing was built the way it was and *how it was validated*, not a substitute for
 reading the code.
@@ -316,9 +316,9 @@ from `COUNTER_ALL`**, following the IBS precedent — `--capabilities` gets its 
 **V1 scope deliberately excluded `power_core` (per-core energy):** unlike `energy-pkg`, `power_core`'s
 own `cpumask` meant a real per-core breakdown needed opening N events, one pinned per representative
 CPU, and aggregating into `--per-core`'s existing per-core row shape — a separate unit of work, not a
-bigger version of the same call. Shipped since (INVESTIGATION.md's "4.2 — remaining work" → "Shipped
-since 4.1", "Per-core energy support" item) — see `CLAUDE.md`'s `power.c` entry for the full mechanism
-and real-hardware validation.
+bigger version of the same call. Shipped since (INVESTIGATION.md's "What shipped in 4.2", "Per-core
+energy support" item) — see `CLAUDE.md`'s `power.c` entry for the full mechanism and real-hardware
+validation.
 
 **Validated against real hardware on the dev host:** the sysfs-derived `--capabilities` report, graceful
 degradation without `CAP_PERFMON`, and (via `sudo`) real non-zero `pkg_joules`/`pkg_watts` values from a

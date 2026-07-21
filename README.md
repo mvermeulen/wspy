@@ -14,9 +14,13 @@ Run `wspy --version` for the exact version of a given checkout.
 
 ```
 make                          # builds wspy, cpu_info, proctree, wspy-validate, wspy-ledger,
-                               # wspy-store, wspy-summary, wspy-plot (no GPU support)
+                               # wspy-store, wspy-summary, wspy-plot, wspy-core-report,
+                               # wspy-archetype (no GPU support)
 make AMDGPU=1                 # also builds amd_smi, amd_sysfs (needs ROCm; auto-detects /opt/rocm or /usr)
 make AMDGPU=1 ROCM_DIR=<path> # point at a non-default ROCm install
+make NVIDIA=1                 # also builds nvidia_nvml for --gpu-nvidia (dlopen()s the driver's
+                               # libnvidia-ml.so.1 at run time -- no CUDA toolkit needed to build)
+make AMDGPU=1 NVIDIA=1        # both GPU axes at once (e.g. an AMD iGPU + NVIDIA dGPU laptop)
 make test                     # build and run the unit tests
 ./run_tests.sh                # build + run unit tests + integration smoke tests
 ./tests/arm_topdown_microbench.sh # ARM-only topdown-equivalent sanity check (skips elsewhere)
@@ -24,10 +28,12 @@ make clean                    # remove object files
 make clobber                  # also remove built binaries
 ```
 
-`wspy-store`/`wspy-summary` link against the system SQLite library — install `libsqlite3-dev`
-(or your distro's equivalent) before building. `wspy-plot` shells out to a `gnuplot` binary at
-run time, not a build-time dependency. `wspy-queue` and the web launcher (`web/server.py`) are
-plain Python 3 scripts — stdlib only, nothing to build or install.
+`wspy-store`/`wspy-summary`/`wspy-archetype` link against the system SQLite library — install
+`libsqlite3-dev` (or your distro's equivalent) before building. `wspy-plot` shells out to a `gnuplot`
+binary at run time, not a build-time dependency. `wspy-run` is a bash script; `wspy-sweep`,
+`wspy-queue`, `wspy-bundle`, `wspy-analyze`, and the web launcher (`web/server.py`) are plain Python 3
+scripts — stdlib only, nothing to build or install (`wspy-analyze` additionally needs a running
+Ollama daemon at use time, not build time, to do anything).
 
 Performance counters and `--tree` (which uses `ptrace`) generally need root, or
 `CAP_SYS_PTRACE` plus `perf_event_paranoid <= 1`. `scripts/setup_perf.sh` checks and, if you
@@ -86,6 +92,12 @@ Some of the more commonly used options:
 * Process info
   * `--rusage` / `-r` - report `getrusage(2)` info (on by default)
   * `--per-core` / `-a` - report performance counters per-core instead of system-wide
+* Core/thread affinity
+  * `--affinity=all|thread=<id>|nosmt|domain=<id>|coretype=<id>|cpuset=<c0,c1,...>` - pin the
+    workload to a subset of cores/threads (SMT off, one L3-domain or core-type, or an explicit
+    list) before it launches; recorded into the manifest/run-index either way
+  * `--list-affinity` - print discovered SMT/L3-domain/core-type topology and exit (no root needed,
+    no workload command either); also folded into `--capabilities`
 * Process tree
   * `--tree <file>` - trace the child (and its descendants) via `ptrace`, recording
     fork/exec/exit events with timestamps to `<file>`
@@ -113,6 +125,10 @@ Some of the more commonly used options:
     * `--branch` / `-b`, `--dcache`, `--icache`, `--cache1`, `--cache2` / `-c`, `--cache3`,
       `--tlb`, `--memory`, `--opcache`, `--float` - individual hardware counter groups
     * `--software` - software counters (page faults, context switches, ...)
+  * `--power` - CPU package energy/power (`pkg_joules`/`pkg_watts`) via the `power`/`energy-pkg`
+    perf PMU (RAPL-equivalent); with `--per-core`, also per-core energy (`core_joules`/
+    `core_watts`) on the representative logical CPUs the `power_core` PMU exposes. Needs root or
+    `CAP_PERFMON` specifically (see `scripts/setup_perf.sh` above)
 
 ARM notes:
 
@@ -137,6 +153,11 @@ ARM notes:
   * `--gpu-device=<idx>` - select a specific AMD GPU device by index for the above, on
     multi-GPU hosts (default: lowest-numbered card / SMI device 0); see `--capabilities`
     for the enumerated device list
+* NVIDIA GPU metrics (only available when built with `NVIDIA=1`)
+  * `--gpu-nvidia` - busy percent + VRAM used/total via NVML (`nv_`-prefixed CSV columns, so they
+    coexist with AMD's `gpu_*` columns when both are active in the same run)
+  * `--gpu-nvidia-device=<idx>` - select a specific NVIDIA device by index on multi-GPU hosts
+    (default: device 0); see `--capabilities` for the enumerated device list
 
 Examples:
 
@@ -388,6 +409,30 @@ report page has a "Download reproducibility bundle" link that produces the ident
 ```
 
 See `./wspy-bundle --help` for the full option list.
+
+## wspy-analyze: local LLM (Ollama) narrative analysis
+
+`wspy-analyze` turns a run directory's already-computed, already-validated numbers (raw counter
+output, `wspy-validate` PASS/WARN/FAIL results, which counter groups are present) into prose via a
+locally running [Ollama](https://ollama.com) model — narration over classification: every bottleneck
+category/verdict fed into the prompt was computed by deterministic code before this tool ever runs,
+never re-derived by the model. Writes the rendered prompt (`aiprompt.txt`) and each queried model's
+response (`aianalysis.<model-slug>.txt`) into the run directory itself, alongside its other artifacts
+(so `wspy-bundle` and the report page pick them up automatically, labeled "AI-generated"). Needs a
+running Ollama daemon; `--dry-run` renders and prints the prompt without calling it.
+
+```
+./wspy-analyze --rundir results/phoronix/coremark/<run-id> --model gpt-oss:20b
+./wspy-analyze --rundir results/.../<run-id> --all-models          # query every installed model
+./wspy-analyze --rundir results/.../<run-id-a> --compare-rundir results/.../<run-id-b>
+                                                                      # what changed between two runs
+./wspy-analyze --list-models                                        # list installed Ollama models
+```
+
+`--critique` also asks each model to suggest improvements to the prompt template itself.
+`--redact-command` omits the workload's literal command line, for use with a non-default
+`--ollama-host` (pointing analysis at a remote host is a real exfiltration surface unlike the
+local-only default). See `./wspy-analyze --help` for the full option list.
 
 ## Web launcher and report browser
 

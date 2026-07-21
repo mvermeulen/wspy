@@ -114,7 +114,7 @@ struct ibs_profile_params {
  * was below that minimum, so every --ibs-memory-deep run that didn't
  * override --ibs-ldlat explicitly silently failed to open the filtered
  * ibs_op counter (degrading to 2/3 measured, not a fatal error, so this
- * went unnoticed) -- see INVESTIGATION.md's "Shipped since 4.1" for the
+ * went unnoticed) -- see INVESTIGATION.md's "What shipped in 4.2" for the
  * validation writeup. IBS_DEFAULT_FETCHLAT_THRESHOLD is left unchanged: no
  * hardware available during that validation exposed a working "fetchlat"
  * sysfs format field to test the same way (ibs_fetch's own filtering is

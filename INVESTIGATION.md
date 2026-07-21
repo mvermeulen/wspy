@@ -1,20 +1,21 @@
 # wspy Investigation
 
 A rolling roadmap: what's shipped, what's actively planned, and the design reasoning behind both.
-Formerly `INVESTIGATION_4.0.md` — renamed once its content outgrew a single release (4.0/4.1 are done,
-most of 4.2 has shipped too; see below). Full design write-ups and validation narratives for work
-that's fully shipped now live in `doc/INVESTIGATION_ARCHIVE.md`, out of the way of the open backlog.
+Formerly `INVESTIGATION_4.0.md` — renamed once its content outgrew a single release (4.0, 4.1, and
+now 4.2 are done; see below). Full design write-ups and validation narratives for work that's fully
+shipped now live in `doc/INVESTIGATION_ARCHIVE.md`, out of the way of the open backlog.
 
-Status (2026-07-19): **4.0 and 4.1 are released and done.** 4.2 is in progress — most of its scope has
-already shipped (see "Shipped since 4.1" below); the remaining backlog is in "4.2 — remaining work."
-4.3 and 4.4 are planned, not started.
+Status (2026-07-21): **4.0 and 4.1 are released and done. 4.2's full scope has shipped** (see "What
+shipped in 4.2" below) **and is pending release** — nothing was carried forward as open backlog; see
+`scripts/release_prep.sh` for the tag/publish steps once it's cut. 4.3 and 4.4 are planned, not
+started.
 
 ## Purpose
 This document captures ideas for improvements focused on making benchmark collection, organization,
 and publication easier and more repeatable.
 
 ## How to use this document
-- "What shipped in 4.0" / "What shipped in 4.1" / "Shipped since 4.1" are pointer lists, not feature
+- "What shipped in 4.0" / "What shipped in 4.1" / "What shipped in 4.2" are pointer lists, not feature
   logs — `CLAUDE.md` documents each module's actual behavior in detail, `doc/INVESTIGATION_ARCHIVE.md`
   holds full design/validation write-ups for fully-shipped work, and `git log` has history. Don't
   restate mechanism here, link to it.
@@ -22,14 +23,16 @@ and publication easier and more repeatable.
   rollup as a one- or two-sentence pointer (name the file/tool, not the mechanism). If its design
   merited a multi-paragraph write-up while it was being built, move that write-up to
   `doc/INVESTIGATION_ARCHIVE.md` rather than leaving it inline — the open backlog should only ever
-  contain open work.
+  contain open work. Once a phase's backlog empties out entirely, fold its rolling "Shipped since
+  <prior phase>" section into a proper "What shipped in <this phase>" section (as happened for 4.2) —
+  this is real editorial judgment done at release-prep time, not automatic the moment the last item lands.
 - **Cross-references are by name, not number.** Item numbers inside a single tier list are fine as a
   local index, but don't reference an item elsewhere in this file (or from `CLAUDE.md`/commit
   messages) as "4.2 #27" — describe it by name instead ("AMD IBS sampling-mode support"). Numbers shift
   every time a tier is reorganized; names don't.
-- "4.2 — remaining work" / "4.3 priorities" / "4.4 priorities" are ordered backlogs, one per phase,
-  grouped into dependency tiers (earlier tiers unlock later ones within the same phase). Add or
-  reorder an item there rather than inventing a parallel table.
+- "4.3 priorities" / "4.4 priorities" are ordered backlogs, one per phase, grouped into dependency
+  tiers (earlier tiers unlock later ones within the same phase). Add or reorder an item there rather
+  than inventing a parallel table.
 - "Track deep-dives" hold reasoning that doesn't fit a single backlog line (Zen5/IBS, topdown, the
   preset/configuration/option vocabulary). Each points back at the priority-list items it informs.
   Deep-dives for work that has since fully shipped live in `doc/INVESTIGATION_ARCHIVE.md`, not here.
@@ -136,11 +139,10 @@ a report instead of re-parsing a flat command line.
 dependency on the web server) or created from the Run tab's "Queue instead of running it now"
 checkbox; a job file can be copied to a second machine with wspy checked out and processed there.
 
-## Shipped since 4.1 (4.2 in progress)
-4.2 as a phase isn't closed yet — see "4.2 — remaining work" below for what's still open — but enough
-has landed that leaving it as scattered inline "done" markers through a priority list stopped being
-readable. This section will fold into a proper "What shipped in 4.2" once that phase's backlog is
-empty. Full design/validation detail for each item below lives in `doc/INVESTIGATION_ARCHIVE.md`.
+## What shipped in 4.2
+4.2's full scope has shipped — nothing was carried forward as open backlog. Grouped the same way as
+"What shipped in 4.0"/"What shipped in 4.1" above — a pointer list, not a feature log. Full design/
+validation detail for each item below lives in `doc/INVESTIGATION_ARCHIVE.md`.
 
 **Critical-path / synchronization-latency instrumentation:** all six originally-scoped syscall-latency
 candidates shipped — `--tree-futex`, `--tree-io-wait` (paired with `--tree-io`'s `/proc/<pid>/io` byte
@@ -410,7 +412,7 @@ fix above already ran into once. `--gpu-smi`'s own raw/legacy columns are unchan
 real AMD GPU hardware: SMI's `gpu_metrics_info` call failed independently of sysfs, and the fused row
 still correctly reported `sysfs`/`sysfs` sources plus a real VRAM reading from SMI's separate (successful)
 VRAM call. Extending the manifest/index/profile pipeline to GPU runs (the fusion tier's other item)
-remains open — see "4.2 — remaining work" below.
+shipped too — see the next entry.
 
 **GPU telemetry provenance in the manifest/run-index:** `struct manifest_gpu_info` (`manifest.h`) adds
 an `options.gpu` object to both documents (`MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION` 1.7.0 →
@@ -701,7 +703,14 @@ report-page link (`GET /bundle/<suite>/<benchmark>/<run_id>/download`) — same 
 implementation, two front ends" pattern the job queue already established. A `bundle_manifest.json`
 index at the tar root classifies every file as `manifest`/`raw`/`derived` and records its sha256, so a
 recipient can tell what's in the bundle and verify it wasn't corrupted in transit without needing this
-codebase's own conventions memorized. This closes out 4.2 entirely — see "4.2 — remaining work" below.
+codebase's own conventions memorized. This closes out 4.2 entirely.
+
+**Dropped, not deferred:** "Deeper Phoronix Test Suite awareness in the web UI" — its "read a Phoronix
+benchmark article and inventory its benchmarks" sub-item conflicts with Phoronix's site use policy
+(scraping/parsing their articles), so that half is off the table outright; the rest of the item's
+motivation — tracking which Phoronix tests have been run — is now covered by `wspy-ledger`'s existing
+workload-coverage tracking, which lowers the value of building Phoronix-specific web UI on top of the
+general launcher enough that the item isn't worth carrying forward.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
@@ -752,7 +761,7 @@ Advancements worth adopting, in priority order for `wspy` specifically:
 2. ~~Decomposition consistency/sanity checks~~ — shipped alongside #1.
 3. ~~Hierarchical (L1→L2→L3) parent/child schema with explicit raw-vs-contention-adjusted
    denominators~~ — shipped, including L3 (folding `--topdown-backend`'s own detail in), see
-   "Shipped since 4.1"'s "Hierarchical topdown schema".
+   "What shipped in 4.2"'s "Hierarchical topdown schema".
 4. ~~SMT/contention-aware normalization — publish both denominators, document which one drives
    classification~~ — shipped alongside #3 (`contention_pct` CSV column; every other percentage
    documented as a fraction of `slots_no_contention`).
@@ -823,7 +832,7 @@ existing options/commands toward this if it produces a cleaner architecture.
 
 ### Critical-path / synchronization-latency: what's left
 All six originally-scoped syscall-latency candidates (futex, blocking I/O, connect, nanosleep, wait,
-poll) have shipped — see "Shipped since 4.1" above and `doc/INVESTIGATION_ARCHIVE.md` for the full
+poll) have shipped — see "What shipped in 4.2" above and `doc/INVESTIGATION_ARCHIVE.md` for the full
 motivation and per-syscall design rationale. What remains open from this track:
 - The *general*, table-driven mechanism (`tree_open`'s "syscall name → number → decode →
   log-vs-aggregate" generalization, 4.3's "General syscall-level critical-path instrumentation" entry)
@@ -834,20 +843,6 @@ motivation and per-syscall design rationale. What remains open from this track:
   split (fraction of wall time in futex-wait vs. read-wait vs. on-CPU) stays informative even when
   absolute numbers are skewed, but this is an inherent limitation of the mechanism — 4.3's "Low-overhead
   tracing alternative to ptrace" entry is the eventual fix, not a documentation note.
-
-## 4.2 — remaining work
-4.2's original scope is now fully shipped -- see "Shipped since 4.1" above for the full list. Folding
-this into a proper "What shipped in 4.2" section (and pruning the phase's write-ups into
-`doc/INVESTIGATION_ARCHIVE.md`) is real editorial judgment deferred to the actual release-prep pass
-(`scripts/release_prep.sh`'s own phase 7 reminders), not done automatically the moment the last item
-lands.
-
-**Dropped, not deferred:** "Deeper Phoronix Test Suite awareness in the web UI" — its "read a Phoronix
-benchmark article and inventory its benchmarks" sub-item conflicts with Phoronix's site use policy
-(scraping/parsing their articles), so that half is off the table outright; the rest of the item's
-motivation — tracking which Phoronix tests have been run — is now covered by `wspy-ledger`'s existing
-workload-coverage tracking, which lowers the value of building Phoronix-specific web UI on top of the
-general launcher enough that the item isn't worth carrying forward.
 
 ## 4.3 priorities
 Goal: use the normalized store built in 4.1 for regression detection, clustering, phase-aware
@@ -1093,7 +1088,7 @@ this phase's own IBS sampling mode (Tier 1 above):**
     "10 option combinations") next to a workload's existing done/skipped/unsupported/
     needs-tool-support status, flagged prominently above some threshold worth a human's attention
     before committing to a full `batch-run`. Also a natural future input to the (now shipped, see
-    "Shipped since 4.1" above) `--tree` pass timeout-sizing item's own `BATCH_RUN_MULTIPLIER`: a
+    "What shipped in 4.2" above) `--tree` pass timeout-sizing item's own `BATCH_RUN_MULTIPLIER`: a
     `batch-run`'s real total time is much closer to (single-test estimate) × (this item's own
     combination count) than to the single-test estimate alone, which would replace that item's own
     blind 5.0 multiplier guess with a grounded number — noted here as a future connection, not a
@@ -1137,7 +1132,7 @@ Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
 Each carries a recommendation; treat these as the current default, not a closed decision. (Several
 earlier open questions here — native multi-pass execution, ARM64 support, publication automation,
 core/thread affinity, minimum metadata set for publishable — have been resolved by shipped work; see
-"What shipped in 4.1" and "Shipped since 4.1" above rather than a stale "resolved" note here.)
+"What shipped in 4.1" and "What shipped in 4.2" above rather than a stale "resolved" note here.)
 
 - **Should `wspy-run`'s builtin profiles be refactored to be declaratively defined (as
   configurations+options) instead of today's hardcoded `PASS_NAMES`/`PASS_FLAGS` bash arrays in
