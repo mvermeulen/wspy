@@ -198,26 +198,48 @@ class BuildConfigurationPassesTest(unittest.TestCase):
     def test_counters_per_core_checkbox_adds_per_core_flag_with_no_interval(self):
         # Regression test: per_core used to be gated on "interval is not
         # None", so leaving the interval field blank (aggregate mode --
-        # the only mode that produces a wspy CSV with a "core" column,
-        # wspy-core-report's required input) silently dropped --per-core.
+        # the only mode that produced a wspy CSV with a "core" column at
+        # the time) silently dropped --per-core.
         checklist = {"counters": {"enabled": True, "groups": ["topdown"], "per_core": True}}
         passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
         self.assertEqual(len(passes), 1)
         self.assertIn("--per-core", passes[0]["flags"])
         self.assertNotIn("--interval", passes[0]["flags"])
 
-    def test_counters_per_core_forces_aggregate_ignoring_interval(self):
-        # --per-core + --interval together still produce a CSV with no
-        # "core" column at the wspy.c level (per_core_csv excludes
-        # --interval) -- per-core must always win and drop --interval
-        # rather than silently building a CSV wspy-core-report can't read.
+    def test_counters_per_core_honors_interval(self):
+        # Regression test: per_core used to force interval=None
+        # unconditionally, because --per-core + --interval produced a wspy
+        # CSV with no "core" column. wspy.c fixed that (one row per core per
+        # tick), and wspy-core-report/wspy-plot already collapse multiple
+        # rows per core -- so checking "per-core" must no longer silently
+        # drop a given interval.
         checklist = {"counters": {"enabled": True, "groups": ["topdown"],
                                    "per_core": True, "interval_secs": "1"}}
         passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
         self.assertEqual(len(passes), 1)
         flags = passes[0]["flags"]
         self.assertIn("--per-core", flags)
-        self.assertNotIn("--interval", flags)
+        self.assertIn("--interval", flags)
+        self.assertIn("1", flags)
+
+    def test_counters_per_core_freq_requires_per_core(self):
+        # --per-core-freq is fatal in wspy.c without --per-core -- checking
+        # the freq box alone (per-core left unchecked) must not emit the
+        # flag at all, matching "what runs matches what the preview shows"
+        # rather than producing a run that fatals.
+        checklist = {"counters": {"enabled": True, "groups": ["topdown"], "per_core_freq": True}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        self.assertNotIn("--per-core-freq", passes[0]["flags"])
+
+    def test_counters_per_core_freq_with_per_core_adds_flag(self):
+        checklist = {"counters": {"enabled": True, "groups": ["topdown"],
+                                   "per_core": True, "per_core_freq": True}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        flags = passes[0]["flags"]
+        self.assertIn("--per-core", flags)
+        self.assertIn("--per-core-freq", flags)
 
     def test_counters_per_core_forces_plain_flags_over_passes_bin_packing(self):
         # --passes fatals against --per-core (wspy.c), so checking

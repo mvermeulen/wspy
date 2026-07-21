@@ -68,6 +68,7 @@
         groups: selectedGroups("counters"),
         interval_secs: getValue("counters_interval"),
         per_core: getChecked("counters_per_core"),
+        per_core_freq: getChecked("counters_per_core_freq"),
         rusage: getChecked("counters_rusage"),
         csv: getChecked("counters_csv"),
         power: getChecked("counters_power"),

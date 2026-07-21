@@ -2049,7 +2049,9 @@ def render_run_tab(prefill, cfg):
           <div class="group-grid">{counters_groups_html}</div>
           <div class="row">
             <label>Interval seconds <input type="text" id="counters_interval" value="{val('counters', 'interval_secs')}" placeholder="(aggregate)"></label>
-            <label class="inline-check"><input type="checkbox" id="counters_per_core"{chk(chk_default('counters', 'per_core', False))}> per-core (aggregate only, ignores interval)</label>
+            <label class="inline-check"><input type="checkbox" id="counters_per_core"{chk(chk_default('counters', 'per_core', False))}> per-core <code>--per-core</code></label>
+            <label class="inline-check"><input type="checkbox" id="counters_per_core_freq"{chk(chk_default('counters', 'per_core_freq', False))}> + live per-core frequency <code>--per-core-freq</code>
+              <span class="muted">(needs "per-core" checked too)</span></label>
             <label class="inline-check"><input type="checkbox" id="counters_rusage"{chk(chk_default('counters', 'rusage', False))}> include rusage</label>
             <label class="inline-check"><input type="checkbox" id="counters_csv"{chk(chk_default('counters', 'csv', True))}> CSV output</label>
             <label class="inline-check"><input type="checkbox" id="counters_power"{chk(chk_default('counters', 'power', False))}> package power <code>--power</code>
@@ -2059,11 +2061,10 @@ def render_run_tab(prefill, cfg):
              multi-pass execution (<code>--passes</code>, wspy's own PMU-fit arithmetic); giving an
              interval, or checking "per-core" or "package power", always uses plain flags for a
              single re-execution instead (<code>--passes</code> rejects <code>--interval</code>/
-             <code>--per-core</code>/<code>--power</code> outright). Checking "per-core" always runs
-             in aggregate mode and ignores any interval given -- <code>--per-core --interval</code>
-             together still produces a wspy CSV with no <code>core</code> column
-             (a known wspy.c limitation), which <code>wspy-core-report</code>'s per-core/per-class
-             comparison can't read. Check "package power" <strong>here</strong> (rather than under
+             <code>--per-core</code>/<code>--power</code> outright). "per-core" combines with an
+             interval fine -- <code>--per-core --interval</code> produces one CSV row per core per
+             tick, which <code>wspy-core-report</code> (and the plotting templates) already handle by
+             averaging each core's rows. Check "package power" <strong>here</strong> (rather than under
              "System metrics" below) specifically to combine it with per-core in the same run --
              that's the only way to get per-core energy (<code>core_joules</code>/<code>core_watts</code>)
              at all, since <code>--power</code> and <code>--per-core</code> only combine when given to
