@@ -71,6 +71,7 @@ from joblib import (  # noqa: E402,F401
     write_custom_run_summary, LOG_NAME, PLOTS_DIR_NAME, RUN_MANIFEST_NAME, SUMMARY_NAME,
     NAME_RE, resolve_toggles, checklist_from_pass_provenance, valid_affinity_spec,
     parse_run_key, build_proctree_json_argv, build_proctree_diff_argv,
+    run_sync, parse_phoronix_test_names, estimate_phoronix_workload_seconds,
 )
 
 # The one fixed configuration item 6 knows about -- matches wspy-run's
@@ -564,21 +565,6 @@ def _resolve_trace_links(output_root, fields):
     return links
 
 
-def run_sync(argv, cwd=None, timeout=120):
-    """Runs a short-lived discovery/report command (wspy --capabilities,
-    wspy-validate, wspy-store, wspy-summary) to completion and captures its
-    combined output -- unlike a launched workload, none of these have
-    unbounded runtime or need live streaming, so a plain synchronous
-    subprocess call (no RunState/SSE machinery) is the right amount of
-    plumbing. Returns (returncode_or_None, output_text, timed_out)."""
-    try:
-        proc = subprocess.run(argv, cwd=cwd, stdout=subprocess.PIPE,
-                               stderr=subprocess.STDOUT, text=True, timeout=timeout)
-        return proc.returncode, proc.stdout, False
-    except subprocess.TimeoutExpired as e:
-        return None, (e.stdout or ""), True
-    except OSError as e:
-        return None, f"[error] failed to launch {argv[0]}: {e}", False
 
 
 # Core/thread affinity control's discovery counterpart (INVESTIGATION.md's
@@ -1016,120 +1002,6 @@ def check_gpu_build(wspy_bin, flags):
             results.append({**entry_base, "flag": flag, "status": "ok",
                              "detail": "built with GPU support (hardware/driver availability not checked here)"})
     return results
-
-
-# Subcommands that take one or more test/suite names as trailing positional
-# arguments -- batch-run is what wspy-run/workload/phoronix/run_test.sh
-# actually uses; run/benchmark are the same shape for an ad hoc invocation.
-PHORONIX_RUN_SUBCOMMANDS = ("batch-run", "run", "benchmark")
-PHORONIX_MAX_TESTS_CHECKED = 5  # a handful is plenty for an on-page check; batch-run rarely lists more
-
-# `phoronix-test-suite build-suite` lets a user hand-pick a subset of a real
-# test's option combinations into a local suite, by convention (not enforced
-# by phoronix-test-suite itself) named "<real-test>-subset" -- see
-# workload/phoronix/backlog.txt for the canonical test names this is built
-# from. `phoronix-test-suite info` only knows about real OpenBenchmarking
-# test profiles, not these local suites, so an unresolved "-subset" name
-# reports "no such test" instead of a usable estimate. Stripping the suffix
-# resolves it to the real profile's estimate/measured time -- an overestimate
-# for the subset (it covers fewer option combinations) but far more useful
-# than none at all.
-PHORONIX_SUBSET_SUFFIX = "-subset"
-
-
-def resolve_phoronix_subset_name(name):
-    """Returns (name to query via `phoronix-test-suite info`, whether `name`
-    was a "-subset" suite resolved to its underlying real test)."""
-    if name.endswith(PHORONIX_SUBSET_SUFFIX) and len(name) > len(PHORONIX_SUBSET_SUFFIX):
-        return name[:-len(PHORONIX_SUBSET_SUFFIX)], True
-    return name, False
-
-
-def parse_phoronix_test_names(workload):
-    """If workload looks like a `phoronix-test-suite <run-subcommand> <test>
-    [<test> ...]` invocation, returns the list of test name tokens (argv
-    after the subcommand, skipping anything that looks like a flag); else
-    []. Best-effort argv parsing via shlex -- an unparseable command string
-    (unbalanced quotes) just yields no match rather than raising, since this
-    is advisory UI, not something that gates a run."""
-    try:
-        tokens = shlex.split(workload or "")
-    except ValueError:
-        return []
-    if len(tokens) < 3:
-        return []
-    if os.path.basename(tokens[0]) != "phoronix-test-suite":
-        return []
-    if tokens[1] not in PHORONIX_RUN_SUBCOMMANDS:
-        return []
-    return [t for t in tokens[2:] if not t.startswith("-")]
-
-
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-_DURATION_RE = re.compile(
-    r"(?:(\d+)\s*Hours?)?[,\s]*(?:(\d+)\s*Minutes?)?[,\s]*(?:(\d+(?:\.\d+)?)\s*Seconds?)?",
-    re.IGNORECASE)
-
-
-def _parse_duration_seconds(text):
-    """'132 Seconds' / '2 Minutes, 12 Seconds' / '1 Hour, 3 Minutes' -> float
-    seconds, or None if nothing matched -- phoronix-test-suite's own
-    human-readable duration formatting, not a fixed unit."""
-    if not text:
-        return None
-    m = _DURATION_RE.search(text)
-    if not m or not any(m.groups()):
-        return None
-    hours, minutes, seconds = (float(g) if g else 0.0 for g in m.groups())
-    return hours * 3600 + minutes * 60 + seconds
-
-
-def parse_phoronix_info_fields(output):
-    """Parses `phoronix-test-suite info`'s "Label: value" text report into a
-    dict keyed by label text (ANSI color codes stripped; phoronix
-    right-pads values with spaces for column alignment, so both sides are
-    stripped). Not a full parse of the whole report (change history,
-    OpenBenchmarking stats, ...) -- only the handful of fields this check
-    cares about happen to be simple "Label: value" lines, which is all this
-    needs."""
-    fields = {}
-    for raw_line in _ANSI_RE.sub("", output or "").splitlines():
-        m = re.match(r"^([A-Za-z][A-Za-z0-9 /\-.]*):\s+(.*)$", raw_line)
-        if not m:
-            continue
-        fields[m.group(1).strip()] = m.group(2).strip()
-    return fields
-
-
-def estimate_phoronix_runtime(fields):
-    """Applies the "check" button's runtime-source rule (INVESTIGATION.md
-    item 18's original design note): not installed, or installed but never
-    run -> the profile's own generic estimate; installed and already run at
-    least once on this host -> the host's own measured average, a better
-    estimate than the generic one once it exists."""
-    installed = fields.get("Test Installed") == "Yes"
-    times_run = fields.get("Times Run")
-    has_run = installed and times_run not in (None, "", "0")
-    if has_run:
-        text = fields.get("Average Run-Time") or fields.get("Latest Run-Time")
-        return {
-            "source": "measured",
-            "text": text,
-            "seconds": _parse_duration_seconds(text),
-            "detail": f"measured average from {times_run} prior run(s) on this host",
-        }
-    text = fields.get("Estimated Run-Time")
-    if installed:
-        detail = "installed but never run yet on this host -- using phoronix-test-suite's own estimate"
-    else:
-        detail = ("not installed yet -- using phoronix-test-suite's own estimate "
-                  "(install time not included)")
-    return {
-        "source": "installed-not-run" if installed else "not-installed",
-        "text": text,
-        "seconds": _parse_duration_seconds(text),
-        "detail": detail,
-    }
 
 
 # `phoronix-test-suite batch-run` doesn't take flags for any of this -- it
@@ -4306,56 +4178,11 @@ class Handler(BaseHTTPRequestHandler):
         # `run`/`benchmark` already prompt interactively by design, so
         # there's nothing check_phoronix_batch_config() would add for those.
         is_batch_run = shlex.split(workload)[1] == "batch-run"
-        phoronix_bin = cfg["phoronix_bin"]
-        checked_names = test_names[:PHORONIX_MAX_TESTS_CHECKED]
-        tests = []
-        total_seconds = 0.0
-        total_known = True
-        for name in checked_names:
-            query_name, is_subset = resolve_phoronix_subset_name(name)
-            argv = [phoronix_bin, "info", query_name]
-            rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=30)
-            entry = {"name": name, "command": shell_preview(argv)}
-            if is_subset:
-                entry["queried_name"] = query_name
-            if timed_out:
-                entry["error"] = "phoronix-test-suite info timed out"
-                total_known = False
-            elif rc is None:
-                entry["error"] = f"failed to launch {phoronix_bin} -- is phoronix-test-suite installed?"
-                total_known = False
-            else:
-                fields = parse_phoronix_info_fields(output)
-                if not fields:
-                    entry["error"] = f"no such test, or unrecognized output (exit {rc})"
-                    total_known = False
-                else:
-                    estimate = estimate_phoronix_runtime(fields)
-                    if is_subset:
-                        estimate["detail"] = (
-                            f"estimate is for the full '{query_name}' test -- '{name}' is a "
-                            "build-suite subset of it, so this run should take no longer, "
-                            "likely less. " + estimate["detail"])
-                    if estimate["seconds"] is None:
-                        total_known = False
-                    else:
-                        total_seconds += estimate["seconds"]
-                    entry.update({
-                        "installed": fields.get("Test Installed"),
-                        "times_run": fields.get("Times Run"),
-                        "last_run": fields.get("Last Run"),
-                        "estimated_run_time": fields.get("Estimated Run-Time"),
-                        "average_run_time": fields.get("Average Run-Time"),
-                        "latest_run_time": fields.get("Latest Run-Time"),
-                        "estimate": estimate,
-                    })
-            tests.append(entry)
-
+        estimate = estimate_phoronix_workload_seconds(workload, phoronix_bin=cfg["phoronix_bin"],
+                                                       cwd=REPO_ROOT)
         result["phoronix"] = {
             "detected": True,
-            "tests": tests,
-            "total_seconds": total_seconds if (total_known and tests) else None,
-            "truncated": len(test_names) > len(checked_names),
+            **estimate,
             "batch_mode": check_phoronix_batch_config() if is_batch_run else None,
             "result_notifier": (check_phoronix_result_notifier_bug(cfg["phoronix_pts_dir"])
                                  if phoronix_result_notifier_hooks_registered() else None),

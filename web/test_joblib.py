@@ -558,5 +558,205 @@ class BuildProctreeJsonDiffArgvTest(unittest.TestCase):
             ["./proctree", "--diff", "--json", "/tmp/a.json", "/tmp/b.json"])
 
 
+# Phoronix runtime-estimation logic (moved here from server.py's "Estimated
+# runtime display" Check button -- INVESTIGATION.md's 4.2 "Size wspy-run's
+# --tree pass timeout" item -- so scripts/estimate_tree_timeout.py could
+# reuse it). Pure-logic pieces only, matching this file's own stated scope;
+# estimate_phoronix_workload_seconds()'s subprocess-spawning half is tested
+# separately below via a fake phoronix_bin script, mirroring
+# tests/wspy_queue_smoke.sh's own fake-binary convention.
+
+class ParsePhoronixTestNamesTest(unittest.TestCase):
+    def test_batch_run_single_test(self):
+        self.assertEqual(
+            joblib.parse_phoronix_test_names("phoronix-test-suite batch-run coremark"),
+            ["coremark"])
+
+    def test_run_multiple_tests(self):
+        self.assertEqual(
+            joblib.parse_phoronix_test_names("phoronix-test-suite run coremark blender"),
+            ["coremark", "blender"])
+
+    def test_ignores_flags(self):
+        self.assertEqual(
+            joblib.parse_phoronix_test_names("phoronix-test-suite benchmark --no-log coremark"),
+            ["coremark"])
+
+    def test_non_phoronix_command_returns_empty(self):
+        self.assertEqual(joblib.parse_phoronix_test_names("sleep 10"), [])
+
+    def test_unrecognized_subcommand_returns_empty(self):
+        self.assertEqual(joblib.parse_phoronix_test_names("phoronix-test-suite info coremark"), [])
+
+    def test_too_few_tokens_returns_empty(self):
+        self.assertEqual(joblib.parse_phoronix_test_names("phoronix-test-suite batch-run"), [])
+
+    def test_unbalanced_quotes_returns_empty_not_raises(self):
+        self.assertEqual(joblib.parse_phoronix_test_names('phoronix-test-suite run "unterminated'), [])
+
+    def test_full_path_binary_recognized(self):
+        self.assertEqual(
+            joblib.parse_phoronix_test_names("/usr/bin/phoronix-test-suite run coremark"),
+            ["coremark"])
+
+
+class ResolvePhoronixSubsetNameTest(unittest.TestCase):
+    def test_strips_subset_suffix(self):
+        self.assertEqual(joblib.resolve_phoronix_subset_name("dirt-rally2-subset"), ("dirt-rally2", True))
+
+    def test_leaves_real_test_name_unchanged(self):
+        self.assertEqual(joblib.resolve_phoronix_subset_name("coremark"), ("coremark", False))
+
+    def test_bare_suffix_not_stripped(self):
+        # "-subset" alone (nothing before it) isn't a real test name either
+        # way, so there's nothing meaningful to strip.
+        self.assertEqual(joblib.resolve_phoronix_subset_name("-subset"), ("-subset", False))
+
+
+class ParseDurationSecondsTest(unittest.TestCase):
+    def test_seconds_only(self):
+        self.assertEqual(joblib._parse_duration_seconds("132 Seconds"), 132.0)
+
+    def test_minutes_and_seconds(self):
+        self.assertEqual(joblib._parse_duration_seconds("2 Minutes, 12 Seconds"), 132.0)
+
+    def test_hours_minutes_seconds(self):
+        self.assertEqual(joblib._parse_duration_seconds("1 Hour, 3 Minutes, 5 Seconds"), 3785.0)
+
+    def test_none_for_empty_string(self):
+        self.assertIsNone(joblib._parse_duration_seconds(""))
+
+    def test_none_for_none(self):
+        self.assertIsNone(joblib._parse_duration_seconds(None))
+
+    def test_none_for_unmatched_text(self):
+        self.assertIsNone(joblib._parse_duration_seconds("not a duration at all"))
+
+
+class ParsePhoronixInfoFieldsTest(unittest.TestCase):
+    def test_parses_label_value_lines(self):
+        output = "Test Installed: Yes\nTimes Run: 3\nEstimated Run-Time: 132 Seconds\n"
+        fields = joblib.parse_phoronix_info_fields(output)
+        self.assertEqual(fields["Test Installed"], "Yes")
+        self.assertEqual(fields["Times Run"], "3")
+        self.assertEqual(fields["Estimated Run-Time"], "132 Seconds")
+
+    def test_strips_ansi_codes(self):
+        output = "\x1b[1mTest Installed:\x1b[0m Yes\n"
+        self.assertEqual(joblib.parse_phoronix_info_fields(output)["Test Installed"], "Yes")
+
+    def test_ignores_non_matching_lines(self):
+        output = "Test Installed: Yes\nsome free-form prose with no colon-value shape here\n"
+        fields = joblib.parse_phoronix_info_fields(output)
+        self.assertEqual(len(fields), 1)
+
+    def test_empty_output_yields_empty_dict(self):
+        self.assertEqual(joblib.parse_phoronix_info_fields(""), {})
+        self.assertEqual(joblib.parse_phoronix_info_fields(None), {})
+
+
+class EstimatePhoronixRuntimeTest(unittest.TestCase):
+    def test_measured_average_when_already_run(self):
+        fields = {"Test Installed": "Yes", "Times Run": "5", "Average Run-Time": "100 Seconds"}
+        result = joblib.estimate_phoronix_runtime(fields)
+        self.assertEqual(result["source"], "measured")
+        self.assertEqual(result["seconds"], 100.0)
+
+    def test_falls_back_to_latest_run_time_if_no_average(self):
+        fields = {"Test Installed": "Yes", "Times Run": "1", "Latest Run-Time": "50 Seconds"}
+        result = joblib.estimate_phoronix_runtime(fields)
+        self.assertEqual(result["source"], "measured")
+        self.assertEqual(result["seconds"], 50.0)
+
+    def test_installed_but_never_run_uses_generic_estimate(self):
+        fields = {"Test Installed": "Yes", "Times Run": "0", "Estimated Run-Time": "200 Seconds"}
+        result = joblib.estimate_phoronix_runtime(fields)
+        self.assertEqual(result["source"], "installed-not-run")
+        self.assertEqual(result["seconds"], 200.0)
+
+    def test_not_installed_uses_generic_estimate(self):
+        fields = {"Test Installed": "No", "Estimated Run-Time": "300 Seconds"}
+        result = joblib.estimate_phoronix_runtime(fields)
+        self.assertEqual(result["source"], "not-installed")
+        self.assertEqual(result["seconds"], 300.0)
+
+
+class EstimatePhoronixWorkloadSecondsTest(unittest.TestCase):
+    """Exercises the subprocess-spawning orchestration loop against a fake
+    `phoronix_bin` shell script (mirroring tests/wspy_queue_smoke.sh's own
+    fake-binary convention) rather than a real phoronix-test-suite
+    install."""
+
+    def _make_fake_phoronix(self, tmpdir, responses):
+        """responses: {test_name: "Test Installed: Yes\\n..." (or None to
+        simulate a nonzero-exit "no such test")}. The fake script just
+        looks up argv[2] (the test name after "info") in a case statement."""
+        path = os.path.join(tmpdir, "fake-phoronix-test-suite")
+        lines = ["#!/bin/sh", 'if [ "$1" != "info" ]; then exit 1; fi', 'case "$2" in']
+        for name, output in responses.items():
+            if output is None:
+                lines.append(f'  {name}) exit 1 ;;')
+            else:
+                escaped = output.replace("'", "'\\''")
+                lines.append(f"  {name}) printf '%s' '{escaped}'; exit 0 ;;")
+        lines.append('  *) exit 1 ;;')
+        lines.append('esac')
+        with open(path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        os.chmod(path, 0o755)
+        return path
+
+    def test_single_test_estimate(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_bin = self._make_fake_phoronix(tmpdir, {
+                "coremark": "Test Installed: No\nEstimated Run-Time: 100 Seconds\n",
+            })
+            result = joblib.estimate_phoronix_workload_seconds(
+                "phoronix-test-suite run coremark", phoronix_bin=fake_bin)
+            self.assertEqual(result["total_seconds"], 100.0)
+            self.assertFalse(result["truncated"])
+            self.assertEqual(len(result["tests"]), 1)
+
+    def test_sums_across_multiple_tests(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_bin = self._make_fake_phoronix(tmpdir, {
+                "coremark": "Test Installed: No\nEstimated Run-Time: 100 Seconds\n",
+                "blender": "Test Installed: No\nEstimated Run-Time: 200 Seconds\n",
+            })
+            result = joblib.estimate_phoronix_workload_seconds(
+                "phoronix-test-suite batch-run coremark blender", phoronix_bin=fake_bin)
+            self.assertEqual(result["total_seconds"], 300.0)
+
+    def test_partial_failure_makes_total_none(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_bin = self._make_fake_phoronix(tmpdir, {
+                "coremark": "Test Installed: No\nEstimated Run-Time: 100 Seconds\n",
+                "no-such-test": None,
+            })
+            result = joblib.estimate_phoronix_workload_seconds(
+                "phoronix-test-suite batch-run coremark no-such-test", phoronix_bin=fake_bin)
+            self.assertIsNone(result["total_seconds"])
+            self.assertEqual(len(result["tests"]), 2)
+            self.assertIn("error", result["tests"][1])
+
+    def test_non_phoronix_workload_returns_empty(self):
+        result = joblib.estimate_phoronix_workload_seconds("sleep 10")
+        self.assertEqual(result, {"tests": [], "total_seconds": None, "truncated": False})
+
+    def test_truncates_beyond_max_tests(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_bin = self._make_fake_phoronix(tmpdir, {
+                f"test{i}": f"Test Installed: No\nEstimated Run-Time: {i} Seconds\n" for i in range(1, 8)
+            })
+            workload = "phoronix-test-suite batch-run " + " ".join(f"test{i}" for i in range(1, 8))
+            result = joblib.estimate_phoronix_workload_seconds(workload, phoronix_bin=fake_bin, max_tests=5)
+            self.assertEqual(len(result["tests"]), 5)
+            self.assertTrue(result["truncated"])
+
+
 if __name__ == "__main__":
     unittest.main()
