@@ -3411,6 +3411,71 @@ void timer_callback(int signum){
   if (sflag) read_system();
   read_counters(cpu_info->systemwide_counters,0);
 
+  // --per-core --interval: one "time,core,..." row per active core per
+  // tick, mirroring the row shape wspy.c's per_core_csv already uses for
+  // the aggregate (no --interval) case -- see wspy.c's per_core_csv
+  // comment for the aggregate/tail-row half of this fix. CSV-only: aflag's
+  // human (non-CSV) periodic output is unchanged, still one systemwide
+  // block per tick, since per_core_csv itself (wspy.c) only ever applies
+  // to CSV output. No phase column here -- phase_detect_is_available()
+  // already excludes aflag entirely -- and no rusage column, which (like
+  // the aggregate --per-core --csv case) is only ever known at the final
+  // tail read in wspy.c:main(), never during a periodic tick.
+  if (aflag && csvflag){
+    for (i=0;i<cpu_info->num_cores;i++){
+      if (cpu_info->coreinfo[i].core_specific_counters)
+        read_counters(cpu_info->coreinfo[i].core_specific_counters,0);
+    }
+
+    for (i=0;i<cpu_info->num_cores;i++){
+      if (!cpu_info->coreinfo[i].core_specific_counters) continue;
+      fprintf(outfile,"%4.1f,",elapsed);
+      if (sflag) print_system(PRINT_CSV);
+      // Same GPU-columns-before-print_metrics() ordering rule as the
+      // non-per-core branch below (see its own comment) -- CSV-only here,
+      // matching wspy.c's per_core_csv tail-row block's own column order
+      // exactly (system, GPU, "core,", per-core metrics, systemwide
+      // metrics, coverage).
+#if AMDGPU
+      if (!sflag && gpu_busy_requested){
+        int busy = amd_sysfs_gpu_busy_percent();
+        fprintf(outfile,"%d,",busy);
+      }
+      if (gpu_metrics_requested){
+        print_gpu_metrics(PRINT_CSV);
+      }
+      if (gpu_smi_requested){
+        amd_smi_metrics();
+        amd_smi_memory();
+        fprintf(outfile,"%u,%u,%u,%u,",
+          amd_smi_metrics_valid() ? amd_smi_get_temp() : 0,
+          amd_smi_metrics_valid() ? amd_smi_get_activity() : 0,
+          amd_smi_memory_valid() ? amd_smi_get_vram_used() : 0,
+          amd_smi_memory_valid() ? amd_smi_get_vram_total() : 0);
+      }
+#endif
+#if NVIDIA
+      if (gpu_nvidia_requested){
+        nvidia_nvml_metrics();
+        fprintf(outfile,"%u,%llu,%llu,",
+          nvidia_nvml_metrics_valid() ? nvidia_nvml_get_busy() : 0,
+          nvidia_nvml_metrics_valid() ? (unsigned long long)nvidia_nvml_get_vram_used_mb() : 0,
+          nvidia_nvml_metrics_valid() ? (unsigned long long)nvidia_nvml_get_vram_total_mb() : 0);
+      }
+#endif
+      fprintf(outfile,"%d,",i);
+      print_metrics(cpu_info->coreinfo[i].core_specific_counters,PRINT_CSV);
+      print_metrics(cpu_info->systemwide_counters,PRINT_CSV);
+      print_counter_coverage(PRINT_CSV);
+      fprintf(outfile,"\n");
+    }
+
+    if (is_still_running){
+      alarm(interval);
+    }
+    return;
+  }
+
   if (csvflag){
     fprintf(outfile,"%4.1f,",elapsed);
   }

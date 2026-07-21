@@ -1719,11 +1719,13 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   // its own -- the header matched it, but per-core data was then appended
   // as extra unheaded columns below. Below, one CSV row per active core
   // (tagged with a "core" column) replaces that aggregate row instead.
-  // Interval mode keeps its existing, separately-documented limitation --
-  // timer_callback() only ever reads systemwide_counters, so per-core data
-  // isn't visible in periodic ticks either way -- so this new shape only
-  // applies outside --interval.
-  if (aflag && csvflag && !interval){
+  // Interval mode now shares this same shape: timer_callback() (topdown.c)
+  // reads and prints one "time,core,..." row per active core per tick when
+  // aflag is set, so a periodic --per-core --interval run gets the
+  // identical "core"-columned row shape a periodic aggregate one already
+  // does -- see timer_callback()'s own comment for the tick-side half of
+  // this.
+  if (aflag && csvflag){
     for (i=0;i<cpu_info->num_cores;i++){
       if (cpu_info->coreinfo[i].core_specific_counters){
 	first_core_with_counters = i;
@@ -1869,10 +1871,23 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     // folded into these (software/ibs's systemwide-only groups and the
     // coverage counts are the same on every row, same as they'd be on the
     // single row they used to only appear on once).
+    //
+    // This is also this run's final (tail) tick when --interval is active
+    // (timer_callback() prints every periodic tick's own per-core rows;
+    // this block always additionally runs once more here after the child
+    // exits, same as the non-per-core aggregate branch's own tail row) --
+    // so it needs the same leading "time," value the header prints in that
+    // case, and the same xflag/rusage gating (rusage is only ever known at
+    // this tail point, never during a periodic tick, so the header omits
+    // that column entirely whenever --interval is active; see
+    // timer_callback()'s comment for the periodic-tick side of this).
+    double tail_elapsed = finish_time.tv_sec + finish_time.tv_nsec / 1000000000.0 -
+      start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
     for (i=0;i<cpu_info->num_cores;i++){
       if (!cpu_info->coreinfo[i].core_specific_counters) continue;
+      if (interval) fprintf(outfile,"%4.1f,",tail_elapsed);
       if (sflag) print_system(PRINT_CSV);
-      if (xflag) print_usage(&rusage,PRINT_CSV);
+      if (xflag && !interval) print_usage(&rusage,PRINT_CSV);
 #if AMDGPU
       if (!sflag && gpu_busy_requested){
         int busy = amd_sysfs_gpu_busy_percent();
@@ -1987,11 +2002,10 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
 #endif
   }
 
-  // per_core_csv already emitted one row per core above; this loop only
-  // has work left to do for the human (non-CSV) block form, or for the
-  // pre-existing --interval + --per-core combination that per_core_csv
-  // deliberately doesn't touch (see the comment where per_core_csv is
-  // computed).
+  // per_core_csv already emitted one row per core above (covers every
+  // --per-core --csv combination now, aggregate or --interval alike); this
+  // loop only has work left to do for the human (non-CSV) per-core block
+  // form, which is unaffected by any of the above.
   if (!per_core_csv){
     for (i=0;i<cpu_info->num_cores;i++){
       if (cpu_info->coreinfo[i].core_specific_counters){
