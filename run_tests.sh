@@ -852,6 +852,15 @@ if ! ./tests/wspy_queue_smoke.sh; then
     exit 1
 fi
 
+# Doc/version consistency check (INVESTIGATION.md's 4.2 "Doc/version
+# consistency check" item): static grep against tracked doc/Makefile/header
+# text, no build/GPU axis, run once like wspy_queue_smoke.sh above.
+echo "Testing doc/version consistency check..."
+if ! ./tests/doc_version_check.sh; then
+    echo "FAIL: doc/version consistency check failed"
+    exit 1
+fi
+
 # AMDGPU build test (if AMDGPU support is available). ROCm was historically
 # only installed under /opt/rocm, but distro packages (e.g. Debian/Ubuntu's
 # rocm-smi-lib) may instead put amd_smi/amdsmi.h under /usr, so check both.
