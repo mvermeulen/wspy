@@ -62,7 +62,7 @@ wspy-ledger:	ledger.o json_reader.o
 	$(CC) -o wspy-ledger $(CFLAGS) ledger.o json_reader.o
 
 wspy-store:	store.o json_reader.o
-	$(CC) -o wspy-store $(CFLAGS) store.o json_reader.o $(STORE_LIBS)
+	$(CC) -o wspy-store $(CFLAGS) store.o json_reader.o $(STORE_LIBS) -lm
 
 wspy-summary:	summary.o
 	$(CC) -o wspy-summary $(CFLAGS) summary.o $(STORE_LIBS) -lm
@@ -164,7 +164,7 @@ test_ledger: test_ledger.c ledger.c json_reader.c json_reader.h run_index.h mani
 	$(CC) -o test_ledger $(CFLAGS) -DTEST_LEDGER test_ledger.c json_reader.c
 
 test_store: test_store.c store.c json_reader.c json_reader.h run_index.h manifest.h
-	$(CC) -o test_store $(CFLAGS) -DTEST_STORE test_store.c json_reader.c $(STORE_LIBS)
+	$(CC) -o test_store $(CFLAGS) -DTEST_STORE test_store.c json_reader.c $(STORE_LIBS) -lm
 
 test_summary: test_summary.c summary.c
 	$(CC) -o test_summary $(CFLAGS) -DTEST_SUMMARY test_summary.c $(STORE_LIBS) -lm

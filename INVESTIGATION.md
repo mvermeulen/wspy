@@ -553,6 +553,21 @@ that would just fail), with `--metric`/`--csv` options exposed. Report pages (bo
 query param and `render_index()`'s `active_tab` — closing the loop from a `--per-core` run straight
 through to a core-class comparison without dropping to the CLI.
 
+**Feature normalization prerequisites:** `wspy-store` now derives a fixed, coverage-aware feature
+vocabulary from `metric_values`/`runs` into a new `run_features` table (`store.c`'s
+`extract_run_features()`, `STORE_SCHEMA_VERSION` 3→4) — v1 covers topdown L1 (`retire_pct`/
+`frontend_pct`/`backend_pct`/`speculate_pct`), cache/TLB/branch miss rates, `fault_rate`/
+`ctxswitch_rate` (rusage-derived), `phase_stability` (needs `--interval`), and `parallelism_proxy`
+(cross-core IPC coefficient of variation, needs `--per-core`) — each independently `measured`/
+`unavailable` rather than a silent zero when its source columns weren't collected. Runs automatically
+after metrics ingestion (`--no-feature-extract` opts out). Per-process I/O-rate features are
+deliberately deferred: `--tree-io`'s `rchar`/`wchar` live in the *tree* output file, which nothing
+ingests into the store today. See `doc/INVESTIGATION_ARCHIVE.md`'s "Concrete design: feature
+normalization prerequisites" for the full derivation-rule rationale. This is the first of 4.2 Tier 1's
+two characterization-track items —
+the archetype scorecard (item 2) is the one still open, and now has this feature vector to score
+against.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -685,67 +700,17 @@ motivation and per-syscall design rationale. What remains open from this track:
   absolute numbers are skewed, but this is an inherent limitation of the mechanism — 4.3's "Low-overhead
   tracing alternative to ptrace" entry is the eventual fix, not a documentation note.
 
-### Feature normalization prerequisites deep-dive
-Grounding for 4.2 Tier 1's "Feature normalization prerequisites" item — the first of the two
-characterization-track items, and a hard input dependency for the second (the archetype scorecard),
-since both need a consistently-shaped input to score against.
-
-`wspy-store`'s `metric_values` table (`store.c`) is long/tall — `(run_id, row_index, tick_time, core,
-phase, metric_name, value, is_percent, raw_text)` — with column *identity* coming from the CSV header
-text itself, not from which flags produced it. That already gives topdown L1 (`retire`/`frontend`/
-`backend`/`speculate`), cache/TLB miss-rate columns, the always-present rusage columns
-(`nvcsw`/`nivcsw`/`minflt`/`majflt`, emitted on every run regardless of `counter_mask` — see
-`topdown.c`'s base CSV header), and `phase` (`phase.c`, present only when `--interval` + `COUNTER_IPC`
-were both active) as queryable rows. `runs` carries `counter_mask`/`counters_requested`/
-`counters_measured`/`cpu_vendor`/`elapsed_seconds` alongside.
-
-What's missing is the step from that raw table to a **feature vector**: two runs of the same workload
-can have very different available columns (different `--counters=` selection, vendor-dependent raw-event
-availability, aggregate vs. `--interval` vs. `--per-core` CSV shape), so nothing downstream can compare
-runs directly against `metric_values` without re-solving "which columns exist this time" on every query.
-This is the same shape of problem `summary.c`'s `mixed-pmu` verdict and `coverage.c`/`provenance.c`'s
-"measured vs unavailable" fields already solve one level down (per-run, not per-feature) — this item is
-that idiom applied to a fixed feature vocabulary instead.
-
-Proposed shape:
-- **A fixed feature vocabulary**, each entry with an explicit derivation rule and a stated coverage
-  requirement (which counter groups/flags it needs) rather than assuming universal availability:
-  `ipc_mean`; `retire_pct`/`frontend_pct`/`backend_pct`/`speculate_pct` (topdown L1); per-instruction
-  `dcache_miss_rate`/`l2_miss_rate`/`l3_miss_rate`/`tlb_miss_rate`; `branch_mispredict_rate`;
-  `fault_rate` = (`minflt`+`majflt`)/`elapsed_seconds`; `ctxswitch_rate` = (`nvcsw`+`nivcsw`)/
-  `elapsed_seconds`; `io_rate` (needs `--tree-io`); `phase_stability` = fraction of ticks with
-  `phase='steady'` vs `'degraded'` (needs `--interval`); `parallelism_proxy` = cross-core CV of a
-  per-core metric (needs `--per-core`).
-- **Normalization rules**, decided once here rather than left for each consumer to reinvent: rate
-  features divide by `elapsed_seconds` or by instruction count depending on the feature (topdown-style
-  ratios are already self-normalizing; raw fault/context-switch counts are not); multi-row shapes
-  (`--interval` ticks, `--per-core` rows) collapse via `AVG()` first, mirroring `summary.c`'s existing
-  per-run collapse convention rather than inventing a second one; a feature whose required
-  columns/groups weren't collected is `NULL` (explicit absence), never zero or silently omitted, so a
-  scorer downstream can tell "measured near-zero" from "not measured."
-- **Storage**: a new `run_features` table (`run_id, feature_name, value, coverage`) populated by a pass
-  over `metric_values`+`runs` — a new `wspy-store` mode or standalone tool, following the same
-  `#ifndef TEST_X`/direct-`#include` testability convention every other tool in this codebase uses.
-  Versioned independently of `STORE_SCHEMA_VERSION` (its own `FEATURE_SCHEMA_VERSION` or similar), since
-  the feature vocabulary/derivation rules will keep evolving after the table shape itself stabilizes —
-  same reasoning `TOPDOWN_FORMULA_VERSION` exists separately from `MANIFEST_SCHEMA_VERSION`.
-
-→ Direct input dependency for 4.2 Tier 1's "Archetype scorecard" item (parallelism shape/resource
-dominance/control-flow style/runtime stability scoring needs one consistently-shaped feature vector to
-score against, not per-rule handling of "what if this run didn't collect topdown"). Also underpins 4.3's
-stated goal of using the normalized store for regression detection and clustering — both need the same
-fixed, coverage-aware feature set this item would establish.
-
 ## 4.2 — remaining work
 Everything from 4.2's original scope that hasn't shipped yet (see "Shipped since 4.1" above for what
 has). Ordered in dependency tiers; items within a tier are independently startable.
 
 **Tier 1 — characterization prerequisites:**
 
-1. Feature normalization prerequisites (fixed feature set from counters/topdown/faults/context-
-    switch/I-O) — needs 4.1's normalized store schema (`wspy-store`) to draw features from.
+1. ~~Feature normalization prerequisites~~ — shipped, see "Shipped since 4.1" above
+   (`store.c`'s `run_features`/`extract_run_features()`).
 2. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
-    stability) + confidence + top-2 alternatives.
+    stability) + confidence + top-2 alternatives — now has a fixed feature vector
+    (`run_features`, above) to score against.
 
 **Tier 2 — launcher/infra follow-ups:**
 

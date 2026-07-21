@@ -28,7 +28,16 @@
 #include "run_index.h"
 #include "manifest.h"
 
-#define STORE_SCHEMA_VERSION 3
+#define STORE_SCHEMA_VERSION 4
+
+/* Version of the run_features derivation-rule vocabulary itself (which
+ * features exist and how each is computed from metric_values/runs),
+ * independent of STORE_SCHEMA_VERSION -- the table shape can stay put while
+ * the feature set/formulas evolve, same reasoning TOPDOWN_FORMULA_VERSION
+ * (wspy.h) is versioned separately from MANIFEST_SCHEMA_VERSION. Recorded
+ * on every run_features row so a later reader can tell which rule set
+ * produced a given value. */
+#define FEATURE_SET_VERSION "1.0"
 
 static int now_iso8601(char *buf,size_t bufsize);
 
@@ -132,7 +141,18 @@ static const char *SCHEMA_DDL =
   "  is_percent INTEGER NOT NULL DEFAULT 0,"
   "  raw_text TEXT NOT NULL"
   ");"
-  "CREATE INDEX IF NOT EXISTS idx_metric_values_run_metric ON metric_values(run_id,metric_name);";
+  "CREATE INDEX IF NOT EXISTS idx_metric_values_run_metric ON metric_values(run_id,metric_name);"
+  "CREATE TABLE IF NOT EXISTS run_features ("
+  "  id INTEGER PRIMARY KEY,"
+  "  run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,"
+  "  feature_name TEXT NOT NULL,"
+  "  value REAL,"
+  "  coverage TEXT NOT NULL,"
+  "  feature_set_version TEXT NOT NULL,"
+  "  UNIQUE(run_id, feature_name)"
+  ");"
+  "CREATE INDEX IF NOT EXISTS idx_run_features_run ON run_features(run_id);"
+  "CREATE INDEX IF NOT EXISTS idx_run_features_name ON run_features(feature_name);";
 
 /* Applied when an existing database is found at STORE_SCHEMA_VERSION 1
  * (the shape wspy-store originally shipped with, before metric_values
@@ -182,6 +202,28 @@ static const char *MIGRATION_V2_TO_V3 =
   "  PRIMARY KEY (run_id, option_name)"
   ");";
 
+/* Applied when an existing database is found at STORE_SCHEMA_VERSION 3 --
+ * adds run_features (INVESTIGATION.md's "Feature normalization
+ * prerequisites" deep-dive/backlog item: a fixed, coverage-aware feature
+ * vocabulary derived from metric_values, one consistently-shaped input for
+ * later characterization work to score against instead of every consumer
+ * re-solving "which columns exist this time" itself). A wholly new table,
+ * not an ALTER TABLE, but still version-gated like MIGRATION_V1_TO_V2/
+ * MIGRATION_V2_TO_V3 rather than relying on SCHEMA_DDL's own IF NOT EXISTS,
+ * so every migration path is exercised the same way. */
+static const char *MIGRATION_V3_TO_V4 =
+  "CREATE TABLE IF NOT EXISTS run_features ("
+  "  id INTEGER PRIMARY KEY,"
+  "  run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,"
+  "  feature_name TEXT NOT NULL,"
+  "  value REAL,"
+  "  coverage TEXT NOT NULL,"
+  "  feature_set_version TEXT NOT NULL,"
+  "  UNIQUE(run_id, feature_name)"
+  ");"
+  "CREATE INDEX IF NOT EXISTS idx_run_features_run ON run_features(run_id);"
+  "CREATE INDEX IF NOT EXISTS idx_run_features_name ON run_features(feature_name);";
+
 struct store_stats {
   int records_seen;
   int records_new;
@@ -195,6 +237,7 @@ struct store_stats {
   int metrics_ingested;
   int metrics_skipped;
   int metrics_row_mismatches;
+  int features_extracted;
 };
 
 static char *read_whole_file_from(const char *path,long offset,long *size_out){
@@ -303,10 +346,31 @@ static int ensure_schema(sqlite3 *db){
       sqlite3_free(errmsg);
       return -1;
     }
+    if (sqlite3_exec(db,MIGRATION_V3_TO_V4,NULL,NULL,&errmsg) != SQLITE_OK){
+      fprintf(stderr,"wspy-store: migration to schema version %d failed: %s\n",
+              STORE_SCHEMA_VERSION,errmsg ? errmsg : "unknown error");
+      sqlite3_free(errmsg);
+      return -1;
+    }
   } else if (user_version == 2){
     fprintf(stderr,"wspy-store: migrating database from schema version 2 to %d "
                     "(adding configuration-provenance/affinity grouping support)\n",STORE_SCHEMA_VERSION);
     if (sqlite3_exec(db,MIGRATION_V2_TO_V3,NULL,NULL,&errmsg) != SQLITE_OK){
+      fprintf(stderr,"wspy-store: migration to schema version %d failed: %s\n",
+              STORE_SCHEMA_VERSION,errmsg ? errmsg : "unknown error");
+      sqlite3_free(errmsg);
+      return -1;
+    }
+    if (sqlite3_exec(db,MIGRATION_V3_TO_V4,NULL,NULL,&errmsg) != SQLITE_OK){
+      fprintf(stderr,"wspy-store: migration to schema version %d failed: %s\n",
+              STORE_SCHEMA_VERSION,errmsg ? errmsg : "unknown error");
+      sqlite3_free(errmsg);
+      return -1;
+    }
+  } else if (user_version == 3){
+    fprintf(stderr,"wspy-store: migrating database from schema version 3 to %d "
+                    "(adding run_features)\n",STORE_SCHEMA_VERSION);
+    if (sqlite3_exec(db,MIGRATION_V3_TO_V4,NULL,NULL,&errmsg) != SQLITE_OK){
       fprintf(stderr,"wspy-store: migration to schema version %d failed: %s\n",
               STORE_SCHEMA_VERSION,errmsg ? errmsg : "unknown error");
       sqlite3_free(errmsg);
@@ -709,6 +773,204 @@ static void ingest_csv_metrics(sqlite3 *db,sqlite3_int64 run_row_id,const char *
   free(buf);
 }
 
+/* Feature normalization (INVESTIGATION.md's "Feature normalization
+ * prerequisites" deep-dive): derives a fixed, coverage-aware feature
+ * vocabulary from metric_values/runs into run_features, so later
+ * characterization work (the archetype scorecard, clustering, regression
+ * detection) has one consistently-shaped input to score against instead of
+ * each re-solving "which columns exist this time" against the raw table.
+ *
+ * upsert_feature() records both value and coverage in one write: `measured`
+ * with a real value, or `unavailable` (value NULL) when this run never
+ * collected what the feature needs -- explicit absence, not a zero, mirrors
+ * coverage.c/provenance.c's own "measured vs unavailable" idiom applied per
+ * feature instead of per run. */
+static void upsert_feature(sqlite3 *db,sqlite3_int64 run_row_id,const char *feature_name,
+                            int measured,double value){
+  sqlite3_stmt *stmt;
+  if (sqlite3_prepare_v2(db,
+      "INSERT INTO run_features (run_id,feature_name,value,coverage,feature_set_version) "
+      "VALUES (?,?,?,?,?) "
+      "ON CONFLICT(run_id,feature_name) DO UPDATE SET "
+      "value=excluded.value,coverage=excluded.coverage,"
+      "feature_set_version=excluded.feature_set_version;",
+      -1,&stmt,NULL) != SQLITE_OK)
+    return;
+  sqlite3_bind_int64(stmt,1,run_row_id);
+  sqlite3_bind_text(stmt,2,feature_name,-1,SQLITE_TRANSIENT);
+  if (measured) sqlite3_bind_double(stmt,3,value);
+  else sqlite3_bind_null(stmt,3);
+  sqlite3_bind_text(stmt,4,measured ? "measured" : "unavailable",-1,SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt,5,FEATURE_SET_VERSION,-1,SQLITE_TRANSIENT);
+  sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+}
+
+/* A feature that's a plain AVG() of one metric_values.metric_name column --
+ * the CSV header text the column actually carries (topdown.c's own
+ * PRINT_CSV_HEADER strings), not an invented name. AVG() over zero rows (the
+ * column was never collected this run, e.g. --topdown wasn't requested) or
+ * over only NULL values (a "nan"/"-nan" cell, per ingest_csv_metrics()'s own
+ * NULL-on-non-finite convention) both come back SQL NULL, so one query
+ * answers coverage and value together. */
+struct simple_metric_feature { const char *feature_name; const char *metric_name; };
+
+static const struct simple_metric_feature SIMPLE_METRIC_FEATURES[] = {
+  { "ipc_mean",              "ipc" },
+  { "retire_pct",            "retire" },
+  { "frontend_pct",          "frontend" },
+  { "backend_pct",           "backend" },
+  { "speculate_pct",         "speculate" },
+  { "dcache_miss_pct",       "L1-dcache miss" },
+  { "icache_miss_pct",       "icache" },
+  { "l2_miss_pct",           "l2miss" },
+  { "l3_miss_pct",           "l3miss" },
+  { "branch_mispredict_pct", "branch miss" },
+  { "itlb_miss_per1k",       "itlb2" },
+  { "dtlb_miss_per1k",       "dtlb2" },
+};
+#define NUM_SIMPLE_METRIC_FEATURES \
+  (int)(sizeof(SIMPLE_METRIC_FEATURES)/sizeof(SIMPLE_METRIC_FEATURES[0]))
+
+/* SUM() of one metric_values.metric_name column -- used for the rusage-based
+ * rate features below, whose source columns (nvcsw/nivcsw/minflt/majflt,
+ * topdown.c's print_usage()) are emitted exactly once per run regardless of
+ * --interval, so SUM() and a single value coincide; written as SUM() rather
+ * than assuming a single row so it degrades safely if that ever changes. */
+static int sum_metric_value(sqlite3 *db,sqlite3_int64 run_row_id,const char *metric_name,double *out){
+  sqlite3_stmt *stmt;
+  int have = 0;
+  if (sqlite3_prepare_v2(db,"SELECT SUM(value) FROM metric_values WHERE run_id=? AND metric_name=?;",
+                         -1,&stmt,NULL) == SQLITE_OK){
+    sqlite3_bind_int64(stmt,1,run_row_id);
+    sqlite3_bind_text(stmt,2,metric_name,-1,SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_type(stmt,0) != SQLITE_NULL){
+      *out = sqlite3_column_double(stmt,0);
+      have = 1;
+    }
+    sqlite3_finalize(stmt);
+  }
+  return have;
+}
+
+static void extract_run_features(sqlite3 *db,sqlite3_int64 run_row_id,struct store_stats *stats){
+  sqlite3_stmt *stmt;
+  double elapsed_seconds = 0;
+  int have_elapsed;
+  int i;
+
+  if (sqlite3_prepare_v2(db,"SELECT elapsed_seconds FROM runs WHERE id=?;",-1,&stmt,NULL) == SQLITE_OK){
+    sqlite3_bind_int64(stmt,1,run_row_id);
+    if (sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_type(stmt,0) != SQLITE_NULL)
+      elapsed_seconds = sqlite3_column_double(stmt,0);
+    sqlite3_finalize(stmt);
+  }
+  have_elapsed = elapsed_seconds > 0;
+
+  for (i = 0; i < NUM_SIMPLE_METRIC_FEATURES; i++){
+    const struct simple_metric_feature *f = &SIMPLE_METRIC_FEATURES[i];
+    sqlite3_stmt *avg_stmt;
+    if (sqlite3_prepare_v2(db,"SELECT AVG(value) FROM metric_values WHERE run_id=? AND metric_name=?;",
+                           -1,&avg_stmt,NULL) != SQLITE_OK)
+      continue;
+    sqlite3_bind_int64(avg_stmt,1,run_row_id);
+    sqlite3_bind_text(avg_stmt,2,f->metric_name,-1,SQLITE_TRANSIENT);
+    if (sqlite3_step(avg_stmt) == SQLITE_ROW && sqlite3_column_type(avg_stmt,0) != SQLITE_NULL)
+      upsert_feature(db,run_row_id,f->feature_name,1,sqlite3_column_double(avg_stmt,0));
+    else
+      upsert_feature(db,run_row_id,f->feature_name,0,0);
+    sqlite3_finalize(avg_stmt);
+  }
+
+  /* fault_rate / ctxswitch_rate: rusage counts always live in metric_values
+   * once ingested (topdown.c's base CSV header, present regardless of
+   * counter_mask), but the rate needs elapsed_seconds from runs -- a run
+   * missing that (e.g. a malformed/degraded record) leaves both
+   * unavailable rather than dividing by zero. */
+  {
+    double minflt = 0,majflt = 0;
+    int have_minflt = sum_metric_value(db,run_row_id,"minflt",&minflt);
+    int have_majflt = sum_metric_value(db,run_row_id,"majflt",&majflt);
+    if (have_elapsed && (have_minflt || have_majflt))
+      upsert_feature(db,run_row_id,"fault_rate",1,(minflt+majflt)/elapsed_seconds);
+    else
+      upsert_feature(db,run_row_id,"fault_rate",0,0);
+  }
+  {
+    double nvcsw = 0,nivcsw = 0;
+    int have_nvcsw = sum_metric_value(db,run_row_id,"nvcsw",&nvcsw);
+    int have_nivcsw = sum_metric_value(db,run_row_id,"nivcsw",&nivcsw);
+    if (have_elapsed && (have_nvcsw || have_nivcsw))
+      upsert_feature(db,run_row_id,"ctxswitch_rate",1,(nvcsw+nivcsw)/elapsed_seconds);
+    else
+      upsert_feature(db,run_row_id,"ctxswitch_rate",0,0);
+  }
+
+  /* phase_stability: fraction of distinct --interval ticks phase.c classified
+   * as 'steady' vs any other phase. metric_values.phase is a per-row
+   * dimension repeated across every metric_name on the same tick (like
+   * metric_values.core), so this counts distinct row_index values rather
+   * than raw rows, or a run with N counter columns would count each tick
+   * N times over. */
+  {
+    sqlite3_stmt *pstmt;
+    long steady = 0,total = 0;
+    if (sqlite3_prepare_v2(db,
+        "SELECT phase,COUNT(*) FROM "
+        "(SELECT DISTINCT row_index,phase FROM metric_values "
+        " WHERE run_id=? AND phase IS NOT NULL AND phase != '') "
+        "GROUP BY phase;",-1,&pstmt,NULL) == SQLITE_OK){
+      sqlite3_bind_int64(pstmt,1,run_row_id);
+      while (sqlite3_step(pstmt) == SQLITE_ROW){
+        const unsigned char *phase = sqlite3_column_text(pstmt,0);
+        long count = sqlite3_column_int64(pstmt,1);
+        total += count;
+        if (phase && !strcmp((const char *)phase,"steady")) steady = count;
+      }
+      sqlite3_finalize(pstmt);
+    }
+    if (total > 0)
+      upsert_feature(db,run_row_id,"phase_stability",1,(double)steady/(double)total);
+    else
+      upsert_feature(db,run_row_id,"phase_stability",0,0);
+  }
+
+  /* parallelism_proxy: cross-core coefficient of variation of each core's
+   * own mean IPC (--per-core only; metric_values.core is NULL on every row
+   * of an aggregate or --interval-without---per-core run). Sample stddev
+   * (n-1 denominator), matching summary.c's compute_stats() convention;
+   * needs at least 2 cores to be meaningful, same n>=2 floor summary.c uses
+   * before reporting a stddev at all. */
+  {
+    sqlite3_stmt *cstmt;
+    double sum = 0,sumsq = 0;
+    long n = 0;
+    if (sqlite3_prepare_v2(db,
+        "SELECT AVG(value) FROM metric_values WHERE run_id=? AND metric_name='ipc' "
+        "AND core IS NOT NULL GROUP BY core;",-1,&cstmt,NULL) == SQLITE_OK){
+      sqlite3_bind_int64(cstmt,1,run_row_id);
+      while (sqlite3_step(cstmt) == SQLITE_ROW){
+        double v = sqlite3_column_double(cstmt,0);
+        sum += v; sumsq += v*v; n++;
+      }
+      sqlite3_finalize(cstmt);
+    }
+    if (n >= 2){
+      double mean = sum/n;
+      double variance = (sumsq - n*mean*mean)/(n-1);
+      double stddev = variance > 0 ? sqrt(variance) : 0;
+      if (mean != 0)
+        upsert_feature(db,run_row_id,"parallelism_proxy",1,stddev/fabs(mean));
+      else
+        upsert_feature(db,run_row_id,"parallelism_proxy",0,0);
+    } else {
+      upsert_feature(db,run_row_id,"parallelism_proxy",0,0);
+    }
+  }
+
+  stats->features_extracted++;
+}
+
 static int now_iso8601(char *buf,size_t bufsize){
   time_t t = time(NULL);
   struct tm tm_utc;
@@ -724,7 +986,8 @@ static int now_iso8601(char *buf,size_t bufsize){
  * genuine re-ingest of the same run, and the existing row is left alone
  * rather than silently merged with unrelated data. */
 static void upsert_run(sqlite3 *db,const struct json_value *record,const char *source_path,
-                        int enrich_manifest,int ingest_metrics,struct store_stats *stats){
+                        int enrich_manifest,int ingest_metrics,int extract_features,
+                        struct store_stats *stats){
   const char *hostname = json_get_string(record,"hostname",NULL);
   const char *run_id = json_get_string(record,"run_id",NULL);
   const struct json_value *cmd = json_object_get(record,"command");
@@ -901,6 +1164,16 @@ static void upsert_run(sqlite3 *db,const struct json_value *record,const char *s
   } else {
     stats->metrics_skipped++;
   }
+
+  /* Run unconditionally (not gated on this call having actually ingested
+   * new CSV rows) whenever the caller wants it: extract_run_features()
+   * degrades every feature to "unavailable" gracefully when metric_values
+   * has nothing for it, so it's just as safe to call on a re-ingest that
+   * skipped CSV parsing (metrics already ingested earlier) as on a fresh
+   * one -- and that's what makes a standalone backfill pass over
+   * already-ingested runs work the same way. */
+  if (extract_features)
+    extract_run_features(db,run_row_id,stats);
 }
 
 static long get_source_offset(sqlite3 *db,const char *path){
@@ -948,7 +1221,7 @@ static void set_source_offset(sqlite3 *db,const char *path,long offset,long size
  * against a growing file only do work proportional to what's new.
  * Returns 0 on success, -1 if the file could not be read at all. */
 static int ingest_run_index_file(sqlite3 *db,const char *path,int enrich_manifest,int ingest_metrics,
-                                  struct store_stats *stats){
+                                  int extract_features,struct store_stats *stats){
   long start_offset,file_size,consumed;
   char *buf;
   char **lines;
@@ -981,7 +1254,7 @@ static int ingest_run_index_file(sqlite3 *db,const char *path,int enrich_manifes
     }
     stats->records_seen++;
     if (check_schema_major_mismatch(root,path,&schema_warned)) stats->schema_mismatch_warned = 1;
-    upsert_run(db,root,path,enrich_manifest,ingest_metrics,stats);
+    upsert_run(db,root,path,enrich_manifest,ingest_metrics,extract_features,stats);
     json_free(root);
   }
   sqlite3_exec(db,"COMMIT;",NULL,NULL,NULL);
@@ -1017,6 +1290,10 @@ static void usage(const char *prog){
     "  --run-index <file>   run-index (JSONL) file to ingest; may be repeated\n"
     "  --no-manifest-enrich skip the best-effort per-record manifest.json read\n"
     "  --no-metrics-ingest  skip parsing each record's CSV output into metric_values\n"
+    "  --no-feature-extract skip deriving run_features from metric_values\n"
+    "                       (a fixed, coverage-aware feature vocabulary --\n"
+    "                       see INVESTIGATION.md's \"Feature normalization\n"
+    "                       prerequisites\" deep-dive)\n"
     "  -q, --quiet          only print the final summary line\n"
     "  -s, --strict         exit non-zero if any record was malformed, had a\n"
     "                       schema major-version mismatch, or collided with\n"
@@ -1033,7 +1310,7 @@ int main(int argc,char **argv){
   const char *db_path = NULL;
   const char *run_index_paths[64];
   int nrun_index = 0;
-  int quiet = 0,strict = 0,enrich_manifest = 1,ingest_metrics = 1;
+  int quiet = 0,strict = 0,enrich_manifest = 1,ingest_metrics = 1,extract_features = 1;
   sqlite3 *db;
   struct store_stats stats;
   int i,rc = 0;
@@ -1044,6 +1321,7 @@ int main(int argc,char **argv){
     { "run-index",          required_argument, 0, 'r' },
     { "no-manifest-enrich", no_argument,       0, 'M' },
     { "no-metrics-ingest",  no_argument,       0, 'C' },
+    { "no-feature-extract", no_argument,       0, 'F' },
     { "quiet",              no_argument,       0, 'q' },
     { "strict",             no_argument,       0, 's' },
     { "help",               no_argument,       0, 'h' },
@@ -1064,6 +1342,7 @@ int main(int argc,char **argv){
       break;
     case 'M': enrich_manifest = 0; break;
     case 'C': ingest_metrics = 0; break;
+    case 'F': extract_features = 0; break;
     case 'q': quiet = 1; break;
     case 's': strict = 1; break;
     case 'h': usage(argv[0]); return 0;
@@ -1085,15 +1364,18 @@ int main(int argc,char **argv){
   if (!db) return 2;
 
   for (i = 0; i < nrun_index; i++){
-    if (ingest_run_index_file(db,run_index_paths[i],enrich_manifest,ingest_metrics,&stats) < 0) rc = 2;
+    if (ingest_run_index_file(db,run_index_paths[i],enrich_manifest,ingest_metrics,
+                               extract_features,&stats) < 0) rc = 2;
     if (!quiet)
       printf("%s: %d record(s): %d new, %d updated, %d malformed, %d collision(s); "
              "%d manifest(s) enriched, %d skipped, %d mismatched; "
-             "%d metric-set(s) ingested, %d skipped, %d row(s) mismatched\n",
+             "%d metric-set(s) ingested, %d skipped, %d row(s) mismatched; "
+             "%d run(s) feature-extracted\n",
              run_index_paths[i],stats.records_seen,stats.records_new,stats.records_updated,
              stats.records_malformed,stats.records_collision,
              stats.manifests_enriched,stats.manifests_skipped,stats.manifests_mismatched,
-             stats.metrics_ingested,stats.metrics_skipped,stats.metrics_row_mismatches);
+             stats.metrics_ingested,stats.metrics_skipped,stats.metrics_row_mismatches,
+             stats.features_extracted);
   }
 
   if (sqlite3_prepare_v2(db,"SELECT COUNT(*) FROM runs;",-1,&count_stmt,NULL) == SQLITE_OK){

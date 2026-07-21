@@ -115,6 +115,38 @@ static void write_manifest_file(const char *path,const char *command0,const char
   fclose(fp);
 }
 
+static sqlite3_int64 lookup_run_id(sqlite3 *db,const char *run_id_text){
+  sqlite3_stmt *stmt;
+  sqlite3_int64 id = -1;
+  if (sqlite3_prepare_v2(db,"SELECT id FROM runs WHERE run_id=?;",-1,&stmt,NULL) == SQLITE_OK){
+    sqlite3_bind_text(stmt,1,run_id_text,-1,SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) == SQLITE_ROW) id = sqlite3_column_int64(stmt,0);
+    sqlite3_finalize(stmt);
+  }
+  return id;
+}
+
+static int feature_row(sqlite3 *db,sqlite3_int64 run_id,const char *feature_name,
+                        double *value_out,char *coverage_out,size_t coverage_size){
+  sqlite3_stmt *stmt;
+  int found = 0;
+  if (sqlite3_prepare_v2(db,"SELECT value,coverage FROM run_features WHERE run_id=? AND feature_name=?;",
+                         -1,&stmt,NULL) == SQLITE_OK){
+    sqlite3_bind_int64(stmt,1,run_id);
+    sqlite3_bind_text(stmt,2,feature_name,-1,SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) == SQLITE_ROW){
+      found = 1;
+      /* value is NULL exactly when coverage=="unavailable" -- callers must
+       * check coverage_out, not value_out, to tell "unmeasured" from a
+       * genuine 0.0 value. */
+      *value_out = (sqlite3_column_type(stmt,0) == SQLITE_NULL) ? 0.0 : sqlite3_column_double(stmt,0);
+      snprintf(coverage_out,coverage_size,"%s",(const char *)sqlite3_column_text(stmt,1));
+    }
+    sqlite3_finalize(stmt);
+  }
+  return found;
+}
+
 static int run_count(sqlite3 *db){
   sqlite3_stmt *stmt;
   int n = -1;
@@ -152,14 +184,14 @@ static void test_upsert_insert_and_reingest_no_duplicate(void){
 
   root = json_parse(buf,errbuf,sizeof(errbuf));
   assert(root != NULL);
-  upsert_run(db,root,"idx.jsonl",0,0,&stats);
+  upsert_run(db,root,"idx.jsonl",0,0,0,&stats);
   json_free(root);
   assert(stats.records_new == 1 && stats.records_updated == 0);
   assert(run_count(db) == 1);
 
   root = json_parse(buf,errbuf,sizeof(errbuf));
   assert(root != NULL);
-  upsert_run(db,root,"idx.jsonl",0,0,&stats);
+  upsert_run(db,root,"idx.jsonl",0,0,0,&stats);
   json_free(root);
   assert(stats.records_updated == 1);
   assert(run_count(db) == 1); /* still one row, not two */
@@ -185,7 +217,7 @@ static void test_upsert_run_ingests_affinity_and_config_provenance(void){
                                 "{\"name\":\"compiler\",\"value\":\"gcc13\"}");
   root = json_parse(buf,errbuf,sizeof(errbuf));
   assert(root != NULL);
-  upsert_run(db,root,"idx.jsonl",0,0,&stats);
+  upsert_run(db,root,"idx.jsonl",0,0,0,&stats);
   json_free(root);
   assert(stats.records_new == 1);
 
@@ -240,14 +272,14 @@ static void test_upsert_run_config_options_value_updates_on_reingest(void){
                                 "all","{\"name\":\"compiler\",\"value\":\"gcc12\"}");
   root = json_parse(buf,errbuf,sizeof(errbuf));
   assert(root != NULL);
-  upsert_run(db,root,"idx.jsonl",0,0,&stats);
+  upsert_run(db,root,"idx.jsonl",0,0,0,&stats);
   json_free(root);
 
   build_record_with_provenance(buf,sizeof(buf),"host1","run1","2026-07-19T00:00:00.000Z","/bin/true",
                                 "all","{\"name\":\"compiler\",\"value\":\"gcc13\"}");
   root = json_parse(buf,errbuf,sizeof(errbuf));
   assert(root != NULL);
-  upsert_run(db,root,"idx.jsonl",0,0,&stats);
+  upsert_run(db,root,"idx.jsonl",0,0,0,&stats);
   json_free(root);
 
   assert(sqlite3_prepare_v2(db,"SELECT COUNT(*) FROM run_config_options;",-1,&stmt,NULL) == SQLITE_OK);
@@ -287,7 +319,7 @@ static void test_upsert_run_missing_provenance_degrades_to_null(void){
   build_record(buf,sizeof(buf),"host1","run1","2026-07-19T00:00:00.000Z","/bin/true",0,NULL);
   root = json_parse(buf,errbuf,sizeof(errbuf));
   assert(root != NULL);
-  upsert_run(db,root,"idx.jsonl",0,0,&stats);
+  upsert_run(db,root,"idx.jsonl",0,0,0,&stats);
   json_free(root);
 
   assert(sqlite3_prepare_v2(db,
@@ -328,13 +360,13 @@ static void test_collision_detected_and_not_overwritten(void){
    * simulates two unrelated runs whose format_run_id() outputs collided. */
   build_record(buf,sizeof(buf),"host1","collide1","2026-07-01T00:00:00.000Z","/bin/true",0,NULL);
   root = json_parse(buf,errbuf,sizeof(errbuf));
-  upsert_run(db,root,"idx.jsonl",0,0,&stats);
+  upsert_run(db,root,"idx.jsonl",0,0,0,&stats);
   json_free(root);
   assert(stats.records_new == 1);
 
   build_record(buf,sizeof(buf),"host1","collide1","2026-07-02T00:00:00.000Z","/bin/false",1,NULL);
   root = json_parse(buf,errbuf,sizeof(errbuf));
-  upsert_run(db,root,"idx.jsonl",0,0,&stats);
+  upsert_run(db,root,"idx.jsonl",0,0,0,&stats);
   json_free(root);
   assert(stats.records_collision == 1);
   assert(run_count(db) == 1); /* not merged into a second row */
@@ -365,7 +397,7 @@ static void test_malformed_line_and_schema_mismatch(void){
   build_record(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","/bin/true",0,NULL);
   append_file(path,buf);
 
-  assert(ingest_run_index_file(db,path,0,0,&stats) == 0);
+  assert(ingest_run_index_file(db,path,0,0,0,&stats) == 0);
   assert(stats.records_malformed == 1);
   assert(stats.records_seen == 1);
   assert(run_count(db) == 1);
@@ -413,7 +445,7 @@ static void test_manifest_enrichment_match(void){
 
   root = json_parse(buf,errbuf,sizeof(errbuf));
   assert(root != NULL);
-  upsert_run(db,root,"idx.jsonl",1,0,&stats);
+  upsert_run(db,root,"idx.jsonl",1,0,0,&stats);
   json_free(root);
 
   assert(stats.manifests_enriched == 1);
@@ -452,7 +484,7 @@ static void test_manifest_enrichment_mismatch_skipped(void){
 
   root = json_parse(buf,errbuf,sizeof(errbuf));
   assert(root != NULL);
-  upsert_run(db,root,"idx.jsonl",1,0,&stats);
+  upsert_run(db,root,"idx.jsonl",1,0,0,&stats);
   json_free(root);
 
   assert(stats.manifests_mismatched == 1);
@@ -482,7 +514,7 @@ static void test_manifest_enrichment_missing_path(void){
   build_record(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","/bin/true",0,NULL);
   root = json_parse(buf,errbuf,sizeof(errbuf));
   assert(root != NULL);
-  upsert_run(db,root,"idx.jsonl",1,0,&stats);
+  upsert_run(db,root,"idx.jsonl",1,0,0,&stats);
   json_free(root);
   assert(stats.manifests_skipped == 1);
   assert(stats.manifests_enriched == 0);
@@ -491,7 +523,7 @@ static void test_manifest_enrichment_missing_path(void){
   build_record(buf,sizeof(buf),"host1","run2","2026-07-01T01:00:00.000Z","/bin/true",0,"/tmp/does_not_exist_store.json");
   root = json_parse(buf,errbuf,sizeof(errbuf));
   assert(root != NULL);
-  upsert_run(db,root,"idx.jsonl",1,0,&stats);
+  upsert_run(db,root,"idx.jsonl",1,0,0,&stats);
   json_free(root);
   assert(stats.manifests_skipped == 1);
   assert(stats.manifests_enriched == 0);
@@ -513,13 +545,13 @@ static void test_ingest_sources_offset_tracking(void){
 
   build_record(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","/bin/true",0,NULL);
   write_file(path,buf);
-  assert(ingest_run_index_file(db,path,0,0,&stats) == 0);
+  assert(ingest_run_index_file(db,path,0,0,0,&stats) == 0);
   assert(stats.records_seen == 1);
   assert(run_count(db) == 1);
 
   /* Re-ingest the same (unchanged) file: nothing new to read. */
   memset(&stats,0,sizeof(stats));
-  assert(ingest_run_index_file(db,path,0,0,&stats) == 0);
+  assert(ingest_run_index_file(db,path,0,0,0,&stats) == 0);
   assert(stats.records_seen == 0);
   assert(run_count(db) == 1);
 
@@ -527,7 +559,7 @@ static void test_ingest_sources_offset_tracking(void){
   build_record(buf,sizeof(buf),"host1","run2","2026-07-01T02:00:00.000Z","/bin/false",1,NULL);
   append_file(path,buf);
   memset(&stats,0,sizeof(stats));
-  assert(ingest_run_index_file(db,path,0,0,&stats) == 0);
+  assert(ingest_run_index_file(db,path,0,0,0,&stats) == 0);
   assert(stats.records_seen == 1);
   assert(run_count(db) == 2);
 
@@ -557,14 +589,14 @@ static void test_incomplete_trailing_line_deferred(void){
   if (len > 0 && buf[len-1] == '\n') buf[len-1] = '\0';
   append_file(path,buf);
 
-  assert(ingest_run_index_file(db,path,0,0,&stats) == 0);
+  assert(ingest_run_index_file(db,path,0,0,0,&stats) == 0);
   assert(stats.records_seen == 1); /* only the complete first line */
   assert(run_count(db) == 1);
 
   /* Writer finishes the line later. */
   append_file(path,"\n");
   memset(&stats,0,sizeof(stats));
-  assert(ingest_run_index_file(db,path,0,0,&stats) == 0);
+  assert(ingest_run_index_file(db,path,0,0,0,&stats) == 0);
   assert(stats.records_seen == 1);
   assert(run_count(db) == 2);
 
@@ -618,7 +650,7 @@ static void test_ingest_csv_metrics_basic(void){
 
   root = json_parse(buf,errbuf,sizeof(errbuf));
   assert(root != NULL);
-  upsert_run(db,root,"idx.jsonl",0,1,&stats);
+  upsert_run(db,root,"idx.jsonl",0,1,0,&stats);
   json_free(root);
 
   assert(stats.metrics_ingested == 1);
@@ -663,7 +695,7 @@ static void test_ingest_csv_metrics_interval(void){
 
   root = json_parse(buf,errbuf,sizeof(errbuf));
   assert(root != NULL);
-  upsert_run(db,root,"idx.jsonl",0,1,&stats);
+  upsert_run(db,root,"idx.jsonl",0,1,0,&stats);
   json_free(root);
 
   assert(stats.metrics_ingested == 1);
@@ -704,7 +736,7 @@ static void test_ingest_csv_metrics_per_core(void){
 
   root = json_parse(buf,errbuf,sizeof(errbuf));
   assert(root != NULL);
-  upsert_run(db,root,"idx.jsonl",0,1,&stats);
+  upsert_run(db,root,"idx.jsonl",0,1,0,&stats);
   json_free(root);
 
   assert(metric_value_count(db,"retire") == 2);
@@ -739,7 +771,7 @@ static void test_ingest_csv_metrics_percent_and_nan(void){
 
   root = json_parse(buf,errbuf,sizeof(errbuf));
   assert(root != NULL);
-  upsert_run(db,root,"idx.jsonl",0,1,&stats);
+  upsert_run(db,root,"idx.jsonl",0,1,0,&stats);
   json_free(root);
 
   assert(sqlite3_prepare_v2(db,"SELECT value,is_percent,raw_text FROM metric_values WHERE metric_name='sanity';",
@@ -786,7 +818,7 @@ static void test_ingest_csv_metrics_row_mismatch_skipped(void){
 
   root = json_parse(buf,errbuf,sizeof(errbuf));
   assert(root != NULL);
-  upsert_run(db,root,"idx.jsonl",0,1,&stats);
+  upsert_run(db,root,"idx.jsonl",0,1,0,&stats);
   json_free(root);
 
   assert(stats.metrics_row_mismatches == 1);
@@ -813,12 +845,12 @@ static void test_ingest_csv_metrics_reingest_idempotent(void){
   build_csv_record(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","/bin/true",csv_path);
 
   root = json_parse(buf,errbuf,sizeof(errbuf));
-  upsert_run(db,root,"idx.jsonl",0,1,&stats);
+  upsert_run(db,root,"idx.jsonl",0,1,0,&stats);
   json_free(root);
   assert(metric_value_count(db,"ipc") == 1);
 
   root = json_parse(buf,errbuf,sizeof(errbuf));
-  upsert_run(db,root,"idx.jsonl",0,1,&stats);
+  upsert_run(db,root,"idx.jsonl",0,1,0,&stats);
   json_free(root);
   assert(metric_value_count(db,"ipc") == 1); /* still one, not two */
 
@@ -841,7 +873,7 @@ static void test_ingest_csv_metrics_skipped_conditions(void){
   memset(&stats,0,sizeof(stats));
   build_record(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","/bin/true",0,NULL);
   root = json_parse(buf,errbuf,sizeof(errbuf));
-  upsert_run(db,root,"idx.jsonl",0,1,&stats);
+  upsert_run(db,root,"idx.jsonl",0,1,0,&stats);
   json_free(root);
   assert(stats.metrics_skipped == 1 && stats.metrics_ingested == 0);
 
@@ -849,7 +881,7 @@ static void test_ingest_csv_metrics_skipped_conditions(void){
   memset(&stats,0,sizeof(stats));
   build_csv_record(buf,sizeof(buf),"host1","run2","2026-07-01T01:00:00.000Z","/bin/true",NULL);
   root = json_parse(buf,errbuf,sizeof(errbuf));
-  upsert_run(db,root,"idx.jsonl",0,1,&stats);
+  upsert_run(db,root,"idx.jsonl",0,1,0,&stats);
   json_free(root);
   assert(stats.metrics_skipped == 1 && stats.metrics_ingested == 0);
 
@@ -858,7 +890,7 @@ static void test_ingest_csv_metrics_skipped_conditions(void){
   build_csv_record(buf,sizeof(buf),"host1","run3","2026-07-01T02:00:00.000Z","/bin/true",
                     "/tmp/test_store_metrics_does_not_exist.csv");
   root = json_parse(buf,errbuf,sizeof(errbuf));
-  upsert_run(db,root,"idx.jsonl",0,1,&stats);
+  upsert_run(db,root,"idx.jsonl",0,1,0,&stats);
   json_free(root);
   assert(stats.metrics_skipped == 1 && stats.metrics_ingested == 0);
 
@@ -868,13 +900,341 @@ static void test_ingest_csv_metrics_skipped_conditions(void){
   build_csv_record(buf,sizeof(buf),"host1","run4","2026-07-01T03:00:00.000Z","/bin/true",
                     "/tmp/test_store_metrics_empty.csv");
   root = json_parse(buf,errbuf,sizeof(errbuf));
-  upsert_run(db,root,"idx.jsonl",0,1,&stats);
+  upsert_run(db,root,"idx.jsonl",0,1,0,&stats);
   json_free(root);
   assert(stats.metrics_skipped == 1 && stats.metrics_ingested == 0);
   remove("/tmp/test_store_metrics_empty.csv");
 
   sqlite3_close(db);
   printf("PASS: ingest_csv_metrics skip conditions\n");
+}
+
+static void test_extract_run_features_basic(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_int64 run_id;
+  double value;
+  char coverage[16];
+  const char *csv_path = "/tmp/test_store_features_basic.csv";
+
+  printf("Testing extract_run_features: simple-AVG features, measured vs unavailable...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  /* ipc/retire/frontend/backend/speculate present; dcache/branch/etc. not
+   * collected this run at all (no --dcache/--branch), so those features
+   * must degrade to unavailable rather than being silently omitted. */
+  write_file(csv_path,
+    "elapsed,ipc,retire,frontend,backend,speculate,counters_measured,counters_requested,\n"
+    "1.0,1.50,60.0,15.0,20.0,5.0,9,9,\n");
+  build_csv_record(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","/bin/true",csv_path);
+
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,1,1,&stats);
+  json_free(root);
+
+  assert(stats.features_extracted == 1);
+  run_id = lookup_run_id(db,"run1");
+  assert(run_id > 0);
+
+  assert(feature_row(db,run_id,"ipc_mean",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && value > 1.49 && value < 1.51);
+  assert(feature_row(db,run_id,"retire_pct",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && value > 59.9 && value < 60.1);
+  assert(feature_row(db,run_id,"speculate_pct",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && value > 4.9 && value < 5.1);
+
+  /* Never collected this run -- unavailable, value NULL, not 0.0. */
+  assert(feature_row(db,run_id,"dcache_miss_pct",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"unavailable"));
+  assert(feature_row(db,run_id,"branch_mispredict_pct",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"unavailable"));
+
+  sqlite3_close(db);
+  remove(csv_path);
+  printf("PASS: extract_run_features basic\n");
+}
+
+static void test_extract_run_features_rates(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_int64 run_id;
+  double value;
+  char coverage[16];
+  const char *csv_path = "/tmp/test_store_features_rates.csv";
+
+  printf("Testing extract_run_features: fault_rate/ctxswitch_rate from always-present rusage columns...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  /* build_csv_record()'s record carries elapsed_seconds=1.0, so rate ==
+   * raw count here, which keeps the assertions exact rather than approximate. */
+  write_file(csv_path,
+    "elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,\n"
+    "1.0,0.1,0.05,30,10,0,0,1000,400,8,0,\n");
+  build_csv_record(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","/bin/true",csv_path);
+
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,1,1,&stats);
+  json_free(root);
+
+  run_id = lookup_run_id(db,"run1");
+  assert(run_id > 0);
+
+  assert(feature_row(db,run_id,"fault_rate",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && value > 407.9 && value < 408.1); /* (400+8)/1.0 */
+  assert(feature_row(db,run_id,"ctxswitch_rate",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && value > 39.9 && value < 40.1); /* (30+10)/1.0 */
+
+  sqlite3_close(db);
+  remove(csv_path);
+  printf("PASS: extract_run_features rates\n");
+}
+
+static void test_extract_run_features_phase_stability(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_int64 run_id;
+  double value;
+  char coverage[16];
+  const char *csv_path = "/tmp/test_store_features_phase.csv";
+
+  printf("Testing extract_run_features: phase_stability counts distinct ticks, not distinct metrics...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  /* Two metric columns per tick (ipc,retire) -- if phase_stability counted
+   * raw metric_values rows instead of distinct row_index, it would double
+   * every tick and still coincidentally compute the same fraction here, so
+   * the real regression this guards is counting rows sharing one row_index
+   * as more than one tick; 3 steady out of 4 ticks total is the fraction
+   * under test either way. */
+  write_file(csv_path,
+    "time,phase,ipc,retire,counters_measured,counters_requested,\n"
+    "1.0,warmup,0.3,10.0,9,9,\n"
+    "2.0,steady,0.9,60.0,9,9,\n"
+    "3.0,steady,0.9,61.0,9,9,\n"
+    "4.0,steady,0.9,59.0,9,9,\n");
+  build_csv_record(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","sleep",csv_path);
+
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,1,1,&stats);
+  json_free(root);
+
+  run_id = lookup_run_id(db,"run1");
+  assert(run_id > 0);
+
+  assert(feature_row(db,run_id,"phase_stability",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && value > 0.74 && value < 0.76); /* 3/4 */
+
+  sqlite3_close(db);
+  remove(csv_path);
+  printf("PASS: extract_run_features phase_stability\n");
+}
+
+static void test_extract_run_features_parallelism_proxy(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_int64 run_id;
+  double value;
+  char coverage[16];
+  const char *csv_path = "/tmp/test_store_features_percore.csv";
+
+  printf("Testing extract_run_features: parallelism_proxy cross-core CV, needs >=2 cores...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  /* Two cores at very different IPC -- a real imbalance, so the CV should
+   * be clearly nonzero (not asserting an exact value, since the point of
+   * this test is "measured, with a real spread" not the specific formula
+   * constant already covered by the rates/basic tests above). */
+  write_file(csv_path,
+    "elapsed,core,ipc,counters_measured,counters_requested,\n"
+    "1.0,0,2.0,9,9,\n"
+    "1.0,1,0.2,9,9,\n");
+  build_csv_record(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","/bin/true",csv_path);
+
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,1,1,&stats);
+  json_free(root);
+
+  run_id = lookup_run_id(db,"run1");
+  assert(run_id > 0);
+
+  assert(feature_row(db,run_id,"parallelism_proxy",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && value > 0.5);
+
+  sqlite3_close(db);
+  remove(csv_path);
+  printf("PASS: extract_run_features parallelism_proxy\n");
+}
+
+static void test_extract_run_features_single_core_unavailable(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_int64 run_id;
+  double value;
+  char coverage[16];
+  const char *csv_path = "/tmp/test_store_features_onecore.csv";
+
+  printf("Testing extract_run_features: parallelism_proxy needs >=2 cores, else unavailable...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  write_file(csv_path,"elapsed,ipc,counters_measured,counters_requested,\n1.0,1.5,9,9,\n");
+  build_csv_record(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","/bin/true",csv_path);
+
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,1,1,&stats);
+  json_free(root);
+
+  run_id = lookup_run_id(db,"run1");
+  assert(run_id > 0);
+
+  assert(feature_row(db,run_id,"parallelism_proxy",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"unavailable"));
+
+  sqlite3_close(db);
+  remove(csv_path);
+  printf("PASS: extract_run_features single-core unavailable\n");
+}
+
+static void test_extract_run_features_reingest_idempotent(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_int64 run_id;
+  double value;
+  char coverage[16];
+  int count;
+  sqlite3_stmt *stmt;
+  const char *csv_path = "/tmp/test_store_features_reingest.csv";
+
+  printf("Testing extract_run_features: re-extraction upserts, doesn't duplicate or ignore updated data...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  write_file(csv_path,"elapsed,ipc,counters_measured,counters_requested,\n1.0,1.0,9,9,\n");
+  build_csv_record(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","/bin/true",csv_path);
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,1,1,&stats);
+  json_free(root);
+
+  /* Change the underlying CSV and re-run extraction directly (as a
+   * standalone backfill pass would, without re-ingesting metric_values) --
+   * this exercises extract_run_features() being safe to call again on its
+   * own, not just via upsert_run()'s CSV-ingest path. */
+  write_file(csv_path,"elapsed,ipc,counters_measured,counters_requested,\n1.0,3.0,9,9,\n");
+  memset(&stats,0,sizeof(stats));
+  root = json_parse(buf,errbuf,sizeof(errbuf)); /* same record, same output_path */
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,1,1,&stats);
+  json_free(root);
+
+  run_id = lookup_run_id(db,"run1");
+  assert(run_id > 0);
+
+  assert(sqlite3_prepare_v2(db,"SELECT COUNT(*) FROM run_features WHERE run_id=? AND feature_name='ipc_mean';",
+                             -1,&stmt,NULL) == SQLITE_OK);
+  sqlite3_bind_int64(stmt,1,run_id);
+  assert(sqlite3_step(stmt) == SQLITE_ROW);
+  count = sqlite3_column_int(stmt,0);
+  sqlite3_finalize(stmt);
+  assert(count == 1); /* upserted, not duplicated */
+
+  assert(feature_row(db,run_id,"ipc_mean",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && value > 2.99 && value < 3.01); /* reflects the new CSV, not the old */
+
+  sqlite3_close(db);
+  remove(csv_path);
+  printf("PASS: extract_run_features re-extraction idempotent and refreshes\n");
+}
+
+static void test_schema_migration_v3_to_v4(void){
+  sqlite3 *db;
+  sqlite3_stmt *stmt;
+  int user_version = 0;
+
+  printf("Testing ensure_schema migrates a v3-shaped database to v4...\n");
+  assert(sqlite3_open(":memory:",&db) == SQLITE_OK);
+
+  /* The exact v3 shape (preset_name/config_name/affinity columns and
+   * run_config_options already exist, but no run_features yet) -- mirrors a
+   * real database created by wspy-store before this item's feature
+   * extraction existed. */
+  assert(sqlite3_exec(db,
+    "CREATE TABLE store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+    "CREATE TABLE ingest_sources (path TEXT PRIMARY KEY, last_byte_offset INTEGER NOT NULL DEFAULT 0,"
+    " last_size INTEGER NOT NULL DEFAULT 0, last_ingested_at TEXT);"
+    "CREATE TABLE runs (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, hostname TEXT NOT NULL,"
+    " run_index_schema_version TEXT NOT NULL, collector TEXT NOT NULL, wspy_version TEXT,"
+    " cpu_vendor TEXT, cpu_family INTEGER, cpu_model INTEGER, start_time TEXT NOT NULL,"
+    " finish_time TEXT, elapsed_seconds REAL, command TEXT NOT NULL, exit_known INTEGER,"
+    " exit_exited INTEGER, exit_code INTEGER, exit_signaled INTEGER, exit_term_signal INTEGER,"
+    " per_core INTEGER, system_flag INTEGER, csv_flag INTEGER, tree_flag INTEGER,"
+    " interval_seconds INTEGER, counter_mask TEXT, counter_mask_int INTEGER,"
+    " counters_requested INTEGER, counters_measured INTEGER, output_path TEXT,"
+    " tree_output_path TEXT, manifest_path TEXT, manifest_ingested INTEGER NOT NULL DEFAULT 0,"
+    " kernel_release TEXT, num_cores INTEGER, num_cores_available INTEGER, is_hybrid INTEGER,"
+    " metrics_ingested INTEGER NOT NULL DEFAULT 0, metrics_row_count INTEGER,"
+    " preset_name TEXT, config_name TEXT, affinity_mode TEXT, affinity_requested TEXT, affinity_cpus TEXT,"
+    " source_run_index_path TEXT NOT NULL, ingested_at TEXT NOT NULL, UNIQUE(hostname, run_id));"
+    "CREATE TABLE metric_values (id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, row_index INTEGER NOT NULL,"
+    " tick_time REAL, core INTEGER, phase TEXT, metric_name TEXT NOT NULL, value REAL,"
+    " is_percent INTEGER NOT NULL DEFAULT 0, raw_text TEXT NOT NULL);"
+    "CREATE TABLE run_config_options (run_id INTEGER NOT NULL, option_name TEXT NOT NULL,"
+    " option_value TEXT NOT NULL, PRIMARY KEY (run_id, option_name));"
+    "INSERT INTO runs (run_id,hostname,run_index_schema_version,collector,start_time,command,"
+    " source_run_index_path,ingested_at) VALUES"
+    " ('r1','h1','1.7.0','wspy','2026-01-01T00:00:00Z','/bin/true','idx.jsonl','2026-01-01T00:00:00Z');"
+    "PRAGMA user_version=3;",NULL,NULL,NULL) == SQLITE_OK);
+
+  assert(ensure_schema(db) == 0);
+
+  assert(sqlite3_prepare_v2(db,"PRAGMA user_version;",-1,&stmt,NULL) == SQLITE_OK);
+  assert(sqlite3_step(stmt) == SQLITE_ROW);
+  user_version = sqlite3_column_int(stmt,0);
+  sqlite3_finalize(stmt);
+  assert(user_version == STORE_SCHEMA_VERSION);
+
+  /* The pre-existing row survived, and run_features is usable. */
+  assert(sqlite3_prepare_v2(db,"SELECT run_id FROM runs;",-1,&stmt,NULL) == SQLITE_OK);
+  assert(sqlite3_step(stmt) == SQLITE_ROW);
+  assert(!strcmp((const char *)sqlite3_column_text(stmt,0),"r1"));
+  sqlite3_finalize(stmt);
+
+  assert(sqlite3_exec(db,
+    "INSERT INTO run_features (run_id,feature_name,value,coverage,feature_set_version) "
+    "VALUES (1,'ipc_mean',1.5,'measured','1.0');",
+    NULL,NULL,NULL) == SQLITE_OK);
+
+  assert(ensure_schema(db) == 0); /* no-op at current version */
+
+  sqlite3_close(db);
+  printf("PASS: schema migration v3 to v4\n");
 }
 
 static void test_schema_migration_v1_to_v2(void){
@@ -1025,8 +1385,15 @@ int main(void){
   test_ingest_csv_metrics_row_mismatch_skipped();
   test_ingest_csv_metrics_reingest_idempotent();
   test_ingest_csv_metrics_skipped_conditions();
+  test_extract_run_features_basic();
+  test_extract_run_features_rates();
+  test_extract_run_features_phase_stability();
+  test_extract_run_features_parallelism_proxy();
+  test_extract_run_features_single_core_unavailable();
+  test_extract_run_features_reingest_idempotent();
   test_schema_migration_v1_to_v2();
   test_schema_migration_v2_to_v3();
+  test_schema_migration_v3_to_v4();
 
   printf("\nAll test_store tests passed.\n");
   return 0;
