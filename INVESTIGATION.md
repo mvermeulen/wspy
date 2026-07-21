@@ -592,6 +592,27 @@ one detailed `key=value` scorecard. Designed for extensibility: a new simple thr
 cross-workload validation) is one rule-table addition plus one `classify_simple_axis()` call site, no
 changes needed elsewhere. See `CLAUDE.md`'s `archetype.c` entry for the full design.
 
+**Compare-view curation (Phase 1):** `GET /compare` now carries an optional annotation layer —
+`compare.json` (`COMPARE_SCHEMA_VERSION`, `web/server.py`), the first cross-*run* state file in this
+codebase (`curation.json` is strictly per-run; `run_index.jsonl`/`store.db` are flat per-run logs with
+no relationship between specific runs), stored at `<output_root>/compares/<id>.json` where `id` is a
+hash of the sorted, deduped run-key set (order-independent, exact-match — a different run set gets a
+different id and starts uncurated, no fuzzy reattachment). Scoped to Phase 1 only: one `overview_note`
+for the comparison as a whole plus one commentary note per filename row, reusing today's exact
+filename-based row identity — no cross-run alignment of differently-named files yet (deferred; see
+below). A separate `GET`/`POST /compare/curate?r=...&r=...` edit page mirrors the studio/report split
+rather than an inline-edit toggle. Covered by `web/test_compare_curation.py` (id determinism/exact-
+match, load/save round-trip, run-resolution dedup/floor, save/clear-a-note paths) — same "not wired
+into `make test`" convention as `web/test_joblib.py`/`web/test_trace_links.py`. See `CLAUDE.md`'s
+"Compare-view curation" entry for the full design.
+
+**Deferred out of Phase 1, not dropped:** manually aligning two differently-named files from
+different runs as "the same measurement" (e.g. two runs that used different profiles/passes and so
+named conceptually-equivalent output differently) — the row-identity model above is filename-only, so
+this would need a real new alignment concept (a group/label spanning a per-run file mapping) rather
+than an extension of the current commentary layer. Worth revisiting once real multi-profile
+comparisons actually need it, not before.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -726,35 +747,28 @@ motivation and per-syscall design rationale. What remains open from this track:
 
 ## 4.2 — remaining work
 Everything from 4.2's original scope that hasn't shipped yet (see "Shipped since 4.1" above for what
-has). Ordered in dependency tiers; items within a tier are independently startable. (Both original
-Tier 1 characterization-track items have now shipped -- see "Shipped since 4.1" above -- so what were
-Tiers 2/3 are renumbered up to Tiers 1/2; the "Collapse wspy-run's builtin profiles onto `--passes`"
-item that was here has moved to 4.3, see below.)
+has). (Both original Tier 1 characterization-track items and the launcher/infra follow-ups tier have
+now shipped or moved elsewhere -- see "Shipped since 4.1" above and 4.3's infra tier for the
+`wspy-run`/`--passes` collapse -- so this is now a single remaining tier.)
 
-**Tier 1 — launcher/infra follow-ups:**
+**Docs/testing/release process:**
 
-1. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
-    raw/filename-aligned today (comparing actual artifacts across runs, curated or not); annotating a
-    comparison itself, or aligning curated block titles across the compared runs, is still open.
-
-**Tier 2 — docs/testing/release process:**
-
-2. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
+1. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
     output).
-3. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
-4. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
+2. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
+3. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
     constant (e.g. `phoronix-test-suite` reportedly has a run-time-estimate command) — today's
     constant is a blunt stand-in; the real constraint is capping process-record data volume for
     publishing, not workload runtime, so a per-workload estimate would size it more accurately than
     one constant across every suite.
-5. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
+4. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
     that catches the class of drift found during the v4.0 release audit: `doc/ARTIFACT_CONTRACT.md`'s
     schema-version examples had silently fallen behind `MANIFEST_SCHEMA_VERSION`/
     `RUN_INDEX_SCHEMA_VERSION`, and `README.md` was missing a whole tool's section. Concretely:
     grep-based checks that doc-quoted schema versions and the documented tool/flag list match the
     actual header constants and `Makefile` binary list, so this doesn't require a manual audit at
     every release again.
-6. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
+5. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
     `MINOR`, grep for stale version-string references across docs, run the full test matrix including
     the `AMDGPU=1` variant, tag, label every merged PR since the last tag, draft release notes from
     the merged-PR list) as a repeatable script or documented checklist instead of redoing it by hand,

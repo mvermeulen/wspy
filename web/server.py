@@ -33,6 +33,7 @@ Usage:
 Stdlib only, by design (see CLAUDE.md's web/ entry for the reasoning).
 """
 import argparse
+import hashlib
 import html
 import json
 import os
@@ -1581,6 +1582,65 @@ def save_curation(rundir, data):
     os.replace(tmp, path)
 
 
+# ---------------------------------------------------------------------------
+# Compare-view curation (INVESTIGATION.md's "Give the report compare view
+# its own curation/annotation layer" item). Unlike curation.json above,
+# this state describes a *set* of runs, not one run directory -- there's no
+# existing precedent for that in this file (run_index.jsonl/store.db are
+# the closest, and those are flat per-run logs, not relationships between
+# specific runs), so it lives in its own directory at the output-root level,
+# the same level run_index.jsonl/store.db already occupy for the same
+# "spans more than one run" reason.
+#
+# Phase 1 scope only (a fuller "manually align two differently-named files
+# as the same measurement" mode was considered and deferred -- see this
+# item's own INVESTIGATION.md entry): an overview note for the comparison
+# as a whole, plus one commentary note per filename row, using exactly
+# today's filename-based row identity (render_compare()'s own union-of-
+# filenames list) rather than inventing a new alignment concept.
+# ---------------------------------------------------------------------------
+
+COMPARE_CURATION_DIR = "compares"
+COMPARE_SCHEMA_VERSION = "1.0"
+
+
+def compare_id_for_keys(run_keys):
+    """Deterministic id for a comparison, from the *sorted* set of
+    "<suite>/<benchmark>/<run_id>" keys -- order-independent (so
+    ?r=A&r=B and ?r=B&r=A resolve to the same curation) and exact-match
+    (a different run set, even one run added/removed, gets a different id
+    and starts uncurated -- same "don't guess at approximate equivalence"
+    idiom summary.c's mixed-pmu check already uses elsewhere in this
+    project, rather than fuzzy-matching a "close enough" prior comparison)."""
+    joined = "\n".join(sorted(set(run_keys)))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
+
+
+def load_compare_curation(output_root, compare_id):
+    try:
+        with open(os.path.join(output_root, COMPARE_CURATION_DIR, f"{compare_id}.json")) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data.get("row_notes"), dict):
+        return None
+    return data
+
+
+def save_compare_curation(output_root, compare_id, data):
+    data["schema_version"] = COMPARE_SCHEMA_VERSION
+    data["updated"] = datetime.now(timezone.utc).isoformat()
+    data.setdefault("created", data["updated"])
+    compare_dir = os.path.join(output_root, COMPARE_CURATION_DIR)
+    os.makedirs(compare_dir, exist_ok=True)
+    path = os.path.join(compare_dir, f"{compare_id}.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
 def read_text_safely(path):
     """Returns (text, size) if the file decodes as UTF-8, else (None, size)
     so callers can fall back to a link-only render for binary artifacts."""
@@ -3046,12 +3106,13 @@ def build_rerun_url(workload_str, suite, benchmark, preset=None, checklist=None)
     return url
 
 
-def render_compare(output_root, keys):
-    """Item 8's compare view: sweep 2+ runs side by side. Deliberately raw
-    (not curation-aware) and filename-aligned rather than block-aligned --
-    curation is a per-run editorial layer (title/commentary/depth), while
-    this view's job is spotting differences across runs' actual artifacts,
-    which works whether or not either run has been curated yet."""
+def resolve_compare_runs(output_root, keys):
+    """Parses/dedupes/validates a list of "<suite>/<benchmark>/<run_id>"
+    keys into run dicts (with rundir/base/files/workload_str populated),
+    shared by render_compare() and the compare-curation edit form so the
+    two can never resolve a different run set for what's meant to be the
+    same comparison. Returns [] if fewer than 2 keys resolve to a real run
+    directory -- callers treat that as "nothing to compare"."""
     runs = []
     seen = set()
     for key in keys:
@@ -3066,10 +3127,7 @@ def render_compare(output_root, keys):
         runs.append({"suite": suite, "benchmark": benchmark, "run_id": run_id, "rundir": rundir})
 
     if len(runs) < 2:
-        body = ('<section class="panel"><h1>Compare runs</h1>'
-                '<p class="muted">Select at least two runs from the homepage report list to '
-                'compare them side by side.</p><p><a href="/">Back to launcher</a></p></section>')
-        return page("wspy compare", body)
+        return []
 
     for r in runs:
         r["base"] = f"/files/{r['suite']}/{r['benchmark']}/{r['run_id']}"
@@ -3080,14 +3138,66 @@ def render_compare(output_root, keys):
         else:
             workload = read_manifest_workload(os.path.join(r["rundir"], MANIFEST_NAME))
         r["workload_str"] = shlex.join(workload) if workload else None
+    return runs
 
+
+def compare_run_keys(runs):
+    """The canonical "<suite>/<benchmark>/<run_id>" key list for an already-
+    resolved run set, reconstructed from the parsed/validated segments
+    rather than the raw query string -- so compare_id_for_keys() is stable
+    against whitespace/encoding differences in how the URL happened to be
+    typed, not just key order (already handled by compare_id_for_keys()'s
+    own sort)."""
+    return [f"{r['suite']}/{r['benchmark']}/{r['run_id']}" for r in runs]
+
+
+def compare_filenames(runs):
+    """Union of filenames across all runs' collect_run_files(), first-seen
+    order -- the row identity both the raw table and the curation layer
+    key off (Phase 1 scope: filename rows only, no cross-run alignment --
+    see this item's own INVESTIGATION.md entry for why that's deferred)."""
     filenames = []
-    filenames_seen = set()
+    seen = set()
     for r in runs:
         for item in collect_run_files(r["rundir"]):
-            if item["filename"] not in filenames_seen:
-                filenames_seen.add(item["filename"])
+            if item["filename"] not in seen:
+                seen.add(item["filename"])
                 filenames.append(item["filename"])
+    return filenames
+
+
+def compare_query_string(run_keys):
+    """Renders run_keys back into repeated r=... query params for a link/
+    form action -- the same identity render_compare()/resolve_compare_runs()
+    parse back out of a request's own qs.get("r", [])."""
+    return "&".join(f"r={_urlescape(k)}" for k in run_keys)
+
+
+def render_compare(output_root, keys):
+    """Item 8's compare view: sweep 2+ runs side by side, filename-aligned
+    (not block-aligned -- see this item's own INVESTIGATION.md entry for why
+    cross-run alignment is deferred past Phase 1). Always shows the raw
+    per-file table regardless of curation state; additionally shows an
+    overview note and any per-row notes from compare.json when present,
+    mirroring render_report()'s own "curated content leads, raw listing
+    always available" precedent, just without a <details> collapse here
+    since Phase 1 annotates the *same* table rather than producing a
+    second, differently-shaped view of it."""
+    runs = resolve_compare_runs(output_root, keys)
+    if not runs:
+        body = ('<section class="panel"><h1>Compare runs</h1>'
+                '<p class="muted">Select at least two runs from the homepage report list to '
+                'compare them side by side.</p><p><a href="/">Back to launcher</a></p></section>')
+        return page("wspy compare", body)
+
+    run_keys = compare_run_keys(runs)
+    compare_id = compare_id_for_keys(run_keys)
+    curation = load_compare_curation(output_root, compare_id) or {}
+    overview_note = curation.get("overview_note", "")
+    row_notes = curation.get("row_notes", {}) or {}
+    curate_url = f"/compare/curate?{compare_query_string(run_keys)}"
+
+    filenames = compare_filenames(runs)
 
     header_cells = "".join(
         f'<th><a href="/report/{_urlescape(r["suite"])}/{_urlescape(r["benchmark"])}/{_urlescape(r["run_id"])}">'
@@ -3114,12 +3224,18 @@ def render_compare(output_root, keys):
                     size = None
                 size_note = f' <span class="muted">({size} bytes)</span>' if size is not None else ""
                 cells.append(f'<td><a href="{url}">{html.escape(filename)}</a>{size_note}</td>')
-        rows.append(f'<tr><th class="row-label">{html.escape(filename)}</th>{"".join(cells)}</tr>')
+        note = row_notes.get(filename)
+        note_html = f'<div class="row-note">{html.escape(note)}</div>' if note else ""
+        rows.append(f'<tr><th class="row-label">{html.escape(filename)}{note_html}</th>{"".join(cells)}</tr>')
+
+    overview_html = (f'<p class="compare-overview">{html.escape(overview_note)}</p>' if overview_note else "")
 
     body = f"""
 <section class="panel">
   <h1>Compare {len(runs)} runs</h1>
-  <p><a href="/">Back to launcher</a></p>
+  <p><a href="/">Back to launcher</a> &middot; <a href="{curate_url}">
+     {"Edit this comparison" if (overview_note or row_notes) else "Annotate this comparison"}</a></p>
+  {overview_html}
   <div class="compare-scroll">
     <table class="compare">
       <thead><tr><th></th>{header_cells}</tr></thead>
@@ -3129,6 +3245,82 @@ def render_compare(output_root, keys):
 </section>
 """
     return page("wspy compare", body)
+
+
+def render_compare_curate_form(output_root, keys):
+    """Edit page for a comparison's overview note + per-filename-row notes
+    (Phase 1 scope -- see render_compare()'s own docstring). A separate
+    page from /compare itself, mirroring the studio/report split rather
+    than an inline-edit toggle, since that's this codebase's established
+    view/edit pattern (render_studio() vs. render_report())."""
+    runs = resolve_compare_runs(output_root, keys)
+    if not runs:
+        body = ('<section class="panel"><h1>Annotate comparison</h1>'
+                '<p class="muted">Select at least two runs from the homepage report list to '
+                'compare them side by side.</p><p><a href="/">Back to launcher</a></p></section>')
+        return page("wspy compare", body)
+
+    run_keys = compare_run_keys(runs)
+    compare_id = compare_id_for_keys(run_keys)
+    curation = load_compare_curation(output_root, compare_id) or {}
+    overview_note = curation.get("overview_note", "")
+    row_notes = curation.get("row_notes", {}) or {}
+    action = f"/compare/curate?{compare_query_string(run_keys)}"
+    back_url = f"/compare?{compare_query_string(run_keys)}"
+
+    filenames = compare_filenames(runs)
+    rows = "".join(f"""
+<div class="block-card">
+  <label>{html.escape(filename)}
+    <textarea name="row_note__{html.escape(filename)}" rows="2">{html.escape(row_notes.get(filename, ""))}</textarea>
+  </label>
+</div>""" for filename in filenames)
+
+    body = f"""
+<section class="panel">
+  <h1>Annotate comparison: {len(runs)} runs</h1>
+  <p class="config-label">One note for the comparison as a whole, plus an optional note per
+     artifact row -- filename-aligned, same rows as the comparison table itself. Clearing a note's
+     text and saving removes it.</p>
+  <p><a href="{back_url}">Back to comparison</a></p>
+  <form method="post" action="{action}">
+    <div class="block-card overview-card">
+      <label>Comparison overview
+        <textarea name="overview_note" rows="3">{html.escape(overview_note)}</textarea>
+      </label>
+    </div>
+    <div class="block-list">{rows or '<p class="muted">No artifacts in common to annotate.</p>'}</div>
+    <button type="submit" class="primary">Save</button>
+  </form>
+</section>
+"""
+    return page("annotate comparison", body)
+
+
+def apply_compare_curate_post(output_root, keys, form):
+    """Saves the edit form above. Returns the run_keys the comparison
+    resolved to (for the caller's redirect back to /compare), or None if
+    the key set no longer resolves to >=2 real run directories (e.g. a run
+    was deleted between loading the form and submitting it)."""
+    runs = resolve_compare_runs(output_root, keys)
+    if not runs:
+        return None
+    run_keys = compare_run_keys(runs)
+    compare_id = compare_id_for_keys(run_keys)
+
+    overview_note = form.get("overview_note", [""])[0]
+    row_notes = {}
+    prefix = "row_note__"
+    for field_name, values in form.items():
+        if not field_name.startswith(prefix) or not values:
+            continue
+        note = values[0].strip()
+        if note:
+            row_notes[field_name[len(prefix):]] = note
+
+    save_compare_curation(output_root, compare_id,
+                           {"run_keys": run_keys, "overview_note": overview_note, "row_notes": row_notes})
+    return run_keys
 
 
 def render_tree_viewer(suite, benchmark, run_id):
@@ -3368,6 +3560,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, render_compare(cfg["output_root"], keys))
             return
 
+        if path == "/compare/curate":
+            keys = qs.get("r", [])
+            self._send(200, render_compare_curate_form(cfg["output_root"], keys))
+            return
+
         if path == "/history":
             self._send(200, render_history(cfg, qs))
             return
@@ -3424,6 +3621,20 @@ class Handler(BaseHTTPRequestHandler):
             apply_studio_post(rundir, form)
             self.send_response(303)
             self.send_header("Location", f"/studio/{suite}/{benchmark}/{run_id}")
+            self.end_headers()
+            return
+
+        if parsed.path == "/compare/curate":
+            keys = parse_qs(parsed.query).get("r", [])
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length).decode("utf-8", errors="replace")
+            form = parse_qs(raw, keep_blank_values=True)
+            run_keys = apply_compare_curate_post(cfg["output_root"], keys, form)
+            if run_keys is None:
+                self._send(400, "comparison no longer resolves to at least two runs")
+                return
+            self.send_response(303)
+            self.send_header("Location", f"/compare?{compare_query_string(run_keys)}")
             self.end_headers()
             return
 
