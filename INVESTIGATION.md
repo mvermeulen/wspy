@@ -675,6 +675,21 @@ option-combination count" item below for a related future connection (a real com
 replace this item's own `batch-run` multiplier guess with a grounded number) and `wspy-ledger`'s own
 scope for where that's planned to live.
 
+**Profile cookbook + interpretation playbook** (`doc/PROFILE_COOKBOOK.md`, see its own `CLAUDE.md`
+entry): a reading guide for `summary.c`'s `verdict` column, `archetype.c`'s `confidence`, `phase.c`'s
+`phase` output, and the two real comparability mechanisms (`mixed-pmu`, environment `--group-by`) —
+what each signal means and what to do when it fires, not a restatement of the artifact format
+(`doc/ARTIFACT_CONTRACT.md` already owns that). Every numeric example is real captured output from a
+small synthetic 4-run dataset built specifically to trigger a genuine `WARN:noisy,mixed-pmu` bucket
+and a real low-confidence `wspy-archetype` classification, rather than invented figures; the phase-
+boundaries example is the one exception, explicitly labeled illustrative since a live phase
+transition needs real perf access this development sandbox didn't have. Also directly resolves the
+backlog line's ambiguous "cluster" wording: states plainly that statistical clustering is **not**
+shipped yet (still its own distinct 4.3 item, "Clustering + nearest-neighbor + cluster profile
+cards"), rather than describing a feature that doesn't exist — kept separate from the real, but
+unrelated, ARM PMU hardware "cluster" topology output (`cpu_info.c`), which is topology discovery,
+not an interpretive signal.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -815,9 +830,7 @@ now shipped or moved elsewhere -- see "Shipped since 4.1" above and 4.3's infra 
 
 **Docs/testing/release process:**
 
-1. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
-    output).
-2. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
+1. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
 
 **Dropped, not deferred:** "Deeper Phoronix Test Suite awareness in the web UI" — its "read a Phoronix
 benchmark article and inventory its benchmarks" sub-item conflicts with Phoronix's site use policy
