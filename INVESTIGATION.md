@@ -563,10 +563,9 @@ vocabulary from `metric_values`/`runs` into a new `run_features` table (`store.c
 after metrics ingestion (`--no-feature-extract` opts out). Per-process I/O-rate features are
 deliberately deferred: `--tree-io`'s `rchar`/`wchar` live in the *tree* output file, which nothing
 ingests into the store today. See `doc/INVESTIGATION_ARCHIVE.md`'s "Concrete design: feature
-normalization prerequisites" for the full derivation-rule rationale. This is the first of 4.2 Tier 1's
-two characterization-track items —
-the archetype scorecard (item 2) is the one still open, and now has this feature vector to score
-against.
+normalization prerequisites" for the full derivation-rule rationale. This was one of two
+characterization-track items originally scoped for 4.2 Tier 1 — the archetype scorecard is the one
+still open, and now has this feature vector to score against.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
@@ -706,39 +705,37 @@ has). Ordered in dependency tiers; items within a tier are independently startab
 
 **Tier 1 — characterization prerequisites:**
 
-1. ~~Feature normalization prerequisites~~ — shipped, see "Shipped since 4.1" above
-   (`store.c`'s `run_features`/`extract_run_features()`).
-2. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
+1. Archetype scorecard (parallelism shape, resource dominance, control-flow style, runtime
     stability) + confidence + top-2 alternatives — now has a fixed feature vector
-    (`run_features`, above) to score against.
+    (`store.c`'s `run_features`, see "Shipped since 4.1" above) to score against.
 
 **Tier 2 — launcher/infra follow-ups:**
 
-3. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
+2. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
     They still shell out to `wspy` once per pass today; 4.1's multi-pass execution work scoped this
     collapse as a documented follow-up, not part of that item.
-4. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
+3. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
     raw/filename-aligned today (comparing actual artifacts across runs, curated or not); annotating a
     comparison itself, or aligning curated block titles across the compared runs, is still open.
 
 **Tier 3 — docs/testing/release process:**
 
-5. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
+4. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
     output).
-6. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
-7. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
+5. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
+6. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
     constant (e.g. `phoronix-test-suite` reportedly has a run-time-estimate command) — today's
     constant is a blunt stand-in; the real constraint is capping process-record data volume for
     publishing, not workload runtime, so a per-workload estimate would size it more accurately than
     one constant across every suite.
-8. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
+7. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
     that catches the class of drift found during the v4.0 release audit: `doc/ARTIFACT_CONTRACT.md`'s
     schema-version examples had silently fallen behind `MANIFEST_SCHEMA_VERSION`/
     `RUN_INDEX_SCHEMA_VERSION`, and `README.md` was missing a whole tool's section. Concretely:
     grep-based checks that doc-quoted schema versions and the documented tool/flag list match the
     actual header constants and `Makefile` binary list, so this doesn't require a manual audit at
     every release again.
-9. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
+8. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
     `MINOR`, grep for stale version-string references across docs, run the full test matrix including
     the `AMDGPU=1` variant, tag, label every merged PR since the last tag, draft release notes from
     the merged-PR list) as a repeatable script or documented checklist instead of redoing it by hand,
