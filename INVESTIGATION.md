@@ -728,35 +728,33 @@ motivation and per-syscall design rationale. What remains open from this track:
 Everything from 4.2's original scope that hasn't shipped yet (see "Shipped since 4.1" above for what
 has). Ordered in dependency tiers; items within a tier are independently startable. (Both original
 Tier 1 characterization-track items have now shipped -- see "Shipped since 4.1" above -- so what were
-Tiers 2/3 are renumbered up to Tiers 1/2.)
+Tiers 2/3 are renumbered up to Tiers 1/2; the "Collapse wspy-run's builtin profiles onto `--passes`"
+item that was here has moved to 4.3, see below.)
 
 **Tier 1 — launcher/infra follow-ups:**
 
-1. Collapse `wspy-run`'s builtin profiles (`deep-cpu` et al.) onto native `--passes` bin-packing.
-    They still shell out to `wspy` once per pass today; 4.1's multi-pass execution work scoped this
-    collapse as a documented follow-up, not part of that item.
-2. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
+1. Give the report compare view (`GET /compare`) its own curation/annotation layer. It's deliberately
     raw/filename-aligned today (comparing actual artifacts across runs, curated or not); annotating a
     comparison itself, or aligning curated block titles across the compared runs, is still open.
 
 **Tier 2 — docs/testing/release process:**
 
-3. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
+2. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
     output).
-4. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
-5. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
+3. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
+4. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
     constant (e.g. `phoronix-test-suite` reportedly has a run-time-estimate command) — today's
     constant is a blunt stand-in; the real constraint is capping process-record data volume for
     publishing, not workload runtime, so a per-workload estimate would size it more accurately than
     one constant across every suite.
-6. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
+5. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
     that catches the class of drift found during the v4.0 release audit: `doc/ARTIFACT_CONTRACT.md`'s
     schema-version examples had silently fallen behind `MANIFEST_SCHEMA_VERSION`/
     `RUN_INDEX_SCHEMA_VERSION`, and `README.md` was missing a whole tool's section. Concretely:
     grep-based checks that doc-quoted schema versions and the documented tool/flag list match the
     actual header constants and `Makefile` binary list, so this doesn't require a manual audit at
     every release again.
-7. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
+6. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
     `MINOR`, grep for stale version-string references across docs, run the full test matrix including
     the `AMDGPU=1` variant, tag, label every merged PR since the last tag, draft release notes from
     the merged-PR list) as a repeatable script or documented checklist instead of redoing it by hand,
@@ -930,13 +928,34 @@ this phase's own IBS sampling mode (Tier 1 above):**
     `result_notifier.php` (applied and verified on this project's dev host) is the stopgap. **Still open**:
     teaching `wspy-phoronix-segment.py` to prefer `pts_hooks.log` over the composite.xml/log-timestamp
     correlation it uses today.
+23. Collapse `wspy-run`'s builtin profiles onto native `--passes` bin-packing (moved from 4.2, 2026-07-21
+    — see below for why). Deprioritized to 4.3 rather than dropped: low value relative to everything
+    else on the 4.2/4.3 boards, no dependents, safe to leave alone indefinitely. Investigation before
+    deferring found the item is already mostly done, worth recording so a future pass doesn't have to
+    re-derive it: `deep-cpu`/`deep-gpu` (`wspy-run`'s builtin profiles) already collapsed their
+    pure-counter middle pass onto `--passes=software,branch,ipc,topdown2,cache2,cache3,memory,float,
+    topdown-frontend,topdown-optlb` back in 4.1. Their remaining separate passes (`systemtime`/
+    `amdtopdown`/`gpu_busy`/`gpu_metrics`) all use `--interval 1`, which is hard-fatal'd against
+    `--passes` (`wspy.c`, "no defined multi-pass merge semantics for periodic ticks") — a real
+    architectural constraint, not a missed collapse; giving `--passes` an interval-compatible merge
+    story would be a separate, larger redesign, not this item. `tree-heavy`/`gpu-compute` (`--tree`) and
+    `ibs-basic`/`ibs-memory-deep` (IBS) are excluded from `--passes` the same way; `quick` is already one
+    pass; `zen-portable`/`zen4plus-deep` just compose other profiles and inherit whatever those do. The
+    only actual remaining candidate is **`deep-cpu-intel`**, which still hand-authors 4 separate `wspy`
+    invocations (`software_branch`/`topdown`/`ipc_l2`/`backend`), none of which touch any
+    `--passes`-incompatible flag — collapsing it to one `--rusage --passes=software,branch,ipc,topdown2,
+    cache2,topdown-backend` pass is the entire remaining scope of this item. Real consequence worth
+    flagging when this is picked up: that changes on-disk output shape from 4 files (each with its own
+    manifest) to 1, which anything downstream assuming those 4 specific filenames (external scripts,
+    `workload/cpu2017`'s driver if it references Intel-specific pass names, `tests/capability_matrix.sh`)
+    would need checked against.
 
 **Tier 8 — testing:**
 
-23. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
+24. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
     guardrails — needs deterministic micro-workloads and 4.1's normalized store plus 4.2's
     stats/confidence infrastructure.
-24. Contributor guide for adding a collector/metric/schema bump safely.
+25. Contributor guide for adding a collector/metric/schema bump safely.
 
 ## 4.4 priorities
 Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
