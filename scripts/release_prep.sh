@@ -32,7 +32,7 @@ set -euo pipefail
 # are `gh`'s own template placeholders, resolved from the repo's git
 # remote, so this isn't hardcoded to a specific fork.
 #
-# Usage: ./scripts/release_prep.sh --version X.Y.Z [options]
+# Usage: ./scripts/release_prep.sh --version X.Y[.Z] [options]
 
 SCRIPT_NAME=$(basename "$0")
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,7 +46,7 @@ SKIP_TESTS=0
 
 usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME --version X.Y.Z [options]
+Usage: $SCRIPT_NAME --version X.Y[.Z] [options]
 
 Runs the release-prep checklist: pre-flight checks, a merged-PR/label
 audit, a version bump, a stale-version-reference grep, the full test
@@ -55,9 +55,16 @@ exact tag/push/publish commands to run by hand -- this script never runs
 those three itself.
 
 Options:
-  --version X.Y.Z     new wspy version (required for the version-bump and
+  --version X.Y[.Z]   new wspy version (required for the version-bump and
                       stale-reference-grep phases; the audit/test-matrix
-                      phases still run without it)
+                      phases still run without it). X.Y is shorthand for
+                      X.Y.0 -- wspy.h always carries a MAJOR/MINOR/PATCH
+                      triple, but every X.Y.0 release so far has tagged as
+                      plain "vX.Y" (v4.0, v4.1), not "vX.Y.0" -- only a
+                      real patch release tags as "vX.Y.Z" (v4.1.1). This
+                      script now derives the tag/title from the resulting
+                      patch number rather than echoing back whatever was
+                      typed, so either form produces the right tag.
   --since <tag>       compare against this tag instead of the most recent
                       one (default: \`git describe --tags --abbrev=0\`)
   -y                  apply the missing-release-label fix without
@@ -85,9 +92,27 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ -n "$VERSION" ] && ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "$SCRIPT_NAME: --version must be X.Y.Z (got '$VERSION')" >&2
+if [ -n "$VERSION" ] && ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+  echo "$SCRIPT_NAME: --version must be X.Y or X.Y.Z (got '$VERSION')" >&2
   exit 2
+fi
+# X.Y is shorthand for X.Y.0 -- normalize once here so every phase below
+# can keep assuming a full MAJOR.MINOR.PATCH triple (wspy.h always has all
+# three #defines). DISPLAY_VERSION is the separate, tag-facing form: drop
+# the patch back off when it's 0, since that's the convention every X.Y.0
+# release has actually tagged/titled with (v4.0, v4.1 -- not v4.0.0/v4.1.0;
+# only a real patch release like v4.1.1 keeps the third component).
+DISPLAY_VERSION=""
+if [ -n "$VERSION" ]; then
+  if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
+    VERSION="${VERSION}.0"
+  fi
+  IFS=. read -r _V_MAJOR _V_MINOR _V_PATCH <<< "$VERSION"
+  if [ "$_V_PATCH" = "0" ]; then
+    DISPLAY_VERSION="${_V_MAJOR}.${_V_MINOR}"
+  else
+    DISPLAY_VERSION="$VERSION"
+  fi
 fi
 
 HAVE_GH=1
@@ -267,7 +292,7 @@ if [ "$HAVE_GH" -eq 0 ] || [ -z "$SINCE_TAG" ]; then
 else
   notes_file=$(mktemp /tmp/wspy-release-notes.XXXXXX.md)
   {
-    echo "# wspy ${VERSION:-<version>}"
+    echo "# wspy ${DISPLAY_VERSION:-<version>}"
     echo ""
     echo "<!-- DRAFT: group these thematically with prose framing before publishing, -->"
     echo "<!-- mirroring past release bodies (see \`gh release view v4.1\`) -- this is -->"
@@ -285,7 +310,7 @@ echo ""
 
 echo "=== Phase 7: doc bookkeeping reminders (manual -- real editorial judgment, not automated) ==="
 echo "  - Fold the rolling \"Shipped since 4.1\"-style section in INVESTIGATION.md into a"
-echo "    proper \"What shipped in ${VERSION:-<X.Y>}\" pointer-list section (its own stated"
+echo "    proper \"What shipped in ${DISPLAY_VERSION:-<X.Y>}\" pointer-list section (its own stated"
 echo "    intent once this phase's backlog is empty -- keep it to names/pointers, not a"
 echo "    feature log; CLAUDE.md documents mechanism, this doc shouldn't restate it)."
 echo "  - Prune: move any multi-paragraph design write-up or validation narrative still"
@@ -302,11 +327,11 @@ echo "    this tool is meant to get better release over release, not stay static
 echo ""
 
 echo "=== Phase 8: tag/publish -- run these yourself when ready, this script never does ==="
-tag="v${VERSION:-X.Y.Z}"
-echo "  git tag -a $tag -m \"wspy ${VERSION:-X.Y.Z}"
+tag="v${DISPLAY_VERSION:-X.Y[.Z]}"
+echo "  git tag -a $tag -m \"wspy ${DISPLAY_VERSION:-X.Y[.Z]}"
 echo ""
 echo "  <one-paragraph summary of what shipped>\""
 echo ""
 echo "  git push origin $tag"
 echo ""
-echo "  gh release create $tag --title \"wspy ${VERSION:-X.Y.Z}\" --notes-file <edited-release-notes.md>"
+echo "  gh release create $tag --title \"wspy ${DISPLAY_VERSION:-X.Y[.Z]}\" --notes-file <edited-release-notes.md>"
