@@ -254,6 +254,17 @@ run_bundle "interval-no-phase-detect" 0 --csv --interval 1 --no-phase-detect -- 
 # column-count-parity checks; this bundle still just checks the exit-code/
 # no-fatal/no-crash contract.
 run_bundle "interval-per-core"        0 --csv --per-core --interval 1        -- sleep 1
+# --per-core-freq: cpu_info.c's live cpufreq read, added onto the per-core
+# row right after "core," -- exercised both in aggregate and --interval
+# form (its own timer_callback() read site); see tests/golden_output.sh's
+# "per-core-freq"/"interval-per-core-freq" cases for the actual column-
+# shape checks.
+run_bundle "per-core-freq"            0 --csv --no-ipc --per-core --per-core-freq --topdown -- /bin/true
+run_bundle "interval-per-core-freq"   0 --csv --per-core --per-core-freq --interval 1        -- sleep 1
+# --per-core-freq has no per-core row to attach a reading to without
+# --per-core -- same "meaningless alone" fatal as --multiplex without
+# --passes below.
+run_expected_fatal_bundle "per-core-freq-without-per-core" 1 --no-ipc --per-core-freq -- /bin/true
 # --power over --interval: power/energy-pkg links into systemwide_counters
 # like software/ibs, so timer_callback()'s existing generic per-tick read/
 # print already covers it with no interval-specific plumbing of its own --

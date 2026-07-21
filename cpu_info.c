@@ -286,6 +286,30 @@ static void resolve_amd_zen5_dense_cores(void){
   free(freqs);
 }
 
+// --per-core-freq's data source (wspy.c/topdown.c): the live cpufreq
+// "current" reading, distinct from resolve_amd_zen5_dense_cores()'s use of
+// cpuinfo_max_freq above (a static ceiling used once at detection time).
+// Parameterized with a base path so a fake sysfs tree can exercise this
+// without real hardware, mirroring ibs.c/power.c/affinity.c/cgroup.c's own
+// testable "_at()" convention. Returns 0 (never a real frequency) when the
+// file doesn't exist or isn't readable -- e.g. a VM/container with no
+// cpufreq exposed -- same measured-vs-unavailable degrade every other
+// sysfs probe in this codebase uses; callers don't need a separate
+// validity flag; a genuine 0 MHz reading isn't a value cpufreq ever
+// reports.
+unsigned int cpu_core_current_freq_mhz_at(const char *sysfs_base,unsigned int cpu_id){
+  char path[256];
+  unsigned int mhz;
+
+  snprintf(path,sizeof(path),"%s/cpu%u/cpufreq/scaling_cur_freq",sysfs_base,cpu_id);
+  if (read_u32_file(path,&mhz) != 0) return 0;
+  return mhz / 1000;
+}
+
+unsigned int cpu_core_current_freq_mhz(unsigned int cpu_id){
+  return cpu_core_current_freq_mhz_at("/sys/devices/system/cpu",cpu_id);
+}
+
 static enum cpu_core_type resolve_arm_core_type(unsigned int implementer, unsigned int part) {
   if (implementer == 0x41) { /* ARM Ltd */
     switch (part) {

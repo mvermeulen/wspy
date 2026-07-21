@@ -3464,6 +3464,7 @@ void timer_callback(int signum){
       }
 #endif
       fprintf(outfile,"%d,",i);
+      if (per_core_freq) fprintf(outfile,"%u,",cpu_core_current_freq_mhz(i));
       print_metrics(cpu_info->coreinfo[i].core_specific_counters,PRINT_CSV);
       print_metrics(cpu_info->systemwide_counters,PRINT_CSV);
       print_counter_coverage(PRINT_CSV);

@@ -184,3 +184,7 @@ static inline int is_arm_core_type(enum cpu_core_type vendor) {
 }
 
 void print_cpu_pmu_report(FILE *fp);
+
+// --per-core-freq's data source; see cpu_info.c's own comment.
+unsigned int cpu_core_current_freq_mhz_at(const char *sysfs_base,unsigned int cpu_id);
+unsigned int cpu_core_current_freq_mhz(unsigned int cpu_id);
