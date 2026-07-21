@@ -633,6 +633,22 @@ mentioned somewhere in `README.md`, and the reverse (a section for something tha
 Makefile binary nor a real executable in the repo root). See `CLAUDE.md`'s `tests/doc_version_check.sh`
 entry for the full design.
 
+**Release-prep checklist/script:** `scripts/release_prep.sh` — captures the v4.0/v4.1/v4.1.1 release
+process as a repeatable script: pre-flight checks, a merged-PR/release-label audit, version bump,
+stale-version-reference grep, the full test matrix, a release-notes draft, and doc bookkeeping
+reminders, ending with print-only tag/push/publish commands it never executes itself (matching how
+every push/PR gets handled in this project's own workflow — asked first, never auto-executed). Also
+not hypothetical: the label audit found real, live drift the first time it ran — PR #124 was missing
+its `v4.2` label (every other merged PR since `v4.1.1` already had it, applied incrementally as each
+merged), now fixed. Two real bugs found and fixed while building this, worth recording since they're
+non-obvious: (1) `gh pr list --search "merged:>=<date>"` is imprecise at same-day tag/PR boundaries
+(`v4.1.1`'s own tagged commit's author-date collided with its own PR's merge time and got
+double-counted as "since v4.1.1") — fixed by using `git log <tag>..HEAD --merges` for exact PR
+ancestry instead of a GitHub date search; (2) `gh pr edit --add-label` fails outright on this repo
+with a "Projects (classic) is being deprecated" GraphQL error before the label is ever applied — fixed
+by using `gh api repos/{owner}/{repo}/issues/<n>/labels` instead. See `CLAUDE.md`'s
+`scripts/release_prep.sh` entry for the full phase-by-phase design.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -781,11 +797,6 @@ now shipped or moved elsewhere -- see "Shipped since 4.1" above and 4.3's infra 
     constant is a blunt stand-in; the real constraint is capping process-record data volume for
     publishing, not workload runtime, so a per-workload estimate would size it more accurately than
     one constant across every suite.
-4. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
-    `MINOR`, grep for stale version-string references across docs, run the full test matrix including
-    the `AMDGPU=1` variant, tag, label every merged PR since the last tag, draft release notes from
-    the merged-PR list) as a repeatable script or documented checklist instead of redoing it by hand,
-    since every future phase will need this same sequence again.
 
 **Dropped, not deferred:** "Deeper Phoronix Test Suite awareness in the web UI" — its "read a Phoronix
 benchmark article and inventory its benchmarks" sub-item conflicts with Phoronix's site use policy
