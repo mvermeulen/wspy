@@ -138,8 +138,9 @@ Options:
   --affinity <spec>        Pin every pass's workload to selected CPUs -- passed
                             through as-is to each wspy invocation's own
                             --affinity=<spec> (all/thread=<id>/nosmt/domain=<id>/
-                            cpuset=<c0,c1,...>; run --wspy's own --list-affinity
-                            to see this host's core/L3-domain ids)
+                            coretype=<id>/cpuset=<c0,c1,...>; run --wspy's own
+                            --list-affinity to see this host's core/L3-domain/
+                            core-type ids)
   --config-option <k>=<v>  Metadata-only tag forwarded to every pass's own
                             --config-option <k>=<v> (repeatable) -- e.g. a
                             wspy-sweep cell's axis tag, or a uniform context
@@ -172,8 +173,10 @@ Unified output layout (INVESTIGATION.md, "Run artifact foundation"):
                                    the hooks are registered on this host
                                    (scripts/setup_phoronix_hooks.sh) and this pass's
                                    workload actually triggered them; absent otherwise
-      plots/                       reserved, empty -- for a future report generator
-                                   (4.1/4.2); nothing here populates it yet
+      plots/                       where wspy-plot --rundir <this dir> writes its PNGs --
+                                   this script never runs wspy-plot itself, so plots/
+                                   stays empty until a caller (the web launcher, or
+                                   wspy-plot run by hand) does
 
   A profile argument may be a comma-separated list (e.g. "deep-cpu,tree-heavy") to
   run more than one builtin profile's passes in a single invocation -- this is how

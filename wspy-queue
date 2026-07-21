@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-wspy-queue - job/queue processor for wspy (INVESTIGATION.md item 13,
-"Deployment/hosting design note").
+wspy-queue - job/queue processor for wspy (INVESTIGATION.md's "What shipped
+in 4.1", "Deployment/hosting design note").
 
-Answers item 13's three concrete use cases beyond "launch one run and watch
+Answers that item's three concrete use cases beyond "launch one run and watch
 it stream":
   (a) using the web UI to create a series of jobs, each describing one
       intended benchmark run, without launching it immediately -- see

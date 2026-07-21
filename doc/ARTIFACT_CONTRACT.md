@@ -728,7 +728,9 @@ artifact foundation" track, "Unified output layout" item) switches `wspy-run` fr
   process.tree.txt             written directly by a --tree pass (e.g. the tree-heavy profile)
   summary.txt                  concatenation of every non-CSV, non---tree pass's output
   manifest.json                run-level index (not a per-process wspy manifest -- see below)
-  plots/                       reserved, empty -- for a future report generator (4.1/4.2)
+  plots/                       where `wspy-plot --rundir <dir>` writes its PNGs -- `wspy-run`
+                               itself never runs `wspy-plot`, so this stays empty until a
+                               caller (the web launcher, or `wspy-plot` run by hand) does
 ```
 
 `<run-id>` is `wspy-run`'s own `<timestamp-ms>-<pid>` (same shape as `run_index.c`'s per-process
