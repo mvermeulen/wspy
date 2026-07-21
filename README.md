@@ -326,6 +326,37 @@ charted together.
 
 See `./wspy-plot --help` for the full option list.
 
+## wspy-core-report: per-core imbalance diagnostics
+
+`wspy-core-report` post-processes an already-collected `--per-core --csv` file: for every metric
+column it reports cross-core min/max/mean/stddev/coefficient-of-variation, naming the "hot" (max)
+and "cold" (min) core. On a heterogeneous host (ARM big.LITTLE, Intel Atom+Core, AMD Zen5/Zen5c) it
+also breaks the same stats down by core class. Must be run on the same host that collected the CSV
+(or one with identical topology) — core classes are re-detected fresh, not read from the CSV.
+
+```
+./wspy-core-report results/percore.csv
+./wspy-core-report --csv results/percore.csv --metric ipc
+```
+
+See `./wspy-core-report --help` for the full option list.
+
+## wspy-archetype: archetype scorecard
+
+`wspy-archetype` classifies runs recorded in a normalized store (`wspy-store --db <path>`) along
+four workload axes derived from `run_features`: `resource_dominance` (the headline axis —
+compute-bound/frontend-bound/memory-bound/speculation-bound, ranked from topdown L1 percentages,
+with a top-2 alternative and a confidence level) plus `parallelism_shape`/`control_flow_style`/
+`runtime_stability` as simpler supporting tags, each `unknown` when its source feature wasn't
+collected.
+
+```
+./wspy-archetype --db store.db                          # score every run, one row per run
+./wspy-archetype --db store.db --run somehost:2026...    # detailed single-run scorecard
+```
+
+See `./wspy-archetype --help` for the full option list.
+
 ## wspy-queue: job queue processor
 
 `wspy-queue` processes a directory of **job** files — portable, spec-only JSON describing a

@@ -613,6 +613,26 @@ this would need a real new alignment concept (a group/label spanning a per-run f
 than an extension of the current commentary layer. Worth revisiting once real multi-profile
 comparisons actually need it, not before.
 
+**Doc/version consistency check:** `tests/doc_version_check.sh` (wired into `run_tests.sh`, once, not
+per GPU-build axis — static text/build-list check, not build-variant-dependent) — and this wasn't a
+hypothetical exercise: running it for the first time found the exact class of drift the backlog item
+described, live in the repo. `doc/ARTIFACT_CONTRACT.md`'s manifest/run-index JSON examples *and* its
+own separate "Current versions as of this writing" prose summary had each independently drifted to a
+stale `1.5.0` against the real `1.9.0` `MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION` — two
+different places quoting the same fact, gone stale independently, exactly the failure mode a single
+source of truth would have prevented — and `README.md` had no section at all for `wspy-core-report`/
+`wspy-archetype` despite both being built by `make all`. All three fixed in the same change as adding
+the script. Grep-based (every check in `tests/` is), not a parser: for each `*_SCHEMA_VERSION`-style
+constant the doc actually quotes a version for, every occurrence — scoped to that constant's own
+`## ` section via `awk` range-matching, so a same-shaped value elsewhere can't produce a false match
+— must equal the real header `#define`; a constant named in the doc but never given a version number
+to check (`STORE_SCHEMA_VERSION`, `TOPDOWN_FORMULA_VERSION`, `CURATION_SCHEMA_VERSION`/
+`COMPARE_SCHEMA_VERSION`) is a `WARN`, not a `FAIL` — nothing to compare against, and mandating every
+constant be quoted isn't this check's job. Separately checks every `Makefile`-built binary is
+mentioned somewhere in `README.md`, and the reverse (a section for something that's neither a
+Makefile binary nor a real executable in the repo root). See `CLAUDE.md`'s `tests/doc_version_check.sh`
+entry for the full design.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -761,14 +781,7 @@ now shipped or moved elsewhere -- see "Shipped since 4.1" above and 4.3's infra 
     constant is a blunt stand-in; the real constraint is capping process-record data volume for
     publishing, not workload runtime, so a per-workload estimate would size it more accurately than
     one constant across every suite.
-4. Doc/version consistency check — an automated check (script, or an addition to `run_tests.sh`)
-    that catches the class of drift found during the v4.0 release audit: `doc/ARTIFACT_CONTRACT.md`'s
-    schema-version examples had silently fallen behind `MANIFEST_SCHEMA_VERSION`/
-    `RUN_INDEX_SCHEMA_VERSION`, and `README.md` was missing a whole tool's section. Concretely:
-    grep-based checks that doc-quoted schema versions and the documented tool/flag list match the
-    actual header constants and `Makefile` binary list, so this doesn't require a manual audit at
-    every release again.
-5. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
+4. Release-prep checklist/script — capture the v4.0 release process (bump `WSPY_VERSION_MAJOR`/
     `MINOR`, grep for stale version-string references across docs, run the full test matrix including
     the `AMDGPU=1` variant, tag, label every merged PR since the last tag, draft release notes from
     the merged-PR list) as a repeatable script or documented checklist instead of redoing it by hand,
