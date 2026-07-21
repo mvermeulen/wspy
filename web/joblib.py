@@ -553,7 +553,7 @@ CATEGORY_TO_CHECKLIST_KEY = {
 _BOOL_OPTION_KEYS = {
     "tree": {"cmdline", "open", "futex", "io", "io_wait", "schedstat", "vmsize",
              "connect", "wait", "poll", "nanosleep", "software"},
-    "counters": {"per_core", "rusage", "csv", "power"},
+    "counters": {"per_core", "per_core_freq", "rusage", "csv", "power"},
     "system": {"csv", "power"},
     "gpu": {"busy", "metrics", "smi", "csv"},
     "ibs": set(),
@@ -686,17 +686,14 @@ def build_configuration_passes(rundir, checklist):
         if selected or power_wanted:
             interval = parse_optional_int(counters.get("interval_secs"), 1, 3600)
             per_core = bool(counters.get("per_core"))
-            # --per-core + --interval still produces a CSV with no "core"
-            # column at the wspy.c level (per_core_csv's column-count-mismatch
-            # fix deliberately excludes --interval -- timer_callback() only
-            # ever reads systemwide_counters, see wspy.c's per_core_csv
-            # comment), and wspy-core-report requires that column -- so a
-            # per-core request always forces aggregate here regardless of
-            # what the interval field holds. This isn't silent: the live
-            # command preview simply won't show --interval, so what runs
-            # always matches what's shown.
-            if per_core:
-                interval = None
+            # --per-core + --interval now produces one CSV row per core per
+            # tick (wspy.c's per_core_csv/timer_callback(), fixed after this
+            # checkbox originally shipped -- see CLAUDE.md's wspy.c entry),
+            # and wspy-core-report already collapses multiple rows per core
+            # via a mean, so there's no longer any reason to force aggregate
+            # here; the interval field is honored exactly like every other
+            # card's.
+            per_core_freq = bool(counters.get("per_core_freq")) and per_core
             rusage_on = bool(counters.get("rusage"))
             csv = bool(counters.get("csv", True))
             # --passes rejects --interval/--per-core/--power outright (wspy.c,
@@ -716,6 +713,8 @@ def build_configuration_passes(rundir, checklist):
                     flags += ["--interval", str(interval)]
                 if per_core:
                     flags.append("--per-core")
+                if per_core_freq:
+                    flags.append("--per-core-freq")
                 if power_wanted:
                     flags.append("--power")
             flags.append("--rusage" if rusage_on else "--no-rusage")
