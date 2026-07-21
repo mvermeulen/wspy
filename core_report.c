@@ -12,8 +12,8 @@
  * gets cross-core min/max/mean/stddev, with the "hot"/"cold" core (max/min
  * value) called out by index. When this host's cores aren't all the same
  * type (cpu_info.c's per-core vendor field -- ARM big.LITTLE, Intel
- * Atom+Core hybrid), an additional breakdown groups the same stats by core
- * class instead of lumping every core together.
+ * Atom+Core hybrid, AMD Zen5/Zen5c), an additional breakdown groups the same
+ * stats by core class instead of lumping every core together.
  *
  * Must be run on the same host that collected the CSV (or one with
  * identical topology): inventory_cpu() re-detects *this* host's per-core
@@ -21,11 +21,13 @@
  * CSV itself, matching e.g. wspy-summary --trace's own host-relative-path
  * caveat rather than inventing a new one.
  *
- * AMD Zen5c/Zen5-dense heterogeneous parts aren't yet differentiated at the
- * per-core level by cpu_info.c (every core reports CORE_AMD_ZEN5 uniformly
- * regardless of which physical core type it actually is) -- a pre-existing
- * gap, not something this tool works around; core-class summaries simply
- * won't show a split on such a host yet.
+ * AMD Zen5/Zen5c: cpu_info.c distinguishes them by a frequency-clustering
+ * heuristic (cpuid family 0x1a alone can't tell them apart -- see
+ * resolve_amd_zen5_dense_cores()'s own comment), not a direct hardware
+ * identity read the way ARM's MIDR or Intel's cpu_atom/cpu_core sysfs
+ * lists are -- a host where every Zen5-family core happens to report the
+ * same max frequency (or exposes no per-core cpufreq at all) still won't
+ * show a split, same degrade-don't-fail idiom as everywhere else here.
  *
  * Process/thread migration diagnostics (did a process actually move between
  * cores during the run) is a different, harder capability, split out into
@@ -242,6 +244,7 @@ static const char *core_class_name(enum cpu_core_type t){
     case CORE_AMD_UNKNOWN: return "amd_unknown";
     case CORE_AMD_ZEN: return "amd_zen";
     case CORE_AMD_ZEN5: return "amd_zen5";
+    case CORE_AMD_ZEN5C: return "amd_zen5c";
     case CORE_INTEL_UNKNOWN: return "intel_unknown";
     case CORE_INTEL_ATOM: return "intel_atom";
     case CORE_INTEL_CORE: return "intel_core";
@@ -367,8 +370,8 @@ static void usage(const char *prog){
     "--csv wspy output file: for every metric column, reports min/max/mean/\n"
     "stddev/coefficient-of-variation across cores, naming the \"hot\" (max)\n"
     "and \"cold\" (min) core. When this host's cores aren't all the same\n"
-    "type (ARM big.LITTLE, Intel Atom+Core hybrid), also breaks the same\n"
-    "stats down by core class.\n"
+    "type (ARM big.LITTLE, Intel Atom+Core hybrid, AMD Zen5/Zen5c), also\n"
+    "breaks the same stats down by core class.\n"
     "\n"
     "Must be run on the same host that collected the CSV (or one with\n"
     "identical topology) -- core classes are re-detected fresh from this\n"

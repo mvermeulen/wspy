@@ -2140,7 +2140,10 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
     if ((cinfo = find_ci_label(cgroup,"cpu-cycles"))){
       if (cpu_info->coreinfo[0].vendor == CORE_AMD_ZEN){
 	slots = cinfo->value * 6;
-      } else if (cpu_info->coreinfo[0].vendor == CORE_AMD_ZEN5){
+      } else if ((cpu_info->coreinfo[0].vendor == CORE_AMD_ZEN5)||
+		 (cpu_info->coreinfo[0].vendor == CORE_AMD_ZEN5C)){
+	// Zen5c is the same 8-wide core design as Zen5, just built for
+	// density/lower clock -- same slots-per-cycle width applies.
 	slots = cinfo->value * 8;
       }
       slots_confidence = confidence_ratio(cinfo);

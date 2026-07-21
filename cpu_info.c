@@ -233,6 +233,59 @@ void print_cpu_pmu_report(FILE *fp){
   }
 }
 
+// AMD's cpuid family 0x1a covers both full-size "Zen5" cores and the
+// physically compact "Zen5c" cores used on hybrid parts -- cpuid alone
+// can't tell them apart (same family/model), but Zen5c cores are built for
+// density over clock speed and so carry a lower max non-boost frequency
+// cap than their Zen5 siblings on the same die. This mirrors the
+// frequency-clustering heuristic scripts/map_cpu_hierarchy.py already uses
+// to label the same host's cores "Zen 5"/"Zen 5c": every family-0x1a core
+// starts out CORE_AMD_ZEN5 (the main loop above), then any core whose
+// cpuinfo_max_freq reads strictly below the highest value seen among those
+// cores is reclassified CORE_AMD_ZEN5C. A host where every Zen5 core
+// reports the same max frequency (no Zen5c present, or the kernel doesn't
+// expose per-core cpufreq at all) leaves every core CORE_AMD_ZEN5 --
+// degrade to "can't distinguish" rather than guess, same idiom as every
+// other best-effort sysfs probe in this codebase.
+static void resolve_amd_zen5_dense_cores(void){
+  unsigned int *freqs;
+  unsigned int max_freq = 0;
+  unsigned int i;
+
+  freqs = calloc(cpu_info->num_cores,sizeof(unsigned int));
+  if (!freqs) return;
+
+  for (i=0;i<cpu_info->num_cores;i++){
+    char path[128];
+
+    if (cpu_info->coreinfo[i].vendor != CORE_AMD_ZEN5) continue;
+    snprintf(path,sizeof(path),
+	     "/sys/devices/system/cpu/cpu%u/cpufreq/cpuinfo_max_freq",i);
+    if (read_u32_file(path,&freqs[i]) != 0){
+      snprintf(path,sizeof(path),
+	       "/sys/devices/system/cpu/cpu%u/cpufreq/scaling_max_freq",i);
+      if (read_u32_file(path,&freqs[i]) != 0){
+	freqs[i] = 0; // unreadable -- 0 sentinel, never the max
+	continue;
+      }
+    }
+    if (freqs[i] > max_freq) max_freq = freqs[i];
+  }
+
+  if (max_freq == 0){
+    free(freqs);
+    return; // no readable frequency anywhere on this family -- can't distinguish
+  }
+
+  for (i=0;i<cpu_info->num_cores;i++){
+    if (cpu_info->coreinfo[i].vendor != CORE_AMD_ZEN5) continue;
+    if (freqs[i] != 0 && freqs[i] < max_freq){
+      cpu_info->coreinfo[i].vendor = CORE_AMD_ZEN5C;
+    }
+  }
+  free(freqs);
+}
+
 static enum cpu_core_type resolve_arm_core_type(unsigned int implementer, unsigned int part) {
   if (implementer == 0x41) { /* ARM Ltd */
     switch (part) {
@@ -437,6 +490,13 @@ int inventory_cpu(void){
   if (cpu_info->vendor == VENDOR_ARM){
     discover_arm_pmu_topology();
   }
+  // fix up Zen5/Zen5c: family 0x1a alone can't distinguish AMD's compact
+  // hybrid cores, so a second frequency-based pass reclassifies whichever
+  // of the CORE_AMD_ZEN5 cores just assigned above are actually Zen5c --
+  // see resolve_amd_zen5_dense_cores()'s own comment for the heuristic.
+  if (cpu_info->vendor == VENDOR_AMD && cpu_info->family == 0x1a){
+    resolve_amd_zen5_dense_cores();
+  }
   // fix up hybrid cores for Raptor Lake and Alder Lake
   if (cpu_info->vendor == VENDOR_INTEL &&
       cpu_info->family == 6 &&
@@ -576,6 +636,9 @@ int main(void){
       break;
     case CORE_AMD_ZEN5:
       printf("Zen5");
+      break;
+    case CORE_AMD_ZEN5C:
+      printf("Zen5c");
       break;
     case CORE_INTEL_ATOM:
       printf("Atom");

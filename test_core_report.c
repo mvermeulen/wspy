@@ -121,6 +121,7 @@ static void test_core_class_name(void){
   assert(!strcmp(core_class_name(CORE_INTEL_ATOM),"intel_atom"));
   assert(!strcmp(core_class_name(CORE_INTEL_CORE),"intel_core"));
   assert(!strcmp(core_class_name(CORE_AMD_ZEN5),"amd_zen5"));
+  assert(!strcmp(core_class_name(CORE_AMD_ZEN5C),"amd_zen5c"));
   assert(!strcmp(core_class_name(CORE_UNKNOWN),"unknown"));
   printf("PASS: core_class_name\n");
 }

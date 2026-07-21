@@ -134,6 +134,7 @@ static int core_is_per_core_eligible(int i){
   return cpu_info->coreinfo[i].is_available &&
     ((cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN)||
      (cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN5)||
+     (cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN5C)||
      (cpu_info->coreinfo[i].vendor == CORE_INTEL_CORE)||
      (is_arm_core_type(cpu_info->coreinfo[i].vendor)));
 }
