@@ -649,6 +649,32 @@ with a "Projects (classic) is being deprecated" GraphQL error before the label i
 by using `gh api repos/{owner}/{repo}/issues/<n>/labels` instead. See `CLAUDE.md`'s
 `scripts/release_prep.sh` entry for the full phase-by-phase design.
 
+**Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate:** `estimate_tree_pass_
+timeouts()` (`wspy-run`) sizes the timeout generically for any pass whose flags use `--tree` — not
+hardcoded to `tree-heavy` by name, so `gpu-compute` (which also uses `--tree`, previously with no
+timeout at all) now gets one too. Reuses `web/joblib.py`'s already-validated Phoronix runtime-
+estimation logic (`estimate_phoronix_workload_seconds()`, moved there from `server.py`'s "Estimated
+runtime display" Check button — see `web/joblib.py`'s own entry) via a new small CLI wrapper,
+`scripts/estimate_tree_timeout.py`, rather than reimplementing the same `phoronix-test-suite info`
+text parsing a second time in bash. Design settled through direct discussion, correcting two
+assumptions from the original backlog line: the timeout's real purpose is a ptrace-hang backstop, not
+primarily a data-volume cap — losing a key ptrace event for a traced process can leave `wspy` hung
+waiting to clean up — and real Phoronix runs legitimately exceed the historical 3600s constant, so
+the floor stays at exactly that constant (this can only raise the cap for a workload confirmed to
+legitimately need longer, never lower it) with a generous 6-hour ceiling as a true hang backstop, not
+a normal-operation limit. `phoronix-test-suite info <test>`'s own per-test estimate is treated as a
+floor, not a target, and multiplied up more aggressively for `batch-run` specifically
+(`BATCH_RUN_MULTIPLIER=5.0` vs. `RUN_MULTIPLIER=2.0`) — confirmed live against a real installed test
+profile (`blender-1.2.1/test-definition.xml`) that a full `batch-run` sweep runs every configured
+option combination (5 blend files × 2 compute backends = 10 full renders for that one test), something
+`info`'s single-test estimate doesn't account for. Falls back to the exact historical `3600` whenever
+no estimate can be derived (`python3` missing, non-Phoronix workload, `phoronix-test-suite` not
+installed/reachable) — never blocks a run over a missing/failed estimate. Deliberately scoped to
+`--tree` passes only for now (the item's original motivation); see the "Phoronix per-test
+option-combination count" item below for a related future connection (a real combination count would
+replace this item's own `batch-run` multiplier guess with a grounded number) and `wspy-ledger`'s own
+scope for where that's planned to live.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -792,11 +818,6 @@ now shipped or moved elsewhere -- see "Shipped since 4.1" above and 4.3's infra 
 1. Profile cookbook + interpretation playbook (how to read confidence/phase/comparability/cluster
     output).
 2. Reproducibility bundle export (tarball: manifest + raw + derived per batch).
-3. Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate instead of a fixed 3600s
-    constant (e.g. `phoronix-test-suite` reportedly has a run-time-estimate command) — today's
-    constant is a blunt stand-in; the real constraint is capping process-record data volume for
-    publishing, not workload runtime, so a per-workload estimate would size it more accurately than
-    one constant across every suite.
 
 **Dropped, not deferred:** "Deeper Phoronix Test Suite awareness in the web UI" — its "read a Phoronix
 benchmark article and inventory its benchmarks" sub-item conflicts with Phoronix's site use policy
@@ -1048,12 +1069,12 @@ this phase's own IBS sampling mode (Tier 1 above):**
     existing Phoronix-profile-scanning logic — surfaced as a new annotation/warning column (e.g.
     "10 option combinations") next to a workload's existing done/skipped/unsupported/
     needs-tool-support status, flagged prominently above some threshold worth a human's attention
-    before committing to a full `batch-run`. Also a natural future input to 4.2's "Size `wspy-run`'s
-    `--tree` pass timeout from an actual run-time estimate" item, once that ships: a `batch-run`'s real
-    total time is much closer to (single-test estimate) × (this item's own combination count) than to
-    the single-test estimate alone, which would replace that item's own blind "bigger multiplier for
-    `batch-run`" guess with a grounded number — noted here as a future connection, not a reason to
-    block either item on the other or expand either one's current scope.
+    before committing to a full `batch-run`. Also a natural future input to the (now shipped, see
+    "Shipped since 4.1" above) `--tree` pass timeout-sizing item's own `BATCH_RUN_MULTIPLIER`: a
+    `batch-run`'s real total time is much closer to (single-test estimate) × (this item's own
+    combination count) than to the single-test estimate alone, which would replace that item's own
+    blind 5.0 multiplier guess with a grounded number — noted here as a future connection, not a
+    reason to block either item on the other or expand either one's current scope.
 
 **Tier 8 — testing:**
 

@@ -293,15 +293,15 @@ load_builtin_profile(){
       PASS_FLAGS=("--tree ${OUTDIR}/${PREFIX}process.tree.txt --tree-cmdline --counters=software --no-ipc")
       # workload/*/run_test.sh used to wrap only this one $WSPY invocation in
       # `timeout 3600`, never the others -- not because ptrace tracing runs
-      # slower, but because an hour's worth of process-tree records is
-      # already more data than is practical to publish/browse, so there's no
-      # value in letting it run longer. The counter passes' output stays
-      # small regardless of runtime, so they were (and still are here) left
-      # unbounded -- a slow workload is fine to just wait out for those.
-      # TODO: this fixed 3600s is a blunt stand-in for an actual estimate;
-      # e.g. phoronix-test-suite has a run-time estimate command that could
-      # size this per-workload instead (see INVESTIGATION.md).
-      PASS_TIMEOUTS=(3600)
+      # slower, but because losing a key ptrace event for a traced process
+      # can leave wspy hung waiting to clean up; the timeout is a hang
+      # backstop, not primarily a data-volume cap. The counter passes' own
+      # output stays small regardless of runtime, so they were (and still
+      # are here) left unbounded -- a slow workload is fine to just wait out
+      # for those. This pass's own timeout is left unset here -- sized after
+      # the profile/config is fully loaded, from an actual per-workload
+      # estimate when one can be derived, falling back to this same 3600s
+      # constant otherwise (see estimate_tree_pass_timeouts() below).
       ;;
     ibs-basic)
       PASS_NAMES=(ibs)
@@ -439,6 +439,43 @@ list_profiles(){
       printf '  %-16s %s%s\n' "${PASS_NAMES[$i]}" "${PASS_FLAGS[$i]}" "$suffix"
     done
     echo
+  done
+}
+
+# Sizes PASS_TIMEOUTS for any pass whose flags use --tree from an actual
+# per-workload run-time estimate (INVESTIGATION.md's 4.2 "Size wspy-run's
+# --tree pass timeout from an actual run-time estimate" item), instead of
+# leaving every --tree pass at the same fixed 3600s regardless of workload.
+# Detected generically (any PASS_FLAGS entry containing a real "--tree "
+# flag, not just tree-heavy by name) so a future --tree-using profile picks
+# this up automatically -- gpu-compute already does today, and previously
+# had no timeout at all. Falls back to that same historical 3600s constant
+# whenever no estimate can be derived (python3 missing, non-Phoronix
+# workload, phoronix-test-suite not installed/reachable) -- this never
+# blocks a run over a missing/failed estimate. Only ever fills in a
+# PASS_TIMEOUTS[i] entry that's still empty; a profile that already sets
+# its own explicit timeout keeps it untouched.
+estimate_tree_pass_timeouts(){
+  local has_tree_pass=0 i
+  for i in "${!PASS_FLAGS[@]}"; do
+    case "${PASS_FLAGS[$i]}" in
+      "--tree "*|*" --tree "*) has_tree_pass=1 ;;
+    esac
+  done
+  [ "$has_tree_pass" -eq 1 ] || return 0
+
+  local estimate=""
+  if command -v python3 >/dev/null 2>&1; then
+    estimate=$(python3 "${SCRIPT_DIR}/scripts/estimate_tree_timeout.py" "${WORKLOAD[@]}" 2>/dev/null || true)
+  fi
+  [[ "$estimate" =~ ^[0-9]+$ ]] || estimate=3600
+
+  for i in "${!PASS_FLAGS[@]}"; do
+    case "${PASS_FLAGS[$i]}" in
+      "--tree "*|*" --tree "*)
+        [ -n "${PASS_TIMEOUTS[$i]}" ] || PASS_TIMEOUTS[i]="$estimate"
+        ;;
+    esac
   done
 }
 
@@ -751,6 +788,7 @@ if [ -n "$CONFIG_FILE" ]; then
 else
   load_profiles "$PROFILE"
 fi
+estimate_tree_pass_timeouts
 
 if [ "$DRY_RUN" -ne 1 ]; then
   mkdir -p "$OUTDIR"
