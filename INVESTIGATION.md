@@ -1030,10 +1030,34 @@ this phase's own IBS sampling mode (Tier 1 above):**
       own "resumable/selective re-execution" is part of a much heavier full YAML/JSON suite/benchmark/
       repetition system — this item is the lightweight version, scoped specifically to `wspy-run`'s
       existing profile/pass model, and shouldn't be folded into or block on that bigger item.
+25. Phoronix per-test option-combination count, surfaced ahead of running (raised 2026-07-21, while
+    scoping 4.2's `--tree` pass timeout-sizing item: a real, recurring pain point is discovering
+    *after* a long `batch-run` sweep that a test's full option matrix takes far longer than expected,
+    then hand-building a shorter `-subset` profile only in hindsight — this item is knowing that
+    ahead of time instead). Confirmed live against a real installed test profile
+    (`~/.phoronix-test-suite/test-profiles/system/blender-1.2.1/test-definition.xml`) that
+    `<TestSettings>` names the exact shape needed: one `<Option>` block per configurable dimension,
+    each with a `<Menu>` of `<Entry>` choices — blender's own profile has a 5-entry "Blend File" option
+    and a 2-entry "Compute" option, meaning a full `batch-run` sweep of just this one test is 5×2=10
+    separate full renders, not 1. Parsing `<TestSettings>/<Option>/<Menu>/<Entry>` (counting `<Entry>`
+    elements per `<Option>`, multiplying across every `<Option>` in the file) is cheap and purely
+    static — no need to actually run anything — and follows the same "deliberately not a real XML
+    parser" convention `ledger.c`'s existing `scan_phoronix_dependencies()`/`extract_external_deps()`
+    already established for reading this same `test-definition.xml` file for a different field
+    (`<ExternalDependencies>`). Natural home is `wspy-ledger` (per its own suggestion) alongside that
+    existing Phoronix-profile-scanning logic — surfaced as a new annotation/warning column (e.g.
+    "10 option combinations") next to a workload's existing done/skipped/unsupported/
+    needs-tool-support status, flagged prominently above some threshold worth a human's attention
+    before committing to a full `batch-run`. Also a natural future input to 4.2's "Size `wspy-run`'s
+    `--tree` pass timeout from an actual run-time estimate" item, once that ships: a `batch-run`'s real
+    total time is much closer to (single-test estimate) × (this item's own combination count) than to
+    the single-test estimate alone, which would replace that item's own blind "bigger multiplier for
+    `batch-run`" guess with a grounded number — noted here as a future connection, not a reason to
+    block either item on the other or expand either one's current scope.
 
 **Tier 8 — testing:**
 
-25. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
+26. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
     guardrails — needs deterministic micro-workloads and 4.1's normalized store plus 4.2's
     stats/confidence infrastructure.
 26. Contributor guide for adding a collector/metric/schema bump safely.
