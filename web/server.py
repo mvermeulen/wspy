@@ -320,6 +320,58 @@ def discover_manifest_paths(output_root, limit=100):
     return found[:limit]
 
 
+def csv_has_core_column(path):
+    """True if path's header row has a literal "core" column -- i.e. a
+    --per-core wspy CSV, wspy-core-report's one required input. Matches
+    core_report.c's own definition (read_percore_csv() requires exactly
+    this column), so callers never offer/link a CSV that would just fail
+    with "no core column" if actually run through the tool."""
+    try:
+        with open(path, "r", newline="") as fh:
+            header = fh.readline()
+    except OSError:
+        return False
+    cols = [c.strip() for c in header.strip().split(",")]
+    return "core" in cols
+
+
+def discover_percore_csv_paths(output_root, limit=100):
+    """Every *.csv under output_root with a "core" header column, newest
+    first, offered as "+ add" chips on the Validate tab's per-core class
+    comparison section so a path never has to be typed by hand."""
+    found = []
+    if not os.path.isdir(output_root):
+        return found
+    for dirpath, _dirnames, filenames in os.walk(output_root):
+        for f in filenames:
+            if not f.endswith(".csv"):
+                continue
+            path = os.path.join(dirpath, f)
+            if not csv_has_core_column(path):
+                continue
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            found.append({"path": path, "rel": os.path.relpath(path, output_root), "mtime": mtime})
+    found.sort(key=lambda r: r["mtime"], reverse=True)
+    return found[:limit]
+
+
+def core_report_link(csv_path):
+    """A 'Compare cores' link for a --per-core CSV artifact, landing on the
+    Validate tab's per-core class comparison section with this path
+    prefilled (do_GET()'s core_report_csv query param, render_index()'s
+    active_tab). Empty string if the file isn't actually a --per-core CSV,
+    same degrade-quietly idiom as every other artifact-presence check in
+    the report renderers -- a plain CSV/systemtime.csv artifact just won't
+    get the link."""
+    if not csv_has_core_column(csv_path):
+        return ""
+    url = "/?core_report_csv=" + _urlescape(csv_path)
+    return f' &middot; <a href="{html.escape(url)}">Compare cores</a>'
+
+
 # ---------------------------------------------------------------------------
 # Historical run index browser/search (INVESTIGATION.md's "What shipped in
 # 4.1") -- discover_reports() above is the homepage's cheap, mtime-only recent
@@ -2166,13 +2218,21 @@ def render_run_tab(prefill, cfg):
 """
 
 
-def render_validate_tab(cfg):
+def render_validate_tab(cfg, prefill=None):
+    prefill = prefill or {}
     manifests = discover_manifest_paths(cfg["output_root"])
     chips = "".join(
         f'<button type="button" class="add-manifest-chip" data-path="{html.escape(m["path"])}">'
         f'+ {html.escape(m["rel"])}</button>'
         for m in manifests
     ) or '<span class="muted">no manifests found under the output root yet</span>'
+    core_report_csvs = discover_percore_csv_paths(cfg["output_root"])
+    core_report_chips = "".join(
+        f'<button type="button" class="add-core-report-csv-chip" data-path="{html.escape(c["path"])}">'
+        f'+ {html.escape(c["rel"])}</button>'
+        for c in core_report_csvs
+    ) or '<span class="muted">no --per-core CSVs found under the output root yet</span>'
+    core_report_path = html.escape(prefill.get("core_report_path", ""))
     return f"""
 <section class="panel">
   <h1>Validate</h1>
@@ -2190,6 +2250,28 @@ def render_validate_tab(cfg):
   <button type="button" id="validate-run">Run wspy-validate</button>
   <pre id="validate-cmdline" class="muted" hidden></pre>
   <pre id="validate-output" class="live-output" hidden></pre>
+
+  <h2>Per-core class comparison</h2>
+  <p class="config-label">Runs <code>wspy-core-report</code> against an existing <code>--per-core
+     --csv</code> wspy output file: cross-core min/max/mean/stddev/coefficient-of-variation for
+     every metric column, naming the "hot"/"cold" core by index. On a heterogeneous host (ARM
+     big.LITTLE, Intel Atom+Core, AMD Zen5/Zen5c) it also breaks the same stats down by core
+     class -- e.g. Zen5 vs. Zen5c IPC/topdown. Re-detects <em>this</em> host's core classes
+     fresh, so it must be run on the same host that collected the CSV (or one with identical
+     topology).</p>
+  <div class="add-buttons">{core_report_chips}</div>
+  <label>Per-core CSV path
+    <input type="text" id="core-report-path" value="{core_report_path}" placeholder="/path/to/percore.csv">
+  </label>
+  <label>Metric filter(s), comma-separated
+    <input type="text" id="core-report-metrics" placeholder="(all, e.g. ipc,retire,frontend,backend)">
+  </label>
+  <div class="chips">
+    <label class="chip"><input type="checkbox" id="core-report-csv"> --csv output</label>
+  </div>
+  <button type="button" id="core-report-run">Run wspy-core-report</button>
+  <pre id="core-report-cmdline" class="muted" hidden></pre>
+  <pre id="core-report-output" class="live-output" hidden></pre>
 </section>
 """
 
@@ -2312,17 +2394,30 @@ def render_index(cfg, prefill):
         "</form>" if rows else "<p class=\"muted\">No runs yet.</p>"
     )
 
+    # Normally the Run tab is what a page load lands on; a report page's
+    # "Compare cores" link (core_report_csv query param, do_GET() above)
+    # instead wants the Validate tab active with its CSV path prefilled --
+    # active_tab picks which one starts visible, purely a server-side
+    # render-time choice (wireTabs() in app.js only wires click handlers,
+    # it never inspects initial state).
+    active_tab = prefill.get("active_tab") or "run"
+    def tab_btn(name, label):
+        cls = "tab-btn active" if name == active_tab else "tab-btn"
+        return f'<button type="button" class="{cls}" data-tab="{name}">{label}</button>'
+    def tab_hidden(name):
+        return "" if name == active_tab else " hidden"
+
     body = f"""
 <nav class="tabs">
-  <button type="button" class="tab-btn active" data-tab="run">Run</button>
-  <button type="button" class="tab-btn" data-tab="validate">Validate</button>
-  <button type="button" class="tab-btn" data-tab="store">Store &amp; Summary</button>
-  <button type="button" class="tab-btn" data-tab="discovery">Discovery</button>
+  {tab_btn("run", "Run")}
+  {tab_btn("validate", "Validate")}
+  {tab_btn("store", "Store &amp; Summary")}
+  {tab_btn("discovery", "Discovery")}
 </nav>
-<div class="tab-panel" id="tab-run">{render_run_tab(prefill, cfg)}</div>
-<div class="tab-panel" id="tab-validate" hidden>{render_validate_tab(cfg)}</div>
-<div class="tab-panel" id="tab-store" hidden>{render_store_tab(cfg)}</div>
-<div class="tab-panel" id="tab-discovery" hidden>{render_discovery_tab()}</div>
+<div class="tab-panel" id="tab-run"{tab_hidden("run")}>{render_run_tab(prefill, cfg)}</div>
+<div class="tab-panel" id="tab-validate"{tab_hidden("validate")}>{render_validate_tab(cfg, prefill)}</div>
+<div class="tab-panel" id="tab-store"{tab_hidden("store")}>{render_store_tab(cfg)}</div>
+<div class="tab-panel" id="tab-discovery"{tab_hidden("discovery")}>{render_discovery_tab()}</div>
 <section class="panel">
   <h2>Recent reports</h2>
   {reports_html}
@@ -2774,7 +2869,8 @@ def render_fixed_report(rundir, suite, benchmark, run_id):
     else:
         raw.append('<li class="muted">no plots generated</li>')
     if os.path.exists(csv_path):
-        raw.append(f'<li><a href="{base}/{CSV_NAME}">{CSV_NAME}</a> (raw CSV)</li>')
+        raw.append(f'<li><a href="{base}/{CSV_NAME}">{CSV_NAME}</a> (raw CSV)'
+                   f'{core_report_link(csv_path)}</li>')
     else:
         raw.append('<li class="muted">amdtopdown.csv missing</li>')
     if os.path.exists(manifest_path):
@@ -2855,7 +2951,8 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
             if output.endswith(".png") and os.path.isfile(output_path):
                 raw.append(f'<img class="plot" src="{base}/{_urlescape(output)}" alt="{html.escape(name)}">')
             elif os.path.isfile(output_path):
-                raw.append(f'<a href="{base}/{_urlescape(output)}">{html.escape(output)}</a>')
+                raw.append(f'<a href="{base}/{_urlescape(output)}">{html.escape(output)}</a>'
+                           f'{core_report_link(output_path)}')
             else:
                 raw.append(f'<span class="muted">{html.escape(output)} (missing)</span>')
         if pass_manifest:
@@ -2900,7 +2997,8 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
                 raw.append(f'<li>{html.escape(f)}:<br>'
                           f'<img class="plot" src="{base}/{_urlescape(f)}" alt="{html.escape(f)}"></li>')
             else:
-                raw.append(f'<li><a href="{base}/{_urlescape(f)}">{html.escape(f)}</a></li>')
+                raw.append(f'<li><a href="{base}/{_urlescape(f)}">{html.escape(f)}</a>'
+                           f'{core_report_link(os.path.join(rundir, f))}</li>')
         raw.append("</ul>")
 
     parts.append(_studio_link_and_curated(rundir, base, suite, benchmark, run_id, "".join(raw)))
@@ -3165,6 +3263,13 @@ class Handler(BaseHTTPRequestHandler):
                             if k in ("tree", "counters", "system", "gpu", "ibs", "power")
                             and isinstance(v, dict)
                         }
+            # A report page's "Compare cores" link on a --per-core CSV
+            # artifact -- lands on the Validate tab's per-core class
+            # comparison section instead of the Run tab, with that CSV's
+            # path prefilled so nothing has to be typed by hand.
+            if "core_report_csv" in qs:
+                prefill["active_tab"] = "validate"
+                prefill["core_report_path"] = qs["core_report_csv"][0]
             self._send(200, render_index(cfg, prefill))
             return
 
@@ -3344,6 +3449,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/discovery/preflight": self._discovery_preflight,
             "/api/discovery/affinity-topology": self._discovery_affinity_topology,
             "/api/discovery/validate": self._discovery_validate,
+            "/api/discovery/core-report": self._discovery_core_report,
             "/api/discovery/store-ingest": self._discovery_store_ingest,
             "/api/discovery/summary": self._discovery_summary,
             "/api/discovery/trace": self._discovery_trace,
@@ -4092,6 +4198,25 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"command": shell_preview(argv), "exit_code": rc,
                                "output": output, "timed_out": timed_out})
 
+    def _discovery_core_report(self, cfg, body):
+        path = (body.get("path") or "").strip()
+        if not path:
+            self._send_json(400, {"error": "a --per-core CSV path is required"})
+            return
+        if not os.path.isfile(path):
+            self._send_json(400, {"error": f"CSV file not found: {path}"})
+            return
+        argv = [cfg["wspy_core_report_bin"]]
+        if body.get("csv"):
+            argv.append("--csv")
+        for m in (body.get("metrics") or []):
+            if isinstance(m, str) and m.strip():
+                argv += ["--metric", m.strip()]
+        argv.append(path)
+        rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=60)
+        self._send_json(200, {"command": shell_preview(argv), "exit_code": rc,
+                               "output": output, "timed_out": timed_out})
+
     def _discovery_store_ingest(self, cfg, body):
         db = (body.get("db") or "").strip() or cfg["store_db"]
         run_index_paths = [p.strip() for p in (body.get("run_index") or []) if isinstance(p, str) and p.strip()]
@@ -4264,6 +4389,10 @@ def main():
                      help="path to the wspy-store binary (default: repo root's ./wspy-store)")
     ap.add_argument("--wspy-summary", default=os.path.join(REPO_ROOT, "wspy-summary"),
                      help="path to the wspy-summary binary (default: repo root's ./wspy-summary)")
+    ap.add_argument("--wspy-core-report", default=os.path.join(REPO_ROOT, "wspy-core-report"),
+                     help="path to the wspy-core-report binary (Validate tab's per-core class "
+                          "comparison section, e.g. Zen5 vs. Zen5c; default: repo root's "
+                          "./wspy-core-report)")
     ap.add_argument("--wspy-analyze", default=os.path.join(REPO_ROOT, "wspy-analyze"),
                      help="path to the wspy-analyze script (report page's 'AI narrative "
                           "analysis' button; requires a locally running Ollama daemon; "
@@ -4303,7 +4432,8 @@ def main():
     if not os.path.isfile(args.wspy_run):
         print(f"warning: wspy-run not found at {args.wspy_run}", file=sys.stderr)
     for label, path in (("wspy-validate", args.wspy_validate), ("wspy-store", args.wspy_store),
-                         ("wspy-summary", args.wspy_summary)):
+                         ("wspy-summary", args.wspy_summary),
+                         ("wspy-core-report", args.wspy_core_report)):
         if not os.path.isfile(path):
             print(f"warning: {label} not found at {path} (the Validate/Store & Summary tab "
                   f"will fail until it's built -- see CLAUDE.md's Build & Test section)",
@@ -4330,6 +4460,7 @@ def main():
         "wspy_validate_bin": os.path.abspath(args.wspy_validate),
         "wspy_store_bin": os.path.abspath(args.wspy_store),
         "wspy_summary_bin": os.path.abspath(args.wspy_summary),
+        "wspy_core_report_bin": os.path.abspath(args.wspy_core_report),
         "wspy_analyze_bin": os.path.abspath(args.wspy_analyze),
         "run_index_file": run_index_file,
         "store_db": store_db,

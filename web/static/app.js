@@ -757,6 +757,24 @@
         return { paths: paths, strict: getChecked("validate-strict"), quiet: getChecked("validate-quiet") };
       },
     });
+    document.querySelectorAll(".add-core-report-csv-chip").forEach(function (chip) {
+      chip.addEventListener("click", function () {
+        var input = byId("core-report-path");
+        if (!input) return;
+        input.value = chip.dataset.path;
+      });
+    });
+    runSyncEndpoint({
+      buttonId: "core-report-run",
+      outputId: "core-report-output",
+      cmdlineId: "core-report-cmdline",
+      endpoint: "/api/discovery/core-report",
+      buildBody: function () {
+        var metrics = (getValue("core-report-metrics") || "").split(",")
+          .map(function (s) { return s.trim(); }).filter(Boolean);
+        return { path: getValue("core-report-path"), metrics: metrics, csv: getChecked("core-report-csv") };
+      },
+    });
   }
 
   function wireStoreTab() {
