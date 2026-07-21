@@ -395,6 +395,10 @@ See `./web/server.py --help` for the full option list.
 * `doc/ARTIFACT_CONTRACT.md` - the manifest/run-index/CSV/tree-file format contract (what's
   guaranteed to stay stable, how schema versioning works) plus a troubleshooting runbook for common
   partial-coverage, GPU, and validation issues
+* `doc/PROFILE_COOKBOOK.md` - reading guide for wspy's analytical signals: `wspy-summary`'s
+  confidence verdict, `wspy-archetype`'s classification confidence, `phase.c`'s phase output, and
+  comparability signals (`mixed-pmu`, environment grouping) — what each one means and what to do
+  when it fires, with real captured examples
 * `scripts/setup_perf.sh` - checks/adjusts `nmi_watchdog` and `perf_event_paranoid` for running
   perf counters as a non-root user, and checks/grants `CAP_PERFMON` on the `wspy` binary for
   `--power` (re-run after rebuilding — the grant is a file capability, not a sysctl)
