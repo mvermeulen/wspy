@@ -72,18 +72,17 @@ from joblib import (  # noqa: E402,F401
     NAME_RE, resolve_toggles, checklist_from_pass_provenance, valid_affinity_spec,
     parse_run_key, build_proctree_json_argv, build_proctree_diff_argv,
     run_sync, parse_phoronix_test_names, estimate_phoronix_workload_seconds,
+    CSV_NAME, MANIFEST_NAME, PNG_NAME, CURATION_NAME, guess_kind, read_run_manifest,
+    ai_artifact_label, list_plot_pngs, collect_run_files,
+    build_reproducibility_bundle, BUNDLE_MANIFEST_NAME,
 )
 
 # The one fixed configuration item 6 knows about -- matches wspy-run's
 # deep-cpu/deep-gpu "amdtopdown" pass exactly (wspy-run, load_builtin_profile()).
 WSPY_FIXED_ARGS = ["--csv", "--interval", "1", "--counters=topdown",
                     "--no-rusage", "--no-software", "--no-ipc"]
-CSV_NAME = "amdtopdown.csv"
-MANIFEST_NAME = "amdtopdown.manifest.json"
-PNG_NAME = "amdtopdown.png"  # legacy root-level plot name from the retired gnuplot.sh; old
-                              # reports on disk from before item 12 may still have one there.
-# LOG_NAME/RUN_MANIFEST_NAME/SUMMARY_NAME/NAME_RE/PROFILE_TOKEN_RE come from
-# joblib.py (import block above).
+# CSV_NAME/MANIFEST_NAME/PNG_NAME/LOG_NAME/RUN_MANIFEST_NAME/SUMMARY_NAME/
+# CURATION_NAME/NAME_RE/PROFILE_TOKEN_RE come from joblib.py (import block above).
 TREE_TXT_NAME = "process.tree.txt"  # fixed filename every --tree pass writes (joblib.py)
 ARTIFACT_FILES = (CSV_NAME, MANIFEST_NAME, PNG_NAME, LOG_NAME)
 
@@ -148,21 +147,7 @@ def build_wspy_argv(wspy_bin, rundir, workload_argv):
             ["-o", csv_path, "--manifest", manifest_path, "--"] + workload_argv)
 
 
-# build_plot_argv comes from joblib.py (import block above).
-
-def list_plot_pngs(rundir):
-    """Every *.png wspy-plot wrote into <rundir>/plots/, as filenames
-    relative to rundir (e.g. "plots/amdtopdown.topdown.png") -- the shape
-    collect_run_files()/render_wspy_run_report()'s "other artifacts" scan
-    and render_fixed_report() all offer plot images in."""
-    plots_dir = os.path.join(rundir, PLOTS_DIR_NAME)
-    try:
-        names = sorted(f for f in os.listdir(plots_dir)
-                        if f.endswith(".png") and os.path.isfile(os.path.join(plots_dir, f)))
-    except OSError:
-        return []
-    return [f"{PLOTS_DIR_NAME}/{f}" for f in names]
-
+# build_plot_argv/list_plot_pngs come from joblib.py (import block above).
 
 # valid_profile_spec/build_wspy_run_argv/shell_preview come from joblib.py
 # (import block above).
@@ -1235,21 +1220,6 @@ def format_config_provenance(cp):
     return "; ".join(bits) if bits else None
 
 
-def read_run_manifest(run_manifest_path):
-    """Parse wspy-run's own run-level manifest.json (wspy-run's
-    generate_manifest() -- a different, simpler shape than a per-pass
-    --manifest: top-level command is a bare argv array, not {"argv": [...]},
-    and passes[] lists name/output/manifest/status for each pass wspy-run ran."""
-    try:
-        with open(run_manifest_path) as f:
-            data = json.load(f)
-        if not isinstance(data.get("passes"), list):
-            return None
-        return data
-    except (OSError, json.JSONDecodeError, ValueError):
-        return None
-
-
 def guess_content_type(filename):
     ext = os.path.splitext(filename)[1].lower()
     return {
@@ -1294,7 +1264,7 @@ def guess_content_type(filename):
 # established for per-block commentary.
 # ---------------------------------------------------------------------------
 
-CURATION_NAME = "curation.json"
+# CURATION_NAME comes from joblib.py (import block above).
 CURATION_SCHEMA_VERSION = "1.1"
 DEFAULT_EXCERPT_LINES = 40
 MAX_INLINE_BYTES = 5 * 1024 * 1024  # don't embed a pathologically large file even at depth=full
@@ -1307,20 +1277,6 @@ DEPTH_OPTIONS_BY_KIND = {
     "binary": ("none", "full"),
     "freeform": ("none", "full"),
 }
-
-
-def guess_kind(filename):
-    ext = os.path.splitext(filename)[1].lower()
-    if ext == ".png":
-        return "image"
-    if ext == ".csv":
-        return "csv"
-    if ext == ".json":
-        return "json"
-    # Unknown extensions are tentatively "text"; read_text_safely() downgrades
-    # to a link-only render if the file doesn't actually decode as UTF-8,
-    # rather than requiring every candidate file to be read just to list it.
-    return "text"
 
 
 def allowed_depths(block):
@@ -1351,84 +1307,9 @@ def new_block(kind, source_file=None, source_kind=None, title=None, ai_generated
     }
 
 
-AIANALYSIS_RE = re.compile(r"^aianalysis\.(.+)\.txt$")
-AIPROMPT_CRITIQUE_RE = re.compile(r"^aiprompt\.critique\.(.+)\.txt$")
-
-
-def ai_artifact_label(filename):
-    """Friendly (label, ai_generated) for one of wspy-analyze's own output
-    files, or None if filename isn't one -- so collect_run_files() below can
-    offer something more useful than the bare filename, and so a block built
-    from actual model output (aianalysis.*/aiprompt.critique.*, not the
-    deterministically-rendered aiprompt.txt itself) carries an AI-generated
-    marker from the moment it's added. See INVESTIGATION.md's Ollama
-    deep-dive, design decision #7."""
-    if filename == "aiprompt.txt":
-        return "AI analysis: rendered prompt", False
-    m = AIPROMPT_CRITIQUE_RE.match(filename)
-    if m:
-        return f"AI analysis: prompt critique (model: {m.group(1)})", True
-    m = AIANALYSIS_RE.match(filename)
-    if m:
-        return f"AI narrative analysis (model: {m.group(1)})", True
-    return None
-
-
-def collect_run_files(rundir):
-    """Every file in a run directory worth offering as a block source, in a
-    sensible default order -- wspy-run's own passes (name-labeled) first when
-    a run-level manifest exists, else item 6's fixed amdtopdown.* shape, then
-    curation.json/wspy-run's own manifest/log, then anything else sitting in
-    the directory that neither claims (mirrors render_wspy_run_report's own
-    "Other artifacts" scan, generalized for reuse here)."""
-    run_manifest = read_run_manifest(os.path.join(rundir, RUN_MANIFEST_NAME))
-    seen = set()
-    items = []
-
-    def add(filename, label, ai_generated=False):
-        if not filename or filename in seen:
-            return
-        if not os.path.isfile(os.path.join(rundir, filename)):
-            return
-        seen.add(filename)
-        items.append({"filename": filename, "kind": guess_kind(filename), "label": label,
-                      "ai_generated": ai_generated})
-
-    if run_manifest is not None:
-        for p in run_manifest.get("passes", []):
-            name = p.get("name", "?")
-            if p.get("output"):
-                add(p["output"], f"{name}: {p['output']}")
-            if p.get("manifest"):
-                add(p["manifest"], f"{name}: manifest")
-        add(SUMMARY_NAME, "summary (concatenated pass output)")
-        add(RUN_MANIFEST_NAME, "wspy-run run manifest")
-        add(LOG_NAME, "launch log")
-    else:
-        add(PNG_NAME, "topdown plot")
-        add(CSV_NAME, "amdtopdown.csv")
-        add(MANIFEST_NAME, "manifest")
-        add(LOG_NAME, "launch log")
-
-    try:
-        extras = sorted(
-            f for f in os.listdir(rundir)
-            if f not in seen and f != CURATION_NAME and os.path.isfile(os.path.join(rundir, f))
-        )
-    except OSError:
-        extras = []
-    for f in extras:
-        ai_label = ai_artifact_label(f)
-        if ai_label is not None:
-            label, ai_generated = ai_label
-            add(f, label, ai_generated=ai_generated)
-        else:
-            add(f, f)
-
-    for f in list_plot_pngs(rundir):
-        add(f, f"plot: {os.path.basename(f)}")
-
-    return items
+# AIANALYSIS_RE/AIPROMPT_CRITIQUE_RE/ai_artifact_label/collect_run_files come
+# from joblib.py (import block above) -- shared with build_reproducibility_bundle()
+# there, which archives the identical file list this function's callers browse.
 
 
 def load_curation(rundir):
@@ -2633,14 +2514,18 @@ def _studio_link_and_curated(rundir, base_url, suite, benchmark, run_id, raw_htm
     content this report has."""
     studio_url = f"/studio/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
     export_url = f"/export/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    bundle_url = f"/bundle/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}/download"
+    bundle_link = (f'<a href="{bundle_url}">Download reproducibility bundle</a> '
+                   f'<span class="muted">(manifest + raw + derived, .tar.gz)</span>')
     curated_html = render_curated_section(rundir, base_url, suite, benchmark, run_id)
     if curated_html:
         return (f'<p><a href="{studio_url}">Edit curation</a> &middot; '
-                f'<a href="{export_url}">Export</a></p>'
+                f'<a href="{export_url}">Export</a> &middot; {bundle_link}</p>'
                 f'{curated_html}'
                 f'<details><summary>Raw artifacts</summary>{raw_html}</details>')
     return (f'<p><a href="{studio_url}">Curate this report</a> '
             f'<span class="muted">(select/reorder/annotate the artifacts below)</span></p>'
+            f'<p>{bundle_link}</p>'
             f'{raw_html}')
 
 
@@ -3407,6 +3292,22 @@ class Handler(BaseHTTPRequestHandler):
             rendered = render_export(rundir, base, title, fmt, overview_note, blocks)
             filename = f"{benchmark}-{run_id}-{fmt}.{EXPORT_FORMAT_EXTENSIONS[fmt]}"
             self._send(200, rendered, content_type=EXPORT_FORMAT_CONTENT_TYPES[fmt],
+                       headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+            return
+
+        m = re.match(r"^/bundle/([^/]+)/([^/]+)/([^/]+)/download$", path)
+        if m:
+            suite, benchmark, run_id = m.groups()
+            if not all(valid_segment(x) for x in (suite, benchmark, run_id)):
+                self._send(400, "invalid path")
+                return
+            rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+            if not os.path.isdir(rundir):
+                self._send(404, "no such report")
+                return
+            tar_bytes, _index = build_reproducibility_bundle(rundir, suite, benchmark, run_id)
+            filename = f"{suite}-{benchmark}-{run_id}.reproducibility.tar.gz"
+            self._send(200, tar_bytes, content_type="application/gzip",
                        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
             return
 

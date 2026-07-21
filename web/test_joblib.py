@@ -14,8 +14,12 @@ wspy/wspy-run/wspy-plot/wspy-store binaries, exercised through wspy-queue);
 this file only exercises the parts that don't touch the filesystem or spawn
 processes.
 """
+import io
+import json
 import os
 import sys
+import tarfile
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -756,6 +760,161 @@ class EstimatePhoronixWorkloadSecondsTest(unittest.TestCase):
             result = joblib.estimate_phoronix_workload_seconds(workload, phoronix_bin=fake_bin, max_tests=5)
             self.assertEqual(len(result["tests"]), 5)
             self.assertTrue(result["truncated"])
+
+
+class CollectRunFilesTest(unittest.TestCase):
+    """collect_run_files() is shared between the curation studio's "+ add"
+    buttons and build_reproducibility_bundle()'s archive contents -- exercise
+    both the wspy-run unified-layout shape and the legacy fixed-config shape,
+    plus the curation.json exclusion."""
+
+    def test_wspy_run_layout(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest = {
+                "layout_version": "1.0.0", "suite": "s", "benchmark": "b", "run_id": "r",
+                "command": ["true"],
+                "passes": [{"name": "quick", "output": "quick.txt",
+                            "manifest": "quick.manifest.json", "status": "ok"}],
+            }
+            with open(os.path.join(tmpdir, "manifest.json"), "w") as f:
+                json.dump(manifest, f)
+            for name in ("quick.txt", "quick.manifest.json", "summary.txt", "launch.log"):
+                open(os.path.join(tmpdir, name), "w").close()
+            open(os.path.join(tmpdir, "curation.json"), "w").close()
+            items = joblib.collect_run_files(tmpdir)
+            filenames = [i["filename"] for i in items]
+            self.assertIn("quick.txt", filenames)
+            self.assertIn("quick.manifest.json", filenames)
+            self.assertIn("summary.txt", filenames)
+            self.assertIn("manifest.json", filenames)
+            self.assertIn("launch.log", filenames)
+            self.assertNotIn("curation.json", filenames)
+
+    def test_legacy_fixed_config_layout(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for name in (joblib.CSV_NAME, joblib.MANIFEST_NAME, joblib.LOG_NAME):
+                open(os.path.join(tmpdir, name), "w").close()
+            items = joblib.collect_run_files(tmpdir)
+            filenames = [i["filename"] for i in items]
+            self.assertIn(joblib.CSV_NAME, filenames)
+            self.assertIn(joblib.MANIFEST_NAME, filenames)
+            self.assertIn(joblib.LOG_NAME, filenames)
+
+    def test_ai_analysis_files_labeled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            open(os.path.join(tmpdir, "aiprompt.txt"), "w").close()
+            open(os.path.join(tmpdir, "aianalysis.llama3.txt"), "w").close()
+            items = joblib.collect_run_files(tmpdir)
+            by_name = {i["filename"]: i for i in items}
+            self.assertFalse(by_name["aiprompt.txt"]["ai_generated"])
+            self.assertTrue(by_name["aianalysis.llama3.txt"]["ai_generated"])
+
+    def test_plot_pngs_included(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.mkdir(os.path.join(tmpdir, "plots"))
+            open(os.path.join(tmpdir, "plots", "foo.topdown.png"), "w").close()
+            items = joblib.collect_run_files(tmpdir)
+            filenames = [i["filename"] for i in items]
+            self.assertIn("plots/foo.topdown.png", filenames)
+
+
+class ClassifyBundleKindTest(unittest.TestCase):
+    def test_manifest_kinds(self):
+        self.assertEqual(joblib.classify_bundle_kind("manifest.json"), "manifest")
+        self.assertEqual(joblib.classify_bundle_kind("quick.manifest.json"), "manifest")
+        self.assertEqual(joblib.classify_bundle_kind(joblib.MANIFEST_NAME), "manifest")
+
+    def test_derived_kinds(self):
+        self.assertEqual(joblib.classify_bundle_kind("summary.txt"), "derived")
+        self.assertEqual(joblib.classify_bundle_kind("curation.json"), "derived")
+        self.assertEqual(joblib.classify_bundle_kind(joblib.PNG_NAME), "derived")
+        self.assertEqual(joblib.classify_bundle_kind("plots/foo.png"), "derived")
+        self.assertEqual(joblib.classify_bundle_kind("process.tree.summary.txt"), "derived")
+        self.assertEqual(joblib.classify_bundle_kind("aianalysis.llama3.txt"), "derived")
+        self.assertEqual(joblib.classify_bundle_kind("aiprompt.txt"), "derived")
+
+    def test_raw_kinds(self):
+        self.assertEqual(joblib.classify_bundle_kind("quick.txt"), "raw")
+        self.assertEqual(joblib.classify_bundle_kind("quick.csv"), "raw")
+        self.assertEqual(joblib.classify_bundle_kind("process.tree.txt"), "raw")
+        self.assertEqual(joblib.classify_bundle_kind("launch.log"), "raw")
+        self.assertEqual(joblib.classify_bundle_kind(joblib.CSV_NAME), "raw")
+
+
+class BuildReproducibilityBundleTest(unittest.TestCase):
+    def _make_rundir(self, tmpdir):
+        manifest = {
+            "layout_version": "1.0.0", "suite": "s", "benchmark": "b", "run_id": "r",
+            "command": ["true"],
+            "passes": [{"name": "quick", "output": "quick.txt",
+                        "manifest": "quick.manifest.json", "status": "ok"}],
+        }
+        with open(os.path.join(tmpdir, "manifest.json"), "w") as f:
+            json.dump(manifest, f)
+        with open(os.path.join(tmpdir, "quick.txt"), "w") as f:
+            f.write("elapsed 1.0\n")
+        with open(os.path.join(tmpdir, "quick.manifest.json"), "w") as f:
+            f.write("{}")
+        with open(os.path.join(tmpdir, "summary.txt"), "w") as f:
+            f.write("=== quick ===\nelapsed 1.0\n")
+
+    def test_bundle_contains_expected_files_and_index(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._make_rundir(tmpdir)
+            tar_bytes, index = joblib.build_reproducibility_bundle(tmpdir, "s", "b", "r")
+            self.assertEqual(index["schema_version"], joblib.BUNDLE_SCHEMA_VERSION)
+            self.assertEqual(index["suite"], "s")
+            self.assertEqual(index["benchmark"], "b")
+            self.assertEqual(index["run_id"], "r")
+            by_path = {e["path"]: e for e in index["files"]}
+            self.assertEqual(by_path["quick.txt"]["kind"], "raw")
+            self.assertEqual(by_path["quick.manifest.json"]["kind"], "manifest")
+            self.assertEqual(by_path["manifest.json"]["kind"], "manifest")
+            self.assertEqual(by_path["summary.txt"]["kind"], "derived")
+
+            with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
+                names = tar.getnames()
+                self.assertIn("quick.txt", names)
+                self.assertIn(joblib.BUNDLE_MANIFEST_NAME, names)
+                bundle_manifest = json.loads(
+                    tar.extractfile(joblib.BUNDLE_MANIFEST_NAME).read().decode("utf-8"))
+                self.assertEqual(bundle_manifest, index)
+
+    def test_checksums_verify_against_extracted_content(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._make_rundir(tmpdir)
+            tar_bytes, index = joblib.build_reproducibility_bundle(tmpdir, "s", "b", "r")
+            import hashlib
+            with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
+                for entry in index["files"]:
+                    data = tar.extractfile(entry["path"]).read()
+                    self.assertEqual(hashlib.sha256(data).hexdigest(), entry["sha256"])
+                    self.assertEqual(len(data), entry["size_bytes"])
+
+    def test_missing_file_degrades_not_fails(self):
+        """A file collect_run_files() lists but that vanishes/becomes
+        unreadable between listing and archiving gets kind="missing" rather
+        than aborting the whole bundle -- this is an inherent TOCTOU race in
+        real use (collect_run_files() itself already checks os.path.isfile()
+        at listing time), so it's exercised here by monkeypatching
+        collect_run_files() to report a file that was never actually
+        created, rather than trying to reproduce the race itself."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._make_rundir(tmpdir)
+            real_collect = joblib.collect_run_files
+            try:
+                joblib.collect_run_files = lambda rundir: real_collect(rundir) + [
+                    {"filename": "vanished.txt", "kind": "text", "label": "vanished.txt",
+                     "ai_generated": False}
+                ]
+                tar_bytes, index = joblib.build_reproducibility_bundle(tmpdir, "s", "b", "r")
+            finally:
+                joblib.collect_run_files = real_collect
+            by_path = {e["path"]: e for e in index["files"]}
+            self.assertEqual(by_path["vanished.txt"]["kind"], "missing")
+            self.assertNotIn("sha256", by_path["vanished.txt"])
+            with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
+                self.assertNotIn("vanished.txt", tar.getnames())
 
 
 if __name__ == "__main__":

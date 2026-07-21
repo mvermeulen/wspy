@@ -14,7 +14,7 @@ below) true even though there are now two independent front ends -- the web
 Run tab and wspy-queue -- that both need to turn a configuration into a real
 wspy/wspy-run/wspy-plot invocation.
 
-Three groups of things live here:
+Four groups of things live here:
   1. The configuration/option -> wspy argv builders (ALL_GROUPS through
      build_wspy_run_argv/build_plot_argv) -- moved out of server.py verbatim,
      no behavior change.
@@ -31,15 +31,26 @@ Three groups of things live here:
      don't drift into separate vocabularies. See build_job()'s docstring for
      the exact shape and the portability rules (no absolute paths, no
      reference to the machine that created it).
+  4. Run-directory artifact enumeration/bundling (collect_run_files() through
+     build_reproducibility_bundle()) -- moved out of server.py verbatim
+     (collect_run_files() backed only the curation studio's "+ add" buttons
+     before), plus new bundling logic on top, so wspy-bundle's standalone CLI
+     and server.py's own "Download reproducibility bundle" report-page link
+     share the identical file list and archive contents instead of drifting
+     into two independently-maintained enumerations.
 """
 import copy
+import hashlib
+import io
 import json
 import os
 import re
 import secrets
 import shlex
 import subprocess
+import tarfile
 import threading
+import time
 from datetime import datetime, timezone
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -70,6 +81,241 @@ LOG_NAME = "launch.log"
 PLOTS_DIR_NAME = "plots"
 RUN_MANIFEST_NAME = "manifest.json"
 SUMMARY_NAME = "summary.txt"
+
+# Item 6's older fixed-configuration launcher's own artifact names (superseded
+# on the homepage by item 7/9's unified layout above, but still rendered for
+# old reports on disk) -- shared here (not just in server.py) because
+# collect_run_files()/classify_bundle_kind() below need to recognize both
+# report shapes identically.
+CSV_NAME = "amdtopdown.csv"
+MANIFEST_NAME = "amdtopdown.manifest.json"
+PNG_NAME = "amdtopdown.png"
+
+# The curation studio's own per-run state file (server.py's curation studio) --
+# named here too since collect_run_files() below must never offer it as a
+# candidate artifact (it's studio-owned metadata, not a run artifact).
+CURATION_NAME = "curation.json"
+
+
+def guess_kind(filename):
+    ext = os.path.splitext(filename)[1].lower()
+    if ext == ".png":
+        return "image"
+    if ext == ".csv":
+        return "csv"
+    if ext == ".json":
+        return "json"
+    # Unknown extensions are tentatively "text"; server.py's
+    # read_text_safely() downgrades to a link-only render if the file
+    # doesn't actually decode as UTF-8, rather than requiring every
+    # candidate file to be read just to list it.
+    return "text"
+
+
+def read_run_manifest(run_manifest_path):
+    """Parse wspy-run's own run-level manifest.json (wspy-run's
+    generate_manifest() -- a different, simpler shape than a per-pass
+    --manifest: top-level command is a bare argv array, not {"argv": [...]},
+    and passes[] lists name/output/manifest/status for each pass wspy-run ran."""
+    try:
+        with open(run_manifest_path) as f:
+            data = json.load(f)
+        if not isinstance(data.get("passes"), list):
+            return None
+        return data
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+
+
+AIANALYSIS_RE = re.compile(r"^aianalysis\.(.+)\.txt$")
+AIPROMPT_CRITIQUE_RE = re.compile(r"^aiprompt\.critique\.(.+)\.txt$")
+
+
+def ai_artifact_label(filename):
+    """Friendly (label, ai_generated) for one of wspy-analyze's own output
+    files, or None if filename isn't one -- so collect_run_files() below can
+    offer something more useful than the bare filename, and so a block built
+    from actual model output (aianalysis.*/aiprompt.critique.*, not the
+    deterministically-rendered aiprompt.txt itself) carries an AI-generated
+    marker from the moment it's added. See INVESTIGATION.md's Ollama
+    deep-dive, design decision #7."""
+    if filename == "aiprompt.txt":
+        return "AI analysis: rendered prompt", False
+    m = AIPROMPT_CRITIQUE_RE.match(filename)
+    if m:
+        return f"AI analysis: prompt critique (model: {m.group(1)})", True
+    m = AIANALYSIS_RE.match(filename)
+    if m:
+        return f"AI narrative analysis (model: {m.group(1)})", True
+    return None
+
+
+def list_plot_pngs(rundir):
+    """Every *.png wspy-plot wrote into <rundir>/plots/, as filenames
+    relative to rundir (e.g. "plots/amdtopdown.topdown.png") -- the shape
+    collect_run_files()/render_wspy_run_report()'s "other artifacts" scan
+    and render_fixed_report() all offer plot images in."""
+    plots_dir = os.path.join(rundir, PLOTS_DIR_NAME)
+    try:
+        names = sorted(f for f in os.listdir(plots_dir)
+                        if f.endswith(".png") and os.path.isfile(os.path.join(plots_dir, f)))
+    except OSError:
+        return []
+    return [f"{PLOTS_DIR_NAME}/{f}" for f in names]
+
+
+def collect_run_files(rundir):
+    """Every file in a run directory worth offering as a block source, in a
+    sensible default order -- wspy-run's own passes (name-labeled) first when
+    a run-level manifest exists, else item 6's fixed amdtopdown.* shape, then
+    curation.json/wspy-run's own manifest/log, then anything else sitting in
+    the directory that neither claims (mirrors render_wspy_run_report's own
+    "Other artifacts" scan, generalized for reuse here). Also the enumeration
+    build_reproducibility_bundle() below archives, unchanged -- one file list
+    for both the curation studio's "+ add" buttons and the reproducibility
+    bundle's contents, rather than two independently-drifting scans."""
+    run_manifest = read_run_manifest(os.path.join(rundir, RUN_MANIFEST_NAME))
+    seen = set()
+    items = []
+
+    def add(filename, label, ai_generated=False):
+        if not filename or filename in seen:
+            return
+        if not os.path.isfile(os.path.join(rundir, filename)):
+            return
+        seen.add(filename)
+        items.append({"filename": filename, "kind": guess_kind(filename), "label": label,
+                      "ai_generated": ai_generated})
+
+    if run_manifest is not None:
+        for p in run_manifest.get("passes", []):
+            name = p.get("name", "?")
+            if p.get("output"):
+                add(p["output"], f"{name}: {p['output']}")
+            if p.get("manifest"):
+                add(p["manifest"], f"{name}: manifest")
+        add(SUMMARY_NAME, "summary (concatenated pass output)")
+        add(RUN_MANIFEST_NAME, "wspy-run run manifest")
+        add(LOG_NAME, "launch log")
+    else:
+        add(PNG_NAME, "topdown plot")
+        add(CSV_NAME, "amdtopdown.csv")
+        add(MANIFEST_NAME, "manifest")
+        add(LOG_NAME, "launch log")
+
+    try:
+        extras = sorted(
+            f for f in os.listdir(rundir)
+            if f not in seen and f != CURATION_NAME and os.path.isfile(os.path.join(rundir, f))
+        )
+    except OSError:
+        extras = []
+    for f in extras:
+        ai_label = ai_artifact_label(f)
+        if ai_label is not None:
+            label, ai_generated = ai_label
+            add(f, label, ai_generated=ai_generated)
+        else:
+            add(f, f)
+
+    for f in list_plot_pngs(rundir):
+        add(f, f"plot: {os.path.basename(f)}")
+
+    return items
+
+
+# ---------------------------------------------------------------------------
+# Reproducibility bundle export (INVESTIGATION.md's 4.2 "Reproducibility
+# bundle export" item): given one run directory, produce a single, portable
+# tar.gz -- manifest(s) + raw per-pass output + derived summaries/plots/
+# curation/AI narrative -- so a run can be archived or handed to someone
+# without access to this machine's live output-root/store.db. Scoped to one
+# run directory (the same unit every other per-run tool here already
+# operates on: wspy-validate, wspy-summary --trace, wspy-analyze --rundir,
+# the curation studio) -- bundling a whole sweep/suite is separate future
+# work, since a sweep's compare.json lives at the output-root level, not
+# inside any one run directory.
+# ---------------------------------------------------------------------------
+
+BUNDLE_SCHEMA_VERSION = "1.0"
+BUNDLE_MANIFEST_NAME = "bundle_manifest.json"
+
+
+def classify_bundle_kind(filename):
+    """manifest | raw | derived classification for one run-directory file,
+    used to label bundle_manifest.json's files[] entries -- "manifest" is
+    wspy's own run-identity record, "raw" is a tool's direct output (what
+    actually happened), "derived" is something computed from that raw
+    output (plots, summaries, curation, AI narrative). Order matters here:
+    the manifest check must run before the generic .json catch-all falls
+    through to "raw", and the derived filename set before the raw .csv/.txt
+    default."""
+    base = os.path.basename(filename)
+    if base.endswith(".manifest.json") or base == RUN_MANIFEST_NAME:
+        return "manifest"
+    if (base in (SUMMARY_NAME, CURATION_NAME, PNG_NAME,
+                 "process.tree.summary.txt", "process.tree.simple.txt") or
+            filename.startswith(PLOTS_DIR_NAME + "/") or
+            ai_artifact_label(base) is not None):
+        return "derived"
+    return "raw"
+
+
+def build_reproducibility_bundle(rundir, suite, benchmark, run_id):
+    """Builds one tar.gz (in memory, returned as bytes) bundling every
+    artifact collect_run_files() finds in rundir, plus a new
+    bundle_manifest.json index at the tar root: schema_version, suite/
+    benchmark/run_id, generated_at, and one {path,kind,sha256,size_bytes}
+    entry per file -- sha256 so a recipient can verify the bundle wasn't
+    corrupted/tampered with in transit, kind so a reader can tell "what
+    happened" (raw) from "what wspy computed" (derived/manifest) without
+    guessing from the filename. Returns (tar_bytes, index) -- index is the
+    same dict written as bundle_manifest.json, so a caller (wspy-bundle's
+    --dry-run, tests) can inspect it without re-parsing the archive.
+
+    A file collect_run_files() lists but that vanishes/becomes unreadable
+    between listing and archiving gets kind="missing" and no sha256/
+    size_bytes, rather than aborting the whole bundle -- same degrade-don't-
+    fail idiom used everywhere else in this codebase."""
+    entries = collect_run_files(rundir)
+    files_index = []
+    buf = io.BytesIO()
+    now = int(time.time())
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for entry in entries:
+            rel = entry["filename"]
+            full = os.path.join(rundir, rel)
+            try:
+                with open(full, "rb") as f:
+                    data = f.read()
+            except OSError:
+                files_index.append({"path": rel, "kind": "missing"})
+                continue
+            info = tarfile.TarInfo(name=rel)
+            info.size = len(data)
+            info.mtime = now
+            tar.addfile(info, io.BytesIO(data))
+            files_index.append({
+                "path": rel,
+                "kind": classify_bundle_kind(rel),
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "size_bytes": len(data),
+            })
+        index = {
+            "schema_version": BUNDLE_SCHEMA_VERSION,
+            "suite": suite,
+            "benchmark": benchmark,
+            "run_id": run_id,
+            "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            "files": files_index,
+        }
+        index_bytes = json.dumps(index, indent=2).encode("utf-8")
+        info = tarfile.TarInfo(name=BUNDLE_MANIFEST_NAME)
+        info.size = len(index_bytes)
+        info.mtime = now
+        tar.addfile(info, io.BytesIO(index_bytes))
+    return buf.getvalue(), index
+
 
 # Fixed staging path scripts/pts_hooks/{pre,post}_test_run.sh write to, if
 # Phoronix Test Suite's result_notifier module hooks are registered on this
