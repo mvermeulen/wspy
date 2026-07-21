@@ -474,6 +474,80 @@ futex-wait vs. read-wait vs. on-CPU) stays informative even when absolute number
 is an inherent limitation of the ptrace-based mechanism, not clean latency data — a lower-overhead
 tracing alternative (`ftrace`/eBPF) remains open, see `INVESTIGATION.md`'s infra tier.
 
+### Concrete design: feature normalization prerequisites (2026-07-21, shipped)
+Grounding for 4.2 Tier 1's "Feature normalization prerequisites" item — the first of the two
+characterization-track items, and a hard input dependency for the second (the archetype scorecard),
+since both need a consistently-shaped input to score against.
+
+`wspy-store`'s `metric_values` table (`store.c`) is long/tall — `(run_id, row_index, tick_time, core,
+phase, metric_name, value, is_percent, raw_text)` — with column *identity* coming from the CSV header
+text itself, not from which flags produced it. That already gives topdown L1 (`retire`/`frontend`/
+`backend`/`speculate`), cache/TLB miss-rate columns, the always-present rusage columns
+(`nvcsw`/`nivcsw`/`minflt`/`majflt`, emitted on every run regardless of `counter_mask` — see
+`topdown.c`'s base CSV header), and `phase` (`phase.c`, present only when `--interval` + `COUNTER_IPC`
+were both active) as queryable rows. `runs` carries `counter_mask`/`counters_requested`/
+`counters_measured`/`cpu_vendor`/`elapsed_seconds` alongside.
+
+What's missing is the step from that raw table to a **feature vector**: two runs of the same workload
+can have very different available columns (different `--counters=` selection, vendor-dependent raw-event
+availability, aggregate vs. `--interval` vs. `--per-core` CSV shape), so nothing downstream can compare
+runs directly against `metric_values` without re-solving "which columns exist this time" on every query.
+This is the same shape of problem `summary.c`'s `mixed-pmu` verdict and `coverage.c`/`provenance.c`'s
+"measured vs unavailable" fields already solve one level down (per-run, not per-feature) — this item is
+that idiom applied to a fixed feature vocabulary instead.
+
+Proposed shape:
+- **A fixed feature vocabulary**, each entry with an explicit derivation rule and a stated coverage
+  requirement (which counter groups/flags it needs) rather than assuming universal availability:
+  `ipc_mean`; `retire_pct`/`frontend_pct`/`backend_pct`/`speculate_pct` (topdown L1); per-instruction
+  `dcache_miss_rate`/`l2_miss_rate`/`l3_miss_rate`/`tlb_miss_rate`; `branch_mispredict_rate`;
+  `fault_rate` = (`minflt`+`majflt`)/`elapsed_seconds`; `ctxswitch_rate` = (`nvcsw`+`nivcsw`)/
+  `elapsed_seconds`; `io_rate` (needs `--tree-io`); `phase_stability` = fraction of ticks with
+  `phase='steady'` vs `'degraded'` (needs `--interval`); `parallelism_proxy` = cross-core CV of a
+  per-core metric (needs `--per-core`).
+- **Normalization rules**, decided once here rather than left for each consumer to reinvent: rate
+  features divide by `elapsed_seconds` or by instruction count depending on the feature (topdown-style
+  ratios are already self-normalizing; raw fault/context-switch counts are not); multi-row shapes
+  (`--interval` ticks, `--per-core` rows) collapse via `AVG()` first, mirroring `summary.c`'s existing
+  per-run collapse convention rather than inventing a second one; a feature whose required
+  columns/groups weren't collected is `NULL` (explicit absence), never zero or silently omitted, so a
+  scorer downstream can tell "measured near-zero" from "not measured."
+- **Storage**: a new `run_features` table (`run_id, feature_name, value, coverage`) populated by a pass
+  over `metric_values`+`runs` — a new `wspy-store` mode or standalone tool, following the same
+  `#ifndef TEST_X`/direct-`#include` testability convention every other tool in this codebase uses.
+  Versioned independently of `STORE_SCHEMA_VERSION` (its own `FEATURE_SCHEMA_VERSION` or similar), since
+  the feature vocabulary/derivation rules will keep evolving after the table shape itself stabilizes —
+  same reasoning `TOPDOWN_FORMULA_VERSION` exists separately from `MANIFEST_SCHEMA_VERSION`.
+
+**What actually shipped, and where implementation diverged from this sketch:** landed inside `store.c`
+itself (`extract_run_features()`, called automatically from `upsert_run()`) rather than as a standalone
+tool — the same file that owns `metric_values` was the natural place, and `--no-feature-extract` gives
+the opt-out `--no-manifest-enrich`/`--no-metrics-ingest` already established the pattern for. The version
+tag is `FEATURE_SET_VERSION` (a plain `#define`, not a second schema-version-style constant) — value
+`"1.0"`. `io_rate` was dropped entirely: `--tree-io`'s `rchar`/`wchar` live in the *tree* output file,
+which nothing ingests into the store today, so there was no `metric_values` column to derive it from —
+a real scope correction found during implementation, not a deliberate deferral written in ahead of time.
+Real CSV column names turned out to differ from this sketch's placeholders in several cases —
+`dcache_miss_pct` (not `dcache_miss_rate`) reads `metric_name='L1-dcache miss'`; `icache_miss_pct` reads
+`'icache'`; `l2_miss_pct`/`l3_miss_pct` read `'l2miss'`/`'l3miss'`; `branch_mispredict_pct` reads
+`'branch miss'`; `itlb_miss_per1k`/`dtlb_miss_per1k` (per-1000-instructions, not a miss rate) read
+`'itlb2'`/`'dtlb2'` — all taken directly from `topdown.c`'s own `PRINT_CSV_HEADER` strings rather than
+invented, since `metric_values.metric_name` is exactly the literal CSV header text. `phase_stability`
+counts `DISTINCT row_index,phase` pairs rather than raw rows, since `metric_values.phase` (like `.core`)
+is a per-tick dimension repeated across every metric column collected that tick — grouping on raw rows
+would multiply every tick's weight by however many counter columns were selected. Verified end-to-end
+against the real `wspy-store` binary (a synthetic run-index record + CSV, not real `wspy` hardware
+counters): all designed features round-tripped correctly, features with no source column present
+correctly landed `coverage='unavailable'`/`value=NULL` rather than a silent zero, `--no-feature-extract`
+correctly suppressed extraction, and a v3-shaped hand-built database migrated cleanly to v4. See
+`store.c`'s and `test_store.c`'s own `INVESTIGATION.md`-linked comments for the full up-to-date behavior.
+
+→ Direct input dependency for 4.2 Tier 1's "Archetype scorecard" item (parallelism shape/resource
+dominance/control-flow style/runtime stability scoring needs one consistently-shaped feature vector to
+score against, not per-rule handling of "what if this run didn't collect topdown"). Also underpins 4.3's
+stated goal of using the normalized store for regression detection and clustering — both need the same
+fixed, coverage-aware feature set this item established.
+
 ## Validation narratives (4.2-era)
 
 ### AMD IBS real-hardware validation (Zen5, 2026-07-15)
