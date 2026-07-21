@@ -444,6 +444,20 @@ table.compare th, table.compare td {
 table.compare th.row-label { white-space: nowrap; background: var(--panel); }
 table.compare thead th { background: var(--panel); }
 img.compare-plot { max-width: 320px; }
+table.compare .row-note {
+  white-space: normal;
+  font-weight: normal;
+  font-style: italic;
+  color: var(--muted);
+  margin-top: 0.25rem;
+  max-width: 22rem;
+}
+p.compare-overview {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  padding: 0.6rem 0.9rem;
+}
 
 /* proctree viewer (item 3): interactive tree viewer + tree-diff view,
  * web/static/proctree_viewer.js. Prefixed .ptv- throughout so this doesn't
