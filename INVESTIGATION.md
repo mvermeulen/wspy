@@ -963,13 +963,56 @@ this phase's own IBS sampling mode (Tier 1 above):**
     manifest) to 1, which anything downstream assuming those 4 specific filenames (external scripts,
     `workload/cpu2017`'s driver if it references Intel-specific pass names, `tests/capability_matrix.sh`)
     would need checked against.
+24. Detect and resume interrupted `wspy-run` profiles (raised 2026-07-21: a real host crash mid-batch,
+    twice, with no way to tell from a report that the run never finished, and no way to pick up where
+    it left off short of redoing already-completed passes). Two phases of very different size, second
+    depends on the first:
+    - **Phase A — surface incompleteness in reporting.** `generate_manifest()` (`wspy-run:772`) writes
+      the run-level `manifest.json` (the one with per-pass `passes[]` status) exactly once, only after
+      the entire pass loop (`for i in "${!PASS_NAMES[@]}"; do run_pass ...; done`) finishes — a crash of
+      the whole host (or the `wspy-run` process itself) mid-loop kills it before that write, so the
+      run directory ends up with whichever passes *did* finish cleanly (each pass's own per-pass output
+      + `<pass-name>.manifest.json`, written by `wspy` itself as that pass completes) but no top-level
+      `manifest.json` at all. That's a clean, already-computable signal needing zero new instrumentation:
+      a unified-layout (`--suite`/`--benchmark`) run directory with no bare `manifest.json` is
+      unambiguously "never finished" — distinct from a run that finished all its passes but whose child
+      workload itself failed (which *does* get a `manifest.json`, just with a failing `exit_status`,
+      already covered by `wspy-validate`'s PASS/WARN/FAIL and shouldn't be conflated with this). Surface
+      this on `/report` (a clear "incomplete — N of M passes ran" banner, counting existing per-pass
+      manifests against `PASS_NAMES`' expected count) and on `/history`'s search/filter (a new status
+      value alongside its existing `run_status_from_passes()`/`run_status_from_exit_status()` derivation
+      — see `CLAUDE.md`'s "historical run browser" entry).
+    - **Phase B — resume, skipping already-completed passes.** A new `wspy-run --resume <existing-run-
+      dir>` mode reusing that directory's existing `RUNROOT`/`RUN_ID` (not generating a fresh one, or
+      the resumed passes would land somewhere new instead of alongside the ones already there). For each
+      `PASS_NAMES` entry, skip re-running it only if *both* (a) that pass's own `<name>.manifest.json`
+      already exists with a clean exit, and (b) its recorded configuration exactly matches what this
+      invocation would run now — exact-match, not fuzzy, same "don't guess at approximate equivalence"
+      idiom `compare_id_for_keys()`/`summary.c`'s `mixed-pmu` check already use elsewhere in this
+      project, since silently trusting a stale pass run under a since-changed profile/flag set would be
+      worse than just re-running it. The match check needs one new small piece of provenance: since
+      `run_pass()` already threads `--config-option` per pass (`wspy-run:470-472`, existing plumbing, no
+      wspy-side changes needed), `wspy-run` can record a hash of that pass's own resolved flag string as
+      `--config-option pass_flags_hash=<hash>` and compare it against what it would compute for the same
+      pass now. Deliberately does **not** attempt to resume a pass that was itself interrupted
+      mid-execution — that pass's partial output is simply discarded and the whole pass re-run from
+      scratch, since resuming a partially-written `--interval` CSV or a half-finished `--tree` capture
+      mid-stream is a much harder, riskier problem than this item is trying to solve; only *entire,
+      already-cleanly-finished* passes are ever skipped.
+    - **Scope boundaries, both cross-referenced by name per this doc's own convention:** distinct from
+      `wspy-queue`'s job lifecycle (`pending`/`running`/`done`/`failed`) — that's scheduling/retry of
+      *whole new jobs*, not resuming partway through one already-multi-pass `wspy-run` invocation's own
+      internal passes. Also distinct from 4.4's "Config-first experiment definition system" item, whose
+      own "resumable/selective re-execution" is part of a much heavier full YAML/JSON suite/benchmark/
+      repetition system — this item is the lightweight version, scoped specifically to `wspy-run`'s
+      existing profile/pass model, and shouldn't be folded into or block on that bigger item.
 
 **Tier 8 — testing:**
 
-24. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
+25. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
     guardrails — needs deterministic micro-workloads and 4.1's normalized store plus 4.2's
     stats/confidence infrastructure.
-25. Contributor guide for adding a collector/metric/schema bump safely.
+26. Contributor guide for adding a collector/metric/schema bump safely.
 
 ## 4.4 priorities
 Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
