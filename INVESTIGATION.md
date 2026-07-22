@@ -671,15 +671,14 @@ this phase's own IBS sampling mode (Tier 1 above):**
    classification shipped in 4.2) and Intel hybrid hardware became available this cycle ("carlsbad",
    see the Intel hybrid/counter-grouping deep-dive above and "Shipped since 4.2"). That first
    real-hardware Intel pass turned up correctness bugs more fundamental than the E-core-exclusion gap
-   this item was originally scoped around — three now shipped, two correctness bugs still open in Tier 0
-   above, plus that same tier's item 1 (Gracemont raw-event tables), which *is* this item's
-   E-core-exclusion gap, now scoped there instead of here since it's shared with every other
-   E-core-touching feature, not specific to topdown. Recommend sequencing the rest of Tier 0 before
-   resuming this item: a weighted P-core/E-core aggregate is meaningless to build on per-core topdown
-   data that isn't measured correctly yet (or, for E-cores, doesn't exist yet) even for the cores already
-   included. `--affinity=coretype=<id>` (`affinity.c`) now detects x86 P-core/E-core and Zen5/Zen5c
-   groups too (shipped, see "Shipped since 4.2") — this item still needs Tier 0's item 1 before an
-   E-core's own topdown numbers exist to aggregate.
+   this item was originally scoped around — all five now resolved (four shipped, one a documented
+   non-actionable perf-subsystem limitation; see "Shipped since 4.2" and "Known gaps"), leaving only
+   Tier 0's item 1 (Gracemont raw-event tables), which *is* this item's E-core-exclusion gap, now scoped
+   there instead of here since it's shared with every other E-core-touching feature, not specific to
+   topdown. A weighted P-core/E-core aggregate is meaningless to build until Tier 0's item 1 ships: E-core
+   topdown data doesn't exist at all yet to weight. `--affinity=coretype=<id>` (`affinity.c`) now detects
+   x86 P-core/E-core and Zen5/Zen5c groups too (shipped, see "Shipped since 4.2") — this item still needs
+   Tier 0's item 1 before an E-core's own topdown numbers exist to aggregate.
 
 **Tier 4 — publishing/reporting expansion, needs 4.1's report studio:**
 
