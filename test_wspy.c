@@ -568,7 +568,7 @@ void test_multipass() {
     cpu_info = saved_cpu_info;
 
     // close_counters(): real fds (from pipe(), so close() is meaningfully
-    // exercised), assert every one becomes -1 and intel_group_id resets.
+    // exercised), assert every one becomes -1.
     {
         struct counter_group cgroup;
         struct counter_info cinfo[2];
@@ -1042,6 +1042,97 @@ void test_append_run_index() {
 // through wspy.h since only print_metrics() is part of the public surface.
 extern void print_topdown(struct counter_group *cgroup, enum output_format oformat, int mask);
 extern void print_topdown_be(struct counter_group *cgroup, enum output_format oformat, int mask);
+extern struct counter_group *raw_counter_group(char *name, unsigned int mask);
+extern struct counter_group *cache_counter_group(char *name, unsigned int mask);
+
+static void free_test_cgroup(struct counter_group *cgroup) {
+    if (!cgroup) return;
+    free(cgroup->cinfo);
+    free(cgroup->label);
+    free(cgroup);
+}
+
+// INVESTIGATION.md's 4.3 Tier 0 #1: the single-shared-Intel-group design used
+// to funnel every non-topdown Intel raw/cache counter into one perf event
+// group with no size limit, cascading into wholesale EINVAL loss once a
+// combined group exceeded real hardware PMU capacity. The fix makes
+// cache_counter_group()/raw_counter_group() chunk Intel counters into
+// hardware-budget-respecting groups (is_group_leader every
+// available_counters/num_counters_available counters) exactly like they
+// already did for AMD/ARM, while keeping the topdown/topdown2 Perf Metrics
+// family as a single dedicated group regardless of size (a kernel-enforced
+// "literal slots leader" requirement, not a PMC-budget one -- see
+// raw_counter_group()'s own comment). This test locks in both halves of
+// that behavior directly against the real intel_raw_events[]/cache_events[]
+// tables, without needing real hardware/perf_event_open() access.
+void test_intel_counter_grouping(void) {
+    struct cpu_info fake_cpu;
+    struct cpu_info *saved_cpu_info;
+    int saved_nmi;
+    struct counter_group *cgroup;
+    int i;
+
+    printf("Testing Intel counter-group budget chunking (4.3 Tier 0 #1)...\n");
+
+    saved_cpu_info = cpu_info;
+    memset(&fake_cpu, 0, sizeof(fake_cpu));
+    fake_cpu.vendor = VENDOR_INTEL;
+    cpu_info = &fake_cpu;
+    saved_nmi = nmi_running;
+    nmi_running = 0;
+
+    // topdown2 alone requests 9 raw events (slots + 8 core.topdown-* sub-
+    // events) -- more than the 6-slot general-purpose budget, but the whole
+    // family must stay one group led by "slots" regardless: only index 0 is
+    // a leader.
+    cgroup = raw_counter_group("topdown2", COUNTER_TOPDOWN2);
+    assert(cgroup != NULL);
+    assert(cgroup->ncounters == 9);
+    assert(cgroup->cinfo[0].is_group_leader == 1);
+    for (i = 1; i < cgroup->ncounters; i++)
+        assert(cgroup->cinfo[i].is_group_leader == 0);
+    free_test_cgroup(cgroup);
+
+    // branch alone (5 counters: "instructions" + 4 br_* events) fits the
+    // 6-slot budget -- one group, one leader.
+    cgroup = raw_counter_group("branch", COUNTER_BRANCH);
+    assert(cgroup != NULL);
+    assert(cgroup->ncounters == 5);
+    assert(cgroup->cinfo[0].is_group_leader == 1);
+    for (i = 1; i < cgroup->ncounters; i++)
+        assert(cgroup->cinfo[i].is_group_leader == 0);
+    free_test_cgroup(cgroup);
+
+    // A combined, non-topdown mask (branch|l2cache|topdown-be) requests 13
+    // raw events in table order -- exceeding the 6-slot budget twice over.
+    // This is exactly the "wholesale loss once combined group exceeds
+    // capacity" bug: leaders must land at counts 0, 6, and 12 (three groups
+    // of 6/6/1), not one 13-member group the kernel would refuse outright.
+    cgroup = raw_counter_group("combined", COUNTER_BRANCH|COUNTER_L2CACHE|COUNTER_TOPDOWN_BE);
+    assert(cgroup != NULL);
+    assert(cgroup->ncounters == 13);
+    for (i = 0; i < cgroup->ncounters; i++){
+        int expect_leader = (i == 0 || i == 6 || i == 12);
+        assert(cgroup->cinfo[i].is_group_leader == expect_leader);
+    }
+    free_test_cgroup(cgroup);
+
+    // cache_counter_group() (PERF_TYPE_HW_CACHE dcache/icache/tlb): 9 events,
+    // same 6-slot chunking -- leaders at counts 0 and 6.
+    cgroup = cache_counter_group("cache", COUNTER_DCACHE|COUNTER_ICACHE|COUNTER_TLB);
+    assert(cgroup != NULL);
+    assert(cgroup->ncounters == 9);
+    for (i = 0; i < cgroup->ncounters; i++){
+        int expect_leader = (i == 0 || i == 6);
+        assert(cgroup->cinfo[i].is_group_leader == expect_leader);
+    }
+    free_test_cgroup(cgroup);
+
+    nmi_running = saved_nmi;
+    cpu_info = saved_cpu_info;
+
+    printf("PASS: Intel counter-group budget chunking\n");
+}
 
 void test_topdown_confidence(void) {
     struct cpu_info fake_cpu;
@@ -1572,6 +1663,7 @@ int main(int argc, char **argv) {
     test_arm_topdown_equivalence();
     test_topdown_amd_contention();
     test_topdown_be_shared_denominator();
+    test_intel_counter_grouping();
     test_arm_pmu_report();
     test_read_counters_multiplex_scaling();
     return 0;
