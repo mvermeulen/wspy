@@ -548,6 +548,296 @@ score against, not per-rule handling of "what if this run didn't collect topdown
 stated goal of using the normalized store for regression detection and clustering — both need the same
 fixed, coverage-aware feature set this item established.
 
+### Hierarchical topdown schema (L1→L2→L3) (4.2, shipped)
+`print_topdown()`'s already-computed per-vendor L2 breakdown (ucode/fastpath, frontend latency/
+bandwidth, backend cpu/memory, speculation branch/pipeline) reaches CSV, not just human text, as 9 new
+trailing columns (`contention_pct` + 8 `<parent>_<child>_pct` columns), all expressed as a fraction of
+the same contention-adjusted `slots_no_contention` denominator L1 already uses — a real AMD-only
+consistency fix, since the pre-existing human-text L2 lines had divided by raw `slots` instead.
+`TOPDOWN_FORMULA_VERSION` (`wspy.h`) is recorded in the manifest/run-index (`topdown_formula_version`,
+`MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION` 1.6.0 → 1.7.0), `null` when a run collects no
+topdown counters. `wspy-plot`'s `topdown-detail` template charts the 9 new columns on their own, since
+the pre-existing `topdown` template only matches the 4 L1 columns and would otherwise dump them into the
+generic fallback plot.
+
+**L3 tie-in (fast-follow):** `--topdown-backend`'s own `l1_bound`/`l2_bound`/`l3_bound`/`dram_bound`/
+`store_bound` detail (`print_topdown_be()`, a genuinely separate perf counter group with its own
+independent `cpu-cycles` reading) also reaches the same `slots_no_contention` denominator, via 5 new
+`*_slots_pct` columns and a small cross-group sharing mechanism (`topdown.c`'s
+`shared_slots_no_contention`, published by `print_topdown()` and read by `print_topdown_be()` — safe
+only because `setup_counter_groups()`'s check order guarantees the former always runs first for the same
+row; see `CLAUDE.md`'s `topdown.c` entry for the exact mechanism). The original 5 cpu-cycles-normalized
+columns are untouched for backward compatibility; the new columns are explicitly documented as *not*
+guaranteed to sum to `backend_memory_pct` (independent measurement chains, same caveat as the L1 sanity
+check). `wspy-plot`'s `memory-bound-detail` template covers the 5 new columns. Also fixed two previously
+unguarded unsigned-subtraction underflow risks in `print_topdown_be()`'s own `l2_bound`/`l3_bound`
+computation (same bug class as the AMD L2-split fix), via `safe_sub()`. Intel/ARM only — AMD has no
+`COUNTER_TOPDOWN_BE` raw events, so `print_topdown_be()` is never called there.
+
+### Zen-family preset packs (4.2, shipped)
+`wspy-run`'s `zen-portable` (`quick`+`ibs-basic`) and `zen4plus-deep` (`deep-cpu`+`ibs-memory-deep`)
+builtin profiles are the first defined purely as a composition of other builtin profiles
+(`load_profiles()`, the same machinery that resolves a user-supplied comma list) rather than
+hand-written flag strings. `zen-portable` avoids `--power` (AMD Family 19h+ only) and IBS `l3missonly`
+filtering (Zen5-only) so it runs warning-free across the whole Zen family; `zen4plus-deep` assumes
+Family 19h+ hardware where both are real, with `l3missonly` degrading gracefully (not failing) on Zen4.
+Verified end-to-end on real Zen5 hardware.
+
+### Per-core energy (`power_core`) support (4.2, shipped)
+`--power --per-core` opens a real `power_core`/`energy-core` event per representative CPU
+(`power_core`'s own sysfs `cpumask` names one representative logical CPU per physical core — e.g. the
+16 even-numbered CPUs out of 32 on a real Zen5/SMT2 host) and adds `core_joules`/`core_watts` trailing
+columns to `--per-core`'s row shape, alongside (not replacing) the existing systemwide
+`pkg_joules`/`pkg_watts`. Every per-core-eligible CPU gets a structurally identical group; a CPU that
+isn't one of `power_core`'s representative CPUs gets a placeholder counter marked with a new sentinel
+(`POWER_CORE_NOT_APPLICABLE_DEVICE_TYPE`, `power.h`) that `setup_counters()` skips before even
+attempting `perf_event_open()` — genuinely never-attempted, not "requested but failed," so it doesn't
+skew `counters_requested`/`counters_measured` or `preflight.c`'s budget estimate. `--power` alone (no
+`--per-core`) is unaffected.
+
+**Confirmed on real Zen5 hardware (root):** representative CPUs showed real nonzero values correlating
+with actual scheduling activity, sibling CPUs read exactly `0.000`, `pkg_joules`/`pkg_watts` stayed
+unchanged across every row, and coverage counts confirmed exactly 16 representative attempts (not 32).
+Also confirmed, a genuine finding rather than a units bug: summed per-core energy across representative
+CPUs was roughly 16× smaller than package energy for the same window — core-domain energy is a real,
+meaningfully smaller subset of package energy (excludes uncore/IO/memory-controller/L3/idle-package
+power). See `CLAUDE.md`'s `power.c` entry for the full mechanism.
+
+### ROCm SMI + sysfs GPU fusion layer, and GPU telemetry provenance (4.2, shipped)
+`--gpu-metrics` now merges `amd_sysfs.c` and `amd_smi.c` into one fused column set instead of requiring
+a separate `--gpu-smi` for VRAM — sysfs supplies temp/activity/power/freq (the actively-used path;
+`amd_smi.c` is "legacy"), SMI fills in temp/activity only when sysfs's reading failed, and SMI remains
+the sole VRAM source. New `gpu_temp_source`/`gpu_activity_source` columns record which backend actually
+supplied each value (power/freq/VRAM each have exactly one possible source, so they keep this
+codebase's usual zero-means-unmeasured convention instead of a redundant flag). The precedence logic
+(`gpu_fusion.c`'s `gpu_fusion_combine()`) is a pure, unit-tested function (`test_gpu_fusion.c`)
+separated from the hardware-dependent glue, mirroring `power.c`/`ibs.c`'s own testability split. Also
+collapsed 4 previously hand-duplicated GPU-metrics print sites (CSV header, per-core CSV, aggregate
+CSV, human output) into one shared `print_gpu_metrics()`, closing off the exact column-ordering bug
+class the `--gpu-smi --interval` fix (below) already ran into once.
+
+`struct manifest_gpu_info` (`manifest.h`) adds an `options.gpu` object to the manifest/run-index
+(`MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION` 1.7.0 → 1.8.0) — which `--gpu-*` flag(s) were
+requested, the resolved AMD/NVIDIA device index, and whether each backend
+(`amd_sysfs`/`amd_smi`/`nvidia`) actually produced valid data on the run's last read. Deliberately
+provenance-only, not a duplicate of the measured values (same role `counters_requested`/
+`counters_measured` play for perf counters); device-index fields are gated on the `requested` flags
+rather than the index's sign, so a zero-initialized struct reports `null` rather than looking like
+"device 0".
+
+**Verified live on real AMD GPU hardware:** SMI's `gpu_metrics_info` call failed independently of
+sysfs, and the fused row still correctly reported `sysfs`/`sysfs` sources plus a real VRAM reading from
+SMI's separate (successful) VRAM call; the same combination round-tripped correctly into both the
+manifest and run-index.
+
+### System-wide disk I/O and memory pressure stats (4.2, shipped)
+Two new `system.c` bits, both default-on in `system_mask` (only printed with `--system`/`-s`, no
+separate CLI flag):
+
+- **`SYSTEM_DISK`** reports per-block-device read/write bytes and time-in-I/O deltas from
+  `/sys/block/<dev>/stat` (devices enumerated via `/proc/partitions`, filtered to whole disks) as three
+  new columns per device (`disk <dev> read,disk <dev> write,disk <dev> time,`) — the same per-device
+  breakdown `SYSTEM_NETWORK` already gives for `/proc/net/dev`. `wspy-plot` gained matching
+  `disk-io`/`disk-time` fallback plots (kept separate since bytes and milliseconds don't share a useful
+  scale). Device enumeration excludes `loop`/`ram`/`zram` names unconditionally
+  (`is_virtual_disk_device()`) — found via live testing: a real dev host's 35 snap-package loop devices
+  pushed a realistic multi-flag `--interval` CSV to 137 columns, past `plot.c`'s `MAX_CSV_FIELDS` (128)
+  cap, silently truncating header parsing and dropping the `topdown-detail` plot with no error;
+  filtering brought the same CSV to 35 columns and restored correct plotting. Loop devices' own
+  `/sys/block/loopN/stat` also never reflects real backing-file I/O, so this is the correct default
+  independent of the column-budget concern. Verified live: real `dd`-driven writes to the root
+  filesystem tracked actual bytes/I/O-time tick-for-tick, while a tmpfs-backed write correctly showed
+  zero disk activity.
+- **`SYSTEM_MEM`** reports 6 fixed `/proc/meminfo` fields — `MemFree`/`Cached`/`Dirty`/`Writeback`/
+  `SwapFree`/`Committed_AS` — as `mem_free_mb,mem_cached_mb,mem_dirty_mb,mem_writeback_mb,
+  swap_free_mb,committed_as_mb,` columns (kB converted to MB at print time). Distinct from
+  `--tree-vmsize`'s per-process snapshot — this is host-wide. Absolute point-in-time gauges, not deltas.
+  `wspy-plot` gained a real `memory-pressure` template (not a fallback bucket, since these 6 columns are
+  fixed names sharing one MB scale). Verified live: a Python process touching a 300MB buffer moved
+  `mem_free_mb` measurably across `--interval` ticks on a 62GB host.
+
+### `proctree` JSON export + interactive viewer + run-to-run diff (4.2, shipped)
+`proctree --json <tree-file>` emits one JSON document (per-`comm` summary + full process tree, every
+field unconditional rather than gated by the text-mode `-M`/`-N`/`-P`/`-U`/`-X`/etc. toggles) instead of
+the text tree/summary — the interchange format both the new web viewer and `--diff` mode consume,
+versioned via `PROCTREE_JSON_SCHEMA_VERSION` (see `doc/ARTIFACT_CONTRACT.md`'s "Tree JSON export").
+`proctree --diff [--json] <a.json> <b.json>` matches subtrees structurally (ancestor-`comm`-path,
+disambiguated by sibling occurrence order, since pids never correspond across two separate runs),
+reporting `added`/`removed`/`changed`/`same` per node plus a `comm`-keyed `summary_diff` overview; exits
+1 if any difference was found, 0 if the trees matched exactly.
+
+`web/server.py` gained an on-demand `GET /api/tree-json/<suite>/<benchmark>/<run_id>` (shells out to
+`proctree --json`, no artifact written to disk) feeding a client-side-rendered
+`/tree-viewer/<suite>/<benchmark>/<run_id>` page (`web/static/proctree_viewer.js`: collapsible tree,
+search/filter by `comm`/pid, auto-detected column toggles for whichever `--tree-*` annotations this run
+collected), linked from every report that has a `process.tree.txt`. `GET /tree-diff?r=...&r=...` reuses
+the homepage's/`/history`'s run-selection checkboxes (a second "Tree diff selected" button) to drive the
+same viewer against `GET /api/tree-diff-json`'s merged diff tree, rendering per-node
+added/removed/changed/same badges.
+
+Graphviz export for an already-filtered small subtree remains a possible optional secondary output, not
+implemented — the interactive viewer is the main way to view a whole run's tree now.
+
+### `wspy-core-report`: per-core diagnostics, and AMD Zen5/Zen5c core detection (4.2, shipped)
+A new standalone binary (`core_report.c`) reports cross-core min/max/mean/stddev/coefficient-of-
+variation for every metric column in an existing `--per-core --csv` file, naming the "hot" (max) and
+"cold" (min) core by index — a post-hoc report over an already-collected artifact (matching
+`wspy-validate`/`wspy-plot`'s own pattern), not a live collection-time feature. When a host's cores
+aren't all the same type, an additional breakdown groups the same stats by core class. Must be run on
+the same host that collected the CSV (or one with identical topology) — core classes are re-detected
+fresh via `inventory_cpu()`, there's no per-core class column in the CSV itself. The class-grouping
+logic (`gather_core_values()`/`distinct_classes_present()`) takes a plain class-per-core-index array
+rather than reading `cpu_info` directly, so `test_core_report.c` exercises it against a synthetic
+heterogeneous-host assignment without needing real hardware. `--csv` output:
+`metric,scope,scope_value,n,min,min_core,max,max_core,mean,stddev,cv_percent`; `--metric <name>` filters
+columns. (Process/thread migration diagnostics — did a process's threads move between cores — was split
+out into its own 4.4 backlog entry, since it needs new instrumentation, not just new analysis of data
+already collected.)
+
+**AMD Zen5/Zen5c core detection** feeds this directly: `cpu_info.c` previously classified every
+family-0x1a AMD core as `CORE_AMD_ZEN5` uniformly, unable to tell full Zen5 cores apart from the
+physically compact Zen5c cores on hybrid parts (e.g. Ryzen AI 300 "Strix Point") — cpuid family/model
+alone can't distinguish them. `resolve_amd_zen5_dense_cores()` clusters on per-core `cpufreq` max
+instead (any family-0x1a core whose max frequency reads below the highest seen among its siblings is
+reclassified `CORE_AMD_ZEN5C`), mirroring the heuristic `scripts/map_cpu_hierarchy.py` already used;
+degrades to leaving every core `CORE_AMD_ZEN5` when frequency data isn't readable. Fixed two consumers
+that would otherwise silently mishandle the new class: `topdown.c`'s slots-per-cycle formula (folded
+into the same 8-wide branch as full Zen5) and `wspy.c`'s `core_is_per_core_eligible()` (without it,
+Zen5c cores would silently collect zero per-core counters). **Verified live:** `./cpu_info`'s
+Zen5/Zen5c split matched `map_cpu_hierarchy.py` exactly, CPU-for-CPU, on a Ryzen AI 9 HX 370 (4 Zen5 +
+8 Zen5c cores).
+
+A new "Per-core class comparison" section on the web launcher's Validate tab runs `wspy-core-report`
+against a discovered or pasted `--per-core` CSV (gated on a real `core` header column), with
+`--metric`/`--csv` options exposed; report pages gained a "Compare cores" link next to any `--per-core`
+CSV artifact that lands pre-filled on that section.
+
+### cgroup identity, limits, and throttling in the manifest/run-index (4.2, shipped)
+A new module (`cgroup.c`/`cgroup.h`) adds a top-level `"cgroup"` object to the manifest/run-index
+(`MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION` 1.8.0 → 1.9.0) — cgroup v2 identity (the
+unified-hierarchy path from `/proc/self/cgroup`'s `"0::"` line), resource limits (`cpu.max`'s
+quota/period, `cpu.weight`, `memory.max`/`memory.high`), and CPU-throttling stats (`cpu.stat`'s
+`nr_periods`/`nr_throttled`/`throttled_usec`) — needed for fair comparison of runs in containerized
+environments, where a `cpu.max` quota or an ongoing throttling episode can explain a degraded result
+that has nothing to do with the workload itself. cgroup v2 (unified hierarchy) only; a pure cgroup v1
+host degrades the whole thing to unavailable, and every limit field degrades independently (a real,
+confirmed-live case: a desktop terminal-emulator's leaf cgroup had `memory.max`/`memory.high` but no
+`cpu.max`/`cpu.weight`/throttling fields at all, since the cpu controller wasn't enabled on it).
+Identity/limits are read once; `cpu.stat`'s cumulative counters are read twice — once near workload
+launch, once at manifest-write time — and the *delta* is what's reported, mirroring `read_counters()`'s
+before/after idiom for perf counters. `cgroup_state`/`cgroup_throttle_baseline` are module-owned
+run-lifetime state, mirroring `affinity.h`'s precedent. Tested against fake
+`/proc/self/cgroup`+`/sys/fs/cgroup` fixtures (`test_cgroup.c`), including a regression fixture for the
+real no-cpu-controller case found during development.
+
+### Archetype scorecard (4.2, shipped)
+`wspy-archetype` (`archetype.c`) classifies a run along four axes scored from `run_features` —
+`resource_dominance` (the headline axis: `compute-bound`/`frontend-bound`/`memory-bound`/
+`speculation-bound`, ranked from topdown L1 percentages, with a top-2 alternative and a margin-based
+confidence level) plus three simpler supporting tags (`parallelism_shape`, `control_flow_style`,
+`runtime_stability`, each `unknown` when their source feature wasn't collected). No taxonomy/threshold/
+confidence-formula spec existed anywhere in this repo before this item — every rule is a from-scratch v1
+design, confirmed with the user as 4 independent axes (not a single composite cross-product label)
+specifically because `resource_dominance` is the one axis with a natural ranked percentage to define
+"top-2 alternatives" against.
+
+Real prior art grounded the design: a 2024 clustering analysis (~240 Phoronix tests + 23 SPEC CPU2017
+benchmarks, k-means into 30 clusters, see `mvermeulen.org/perf/2024/06/08/clustering/`) used exactly
+`retire`/`frontend`/`backend`/`speculation` as its core clustering metrics, directly validating the
+`resource_dominance` approach, and separately used `on_cpu` (cores actively used) as a clustering
+dimension distinct from load balance — motivating the new `active_core_count` run_feature (`store.c`,
+`FEATURE_SET_VERSION` 1.0 → 1.1, alongside `smt_contention_pct`) that `parallelism_proxy` alone didn't
+capture.
+
+Two CLI modes mirror `summary.c`'s bulk/`--trace` duality: default scores every run matching
+`--command`/`--hostname` filters (one row per run, CSV or human table; deliberately excludes runs with
+zero `run_features` rows at all rather than showing them as all-`unknown`); `--run <hostname>:<run_id>`
+prints one detailed `key=value` scorecard. Designed for extensibility: a new simple threshold-based axis
+is one rule-table addition plus one `classify_simple_axis()` call site, no changes needed elsewhere. See
+`CLAUDE.md`'s `archetype.c` entry for the full design.
+
+### Compare-view curation, Phase 1 (4.2, shipped)
+`GET /compare` gained an optional annotation layer — `compare.json` (`COMPARE_SCHEMA_VERSION`,
+`web/server.py`), the first cross-*run* state file in this codebase (`curation.json` is strictly
+per-run; `run_index.jsonl`/`store.db` are flat per-run logs with no relationship between specific runs),
+stored at `<output_root>/compares/<id>.json` where `id` is a hash of the sorted, deduped run-key set
+(order-independent, exact-match — a different run set gets a different id and starts uncurated, no
+fuzzy reattachment). Scoped to Phase 1 only: one `overview_note` for the comparison as a whole plus one
+commentary note per filename row, reusing today's exact filename-based row identity — no cross-run
+alignment of differently-named files yet. A separate `GET`/`POST /compare/curate?r=...&r=...` edit page
+mirrors the studio/report split rather than an inline-edit toggle. Covered by
+`web/test_compare_curation.py`. See `CLAUDE.md`'s "Compare-view curation" entry for the full design.
+
+**Deferred out of Phase 1, not dropped:** manually aligning two differently-named files from different
+runs as "the same measurement" (e.g. two runs that used different profiles/passes and so named
+conceptually-equivalent output differently) needs a real new alignment concept (a group/label spanning a
+per-run file mapping), not an extension of the current commentary layer. Worth revisiting once real
+multi-profile comparisons actually need it.
+
+### Release-prep checklist/script and doc/version consistency check (4.2, shipped)
+`scripts/release_prep.sh` captures the v4.0/v4.1/v4.1.1 release process as a repeatable script:
+pre-flight checks, a merged-PR/release-label audit, version bump, stale-version-reference grep, the
+full test matrix, a release-notes draft, and doc bookkeeping reminders, ending with print-only
+tag/push/publish commands it never executes itself. Not hypothetical: the label audit found real, live
+drift the first time it ran — PR #124 was missing its `v4.2` label, now fixed. Two real bugs found and
+fixed while building it, worth recording since they're non-obvious: (1) `gh pr list --search
+"merged:>=<date>"` is imprecise at same-day tag/PR boundaries (`v4.1.1`'s own tagged commit's
+author-date collided with its own PR's merge time and got double-counted) — fixed by using `git log
+<tag>..HEAD --merges` for exact PR ancestry instead; (2) `gh pr edit --add-label` fails outright on this
+repo with a "Projects (classic) is being deprecated" GraphQL error before the label is ever applied —
+fixed by using `gh api repos/{owner}/{repo}/issues/<n>/labels` instead. See `CLAUDE.md`'s
+`scripts/release_prep.sh` entry for the full phase-by-phase design.
+
+`tests/doc_version_check.sh` (wired into `run_tests.sh`, once, not per GPU-build axis) is a grep-based
+doc/version drift check — and wasn't a hypothetical exercise: running it for the first time found the
+exact class of drift the backlog item described, live in the repo. `doc/ARTIFACT_CONTRACT.md`'s
+manifest/run-index JSON examples *and* its own separate "Current versions as of this writing" prose
+summary had each independently drifted to a stale `1.5.0` against the real `1.9.0`
+`MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION`, and `README.md` had no section at all for
+`wspy-core-report`/`wspy-archetype` despite both being built by `make all`. All three fixed in the same
+change as adding the script. See `CLAUDE.md`'s `tests/doc_version_check.sh` entry for the full design.
+
+### Size `wspy-run`'s `--tree` pass timeout from an actual run-time estimate (4.2, shipped)
+`estimate_tree_pass_timeouts()` (`wspy-run`) sizes the timeout generically for any pass whose flags use
+`--tree` — not hardcoded to `tree-heavy` by name, so `gpu-compute` (which also uses `--tree`, previously
+with no timeout at all) now gets one too. Reuses `web/joblib.py`'s already-validated Phoronix
+runtime-estimation logic (`estimate_phoronix_workload_seconds()`) via a new small CLI wrapper,
+`scripts/estimate_tree_timeout.py`, rather than reimplementing the same `phoronix-test-suite info` text
+parsing a second time in bash.
+
+Design settled through direct discussion, correcting two assumptions from the original backlog line: the
+timeout's real purpose is a ptrace-hang backstop, not primarily a data-volume cap — losing a key ptrace
+event for a traced process can leave `wspy` hung waiting to clean up — and real Phoronix runs
+legitimately exceed the historical 3600s constant, so the floor stays at exactly that constant (this can
+only raise the cap for a workload confirmed to legitimately need longer, never lower it) with a generous
+6-hour ceiling as a true hang backstop, not a normal-operation limit. `phoronix-test-suite info <test>`'s
+own per-test estimate is treated as a floor, not a target, and multiplied up more aggressively for
+`batch-run` specifically (`BATCH_RUN_MULTIPLIER=5.0` vs. `RUN_MULTIPLIER=2.0`) — confirmed live against a
+real installed test profile (`blender-1.2.1/test-definition.xml`) that a full `batch-run` sweep runs
+every configured option combination (5 blend files × 2 compute backends = 10 full renders for that one
+test), something `info`'s single-test estimate doesn't account for. Falls back to the exact historical
+`3600` whenever no estimate can be derived — never blocks a run over a missing/failed estimate.
+
+### Profile cookbook + interpretation playbook, and reproducibility bundle export (4.2, shipped)
+`doc/PROFILE_COOKBOOK.md` is a reading guide for `summary.c`'s `verdict` column, `archetype.c`'s
+`confidence`, `phase.c`'s `phase` output, and the two real comparability mechanisms (`mixed-pmu`,
+environment `--group-by`) — what each signal means and what to do when it fires, not a restatement of
+the artifact format (`doc/ARTIFACT_CONTRACT.md` already owns that). Every numeric example is real
+captured output from a small synthetic 4-run dataset built specifically to trigger a genuine
+`WARN:noisy,mixed-pmu` bucket and a real low-confidence `wspy-archetype` classification, rather than
+invented figures. Also directly resolves the backlog line's ambiguous "cluster" wording: states plainly
+that statistical clustering is **not** shipped yet (still its own distinct 4.3 item), rather than
+describing a feature that doesn't exist.
+
+`wspy-bundle` (new, stdlib-only Python) bundles one run directory's manifest(s), raw per-pass output,
+and derived artifacts (plots, summary, curation, AI narrative) into a single checksummed `.tar.gz`, so a
+run can be archived or handed off without access to the machine's live output-root/`store.db`. The
+actual enumeration/bundling logic (`collect_run_files()`, `build_reproducibility_bundle()`) lives in
+`web/joblib.py`, shared with `web/server.py`'s own "Download reproducibility bundle" report-page link —
+same "one shared implementation, two front ends" pattern the job queue established. A
+`bundle_manifest.json` index at the tar root classifies every file as `manifest`/`raw`/`derived` and
+records its sha256. This closed out 4.2 entirely.
+
 ## Validation narratives (4.2-era)
 
 ### AMD IBS real-hardware validation (Zen5, 2026-07-15)
@@ -927,3 +1217,123 @@ on the current boot); governor is a global sysfs write that affects every other 
 and persists after `wspy` exits — a measurement tool being in the business of mutating shared system
 state like that is a different, larger feature with its own safety design, not a natural extension of
 this one. Left genuinely open-ended, not merely deferred to a later phase.
+
+### AMD IBS `ldlat` hardware minimum, and filtered-vs-unfiltered validation (Zen5, 4.2)
+Attempting the long-carried-forward "compare filtered vs. unfiltered IBS sample distributions on real
+hardware" validation immediately hit `--ibs-memory-deep`'s filtered `ibs_op` counter failing to open
+(`errno=22`/`EINVAL`) on real Zen5 hardware (family 1a model 70). A bit-by-bit `perf_event_open()` sweep
+of the `ldlat` config field (bypassing wspy entirely) found a clean, reproducible threshold: every value
+100–127 is rejected, every value ≥ 128 succeeds — the kernel enforces a real minimum load-latency
+threshold of 128 for `ibs_op`. `ibs.h`'s `IBS_DEFAULT_LDLAT_THRESHOLD` was **120**, below that minimum,
+so every `--ibs-memory-deep` run that didn't explicitly override `--ibs-ldlat` had been silently failing
+to open the filtered counter (degrading to 2/3 measured — not a fatal error, so this went unnoticed).
+Fixed: default bumped to 128. `IBS_DEFAULT_FETCHLAT_THRESHOLD` (also 120) is deliberately left unchanged
+— no hardware available exposed a working `fetchlat` sysfs format field on `ibs_fetch` to test the same
+way (see `INVESTIGATION.md`'s "Known gaps").
+
+With the fix, the originally-requested comparison now works: a deliberately cache-unfriendly
+pointer-chase workload (256MB randomized permutation cycle) showed `ibs_op_accepted_ratio` averaging
+~6.8% across 3 trials (0.0630/0.0662/0.0750) versus ~2.6% for an idle `sleep` baseline
+(0.0425/0.0190/0.0176) over 3 trials each — non-overlapping ranges, confirming the l3missonly+ldlat
+filter's accepted-ratio signal genuinely tracks real memory-bound behavior rather than sampling noise.
+
+### `wspy-validate`/`wspy-ledger` exercised at accumulated real scale (4.2)
+Built up a real `--run-index`-accumulated file (100+ genuine `wspy` runs, mixed successful/failing/
+varied workloads) rather than relying only on `test_ledger.c`/`test_validate.c`'s small synthetic
+fixtures.
+
+**Interrupted runs:** a process killed well before reaching the manifest/run-index write phase leaves
+no trace (clean, expected) across 150 trials at randomized early-startup timing; a further ~250 trials
+with a precise `clock_nanosleep`-timed `SIGKILL` deliberately swept across the exact
+`sleep(2)`-pre-launch-boundary/record-write window — every resulting run-index line remained valid
+JSONL with zero corruption, consistent with `run_index.c`'s buffered-then-single-flush write pattern
+being effectively atomic in practice for typical record sizes (not claimed mathematically provable).
+
+**Mixed schema versions:** hand-stamped real records with a same-major/older-minor version (1.4.0,
+1.0.0, predating structured configuration provenance/affinity) were silently tolerated with no warning,
+exactly as designed; a genuinely different-major version (2.0.0) triggered `wspy-ledger`'s
+one-time-per-distinct-version warning (not per-record) without affecting `--strict`'s exit code; a
+record with no `schema_version` field triggered its own one-time warning; a hand-truncated malformed
+JSON line was skipped with a line-numbered error rather than aborting the rest of the file.
+`wspy-validate` against 5 manifests spanning current/old-minor/major-mismatch/missing-field/truncated
+variants behaved identically: major-mismatch is `WARN` not `FAIL`, missing-field is `FAIL`, truncated
+JSON fails with a precise parse-error location, and every other manifest in the batch still gets a full,
+independent report. No bugs found — this validation confirms existing designed behavior rather than
+fixing anything.
+
+### GPU multi-device enumeration on a real multi-GPU host (4.2)
+Built `AMDGPU=1 NVIDIA=1` and ran against a real laptop with both an AMD iGPU (Strix 880M/890M, sysfs
+`card2`) and an NVIDIA dGPU (RTX 5070 Laptop GPU) present simultaneously. `--gpu-device=2`/
+`--gpu-nvidia-device=0` (the correct indices) select the right card on each backend and report real,
+distinct data (`gpu_*` and `nv_*` CSV columns coexisting on the same row, including under `--interval`);
+an out-of-range index and a nonexistent NVIDIA index both degrade gracefully (logged error, zero-valued
+columns, run continues) rather than crashing or silently reading the wrong device. Running both GPU
+backends' counters alongside real IPC/topdown hardware counters confirmed no interaction between the
+GPU and PMU collection paths.
+
+Surfaced one real bug: `wspy --capabilities`' AMD sysfs device list never showed which device was
+selected (unlike the AMD SMI/NVIDIA NVML lists right next to it), because `run_capabilities_probe()`
+(`wspy.c`) called `amd_sysfs_print_capability_report()` without ever calling `amd_sysfs_initialize()`
+first. Fixed by adding the missing initialize/finalize pair, matching the `amd_smi_*`/`nvidia_nvml_*`
+pattern immediately below it.
+
+Also confirms a real-hardware finding that is not a wspy bug: on this specific AMD Strix APU, the ROCm
+`amd_smi` backend's `gpu_metrics` blob query fails with `AMDSMI_STATUS_UNEXPECTED_DATA` (43) —
+`--gpu-smi`'s `gpu_smi_temp`/`gpu_smi_activity` degrade to 0 as designed while
+`gpu_smi_vram_used`/`gpu_smi_vram_total` (a separate ROCm query) still succeed; the plain-sysfs backend
+is unaffected. Confirmed via `./test_amd_smi.sh`/`./test_nvidia_nvml.sh` and the full `./run_tests.sh`
+matrix (default + `AMDGPU=1` + `NVIDIA=1` builds), all passing.
+
+### Small correctness fixes found during 4.2 hand-testing
+- **`--gpu-smi --interval` CSV column-count fix:** `timer_callback()` (`topdown.c`) never read
+  `amd_smi` per tick, only in aggregate mode, so a periodic `--gpu-smi --interval` row silently missed
+  the 4 columns (`gpu_smi_temp`/`gpu_smi_activity`/`gpu_smi_vram_used`/`gpu_smi_vram_total`) the header
+  claims. Fixed to mirror the aggregate/tail-row block exactly, positioned to match column order.
+- **`--interval` tail-print/last-tick signal race:** `wspy.c` now blocks `SIGALRM` and disarms the
+  periodic timer (`sigprocmask`/`alarm(0)`) as the very first thing after the blocking wait for the
+  child returns, before any of the final tail row's `fprintf()` calls — `is_still_running=0` alone only
+  stopped the *next* re-arm, it didn't retract a `SIGALRM` the kernel had already queued, so a signal
+  delivered partway through the tail row could let `timer_callback()` splice a full periodic row into
+  the middle of it. **Validation note:** three escalating black-box reproduction attempts (natural
+  near-boundary timing, external `SIGALRM` injection around child exit, sustained injection across the
+  whole process lifetime — several dozen trials, thousands of signal deliveries each) did not trigger
+  the malformed-line symptom even on the pre-fix binary, so this fix is verified by code-level reasoning
+  and the full test suite rather than an empirical repro of the race itself. The narrowed window is not
+  claimed to be mathematically zero.
+- **`deep-gpu` now carries `--power`:** `wspy-run`'s `deep-gpu` systemtime pass was missing `--power`
+  even though it's the exact same zero-hardware-counter shape as `deep-cpu`'s systemtime pass (which
+  already carried it) — a pre-existing asymmetry, not a deliberate difference. Also fixed
+  `web/server.py`'s `POWER_PRESET_NAMES` (had been silently skipping `deep-gpu`'s power probe) and
+  `web/joblib.py`'s `PROFILE_PLOTTABLE_COLUMNS`.
+- **Web launcher custom GPU checklist gained an NVIDIA checkbox:** the "GPU metrics" card only exposed
+  AMD's `--gpu-busy`/`--gpu-metrics`/`--gpu-smi` checkboxes, so a custom (non-preset) run had no way to
+  opt into `--gpu-nvidia` — only presets that hardcode it (`gpu-compute`) got NVIDIA data. Added the
+  missing checkbox; the "Device index" field stays AMD-only, NVIDIA always uses its default device.
+
+### Phoronix `result_notifier` hook capture: real-host findings (4.2)
+`scripts/pts_hooks/{pre,post}_test_run.sh` (PTS `result_notifier` hook scripts) and
+`scripts/setup_phoronix_hooks.sh` (one-time host registration helper) landed ahead of the full
+`wspy-phoronix-segment` item (see `INVESTIGATION.md`'s 4.3 infra tier). Relocation of the staging log
+into a per-pass `<pass-name>.pts_hooks.log` artifact lives in `wspy-run`'s own `run_pass()` rather than
+only in `workload/phoronix/run_test.sh`, so every front end that funnels through `wspy-run` (the web
+launcher's preset path, `wspy-queue`, direct use) captures hook data the same way; the web launcher's
+*custom checklist* path (which calls `wspy` directly) needed its own equivalent
+(`_archive_stale_pts_hooks_log()`/`_capture_pts_hooks_log()`, `web/joblib.py`).
+
+**Real-host testing found registration had never actually worked at all:** two compounding bugs, one
+ours (`setup_phoronix_hooks.sh` wrote a hyphenated `modules-data/result-notifier/` directory; PTS's own
+module lookup resolves the underscored `result_notifier`, matching the module's literal PHP class name,
+so registration silently no-opped — fixed), one upstream (PTS's bundled `result_notifier.php`
+unconditionally dereferences a null `test_result_buffer` and calls a nonexistent
+`pts_test_result::get_result()`, fatally crashing `phoronix-test-suite` itself as soon as *any* real
+hook script is configured — filed and fixed upstream at
+[phoronix-test-suite/phoronix-test-suite#924](https://github.com/phoronix-test-suite/phoronix-test-suite/pull/924)/
+[#925](https://github.com/phoronix-test-suite/phoronix-test-suite/issues/925), verified live). Until
+that upstream fix ships in a release, registering the hooks on an unpatched PTS install turns "no
+telemetry" into "the benchmark run crashes with zero results" — a locally-patched `result_notifier.php`
+is the stopgap; the web launcher's Check button also warns about the unpatched case
+(`check_phoronix_result_notifier_bug()`). Full detail: `doc/phoronix_hook_investigation.md`'s
+"Implementation Update"/"Follow-up"/"Real-Host Findings" sections.
+
+**Still open:** teaching `wspy-phoronix-segment.py` (the still-unbuilt 4.3 item) to prefer
+`pts_hooks.log` over the composite.xml/log-timestamp correlation it plans to use otherwise.

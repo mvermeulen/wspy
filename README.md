@@ -73,7 +73,8 @@ Some of the more commonly used options:
   * `--verbose` / `-v` - verbose diagnostics (repeat for more detail)
 * Run artifacts (reproducibility metadata, independent of each other)
   * `--manifest <file>` - write a JSON run manifest (command line, timestamps, exit status,
-    host/CPU info, counter coverage, provenance, output files produced)
+    host/CPU info, counter coverage, provenance, cgroup v2 identity/limits/throttling deltas,
+    output files produced)
   * `--run-index <file>` - append a compact JSON Lines record for this run to a shared file,
     so tooling can query "all runs" by scanning one file
   * `--exit-with-child` - exit with the launched command's own exit status (or 128+signal),
@@ -92,6 +93,7 @@ Some of the more commonly used options:
 * Process info
   * `--rusage` / `-r` - report `getrusage(2)` info (on by default)
   * `--per-core` / `-a` - report performance counters per-core instead of system-wide
+  * `--per-core-freq` - with `--per-core`, add each core's live cpufreq reading (`core_freq_mhz`)
 * Core/thread affinity
   * `--affinity=all|thread=<id>|nosmt|domain=<id>|coretype=<id>|cpuset=<c0,c1,...>` - pin the
     workload to a subset of cores/threads (SMT off, one L3-domain or core-type, or an explicit
@@ -102,12 +104,21 @@ Some of the more commonly used options:
   * `--tree <file>` - trace the child (and its descendants) via `ptrace`, recording
     fork/exec/exit events with timestamps to `<file>`
   * `--tree-cmdline` - also record each process's full command line
-  * `--tree-vmsize` - also record virtual memory size
+  * `--tree-vmsize` - also record peak RSS plus anon/file/shmem RSS composition and swap
+  * `--tree-futex`, `--tree-io`, `--tree-io-wait`, `--tree-schedstat`, `--tree-connect`,
+    `--tree-nanosleep`, `--tree-wait`, `--tree-poll` - per-process synchronization-latency
+    instrumentation (blocking futex/I/O/connect/wait/poll/sleep time, `/proc/<pid>/io` byte
+    counters, and `/proc/<pid>/schedstat` run-queue delay) — together they explain a degraded
+    interval phase as blocked in the kernel, runnable but not scheduled, or a genuine on-CPU stall
   * `proctree <file>` - the companion tool that reads a `--tree` file back and reconstructs
-    the process hierarchy
+    the process hierarchy; `proctree --json <file>` emits the same tree as one JSON document, and
+    `proctree --diff [--json] <a.json> <b.json>` diffs two runs' trees structurally
+    (added/removed/changed/same per node) — both also drive the web launcher's interactive tree
+    viewer and tree-diff pages
 * System-wide metrics
-  * `--system` / `-s` - report load average, CPU time (`/proc/stat`), and network
-    (`/proc/net/dev`) counters, plus GPU metrics if a `--gpu-*` option is also given
+  * `--system` / `-s` - report load average, CPU time (`/proc/stat`), network (`/proc/net/dev`),
+    per-block-device disk I/O (`/sys/block/<dev>/stat`), and memory pressure (`/proc/meminfo`)
+    counters, plus GPU metrics if a `--gpu-*` option is also given
 * Performance counters (`--ipc` and `--software` are on by default; `--no-ipc`/`--no-software`
   to turn either off)
   * `--counters=<list>` - **the recommended way to select counter groups**: a comma-separated
@@ -149,7 +160,10 @@ ARM notes:
 * AMD GPU metrics (only available when built with `AMDGPU=1`)
   * `--gpu-smi` - GPU info via ROCm's `amd_smi` library
   * `--gpu-busy` - instantaneous GPU busy percent, read from sysfs
-  * `--gpu-metrics` - detailed GPU metrics (temperature, activity, power, clock), read from sysfs
+  * `--gpu-metrics` - detailed GPU metrics (temperature, activity, power, clock) fused from sysfs
+    (the primary source) and ROCm SMI (fills in temperature/activity if sysfs's reading failed,
+    and is the sole VRAM source); `gpu_temp_source`/`gpu_activity_source` columns record which
+    backend actually supplied each value
   * `--gpu-device=<idx>` - select a specific AMD GPU device by index for the above, on
     multi-GPU hosts (default: lowest-numbered card / SMI device 0); see `--capabilities`
     for the enumerated device list
@@ -195,9 +209,13 @@ Builtin profiles: `quick` (one fast IPC+system pass), `deep-cpu` (the multi-pass
 used for topdown characterization), `deep-cpu-intel` (the shorter Intel-only equivalent — Intel
 lacks `deep-cpu`'s AMD-specific opcache/frontend/L3 groups), `deep-gpu` (`deep-cpu` plus GPU
 busy/metrics passes), `tree-heavy` (a single `--tree` pass with full command-line capture, capped
-at a 3600s timeout since an hour of process-tree records is already more than practical to
-publish), and `ibs-basic`/`ibs-memory-deep` (single-pass AMD IBS collection, see the IBS flags
-above). `-c <file>` loads a custom pass list instead (`<pass-name> <wspy-flags...>` per line), and
+at a run-time-estimated timeout, 3600s floor), `ibs-basic`/`ibs-memory-deep` (single-pass AMD IBS
+collection, see the IBS flags above), `gpu-compute` (tree tracing + system + power + both GPU
+backends + topdown on one shared `--interval` timeline, for GPU-bound workloads a
+separate-pass-per-category profile can't correlate tick-for-tick), and the Zen-family preset packs
+`zen-portable` (`quick`+`ibs-basic`, warning-free across the whole Zen family) and `zen4plus-deep`
+(`deep-cpu`+`ibs-memory-deep`, assumes Family 19h+). `-c <file>` loads a custom pass list instead
+(`<pass-name> <wspy-flags...>` per line), and
 a comma-separated profile list (e.g. `deep-cpu,tree-heavy`) composes more than one builtin
 profile's passes into a single invocation — see `./wspy-run --help` for the full option list and
 config-file format. Each pass writes to `<outdir>/<prefix><pass-name>.<csv|txt>` by default, or
@@ -309,8 +327,10 @@ See `./wspy-store --help` for the full option list.
 ## wspy-summary: regenerable summary tables
 
 `wspy-summary` queries a `wspy-store` database directly and computes min/max/mean/median/stddev/CV,
-a 95% confidence interval of the mean, a repeatability verdict (`PASS`/`WARN:thin`/`WARN:noisy`),
-and z-score outlier flags per `(group,metric)` bucket — grouped by workload command (default),
+a 95% confidence interval of the mean, a repeatability verdict (`PASS`, or `WARN:` plus any
+combination of `thin` — too few runs, `noisy` — too much spread, `mixed-pmu` — contributing runs
+differ in CPU vendor or requested/measured counter coverage), and z-score outlier flags per
+`(group,metric)` bucket — grouped by workload command (default),
 hostname, CPU vendor, `affinity_mode`/`preset_name`/`config_name`, or `cpu_governor`/`virt_role` —
 so a summary table can always be regenerated from indexed data with no manual copy/paste.
 `--group-by-option <name>` composes a *second* grouping axis from an arbitrary `--config-option`
@@ -438,8 +458,9 @@ local-only default). See `./wspy-analyze --help` for the full option list.
 
 `web/server.py` is a stdlib-only Python web UI (no dependency, no build step) for launching runs
 (a preset dropdown or a configuration checklist, either way showing the exact command line about
-to run), browsing/curating/exporting reports, comparing runs side by side, searching run history,
-and running `wspy-validate`/`wspy-store`/`wspy-summary`/`wspy --capabilities`/`--preflight`
+to run), browsing/curating/exporting reports, comparing runs side by side (with an optional
+annotation layer), searching run history, viewing/diffing process trees interactively, and running
+`wspy-validate`/`wspy-store`/`wspy-summary`/`wspy-core-report`/`wspy --capabilities`/`--preflight`
 without leaving the browser.
 
 ```
