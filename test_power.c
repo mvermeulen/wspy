@@ -268,6 +268,15 @@ static void test_power_counter_group_structural(void){
     assert(!strcmp(cgroup->cinfo[0].label,"pkg_joules"));
     assert(cgroup->cinfo[0].is_group_leader == 1);
     assert(cgroup->cinfo[0].scale > 0.0);
+    // Real perf-backed path only (fallback hwmon reads bypass perf_event_open()
+    // entirely, device_type==9999 -- see power_counter_group()'s own comment):
+    // regression test for INVESTIGATION.md's "RAPL/energy-pkg opened with the
+    // wrong scope" item -- setup_counters() must route this through pid=-1,
+    // not the generic per-process branch, since RAPL's "power" PMU driver
+    // rejects a process-scoped open outright.
+    if (cgroup->cinfo[0].device_type != 9999){
+      assert(cgroup->cinfo[0].requires_system_wide == 1);
+    }
   }
 
   printf("PASS: power_counter_group structural invariants\n");

@@ -857,9 +857,10 @@ static int run_capabilities_probe(void){
     // attempt the real open directly since it needs no workload to
     // launch). Reuses power_counter_group()/setup_counters() -- the exact
     // path a real --power run takes -- rather than a hand-rolled duplicate
-    // perf_event_open() call, since this host's dynamic PMU type can
-    // coincidentally collide with a sentinel like PERF_TYPE_L3
-    // (cpu_info.h) and take a different code path than expected. Standalone
+    // perf_event_open() call, since power_counter_group()'s cinfo entry
+    // carries requires_system_wide and setup_counters() dispatches on it
+    // (see struct counter_info's comment); a hand-rolled call would need to
+    // reimplement that dispatch to avoid a misleading errno. Standalone
     // (not linked into cpu_info->systemwide_counters): nothing later in
     // this probe reads, prints, or closes that list again.
     int access = -1;

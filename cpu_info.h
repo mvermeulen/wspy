@@ -62,6 +62,15 @@ struct counter_info {
   char *label;
   int corenum; // for hw counters
   unsigned int is_group_leader : 1;
+  // Explicit "this counter's PMU only supports a system-wide (pid=-1,cpu=X)
+  // perf_event_open(), never a process-scoped one" marker -- AMD L3, RAPL's
+  // power PMU (energy-pkg), and AMD IBS's ibs_fetch/ibs_op. Previously
+  // setup_counters() detected this only via an incidental match against the
+  // PERF_TYPE_L3 sentinel value, which happened to route correctly whenever
+  // a host's real dynamic PMU type numerically collided with it and silently
+  // took the wrong (process-scoped) path otherwise -- see INVESTIGATION.md's
+  // 4.3 Tier 0 "RAPL/energy-pkg opened with the wrong scope" item.
+  unsigned int requires_system_wide : 1;
   unsigned int device_type;
   unsigned long int config;
   unsigned long int config1; // extended config word (e.g. AMD IBS ldlat threshold); 0 for counters that don't use it

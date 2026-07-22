@@ -287,6 +287,8 @@ struct counter_group *ibs_counter_group(char *name,enum ibs_profile profile,cons
   cgroup->ncounters = n;
   cgroup->cinfo = calloc(n,sizeof(struct counter_info));
 
+  // IBS is system-wide only (CLAUDE.md's ibs.c entry) -- see struct
+  // counter_info's requires_system_wide comment.
   idx = 0;
   if (fetch_ev.valid){
     cgroup->cinfo[idx].label = strdup("ibs_fetch");
@@ -296,6 +298,7 @@ struct counter_group *ibs_counter_group(char *name,enum ibs_profile profile,cons
     cgroup->cinfo[idx].config2 = fetch_ev.config2;
     cgroup->cinfo[idx].sample_period = fetch_ev.sample_period;
     cgroup->cinfo[idx].is_group_leader = 1;
+    cgroup->cinfo[idx].requires_system_wide = 1;
     idx++;
   }
   if (op_ev.valid){
@@ -306,6 +309,7 @@ struct counter_group *ibs_counter_group(char *name,enum ibs_profile profile,cons
     cgroup->cinfo[idx].config2 = op_ev.config2;
     cgroup->cinfo[idx].sample_period = op_ev.sample_period;
     cgroup->cinfo[idx].is_group_leader = 1;
+    cgroup->cinfo[idx].requires_system_wide = 1;
     idx++;
   }
   if (op_unfiltered_ev.valid){
@@ -316,6 +320,7 @@ struct counter_group *ibs_counter_group(char *name,enum ibs_profile profile,cons
     cgroup->cinfo[idx].config2 = op_unfiltered_ev.config2;
     cgroup->cinfo[idx].sample_period = op_unfiltered_ev.sample_period;
     cgroup->cinfo[idx].is_group_leader = 1;
+    cgroup->cinfo[idx].requires_system_wide = 1;
     idx++;
   }
   return cgroup;
