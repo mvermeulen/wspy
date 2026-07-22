@@ -6,11 +6,12 @@ now 4.2 are done; see below). Full design write-ups and validation narratives fo
 shipped now live in `doc/INVESTIGATION_ARCHIVE.md`, out of the way of the open backlog.
 
 Status (2026-07-21): **4.0 and 4.1 are released and done. 4.2's full scope has shipped** (see "What
-shipped in 4.2" below) **and is pending release** — nothing was carried forward as open backlog; a
-release-notes draft lives at `wspy-release-notes.4.2.md`, see `scripts/release_prep.sh` for the
-remaining tag/publish steps once it's cut. This document was slimmed down for the 4.3 cycle
-(2026-07-21): "What shipped in 4.0"/"4.1"/"4.2" are pointer lists only, with design write-ups and
-validation narratives moved to `doc/INVESTIGATION_ARCHIVE.md`. 4.3 and 4.4 are planned, not started.
+shipped in 4.2" below), `./run_tests.sh` passes cleanly as the final release-prep check, and
+`wspy-release-notes.4.2.md` is ready as the v4.2 GitHub release body — nothing was carried forward
+as open backlog; tagging/publishing the release itself is the one remaining manual step (see
+`scripts/release_prep.sh`). This document was slimmed down for the 4.3 cycle (2026-07-21): "What
+shipped in 4.0"/"4.1"/"4.2" are pointer lists only, with design write-ups and validation narratives
+moved to `doc/INVESTIGATION_ARCHIVE.md`. 4.3 and 4.4 are planned, not started.
 
 ## Purpose
 This document captures ideas for improvements focused on making benchmark collection, organization,
