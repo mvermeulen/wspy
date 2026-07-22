@@ -34,19 +34,23 @@
  * -- the same facts scripts/map_cpu_hierarchy.py maps out for a human, but
  * read directly here since a real run can't shell out to a helper script
  * (and to keep this a pure C module with no Python dependency). Core-type
- * grouping (coretype=<id>) comes from ARM's per-CPU MIDR_EL1 register
+ * grouping (coretype=<id>) first tries ARM's per-CPU MIDR_EL1 register
  * (.../cpu<N>/regs/identification/midr_el1, implementer+part fields only --
  * variant/revision are just silicon steppings within the same
  * microarchitecture, not a different core type), the same signal
  * map_cpu_hierarchy.py's decode_midr()/get_core_type_score() use to tell
  * e.g. Cortex-A720 "big" cores from Cortex-A520 "little" ones on a mixed
- * part; a host with no midr_el1 (x86, or an ARM host reporting one uniform
- * MIDR across all cores) simply has every CPU's core_type left unassigned
- * (see below) and ncoretypes stays 0, so coretype=<id> degrades to a clear
- * "no such core type" error rather than silently doing nothing. Detecting
- * x86 hybrid parts (Intel Atom+Core, already tracked as CORE_INTEL_ATOM/
- * CORE_INTEL_CORE in cpu_info.c's own per-core vendor field) as a coretype=
- * grouping too is a natural follow-up, not implemented here yet.
+ * part. A host with no midr_el1 at all (every x86 host) falls back to
+ * cpu_info.c's own per-core vendor classification (CORE_INTEL_ATOM/
+ * CORE_INTEL_CORE for Intel P-core/E-core parts, CORE_AMD_ZEN5/
+ * CORE_AMD_ZEN5C for AMD's dense-core Zen5c parts) instead -- there's no
+ * MIDR-equivalent identification register to read on x86, so this reuses
+ * the classification inventory_cpu() already computed rather than
+ * re-deriving it. Either way, a genuinely homogeneous host (uniform MIDR,
+ * or a single x86 vendor classification with nothing to distinguish)
+ * leaves every CPU's core_type unassigned and ncoretypes at 0, so
+ * coretype=<id> degrades to a clear "no such core type" error rather than
+ * silently doing nothing.
  *
  * A resolved spec never fatal's here on a request that overlaps this
  * process's own available-CPU mask only partially (that CPU subset is used,
@@ -93,16 +97,23 @@ struct affinity_l3_domain {
   unsigned long size_bytes; /* 0 if unknown */
 };
 
-/* One MIDR-distinct microarchitecture/core type (ARM only today -- see the
- * header comment above). implementer/part are MIDR_EL1's raw Implementer
- * (bits 31:24) and PartNum (bits 15:4) fields, deliberately not decoded into
- * a vendor/model name here (that full lookup table lives in
- * scripts/map_cpu_hierarchy.py, not duplicated in this smaller C module) --
- * affinity_print_report() prints them as plain hex, pointing at that script
- * for a human-readable name. */
+/* One distinct microarchitecture/core type -- either ARM MIDR-derived or,
+ * on x86, cpu_info.c's own per-core vendor classification (see the header
+ * comment above). is_midr selects which fields are meaningful:
+ *   is_midr=1: implementer/part are MIDR_EL1's raw Implementer (bits 31:24)
+ *     and PartNum (bits 15:4) fields, deliberately not decoded into a
+ *     vendor/model name here (that full lookup table lives in
+ *     scripts/map_cpu_hierarchy.py, not duplicated in this smaller C
+ *     module) -- affinity_print_report() prints them as plain hex, pointing
+ *     at that script for a human-readable name.
+ *   is_midr=0: vendor_name is a short fixed string (e.g. "intel_atom",
+ *     "intel_core", "amd_zen5", "amd_zen5c") taken directly from
+ *     cpu_info.c's enum cpu_core_type classification. */
 struct affinity_core_type {
+  int is_midr;
   unsigned int implementer;
   unsigned int part;
+  char vendor_name[16];
   cpu_set_t cpus;
 };
 
