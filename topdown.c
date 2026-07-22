@@ -52,11 +52,13 @@ int dummy = 0;
 struct timespec start_time,finish_time;
 
 // Counter definitions for RAW performance counters
-// Outlives a single setup_counters() call -- set from the first successfully
-// opened Intel fd and reused as every subsequent counter's perf event-group
-// leader for the rest of the process, unless reset. close_counters() resets
-// this to -1 as part of per-pass teardown so a later pass's setup_counters()
-// doesn't pass a since-closed fd as group_fd.
+// Scoped to a single setup_counters() call (reset to -1 at the top of that
+// function): set from the first successfully opened Intel fd in the call and
+// reused as every subsequent counter's perf event-group leader for the rest
+// of that same call's list, since group members must share their leader's
+// cpu/task target. close_counters() also resets this to -1 as part of
+// per-pass teardown, so a since-closed fd is never reused as a group_fd
+// either (belt-and-suspenders alongside the per-call reset above).
 static int intel_group_id = -1;
 struct raw_event intel_raw_events[] = {
   { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_L2CACHE,{{0}} },
@@ -1495,6 +1497,19 @@ void setup_counters(struct counter_group *counter_group_list){
   // struct cpu_core_info *coreinfo;
   // struct counter_def *counter_def;
   // int ncounters;
+
+  // Each call to setup_counters() operates on one self-contained list that
+  // may target a different CPU than any previous call (--per-core calls this
+  // once per eligible core, back to back, with no close_counters() in
+  // between -- see that function's own comment). A perf event group's
+  // members must share their leader's cpu/task target, so intel_group_id
+  // (below) must start fresh here rather than carry a still-open leader fd
+  // from a previous call's (different-cpu) group -- otherwise every core
+  // after the first fails every Intel raw-type counter with EINVAL, since it
+  // tries to join a group led by another CPU's event. Confirmed live on a
+  // real Raptor Lake host: --per-core --ipc measured counters on core 0 only,
+  // errno=22 on cores 1-15 (--per-core's P-core set), before this reset.
+  intel_group_id = -1;
 
   // create system-wide counters
   for (cgroup = counter_group_list;cgroup;cgroup = cgroup->next){

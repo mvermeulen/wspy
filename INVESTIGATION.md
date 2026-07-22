@@ -362,6 +362,166 @@ motivation and per-syscall design rationale. What remains open from this track:
 Goal: use the normalized store built in 4.1 for regression detection, clustering, phase-aware
 topdown/IBS attribution, static-site publishing, and a lower-overhead tracing backend.
 
+**Tier 0 — Intel counter-grouping correctness bugs (moved to the front of 4.3, 2026-07-22): real Intel
+hybrid hardware became available (a Raptor Lake HX host, "carlsbad") and immediately surfaced a cluster
+of confirmed, hardware-verified bugs in how `topdown.c` groups Intel `perf_event_open()` calls — these
+predate this investigation (the shared-group design dates to commit `273e9af`, Dec 2023) and were never
+caught because no Intel hardware was available to exercise them until now. Ahead of the IBS work below
+since these are outright incorrect-data/broken-feature bugs on a whole vendor, not new capability:**
+
+0.1. **[FIXED, uncommitted on `master`] `--per-core` on Intel silently measured only the first core.**
+   `topdown.c`'s `intel_group_id` (a module-static "current Intel perf-group leader fd") was scoped to
+   outlive a single `setup_counters()` call, reused across every subsequent call until `close_counters()`
+   resets it — fine for the single-pass aggregate path (one call, ever), but `--per-core`'s setup loop
+   (`wspy.c` `main()`, ~line 1718) calls `setup_counters()` once per eligible core, back to back, with no
+   `close_counters()` in between (core fds all need to stay open simultaneously so `start_counters()` can
+   start them together). Every core after the first therefore tried to open its own hardware counters as
+   members of a perf group led by a *different CPU's* fd (core 0's) — the kernel requires group members to
+   share their leader's cpu/task target, so every one of those opens failed with `EINVAL`. Confirmed live:
+   `./wspy --per-core --csv -- sleep 1` on the 13950HX measured real IPC on core 0 only; cores 1-15
+   (the P-core set `core_is_per_core_eligible()` allows) all read `-nan`, `counters_measured=2/32`
+   (2 = core 0's own 2 counters; every other core's 2 attempts failed and were never re-counted). This
+   silently broke **every currently-possible Intel `--per-core` invocation** — `core_is_per_core_eligible()`
+   only allows `CORE_INTEL_CORE`, which only the 5 hybrid-capable models `cpu_info.c` recognizes ever get
+   classified as, so there was no Intel host configuration where `--per-core` + more than one core actually
+   worked. Fix (already applied to `topdown.c`, verified against real hardware — all 16 P-cores now report
+   real per-core IPC, and `test_wspy`/full `make test` still pass): reset `intel_group_id = -1` at the top
+   of every `setup_counters()` call, so each call's list forms its own self-contained group instead of
+   inheriting a leader fd bound to a different call's cpu/task target. Bonus side effect confirmed live:
+   this incidentally also fixed `--power --per-core`'s package-energy reading, which was hitting the same
+   bleed from the opposite direction (see 0.3 below) — needs a decision on whether to land as-is on
+   `master` (contained, one-file diff, `make test` green) or move to a `feature/` branch per the normal
+   workflow given its severity/urgency.
+0.2. **Topdown/topdown2 (`--topdown`/`--topdown2`, now `--counters=topdown[2]`) silently report all-zero
+   percentages whenever any other Intel counter opens first.** Intel's "Perf Metrics" fixed-counter
+   feature (`slots` + the four/eight `core.topdown-*` sub-events) is a genuine kernel-enforced special
+   case: those sub-events are only valid as members of a group whose *literal* leader is the `slots`
+   event — the kernel returns `EINVAL` for any of them opened under a different leader. Because
+   `setup_counters()` funnels every Intel raw/hw-cache/hardware group into one shared `intel_group_id`
+   regardless of which group's counter happens to open first, and `ipc` (default-on, list order puts it
+   ahead of `topdown`) opens its own `instructions` event first, `slots`'s sub-metrics end up trying to
+   join a group led by `instructions` — not `slots` — and fail. Confirmed live and exactly reproduced the
+   *default*, most common invocation: `./wspy --csv --topdown -- true` measured only 3/7 counters
+   (ipc's 2 + `slots` itself, which tolerates a foreign leader) and printed `retire=0.0, frontend=0.0,
+   backend=0.0, speculate=0.0` — indistinguishable from a genuinely idle workload unless the stderr
+   `errno=22` lines are read. `--no-ipc --topdown` (or any invocation where nothing else opens first)
+   correctly measures 5/5 with real values, confirming the diagnosis. `--topdown-backend` is unaffected
+   (its `exe_activity`/`memory_activity` events are ordinary raw PMU events with no leader constraint).
+   **This is one of the tool's flagship features and its most common invocation (topdown + default ipc)
+   is currently broken on every Intel host.** Fix needs its own group id scoped to the topdown/topdown2
+   family (so `slots` always leads *that* group specifically), independent of whatever other Intel groups
+   are also being set up in the same call — not just a reordering hack, since any future group placed
+   ahead of topdown in list order would reintroduce the same failure.
+0.3. **The single-shared-Intel-group design cascades into wholesale counter loss once the combined group
+   exceeds real hardware PMU capacity, and cannot mix counters across different underlying PMUs.** Two
+   confirmed manifestations beyond topdown specifically:
+   - A realistic multi-group combo (`--counters=dcache,icache,tlb,branch,cache2`, closer to what
+     `deep-cpu-intel`-scale profiles request) measured only 10/19 counters — not partial degradation
+     spread across groups, but *one whole group* (`cache`, 9 counters) failing 0/9 outright once the
+     shared group's real hardware-slot budget was exhausted by earlier groups. A perf event *group*
+     requires every member to be simultaneously schedulable (no within-group multiplexing by design);
+     once that's impossible the kernel refuses further members with `EINVAL` rather than degrading to
+     multiplexing. `preflight.c`'s own warning text ("an oversized group can get little or no scheduled
+     time at all rather than degrading gracefully") already anticipated something like this but
+     undersells it — in practice it's outright counter-open failure for entire groups, not reduced
+     fidelity, and the 6-slot budget `preflight.c` estimates doesn't match what was actually observed
+     (~10 succeeded here). `wspy --capabilities` (`COUNTER_ALL`) makes this maximally visible: 20/48
+     available, with entire groups (`cache`, most of `topdown`/`topdown2`) reading 0.
+   - `--power` (aggregate, no `--per-core`) tries to put RAPL's `energy-pkg` event (a *different* dynamic
+     PMU, `type=35` on this host — not the general-purpose `cpu`/`cpu_core` PMU) into the same shared
+     group as whatever hardware/raw event opened first. A perf group cannot span two different PMUs, so
+     `energy-pkg` fails with `EINVAL` whenever anything else is set up in the same call — confirmed live,
+     `./wspy --csv --power -- true` reports `pkg_joules=0.000,pkg_watts=0.000` with an explicit
+     `unable to create power performance counter` error, even with `--no-ipc` (still fails — see 0.4,
+     a second, independent bug also affecting this same flag). `--power --per-core` happens to dodge this
+     one as a side effect of the 0.1 fix, since power's systemwide group is now set up in its own isolated
+     `setup_counters()` call, separate from the per-core groups.
+   Proper fix likely means moving Intel away from "one shared group across every requested counter" and
+   toward something closer to AMD's model: either leave unrelated general-purpose events ungrouped
+   (letting the kernel multiplex independently-scheduled events the normal way, restoring graceful
+   degradation) with only the topdown Perf-Metrics family kept as its own small dedicated group (see 0.2),
+   or route grouping decisions through `preflight.c`'s own already-more-accurate budget/bin-packing logic
+   (already built for `--passes`, see `multipass.c`) instead of a single ungated shared leader. Worth
+   scoping as its own design pass rather than a one-line fix, given how many failure shapes trace back to
+   this one assumption.
+0.4. **RAPL/`energy-pkg` opened with the wrong scope (`pid=0` instead of `pid=-1`) on Intel.** Even fully
+   isolated (`--power --no-ipc`, nothing else competing for group leadership — rules out 0.3), `--power`
+   alone still fails with `errno=22`. `setup_counters()`'s dispatch only special-cases system-wide/uncore
+   PMU semantics (`perf_event_open(&pe,-1,0,group_id,0)`, i.e. "any process on this cpu") for
+   `pe.type == PERF_TYPE_L3` specifically; every other counter — including RAPL's `power` PMU, whose Linux
+   driver sets `task_ctx_nr = perf_invalid_context` and rejects task-scoped (`pid=0`) opens outright — falls
+   through to the generic per-process branch (`pid=0,cpu=-1`). `CLAUDE.md`'s own power.c notes document
+   that `--power` was validated "on real hardware" — but on the author's AMD dev host, the `power` PMU's
+   dynamic type apparently *coincidentally* equalled `PERF_TYPE_L3`'s sentinel (`0xe`/14), routing it
+   through the correct branch by accident (that coincidence is independently documented in `manifest.c`'s
+   own entry, in a different context — `run_capabilities_probe()`'s duplicate-`perf_event_open()` bug).
+   On this Intel host `power`'s real type is 35, doesn't collide, and takes the wrong branch. **This bug
+   is not Intel-specific** — any AMD (or future Intel) host where the `power` PMU's dynamic type doesn't
+   happen to equal 14 would hit the identical failure; it was only ever masked by chance. Fix: give
+   `power_counter_group()`/`ibs_counter_group()` (and any future system-wide dynamic-PMU group) an explicit
+   "needs pid=-1" marker rather than relying on an incidental type-value match against `PERF_TYPE_L3`.
+0.5. **`--passes` (native multi-pass execution) intermittently zeroes out an entire pass's values on
+   Intel, non-deterministically.** `--passes=ipc,topdown -- sleep 1` measured both passes' counters
+   correctly (manifest `passes[]` showed 2/2 and 5/5) roughly 2 times out of 3 in repeated runs, but
+   occasionally printed `ipc=-nan` *and* every topdown percentage as `0.0` in the same run despite full
+   coverage in the manifest — i.e., the underlying `perf_event_open()`/`read_counters()` machinery reported
+   success, but the merged output was wrong anyway. Order-dependence was ruled out (`--passes=topdown,ipc`
+   with the order reversed also succeeded on one run and is not obviously immune), and each pass's
+   `counter_group` list is a fresh, independently-`calloc()`'d allocation with no possible cross-pass field
+   reuse, so this doesn't obviously share 0.1's root cause. Not root-caused yet — flagged here as a
+   real, reproduced-live, Intel-specific reliability gap in a 4.1-shipped feature that needs a dedicated
+   investigation pass (strace across a failing run is the obvious next step) before `--passes` can be
+   trusted on Intel.
+
+**Study: additional counters worth adding, grounded in this same real-hardware pass (13950HX / Raptor
+Lake HX, `/sys/bus/event_source/devices/` enumerated live, not from documentation alone):**
+- **Per-core-type-aware Intel raw event tables.** `cpu_core`'s dynamic PMU type is `4` on this host
+  (which happens to equal the numeric value of `PERF_TYPE_RAW` itself — the likely reason
+  `intel_raw_events[]`'s hardcoded `PERF_TYPE_RAW` has silently "worked" for P-cores despite never doing
+  a real per-core PMU-type lookup the way `cpu_info.c` already does for ARM via
+  `discover_arm_pmu_topology()`/`mark_cpus_for_pmu()`); `cpu_atom`'s type is `10` — a different value, not
+  guaranteed stable across hosts/kernel versions. Every raw event in `intel_raw_events[]` (topdown,
+  branch, l2cache encodings) is P-core-only-correct (Golden/Raptor Cove); Gracemont E-cores have
+  different encodings entirely, which is *why* `core_is_per_core_eligible()` currently excludes
+  `CORE_INTEL_ATOM` outright (see item 9 below, now unblocked). Real fix needs both a second,
+  E-core-specific raw event table *and* per-core dynamic-PMU-type resolution (mirroring the ARM
+  `pmu_type` field on `struct cpu_core_info`) rather than the hardcoded `PERF_TYPE_RAW` constant.
+- **Real DRAM bandwidth (`COUNTER_MEMORY`, currently nonexistent for Intel — `amd_raw_events[]` has it,
+  `intel_raw_events[]` doesn't).** `uncore_imc_free_running_0`/`_1` expose `data_read`/`data_write`/
+  `data_total` events with their own `.scale`/`.unit` sysfs files — the *exact* shape `power.c` already
+  knows how to parse (event lookup + scale/unit conversion, no config bit-math needed since these are
+  "free running," always-on counters). This is a comparatively low-effort net-new capability riding on
+  code that already exists, not a new discovery pattern.
+- **True LLC/L3 counters.** Today's `l2_request.all`/`l2_request.miss` (`COUNTER_L2CACHE`, printed as
+  `--cache2`/`-c`) is genuinely L2, not L3 — Intel has no L3-layer entry in `intel_raw_events[]` at all,
+  unlike AMD's `COUNTER_L3CACHE`. `uncore_cbox_0`..`uncore_cbox_11` (12 CBox/LLC-slice PMUs on this host)
+  would give real chip-wide LLC hit/miss/occupancy, complementing (not replacing) a per-core
+  `LONGEST_LAT_CACHE.MISS`/`.REFERENCE`-style general-purpose-PMU event if one's wanted at the per-core
+  granularity `l2_request.*` already reports at.
+- **Intel per-core-domain and iGPU RAPL energy**, a genuinely different discovery shape than AMD's.
+  `power.c`'s per-core energy support (`power.h`, "Per-core energy support," shipped 4.2) is built around
+  AMD's model: package energy and per-core energy are *two separate PMU devices* (`power`/`power_core`).
+  This host has no `power_core` PMU at all — instead the *same* `power` PMU exposes `energy-cores`
+  (plural) and `energy-gpu` as additional named events alongside `energy-pkg`. Wiring up Intel per-core
+  energy needs a second discovery path in `power_probe()`, not just a differently-named sysfs directory.
+  `energy-gpu` is also notable on its own: real iGPU energy with no GPU vendor build flag needed at all.
+- **`i915` GPU PMU** — an Intel-native alternative to this codebase's current AMD-sysfs/NVML-only GPU
+  support (`amd_sysfs.c`/`nvidia_nvml.c`), exposing busy/frequency directly via `perf_event_open()`
+  rather than a vendor SMI/sysfs scrape. Would need its own build axis (`INTEL_GPU=1`?) alongside
+  `AMDGPU`/`NVIDIA` per the existing pattern, or could piggyback on the always-built default path since
+  it's `perf_event_open()`-based rather than needing a vendor library.
+- **C-state residency (`cstate_core`/`cstate_pkg` PMUs)** — idle-state time breakdown, useful context for
+  interpreting `--power`'s energy numbers (low `pkg_watts` could mean genuinely idle vs. throttled) and
+  for `system.c`'s existing power/frequency reporting; no code anywhere in this tree reads these today.
+  AMD has no direct equivalent PMU (its C-state info comes from different sysfs paths), so this would be
+  an Intel-only addition, same shape as `power_core`'s "not every counter exists on every vendor."
+- **Intel PEBS-based precise memory-latency sampling** — the natural Intel-side counterpart to 4.3 Tier 1's
+  already-planned AMD IBS sampling-mode item (item 1 above): `MEM_TRANS_RETIRED.LOAD_LATENCY`-style PEBS
+  events give per-sample tagged memory-access latency/source data on Intel, comparable in spirit to IBS's
+  `IbsOpData`/`DcMiss`/`NbIbsReqSrc` tag bits. Not investigated in depth this pass (no PEBS-specific sysfs
+  probing was done here) — flagged as a parallel track worth scoping once IBS sampling-mode ships and its
+  mmap-ring-buffer/per-sample decode infrastructure exists to model this against.
+
 **Tier 1 — AMD IBS sampling-mode support (moved to the front of 4.3, 2026-07-20; see below):**
 
 1. AMD IBS *sampling*-mode support: mmap'ing the perf ring buffer and requesting `PERF_SAMPLE_RAW`
@@ -435,7 +595,14 @@ this phase's own IBS sampling mode (Tier 1 above):**
    analysis itself is still unimplemented for every vendor including AMD, and `--affinity=coretype=<id>`
    is still ARM-only (x86 hybrid detection for that grouping remains the separate gap `affinity.c`
    already documents). This item stays open; AMD is just no longer blocked on hardware access the way
-   Intel/ARM hybrid still are.
+   Intel/ARM hybrid still are. **Update (2026-07-22):** Intel hybrid hardware is now available (a
+   Raptor Lake HX host, "carlsbad") — this item is no longer hardware-blocked either. First real-hardware
+   pass on it turned up correctness bugs more fundamental than the E-core-exclusion gap this item was
+   originally scoped around (see 4.3 Tier 0, above): `--per-core` was silently measuring only the first
+   P-core regardless of E-cores (fixed), and topdown/topdown2 report all-zero on Intel by default even on
+   the P-cores this item already knew were supported. Recommend sequencing Tier 0's fixes before resuming
+   this item — a weighted P-core/E-core aggregate is meaningless to build on top of per-core topdown data
+   that isn't being measured correctly yet even for the cores already included.
 
 **Tier 4 — publishing/reporting expansion, needs 4.1's report studio:**
 
