@@ -227,12 +227,12 @@ struct power_capabilities power_probe(void){
  * package counter, from coverage.c's coverage_note() bookkeeping --
  * run_capabilities_probe() (wspy.c) builds a throwaway power_counter_group()
  * and runs it through the real setup_counters() to get this, rather than
- * this file hand-rolling a second perf_event_open() call: this host's
- * "power" PMU dynamic type happened, live, to numerically collide with
- * PERF_TYPE_L3 (cpu_info.h), which routes setup_counters() through
- * different perf_event_open() args than the generic path -- a
- * hand-duplicated call missed that and reported a misleading EINVAL where
- * a real run gets EACCES, so this reuses the exact real code path instead.
+ * this file hand-rolling a second perf_event_open() call: setup_counters()
+ * routes power_counter_group()'s cinfo entry through different
+ * perf_event_open() args than the generic path (requires_system_wide, see
+ * struct counter_info's comment) -- a hand-duplicated call missed that and
+ * reported a misleading EINVAL where a real run gets EACCES, so this reuses
+ * the exact real code path instead.
  * access: 1 = opened fine, 0 = failed (access_errno set), -1 = nothing to
  * test (not supported at all -- no access line printed). */
 void print_power_capability_report(const struct power_capabilities *power,int access,int access_errno){
@@ -356,6 +356,10 @@ struct counter_group *power_counter_group(char *name){
   cgroup->cinfo[0].config = ev.config;
   cgroup->cinfo[0].is_group_leader = 1;
   cgroup->cinfo[0].scale = caps.pkg.scale;
+  /* RAPL's "power" PMU sets task_ctx_nr = perf_invalid_context in the
+   * kernel driver -- it rejects a process-scoped open outright, needs
+   * pid=-1. See struct counter_info's requires_system_wide comment. */
+  cgroup->cinfo[0].requires_system_wide = 1;
   return cgroup;
 }
 

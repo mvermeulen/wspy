@@ -1134,6 +1134,58 @@ void test_intel_counter_grouping(void) {
     printf("PASS: Intel counter-group budget chunking\n");
 }
 
+// Regression test for INVESTIGATION.md's "RAPL/energy-pkg opened with the
+// wrong scope" item (4.3 Tier 0): AMD L3's raw events are the one entry in
+// amd_raw_events[] carrying device_type == PERF_TYPE_L3 -- an uncore PMU
+// whose driver rejects a process-scoped perf_event_open() outright.
+// raw_counter_group() must mark those (and only those) cinfo entries
+// requires_system_wide so setup_counters() routes them through pid=-1
+// instead of the generic per-process branch (previously that routing relied
+// on an incidental numeric collision between a host's real dynamic PMU type
+// and the PERF_TYPE_L3 sentinel value -- see struct counter_info's comment).
+void test_raw_counter_group_system_wide_marking(void) {
+    struct cpu_info fake_cpu;
+    struct cpu_info *saved_cpu_info;
+    int saved_nmi;
+    struct counter_group *cgroup;
+    int i;
+
+    printf("Testing raw_counter_group() marks AMD L3 (and only L3) requires_system_wide...\n");
+
+    saved_cpu_info = cpu_info;
+    memset(&fake_cpu, 0, sizeof(fake_cpu));
+    fake_cpu.vendor = VENDOR_AMD;
+    cpu_info = &fake_cpu;
+    saved_nmi = nmi_running;
+    nmi_running = 0;
+
+    // The "l3 cache" group also pulls in amd_raw_events[]'s shared
+    // "instructions" denominator entry (its .use bitmask includes
+    // COUNTER_L3CACHE alongside many other groups) -- that entry's own
+    // device_type is PERF_TYPE_RAW, not PERF_TYPE_L3, so it must NOT be
+    // marked; only the two real l3_lookup_state.* entries should be.
+    cgroup = raw_counter_group("l3 cache", COUNTER_L3CACHE);
+    assert(cgroup != NULL);
+    for (i = 0; i < cgroup->ncounters; i++){
+        int expect_marked = !strncmp(cgroup->cinfo[i].label, "l3_lookup_state.", 16);
+        assert(cgroup->cinfo[i].requires_system_wide == expect_marked);
+    }
+    free_test_cgroup(cgroup);
+
+    // A non-L3 raw group (ordinary general-purpose PMU events) must NOT be
+    // marked -- only the uncore/system PMU escape hatch is.
+    cgroup = raw_counter_group("branch", COUNTER_BRANCH);
+    assert(cgroup != NULL);
+    for (i = 0; i < cgroup->ncounters; i++)
+        assert(cgroup->cinfo[i].requires_system_wide == 0);
+    free_test_cgroup(cgroup);
+
+    nmi_running = saved_nmi;
+    cpu_info = saved_cpu_info;
+
+    printf("PASS: raw_counter_group() AMD L3 requires_system_wide marking\n");
+}
+
 // Regression test for a real bug found via a live Raptor Lake HX run
 // (2026-07-22): cache_counter_group()'s synthetic "instructions" entry (a
 // genuine PERF_TYPE_HARDWARE/PERF_COUNT_HW_INSTRUCTIONS event smuggled into
@@ -1802,6 +1854,7 @@ int main(int argc, char **argv) {
     test_topdown_amd_contention();
     test_topdown_be_shared_denominator();
     test_intel_counter_grouping();
+    test_raw_counter_group_system_wide_marking();
     test_cache_group_instructions_real_type();
     test_arm_pmu_report();
     test_read_counters_multiplex_scaling();

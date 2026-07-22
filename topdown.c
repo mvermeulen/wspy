@@ -1347,6 +1347,9 @@ struct counter_group *raw_counter_group(char *name,unsigned int mask){
       cgroup->cinfo[count].label = events[i].name;
       cgroup->cinfo[count].config = events[i].raw.config;
       cgroup->cinfo[count].device_type = events[i].device_type;
+      // AMD L3's uncore PMU rejects a process-scoped open outright -- see
+      // struct counter_info's requires_system_wide comment.
+      cgroup->cinfo[count].requires_system_wide = (events[i].device_type == PERF_TYPE_L3);
       // chunk into multiplex groups if needed
       if (cpu_info->vendor == VENDOR_AMD || cpu_info->vendor == VENDOR_ARM){
 	if (((count % available_counters) == 0) || (events[i].device_type != PERF_TYPE_RAW))
@@ -1617,13 +1620,14 @@ void setup_counters(struct counter_group *counter_group_list){
       if (aflag && cgroup->target_cpu >= 0){
   // --per-core path: bind each core's counter group to that logical CPU.
   status = perf_event_open(&pe,-1,cgroup->target_cpu,group_id,0);
-      } else if (pe.type == PERF_TYPE_L3){
-	// read from any process on this core
+      } else if (cgroup->cinfo[i].requires_system_wide){
+	// read from any process on this core -- AMD L3, RAPL/energy-pkg,
+	// AMD IBS: PMUs whose driver rejects a process-scoped open outright.
 	pe.exclude_guest = 0;
 	status = perf_event_open(&pe,-1,0,group_id,0);
       } else {
 	// read from current process
-	status = perf_event_open(&pe,0,-1,group_id,PERF_FLAG_FD_CLOEXEC);	
+	status = perf_event_open(&pe,0,-1,group_id,PERF_FLAG_FD_CLOEXEC);
       }
 
 
