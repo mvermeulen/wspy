@@ -2163,25 +2163,27 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
     // backend level 2
     if ((cinfo = find_ci_label(cgroup,"core.topdown-mem-bound"))){
       backend_memory = cinfo->value;
-      backend_cpu = backend - backend_memory;
+      // see safe_sub()'s comment above: two independently-read counters,
+      // no guaranteed parent >= child ordering.
+      backend_cpu = safe_sub(backend,backend_memory);
     }
 
     // speculation level 2
     if ((cinfo = find_ci_label(cgroup,"core.topdown-br-mispredict"))){
       speculation_branches = cinfo->value;
-      speculation_pipeline = speculation - speculation_branches;
+      speculation_pipeline = safe_sub(speculation,speculation_branches);
     }
 
     // frontend level 2
     if ((cinfo = find_ci_label(cgroup,"core.topdown-fetch-lat"))){
       frontend_latency = cinfo->value;
-      frontend_bandwidth = frontend - frontend_latency;
+      frontend_bandwidth = safe_sub(frontend,frontend_latency);
     }
 
     // retire level 2
     if ((cinfo = find_ci_label(cgroup,"core.topdown-heavy-ops"))){
       retire_ucode = cinfo->value;
-      retire_fastpath = retiring - retire_ucode;
+      retire_fastpath = safe_sub(retiring,retire_ucode);
     }
     
     slots_no_contention = slots;

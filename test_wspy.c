@@ -1307,6 +1307,93 @@ void test_topdown_confidence(void) {
     printf("PASS: topdown confidence envelope + sanity checks\n");
 }
 
+// Regression test for a real bug found via a live Raptor Lake HX run
+// (2026-07-22, INVESTIGATION.md 4.3 Tier 0 #2): print_topdown()'s VENDOR_INTEL
+// branch computed L2 splits (backend_cpu, speculation_pipeline,
+// frontend_bandwidth, retire_fastpath) as plain unsigned long subtraction
+// instead of safe_sub(). Since a level-2 "child" counter (e.g.
+// core.topdown-br-mispredict) and its level-1 "parent" (core.topdown-bad-spec)
+// are independently-read/independently-multiplexed perf counters, the child
+// can read slightly larger than the parent from measurement noise alone --
+// observed live as spec_pipeline_pct=72407003082176.4, reproduced again here
+// as a fixture after switching a branch-heavy workload's bad-spec/br-mispredict
+// values: the unsigned wraparound turned a ~0% field into a
+// multi-trillion-percent one instead of clamping to 0.
+void test_intel_topdown_l2_underflow(void) {
+    struct cpu_info fake_cpu;
+    struct cpu_info *saved_cpu_info;
+    struct counter_group cgroup;
+    struct counter_info cinfo[7];
+    char *contents;
+    const char *tmp_out = "/tmp/test_wspy_intel_l2_underflow.txt";
+
+    printf("Testing Intel L2 topdown decomposition clamps child>parent instead of wrapping...\n");
+
+    saved_cpu_info = cpu_info;
+    memset(&fake_cpu, 0, sizeof(fake_cpu));
+    fake_cpu.vendor = VENDOR_INTEL;
+    cpu_info = &fake_cpu;
+
+    memset(cinfo, 0, sizeof(cinfo));
+    cinfo[0].label = "slots";
+    cinfo[0].value = 1000000; cinfo[0].time_enabled = 1000000; cinfo[0].time_running = 1000000;
+    cinfo[1].label = "core.topdown-retiring";
+    cinfo[1].value = 400000; cinfo[1].time_enabled = 1000000; cinfo[1].time_running = 1000000;
+    cinfo[2].label = "core.topdown-fe-bound";
+    cinfo[2].value = 300000; cinfo[2].time_enabled = 1000000; cinfo[2].time_running = 1000000;
+    cinfo[3].label = "core.topdown-be-bound";
+    cinfo[3].value = 250000; cinfo[3].time_enabled = 1000000; cinfo[3].time_running = 1000000;
+    // speculation (level 1) reads slightly below speculation_branches (level
+    // 2) -- the exact condition that wrapped pre-fix.
+    cinfo[4].label = "core.topdown-bad-spec";
+    cinfo[4].value = 50000; cinfo[4].time_enabled = 1000000; cinfo[4].time_running = 1000000;
+    cinfo[5].label = "core.topdown-br-mispredict";
+    cinfo[5].value = 50001; cinfo[5].time_enabled = 1000000; cinfo[5].time_running = 1000000;
+
+    memset(&cgroup, 0, sizeof(cgroup));
+    cgroup.label = "topdown";
+    cgroup.ncounters = 6;
+    cgroup.cinfo = cinfo;
+    cgroup.mask = COUNTER_TOPDOWN;
+
+    outfile = fopen(tmp_out, "w");
+    if (!outfile) { fprintf(stderr, "FAIL: could not open temp file\n"); exit(1); }
+    print_topdown(&cgroup, PRINT_CSV, COUNTER_TOPDOWN);
+    fclose(outfile);
+
+    contents = slurp_file(tmp_out);
+    assert(contents != NULL);
+    {
+        // spec_pipeline_pct (the last of the 9 trailing L2 columns) must
+        // clamp to 0.0, not wrap to a near-ULONG_MAX-derived value -- confirm
+        // by parsing every comma-separated field instead of pattern-matching
+        // one, since a wrapped value's exact digits aren't predictable.
+        char *p = contents;
+        char *comma;
+        while ((comma = strchr(p, ','))) {
+            char field[64];
+            size_t len = (size_t)(comma - p);
+            if (len < sizeof(field)) {
+                memcpy(field, p, len);
+                field[len] = '\0';
+                double v = atof(field);
+                if (v > 1000.0) {
+                    fprintf(stderr, "FAIL: field '%s' looks like an unclamped underflow (%.1f)\n", field, v);
+                    exit(1);
+                }
+            }
+            p = comma + 1;
+        }
+    }
+    free(contents);
+
+    remove(tmp_out);
+    outfile = NULL;
+    cpu_info = saved_cpu_info;
+
+    printf("PASS: Intel L2 topdown decomposition clamps child>parent instead of wrapping\n");
+}
+
 void test_arm_topdown_equivalence(void) {
     struct cpu_info fake_cpu;
     struct cpu_info *saved_cpu_info;
@@ -1710,6 +1797,7 @@ int main(int argc, char **argv) {
     test_multipass_raw_event_parsing();
     test_provenance();
     test_topdown_confidence();
+    test_intel_topdown_l2_underflow();
     test_arm_topdown_equivalence();
     test_topdown_amd_contention();
     test_topdown_be_shared_denominator();
