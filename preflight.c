@@ -19,6 +19,21 @@ static int preflight_available_slots(void){
   return nmi_running ? 5 : 6;
 }
 
+/* Intel's topdown/topdown2 Perf Metrics family is the one remaining Intel
+ * counter group that still forms a single kernel-enforced group regardless
+ * of size (raw_counter_group()'s "slots" leader carve-out, topdown.c) --
+ * every other Intel raw/cache group now bin-packs into budget-respecting
+ * chunks the same way AMD/ARM's already did (4.3 Tier 0's counter-group
+ * budget-chunking fix), so it's no longer accurate to warn about Intel
+ * counters in general sharing one group. Only warn when the request actually
+ * includes that family. */
+static int includes_intel_topdown_family(struct preflight_result *result){
+  struct preflight_group_usage *u;
+  for (u = result->groups; u; u = u->next)
+    if (u->mask & (COUNTER_TOPDOWN|COUNTER_TOPDOWN2)) return 1;
+  return 0;
+}
+
 /* --no-<flag> (or, where no such flag exists yet, a plain-language
  * equivalent) for each COUNTER_* bit a raw/cache counter group can carry.
  * Matches wspy.c:parse_options()'s long_options table -- if that table
@@ -158,10 +173,11 @@ void print_preflight_report(struct preflight_result *result){
   }
   fprintf(outfile,"  fit                 WILL MULTIPLEX -- %d slot(s) over budget\n",
 	  result->requested - result->available);
-  if (cpu_info && cpu_info->vendor == VENDOR_INTEL){
-    fprintf(outfile,"  note                these counters currently share a single perf event group on Intel"
-	    " (topdown.c's setup_counters()); an oversized group can get little or no scheduled"
-	    " time at all rather than degrading gracefully\n");
+  if (cpu_info && cpu_info->vendor == VENDOR_INTEL && includes_intel_topdown_family(result)){
+    fprintf(outfile,"  note                topdown/topdown2 is a single kernel-enforced perf event group on"
+	    " Intel (topdown.c's raw_counter_group()); if it alone exceeds the budget above, expect"
+	    " all-or-nothing behavior for that family specifically -- every other Intel group now"
+	    " multiplexes the same way AMD/ARM's already do\n");
   }
   if (result->nmi_watchdog_active){
     fprintf(outfile,"  suggestion          stop the NMI watchdog to free 1 more slot (%d instead of %d):"
@@ -192,10 +208,11 @@ void preflight_warn_if_tight(struct preflight_result *result){
 	  " slot(s) available%s -- this run will multiplex\n",
 	  result->requested,result->available,
 	  result->nmi_watchdog_active ? " (nmi_watchdog reserves 1)" : "");
-  if (cpu_info && cpu_info->vendor == VENDOR_INTEL){
-    notice("  note: these counters currently share a single perf event group on Intel -- an"
-	   " oversized group can get little or no scheduled time at all rather than degrading"
-	   " gracefully\n");
+  if (cpu_info && cpu_info->vendor == VENDOR_INTEL && includes_intel_topdown_family(result)){
+    notice("  note: topdown/topdown2 is a single kernel-enforced perf event group on Intel -- if it"
+	   " alone exceeds the budget above, expect all-or-nothing behavior for that family"
+	   " specifically -- every other Intel group now multiplexes the same way AMD/ARM's already"
+	   " do\n");
   }
   if (result->nmi_watchdog_active){
     notice("  tip: stop the NMI watchdog to free 1 more slot (%d instead of %d): scripts/setup_perf.sh"
