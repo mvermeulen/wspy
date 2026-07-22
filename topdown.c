@@ -1277,19 +1277,6 @@ struct counter_group *cache_counter_group(char *name,unsigned int mask){
     if (mask & cache_events[i].use){
       cgroup->cinfo[count].label = cache_events[i].name;
       cgroup->cinfo[count].config = cache_events[i].config;
-      // cache_events[i].type_id is normally PERF_TYPE_HW_CACHE (matching this
-      // whole synthetic group's own cgroup->type_id), except the trailing
-      // "instructions" entry, which is a genuine PERF_TYPE_HARDWARE/
-      // PERF_COUNT_HW_INSTRUCTIONS event smuggled into this table so print_
-      // cache()'s "N per 1000 instructions" line has a denominator. Recorded
-      // per-counter here so setup_counters() can open it at its real type
-      // instead of blindly reusing the whole group's PERF_TYPE_HW_CACHE --
-      // PERF_COUNT_HW_INSTRUCTIONS (1) numerically collides with L1I-read-
-      // access's own HW_CACHE encoding (also 1), so opening it as
-      // PERF_TYPE_HW_CACHE silently requested a duplicate of "l1i-read"
-      // instead of real instruction retirement (vendor-agnostic; every
-      // vendor builds this same table).
-      cgroup->cinfo[count].device_type = cache_events[i].type_id;
       if (cpu_info->vendor == VENDOR_AMD || cpu_info->vendor == VENDOR_ARM ||
 	  cpu_info->vendor == VENDOR_INTEL){
 	if ((count % num_counters_available) == 0)
@@ -1589,17 +1576,7 @@ void setup_counters(struct counter_group *counter_group_list){
       // whatever couldn't join).
       if (cgroup->cinfo[i].is_group_leader == 1) group_id = -1;
       memset(&pe,0,sizeof(pe));
-      // PERF_TYPE_RAW groups always defer to their own per-counter
-      // device_type (real per-event dynamic PMU types -- RAPL, AMD L3,
-      // IBS, ...); PERF_TYPE_HW_CACHE groups (cache_counter_group(), the
-      // only constructor of that type_id) do too, since that's the only way
-      // its synthetic "instructions" entry -- a real PERF_TYPE_HARDWARE
-      // event smuggled into an otherwise-HW_CACHE table -- opens at its
-      // actual type instead of colliding with l1i-read's HW_CACHE encoding
-      // (see cache_counter_group()'s comment). Every other group type still
-      // just uses its own fixed cgroup->type_id.
-      pe.type = (cgroup->type_id==PERF_TYPE_RAW || cgroup->type_id==PERF_TYPE_HW_CACHE)?
-	cgroup->cinfo[i].device_type:cgroup->type_id;
+      pe.type = (cgroup->type_id==PERF_TYPE_RAW)?cgroup->cinfo[i].device_type:cgroup->type_id;
       pe.config = cgroup->cinfo[i].config;
       pe.config1 = cgroup->cinfo[i].config1;
       pe.config2 = cgroup->cinfo[i].config2;

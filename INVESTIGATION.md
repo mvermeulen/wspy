@@ -263,19 +263,6 @@ x86 always reported 0 core types. Verified against a real 32-thread Intel P-core
 threads, both `coretype=0|1` resolving correctly); the web UI's discovery endpoint carries the new
 vendor-tagged core types too.
 
-**`cache_counter_group()`'s "instructions" entry opened at the wrong PMU type (`topdown.c`) —
-vendor-agnostic, not Intel-specific, though surfaced by the same real Coremark run above.** The
-synthetic `"instructions"` entry `cache_events[]` carries alongside its `PERF_TYPE_HW_CACHE` rows (a
-genuine `PERF_TYPE_HARDWARE`/`PERF_COUNT_HW_INSTRUCTIONS` event, used only as `print_cache()`'s "N per
-1000 inst" denominator) never had a `device_type` set, so `setup_counters()` opened it at the whole
-group's fixed `PERF_TYPE_HW_CACHE` type instead — and `PERF_COUNT_HW_INSTRUCTIONS` (`1`) numerically
-collides with L1I-read-access's own `PERF_TYPE_HW_CACHE` encoding (also `1`, confirmed against
-`<linux/perf_event.h>`), so it silently requested a duplicate of `l1i-read` rather than real instruction
-retirement, on every vendor. Fix: `cache_counter_group()` now records each `cache_events[]` entry's real
-`type_id` per-counter; `setup_counters()`'s `pe.type` resolution now also honors it for
-`PERF_TYPE_HW_CACHE` groups (previously that per-counter override only applied to `PERF_TYPE_RAW`
-groups).
-
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -404,18 +391,6 @@ event_source/devices/` enumerated live, not from documentation alone):
 - **True LLC/L3 counters.** Today's `l2_request.all`/`.miss` (`COUNTER_L2CACHE`) is genuinely L2, not
   L3 — Intel has no L3-layer entry at all, unlike AMD's `COUNTER_L3CACHE`. `uncore_cbox_0`..`_11` (12
   CBox/LLC-slice PMUs on this host) would give real chip-wide LLC hit/miss/occupancy.
-- **Generic `PERF_TYPE_HW_CACHE` coverage is incomplete on this microarchitecture.** Confirmed live on a
-  real Coremark run (Raptor Lake HX, 2026-07-22): `l1i-read` (L1I read-access), `iTLB-loads` (ITLB
-  read-access), and `dTLB-load-misses` all failed `perf_event_open()` with `EINVAL` while their sibling
-  events in the same request (`l1d-read`, `l1i-read-miss`, `dTLB-loads`, `iTLB-load-misses`) succeeded —
-  consistent with the well-known Linux-perf reality that several generic `PERF_COUNT_HW_CACHE_*`
-  (cache,op,result) combinations simply aren't wired up in the kernel's per-microarchitecture Intel PMU
-  mapping table, not a wspy grouping/request bug (ruled out separately: this reproduced with the 4.3 Tier
-  0 counter-group budget fix already in place, each event opening as its own correctly-sized group).
-  Reinforces the **True LLC/L3 counters**/**Real DRAM bandwidth** items above rather than adding new
-  scope: the fix for any specific missing combo is the same one — a real Intel raw/uncore MSR event
-  replacing the generic `PERF_TYPE_HW_CACHE` abstraction for that slot, not a wspy-side workaround (there
-  isn't one; the kernel refuses the open before wspy sees anything to work around).
 - **Intel per-core-domain and iGPU RAPL energy** — a genuinely different discovery shape than AMD's.
   This host has no `power_core` PMU; instead the *same* `power` PMU exposes `energy-cores`/`energy-gpu`
   as additional named events alongside `energy-pkg`. `energy-gpu` is notable on its own: real iGPU
@@ -775,24 +750,6 @@ core/thread affinity, minimum metadata set for publishable — have been resolve
 - **Should the website stay static-only, or add an interactive backend?** Still open. Recommendation:
   static-first through 4.3, keep an optional Grafana-style backend as a 4.4 nice-to-have. Non-goal:
   don't let the interactive-backend question block 4.3's static-site work.
-- **Does wspy's counter-group naming/organization need a separate Intel-focused and AMD-focused split
-  (CLI flags, `--counters=` group names, web UI panels), since today's single vocabulary can feel
-  AMD-centric on Intel hardware?** Raised 2026-07-22 off a real Intel Coremark run where several
-  requested groups (`opcache`, `memory`) silently produced zero columns. Recommendation: no — don't
-  fork the vocabulary. The Preset/Configuration/Option deep-dive above already commits to one vocabulary
-  shared by the CLI/`wspy-run`/web UI specifically so none of them invents its own mental model, and
-  forking by vendor would double that surface (two flag sets, two web-UI panels, two things to keep in
-  sync in `wspy-run`/`wspy-queue`/tests) while also making `wspy-summary`/`wspy-plot`'s cross-run
-  comparisons harder, since those already lean on shared column *identity* across vendors (`CLAUDE.md`:
-  "column identity decides template membership"). The actual problem is **coverage, not naming**:
-  `intel_raw_events[]` has zero entries for `COUNTER_OPCACHE`/`COUNTER_MEMORY` today, so those group
-  names are silent no-ops on Intel with no warning — already tracked as the Intel hybrid deep-dive's
-  "Additional Intel counters worth adding" list (op-cache/DSB raw events, `uncore_imc` DRAM bandwidth,
-  `uncore_cbox` LLC, per-core-domain/iGPU RAPL energy, `i915` GPU PMU, C-state residency). Closing those
-  gaps makes the *same* group names carry real data on Intel; a follow-up worth scoping alongside that
-  work is making coverage/capability reporting explicit about "not implemented on this vendor" (a
-  `raw_counter_group()` call that matched zero table entries) vs. "requested but failed to open" (a real
-  per-run EINVAL/EACCES) — today both look identical (silently zero columns) from the CLI/web UI.
 
 ## External brainstorming references
 - ReBench — reproducible experiment configuration, resumable execution, explicit benchmark
