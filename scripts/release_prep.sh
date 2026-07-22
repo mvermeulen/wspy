@@ -4,7 +4,7 @@ set -euo pipefail
 # scripts/release_prep.sh - release-prep checklist/script.
 #
 # INVESTIGATION.md's 4.2 "Release-prep checklist/script" item: captures the
-# v4.0/v4.1/v4.1.1 release process (version bump, stale-version-reference
+# v4.0/v4.1/v4.1.1/v4.2 release process (version bump, stale-version-reference
 # check, full test matrix, merged-PR label audit, release-notes draft, tag/
 # publish) as a repeatable script instead of redoing it by hand every phase.
 #
@@ -60,7 +60,7 @@ Options:
                       phases still run without it). X.Y is shorthand for
                       X.Y.0 -- wspy.h always carries a MAJOR/MINOR/PATCH
                       triple, but every X.Y.0 release so far has tagged as
-                      plain "vX.Y" (v4.0, v4.1), not "vX.Y.0" -- only a
+                      plain "vX.Y" (v4.0, v4.1, v4.2), not "vX.Y.0" -- only a
                       real patch release tags as "vX.Y.Z" (v4.1.1). This
                       script now derives the tag/title from the resulting
                       patch number rather than echoing back whatever was
@@ -100,8 +100,9 @@ fi
 # can keep assuming a full MAJOR.MINOR.PATCH triple (wspy.h always has all
 # three #defines). DISPLAY_VERSION is the separate, tag-facing form: drop
 # the patch back off when it's 0, since that's the convention every X.Y.0
-# release has actually tagged/titled with (v4.0, v4.1 -- not v4.0.0/v4.1.0;
-# only a real patch release like v4.1.1 keeps the third component).
+# release has actually tagged/titled with (v4.0, v4.1, v4.2 -- not
+# v4.0.0/v4.1.0/v4.2.0; only a real patch release like v4.1.1 keeps the
+# third component).
 DISPLAY_VERSION=""
 if [ -n "$VERSION" ]; then
   if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
@@ -261,7 +262,7 @@ else
   # doc/ARTIFACT_CONTRACT.md's manifest/run-index examples use (what broke
   # in both the real v4.0 and v4.1 releases), not a bare search for the old
   # version number as a word -- that would flood on INVESTIGATION.md's own
-  # legitimate historical narrative ("4.1 shipped X", etc.), which must not
+  # legitimate historical narrative ("4.2 shipped X", etc.), which must not
   # be touched.
   hits=$(grep -rn -E "\"wspy_version\"[[:space:]]*:[[:space:]]*\"${OLD_VERSION_SHORT}\"" \
     --include='*.md' --include='*.c' . 2>/dev/null || true)
@@ -295,7 +296,7 @@ else
     echo "# wspy ${DISPLAY_VERSION:-<version>}"
     echo ""
     echo "<!-- DRAFT: group these thematically with prose framing before publishing, -->"
-    echo "<!-- mirroring past release bodies (see \`gh release view v4.1\`) -- this is -->"
+    echo "<!-- mirroring past release bodies (see \`gh release view v4.2\`) -- this is -->"
     echo "<!-- a flat chronological skeleton, not a finished body. -->"
     echo ""
     echo "$matched_prs_json" | python3 -c "
@@ -309,7 +310,7 @@ fi
 echo ""
 
 echo "=== Phase 7: doc bookkeeping reminders (manual -- real editorial judgment, not automated) ==="
-echo "  - Fold the rolling \"Shipped since 4.1\"-style section in INVESTIGATION.md into a"
+echo "  - Fold the rolling \"Shipped since 4.2\"-style section in INVESTIGATION.md into a"
 echo "    proper \"What shipped in ${DISPLAY_VERSION:-<X.Y>}\" pointer-list section (its own stated"
 echo "    intent once this phase's backlog is empty -- keep it to names/pointers, not a"
 echo "    feature log; CLAUDE.md documents mechanism, this doc shouldn't restate it)."
