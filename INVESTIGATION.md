@@ -5,9 +5,9 @@ Formerly `INVESTIGATION_4.0.md` — renamed once its content outgrew a single re
 now 4.2 are done; see below). Full design write-ups and validation narratives for work that's fully
 shipped now live in `doc/INVESTIGATION_ARCHIVE.md`, out of the way of the open backlog.
 
-Status (2026-07-22): **4.0, 4.1, and 4.2 are released and done** (`wspy-release-notes.4.2.md` is ready
-as the v4.2 GitHub release body; tagging/publishing itself is the one remaining manual step, see
-`scripts/release_prep.sh`). **4.3 is now underway.** Real Intel hybrid hardware became available for
+Status (2026-07-22): **4.0, 4.1, and 4.2 are released and done** (v4.2 tagged and published as a
+GitHub release, `wspy-release-notes.4.2.md` as its body — see `scripts/release_prep.sh`). **4.3 is now
+underway.** Real Intel hybrid hardware became available for
 the first time this cycle (a Raptor Lake HX host, "carlsbad") and Tier 0's counter-grouping
 correctness pass found five confirmed hardware bugs; all five are now resolved (four shipped, see
 "Shipped since 4.2" below; one is a documented non-actionable perf-subsystem limitation, see
@@ -528,7 +528,9 @@ Advancements worth adopting, in priority order for `wspy` specifically:
   (items 5/6 above, and 4.3's "Phase-aware topdown" entry).
 
 → Items 3-8 map to 4.2's "Hierarchical topdown schema" (shipped) and 4.3's "Phase-aware topdown,"
-"Composite attribution," and "Core-class-aware topdown" (moved to 4.3, blocked on hardware access).
+"Composite attribution," and "Core-class-aware topdown" (moved to 4.3; no longer blocked on hardware
+access — real Intel/AMD hybrid hardware became available this cycle — but now blocked on Tier 0's
+Gracemont E-core raw-event item instead, see that tier above).
 
 ### Preset / Configuration / Option hierarchy deep-dive
 A three-level vocabulary for describing what wspy can be asked to do, surfaced while iterating the
@@ -688,7 +690,8 @@ this phase's own IBS sampling mode (Tier 1 above):**
    reports into a browsable site. Likely consumes the same export formats (WordPress/HTML/Markdown,
    4.1) rather than inventing a fourth.
 12. Characterization badges + similarity panels in reports — a new block type in 4.1's curation studio
-    once 4.2's archetype scorecard exists to draw a badge from, not a separate report surface.
+    drawing a badge from 4.2's (shipped) archetype scorecard (`wspy-archetype`), not a separate report
+    surface.
 13. Interactive tree/timeline drill-down, GPU phase overlays — the interactive counterpart to 4.1's
     static inclusion-depth mechanism (none/summary/excerpt/full) for the tree/interval blocks
     specifically; that mechanism stays the right default for a published, non-interactive report even
@@ -709,8 +712,8 @@ this phase's own IBS sampling mode (Tier 1 above):**
 
 17. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
     heavier, optional trace-rich profile, same "default vs debug profile" pattern as IBS.
-18. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) —
-    depends on 4.2's GPU fusion layer providing consistent per-metric data first.
+18. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds
+    on 4.2's (shipped) GPU fusion layer (`gpu_fusion.c`, `--gpu-metrics`) for consistent per-metric data.
 19. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`,
     extended once GPU runs feed the same index.
 20. Fold into general environment-comparability scoring (power cap, memory clock, thermal state,
