@@ -1134,6 +1134,56 @@ void test_intel_counter_grouping(void) {
     printf("PASS: Intel counter-group budget chunking\n");
 }
 
+// Regression test for a real bug found via a live Raptor Lake HX run
+// (2026-07-22): cache_counter_group()'s synthetic "instructions" entry (a
+// genuine PERF_TYPE_HARDWARE/PERF_COUNT_HW_INSTRUCTIONS event smuggled into
+// the otherwise-PERF_TYPE_HW_CACHE cache_events[] table, used only as
+// print_cache()'s "N per 1000 inst" denominator) never had its device_type
+// set, so setup_counters() opened it at the whole group's fixed
+// PERF_TYPE_HW_CACHE type instead -- and PERF_COUNT_HW_INSTRUCTIONS (1)
+// numerically collides with L1I-read-access's own HW_CACHE encoding (also
+// 1, per <linux/perf_event.h>), so it silently requested a duplicate of
+// "l1i-read" instead of real instruction retirement. Vendor-agnostic (every
+// vendor builds this same table via cache_counter_group()), unlike the
+// grouping fix above. This pins the fix at the data level: "instructions"
+// must carry device_type == PERF_TYPE_HARDWARE while every other cache_events
+// entry keeps PERF_TYPE_HW_CACHE.
+void test_cache_group_instructions_real_type(void) {
+    struct cpu_info fake_cpu;
+    struct cpu_info *saved_cpu_info;
+    struct counter_group *cgroup;
+    int i;
+    int found_instructions = 0;
+
+    printf("Testing cache_counter_group()'s \"instructions\" entry gets its real PERF_TYPE_HARDWARE type...\n");
+
+    // Vendor-agnostic bug/fix, but cache_counter_group() dereferences
+    // cpu_info->vendor unconditionally (for its is_group_leader chunking),
+    // and the global cpu_info defaults to NULL until some test sets it --
+    // any real vendor works here.
+    saved_cpu_info = cpu_info;
+    memset(&fake_cpu, 0, sizeof(fake_cpu));
+    fake_cpu.vendor = VENDOR_AMD;
+    cpu_info = &fake_cpu;
+
+    cgroup = cache_counter_group("cache", COUNTER_DCACHE|COUNTER_ICACHE|COUNTER_TLB);
+    assert(cgroup != NULL);
+    for (i = 0; i < cgroup->ncounters; i++){
+        if (!strcmp(cgroup->cinfo[i].label, "instructions")){
+            assert(cgroup->cinfo[i].device_type == PERF_TYPE_HARDWARE);
+            found_instructions = 1;
+        } else {
+            assert(cgroup->cinfo[i].device_type == PERF_TYPE_HW_CACHE);
+        }
+    }
+    assert(found_instructions == 1);
+    free_test_cgroup(cgroup);
+
+    cpu_info = saved_cpu_info;
+
+    printf("PASS: cache_counter_group() \"instructions\" entry real type\n");
+}
+
 void test_topdown_confidence(void) {
     struct cpu_info fake_cpu;
     struct cpu_info *saved_cpu_info;
@@ -1664,6 +1714,7 @@ int main(int argc, char **argv) {
     test_topdown_amd_contention();
     test_topdown_be_shared_denominator();
     test_intel_counter_grouping();
+    test_cache_group_instructions_real_type();
     test_arm_pmu_report();
     test_read_counters_multiplex_scaling();
     return 0;
