@@ -60,6 +60,19 @@ struct timespec start_time,finish_time;
 // per-pass teardown, so a since-closed fd is never reused as a group_fd
 // either (belt-and-suspenders alongside the per-call reset above).
 static int intel_group_id = -1;
+// Separate leader tracking for the topdown/topdown2 "Perf Metrics" family
+// (the "slots" fixed-metric event and its core.topdown-* sub-events). The
+// kernel enforces that those sub-events are only valid as members of a group
+// whose *literal* leader is the "slots" event -- sharing intel_group_id with
+// every other Intel counter group meant whichever group happened to open
+// its own first counter first (e.g. the default-on "ipc" group's
+// "instructions", which sorts ahead of "topdown" in counter_group_list)
+// became the leader instead, and every core.topdown-* sub-event failed with
+// EINVAL. Kept as its own variable, reset alongside intel_group_id at the
+// top of every setup_counters() call, so the topdown family always forms
+// its own group headed by "slots" regardless of what else is being set up
+// in the same call.
+static int intel_topdown_group_id = -1;
 struct raw_event intel_raw_events[] = {
   { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_L2CACHE,{{0}} },
   { "cpu-cycles","event=0x3c",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_TOPDOWN_BE,{{0}} },
@@ -1510,6 +1523,7 @@ void setup_counters(struct counter_group *counter_group_list){
   // real Raptor Lake host: --per-core --ipc measured counters on core 0 only,
   // errno=22 on cores 1-15 (--per-core's P-core set), before this reset.
   intel_group_id = -1;
+  intel_topdown_group_id = -1;
 
   // create system-wide counters
   for (cgroup = counter_group_list;cgroup;cgroup = cgroup->next){
@@ -1551,8 +1565,16 @@ void setup_counters(struct counter_group *counter_group_list){
 	}
 	continue;
       }
+      // topdown/topdown2 (mask COUNTER_TOPDOWN|COUNTER_TOPDOWN2) is Intel's
+      // Perf Metrics fixed-counter family and must lead its own group (see
+      // intel_topdown_group_id's comment above) -- every other Intel raw/
+      // hardware/hw-cache group still shares the general intel_group_id.
       if (cpu_info->vendor == VENDOR_INTEL){
-	group_id = intel_group_id;
+	if (cgroup->mask & (COUNTER_TOPDOWN|COUNTER_TOPDOWN2)){
+	  group_id = intel_topdown_group_id;
+	} else {
+	  group_id = intel_group_id;
+	}
       } else {
 	if (cgroup->cinfo[i].is_group_leader == 1) group_id = -1;
       }
@@ -1598,7 +1620,11 @@ void setup_counters(struct counter_group *counter_group_list){
 	debug("   create %s performance counter, name=%s\n",cgroup->label,cgroup->cinfo[i].label);
 	if (group_id == -1){
 	  group_id = cgroup->cinfo[i].fd;
-	  intel_group_id = group_id;
+	  if (cpu_info->vendor == VENDOR_INTEL && (cgroup->mask & (COUNTER_TOPDOWN|COUNTER_TOPDOWN2))){
+	    intel_topdown_group_id = group_id;
+	  } else {
+	    intel_group_id = group_id;
+	  }
 	}
       }
     }
@@ -1755,7 +1781,8 @@ void read_counters(struct counter_group *counter_group_list,int stop_counters){
 }
 
 // Closes every open fd in counter_group_list (setting .fd = -1) and resets
-// intel_group_id's shared-event-group-leader tracking. Nothing in this
+// intel_group_id's/intel_topdown_group_id's shared-event-group-leader
+// tracking. Nothing in this
 // codebase closed a counter fd before native multi-pass execution existed --
 // a single-pass wspy run just exits with its fds open, which the kernel
 // reclaims for free. For multi-pass this call is mandatory between passes:
@@ -1780,6 +1807,7 @@ void close_counters(struct counter_group *counter_group_list){
     }
   }
   intel_group_id = -1;
+  intel_topdown_group_id = -1;
 }
 
 int check_nmi_watchdog(void){

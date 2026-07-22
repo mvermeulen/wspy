@@ -392,26 +392,34 @@ since these are outright incorrect-data/broken-feature bugs on a whole vendor, n
    bleed from the opposite direction (see 0.3 below) — needs a decision on whether to land as-is on
    `master` (contained, one-file diff, `make test` green) or move to a `feature/` branch per the normal
    workflow given its severity/urgency.
-0.2. **Topdown/topdown2 (`--topdown`/`--topdown2`, now `--counters=topdown[2]`) silently report all-zero
-   percentages whenever any other Intel counter opens first.** Intel's "Perf Metrics" fixed-counter
-   feature (`slots` + the four/eight `core.topdown-*` sub-events) is a genuine kernel-enforced special
-   case: those sub-events are only valid as members of a group whose *literal* leader is the `slots`
-   event — the kernel returns `EINVAL` for any of them opened under a different leader. Because
-   `setup_counters()` funnels every Intel raw/hw-cache/hardware group into one shared `intel_group_id`
-   regardless of which group's counter happens to open first, and `ipc` (default-on, list order puts it
-   ahead of `topdown`) opens its own `instructions` event first, `slots`'s sub-metrics end up trying to
-   join a group led by `instructions` — not `slots` — and fail. Confirmed live and exactly reproduced the
-   *default*, most common invocation: `./wspy --csv --topdown -- true` measured only 3/7 counters
-   (ipc's 2 + `slots` itself, which tolerates a foreign leader) and printed `retire=0.0, frontend=0.0,
-   backend=0.0, speculate=0.0` — indistinguishable from a genuinely idle workload unless the stderr
-   `errno=22` lines are read. `--no-ipc --topdown` (or any invocation where nothing else opens first)
-   correctly measures 5/5 with real values, confirming the diagnosis. `--topdown-backend` is unaffected
-   (its `exe_activity`/`memory_activity` events are ordinary raw PMU events with no leader constraint).
-   **This is one of the tool's flagship features and its most common invocation (topdown + default ipc)
-   is currently broken on every Intel host.** Fix needs its own group id scoped to the topdown/topdown2
-   family (so `slots` always leads *that* group specifically), independent of whatever other Intel groups
-   are also being set up in the same call — not just a reordering hack, since any future group placed
-   ahead of topdown in list order would reintroduce the same failure.
+0.2. **[FIXED, second commit on the same branch] Topdown/topdown2 (`--topdown`/`--topdown2`, now
+   `--counters=topdown[2]`) silently reported all-zero percentages whenever any other Intel counter
+   opened first.** Intel's "Perf Metrics" fixed-counter feature (`slots` + the four/eight
+   `core.topdown-*` sub-events) is a genuine kernel-enforced special case: those sub-events are only
+   valid as members of a group whose *literal* leader is the `slots` event — the kernel returns `EINVAL`
+   for any of them opened under a different leader. Because `setup_counters()` funneled every Intel
+   raw/hw-cache/hardware group into one shared `intel_group_id` regardless of which group's counter
+   happened to open first, and `ipc` (default-on, list order puts it ahead of `topdown`) opens its own
+   `instructions` event first, `slots`'s sub-metrics ended up trying to join a group led by
+   `instructions` — not `slots` — and failed. Confirmed live in exactly the *default*, most common
+   invocation: `./wspy --csv --topdown -- true` measured only 3/7 counters (ipc's 2 + `slots` itself,
+   which tolerates a foreign leader) and printed `retire=0.0, frontend=0.0, backend=0.0, speculate=0.0`
+   — indistinguishable from a genuinely idle workload unless the stderr `errno=22` lines are read.
+   `--no-ipc --topdown` (or any invocation where nothing else opened first) correctly measured 5/5 with
+   real values, confirming the diagnosis. **Fix:** a second, dedicated group-leader variable
+   (`intel_topdown_group_id`, mirroring `intel_group_id`'s own per-call reset from 0.1) scoped to exactly
+   the groups whose `cgroup->mask` includes `COUNTER_TOPDOWN`/`COUNTER_TOPDOWN2` — every other Intel raw/
+   hardware/hw-cache group still shares the general `intel_group_id` unchanged. Verified live: `--topdown`
+   with default `ipc` now measures 7/7 with real values, reliably across 5 repeated runs; `--per-core
+   --topdown` together (both this fix and 0.1's stacked) measures real, distinct topdown data on all 16
+   P-cores. **Residual, separate issue found while verifying this fix:** `--topdown2` (and, less
+   consistently, `--topdown-backend`) still intermittently print all-zero/`-nan` despite the manifest/
+   coverage showing full measurement (e.g. `11/11`) — this is not the group-leader bug (leadership is
+   now always correct and coverage is always complete) and reproduces in plain single-pass aggregate mode,
+   not just under `--passes` as originally scoped in 0.5 below — see that item, revised to reflect the
+   broader scope. One `--topdown2` run also printed an obviously-corrupt value
+   (`spec_pipeline_pct=72407003082176.4`), suggesting a separate read/compute bug in that path worth its
+   own investigation.
 0.3. **The single-shared-Intel-group design cascades into wholesale counter loss once the combined group
    exceeds real hardware PMU capacity, and cannot mix counters across different underlying PMUs.** Two
    confirmed manifestations beyond topdown specifically:
@@ -460,18 +468,25 @@ since these are outright incorrect-data/broken-feature bugs on a whole vendor, n
    happen to equal 14 would hit the identical failure; it was only ever masked by chance. Fix: give
    `power_counter_group()`/`ibs_counter_group()` (and any future system-wide dynamic-PMU group) an explicit
    "needs pid=-1" marker rather than relying on an incidental type-value match against `PERF_TYPE_L3`.
-0.5. **`--passes` (native multi-pass execution) intermittently zeroes out an entire pass's values on
-   Intel, non-deterministically.** `--passes=ipc,topdown -- sleep 1` measured both passes' counters
-   correctly (manifest `passes[]` showed 2/2 and 5/5) roughly 2 times out of 3 in repeated runs, but
-   occasionally printed `ipc=-nan` *and* every topdown percentage as `0.0` in the same run despite full
-   coverage in the manifest — i.e., the underlying `perf_event_open()`/`read_counters()` machinery reported
-   success, but the merged output was wrong anyway. Order-dependence was ruled out (`--passes=topdown,ipc`
-   with the order reversed also succeeded on one run and is not obviously immune), and each pass's
-   `counter_group` list is a fresh, independently-`calloc()`'d allocation with no possible cross-pass field
-   reuse, so this doesn't obviously share 0.1's root cause. Not root-caused yet — flagged here as a
-   real, reproduced-live, Intel-specific reliability gap in a 4.1-shipped feature that needs a dedicated
-   investigation pass (strace across a failing run is the obvious next step) before `--passes` can be
-   trusted on Intel.
+0.5. **Intel topdown-family counters intermittently read back as zero/`-nan` despite full counter
+   coverage — broader than `--passes`, revised after fixing 0.2.** Originally scoped (and reproduced) as
+   a `--passes`-specific bug: `--passes=ipc,topdown -- sleep 1` measured both passes correctly (manifest
+   `passes[]` showed 2/2 and 5/5) roughly 2 times out of 3, but occasionally printed `ipc=-nan` and every
+   topdown percentage as `0.0` in the same run despite full coverage. After landing 0.2's group-leader
+   fix, the *same symptom* reproduced in plain single-pass aggregate `--topdown2` (no `--passes` involved
+   at all — `11/11` measured, all percentages `0.0`, roughly 1 run in 3) and once in `--topdown-backend`
+   too, so this is not primarily a multi-pass merge/print bug and doesn't share 0.1's cross-call root
+   cause either (each pass's `counter_group` list is a fresh, independently-`calloc()`'d allocation with
+   no possible cross-pass field reuse). The common thread across every observed case is the Intel
+   Perf Metrics/fixed-counter family (`slots` and its sub-events) specifically — plain hardware/raw groups
+   (`ipc` alone, `branch`, `cache`) haven't shown this in any repeated test. Likely candidates for a
+   follow-up investigation: a race between `PERF_EVENT_IOC_ENABLE` and the fixed-counter MSR actually
+   starting to accumulate, or a `read()`-time issue specific to how the kernel computes `PERF_METRICS`
+   sub-event values relative to their `slots` leader's own enable/disable state. One `--topdown2` run
+   also printed a corrupt `spec_pipeline_pct` value (`72407003082176.4`), suggesting a related read/compute
+   bug, possibly a divide against a near-zero or transiently-uninitialized denominator. Not root-caused —
+   flagged as a real, reproduced-live, Intel-specific reliability gap in both the single-pass and
+   `--passes` topdown paths; `strace`/`perf record` across a failing run is the obvious next step.
 
 **Study: additional counters worth adding, grounded in this same real-hardware pass (13950HX / Raptor
 Lake HX, `/sys/bus/event_source/devices/` enumerated live, not from documentation alone):**
