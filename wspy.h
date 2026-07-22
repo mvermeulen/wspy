@@ -8,13 +8,13 @@
 #include "cpu_info.h"
 
 #define WSPY_VERSION_MAJOR 4
-#define WSPY_VERSION_MINOR 1
+#define WSPY_VERSION_MINOR 2
 // Point release, bumped for a correctness-only fix that doesn't warrant a
 // MINOR bump (no new feature/flag) but is significant enough that the
 // binary's own --version output should distinguish it from plain 4.1 --
 // see the "raw event .config left unparsed for non-default --passes
 // groups" fix. 0 for a release with no patch-level fix yet.
-#define WSPY_VERSION_PATCH 1
+#define WSPY_VERSION_PATCH 0
 
 extern FILE *outfile;
 
