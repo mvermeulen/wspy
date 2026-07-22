@@ -244,6 +244,25 @@ hardware, both in `topdown.c` (PR #129) — `--per-core` silently measuring only
 Metrics `slots` sub-events require a literal `slots`-led group, and `ipc`'s default-on event usually
 won leadership instead). Verified against real Raptor Lake HX hardware.
 
+**Intel counter-group budget chunking:** the third originally-found bug (`topdown.c`) — Intel's
+single-shared-group design funneled every non-topdown counter into one perf event group with no size
+limit, cascading into wholesale `EINVAL` loss once a combined group exceeded real hardware PMU capacity
+or spanned two different underlying PMUs. `cache_counter_group()`/`raw_counter_group()` now chunk Intel
+counters into hardware-budget-respecting groups (`is_group_leader` every `available_counters`/
+`num_counters_available` counters, same as AMD/ARM already did) instead of one unbounded shared group,
+while the topdown/topdown2 Perf Metrics family stays exactly one dedicated group regardless of size (a
+kernel-enforced "literal `slots` leader" requirement, not a PMC-budget one). This also let
+`setup_counters()` drop the `intel_group_id`/`intel_topdown_group_id` module statics entirely in favor
+of the same `is_group_leader`-driven local `group_id` AMD/ARM already used — structurally removing the
+class of cross-call state-leak bug the first fix above had to patch.
+
+**x86 hybrid core-type detection:** `--affinity=coretype=<id>`/`--list-affinity` (`affinity.c`) now
+detect Intel P-core/E-core and AMD Zen5/Zen5c core-type groups on x86 by reusing `cpu_info.c`'s
+existing per-core vendor classification when the ARM-only `MIDR_EL1` pass finds nothing — previously
+x86 always reported 0 core types. Verified against a real 32-thread Intel P-core/E-core host (16+16
+threads, both `coretype=0|1` resolving correctly); the web UI's discovery endpoint carries the new
+vendor-tagged core types too.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -311,8 +330,9 @@ existed in this environment to exercise them. What's confirmed:
    output in its single most common invocation. Fix: a second, dedicated leader variable
    (`intel_topdown_group_id`) scoped to exactly the groups whose mask includes
    `COUNTER_TOPDOWN`/`COUNTER_TOPDOWN2`.
-3. The single-shared-Intel-group design cascades into wholesale counter loss once the combined group
-   exceeds real hardware PMU capacity, and cannot mix counters across different underlying PMUs. A perf
+3. ~~The single-shared-Intel-group design cascades into wholesale counter loss once the combined group
+   exceeds real hardware PMU capacity, and cannot mix counters across different underlying PMUs~~ —
+   **shipped**, see "Shipped since 4.2"'s "Intel counter-group budget chunking". A perf
    event *group* requires every member to be simultaneously schedulable — no within-group multiplexing
    by design — so once that's impossible the kernel refuses further members with `EINVAL` rather than
    degrading gracefully. Confirmed live: a realistic multi-group combo
@@ -322,7 +342,9 @@ existed in this environment to exercise them. What's confirmed:
    tries to put RAPL's `energy-pkg` event — a *different* dynamic PMU (`type=35` on this host, not the
    general-purpose `cpu`/`cpu_core` PMU) — into the same shared group as whatever opened first; a perf
    group can't span two PMUs, so `energy-pkg` fails `EINVAL` whenever anything else is set up in the
-   same call. Likely fix: move Intel away from "one shared group across every requested counter" toward
+   same call (this specific RAPL-scope symptom's actual root cause is finding #4 below, still open — the
+   grouping fix here stops RAPL from fighting for a slot in Intel's general group, but doesn't by itself
+   fix RAPL's own `pid=0` scope bug). Fix: move Intel away from "one shared group across every requested counter" toward
    AMD's model (ungrouped, independently-multiplexed general-purpose events, with only the topdown
    Perf-Metrics family kept as its own small dedicated group per #2 above), or route grouping through
    `preflight.c`'s existing budget/bin-packing logic (`multipass.c`) instead of one ungated shared
@@ -353,14 +375,16 @@ existed in this environment to exercise them. What's confirmed:
 
 Additional Intel counters worth adding, grounded in the same real-hardware pass (`/sys/bus/
 event_source/devices/` enumerated live, not from documentation alone):
-- **Per-core-type-aware raw event tables.** `cpu_core`'s dynamic PMU type is `4` on this host (which
-  happens to equal `PERF_TYPE_RAW`'s own numeric value — the likely reason `intel_raw_events[]`'s
-  hardcoded `PERF_TYPE_RAW` has silently "worked" for P-cores despite never doing a real per-core
-  PMU-type lookup the way `cpu_info.c` already does for ARM); `cpu_atom`'s type is `10` — different, not
-  guaranteed stable across hosts/kernel versions. Every raw event in `intel_raw_events[]` is
-  P-core-only-correct; Gracemont E-cores need their own encodings entirely, which is why
-  `core_is_per_core_eligible()` currently excludes `CORE_INTEL_ATOM` (see the Topdown deep-dive's
-  "Hybrid/heterogeneous core-class summaries" item, and 4.3 Tier 3's "Core-class-aware topdown", below).
+- ~~**Per-core-type-aware raw event tables.**~~ — now scoped as 4.3 Tier 0's item 3 ("Per-core-type-aware
+  Intel raw event tables (Gracemont E-core support)", below), not left as an unscoped idea: `cpu_core`'s
+  dynamic PMU type is `4` on this host (which happens to equal `PERF_TYPE_RAW`'s own numeric value — the
+  likely reason `intel_raw_events[]`'s hardcoded `PERF_TYPE_RAW` has silently "worked" for P-cores
+  despite never doing a real per-core PMU-type lookup the way `cpu_info.c` already does for ARM);
+  `cpu_atom`'s type is `10` — different, not guaranteed stable across hosts/kernel versions. Every raw
+  event in `intel_raw_events[]` is P-core-only-correct; Gracemont E-cores need their own encodings
+  entirely, which is why `core_is_per_core_eligible()` currently excludes `CORE_INTEL_ATOM` (see the
+  Topdown deep-dive's "Hybrid/heterogeneous core-class summaries" item, and 4.3 Tier 3's
+  "Core-class-aware topdown", below).
 - **Real DRAM bandwidth** (`COUNTER_MEMORY`, nonexistent for Intel today). `uncore_imc_free_running_0`/
   `_1` expose `data_read`/`data_write`/`data_total` with their own `.scale`/`.unit` sysfs files — the
   exact shape `power.c` already knows how to parse; comparatively low-effort riding on existing code.
@@ -381,11 +405,10 @@ event_source/devices/` enumerated live, not from documentation alone):
   IBS sampling-mode ships and its mmap-ring-buffer/per-sample decode infrastructure exists to model this
   against.
 
-→ Findings 1-2 shipped (see "Shipped since 4.2"); 3-5 are 4.3 Tier 0's remaining open items (see
-below). The counter-coverage study above is background for a future Tier 0/Tier 3 item that adds Intel
-raw events, not itself a scoped backlog item yet. Also removes the hardware-access blocker from Tier
-3's "Core-class-aware topdown" item — see that item for why its own scope turned out to depend on
-Tier 0 landing first.
+→ Findings 1-3 shipped (see "Shipped since 4.2"); 4-5 are 4.3 Tier 0's remaining open correctness bugs,
+alongside the E-core raw-event gap above, now scoped as that same tier's item 3 (see below). Also
+removes the hardware-access blocker from Tier 3's "Core-class-aware topdown" item — see that item for
+why its own scope turned out to depend on Tier 0 landing first.
 
 ### Topdown deep-dive
 Advancements worth adopting, in priority order for `wspy` specifically:
@@ -480,26 +503,36 @@ motivation and per-syscall design rationale. What remains open from this track:
 Goal: use the normalized store built in 4.1 for regression detection, clustering, phase-aware
 topdown/IBS attribution, static-site publishing, and a lower-overhead tracing backend.
 
-**Tier 0 — Intel counter-grouping correctness bugs (remaining). Two of five originally-found bugs
-already shipped — see "Shipped since 4.2"; full root-cause detail for every item below lives in the
-Intel hybrid/counter-grouping deep-dive above, not repeated here. Ahead of the IBS work below since
-these are incorrect-data/broken-feature bugs on a whole vendor, not new capability:**
+**Tier 0 — Intel counter-grouping correctness bugs (remaining), plus one coverage gap on the same
+hardware. Three of five originally-found bugs already shipped — see "Shipped since 4.2"; full
+root-cause detail for every item below lives in the Intel hybrid/counter-grouping deep-dive above, not
+repeated here. Ahead of the IBS work below since these are incorrect-data/missing-coverage issues on a
+whole vendor, not new capability:**
 
-1. The single-shared-Intel-group design cascades into wholesale counter loss once the combined group
-   exceeds real hardware PMU capacity, and can't mix counters across different underlying PMUs (e.g. a
-   `dcache,icache,tlb,branch,cache2` combo measuring only 10/19 counters; RAPL's `energy-pkg` failing
-   whenever anything else opens first). Likely fix moves Intel toward AMD's ungrouped
-   general-purpose-events model (topdown's Perf-Metrics family stays its own dedicated group per the
-   deep-dive's #2), or routes grouping through `preflight.c`'s existing budget/bin-packing logic instead
-   of one shared leader.
-2. RAPL/`energy-pkg` opened with the wrong scope (`pid=0` instead of `pid=-1`) on Intel — not actually
+1. RAPL/`energy-pkg` opened with the wrong scope (`pid=0` instead of `pid=-1`) on Intel — not actually
    Intel-specific, just unmasked here by a PMU-type collision that happened to mask it on AMD. Fix needs
    an explicit "needs `pid=-1`" marker on system-wide dynamic-PMU counter groups
    (`power_counter_group()`/`ibs_counter_group()`) rather than an incidental type-value match against
    `PERF_TYPE_L3`.
-3. Intel topdown-family counters intermittently read back as zero/`-nan` despite full counter
+2. Intel topdown-family counters intermittently read back as zero/`-nan` despite full counter
    coverage, in both single-pass and `--passes` topdown paths — not yet root-caused; `strace`/
    `perf record` across a failing run is the obvious next step.
+3. Per-core-type-aware Intel raw event tables (Gracemont E-core support). `intel_raw_events[]` hardcodes
+   `PERF_TYPE_RAW` as every raw event's `device_type` — silently correct for P-cores only because
+   `cpu_core`'s real dynamic PMU type (4) happens to equal `PERF_TYPE_RAW`'s own numeric value (see the
+   deep-dive above); `cpu_atom`'s real dynamic type is 10, and Gracemont E-cores need their own raw event
+   *encodings* entirely, not just a different `device_type` plugged into the same table. Today E-cores
+   get zero raw-event coverage (topdown, branch, L2, ...) rather than wrong coverage —
+   `core_is_per_core_eligible()` excludes `CORE_INTEL_ATOM` outright specifically to avoid silently
+   mismeasuring them. Scope: (a) a `cpu_atom`-keyed raw event table (or a `core_class`-parameterized
+   lookup replacing the single `intel_raw_events[]`) with Gracemont-correct encodings; (b) resolve each
+   Intel raw event's real per-core-type dynamic PMU type at setup time (the same
+   `/sys/bus/event_source/devices/<pmu>/type` lookup `cpu_info.c` already does for ARM PMU clusters)
+   instead of the hardcoded `PERF_TYPE_RAW`. `--affinity=coretype=<id>` now resolves P-core/E-core groups
+   on real Intel/AMD hybrid hardware (shipped, see "Shipped since 4.2") — this item is what's still
+   missing to actually *measure* an E-core once selected. Blocking prerequisite for Tier 3's
+   "Core-class-aware topdown" on Intel specifically: a P-core/E-core weighted aggregate needs E-core data
+   to exist at all before it can be weighted.
 
 **Tier 1 — AMD IBS sampling-mode support (moved to the front of 4.3, 2026-07-20; see below):**
 
@@ -554,11 +587,15 @@ this phase's own IBS sampling mode (Tier 1 above):**
    classification shipped in 4.2) and Intel hybrid hardware became available this cycle ("carlsbad",
    see the Intel hybrid/counter-grouping deep-dive above and "Shipped since 4.2"). That first
    real-hardware Intel pass turned up correctness bugs more fundamental than the E-core-exclusion gap
-   this item was originally scoped around — two now shipped, three still open in Tier 0 above.
-   Recommend sequencing the rest of Tier 0 before resuming this item: a weighted P-core/E-core aggregate
-   is meaningless to build on per-core topdown data that isn't measured correctly yet even for the cores
-   already included. `--affinity=coretype=<id>` (`affinity.c`) remains ARM-only pending x86 hybrid
-   detection, a separate, already-documented gap in that file.
+   this item was originally scoped around — three now shipped, two correctness bugs still open in Tier 0
+   above, plus that same tier's item 3 (Gracemont raw-event tables), which *is* this item's
+   E-core-exclusion gap, now scoped there instead of here since it's shared with every other
+   E-core-touching feature, not specific to topdown. Recommend sequencing the rest of Tier 0 before
+   resuming this item: a weighted P-core/E-core aggregate is meaningless to build on per-core topdown
+   data that isn't measured correctly yet (or, for E-cores, doesn't exist yet) even for the cores already
+   included. `--affinity=coretype=<id>` (`affinity.c`) now detects x86 P-core/E-core and Zen5/Zen5c
+   groups too (shipped, see "Shipped since 4.2") — this item still needs Tier 0's item 3 before an
+   E-core's own topdown numbers exist to aggregate.
 
 **Tier 4 — publishing/reporting expansion, needs 4.1's report studio:**
 

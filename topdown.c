@@ -52,27 +52,6 @@ int dummy = 0;
 struct timespec start_time,finish_time;
 
 // Counter definitions for RAW performance counters
-// Scoped to a single setup_counters() call (reset to -1 at the top of that
-// function): set from the first successfully opened Intel fd in the call and
-// reused as every subsequent counter's perf event-group leader for the rest
-// of that same call's list, since group members must share their leader's
-// cpu/task target. close_counters() also resets this to -1 as part of
-// per-pass teardown, so a since-closed fd is never reused as a group_fd
-// either (belt-and-suspenders alongside the per-call reset above).
-static int intel_group_id = -1;
-// Separate leader tracking for the topdown/topdown2 "Perf Metrics" family
-// (the "slots" fixed-metric event and its core.topdown-* sub-events). The
-// kernel enforces that those sub-events are only valid as members of a group
-// whose *literal* leader is the "slots" event -- sharing intel_group_id with
-// every other Intel counter group meant whichever group happened to open
-// its own first counter first (e.g. the default-on "ipc" group's
-// "instructions", which sorts ahead of "topdown" in counter_group_list)
-// became the leader instead, and every core.topdown-* sub-event failed with
-// EINVAL. Kept as its own variable, reset alongside intel_group_id at the
-// top of every setup_counters() call, so the topdown family always forms
-// its own group headed by "slots" regardless of what else is being set up
-// in the same call.
-static int intel_topdown_group_id = -1;
 struct raw_event intel_raw_events[] = {
   { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_L2CACHE,{{0}} },
   { "cpu-cycles","event=0x3c",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_TOPDOWN_BE,{{0}} },
@@ -1298,7 +1277,8 @@ struct counter_group *cache_counter_group(char *name,unsigned int mask){
     if (mask & cache_events[i].use){
       cgroup->cinfo[count].label = cache_events[i].name;
       cgroup->cinfo[count].config = cache_events[i].config;
-      if (cpu_info->vendor == VENDOR_AMD || cpu_info->vendor == VENDOR_ARM){
+      if (cpu_info->vendor == VENDOR_AMD || cpu_info->vendor == VENDOR_ARM ||
+	  cpu_info->vendor == VENDOR_INTEL){
 	if ((count % num_counters_available) == 0)
 	  cgroup->cinfo[count].is_group_leader = 1;
       }
@@ -1358,6 +1338,21 @@ struct counter_group *raw_counter_group(char *name,unsigned int mask){
       if (cpu_info->vendor == VENDOR_AMD || cpu_info->vendor == VENDOR_ARM){
 	if (((count % available_counters) == 0) || (events[i].device_type != PERF_TYPE_RAW))
 	  cgroup->cinfo[count].is_group_leader = 1;
+      } else if (cpu_info->vendor == VENDOR_INTEL){
+	if (mask & (COUNTER_TOPDOWN|COUNTER_TOPDOWN2)){
+	  // Intel's Perf Metrics fixed-counter family (the "slots" event and
+	  // its core.topdown-* sub-events) is a kernel-enforced special case,
+	  // not a hardware-PMC-capacity one: every sub-event is only valid as
+	  // a member of one group literally led by "slots", however many
+	  // sub-events that is, and it doesn't compete with the general-
+	  // purpose PMC budget the chunking below approximates. So this
+	  // family always stays exactly one group -- only its first event
+	  // becomes a leader, never re-chunked at available_counters like
+	  // everything else.
+	  if (count == 0) cgroup->cinfo[count].is_group_leader = 1;
+	} else if (((count % available_counters) == 0) || (events[i].device_type != PERF_TYPE_RAW)){
+	  cgroup->cinfo[count].is_group_leader = 1;
+	}
       }
       count++;
     }
@@ -1511,19 +1506,19 @@ void setup_counters(struct counter_group *counter_group_list){
   // struct counter_def *counter_def;
   // int ncounters;
 
-  // Each call to setup_counters() operates on one self-contained list that
-  // may target a different CPU than any previous call (--per-core calls this
-  // once per eligible core, back to back, with no close_counters() in
-  // between -- see that function's own comment). A perf event group's
-  // members must share their leader's cpu/task target, so intel_group_id
-  // (below) must start fresh here rather than carry a still-open leader fd
-  // from a previous call's (different-cpu) group -- otherwise every core
-  // after the first fails every Intel raw-type counter with EINVAL, since it
-  // tries to join a group led by another CPU's event. Confirmed live on a
-  // real Raptor Lake host: --per-core --ipc measured counters on core 0 only,
-  // errno=22 on cores 1-15 (--per-core's P-core set), before this reset.
-  intel_group_id = -1;
-  intel_topdown_group_id = -1;
+  // group_id (above) is local to this call and starts fresh every time --
+  // deliberately so. Each call to setup_counters() operates on one self-
+  // contained list that may target a different CPU than any previous call
+  // (--per-core calls this once per eligible core, back to back, with no
+  // close_counters() in between -- see that function's own comment). A perf
+  // event group's members must share their leader's cpu/task target, so a
+  // leader fd left over from a previous call's (different-cpu) group must
+  // never be reused as this call's group_fd -- a bug that used to live here
+  // via a module-static "current Intel group leader" variable (fixed, then
+  // structurally removed by making every vendor's grouping purely
+  // is_group_leader-driven; see cache_counter_group()/raw_counter_group()).
+  // Confirmed live on a real Raptor Lake host before that fix: --per-core
+  // --ipc measured counters on core 0 only, errno=22 on cores 1-15.
 
   // create system-wide counters
   for (cgroup = counter_group_list;cgroup;cgroup = cgroup->next){
@@ -1565,19 +1560,21 @@ void setup_counters(struct counter_group *counter_group_list){
 	}
 	continue;
       }
-      // topdown/topdown2 (mask COUNTER_TOPDOWN|COUNTER_TOPDOWN2) is Intel's
-      // Perf Metrics fixed-counter family and must lead its own group (see
-      // intel_topdown_group_id's comment above) -- every other Intel raw/
-      // hardware/hw-cache group still shares the general intel_group_id.
-      if (cpu_info->vendor == VENDOR_INTEL){
-	if (cgroup->mask & (COUNTER_TOPDOWN|COUNTER_TOPDOWN2)){
-	  group_id = intel_topdown_group_id;
-	} else {
-	  group_id = intel_group_id;
-	}
-      } else {
-	if (cgroup->cinfo[i].is_group_leader == 1) group_id = -1;
-      }
+      // Vendor-agnostic: cache_counter_group()/raw_counter_group() already
+      // decided, at construction time, which counters start a fresh group
+      // (hardware-PMC-budget chunking for AMD/ARM/most Intel groups; a
+      // single dedicated group for Intel's topdown/topdown2 Perf Metrics
+      // family, whose sub-events are only valid under a literal "slots"
+      // leader regardless of PMC budget -- see raw_counter_group()'s
+      // comment). Letting every counter simply follow its own
+      // is_group_leader flag here replaces what used to be a single
+      // shared-group-forever model specific to Intel, which cascaded into
+      // wholesale counter loss once a combined group exceeded real hardware
+      // PMU capacity or spanned two different underlying PMUs (a perf group
+      // requires every member to be simultaneously schedulable on the same
+      // PMU -- no partial degradation, the kernel just refuses EINVAL on
+      // whatever couldn't join).
+      if (cgroup->cinfo[i].is_group_leader == 1) group_id = -1;
       memset(&pe,0,sizeof(pe));
       pe.type = (cgroup->type_id==PERF_TYPE_RAW)?cgroup->cinfo[i].device_type:cgroup->type_id;
       pe.config = cgroup->cinfo[i].config;
@@ -1618,14 +1615,7 @@ void setup_counters(struct counter_group *counter_group_list){
 	coverage_note(cgroup->label,cgroup->cinfo[i].label,1,0);
 	ioctl(cgroup->cinfo[i].fd,PERF_EVENT_IOC_ENABLE,0);
 	debug("   create %s performance counter, name=%s\n",cgroup->label,cgroup->cinfo[i].label);
-	if (group_id == -1){
-	  group_id = cgroup->cinfo[i].fd;
-	  if (cpu_info->vendor == VENDOR_INTEL && (cgroup->mask & (COUNTER_TOPDOWN|COUNTER_TOPDOWN2))){
-	    intel_topdown_group_id = group_id;
-	  } else {
-	    intel_group_id = group_id;
-	  }
-	}
+	if (group_id == -1) group_id = cgroup->cinfo[i].fd;
       }
     }
   }
@@ -1780,19 +1770,15 @@ void read_counters(struct counter_group *counter_group_list,int stop_counters){
   }
 }
 
-// Closes every open fd in counter_group_list (setting .fd = -1) and resets
-// intel_group_id's/intel_topdown_group_id's shared-event-group-leader
-// tracking. Nothing in this
-// codebase closed a counter fd before native multi-pass execution existed --
-// a single-pass wspy run just exits with its fds open, which the kernel
-// reclaims for free. For multi-pass this call is mandatory between passes:
-// this MUST run after a pass's final read_counters(list,1) and before the
-// NEXT pass's setup_counters(), or the closed-but-not-yet-reused fds keep
-// occupying PMU slots (the next pass's perf_event_open() calls fail or
-// silently multiplex) and, on Intel, that next pass's first
-// perf_event_open() would pass this pass's now-invalid leader fd as
-// group_fd. Does not free any struct counter_group/counter_info memory --
-// see read_counters()/preflight.h for the same "fds are the scarce
+// Closes every open fd in counter_group_list (setting .fd = -1). Nothing in
+// this codebase closed a counter fd before native multi-pass execution
+// existed -- a single-pass wspy run just exits with its fds open, which the
+// kernel reclaims for free. For multi-pass this call is mandatory between
+// passes: this MUST run after a pass's final read_counters(list,1) and
+// before the NEXT pass's setup_counters(), or the closed-but-not-yet-reused
+// fds keep occupying PMU slots (the next pass's perf_event_open() calls fail
+// or silently multiplex). Does not free any struct counter_group/counter_info
+// memory -- see read_counters()/preflight.h for the same "fds are the scarce
 // resource, memory isn't" split this codebase already applies elsewhere.
 void close_counters(struct counter_group *counter_group_list){
   struct counter_group *cgroup;
@@ -1806,8 +1792,6 @@ void close_counters(struct counter_group *counter_group_list){
       }
     }
   }
-  intel_group_id = -1;
-  intel_topdown_group_id = -1;
 }
 
 int check_nmi_watchdog(void){
