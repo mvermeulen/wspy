@@ -721,12 +721,46 @@ this phase's own IBS sampling mode (Tier 1 above):**
     timeout item's `BATCH_RUN_MULTIPLIER` — a real combination count would replace that item's blind
     5.0 guess with a grounded number, once both exist.
 
+29. openbenchmarking.org-seeded single-test-point Phoronix suites, building toward a semi-automated
+    profiled-workload library. openbenchmarking.org result pages (e.g. a `pts/*`-suite run someone else
+    already published) carry an "Export Benchmark Data: Result File to Test Suite (XML)" link — a
+    documented export feature, distinct from the HTML/article scraping this tier's already-"Dropped, not
+    deferred" item ruled out (see "What shipped in 4.2"'s dropped-items note); no site-policy conflict
+    here since this consumes a result's own structured export, not scraped page content. Scope:
+    - Decompose that exported test-suite XML into one minimal single-test-point PTS suite per option
+      combination (e.g. `pts/build-linux-kernel-1.18.0` at a specific `defconfig`), saved as
+      `workload/phoronix/<test-name>/<options-info>/` — reusing the same `<TestSettings>/<Option>/
+      <Menu>/<Entry>` shape item 28 above already identified as the right static-parse target in
+      `test-definition.xml`, just applied to build suites instead of just counting combinations.
+    - A runner script copies each single-test-point suite into `~/.phoronix-test-suite/test-suites/
+      local/`, runs it under a saved `wspy-run` configuration (profile or `-c` file), and writes the
+      wspy output back into that same `workload/phoronix/<test-name>/<options-info>/` directory —
+      co-locating the PTS suite definition with its own wspy profile(s) instead of the current
+      `workload/phoronix` layout's single flat `run_test.sh` covering every test by name at invocation
+      time.
+    - Reuse check before running: skip regenerating/rerunning a `<test-name>/<options-info>` combination
+      that's already present, so building up the library is additive across sessions rather than
+      redoing prior work — same spirit as item 27's "skip re-running only if already complete" resume
+      check, but keyed on test identity rather than a single run's own pass list.
+    - Because each generated suite is exactly one test point, its wspy capture is *already* segmented at
+      the source — no post-hoc composite.xml/log-timestamp correlation needed for runs built this way.
+      Doesn't replace item 25 (`wspy-phoronix-segment`) for suites run the ordinary multi-test-point way,
+      but sidesteps the problem entirely for anything built through this path.
+    - Longer-term payoff (point 5 of the originating use case): once enough `<test-name>/<options-info>`
+      directories accumulate this way, they form a pre-profiled library keyed on real Phoronix test
+      identity — a natural feed for Tier 2's clustering/nearest-neighbor work once that lands, and a
+      cheaper way to grow `wspy-ledger`'s workload coverage than hand-authoring one-off `wspy-run`
+      invocations per benchmark.
+    Not yet scoped: how much of "decompose XML → per-option local suite" is worth a dedicated tool vs.
+    a documented manual recipe for the first pass — start manual on 2-3 real openbenchmarking.org results
+    before deciding a script pays for itself.
+
 **Tier 8 — testing:**
 
-29. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
+30. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
     guardrails — needs deterministic micro-workloads and 4.1's normalized store plus 4.2's
     stats/confidence infrastructure.
-30. Contributor guide for adding a collector/metric/schema bump safely.
+31. Contributor guide for adding a collector/metric/schema bump safely.
 
 ## 4.4 priorities
 Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
@@ -803,6 +837,12 @@ core/thread affinity, minimum metadata set for publishable — have been resolve
   taken: https://grafana.com/oss/grafana/
 - Perfetto — timeline/trace analysis and SQL-based trace queries, relevant to the optional deep
   trace analysis pipeline (4.4): https://perfetto.dev/docs/
+- OpenBenchmarking.org — public Phoronix Test Suite result archive; individual result pages expose an
+  "Export Benchmark Data: Result File to Test Suite (XML)" link, the seed mechanism for 4.3 Tier 7's
+  new "openbenchmarking.org-seeded single-test-point Phoronix suites" item: https://openbenchmarking.org/
 
-Note: OpenBenchmarking.org returned HTTP 403 in the environment used for this research; not
-reviewed.
+Note (2026-07-22): an earlier research pass hit an HTTP 403 fetching OpenBenchmarking.org directly from
+this environment and left it unreviewed (see prior revisions of this note); a user-provided result URL
+in this same conversation confirmed the export-XML link exists and is usable as a seed, so that blocker
+was environment/fetch-specific, not a real access restriction — reviewed manually, not by this
+environment's own fetch tooling.
