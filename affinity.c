@@ -247,8 +247,61 @@ static void affinity_topology_discover_at(const char *sysfs_base,int ncpus){
       CPU_ZERO(&affinity_topology.coretypes[found].cpus);
       affinity_topology.ncoretypes = found+1;
     }
+    affinity_topology.coretypes[found].is_midr = 1;
     CPU_SET(i,&affinity_topology.coretypes[found].cpus);
     affinity_topology.cpu[i].core_type = found;
+  }
+
+  /* x86 hybrid fallback (Intel P-core/E-core, AMD Zen5/Zen5c dense cores):
+   * the MIDR loop above finds nothing on x86 (no midr_el1 register), but
+   * cpu_info.c's inventory_cpu() has *already* classified each logical
+   * cpu's microarchitecture into coreinfo[i].vendor while building
+   * cpu_info (Intel via /sys/devices/cpu_atom|cpu_core/cpus, AMD Zen5c via
+   * resolve_amd_zen5_dense_cores()'s frequency heuristic) -- reuse that
+   * classification instead of re-deriving it here. Only kept when the host
+   * is genuinely heterogeneous (>1 distinct classified vendor present): a
+   * uniform x86 host must still report ncoretypes == 0, the same "no such
+   * thing" answer every homogeneous host already gave before this
+   * fallback existed. */
+  if (affinity_topology.ncoretypes == 0 && cpu_info && cpu_info->coreinfo){
+    for (i=0;i<ncpus && i<(int)cpu_info->num_cores;i++){
+      enum cpu_core_type v = cpu_info->coreinfo[i].vendor;
+      const char *name;
+      int j,found;
+
+      switch (v){
+      case CORE_INTEL_ATOM: name = "intel_atom"; break;
+      case CORE_INTEL_CORE: name = "intel_core"; break;
+      case CORE_AMD_ZEN5: name = "amd_zen5"; break;
+      case CORE_AMD_ZEN5C: name = "amd_zen5c"; break;
+      default: continue; /* CORE_UNKNOWN/CORE_*_UNKNOWN/ARM types: not a meaningful grouping key here */
+      }
+
+      found = -1;
+      for (j=0;j<affinity_topology.ncoretypes;j++){
+        if (!strcmp(affinity_topology.coretypes[j].vendor_name,name)){ found = j; break; }
+      }
+      if (found == -1){
+        found = affinity_topology.ncoretypes;
+        affinity_topology.coretypes = realloc(affinity_topology.coretypes,
+          (found+1)*sizeof(struct affinity_core_type));
+        memset(&affinity_topology.coretypes[found],0,sizeof(struct affinity_core_type));
+        snprintf(affinity_topology.coretypes[found].vendor_name,
+          sizeof(affinity_topology.coretypes[found].vendor_name),"%s",name);
+        CPU_ZERO(&affinity_topology.coretypes[found].cpus);
+        affinity_topology.ncoretypes = found+1;
+      }
+      CPU_SET(i,&affinity_topology.coretypes[found].cpus);
+      affinity_topology.cpu[i].core_type = found;
+    }
+    if (affinity_topology.ncoretypes == 1){
+      /* Only one distinct vendor actually present -- not heterogeneous,
+       * so undo it rather than report a single meaningless "core type 0". */
+      free(affinity_topology.coretypes);
+      affinity_topology.coretypes = NULL;
+      affinity_topology.ncoretypes = 0;
+      for (i=0;i<ncpus;i++) affinity_topology.cpu[i].core_type = -1;
+    }
   }
 }
 
@@ -414,11 +467,18 @@ void affinity_print_report(FILE *fp){
 	    affinity_topology.l3domains[i].size_bytes / (1024.0*1024.0));
   }
   /* implementer/part are MIDR_EL1's raw hex fields, not decoded into a
-   * vendor/model name -- see scripts/map_cpu_hierarchy.py for that. */
+   * vendor/model name -- see scripts/map_cpu_hierarchy.py for that. x86
+   * hybrid entries (is_midr==0) have no MIDR fields at all, so they print
+   * a vendor_name string instead -- see affinity.h's struct comment. */
   for (i=0;i<affinity_topology.ncoretypes;i++){
     char buf[512];
     affinity_format_cpu_set(&affinity_topology.coretypes[i].cpus,affinity_topology.ncpus,buf,sizeof(buf));
-    fprintf(fp,"coretype %d: implementer=0x%02x part=0x%03x cpus %s\n",i,
-	    affinity_topology.coretypes[i].implementer,affinity_topology.coretypes[i].part,buf);
+    if (affinity_topology.coretypes[i].is_midr){
+      fprintf(fp,"coretype %d: implementer=0x%02x part=0x%03x cpus %s\n",i,
+	      affinity_topology.coretypes[i].implementer,affinity_topology.coretypes[i].part,buf);
+    } else {
+      fprintf(fp,"coretype %d: vendor=%s cpus %s\n",i,
+	      affinity_topology.coretypes[i].vendor_name,buf);
+    }
   }
 }

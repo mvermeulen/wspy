@@ -185,8 +185,10 @@
       (topology.core_types || []).forEach(function (t) {
         var opt = document.createElement("option");
         opt.value = t.id;
-        opt.textContent = "Core type " + t.id + " — implementer " + t.implementer +
-          " part " + t.part + " (cpus " + t.cpus + ")";
+        var label = t.vendor
+          ? t.vendor
+          : "implementer " + t.implementer + " part " + t.part;
+        opt.textContent = "Core type " + t.id + " — " + label + " (cpus " + t.cpus + ")";
         coretypeSelect.appendChild(opt);
       });
     }

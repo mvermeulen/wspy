@@ -322,6 +322,65 @@ static void test_topology_discover_core_types(void){
   printf("PASS: affinity_topology_discover_at ARM big.LITTLE core types\n");
 }
 
+/* Models a real Intel P-core/E-core hybrid part (Raptor/Alder Lake): 4
+ * P-cores (cpu 0-3) + 4 E-cores (cpu 4-7), no midr_el1 files at all (x86
+ * has no such register) -- exercises the coretype fallback that reuses
+ * cpu_info.c's own CORE_INTEL_ATOM/CORE_INTEL_CORE per-core classification
+ * (already computed by inventory_cpu() before affinity_topology_discover()
+ * runs, see wspy.c's call sites) instead of re-deriving it from sysfs. */
+static void test_topology_discover_x86_hybrid(void){
+  int i;
+
+  printf("Testing affinity_topology_discover_at: x86 P-core/E-core fallback...\n");
+
+  build_fake_topology();
+  build_fake_cpu_info(8);
+  for (i = 0; i < 4; i++) cpu_info->coreinfo[i].vendor = CORE_INTEL_CORE;
+  for (i = 4; i < 8; i++) cpu_info->coreinfo[i].vendor = CORE_INTEL_ATOM;
+
+  affinity_topology_discover_at(FAKE_SYSFS_BASE,8);
+
+  assert(affinity_topology.ncoretypes == 2);
+  /* Discovery order is ascending cpu id: cpu0 (intel_core) is seen first ->
+   * type 0; cpu4 (intel_atom) is the first not-yet-assigned type -> type 1. */
+  assert(!affinity_topology.coretypes[0].is_midr);
+  assert(!strcmp(affinity_topology.coretypes[0].vendor_name,"intel_core"));
+  assert(!affinity_topology.coretypes[1].is_midr);
+  assert(!strcmp(affinity_topology.coretypes[1].vendor_name,"intel_atom"));
+  for (i = 0; i < 4; i++) assert(affinity_topology.cpu[i].core_type == 0);
+  for (i = 4; i < 8; i++) assert(affinity_topology.cpu[i].core_type == 1);
+  for (i = 0; i < 4; i++) assert(CPU_ISSET(i,&affinity_topology.coretypes[0].cpus));
+  for (i = 4; i < 8; i++) assert(CPU_ISSET(i,&affinity_topology.coretypes[1].cpus));
+  assert(CPU_COUNT(&affinity_topology.coretypes[0].cpus) == 4);
+  assert(CPU_COUNT(&affinity_topology.coretypes[1].cpus) == 4);
+
+  affinity_topology_free();
+  printf("PASS: affinity_topology_discover_at x86 P-core/E-core fallback\n");
+}
+
+/* A uniform (non-hybrid) x86 host must still report ncoretypes == 0 -- a
+ * single classified vendor isn't "heterogeneous", so the fallback must
+ * undo its own tentative single-entry grouping rather than report a
+ * meaningless "core type 0" covering every cpu. */
+static void test_topology_discover_x86_uniform(void){
+  int i;
+
+  printf("Testing affinity_topology_discover_at: x86 uniform (no hybrid)...\n");
+
+  build_fake_topology();
+  build_fake_cpu_info(8);
+  for (i = 0; i < 8; i++) cpu_info->coreinfo[i].vendor = CORE_INTEL_CORE;
+
+  affinity_topology_discover_at(FAKE_SYSFS_BASE,8);
+
+  assert(affinity_topology.ncoretypes == 0);
+  assert(affinity_topology.coretypes == NULL);
+  for (i = 0; i < 8; i++) assert(affinity_topology.cpu[i].core_type == -1);
+
+  affinity_topology_free();
+  printf("PASS: affinity_topology_discover_at x86 uniform\n");
+}
+
 /* A cpu with no sysfs files at all (never created by build_fake_topology())
  * degrades to core_id/package_id/l3_domain -1, treated as its own singleton
  * SMT group -- rather than crashing or misattributing it to cpu 0's group. */
@@ -502,6 +561,8 @@ int main(void){
   test_topology_discover();
   test_topology_discover_missing_cpu();
   test_topology_discover_core_types();
+  test_topology_discover_x86_hybrid();
+  test_topology_discover_x86_uniform();
   test_resolve();
   test_resolve_partial_and_no_availability();
   test_resolve_coretype();

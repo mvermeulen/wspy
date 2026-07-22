@@ -562,16 +562,19 @@ def _resolve_trace_links(output_root, fields):
 _AFFINITY_CPU_ROW_RE = re.compile(r"^(\d+),(-?\d+),(-?\d+),([01]),(-?\d+),(-?\d+)$")
 _AFFINITY_DOMAIN_RE = re.compile(r"^l3domain (\d+): cpus (\S+) \(([\d.]+) MiB\)$")
 _AFFINITY_CORETYPE_RE = re.compile(r"^coretype (\d+): implementer=(0x[0-9a-f]+) part=(0x[0-9a-f]+) cpus (\S+)$")
+_AFFINITY_CORETYPE_VENDOR_RE = re.compile(r"^coretype (\d+): vendor=(\S+) cpus (\S+)$")
 
 
 def parse_affinity_topology_output(output):
     """Returns {"cpus": [{"id","core_id","package_id","primary_thread",
     "l3_domain","core_type"}...], "domains": [{"id","cpus","size_mib"}...],
-    "core_types": [{"id","cpus","implementer","part"}...]}, or None if output
+    "core_types": [{"id","cpus","implementer","part"}...] (ARM MIDR-derived)
+    or [{"id","cpus","vendor"}...] (x86 hybrid fallback, e.g. Intel P-core/
+    E-core or AMD Zen5/Zen5c) -- entries are one shape or the other, never
+    mixed, see affinity.c's affinity_print_report()}, or None if output
     doesn't look like a --list-affinity report at all (e.g. wspy itself
-    failed to launch). core_types is [] on a non-ARM host (or any host
-    reporting one uniform MIDR across every cpu) -- affinity.c never
-    populates it there, not a parsing gap."""
+    failed to launch). core_types is [] on a genuinely homogeneous host --
+    affinity.c never populates it there, not a parsing gap."""
     cpus = []
     domains = []
     core_types = []
@@ -593,6 +596,10 @@ def parse_affinity_topology_output(output):
         if m:
             core_types.append({"id": int(m.group(1)), "implementer": m.group(2),
                                 "part": m.group(3), "cpus": m.group(4)})
+            continue
+        m = _AFFINITY_CORETYPE_VENDOR_RE.match(line)
+        if m:
+            core_types.append({"id": int(m.group(1)), "vendor": m.group(2), "cpus": m.group(3)})
     if not cpus:
         return None
     return {"cpus": cpus, "domains": domains, "core_types": core_types}
