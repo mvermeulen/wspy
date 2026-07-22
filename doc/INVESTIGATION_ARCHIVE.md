@@ -1337,3 +1337,31 @@ is the stopgap; the web launcher's Check button also warns about the unpatched c
 
 **Still open:** teaching `wspy-phoronix-segment.py` (the still-unbuilt 4.3 item) to prefer
 `pts_hooks.log` over the composite.xml/log-timestamp correlation it plans to use otherwise.
+
+### Non-obvious implementation traps found and fixed (moved from CLAUDE.md, 2026-07-21)
+Two specific bugs, kept here since they're the kind of thing that could be silently reintroduced by a
+similarly-shaped future change and aren't written down anywhere else.
+
+**`getopt_long` `val` collisions silently misrouted bad flags (`wspy.c`).** `--no-phase-detect` and
+`--tree-connect` had been assigned `getopt_long()` `val`s (63, 83) that collide with `'?'` (the sentinel
+`getopt_long()` itself returns for any unrecognized option or missing required argument) and `'S'` (a
+stray, undocumented short option that was in the optstring with no `case` to handle it). Either collision
+meant a genuinely bad/malformed flag matched the wrong `case` in `parse_options()`'s switch instead of
+falling through to `default: return 1` (the usage error) — confirmed live: an unrecognized flag given
+alongside a real workload command printed `getopt_long`'s own "unrecognized option" line, then ran the
+workload anyway. Fixed by renumbering to unused values and dropping the dead `'S'` short option. Lesson:
+when adding a new long-only flag, pick a `val` that can't collide with any single-character short option
+or with `'?'`/`':'`, not just "the next unused-looking number."
+
+**A `power` PMU's dynamic `type` value coincidentally collided with `PERF_TYPE_L3`'s sentinel (`power.c`,
+`wspy.c`'s `run_capabilities_probe()`).** On the dev host used for `--power` testing, the `power` PMU's
+real dynamic type (read from sysfs) happened to equal `cpu_info.h`'s internal `PERF_TYPE_L3` sentinel
+value, which routes `setup_counters()` through different `perf_event_open()` arguments than the generic
+path. A capabilities-probe implementation that hand-duplicated a `perf_event_open()` call instead of
+routing through the real `setup_counters()` missed this and reported a misleading `EINVAL` where a real
+`--power` run gets the true `EACCES` (RAPL access needs root/`CAP_PERFMON`, not just `perf_event_open`
+generally). Fixed by having the probe build a throwaway `power_counter_group("power")` and run it through
+the actual `setup_counters()`/`coverage_entries` path rather than reimplementing the call. Lesson: any
+future "probe without a full run" feature should reuse the real setup path rather than hand-rolling a
+second `perf_event_open()`, since this codebase's per-vendor/per-PMU dynamic-type dispatch has sharp
+edges a naive duplicate won't know about.
