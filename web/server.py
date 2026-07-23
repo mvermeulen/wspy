@@ -2215,6 +2215,9 @@ def render_phoronix_inventory_groups(dest_root):
         run_dot_html = (f'<span class="phoronix-run-dot phoronix-run-{run_status}" '
                          f'title="{html.escape(run_dot_title)}"></span>')
 
+        group_test_id = g["points"][0]["test_id"] if g["points"] else ""
+        installed_versions = joblib.list_installed_phoronix_test_versions(group_test_id) if group_test_id else []
+
         rows = []
         for p in g["points"]:
             if p["runs"]:
@@ -2225,6 +2228,15 @@ def render_phoronix_inventory_groups(dest_root):
             else:
                 runs_html = '<span class="muted">none yet</span>'
             installed_text = {True: "yes", False: "no"}.get(p.get("installed"), "?")
+            pinned_version = joblib.phoronix_pinned_version(p["test_id"])
+            if pinned_version and installed_versions and pinned_version not in installed_versions:
+                other_versions = installed_versions
+                mismatch_title = (f'pinned v{pinned_version} is not installed, but v'
+                                   f'{", v".join(other_versions)} {"is" if len(other_versions) == 1 else "are"} '
+                                   f'-- the run will fail until v{pinned_version} is installed')
+                installed_text += (f' <span class="phoronix-version-mismatch" title="{html.escape(mismatch_title)}">'
+                                    f'&#9888; v{html.escape(pinned_version)} pinned, '
+                                    f'v{html.escape(", v".join(other_versions))} installed</span>')
             rows.append(
                 f'<tr data-phoronix-options="{html.escape(p["options_slug"].lower())}">'
                 f'<td>{html.escape(p["options_slug"])}</td>'

@@ -228,6 +228,11 @@ details summary {
 .phoronix-run-all { background: var(--good); }
 .phoronix-run-some { background: var(--warn); }
 .phoronix-run-none { background: var(--bad); }
+.phoronix-version-mismatch {
+  color: var(--warn);
+  font-size: 0.85rem;
+  cursor: help;
+}
 
 .block {
   border: 1px solid var(--border);
