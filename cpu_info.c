@@ -526,6 +526,9 @@ int inventory_cpu(void){
       cpu_info->family == 6 &&
       ((cpu_info->model == 0xba)||(cpu_info->model == 0xb7)||
        (cpu_info->model == 0x9a)||(cpu_info->model == 0x97))){
+    char pmu_cpus_buf[256];
+    unsigned int pmu_type;
+
     if (stat("/sys/devices/cpu_atom/cpus",&statbuf) != -1){
       cpu_info->is_hybrid = 1;
       if (fp = fopen("/sys/devices/cpu_atom/cpus","r")){
@@ -537,6 +540,23 @@ int inventory_cpu(void){
 	}
 	fclose(fp);
       }
+      // Real per-core-type dynamic PMU type -- the same /sys/bus/
+      // event_source/devices/<pmu>/type lookup discover_arm_pmu_topology()
+      // already does for ARM PMU clusters, via the same vendor-agnostic
+      // mark_cpus_for_pmu() helper. Previously left at pmu_type's
+      // PERF_TYPE_RAW default forever on Intel, so bind_core_counter_
+      // groups()'s (wspy.c) per-core device_type patch silently substituted
+      // 4 for 4 on P-cores (a coincidence: cpu_core's real type happens to
+      // equal PERF_TYPE_RAW's own enum value) and would have substituted
+      // that same wrong value on E-cores too, had they ever been per-core-
+      // eligible before now. See INVESTIGATION.md's "Per-core-type-aware
+      // Intel raw event tables" item.
+      if ((fp = fopen("/sys/devices/cpu_atom/cpus","r")) &&
+	  fgets(pmu_cpus_buf,sizeof(pmu_cpus_buf),fp)){
+	if (read_u32_file("/sys/devices/cpu_atom/type",&pmu_type) == 0)
+	  mark_cpus_for_pmu(pmu_cpus_buf,pmu_type,1);
+      }
+      if (fp) fclose(fp);
     }
     if (stat("/sys/devices/cpu_core/cpus",&statbuf) != -1){
       if (fp = fopen("/sys/devices/cpu_core/cpus","r")){
@@ -548,7 +568,13 @@ int inventory_cpu(void){
 	}
 	fclose(fp);
       }
-    }    
+      if ((fp = fopen("/sys/devices/cpu_core/cpus","r")) &&
+	  fgets(pmu_cpus_buf,sizeof(pmu_cpus_buf),fp)){
+	if (read_u32_file("/sys/devices/cpu_core/type",&pmu_type) == 0)
+	  mark_cpus_for_pmu(pmu_cpus_buf,pmu_type,0);
+      }
+      if (fp) fclose(fp);
+    }
   }
   // check affinity mask for available CPUs
   cpu_set_t set;
@@ -680,7 +706,7 @@ int main(void){
       printf("??");
       break;
     }
-    if (cpu_info->vendor == VENDOR_ARM){
+    if (cpu_info->vendor == VENDOR_ARM || cpu_info->is_hybrid){
       printf(" (pmu_type=%u,cluster=%d)",
              cpu_info->coreinfo[i].pmu_type,
              cpu_info->coreinfo[i].pmu_cluster);

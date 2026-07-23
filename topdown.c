@@ -77,6 +77,61 @@ struct raw_event intel_raw_events[] = {
   { "memory_activity.stalls_l3_miss","event=0x47,cmask=0x9,period=0xf4243,umask=0x9",PERF_TYPE_RAW,COUNTER_TOPDOWN_BE,{{0}} },
 };
 
+// Gracemont (Intel E-core) raw events -- intel_raw_events[] above is P-core
+// (Golden/Raptor Cove)-only correct; INVESTIGATION.md's "Per-core-type-aware
+// Intel raw event tables" item. Every encoding below was read directly off a
+// real Raptor Lake HX host's live cpu_atom PMU (/sys/devices/cpu_atom/events/
+// for the 4 topdown-*/instructions/cpu-cycles names; `perf stat -e
+// cpu_atom/<name>/ -vv` for the rest, which prints the resolved raw config),
+// not guessed from documentation -- cross-checked against real counter runs
+// (l2_request.miss << l2_request.all, br_misp_retired << br_inst_retired,
+// all sane). Two real hardware differences from P-cores, not just a
+// different device_type:
+// (1) No `slots`/fixed-counter "Perf Metrics" register exists on Gracemont
+//     at all (cpu_core exposes 20 named perf events including `slots`;
+//     cpu_atom exposes 14, no `slots`) -- its 4 topdown events are ordinary
+//     counting events (event=0xc2/0x73/0x71/0x74, umask=0x0), not members of
+//     any kernel-enforced "literal slots leader" group the way P-core's are.
+//     print_topdown()'s VENDOR_INTEL case computes a synthetic slots
+//     denominator from cpu-cycles when no real "slots" counter is found
+//     (mirroring AMD's cpu-cycles*width pattern) -- the width, 5, was
+//     measured empirically: (retiring+bad-spec+fe-bound+be-bound)/cpu-cycles
+//     across 4 independent real runs on this host measured 4.9997 every
+//     time. No L2 topdown breakdown (heavy-ops/br-mispredict/fetch-lat/
+//     mem-bound) exists on Gracemont at all -- confirmed absent from both
+//     sysfs and `perf list`; those columns stay 0.0 for E-core rows via the
+//     same "vendor doesn't populate this" convention ARM already uses.
+// (2) l2_request.all/.miss and the br_inst_retired.*/br_misp_retired.*
+//     family exist on cpu_atom too, but with different umask encodings for
+//     the same event numbers (e.g. l2_request.all: P-core event=0x24,
+//     umask=0xff vs. Gracemont event=0x24,umask=0x0) -- confirming these
+//     can't share intel_raw_events[]'s table at all, only its event numbers
+//     coincide for instructions/cpu-cycles.
+// COUNTER_TOPDOWN_BE (--topdown-backend's exe_activity.*/memory_activity.*)
+// has no confirmed Gracemont equivalent -- deliberately not included, same
+// "zero coverage rather than wrong coverage" philosophy as the rest of this
+// table; cache_counter_group()'s PERF_TYPE_HW_CACHE dcache/icache/tlb groups
+// need no Gracemont-specific table at all (the kernel resolves that generic
+// type per-PMU on its own).
+struct raw_event intel_atom_raw_events[] = {
+  { "instructions","event=0xc0",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_L2CACHE,{{0}} },
+  // Tagged with COUNTER_TOPDOWN/COUNTER_TOPDOWN2 (not COUNTER_TOPDOWN_BE
+  // like intel_raw_events[]'s entry) since Gracemont's synthetic slots
+  // computation needs cpu-cycles as part of *this* group -- mirrors how
+  // amd_raw_events[]'s own "cpu-cycles" entry is tagged for the same reason.
+  { "cpu-cycles","event=0x3c",PERF_TYPE_RAW,COUNTER_IPC|COUNTER_TOPDOWN|COUNTER_TOPDOWN2,{{0}} },
+  { "core.topdown-retiring","event=0xc2,umask=0x0",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,{{0}} },
+  { "core.topdown-bad-spec","event=0x73,umask=0x0",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,{{0}} },
+  { "core.topdown-fe-bound","event=0x71,umask=0x0",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,{{0}} },
+  { "core.topdown-be-bound","event=0x74,umask=0x0",PERF_TYPE_RAW,COUNTER_TOPDOWN|COUNTER_TOPDOWN2,{{0}} },
+  { "br_inst_retired.all_branches","event=0xc4",PERF_TYPE_RAW,COUNTER_BRANCH,{{0}} },
+  { "br_misp_retired.all_branches","event=0xc5",PERF_TYPE_RAW,COUNTER_BRANCH,{{0}} },
+  { "br_inst_retired.cond","event=0xc4,umask=0x7e",PERF_TYPE_RAW,COUNTER_BRANCH,{{0}} },
+  { "br_inst_retired.indirect","event=0xc4,umask=0xeb",PERF_TYPE_RAW,COUNTER_BRANCH,{{0}} },
+  { "l2_request.all","event=0x24,umask=0x0",PERF_TYPE_RAW,COUNTER_L2CACHE,{{0}} },
+  { "l2_request.miss","event=0x24,umask=0x1",PERF_TYPE_RAW,COUNTER_L2CACHE,{{0}} },
+};
+
 struct raw_event amd_raw_events[] = {
   { "instructions","event=0xc0",
     PERF_TYPE_RAW,COUNTER_IPC|COUNTER_BRANCH|COUNTER_OPCACHE|COUNTER_TLB|COUNTER_L2CACHE|COUNTER_L3CACHE|COUNTER_FLOAT|COUNTER_TOPDOWN_FE|COUNTER_TOPDOWN_OP,{0} },
@@ -361,7 +416,19 @@ int setup_raw_events(void){
     for (i=0;i<num_events;i++){
       if (events[i].use & counter_mask)
 	events[i].raw.config = parse_intel_event(events[i].description);
-    }        
+    }
+    // Gracemont E-core table -- only ever selected by raw_counter_group()
+    // when actually building a group for a CORE_INTEL_ATOM core, but parsed
+    // here unconditionally (cheap, once at setup) whenever this host is
+    // hybrid, same as intel_raw_events[] above.
+    if (cpu_info->is_hybrid){
+      events = intel_atom_raw_events;
+      num_events = sizeof(intel_atom_raw_events)/sizeof(intel_atom_raw_events[0]);
+      for (i=0;i<num_events;i++){
+	if (events[i].use & counter_mask)
+	  events[i].raw.config = parse_intel_event(events[i].description);
+      }
+    }
     break;
   default:
     warning("Unknown CPU, no events parsed\n");
@@ -1301,11 +1368,20 @@ struct counter_group *cache_counter_group(char *name,unsigned int mask){
   return cgroup;
 }
 
-// creates and allocates a group for raw hardware performance counters
-struct counter_group *raw_counter_group(char *name,unsigned int mask){
+// creates and allocates a group for raw hardware performance counters.
+// core_class is the specific core this group is being built for -- CORE_
+// UNKNOWN when there's no single core in view (system-wide/aggregate/pass
+// setup, every call site except --per-core's own loop), which falls through
+// to the vendor's default/primary table unchanged. Only CORE_INTEL_ATOM
+// currently selects a different table (Gracemont -- see intel_atom_raw_
+// events[]'s own comment); every other value, including every AMD/ARM core
+// class, is a no-op here since those vendors don't have a per-core-class
+// split in their raw event tables (yet).
+struct counter_group *raw_counter_group(char *name,unsigned int mask,enum cpu_core_type core_class){
   unsigned int i;
   int available_counters = (nmi_running)?5:6;
-  
+  int is_gracemont = 0;
+
   struct raw_event *events;
   unsigned int num_events;
   switch(cpu_info->vendor){
@@ -1318,8 +1394,14 @@ struct counter_group *raw_counter_group(char *name,unsigned int mask){
     num_events = sizeof(amd_raw_events)/sizeof(amd_raw_events[0]);
     break;
   case VENDOR_INTEL:
-    events = intel_raw_events;
-    num_events = sizeof(intel_raw_events)/sizeof(intel_raw_events[0]);
+    if (core_class == CORE_INTEL_ATOM){
+      events = intel_atom_raw_events;
+      num_events = sizeof(intel_atom_raw_events)/sizeof(intel_atom_raw_events[0]);
+      is_gracemont = 1;
+    } else {
+      events = intel_raw_events;
+      num_events = sizeof(intel_raw_events)/sizeof(intel_raw_events[0]);
+    }
     break;
   default:
     return NULL;
@@ -1355,7 +1437,7 @@ struct counter_group *raw_counter_group(char *name,unsigned int mask){
 	if (((count % available_counters) == 0) || (events[i].device_type != PERF_TYPE_RAW))
 	  cgroup->cinfo[count].is_group_leader = 1;
       } else if (cpu_info->vendor == VENDOR_INTEL){
-	if (mask & (COUNTER_TOPDOWN|COUNTER_TOPDOWN2)){
+	if ((mask & (COUNTER_TOPDOWN|COUNTER_TOPDOWN2)) && !is_gracemont){
 	  // Intel's Perf Metrics fixed-counter family (the "slots" event and
 	  // its core.topdown-* sub-events) is a kernel-enforced special case,
 	  // not a hardware-PMC-capacity one: every sub-event is only valid as
@@ -1364,7 +1446,10 @@ struct counter_group *raw_counter_group(char *name,unsigned int mask){
 	  // purpose PMC budget the chunking below approximates. So this
 	  // family always stays exactly one group -- only its first event
 	  // becomes a leader, never re-chunked at available_counters like
-	  // everything else.
+	  // everything else. Gracemont has no such register/requirement (see
+	  // intel_atom_raw_events[]'s comment) -- its topdown events are
+	  // ordinary counting events and chunk normally, the same as the
+	  // `else` branch below.
 	  if (count == 0) cgroup->cinfo[count].is_group_leader = 1;
 	} else if (((count % available_counters) == 0) || (events[i].device_type != PERF_TYPE_RAW)){
 	  cgroup->cinfo[count].is_group_leader = 1;
@@ -1377,7 +1462,13 @@ struct counter_group *raw_counter_group(char *name,unsigned int mask){
   return cgroup;
 }
 
-void setup_counter_groups(struct counter_group **counter_group_list){
+// core_class: the specific core this call is setting up counters for --
+// CORE_UNKNOWN when there's no single core in view (system-wide/aggregate/
+// pass setup); the --per-core loop (wspy.c) passes the real per-core class.
+// Threaded straight through to every raw_counter_group() call below (see
+// that function's own comment) -- a no-op everywhere except Intel's topdown/
+// branch/L2 groups when core_class == CORE_INTEL_ATOM.
+void setup_counter_groups(struct counter_group **counter_group_list,enum cpu_core_type core_class){
 
   struct counter_group *cgroup;
 
@@ -1397,108 +1488,108 @@ void setup_counter_groups(struct counter_group **counter_group_list){
   }
 
   if (counter_mask & COUNTER_ARM_DCACHE_MEM){
-    if ((cgroup = raw_counter_group("arm-dcache-mem",COUNTER_ARM_DCACHE_MEM))){
+    if ((cgroup = raw_counter_group("arm-dcache-mem",COUNTER_ARM_DCACHE_MEM,core_class))){
       cgroup->next = *counter_group_list;
-      *counter_group_list = cgroup;      
+      *counter_group_list = cgroup;
     }
   }
 
   if (counter_mask & COUNTER_ARM_ICACHE_TLB){
-    if ((cgroup = raw_counter_group("arm-icache-tlb",COUNTER_ARM_ICACHE_TLB))){
+    if ((cgroup = raw_counter_group("arm-icache-tlb",COUNTER_ARM_ICACHE_TLB,core_class))){
       cgroup->next = *counter_group_list;
-      *counter_group_list = cgroup;      
+      *counter_group_list = cgroup;
     }
   }
 
   if (counter_mask & COUNTER_ARM_MEM_ALIGN_TLB){
-    if ((cgroup = raw_counter_group("arm-mem-align-tlb",COUNTER_ARM_MEM_ALIGN_TLB))){
+    if ((cgroup = raw_counter_group("arm-mem-align-tlb",COUNTER_ARM_MEM_ALIGN_TLB,core_class))){
       cgroup->next = *counter_group_list;
-      *counter_group_list = cgroup;      
+      *counter_group_list = cgroup;
     }
   }
 
   if (counter_mask & COUNTER_FLOAT){
-    if ((cgroup = raw_counter_group("float",COUNTER_FLOAT))){
+    if ((cgroup = raw_counter_group("float",COUNTER_FLOAT,core_class))){
       cgroup->next = *counter_group_list;
-      *counter_group_list = cgroup;      
+      *counter_group_list = cgroup;
     }
   }
 
   if (counter_mask & COUNTER_OPCACHE){
-    if ((cgroup = raw_counter_group("op cache",COUNTER_OPCACHE))){
+    if ((cgroup = raw_counter_group("op cache",COUNTER_OPCACHE,core_class))){
       cgroup->next = *counter_group_list;
-      *counter_group_list = cgroup;      
-    }    
+      *counter_group_list = cgroup;
+    }
   }
-  
+
 
   if (counter_mask & COUNTER_MEMORY){
-    if ((cgroup = raw_counter_group("memory",COUNTER_MEMORY))){
+    if ((cgroup = raw_counter_group("memory",COUNTER_MEMORY,core_class))){
       cgroup->next = *counter_group_list;
-      *counter_group_list = cgroup;      
+      *counter_group_list = cgroup;
     }
   }
 
   if (counter_mask & COUNTER_L3CACHE){
-    if ((cgroup = raw_counter_group("l3 cache",COUNTER_L3CACHE))){
+    if ((cgroup = raw_counter_group("l3 cache",COUNTER_L3CACHE,core_class))){
       cgroup->next = *counter_group_list;
-      *counter_group_list = cgroup;      
-    }    
-  }  
+      *counter_group_list = cgroup;
+    }
+  }
 
   if (counter_mask & COUNTER_L2CACHE){
-    if ((cgroup = raw_counter_group("l2 cache",COUNTER_L2CACHE))){
+    if ((cgroup = raw_counter_group("l2 cache",COUNTER_L2CACHE,core_class))){
       cgroup->next = *counter_group_list;
-      *counter_group_list = cgroup;      
-    }    
+      *counter_group_list = cgroup;
+    }
   }
 
   if (counter_mask & COUNTER_BRANCH){
-    if ((cgroup = raw_counter_group("branch",COUNTER_BRANCH))){
+    if ((cgroup = raw_counter_group("branch",COUNTER_BRANCH,core_class))){
       cgroup->next = *counter_group_list;
-      *counter_group_list = cgroup;      
-    }        
+      *counter_group_list = cgroup;
+    }
   }
 
   if (counter_mask & COUNTER_TOPDOWN_OP){
-    if ((cgroup = raw_counter_group("topdown-op",COUNTER_TOPDOWN_OP))){
+    if ((cgroup = raw_counter_group("topdown-op",COUNTER_TOPDOWN_OP,core_class))){
       cgroup->next = *counter_group_list;
-      *counter_group_list = cgroup;      
+      *counter_group_list = cgroup;
     }
-  }    
-      
+  }
+
   if (counter_mask & COUNTER_TOPDOWN_FE){
-    if ((cgroup = raw_counter_group("topdown-fe",COUNTER_TOPDOWN_FE))){
+    if ((cgroup = raw_counter_group("topdown-fe",COUNTER_TOPDOWN_FE,core_class))){
       cgroup->next = *counter_group_list;
-      *counter_group_list = cgroup;      
+      *counter_group_list = cgroup;
     }
-  }  
+  }
 
   if (counter_mask & COUNTER_TOPDOWN_BE){
-    if ((cgroup = raw_counter_group("topdown-be",COUNTER_TOPDOWN_BE))){
+    if ((cgroup = raw_counter_group("topdown-be",COUNTER_TOPDOWN_BE,core_class))){
       cgroup->next = *counter_group_list;
-      *counter_group_list = cgroup;      
+      *counter_group_list = cgroup;
     }
-  }  
-  
+  }
+
   if (counter_mask & COUNTER_TOPDOWN2){
-    if ((cgroup = raw_counter_group("topdown2",COUNTER_TOPDOWN2))){
+    if ((cgroup = raw_counter_group("topdown2",COUNTER_TOPDOWN2,core_class))){
       cgroup->next = *counter_group_list;
-      *counter_group_list = cgroup;      
+      *counter_group_list = cgroup;
     }
-  }  
-  
+  }
+
   if (counter_mask & COUNTER_TOPDOWN){
-    if ((cgroup = raw_counter_group("topdown",COUNTER_TOPDOWN))){
+    if ((cgroup = raw_counter_group("topdown",COUNTER_TOPDOWN,core_class))){
       cgroup->next = *counter_group_list;
-      *counter_group_list = cgroup;      
+      *counter_group_list = cgroup;
     }
-  }  
+  }
 
   if (counter_mask & COUNTER_IPC){
-    if ((cgroup = raw_counter_group("ipc",COUNTER_IPC))){
+    if ((cgroup = raw_counter_group("ipc",COUNTER_IPC,core_class))){
       cgroup->next = *counter_group_list;
-      *counter_group_list = cgroup;		
+      *counter_group_list = cgroup;
     }
   }
 
@@ -2158,7 +2249,18 @@ void print_topdown(struct counter_group *cgroup,enum output_format oformat,int m
     slots_no_contention = slots;
     break;
   case VENDOR_INTEL:
-    if ((cinfo = find_ci_label(cgroup,"slots"))){ slots = cinfo->value; slots_confidence = confidence_ratio(cinfo); }
+    if ((cinfo = find_ci_label(cgroup,"slots"))){
+      slots = cinfo->value; slots_confidence = confidence_ratio(cinfo);
+    } else if ((cinfo = find_ci_label(cgroup,"cpu-cycles"))){
+      // Gracemont (Intel E-core): no "slots"/fixed-counter Perf Metrics
+      // register exists at all (intel_atom_raw_events[]'s own comment) --
+      // synthesize a slots-equivalent denominator from cpu-cycles instead,
+      // the same way AMD's branch below does. Width (5) measured
+      // empirically on real hardware: (retiring+bad-spec+fe-bound+
+      // be-bound)/cpu-cycles across 4 independent runs = 4.9997 every time.
+      slots = cinfo->value * 5;
+      slots_confidence = confidence_ratio(cinfo);
+    }
     if ((cinfo = find_ci_label(cgroup,"core.topdown-retiring"))){ retiring = cinfo->value; retiring_confidence = confidence_ratio(cinfo); }
     if ((cinfo = find_ci_label(cgroup,"core.topdown-fe-bound"))){ frontend = cinfo->value; frontend_confidence = confidence_ratio(cinfo); }
     if ((cinfo = find_ci_label(cgroup,"core.topdown-be-bound"))){ backend = cinfo->value; backend_confidence = confidence_ratio(cinfo); }
