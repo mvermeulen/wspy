@@ -2195,24 +2195,45 @@ def render_discovery_tab():
 """
 
 
-def render_phoronix_inventory_rows(dest_root):
-    rows = []
-    for p in joblib.list_materialized_phoronix_test_points(dest_root):
-        if p["runs"]:
-            runs_html = ", ".join(
-                f'<a href="/report/{html.escape(r["suite"])}/{html.escape(r["benchmark"])}/'
-                f'{html.escape(r["run_id"])}">{html.escape(r["run_id"])}</a>'
-                for r in p["runs"])
-        else:
-            runs_html = '<span class="muted">none yet</span>'
-        installed_text = {True: "yes", False: "no"}.get(p.get("installed"), "?")
-        rows.append(
-            f'<tr><td>{html.escape(p["bare_name"])}</td><td>{html.escape(p["options_slug"])}</td>'
-            f'<td>{installed_text}</td><td>{runs_html}</td>'
-            f'<td><button type="button" class="phoronix-use-in-run" '
-            f'data-dir="{html.escape(p["dir"])}">Use in Run tab</button></td></tr>'
+def render_phoronix_inventory_groups(dest_root):
+    points = joblib.list_materialized_phoronix_test_points(dest_root)
+    groups = joblib.group_materialized_phoronix_points_by_test(points)
+    blocks = []
+    for g in groups:
+        description = joblib.read_phoronix_test_description(dest_root, g["bare_name"])
+        summary_bits = [f'{g["total_count"]} point{"s" if g["total_count"] != 1 else ""}']
+        if g["installed_count"]:
+            summary_bits.append(f'{g["installed_count"]} installed')
+        summary_extra = " &mdash; " + html.escape(description) if description else ""
+        search_attr = html.escape(f'{g["bare_name"]} {description or ""}'.lower())
+
+        rows = []
+        for p in g["points"]:
+            if p["runs"]:
+                runs_html = ", ".join(
+                    f'<a href="/report/{html.escape(r["suite"])}/{html.escape(r["benchmark"])}/'
+                    f'{html.escape(r["run_id"])}">{html.escape(r["run_id"])}</a>'
+                    for r in p["runs"])
+            else:
+                runs_html = '<span class="muted">none yet</span>'
+            installed_text = {True: "yes", False: "no"}.get(p.get("installed"), "?")
+            rows.append(
+                f'<tr data-phoronix-options="{html.escape(p["options_slug"].lower())}">'
+                f'<td>{html.escape(p["options_slug"])}</td>'
+                f'<td>{installed_text}</td><td>{runs_html}</td>'
+                f'<td><button type="button" class="phoronix-use-in-run" '
+                f'data-dir="{html.escape(p["dir"])}">Use in Run tab</button></td></tr>'
+            )
+
+        blocks.append(
+            f'<details class="phoronix-test-group" data-phoronix-search="{search_attr}">'
+            f'<summary><strong>{html.escape(g["bare_name"])}</strong> '
+            f'<span class="muted">({", ".join(summary_bits)}){summary_extra}</span></summary>'
+            f'<table class="reports"><thead><tr><th>Options</th><th>Installed</th>'
+            f'<th>Runs</th><th></th></tr></thead><tbody>{"".join(rows)}</tbody></table>'
+            f'</details>'
         )
-    return "".join(rows)
+    return "".join(blocks), len(points), len(groups)
 
 
 def render_phoronix_tab(cfg):
@@ -2221,12 +2242,21 @@ def render_phoronix_tab(cfg):
         f'<option value="{html.escape(name)}">{html.escape(name)}</option>'
         for name in joblib.list_installed_phoronix_suites()
     ) or '<option value="" disabled selected>(none found)</option>'
-    inventory_rows = render_phoronix_inventory_rows(dest_root)
-    inventory_html = (
-        f'<table class="reports" id="phoronix-inventory-table">'
-        f'<thead><tr><th>Test</th><th>Options</th><th>Installed</th><th>Runs</th><th></th></tr></thead>'
-        f'<tbody id="phoronix-inventory-body">{inventory_rows}</tbody></table>'
-    ) if inventory_rows else '<p class="muted">No test points materialized yet.</p>'
+    inventory_groups_html, point_count, test_count = render_phoronix_inventory_groups(dest_root)
+    if inventory_groups_html:
+        inventory_html = f"""
+    <div class="row">
+      <label>Filter <input type="text" id="phoronix-filter"
+             placeholder="test name, description, or options substring"></label>
+      <button type="button" id="phoronix-expand-all">Expand all</button>
+      <button type="button" id="phoronix-collapse-all">Collapse all</button>
+    </div>
+    <p class="muted" id="phoronix-inventory-count">{point_count} test point(s) across {test_count} test(s)</p>
+    <div id="phoronix-inventory-groups">{inventory_groups_html}</div>
+    <p class="muted" id="phoronix-filter-empty" hidden>No tests match this filter.</p>
+"""
+    else:
+        inventory_html = '<p class="muted">No test points materialized yet.</p>'
     return f"""
 <section class="panel">
   <h1>Phoronix</h1>

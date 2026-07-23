@@ -2112,6 +2112,57 @@ def list_materialized_phoronix_test_points(dest_root):
     return entries
 
 
+def read_phoronix_test_description(dest_root, bare_name):
+    """Returns the Description paragraph write_phoronix_test_readme() put
+    in dest_root/<bare_name>/README.md (its second non-blank line -- the
+    first is the "# <bare_name>" heading), or None if no README exists yet
+    (--no-check-installed, or the `phoronix-test-suite info` lookup
+    failed, or the info output itself had no Description field, in which
+    case the second non-blank line is a detail bullet or the "Source test
+    profile:" line instead, not prose). Lets the Phoronix tab's inventory
+    show a one-line summary of each test group without re-running
+    `phoronix-test-suite info`."""
+    path = os.path.join(dest_root, bare_name, "README.md")
+    try:
+        with open(path) as f:
+            lines = [line.strip() for line in f]
+    except OSError:
+        return None
+    non_blank = [line for line in lines if line]
+    if len(non_blank) < 2:
+        return None
+    candidate = non_blank[1]
+    if candidate.startswith("-") or candidate.startswith("Source test profile:"):
+        return None
+    return candidate
+
+
+def group_materialized_phoronix_points_by_test(points):
+    """Groups list_materialized_phoronix_test_points()'s flat, recency-
+    ordered list into one entry per bare test name, alphabetically -- the
+    <test> -> <options> hierarchy the Phoronix tab's inventory renders.
+    Recency order is useful for "what did I just import" but scales badly
+    once a host has accumulated hundreds of points across many imports and
+    a human is instead trying to find one specific test among them.
+    Each group's own points are re-sorted by options_slug (recovering the
+    ordering list_materialized_phoronix_test_points() had before its own
+    final recency sort). Returns a list of {"bare_name", "points",
+    "total_count", "installed_count"}, sorted by bare_name."""
+    groups = {}
+    for p in points:
+        groups.setdefault(p["bare_name"], []).append(p)
+    result = []
+    for bare_name in sorted(groups):
+        pts = sorted(groups[bare_name], key=lambda p: p["options_slug"])
+        result.append({
+            "bare_name": bare_name,
+            "points": pts,
+            "total_count": len(pts),
+            "installed_count": sum(1 for p in pts if p.get("installed") is True),
+        })
+    return result
+
+
 def resolve_phoronix_test_point_dir(dest_root, raw_dir):
     """Validates raw_dir (untrusted -- comes from a request body) is a real
     materialized test point: resolves under dest_root (guards against a

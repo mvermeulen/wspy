@@ -198,6 +198,20 @@ details summary {
   font-size: 0.9rem;
 }
 
+.phoronix-test-group {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.7rem;
+  margin-top: 0.4rem;
+}
+.phoronix-test-group summary {
+  color: var(--fg);
+  font-size: 0.95rem;
+}
+.phoronix-test-group table.reports {
+  margin-top: 0.5rem;
+}
+
 .block {
   border: 1px solid var(--border);
   border-radius: 8px;

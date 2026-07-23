@@ -1151,6 +1151,44 @@ class ListMaterializedPhoronixTestPointsTest(unittest.TestCase):
             self.assertEqual(points[0]["runs"], [])
 
 
+class ReadPhoronixTestDescriptionTest(unittest.TestCase):
+    def test_reads_description_from_readme(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            joblib.write_phoronix_test_readme("compress-7zip", tmpdir, "pts/compress-7zip",
+                                               {"Description": "A compression benchmark."}, "/tmp/src.xml")
+            self.assertEqual(joblib.read_phoronix_test_description(tmpdir, "compress-7zip"),
+                              "A compression benchmark.")
+
+    def test_none_when_no_readme(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertIsNone(joblib.read_phoronix_test_description(tmpdir, "no-such-test"))
+
+    def test_none_when_readme_has_no_description(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            joblib.write_phoronix_test_readme("compress-7zip", tmpdir, "pts/compress-7zip",
+                                               {"Test Type": "Processor"}, "/tmp/src.xml")
+            self.assertIsNone(joblib.read_phoronix_test_description(tmpdir, "compress-7zip"))
+
+
+class GroupMaterializedPhoronixPointsByTestTest(unittest.TestCase):
+    def test_groups_and_sorts_by_bare_name(self):
+        points = [
+            {"bare_name": "blender", "options_slug": "bmw27", "installed": True},
+            {"bare_name": "compress-7zip", "options_slug": "default", "installed": False},
+            {"bare_name": "blender", "options_slug": "quad-mesh", "installed": None},
+        ]
+        groups = joblib.group_materialized_phoronix_points_by_test(points)
+        self.assertEqual([g["bare_name"] for g in groups], ["blender", "compress-7zip"])
+        blender = groups[0]
+        self.assertEqual(blender["total_count"], 2)
+        self.assertEqual(blender["installed_count"], 1)
+        # re-sorted by options_slug regardless of input order
+        self.assertEqual([p["options_slug"] for p in blender["points"]], ["bmw27", "quad-mesh"])
+
+    def test_empty_list_yields_empty_groups(self):
+        self.assertEqual(joblib.group_materialized_phoronix_points_by_test([]), [])
+
+
 class ResolvePhoronixTestPointDirTest(unittest.TestCase):
     def test_accepts_real_materialized_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
