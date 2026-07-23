@@ -437,6 +437,57 @@ static void test_extract_external_dependencies(void){
   printf("PASS: extract_external_dependencies\n");
 }
 
+static void test_count_option_combinations(void){
+  int has_freeform;
+  const char *no_settings = "<PhoronixTestSuite>\n<TestProfile>\n</TestProfile>\n</PhoronixTestSuite>\n";
+  const char *empty_settings = "<TestSettings>\n</TestSettings>\n";
+  /* blender-1.2.1's real shape: 5-entry "Blend File" x 2-entry "Compute". */
+  const char *two_menus =
+    "<TestSettings>\n"
+    "<Option><DisplayName>Blend File</DisplayName><Menu>\n"
+    "<Entry><Name>BMW27</Name><Value>bmw27</Value></Entry>\n"
+    "<Entry><Name>Classroom</Name><Value>classroom</Value></Entry>\n"
+    "<Entry><Name>Fishy Cat</Name><Value>fishy_cat</Value></Entry>\n"
+    "<Entry><Name>Pabellon Barcelona</Name><Value>pabellon</Value></Entry>\n"
+    "<Entry><Name>Barbershop</Name><Value>barbershop</Value></Entry>\n"
+    "</Menu></Option>\n"
+    "<Option><DisplayName>Compute</DisplayName><Menu>\n"
+    "<Entry><Name>CPU-Only</Name><Value>NONE</Value></Entry>\n"
+    "<Entry><Name>CUDA</Name><Value>CUDA</Value></Entry>\n"
+    "</Menu></Option>\n"
+    "</TestSettings>\n";
+  /* fio's real shape: one Menu option alongside one free-form (no-Menu) one. */
+  const char *menu_plus_freeform =
+    "<TestSettings>\n"
+    "<Option><DisplayName>Type</DisplayName><Menu>\n"
+    "<Entry><Name>Random Read</Name><Value>randread</Value></Entry>\n"
+    "<Entry><Name>Random Write</Name><Value>randwrite</Value></Entry>\n"
+    "</Menu></Option>\n"
+    "<Option><DisplayName>Disk Target</DisplayName><Identifier>auto-disk-mount-points</Identifier>\n"
+    "<DefaultEntry>0</DefaultEntry></Option>\n"
+    "</TestSettings>\n";
+
+  printf("Testing count_option_combinations...\n");
+
+  has_freeform = 0;
+  assert(count_option_combinations(no_settings,&has_freeform) == 1);
+  assert(has_freeform == 0);
+
+  has_freeform = 0;
+  assert(count_option_combinations(empty_settings,&has_freeform) == 1);
+  assert(has_freeform == 0);
+
+  has_freeform = 0;
+  assert(count_option_combinations(two_menus,&has_freeform) == 10);
+  assert(has_freeform == 0);
+
+  has_freeform = 0;
+  assert(count_option_combinations(menu_plus_freeform,&has_freeform) == 2);
+  assert(has_freeform == 1); /* the Disk Target option isn't counted -- lower bound */
+
+  printf("PASS: count_option_combinations\n");
+}
+
 static void test_load_unavailable_deps(void){
   const char *path = "/tmp/test_ledger_deps.txt";
   char tags[MAX_UNAVAILABLE_TAGS][MAX_DEP_TAG];
@@ -572,6 +623,94 @@ static void test_scan_phoronix_dependencies(void){
   printf("PASS: scan_phoronix_dependencies\n");
 }
 
+/* Writes a fake "<profiles_dir>/<suite>/<dirname>/test-definition.xml" whose
+ * <TestSettings> is exactly settings_xml (NULL to omit <TestSettings>
+ * entirely, i.e. a one-combination profile). */
+static void make_fake_option_profile(const char *profiles_dir,const char *suite,const char *dirname,
+                                      const char *settings_xml){
+  char dir[512],path[700];
+  char content[2048];
+
+  snprintf(dir,sizeof(dir),"%s/%s/%s",profiles_dir,suite,dirname);
+  mkdir_p(dir);
+  snprintf(path,sizeof(path),"%s/test-definition.xml",dir);
+  snprintf(content,sizeof(content),
+    "<?xml version=\"1.0\"?>\n<PhoronixTestSuite>\n<TestProfile>\n</TestProfile>\n%s</PhoronixTestSuite>\n",
+    settings_xml ? settings_xml : "");
+  write_file(path,content);
+}
+
+static void test_scan_phoronix_option_combinations(void){
+  const char *profiles_dir = "/tmp/test_ledger_combo_profiles";
+  const char *list_path = "/tmp/test_ledger_combo_list.txt";
+  const char *two_option_menu =
+    "<TestSettings>\n"
+    "<Option><Menu><Entry><Name>A</Name><Value>a</Value></Entry>"
+    "<Entry><Name>B</Name><Value>b</Value></Entry></Menu></Option>\n"
+    "<Option><Menu><Entry><Name>X</Name><Value>x</Value></Entry>"
+    "<Entry><Name>Y</Name><Value>y</Value></Entry>"
+    "<Entry><Name>Z</Name><Value>z</Value></Entry></Menu></Option>\n"
+    "</TestSettings>\n";
+  const char *five_entry_menu =
+    "<TestSettings>\n"
+    "<Option><Menu>"
+    "<Entry><Name>1</Name><Value>1</Value></Entry>"
+    "<Entry><Name>2</Name><Value>2</Value></Entry>"
+    "<Entry><Name>3</Name><Value>3</Value></Entry>"
+    "<Entry><Name>4</Name><Value>4</Value></Entry>"
+    "<Entry><Name>5</Name><Value>5</Value></Entry>"
+    "</Menu></Option>\n"
+    "</TestSettings>\n";
+  struct ledger_entry *entries;
+  struct ledger_entry *e;
+  int n;
+
+  printf("Testing scan_phoronix_option_combinations...\n");
+
+  rmdir_recursive(profiles_dir);
+  /* some-test: 2x3=6 combinations. */
+  make_fake_option_profile(profiles_dir,"pts","some-test-1.0.0",two_option_menu);
+  /* no-options-test: no <TestSettings> at all -- 1 combination. */
+  make_fake_option_profile(profiles_dir,"pts","no-options-test-1.0.0",NULL);
+  /* ambiguous-test: two profile dirs (different suites) disagree on count. */
+  make_fake_option_profile(profiles_dir,"pts","ambiguous-test-1.0.0",two_option_menu);
+  make_fake_option_profile(profiles_dir,"system","ambiguous-test-1.0.0",five_entry_menu);
+
+  write_file(list_path,
+    "some-test\n"
+    "no-options-test\n"
+    "ambiguous-test\n"
+    "unmatched-test\n");
+
+  entries = load_workload_list(list_path,&n);
+  assert(entries != NULL && n == 4);
+
+  scan_phoronix_option_combinations(profiles_dir,entries,n);
+
+  e = find_entry(entries,n,"some-test");
+  assert(e->combo_known == 1);
+  assert(e->combo_count == 6);
+  assert(e->combo_has_freeform == 0);
+  assert(e->combo_ambiguous == 0);
+  assert(strstr(e->combo_profile,"some-test-1.0.0") != NULL);
+
+  e = find_entry(entries,n,"no-options-test");
+  assert(e->combo_known == 1);
+  assert(e->combo_count == 1);
+
+  e = find_entry(entries,n,"ambiguous-test");
+  assert(e->combo_known == 1);
+  assert(e->combo_ambiguous == 1); /* 6 vs 5 -- disagreement flagged, not silently picked */
+
+  e = find_entry(entries,n,"unmatched-test");
+  assert(e->combo_known == 0); /* no matching profile dir at all */
+
+  free(entries);
+  remove(list_path);
+  rmdir_recursive(profiles_dir);
+  printf("PASS: scan_phoronix_option_combinations\n");
+}
+
 int main(void){
   test_parse_ledger_line();
   test_load_workload_list();
@@ -584,8 +723,10 @@ int main(void){
   test_stale_run_excluded_from_scoring();
   test_strip_version_suffix();
   test_extract_external_dependencies();
+  test_count_option_combinations();
   test_load_unavailable_deps();
   test_scan_phoronix_dependencies();
+  test_scan_phoronix_option_combinations();
 
   printf("\nAll test_ledger tests passed.\n");
   return 0;

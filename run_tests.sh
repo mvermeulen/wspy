@@ -259,7 +259,7 @@ if ./wspy-ledger --run-index test_ledger_index.jsonl --strict test_ledger_list.t
     exit 1
 fi
 CSV_OUT=$(./wspy-ledger --run-index test_ledger_index.jsonl --csv test_ledger_list.txt)
-if ! echo "$CSV_OUT" | head -1 | grep -q '^name,status,runs_matched,runs_succeeded,runs_stale,last_run_id,last_start_time,note$'; then
+if ! echo "$CSV_OUT" | head -1 | grep -q '^name,status,runs_matched,runs_succeeded,runs_stale,last_run_id,last_start_time,note,option_combinations,option_combinations_note$'; then
     echo "FAIL: wspy-ledger --csv header did not match"
     echo "$CSV_OUT"
     exit 1

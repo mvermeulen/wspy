@@ -333,6 +333,22 @@ both core types. `strace` additionally confirmed E-core `perf_event_open()` call
 (`0xc0`/`0x3c`/`0xc2`/`0x73`/`0x71`/`0x74` for instructions/cycles/topdown,
 `0xc4`/`0xc5`/`0x7ec4`/`0xebc4` for branch, `0x24`/`0x124` for L2).
 
+**Phoronix per-test option-combination count (`ledger.c`, Tier 7):** `wspy-ledger --phoronix-option-combos`
+scans the same `--phoronix-profiles-dir` tree `--unavailable-deps` already reads and reports each matching
+workload's full option-matrix size — the product of every `<TestSettings>/<Option>`'s `<Menu>` `<Entry>`
+count in its `test-definition.xml` — as a new `option_combinations`/`option_combinations_note` pair (CSV) or
+a bracketed suffix (human report), surfaced up front instead of discovered partway through a long
+batch-run sweep. Verified against real installed profiles: blender-1.2.1's own test-definition.xml
+(`system/blender-1.2.1`) resolves to exactly the confirmed 5×2=10. An `<Option>` with no `<Menu>` at all
+(a free-form input like fio's "Disk Target" or iperf's "Server Address") can't be enumerated, so it's
+excluded from the product and the count is reported as a lower bound (`combo_has_freeform`) rather than
+silently undercounted; if a workload name matches more than one installed profile (different suites or
+kept versions) and they disagree on the count, `combo_ambiguous` flags it rather than silently picking
+one. Purely static `test-definition.xml` parsing, same "deliberately not a real XML parser" convention
+`scan_phoronix_dependencies()` already established for this file — no need to run anything. Independent of
+`--unavailable-deps`; both share `resolve_profiles_dir()`'s profiles-dir resolution and may be given
+together.
+
 **`cache_counter_group()`'s "instructions" entry opened at the wrong PMU type (`topdown.c`) —
 vendor-agnostic, not Intel-specific, though surfaced by the same real Coremark run above.** The
 synthetic `"instructions"` entry `cache_events[]` carries alongside its `PERF_TYPE_HW_CACHE` rows (a
@@ -795,17 +811,17 @@ this phase's own IBS sampling mode (Tier 1 above):**
     - Distinct from `wspy-queue`'s job lifecycle (whole-job scheduling/retry, not resuming partway
       through one multi-pass invocation's own internal passes) and from 4.4's much heavier config-first
       experiment system.
-25. Phoronix per-test option-combination count, surfaced ahead of running — a real, recurring pain
-    point is discovering *after* a long `batch-run` sweep that a test's full option matrix takes far
-    longer than expected. Confirmed live against a real test profile (`blender-1.2.1`) that
-    `<TestSettings>/<Option>/<Menu>/<Entry>` in `test-definition.xml` names the exact shape needed
-    (blender's own profile is a 5×2=10-combination full sweep) — purely static parsing, no need to run
-    anything, following the same "deliberately not a real XML parser" convention `ledger.c`'s
-    `scan_phoronix_dependencies()` already established for this file. Natural home is `wspy-ledger`
-    (alongside that existing scanning logic) as a new annotation/warning column next to a workload's
-    done/skipped/unsupported/needs-tool-support status. Future input to the (shipped) `--tree` pass
-    timeout item's `BATCH_RUN_MULTIPLIER` — a real combination count would replace that item's blind
-    5.0 guess with a grounded number, once both exist.
+25. ~~Phoronix per-test option-combination count, surfaced ahead of running~~ — **shipped**, see
+    "Shipped since 4.2". A real, recurring pain point is discovering *after* a long `batch-run` sweep
+    that a test's full option matrix takes far longer than expected. Confirmed live against a real test
+    profile (`blender-1.2.1`) that `<TestSettings>/<Option>/<Menu>/<Entry>` in `test-definition.xml`
+    names the exact shape needed (blender's own profile is a 5×2=10-combination full sweep) — purely
+    static parsing, no need to run anything, following the same "deliberately not a real XML parser"
+    convention `ledger.c`'s `scan_phoronix_dependencies()` already established for this file. Landed as
+    `wspy-ledger --phoronix-option-combos` (alongside that existing scanning logic), a new
+    annotation/warning column next to a workload's done/skipped/unsupported/needs-tool-support status.
+    Still open: feeding this into the (shipped) `--tree` pass timeout item's `BATCH_RUN_MULTIPLIER` — a
+    real combination count would replace that item's blind 5.0 guess with a grounded number.
 
 26. openbenchmarking.org-seeded single-test-point Phoronix suites, building toward a semi-automated
     profiled-workload library. openbenchmarking.org result pages (e.g. a `pts/*`-suite run someone else
