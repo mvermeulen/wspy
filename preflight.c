@@ -139,7 +139,7 @@ struct preflight_result preflight_evaluate(unsigned int mask){
   unsigned int saved_mask = counter_mask;
 
   counter_mask = mask;
-  setup_counter_groups(&list);
+  setup_counter_groups(&list,CORE_UNKNOWN);
   counter_mask = saved_mask;
 
   r = preflight_evaluate_groups(list);

@@ -127,16 +127,20 @@ char **command_line_argv;
 // per-core-energy wiring below (INVESTIGATION.md's 4.2 Tier 1, "Per-core
 // energy support" item) -- one core is "per-core eligible" if it's both
 // available to this process and a vendor/core type wspy's own per-core raw
-// events actually support (CORE_INTEL_ATOM is deliberately excluded here,
-// same as the main loop -- see INVESTIGATION.md's 4.3 "Core-class-aware
-// topdown" entry for why). Kept as one predicate so the two call sites
-// can't silently drift apart on which cores end up with a per-core row.
+// events actually support. CORE_INTEL_ATOM (Gracemont) is included now that
+// intel_atom_raw_events[] (topdown.c) gives it real, hardware-verified raw
+// event coverage -- previously excluded outright to avoid silently
+// mismeasuring E-cores with P-core-only-correct raw events (see
+// INVESTIGATION.md's "Per-core-type-aware Intel raw event tables" item).
+// Kept as one predicate so the two call sites can't silently drift apart on
+// which cores end up with a per-core row.
 static int core_is_per_core_eligible(int i){
   return cpu_info->coreinfo[i].is_available &&
     ((cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN)||
      (cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN5)||
      (cpu_info->coreinfo[i].vendor == CORE_AMD_ZEN5C)||
      (cpu_info->coreinfo[i].vendor == CORE_INTEL_CORE)||
+     (cpu_info->coreinfo[i].vendor == CORE_INTEL_ATOM)||
      (is_arm_core_type(cpu_info->coreinfo[i].vendor)));
 }
 
@@ -823,7 +827,7 @@ static int run_capabilities_probe(void){
   setup_raw_events();
 
   coverage_reset();
-  setup_counter_groups(&cpu_info->systemwide_counters);
+  setup_counter_groups(&cpu_info->systemwide_counters,CORE_UNKNOWN);
   if (counter_mask & COUNTER_SOFTWARE){
     if ((cgroup = software_counter_group("software"))){
       cgroup->next = cpu_info->systemwide_counters;
@@ -1171,7 +1175,7 @@ static int run_multipass(char *const envp[]){
     struct counter_group *cgroup;
 
     counter_mask = plan.pass_mask[p];
-    setup_counter_groups(&pass_lists[p]);
+    setup_counter_groups(&pass_lists[p],CORE_UNKNOWN);
     counter_mask = saved_mask;
     // setup_counter_groups() never handles COUNTER_SOFTWARE itself (see
     // main()'s single-pass path) -- replicate that per pass exactly.
@@ -1653,13 +1657,14 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   if (aflag){
     for (i=0;i<cpu_info->num_cores;i++){
       if (core_is_per_core_eligible(i)){
-	setup_counter_groups(&cpu_info->coreinfo[i].core_specific_counters);
+	setup_counter_groups(&cpu_info->coreinfo[i].core_specific_counters,
+			     cpu_info->coreinfo[i].vendor);
   bind_core_counter_groups(cpu_info->coreinfo[i].core_specific_counters,
          i,cpu_info->coreinfo[i].pmu_type);
       }
     }
   } else {
-    setup_counter_groups(&cpu_info->systemwide_counters);
+    setup_counter_groups(&cpu_info->systemwide_counters,CORE_UNKNOWN);
   }
   // software counters are only system-wide
   if (counter_mask & COUNTER_SOFTWARE){

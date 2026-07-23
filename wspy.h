@@ -151,7 +151,7 @@ void check_schedstat_enabled(void);
 int setup_raw_events(void);
 extern struct raw_event amd_raw_events[];
 int amd_raw_events_count(void);
-void setup_counter_groups(struct counter_group **counter_group_list);
+void setup_counter_groups(struct counter_group **counter_group_list,enum cpu_core_type core_class);
 struct counter_group *software_counter_group(char *name);
 void setup_counters(struct counter_group *counter_group_list);
 void start_counters(struct counter_group *counter_group_list);

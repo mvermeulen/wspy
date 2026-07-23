@@ -192,7 +192,13 @@ vendor/group applicability) means a permission-denied run silently drops columns
 
 - **New raw perf counter:** add an entry to `intel_raw_events[]`/`amd_raw_events[]` in `topdown.c`
   (`event=...,umask=...` + a `COUNTER_*` mask from `wspy.h`, adding a bit if needed); `setup_raw_events()`
-  converts it. Add a `--foo`/`--no-foo` flag pair in `parse_options()` if user-toggleable.
+  converts it. Add a `--foo`/`--no-foo` flag pair in `parse_options()` if user-toggleable. For an
+  Intel E-core (Gracemont) equivalent, add to `intel_atom_raw_events[]` instead — its encodings
+  routinely differ from `intel_raw_events[]`'s P-core ones even for the same event number (confirmed
+  live: `l2_request.all` is `umask=0xff` on P-core, `umask=0x0` on Gracemont), so never assume the two
+  tables can share a value; verify against a real `cpu_atom` PMU (`/sys/devices/cpu_atom/events/<name>`
+  where a named event exists, else `perf stat -e cpu_atom/<name>/ -vv` to read the resolved `config`)
+  rather than guessing.
 - **New counter group:** write a constructor in `topdown.c` (pattern: `software_counter_group()`,
   `cache_counter_group()`), link it in `setup_counter_groups()` based on `counter_mask`. Each check
   *prepends* to `*counter_group_list`, so groups print in reverse check order — reorder the `if` blocks
@@ -226,8 +232,13 @@ vendor/group applicability) means a permission-denied run silently drops columns
 - NMI watchdog: if active, one hardware counter is reserved system-wide; `check_nmi_watchdog()`
   (`topdown.c`) detects this and reduces available slots rather than failing.
 - AMD L3 cache events depend on `/sys/devices/amd_l3/type` and are silently skipped if absent.
-- Vendor detection distinguishes AMD Zen/Zen5, Intel Atom/Core (hybrid), ARM; on ARM, `cpu_info.c` also
-  tracks PMU cluster/type per core so `--per-core` binds raw counters to the correct PMU type.
+- Vendor detection distinguishes AMD Zen/Zen5, Intel Atom/Core (hybrid), ARM; on both ARM and Intel
+  hybrid parts, `cpu_info.c` tracks PMU cluster/type per core (`coreinfo[i].pmu_type`, resolved from
+  `/sys/bus/event_source/devices/<pmu>/type`) so `--per-core` binds raw counters to the correct PMU
+  type. On Intel, `raw_counter_group()`/`setup_counter_groups()` (`topdown.c`) also take a `core_class`
+  parameter so P-cores and E-cores (Gracemont) pull from separate raw event tables
+  (`intel_raw_events[]`/`intel_atom_raw_events[]`) — Gracemont has no `slots`/fixed-counter register at
+  all, so `print_topdown()` synthesizes one from `cpu-cycles * 5` when building an E-core's row.
 - `amd_sysfs_initialize()` scans `/sys/class/drm/card*/device/vendor` for AMD cards rather than assuming
   a fixed `card1` (a multi-GPU machine can enumerate an NVIDIA card first). `--gpu-device=<idx>` selects
   a card/device for either AMD backend.

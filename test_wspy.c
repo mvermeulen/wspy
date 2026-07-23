@@ -1042,7 +1042,7 @@ void test_append_run_index() {
 // through wspy.h since only print_metrics() is part of the public surface.
 extern void print_topdown(struct counter_group *cgroup, enum output_format oformat, int mask);
 extern void print_topdown_be(struct counter_group *cgroup, enum output_format oformat, int mask);
-extern struct counter_group *raw_counter_group(char *name, unsigned int mask);
+extern struct counter_group *raw_counter_group(char *name, unsigned int mask, enum cpu_core_type core_class);
 extern struct counter_group *cache_counter_group(char *name, unsigned int mask);
 
 static void free_test_cgroup(struct counter_group *cgroup) {
@@ -1085,7 +1085,7 @@ void test_intel_counter_grouping(void) {
     // events) -- more than the 6-slot general-purpose budget, but the whole
     // family must stay one group led by "slots" regardless: only index 0 is
     // a leader.
-    cgroup = raw_counter_group("topdown2", COUNTER_TOPDOWN2);
+    cgroup = raw_counter_group("topdown2", COUNTER_TOPDOWN2, CORE_UNKNOWN);
     assert(cgroup != NULL);
     assert(cgroup->ncounters == 9);
     assert(cgroup->cinfo[0].is_group_leader == 1);
@@ -1095,7 +1095,7 @@ void test_intel_counter_grouping(void) {
 
     // branch alone (5 counters: "instructions" + 4 br_* events) fits the
     // 6-slot budget -- one group, one leader.
-    cgroup = raw_counter_group("branch", COUNTER_BRANCH);
+    cgroup = raw_counter_group("branch", COUNTER_BRANCH, CORE_UNKNOWN);
     assert(cgroup != NULL);
     assert(cgroup->ncounters == 5);
     assert(cgroup->cinfo[0].is_group_leader == 1);
@@ -1108,7 +1108,7 @@ void test_intel_counter_grouping(void) {
     // This is exactly the "wholesale loss once combined group exceeds
     // capacity" bug: leaders must land at counts 0, 6, and 12 (three groups
     // of 6/6/1), not one 13-member group the kernel would refuse outright.
-    cgroup = raw_counter_group("combined", COUNTER_BRANCH|COUNTER_L2CACHE|COUNTER_TOPDOWN_BE);
+    cgroup = raw_counter_group("combined", COUNTER_BRANCH|COUNTER_L2CACHE|COUNTER_TOPDOWN_BE, CORE_UNKNOWN);
     assert(cgroup != NULL);
     assert(cgroup->ncounters == 13);
     for (i = 0; i < cgroup->ncounters; i++){
@@ -1132,6 +1132,75 @@ void test_intel_counter_grouping(void) {
     cpu_info = saved_cpu_info;
 
     printf("PASS: Intel counter-group budget chunking\n");
+}
+
+// Regression test for INVESTIGATION.md's "Per-core-type-aware Intel raw
+// event tables" item (Gracemont E-core support): raw_counter_group()'s
+// core_class parameter must (a) select intel_atom_raw_events[] instead of
+// intel_raw_events[] for CORE_INTEL_ATOM, and (b) NOT apply the P-core-only
+// forced-single-group rule (Gracemont has no "slots"/fixed-counter register
+// -- its topdown events are ordinary counting events that chunk normally,
+// see intel_atom_raw_events[]'s own comment in topdown.c). A combined
+// topdown2|branch mask exceeding the 6-slot budget is exactly the case that
+// would look identical to the forced-single-group behavior if this chunking
+// distinction were lost (both put a leader at count 0) -- only normal
+// chunking also puts one at count 6.
+void test_gracemont_raw_counter_group(void) {
+    struct cpu_info fake_cpu;
+    struct cpu_info *saved_cpu_info;
+    int saved_nmi;
+    struct counter_group *cgroup;
+    int i;
+
+    printf("Testing raw_counter_group() selects intel_atom_raw_events[] and chunks normally for CORE_INTEL_ATOM...\n");
+
+    saved_cpu_info = cpu_info;
+    memset(&fake_cpu, 0, sizeof(fake_cpu));
+    fake_cpu.vendor = VENDOR_INTEL;
+    cpu_info = &fake_cpu;
+    saved_nmi = nmi_running;
+    nmi_running = 0;
+
+    // topdown2 alone: cpu-cycles + 4 core.topdown-* entries = 5 counters,
+    // no "slots" entry at all (Gracemont has none) -- and well under the
+    // 6-slot budget, so this alone can't distinguish forced-single-group
+    // from normal chunking (both leave only count 0 as leader here).
+    cgroup = raw_counter_group("topdown2", COUNTER_TOPDOWN2, CORE_INTEL_ATOM);
+    assert(cgroup != NULL);
+    assert(cgroup->ncounters == 5);
+    for (i = 0; i < cgroup->ncounters; i++)
+        assert(strcmp(cgroup->cinfo[i].label, "slots") != 0);
+    free_test_cgroup(cgroup);
+
+    // topdown2|branch combined: 10 counters (instructions + cpu-cycles + 4
+    // core.topdown-* + 4 br_*), exceeding the 6-slot budget -- leaders must
+    // land at counts 0 and 6 (normal chunking), not only at count 0 (which
+    // is what the P-core forced-single-group rule would produce instead).
+    cgroup = raw_counter_group("topdown2-branch", COUNTER_TOPDOWN2|COUNTER_BRANCH, CORE_INTEL_ATOM);
+    assert(cgroup != NULL);
+    assert(cgroup->ncounters == 10);
+    for (i = 0; i < cgroup->ncounters; i++){
+        int expect_leader = (i == 0 || i == 6);
+        assert(cgroup->cinfo[i].is_group_leader == expect_leader);
+    }
+    free_test_cgroup(cgroup);
+
+    // Same mask/core_class as intel_raw_events[]'s own P-core equivalent,
+    // requested with CORE_INTEL_CORE (not CORE_INTEL_ATOM): must still
+    // select the P-core table (9 counters incl. "slots", forced single
+    // group) -- confirms core_class only changes behavior for the atom case.
+    cgroup = raw_counter_group("topdown2", COUNTER_TOPDOWN2, CORE_INTEL_CORE);
+    assert(cgroup != NULL);
+    assert(cgroup->ncounters == 9);
+    assert(cgroup->cinfo[0].is_group_leader == 1);
+    for (i = 1; i < cgroup->ncounters; i++)
+        assert(cgroup->cinfo[i].is_group_leader == 0);
+    free_test_cgroup(cgroup);
+
+    nmi_running = saved_nmi;
+    cpu_info = saved_cpu_info;
+
+    printf("PASS: raw_counter_group() Gracemont table selection + normal chunking\n");
 }
 
 // Regression test for INVESTIGATION.md's "RAPL/energy-pkg opened with the
@@ -1164,7 +1233,7 @@ void test_raw_counter_group_system_wide_marking(void) {
     // COUNTER_L3CACHE alongside many other groups) -- that entry's own
     // device_type is PERF_TYPE_RAW, not PERF_TYPE_L3, so it must NOT be
     // marked; only the two real l3_lookup_state.* entries should be.
-    cgroup = raw_counter_group("l3 cache", COUNTER_L3CACHE);
+    cgroup = raw_counter_group("l3 cache", COUNTER_L3CACHE, CORE_UNKNOWN);
     assert(cgroup != NULL);
     for (i = 0; i < cgroup->ncounters; i++){
         int expect_marked = !strncmp(cgroup->cinfo[i].label, "l3_lookup_state.", 16);
@@ -1174,7 +1243,7 @@ void test_raw_counter_group_system_wide_marking(void) {
 
     // A non-L3 raw group (ordinary general-purpose PMU events) must NOT be
     // marked -- only the uncore/system PMU escape hatch is.
-    cgroup = raw_counter_group("branch", COUNTER_BRANCH);
+    cgroup = raw_counter_group("branch", COUNTER_BRANCH, CORE_UNKNOWN);
     assert(cgroup != NULL);
     for (i = 0; i < cgroup->ncounters; i++)
         assert(cgroup->cinfo[i].requires_system_wide == 0);
@@ -1444,6 +1513,72 @@ void test_intel_topdown_l2_underflow(void) {
     cpu_info = saved_cpu_info;
 
     printf("PASS: Intel L2 topdown decomposition clamps child>parent instead of wrapping\n");
+}
+
+// Regression test for INVESTIGATION.md's "Per-core-type-aware Intel raw
+// event tables" item (Gracemont E-core support): print_topdown()'s
+// VENDOR_INTEL case must synthesize a slots denominator from cpu-cycles
+// (mirroring AMD's cpu-cycles*width pattern) when no "slots" fixed-counter
+// entry exists in the group -- real Gracemont hardware has no such register
+// at all. Width (5) was measured empirically on real E-core hardware: see
+// intel_atom_raw_events[]'s own comment in topdown.c. L2 sub-fields must
+// stay 0.0 since Gracemont has no L2 topdown breakdown to report.
+void test_intel_gracemont_synthetic_slots(void) {
+    struct cpu_info fake_cpu;
+    struct cpu_info *saved_cpu_info;
+    struct counter_group cgroup;
+    struct counter_info cinfo[5];
+    char *contents;
+    const char *tmp_out = "/tmp/test_wspy_gracemont_slots.txt";
+
+    printf("Testing print_topdown() synthesizes slots=cycles*5 when no \"slots\" entry exists (Gracemont)...\n");
+
+    saved_cpu_info = cpu_info;
+    memset(&fake_cpu, 0, sizeof(fake_cpu));
+    fake_cpu.vendor = VENDOR_INTEL;
+    cpu_info = &fake_cpu;
+
+    memset(cinfo, 0, sizeof(cinfo));
+    // Deliberately no "slots" label anywhere in this fixture -- matches a
+    // real Gracemont raw_counter_group() result (intel_atom_raw_events[]
+    // has none).
+    cinfo[0].label = "cpu-cycles";
+    cinfo[0].value = 100000; cinfo[0].time_enabled = 1000000; cinfo[0].time_running = 1000000;
+    // slots = cpu-cycles * 5 = 500000, clean decomposition summing to it exactly
+    cinfo[1].label = "core.topdown-retiring";
+    cinfo[1].value = 200000; cinfo[1].time_enabled = 1000000; cinfo[1].time_running = 1000000;
+    cinfo[2].label = "core.topdown-fe-bound";
+    cinfo[2].value = 100000; cinfo[2].time_enabled = 1000000; cinfo[2].time_running = 1000000;
+    cinfo[3].label = "core.topdown-be-bound";
+    cinfo[3].value = 150000; cinfo[3].time_enabled = 1000000; cinfo[3].time_running = 1000000;
+    cinfo[4].label = "core.topdown-bad-spec";
+    cinfo[4].value = 50000; cinfo[4].time_enabled = 1000000; cinfo[4].time_running = 1000000;
+
+    memset(&cgroup, 0, sizeof(cgroup));
+    cgroup.label = "topdown2";
+    cgroup.ncounters = 5;
+    cgroup.cinfo = cinfo;
+    cgroup.mask = COUNTER_TOPDOWN2;
+
+    outfile = fopen(tmp_out, "w");
+    if (!outfile) { fprintf(stderr, "FAIL: could not open temp file\n"); exit(1); }
+    print_topdown(&cgroup, PRINT_CSV, COUNTER_TOPDOWN2);
+    fclose(outfile);
+
+    contents = slurp_file(tmp_out);
+    assert(contents != NULL);
+    // retiring=40.0%, frontend=20.0%, backend=30.0%, speculate=10.0% (all of
+    // slots=500000), confidence=1.00, sanity=100.0% (clean decomposition);
+    // the 9 trailing L2 columns all 0.0 -- Gracemont has no L2 breakdown, so
+    // none of their labels (core.topdown-heavy-ops etc.) exist in this fixture.
+    assert(strstr(contents, "40.0,20.0,30.0,10.0,1.00,100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,") != NULL);
+    free(contents);
+
+    remove(tmp_out);
+    outfile = NULL;
+    cpu_info = saved_cpu_info;
+
+    printf("PASS: print_topdown() Gracemont synthetic slots\n");
 }
 
 void test_arm_topdown_equivalence(void) {
@@ -1850,10 +1985,12 @@ int main(int argc, char **argv) {
     test_provenance();
     test_topdown_confidence();
     test_intel_topdown_l2_underflow();
+    test_intel_gracemont_synthetic_slots();
     test_arm_topdown_equivalence();
     test_topdown_amd_contention();
     test_topdown_be_shared_denominator();
     test_intel_counter_grouping();
+    test_gracemont_raw_counter_group();
     test_raw_counter_group_system_wide_marking();
     test_cache_group_instructions_real_type();
     test_arm_pmu_report();
