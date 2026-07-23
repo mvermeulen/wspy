@@ -1180,6 +1180,56 @@
       });
     });
 
+    // Inventory's per-row "Re-pin" buttons (only rendered next to the
+    // version-mismatch badge, see render_phoronix_inventory_groups()):
+    // rewrites the test point's pinned version to the selected installed
+    // one (server-side, see _phoronix_repin()/joblib.repin_phoronix_test_
+    // point()). Deliberately explicit/per-point -- never automatic -- so
+    // patches the row in place on success rather than re-rendering the
+    // whole tab.
+    var repinErrorEl = byId("phoronix-repin-error");
+    document.querySelectorAll(".phoronix-repin").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var select = btn.parentElement ? btn.parentElement.querySelector(".phoronix-repin-version") : null;
+        var version = select ? select.value : "";
+        btn.disabled = true;
+        if (repinErrorEl) repinErrorEl.hidden = true;
+        fetch("/api/phoronix/repin", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ dir: btn.dataset.dir, version: version }),
+        })
+          .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+          .then(function (res) {
+            if (!res.ok || res.data.error) {
+              btn.disabled = false;
+              if (repinErrorEl) {
+                repinErrorEl.hidden = false;
+                repinErrorEl.textContent = "Re-pin error: " + (res.data.error || "unknown error");
+              }
+              return;
+            }
+            var cell = btn.closest("td");
+            var row = btn.closest("tr");
+            if (row) {
+              var installedCell = row.children[1];
+              if (installedCell) installedCell.textContent = "yes";
+            }
+            if (cell) {
+              if (select) select.remove();
+              btn.remove();
+            }
+          })
+          .catch(function (err) {
+            btn.disabled = false;
+            if (repinErrorEl) {
+              repinErrorEl.hidden = false;
+              repinErrorEl.textContent = "Re-pin error: " + err.message;
+            }
+          });
+      });
+    });
+
     // Inventory filter/expand-collapse: a test can have dozens of option
     // combinations, and a host with hundreds of materialized points needs
     // more than alphabetical scrolling to find one -- filters by test

@@ -1757,6 +1757,57 @@ def phoronix_bare_test_name(test_id):
     return name
 
 
+def phoronix_pinned_version(test_id):
+    """The "-<version>" suffix test_id itself carries (e.g. "1.17.1" for
+    "pts/build-linux-kernel-1.17.1"), or None if test_id has no recognizable
+    version suffix -- same detection phoronix_bare_test_name() already uses,
+    just returning the piece that function discards."""
+    name = test_id.split("/", 1)[1] if "/" in test_id else test_id
+    last_dash = name.rfind("-")
+    if last_dash != -1 and _phoronix_looks_like_version(name[last_dash + 1:]):
+        return name[last_dash + 1:]
+    return None
+
+
+def _phoronix_version_key(version):
+    return [int(part) if part.isdigit() else part for part in version.split(".")]
+
+
+def list_installed_phoronix_test_versions(test_id, user_data_dir=None):
+    """Installed version strings for test_id's bare test name, sorted --
+    e.g. ["1.17.1", "1.18.0"] if both happen to be installed under
+    ~/.phoronix-test-suite/installed-tests/pts/build-linux-kernel-*/.
+    Deliberately distinct from check_phoronix_test_installed(): that asks
+    phoronix-test-suite whether the *exact pinned* test_id is installed;
+    this instead answers "is any version of this test installed, and if so
+    which" by scanning installed-tests/<namespace>/ directly (no
+    subprocess). The two can disagree when a materialized test point pins
+    an older version (e.g. imported from an OpenBenchmarking result) than
+    whatever's actually installed on this host -- confirmed live
+    (2026-07-23): a build-linux-kernel test point pinned to 1.17.1 reported
+    "not installed" and failed at wspy-run time even though 1.18.0 was
+    already installed, because phoronix-test-suite treats each version as a
+    wholly separate installed/uninstalled test. The Phoronix tab's
+    inventory table uses this to show that mismatch instead of a flat
+    yes/no, and offers a re-pin action (repin_phoronix_test_point()) built
+    on top of it. Returns [] if the namespace directory doesn't exist or
+    nothing matches -- never raises. user_data_dir overrides
+    phoronix_user_data_dir(), same testability escape hatch
+    copy_phoronix_test_point_to_local_suite() already uses."""
+    namespace = test_id.split("/", 1)[0] if "/" in test_id else "pts"
+    bare_name = phoronix_bare_test_name(test_id)
+    base = os.path.join(user_data_dir or phoronix_user_data_dir(), "installed-tests", namespace)
+    try:
+        entries = os.listdir(base)
+    except OSError:
+        return []
+    prefix = bare_name + "-"
+    versions = [entry[len(prefix):] for entry in entries
+                if entry.startswith(prefix) and _phoronix_looks_like_version(entry[len(prefix):])]
+    versions.sort(key=_phoronix_version_key)
+    return versions
+
+
 _PHORONIX_SLUG_RE = re.compile(r"[^a-z0-9]+")
 _PHORONIX_SLUG_MAX = 60
 _PHORONIX_SLUG_HASH_LEN = 8
@@ -1866,6 +1917,62 @@ def materialize_phoronix_test_point(point, dest_root, source_kind, source_ref, i
         f.write("\n")
     result["status"] = "created"
     return result
+
+
+def repin_phoronix_test_point(test_point_dir, new_version):
+    """Rewrites <test_point_dir>/suite-definition.xml's <Execute><Test> to
+    point at new_version instead of whatever version it was originally
+    materialized with, and updates source.json to match -- the explicit,
+    opt-in counterpart to the Phoronix tab's version-mismatch badge
+    (list_installed_phoronix_test_versions()): that badge only *shows* a
+    materialized point is pinned to a version this host no longer has
+    installed, it doesn't fix it, because auto-re-pinning would silently
+    defeat the reproducibility guarantee that pinning to an exact
+    OpenBenchmarking-result version exists for in the first place (a test
+    profile's metric definition can change between versions). This
+    function is that fix, called only when a human clicks "re-pin."
+
+    Keeps the namespace prefix ("pts/", "system/", ...) and bare test name
+    unchanged -- only the "-<version>" suffix moves -- so bare_name/
+    options_slug/identity/directory layout (all derived from the bare name,
+    never the version) are untouched; a re-pin never moves or renames a
+    test point. source.json's original "test_id"/"generated_at" are
+    preserved as "previous_test_id"/"generated_at" for provenance; a new
+    "repinned_at" timestamp and "installed": True are set, since a re-pin
+    is only ever offered for a version this host has confirmed installed.
+
+    Returns {"old_test_id", "new_test_id", "dir"}, or raises FileNotFoundError
+    if suite-definition.xml/source.json are missing, or ValueError if the
+    XML has no <Execute><Test> to rewrite -- both indicate test_point_dir
+    isn't actually a materialized test point, which callers are expected to
+    have already validated (e.g. via resolve_phoronix_test_point_dir())
+    before ever getting here."""
+    suite_path = os.path.join(test_point_dir, "suite-definition.xml")
+    source_path = os.path.join(test_point_dir, "source.json")
+    tree = ET.parse(suite_path)
+    test_el = tree.find("./Execute/Test")
+    if test_el is None or not (test_el.text or "").strip():
+        raise ValueError(f"no <Execute><Test> found in {suite_path}")
+    old_test_id = test_el.text.strip()
+    namespace = old_test_id.split("/", 1)[0] if "/" in old_test_id else ""
+    bare_name = phoronix_bare_test_name(old_test_id)
+    new_test_id = f"{namespace}/{bare_name}-{new_version}" if namespace else f"{bare_name}-{new_version}"
+
+    test_el.text = new_test_id
+    with open(suite_path, "wb") as f:
+        f.write(b'<?xml version="1.0"?>\n' + ET.tostring(tree.getroot(), encoding="utf-8") + b"\n")
+
+    with open(source_path) as f:
+        source = json.load(f)
+    source["previous_test_id"] = old_test_id
+    source["test_id"] = new_test_id
+    source["installed"] = True
+    source["repinned_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with open(source_path, "w") as f:
+        json.dump(source, f, indent=2)
+        f.write("\n")
+
+    return {"old_test_id": old_test_id, "new_test_id": new_test_id, "dir": test_point_dir}
 
 
 _PHORONIX_README_DETAIL_FIELDS = [
