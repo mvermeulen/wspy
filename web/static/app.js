@@ -1179,6 +1179,46 @@
           });
       });
     });
+
+    // Inventory filter/expand-collapse: a test can have dozens of option
+    // combinations, and a host with hundreds of materialized points needs
+    // more than alphabetical scrolling to find one -- filters by test
+    // name, README description, or an option-combination substring,
+    // opening matching groups and hiding groups with zero matching rows.
+    var filterEl = byId("phoronix-filter");
+    var groupEls = Array.prototype.slice.call(document.querySelectorAll(".phoronix-test-group"));
+    var filterEmptyEl = byId("phoronix-filter-empty");
+    if (filterEl && groupEls.length) {
+      filterEl.addEventListener("input", function () {
+        var q = filterEl.value.trim().toLowerCase();
+        var anyGroupVisible = false;
+        groupEls.forEach(function (group) {
+          var groupMatches = !q || (group.dataset.phoronixSearch || "").indexOf(q) !== -1;
+          var anyRowVisible = false;
+          group.querySelectorAll("tbody tr").forEach(function (row) {
+            var rowMatches = groupMatches || (row.dataset.phoronixOptions || "").indexOf(q) !== -1;
+            row.hidden = !rowMatches;
+            if (rowMatches) anyRowVisible = true;
+          });
+          group.hidden = !anyRowVisible;
+          group.open = q.length > 0 && anyRowVisible;
+          if (anyRowVisible) anyGroupVisible = true;
+        });
+        if (filterEmptyEl) filterEmptyEl.hidden = anyGroupVisible || !q;
+      });
+    }
+    var expandAllBtn = byId("phoronix-expand-all");
+    if (expandAllBtn) {
+      expandAllBtn.addEventListener("click", function () {
+        groupEls.forEach(function (group) { group.open = true; });
+      });
+    }
+    var collapseAllBtn = byId("phoronix-collapse-all");
+    if (collapseAllBtn) {
+      collapseAllBtn.addEventListener("click", function () {
+        groupEls.forEach(function (group) { group.open = false; });
+      });
+    }
   }
 
   wireTabs();

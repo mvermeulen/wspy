@@ -390,6 +390,19 @@ fields (type, license, supported platforms, project/OpenBenchmarking.org links).
 convention as `suite-definition.xml`: an existing README is left untouched on re-import. Skipped (not an
 error) when `--no-check-installed` disabled the `info` lookup or the lookup itself failed.
 
+The inventory table itself is now grouped by test rather than shown as one flat, recency-ordered list of
+option combinations — `list_materialized_phoronix_test_points()`'s own ordering (newest `generated_at`
+first) is the right default for "what did I just import" but stopped scaling once a host accumulates
+hundreds of points across many imports and a human is instead trying to find one specific test.
+`joblib.group_materialized_phoronix_points_by_test()` re-buckets that flat list into
+`<test>` → `<options>` groups sorted alphabetically by bare test name (each group's own points re-sorted by
+options slug); `joblib.read_phoronix_test_description()` pulls each group's one-line summary straight back
+out of the README.md above, so the inventory doesn't need a second `phoronix-test-suite info` round-trip
+just to label a collapsed group. Each test renders as a `<details>` block (`render_phoronix_inventory_groups()`,
+`web/server.py`) with a text filter above matching test name/description/option-slug substrings
+(`wirePhoronixTab()`, `web/static/app.js` — client-side only, no new endpoint), plus expand-all/collapse-all
+buttons.
+
 **`cache_counter_group()`'s "instructions" entry opened at the wrong PMU type (`topdown.c`) —
 vendor-agnostic, not Intel-specific, though surfaced by the same real Coremark run above.** The
 synthetic `"instructions"` entry `cache_events[]` carries alongside its `PERF_TYPE_HW_CACHE` rows (a
