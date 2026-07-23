@@ -8,10 +8,10 @@ shipped now live in `doc/INVESTIGATION_ARCHIVE.md`, out of the way of the open b
 Status (2026-07-22): **4.0, 4.1, and 4.2 are released and done** (v4.2 tagged and published as a
 GitHub release, `wspy-release-notes.4.2.md` as its body — see `scripts/release_prep.sh`). **4.3 is now
 underway.** Real Intel hybrid hardware became available for
-the first time this cycle (a Raptor Lake HX host, "carlsbad") and Tier 0's counter-grouping
+the first time this cycle (a Raptor Lake HX host, "carlsbad") and an Intel counter-grouping
 correctness pass found five confirmed hardware bugs plus one coverage gap (Gracemont E-core raw
 events); all six are now resolved (five shipped, see "Shipped since 4.2" below; one is a documented
-non-actionable perf-subsystem limitation, see "Known gaps") — nothing remains open in Tier 0.
+non-actionable perf-subsystem limitation, see "Known gaps") — nothing remains open from that pass.
 This document was slimmed down for the 4.3 cycle (2026-07-21):
 "What shipped in 4.0"/"4.1"/"4.2" are pointer lists only, with design write-ups and validation
 narratives moved to `doc/INVESTIGATION_ARCHIVE.md`. A "Shipped since 4.2" rolling section (same idiom
@@ -561,7 +561,7 @@ existed in this environment to exercise them. What's confirmed:
      longer to finish installing onto real hardware than a short-enough-lived child leaves available. No
      wspy-side fix exists (a `perf stat`-style direct-child-pid-targeting rewrite was tried in the probe
      and made it *worse*, not better). Full writeup in "Known gaps" above; not carried forward as an open
-     Tier 0 item.
+     backlog item.
 
 Additional Intel counters worth adding, grounded in the same real-hardware pass (`/sys/bus/
 event_source/devices/` enumerated live, not from documentation alone):
@@ -615,8 +615,8 @@ event_source/devices/` enumerated live, not from documentation alone):
 → Findings 1-4 and half of 5 (the underflow fix) shipped (see "Shipped since 4.2"); finding 5's other
 half is a documented, non-actionable perf-subsystem limitation (see "Known gaps"), not open backlog.
 The E-core raw-event gap above (not one of the original 5 findings) has also shipped — nothing remains
-open in Tier 0. This also removes the last blocker from Tier 3's "Core-class-aware topdown" item, which
-is now just the weighted-aggregate work itself.
+open from this pass. This also removes the last blocker from Tier 3's "Core-class-aware topdown" item,
+which is now just the weighted-aggregate work itself.
 
 ### Topdown deep-dive
 Advancements worth adopting, in priority order for `wspy` specifically:
@@ -645,9 +645,9 @@ Advancements worth adopting, in priority order for `wspy` specifically:
   (items 5/6 above, and 4.3's "Phase-aware topdown" entry).
 
 → Items 3-8 map to 4.2's "Hierarchical topdown schema" (shipped) and 4.3's "Phase-aware topdown,"
-"Composite attribution," and "Core-class-aware topdown" (moved to 4.3; no longer blocked on hardware
-access — real Intel/AMD hybrid hardware became available this cycle — but now blocked on Tier 0's
-Gracemont E-core raw-event item instead, see that tier above).
+"Composite attribution," and "Core-class-aware topdown" (moved to 4.3, no longer blocked at all — real
+Intel/AMD hybrid hardware became available this cycle, and the Gracemont E-core raw-event gap that
+briefly blocked it has since shipped too, see "Core-class-aware topdown" in Tier 3 above).
 
 ### Preset / Configuration / Option hierarchy deep-dive
 A three-level vocabulary for describing what wspy can be asked to do, surfaced while iterating the
@@ -712,12 +712,6 @@ motivation and per-syscall design rationale. What remains open from this track:
 ## 4.3 priorities
 Goal: use the normalized store built in 4.1 for regression detection, clustering, phase-aware
 topdown/IBS attribution, static-site publishing, and a lower-overhead tracing backend.
-
-**Tier 0 — Intel counter-grouping correctness bugs, plus one coverage gap on the same hardware.**
-All six items ever tracked here are now resolved (five shipped, one root-caused as a documented
-non-actionable perf-subsystem limitation — see "Shipped since 4.2" and "Known gaps"); nothing remains
-open in this tier. Full root-cause detail for every item lives in the Intel hybrid/counter-grouping
-deep-dive above, not repeated here.
 
 **Tier 1 — AMD IBS sampling-mode support (moved to the front of 4.3, 2026-07-20; see below):**
 
