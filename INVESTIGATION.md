@@ -228,10 +228,6 @@ status after its output directory is deleted; a `--gpu-smi --interval` CSV colum
 custom GPU checklist missing an NVIDIA checkbox; an `--capabilities` AMD sysfs device-selection marker
 bug found on a real multi-GPU host; a below-hardware-minimum AMD IBS `ldlat` default.
 
-**Dropped, not deferred:** "Deeper Phoronix Test Suite awareness in the web UI" — its article-scraping
-sub-item conflicts with Phoronix's site use policy; the rest of its motivation is covered by
-`wspy-ledger`'s existing workload-coverage tracking.
-
 ## Shipped since 4.2
 Rolling pointer list for the active 4.3 cycle (see "How to use this document" above) — folds into a
 proper "What shipped in 4.3" section once 4.3's backlog empties out, the same way this same section
@@ -347,10 +343,11 @@ kept versions) and they disagree on the count, `combo_ambiguous` flags it rather
 one. Purely static `test-definition.xml` parsing, same "deliberately not a real XML parser" convention
 `scan_phoronix_dependencies()` already established for this file — no need to run anything. Independent of
 `--unavailable-deps`; both share `resolve_profiles_dir()`'s profiles-dir resolution and may be given
-together.
+together. Feeding this count into the (shipped) `--tree` pass timeout item's `BATCH_RUN_MULTIPLIER` —
+replacing that item's blind 5.0 guess with a grounded number — remains a follow-up, not yet wired up.
 
-**openbenchmarking.org-seeded single-test-point Phoronix suites, front-end phase (item 26,
-`web/joblib.py`/`wspy-phoronix-import`/web launcher's Phoronix tab):** decomposes an already-published
+**openbenchmarking.org-seeded single-test-point Phoronix suites, front-end phase
+(`web/joblib.py`/`wspy-phoronix-import`/web launcher's Phoronix tab, Tier 7):** decomposes an already-published
 OpenBenchmarking result or an installed/exported Phoronix suite into one minimal single-test-point suite
 per (test, option-combination), materialized under `workload/phoronix/<test>/<options>/` and registered
 with `wspy-ledger --add`. Three source methods (a result URL/ID, an XML file already on disk, or an
@@ -377,10 +374,14 @@ and bundle export all hard-assume one fixed `--output-root`). A run launched tha
 real files under the normal `--output-root` (`suite=phoronix`, `benchmark=<identity>` — every existing
 route keeps working unchanged) and additionally gets symlinked at
 `workload/phoronix/<test>/<options>/runs/<run-id>/` (`joblib.link_phoronix_test_point_run()`, best-effort)
-purely so it's still browsable as a subdirectory of the test point directory. **Still open (deliberately
-deferred):** install-dependency automation — the INSTALLED flag surfaces which points still need
-`phoronix-test-suite install <test>` run by hand, but nothing installs it; and there's still no
-`wspy-run`-profile-driven equivalent of this flow (only the direct wspy/checklist Run tab path).
+purely so it's still browsable as a subdirectory of the test point directory. Because each generated
+suite is exactly one test point, its wspy capture is already segmented at the source — no post-hoc
+composite.xml/log-timestamp correlation needed for runs built this way (doesn't replace
+`wspy-phoronix-segment` for suites run the ordinary multi-test-point way, but sidesteps the problem
+entirely for anything built through this path). Longer-term, once enough `<test-name>/<options-info>`
+directories accumulate this way they form a pre-profiled library keyed on real Phoronix test identity —
+a natural feed for Tier 2's clustering/nearest-neighbor work once that lands, and a cheaper way to grow
+`wspy-ledger`'s workload coverage than hand-authoring one-off `wspy-run` invocations per benchmark.
 
 Also writes one `workload/phoronix/<test>/README.md` per bare test name (one directory level above the
 `<options>/` subdirectories, since it describes the test regardless of option combination), rendered from
@@ -865,50 +866,18 @@ this phase's own IBS sampling mode (Tier 1 above):**
     - Distinct from `wspy-queue`'s job lifecycle (whole-job scheduling/retry, not resuming partway
       through one multi-pass invocation's own internal passes) and from 4.4's much heavier config-first
       experiment system.
-25. ~~Phoronix per-test option-combination count, surfaced ahead of running~~ — **shipped**, see
-    "Shipped since 4.2". A real, recurring pain point is discovering *after* a long `batch-run` sweep
-    that a test's full option matrix takes far longer than expected. Confirmed live against a real test
-    profile (`blender-1.2.1`) that `<TestSettings>/<Option>/<Menu>/<Entry>` in `test-definition.xml`
-    names the exact shape needed (blender's own profile is a 5×2=10-combination full sweep) — purely
-    static parsing, no need to run anything, following the same "deliberately not a real XML parser"
-    convention `ledger.c`'s `scan_phoronix_dependencies()` already established for this file. Landed as
-    `wspy-ledger --phoronix-option-combos` (alongside that existing scanning logic), a new
-    annotation/warning column next to a workload's done/skipped/unsupported/needs-tool-support status.
-    Still open: feeding this into the (shipped) `--tree` pass timeout item's `BATCH_RUN_MULTIPLIER` — a
-    real combination count would replace that item's blind 5.0 guess with a grounded number.
-
-26. ~~openbenchmarking.org-seeded single-test-point Phoronix suites, building toward a semi-automated
-    profiled-workload library~~ — **shipped** (`wspy-phoronix-import`, `web/joblib.py`, the web
-    launcher's Phoronix tab), see "Shipped since 4.2". Getting the source XML (result URL/ID, file on
-    disk, or an installed suite), decomposing it into one minimal single-test-point suite per option
-    combination, materializing it under `workload/phoronix/<test>/<options>/`, registering it with
-    `wspy-ledger --add`, and (Phoronix tab inventory's "Use in Run tab") copying it into
-    `~/.phoronix-test-suite/test-suites/local/<identity>/` and prefilling+launching a real wspy run
-    against it (symlinked back at `<test-name>/<options-info>/runs/<run-id>/` for browsing, real files
-    staying under the normal `--output-root` so the report page/`/compare`/bundle export needed no
-    changes) are all done, both as a CLI and a web UI tab. Still open:
-    - Install-dependency automation — the front end's per-test `installed` flag (`phoronix-test-suite
-      info`) surfaces which points still need `phoronix-test-suite install <test>` (or accepting the
-      install prompt) run by hand, but nothing installs it automatically.
-    - A `wspy-run`-profile-driven equivalent (a saved profile or `-c` file, run non-interactively/
-      scriptable/batchable across many test points at once) — only the direct wspy/checklist Run tab
-      path (one test point, launched by a human clicking Run) exists today.
-    - Because each generated suite is exactly one test point, its wspy capture is *already* segmented at
-      the source — no post-hoc composite.xml/log-timestamp correlation needed for runs built this way.
-      Doesn't replace item 22 (`wspy-phoronix-segment`) for suites run the ordinary multi-test-point way,
-      but sidesteps the problem entirely for anything built through this path.
-    - Longer-term payoff (point 5 of the originating use case): once enough `<test-name>/<options-info>`
-      directories accumulate this way, they form a pre-profiled library keyed on real Phoronix test
-      identity — a natural feed for Tier 2's clustering/nearest-neighbor work once that lands, and a
-      cheaper way to grow `wspy-ledger`'s workload coverage than hand-authoring one-off `wspy-run`
-      invocations per benchmark.
+25. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
+    (`web/joblib.py`/`wspy-phoronix-import`/web launcher's Phoronix tab; see "Shipped since 4.2" for
+    what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
+    across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
+    point, launched by a human clicking Run) exists today.
 
 **Tier 8 — testing:**
 
-27. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
+26. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
     guardrails — needs deterministic micro-workloads and 4.1's normalized store plus 4.2's
     stats/confidence infrastructure.
-28. Contributor guide for adding a collector/metric/schema bump safely.
+27. Contributor guide for adding a collector/metric/schema bump safely.
 
 ## 4.4 priorities
 Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
