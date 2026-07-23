@@ -35,6 +35,13 @@ web/server.py's Phoronix tab -- this script is a thin CLI wrapper, same
 "thin client, no duplicated logic" convention as wspy-bundle/wspy-queue/
 wspy-sweep.
 
+Also writes one README.md per bare test name (workload/phoronix/<test>/README.md,
+above the per-option-combination subdirectories) with the test's Description and a few
+other high-level fields from `phoronix-test-suite info <test>`, unless
+--no-check-installed skipped that lookup or a README already exists there
+(pre-existing READMEs are left untouched, same idempotent convention as the
+suite-definition.xml files).
+
 Deliberately stops at materializing suite files and registering them with
 `wspy-ledger --add` -- it does not copy anything into
 ~/.phoronix-test-suite/test-suites/local/, does not run anything, and does
@@ -187,6 +194,16 @@ def main():
         print(f"wspy-phoronix-import: {mode} {len(result['points'])} test point(s) from "
               f"{source['source_kind']} ({source['source_ref']}) into {args.dest}/", file=sys.stderr)
         print_table(result["points"])
+        readmes = result.get("readmes", [])
+        written = [r for r in readmes if r["status"] in ("created", "would-create")]
+        if written:
+            verb = "would write" if args.dry_run else "wrote"
+            print(f"wspy-phoronix-import: {verb} {len(written)} README.md ({', '.join(r['bare_name'] for r in written)})",
+                  file=sys.stderr)
+        skipped = [r for r in readmes if r["status"] == "skipped"]
+        if skipped:
+            print(f"wspy-phoronix-import: no README for {len(skipped)} test(s) "
+                  f"(--no-check-installed or `phoronix-test-suite info` failed)", file=sys.stderr)
         failed_ledger = [p for p in result["points"]
                           if p.get("ledger") and p["ledger"].get("exit_code") != 0]
         if failed_ledger:
