@@ -792,8 +792,8 @@ class ParsePhoronixXmlTestPointsTest(unittest.TestCase):
 </PhoronixTestSuite>"""
         points = joblib.parse_phoronix_xml_test_points(xml)
         self.assertEqual(points, [
-            {"test_id": "pts/compress-7zip", "arguments": ""},
-            {"test_id": "pts/blender-1.2.1", "arguments": "quad-mesh"},
+            {"test_id": "pts/compress-7zip", "arguments": "", "description": ""},
+            {"test_id": "pts/blender-1.2.1", "arguments": "quad-mesh", "description": ""},
         ])
 
     def test_result_composite_shape(self):
@@ -815,8 +815,30 @@ class ParsePhoronixXmlTestPointsTest(unittest.TestCase):
 </PhoronixTestSuite>"""
         points = joblib.parse_phoronix_xml_test_points(xml)
         self.assertEqual(points, [
-            {"test_id": "system/selenium-1.0.47", "arguments": "pspdfkit Firefox"},
-            {"test_id": "pts/coremark-1.0.1", "arguments": ""},
+            {"test_id": "system/selenium-1.0.47", "arguments": "pspdfkit Firefox", "description": ""},
+            {"test_id": "pts/coremark-1.0.1", "arguments": "", "description": ""},
+        ])
+
+    def test_captures_description_alongside_arguments(self):
+        # Regression: a real PTS install silently batch-runs *every* option
+        # in a test's menu instead of just the pinned one when a custom
+        # suite's <Execute> has <Arguments> but no <Description> (confirmed
+        # live 2026-07-23 -- see materialize_phoronix_test_point()'s own
+        # comment). The real composite XML this is trimmed from always
+        # pairs the two; parsing must not drop the Description half.
+        xml = b"""<?xml version="1.0"?>
+<PhoronixTestSuite>
+  <Result>
+    <Identifier>pts/build-linux-kernel-1.17.1</Identifier>
+    <Arguments>defconfig</Arguments>
+    <Description>Build: defconfig</Description>
+    <Data><Entry><Identifier>Ryzen 7 7700X</Identifier><Value>119.058</Value></Entry></Data>
+  </Result>
+</PhoronixTestSuite>"""
+        points = joblib.parse_phoronix_xml_test_points(xml)
+        self.assertEqual(points, [
+            {"test_id": "pts/build-linux-kernel-1.17.1", "arguments": "defconfig",
+             "description": "Build: defconfig"},
         ])
 
     def test_dedupes_identical_pairs_preserving_order(self):
@@ -923,14 +945,41 @@ class MaterializePhoronixTestPointTest(unittest.TestCase):
             execute = root.find("Execute")
             self.assertEqual(execute.find("Test").text, "pts/blender-1.2.1")
             self.assertEqual(execute.find("Arguments").text, "quad-mesh")
+            # Falls back to the arguments string itself since this point
+            # carried no captured description -- see the "no options passed
+            # but expecting them" regression test below for why this
+            # element must never be empty/missing when Arguments is set.
+            self.assertEqual(execute.find("Description").text, "quad-mesh")
 
-    def test_no_arguments_omits_arguments_element(self):
+    def test_no_arguments_omits_arguments_and_description_elements(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             point = {"test_id": "pts/compress-7zip", "arguments": ""}
             joblib.materialize_phoronix_test_point(point, tmpdir, "file", "/tmp/src.xml")
             import xml.etree.ElementTree as ET
             root = ET.parse(os.path.join(tmpdir, "compress-7zip", "default", "suite-definition.xml")).getroot()
             self.assertIsNone(root.find("Execute/Arguments"))
+            self.assertIsNone(root.find("Execute/Description"))
+
+    def test_real_description_is_preferred_over_arguments_fallback(self):
+        # Regression: a real PTS install (pts_test_suite.php's suite
+        # parser, confirmed live 2026-07-23) silently batch-runs *every*
+        # option in a test's menu -- ignoring <Arguments> altogether --
+        # whenever a test has configurable options and its <Execute> block
+        # has no non-empty <Description>. A build-linux-kernel test point
+        # pinned to "defconfig" ran both "defconfig" and "allmodconfig"
+        # until this element was added. materialize_phoronix_test_point()
+        # must carry the real captured description through when present,
+        # not just synthesize one from arguments.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            point = {"test_id": "pts/build-linux-kernel-1.17.1", "arguments": "defconfig",
+                     "description": "Build: defconfig"}
+            info = joblib.materialize_phoronix_test_point(point, tmpdir, "file", "/tmp/src.xml")
+            import xml.etree.ElementTree as ET
+            root = ET.parse(os.path.join(info["dir"], "suite-definition.xml")).getroot()
+            self.assertEqual(root.find("Execute/Description").text, "Build: defconfig")
+            with open(os.path.join(info["dir"], "source.json")) as f:
+                source = json.load(f)
+            self.assertEqual(source["description"], "Build: defconfig")
 
     def test_reruns_report_exists_without_overwriting(self):
         with tempfile.TemporaryDirectory() as tmpdir:
