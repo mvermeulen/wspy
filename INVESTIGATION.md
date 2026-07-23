@@ -382,6 +382,14 @@ deferred):** install-dependency automation — the INSTALLED flag surfaces which
 `phoronix-test-suite install <test>` run by hand, but nothing installs it; and there's still no
 `wspy-run`-profile-driven equivalent of this flow (only the direct wspy/checklist Run tab path).
 
+Also writes one `workload/phoronix/<test>/README.md` per bare test name (one directory level above the
+`<options>/` subdirectories, since it describes the test regardless of option combination), rendered from
+the same `phoronix-test-suite info <test_id>` call `installed` already used (`fetch_phoronix_info_fields()`/
+`write_phoronix_test_readme()`, `joblib.py`) — the test's Description plus a handful of other high-level
+fields (type, license, supported platforms, project/OpenBenchmarking.org links). Same idempotent/additive
+convention as `suite-definition.xml`: an existing README is left untouched on re-import. Skipped (not an
+error) when `--no-check-installed` disabled the `info` lookup or the lookup itself failed.
+
 **`cache_counter_group()`'s "instructions" entry opened at the wrong PMU type (`topdown.c`) —
 vendor-agnostic, not Intel-specific, though surfaced by the same real Coremark run above.** The
 synthetic `"instructions"` entry `cache_events[]` carries alongside its `PERF_TYPE_HW_CACHE` rows (a

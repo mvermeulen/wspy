@@ -4369,7 +4369,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": result["error"]})
             return
         self._send_json(200, {"source_kind": source["source_kind"], "source_ref": source["source_ref"],
-                               "dest": dest, "dry_run": dry_run, "points": result["points"]})
+                               "dest": dest, "dry_run": dry_run, "points": result["points"],
+                               "readmes": result.get("readmes", [])})
 
     def _phoronix_use_in_run(self, cfg, body):
         """Backs the Phoronix tab inventory's "Use in Run tab" button:

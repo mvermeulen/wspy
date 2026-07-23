@@ -934,6 +934,46 @@ class MaterializePhoronixTestPointTest(unittest.TestCase):
                 self.assertEqual(f.read(), original_bytes)
 
 
+class WritePhoronixTestReadmeTest(unittest.TestCase):
+    def test_creates_readme_with_description_and_details(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fields = {"Description": "This is a test of 7-Zip compression.",
+                      "Test Type": "Processor", "License Type": "Free",
+                      "Project Web-Site": "https://www.7-zip.org/"}
+            result = joblib.write_phoronix_test_readme("compress-7zip", tmpdir, "pts/compress-7zip",
+                                                         fields, "/tmp/src.xml")
+            self.assertEqual(result["status"], "created")
+            path = os.path.join(tmpdir, "compress-7zip", "README.md")
+            self.assertEqual(result["path"], path)
+            with open(path) as f:
+                text = f.read()
+            self.assertIn("This is a test of 7-Zip compression.", text)
+            self.assertIn("**Test Type:** Processor", text)
+            self.assertIn("**License Type:** Free", text)
+            self.assertIn("pts/compress-7zip", text)
+
+    def test_reruns_report_exists_without_overwriting(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fields = {"Description": "Original description."}
+            first = joblib.write_phoronix_test_readme("compress-7zip", tmpdir, "pts/compress-7zip",
+                                                        fields, "/tmp/src.xml")
+            with open(first["path"]) as f:
+                original_text = f.read()
+            second = joblib.write_phoronix_test_readme("compress-7zip", tmpdir, "pts/compress-7zip",
+                                                         {"Description": "Different description."},
+                                                         "/tmp/other.xml")
+            self.assertEqual(second["status"], "exists")
+            with open(first["path"]) as f:
+                self.assertEqual(f.read(), original_text)
+
+    def test_skipped_when_fields_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = joblib.write_phoronix_test_readme("compress-7zip", tmpdir, "pts/compress-7zip",
+                                                         None, "/tmp/src.xml")
+            self.assertEqual(result["status"], "skipped")
+            self.assertFalse(os.path.isfile(result["path"]))
+
+
 class ImportPhoronixTestPointsTest(unittest.TestCase):
     """Exercises the top-level orchestration with a fake wspy-ledger shell
     script (mirroring EstimatePhoronixWorkloadSecondsTest's fake-phoronix-
@@ -1009,6 +1049,64 @@ class ImportPhoronixTestPointsTest(unittest.TestCase):
             points = joblib.list_materialized_phoronix_test_points(dest)
             self.assertEqual(len(points), 1)
             self.assertIs(points[0]["installed"], True)
+
+    def test_no_check_installed_skips_readmes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            result = joblib.import_phoronix_test_points(
+                self.SUITE_XML, dest, "file", "/tmp/src.xml", check_installed=False, dry_run=False)
+            self.assertEqual(len(result["readmes"]), 2)
+            self.assertTrue(all(r["status"] == "skipped" for r in result["readmes"]))
+            self.assertFalse(os.path.isfile(os.path.join(dest, "compress-7zip", "README.md")))
+
+    def test_dry_run_reports_readme_skipped_without_check_installed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            result = joblib.import_phoronix_test_points(
+                self.SUITE_XML, dest, "file", "/tmp/src.xml", check_installed=False, dry_run=True)
+            self.assertEqual(len(result["readmes"]), 2)
+            self.assertTrue(all(r["status"] == "skipped" for r in result["readmes"]))
+            self.assertFalse(os.path.isdir(dest))
+
+    def test_dry_run_reports_would_create_readme(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            fake_bin = self._make_fake_phoronix_info(tmpdir, "A compression benchmark.")
+            result = joblib.import_phoronix_test_points(
+                self.SUITE_XML, dest, "file", "/tmp/src.xml", phoronix_bin=fake_bin,
+                check_installed=True, dry_run=True)
+            self.assertEqual(len(result["readmes"]), 2)
+            self.assertTrue(all(r["status"] == "would-create" for r in result["readmes"]))
+            self.assertFalse(os.path.isdir(dest))
+
+    def _make_fake_phoronix_info(self, tmpdir, description):
+        path = os.path.join(tmpdir, "fake-phoronix-test-suite")
+        with open(path, "w") as f:
+            f.write("#!/bin/sh\n"
+                    'if [ "$1" != "info" ]; then exit 1; fi\n'
+                    f'printf "Test Installed: No\\nDescription: {description}\\n"\n'
+                    "exit 0\n")
+        os.chmod(path, 0o755)
+        return path
+
+    def test_writes_one_readme_per_bare_test_name(self):
+        xml = b"""<?xml version="1.0"?>
+<PhoronixTestSuite>
+  <Execute><Test>pts/blender-1.2.1</Test><Arguments>quad-mesh</Arguments></Execute>
+  <Execute><Test>pts/blender-1.2.1</Test><Arguments>bmw27</Arguments></Execute>
+</PhoronixTestSuite>"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            fake_bin = self._make_fake_phoronix_info(tmpdir, "Blender rendering benchmark.")
+            result = joblib.import_phoronix_test_points(
+                xml, dest, "file", "/tmp/src.xml", phoronix_bin=fake_bin,
+                check_installed=True, add_to_ledger=False)
+            self.assertEqual(len(result["readmes"]), 1)
+            self.assertEqual(result["readmes"][0]["status"], "created")
+            readme_path = os.path.join(dest, "blender", "README.md")
+            self.assertEqual(result["readmes"][0]["path"], readme_path)
+            with open(readme_path) as f:
+                self.assertIn("Blender rendering benchmark.", f.read())
 
 
 class ListMaterializedPhoronixTestPointsTest(unittest.TestCase):
