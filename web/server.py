@@ -1809,6 +1809,8 @@ def render_run_tab(prefill, cfg):
      "(custom)" to compose configurations directly instead. Each enabled configuration below becomes
      its own separate <code>wspy</code> invocation into the same run directory.</p>
   <form id="run-form">
+    <input type="hidden" id="phoronix_test_point" name="phoronix_test_point"
+           value="{html.escape(prefill.get('phoronix_test_point', ''))}">
     <label>Workload command
       <input type="text" id="workload" name="workload" value="{w_workload}"
              placeholder="e.g. sleep 5" required>
@@ -2193,6 +2195,95 @@ def render_discovery_tab():
 """
 
 
+def render_phoronix_inventory_rows(dest_root):
+    rows = []
+    for p in joblib.list_materialized_phoronix_test_points(dest_root):
+        if p["runs"]:
+            runs_html = ", ".join(
+                f'<a href="/report/{html.escape(r["suite"])}/{html.escape(r["benchmark"])}/'
+                f'{html.escape(r["run_id"])}">{html.escape(r["run_id"])}</a>'
+                for r in p["runs"])
+        else:
+            runs_html = '<span class="muted">none yet</span>'
+        installed_text = {True: "yes", False: "no"}.get(p.get("installed"), "?")
+        rows.append(
+            f'<tr><td>{html.escape(p["bare_name"])}</td><td>{html.escape(p["options_slug"])}</td>'
+            f'<td>{installed_text}</td><td>{runs_html}</td>'
+            f'<td><button type="button" class="phoronix-use-in-run" '
+            f'data-dir="{html.escape(p["dir"])}">Use in Run tab</button></td></tr>'
+        )
+    return "".join(rows)
+
+
+def render_phoronix_tab(cfg):
+    dest_root = os.path.join(REPO_ROOT, "workload", "phoronix")
+    installed_options = "".join(
+        f'<option value="{html.escape(name)}">{html.escape(name)}</option>'
+        for name in joblib.list_installed_phoronix_suites()
+    ) or '<option value="" disabled selected>(none found)</option>'
+    inventory_rows = render_phoronix_inventory_rows(dest_root)
+    inventory_html = (
+        f'<table class="reports" id="phoronix-inventory-table">'
+        f'<thead><tr><th>Test</th><th>Options</th><th>Installed</th><th>Runs</th><th></th></tr></thead>'
+        f'<tbody id="phoronix-inventory-body">{inventory_rows}</tbody></table>'
+    ) if inventory_rows else '<p class="muted">No test points materialized yet.</p>'
+    return f"""
+<section class="panel">
+  <h1>Phoronix</h1>
+  <p class="config-label">Decomposes an already-published Phoronix result or suite into one
+     minimal single-test-point suite per (test, option-combination) &mdash; materialized under
+     <code>workload/phoronix/&lt;test&gt;/&lt;options&gt;/</code> and registered with
+     <code>wspy-ledger --add</code> (INVESTIGATION.md item 26's front-end phase). The INSTALLED
+     column tells you which points still need <code>phoronix-test-suite install</code> run by
+     hand &mdash; nothing here installs or runs anything on its own, except that "Use in Run tab"
+     copies a test point's suite into <code>~/.phoronix-test-suite/test-suites/local/</code> so the
+     Run tab's prefilled command is immediately runnable.</p>
+
+  <h2>Inventory</h2>
+  {inventory_html}
+
+  <h2>Materialize new test points</h2>
+  <div class="chips">
+    <label class="chip"><input type="radio" name="phoronix-source" value="result" checked> OpenBenchmarking result</label>
+    <label class="chip"><input type="radio" name="phoronix-source" value="file"> XML file on disk</label>
+    <label class="chip"><input type="radio" name="phoronix-source" value="installed"> Installed suite</label>
+  </div>
+
+  <label id="phoronix-result-row">Result URL or ID
+    <input type="text" id="phoronix-result" placeholder="https://openbenchmarking.org/result/2607160-PTS-7700X3D886">
+  </label>
+  <label id="phoronix-file-row" hidden>XML file path
+    <input type="text" id="phoronix-file" placeholder="/home/you/Downloads/result-suite.xml">
+  </label>
+  <label id="phoronix-installed-row" hidden>Installed suite
+    <select id="phoronix-installed">{installed_options}</select>
+  </label>
+
+  <label>Destination root
+    <input type="text" id="phoronix-dest" value="{html.escape(dest_root)}">
+  </label>
+  <label>wspy-ledger list path (blank = &lt;destination&gt;/backlog.txt)
+    <input type="text" id="phoronix-ledger-list" placeholder="workload/phoronix/backlog.txt">
+  </label>
+  <div class="chips">
+    <label class="chip"><input type="checkbox" id="phoronix-dry-run" checked> Dry run</label>
+    <label class="chip"><input type="checkbox" id="phoronix-no-ledger"> Skip wspy-ledger --add</label>
+    <label class="chip"><input type="checkbox" id="phoronix-no-check-installed"> Skip installed check (faster)</label>
+  </div>
+  <button type="button" id="phoronix-run">Materialize</button>
+  <pre id="phoronix-cmdline" class="muted" hidden></pre>
+  <p id="phoronix-error" class="muted" hidden></p>
+  <div id="phoronix-results" hidden>
+    <table class="reports" id="phoronix-table">
+      <thead><tr><th>Test</th><th>Options</th><th>Installed</th><th>Status</th><th>Ledger</th></tr></thead>
+      <tbody id="phoronix-table-body"></tbody>
+    </table>
+  </div>
+  <p id="phoronix-use-in-run-error" class="muted" hidden></p>
+</section>
+"""
+
+
 def render_index(cfg, prefill):
     output_root = cfg["output_root"]
     reports = discover_reports(output_root)
@@ -2237,11 +2328,13 @@ def render_index(cfg, prefill):
   {tab_btn("validate", "Validate")}
   {tab_btn("store", "Store &amp; Summary")}
   {tab_btn("discovery", "Discovery")}
+  {tab_btn("phoronix", "Phoronix")}
 </nav>
 <div class="tab-panel" id="tab-run"{tab_hidden("run")}>{render_run_tab(prefill, cfg)}</div>
 <div class="tab-panel" id="tab-validate"{tab_hidden("validate")}>{render_validate_tab(cfg, prefill)}</div>
 <div class="tab-panel" id="tab-store"{tab_hidden("store")}>{render_store_tab(cfg)}</div>
 <div class="tab-panel" id="tab-discovery"{tab_hidden("discovery")}>{render_discovery_tab()}</div>
+<div class="tab-panel" id="tab-phoronix"{tab_hidden("phoronix")}>{render_phoronix_tab(cfg)}</div>
 <section class="panel">
   <h2>Recent reports</h2>
   {reports_html}
@@ -3195,7 +3288,8 @@ class Handler(BaseHTTPRequestHandler):
             prefill = {}
             for key, aliases in (("workload", ("workload", "profile_workload")),
                                   ("suite", ("suite", "profile_suite")),
-                                  ("benchmark", ("benchmark", "profile_benchmark"))):
+                                  ("benchmark", ("benchmark", "profile_benchmark")),
+                                  ("phoronix_test_point", ("phoronix_test_point",))):
                 for alias in aliases:
                     if alias in qs:
                         prefill[key] = qs[alias][0]
@@ -3449,6 +3543,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/discovery/summary": self._discovery_summary,
             "/api/discovery/trace": self._discovery_trace,
             "/api/discovery/ollama-models": self._discovery_ollama_models,
+            "/api/phoronix/materialize": self._phoronix_materialize,
+            "/api/phoronix/use-in-run": self._phoronix_use_in_run,
         }
         handler = POST_HANDLERS.get(parsed.path)
         if handler is None:
@@ -3681,6 +3777,25 @@ class Handler(BaseHTTPRequestHandler):
                                     "cpuset=<c0,c1,...>"}
         return spec, None
 
+    @staticmethod
+    def _link_phoronix_test_point(body, rundir, run_id):
+        """Shared by _start_run()/_start_profile_run()/_start_custom_run():
+        if this run was started via the Phoronix tab's "Use in Run tab"
+        (body["phoronix_test_point"] set, either by that button's own JS or
+        by a bookmarked prefill URL -- see do_GET("/")), re-validates the
+        path server-side (never trust a client-supplied path blindly, even
+        one this same server handed out a moment ago) and symlinks the run
+        back under that test point directory. Best-effort: a missing/
+        invalid/deleted test point just means no symlink, never a failed
+        run -- see joblib.link_phoronix_test_point_run()'s own docstring."""
+        raw = (body.get("phoronix_test_point") or "").strip()
+        if not raw:
+            return
+        dest = os.path.join(REPO_ROOT, "workload", "phoronix")
+        test_point_dir = joblib.resolve_phoronix_test_point_dir(dest, raw)
+        if test_point_dir:
+            joblib.link_phoronix_test_point_run(test_point_dir, run_id, rundir)
+
     def _start_run(self, cfg, body):
         workload_argv, suite, benchmark, run_id, err = self._parse_workload_and_ids(body)
         if err:
@@ -3692,6 +3807,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(409, {"error": f"run directory already exists: {rundir}"})
             return
         os.makedirs(rundir)
+        self._link_phoronix_test_point(body, rundir, run_id)
 
         key = run_key(suite, benchmark, run_id)
         state = RunState(rundir)
@@ -3741,6 +3857,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(409, {"error": f"run directory already exists: {rundir}"})
             return
         os.makedirs(rundir)
+        self._link_phoronix_test_point(body, rundir, run_id)
 
         key = run_key(suite, benchmark, run_id)
         state = RunState(rundir)
@@ -3801,6 +3918,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         os.makedirs(rundir)
+        self._link_phoronix_test_point(body, rundir, run_id)
         key = run_key(suite, benchmark, run_id)
         state = RunState(rundir)
         with RUNS_LOCK:
@@ -4190,6 +4308,100 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"command": shell_preview(argv), "exit_code": rc,
                                "output": output, "timed_out": timed_out})
 
+    def _phoronix_materialize(self, cfg, body):
+        """Backs the Phoronix tab's "Materialize" button: resolves whichever
+        of result/file/installed_suite the tab's source radio selected, then
+        calls joblib.import_phoronix_test_points() -- the exact same
+        function wspy-phoronix-import's CLI calls -- in-process (there's no
+        external-binary dependency the way wspy --capabilities has, so this
+        matches execute_profile_run()'s "call the shared function directly"
+        pattern rather than run_sync()-around-a-real-binary). Source
+        resolution mirrors wspy-phoronix-import's own resolve_source()."""
+        source_kind_req = (body.get("source") or "").strip()
+        dest = (body.get("dest") or "").strip() or os.path.join(REPO_ROOT, "workload/phoronix")
+        ledger_list = (body.get("ledger_list") or "").strip() or None
+        dry_run = bool(body.get("dry_run"))
+        add_to_ledger = not body.get("no_ledger")
+        check_installed = not body.get("no_check_installed")
+
+        if source_kind_req == "result":
+            result_ref = (body.get("result") or "").strip()
+            if not result_ref:
+                self._send_json(400, {"error": "a result URL or ID is required"})
+                return
+            source = joblib.fetch_openbenchmarking_suite_xml(result_ref, phoronix_bin=cfg["phoronix_bin"],
+                                                               cwd=REPO_ROOT)
+        elif source_kind_req == "file":
+            path = (body.get("file") or "").strip()
+            if not path:
+                self._send_json(400, {"error": "an XML file path is required"})
+                return
+            if not os.path.isfile(path):
+                self._send_json(400, {"error": f"no such file: {path}"})
+                return
+            with open(path, "rb") as f:
+                source = {"xml": f.read(), "source_kind": "file", "source_ref": os.path.abspath(path)}
+        elif source_kind_req == "installed":
+            name = (body.get("installed_suite") or "").strip()
+            if not name:
+                self._send_json(400, {"error": "an installed suite name is required"})
+                return
+            path, matched_name = joblib.resolve_installed_phoronix_suite(name)
+            if not path:
+                self._send_json(400, {"error": f"no installed suite matching {name!r}"})
+                return
+            with open(path, "rb") as f:
+                source = {"xml": f.read(), "source_kind": "installed-suite", "source_ref": matched_name}
+        else:
+            self._send_json(400, {"error": "source must be one of result/file/installed"})
+            return
+
+        if "error" in source:
+            self._send_json(400, {"error": source["error"]})
+            return
+
+        result = joblib.import_phoronix_test_points(
+            source["xml"], dest, source["source_kind"], source["source_ref"],
+            phoronix_bin=cfg["phoronix_bin"], ledger_bin=cfg["wspy_ledger_bin"],
+            ledger_list_path=ledger_list, cwd=REPO_ROOT, dry_run=dry_run,
+            check_installed=check_installed, add_to_ledger=add_to_ledger)
+        if result["error"]:
+            self._send_json(400, {"error": result["error"]})
+            return
+        self._send_json(200, {"source_kind": source["source_kind"], "source_ref": source["source_ref"],
+                               "dest": dest, "dry_run": dry_run, "points": result["points"]})
+
+    def _phoronix_use_in_run(self, cfg, body):
+        """Backs the Phoronix tab inventory's "Use in Run tab" button:
+        copies the given test point's suite-definition.xml into
+        ~/.phoronix-test-suite/test-suites/local/<identity>/ (so the
+        returned workload command is immediately runnable -- see
+        joblib.copy_phoronix_test_point_to_local_suite()'s own docstring)
+        and returns the workload/suite/benchmark the Run tab should
+        prefill, plus phoronix_test_point (echoed back into the Run tab's
+        hidden field) so a subsequent /api/run-profile or /api/run-custom
+        can symlink its run directory back under this test point via
+        joblib.link_phoronix_test_point_run() -- see that function's own
+        call sites below."""
+        dest = os.path.join(REPO_ROOT, "workload", "phoronix")
+        test_point_dir = joblib.resolve_phoronix_test_point_dir(dest, (body.get("dir") or "").strip())
+        if not test_point_dir:
+            self._send_json(400, {"error": "not a materialized test point directory"})
+            return
+        # bare_name/options_slug/identity are recomputed from the path
+        # components rather than trusted from the request body, matching
+        # resolve_phoronix_test_point_dir()'s own "don't trust client-
+        # supplied identity strings" posture.
+        options_slug = os.path.basename(test_point_dir)
+        bare_name = os.path.basename(os.path.dirname(test_point_dir))
+        identity = f"{bare_name}-{options_slug}"
+        joblib.copy_phoronix_test_point_to_local_suite(test_point_dir, identity)
+        self._send_json(200, {
+            "workload": f"phoronix-test-suite batch-run local/{identity}",
+            "suite": "phoronix", "benchmark": identity,
+            "phoronix_test_point": test_point_dir,
+        })
+
     def _discovery_ollama_models(self, cfg, body):
         """Backs the report page's "Discover installed models" button
         (render_analyze_card()): runs `wspy-analyze --list-models`, which
@@ -4352,6 +4564,10 @@ def main():
                      help="path to the wspy-analyze script (report page's 'AI narrative "
                           "analysis' button; requires a locally running Ollama daemon; "
                           "default: repo root's ./wspy-analyze)")
+    ap.add_argument("--wspy-ledger", default=os.path.join(REPO_ROOT, "wspy-ledger"),
+                     help="path to the wspy-ledger binary (Phoronix tab's 'materialize' action "
+                          "registers each new test point with this via --add; default: repo "
+                          "root's ./wspy-ledger)")
     ap.add_argument("--run-index-file",
                      help="shared --run-index file every launched run appends to when the "
                           "'record run index' toggle chip is on (default: <output-root>/run_index.jsonl)")
@@ -4388,7 +4604,8 @@ def main():
         print(f"warning: wspy-run not found at {args.wspy_run}", file=sys.stderr)
     for label, path in (("wspy-validate", args.wspy_validate), ("wspy-store", args.wspy_store),
                          ("wspy-summary", args.wspy_summary),
-                         ("wspy-core-report", args.wspy_core_report)):
+                         ("wspy-core-report", args.wspy_core_report),
+                         ("wspy-ledger", args.wspy_ledger)):
         if not os.path.isfile(path):
             print(f"warning: {label} not found at {path} (the Validate/Store & Summary tab "
                   f"will fail until it's built -- see CLAUDE.md's Build & Test section)",
@@ -4417,6 +4634,7 @@ def main():
         "wspy_summary_bin": os.path.abspath(args.wspy_summary),
         "wspy_core_report_bin": os.path.abspath(args.wspy_core_report),
         "wspy_analyze_bin": os.path.abspath(args.wspy_analyze),
+        "wspy_ledger_bin": os.path.abspath(args.wspy_ledger),
         "run_index_file": run_index_file,
         "store_db": store_db,
         "jobs_dir": os.path.abspath(args.jobs_dir),

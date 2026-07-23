@@ -349,6 +349,39 @@ one. Purely static `test-definition.xml` parsing, same "deliberately not a real 
 `--unavailable-deps`; both share `resolve_profiles_dir()`'s profiles-dir resolution and may be given
 together.
 
+**openbenchmarking.org-seeded single-test-point Phoronix suites, front-end phase (item 26,
+`web/joblib.py`/`wspy-phoronix-import`/web launcher's Phoronix tab):** decomposes an already-published
+OpenBenchmarking result or an installed/exported Phoronix suite into one minimal single-test-point suite
+per (test, option-combination), materialized under `workload/phoronix/<test>/<options>/` and registered
+with `wspy-ledger --add`. Three source methods (a result URL/ID, an XML file already on disk, or an
+installed PTS suite under `~/.phoronix-test-suite/test-suites/`) all reduce to the same
+`(test_id, arguments)` pair list, parsed from either of the two real Phoronix XML shapes (suite-definition
+`<Execute>` elements or composite/result-file `<Result>` elements) — verified against real files on a live
+PTS install, including a real fetched OpenBenchmarking result. Idempotent/additive re-runs (an existing
+`<test>/<options>/` directory is left untouched and reported `exists`), and a per-test `installed` flag
+(`phoronix-test-suite info`) surfaces which materialized points still need `phoronix-test-suite install`
+run by hand. The directory-name slug for a long `Arguments` string (a common failure mode: two option
+combinations sharing a long prefix, e.g. a model file path, differing only near the end) gets a short
+content hash appended whenever it would otherwise be truncated, rather than silently truncating and
+colliding two different combinations into one slug — confirmed live against a real OpenVINO result
+where every one of 12 model/precision combinations' `-hint throughput`/`-hint latency` pair collided
+under a plain 60-character truncation before this fix.
+
+The Phoronix tab also shows a live inventory of already-materialized test points
+(`joblib.list_materialized_phoronix_test_points()`), each with a "Use in Run tab" button that copies its
+suite into `~/.phoronix-test-suite/test-suites/local/<identity>/` (`joblib.
+copy_phoronix_test_point_to_local_suite()`) and prefills the Run tab's workload/suite/benchmark fields —
+closing most of the gap to the "runner script" half this item originally deferred, without the invasive
+change a literal `--output-root` override would have needed (the web launcher's report page, `/compare`,
+and bundle export all hard-assume one fixed `--output-root`). A run launched that way still writes its
+real files under the normal `--output-root` (`suite=phoronix`, `benchmark=<identity>` — every existing
+route keeps working unchanged) and additionally gets symlinked at
+`workload/phoronix/<test>/<options>/runs/<run-id>/` (`joblib.link_phoronix_test_point_run()`, best-effort)
+purely so it's still browsable as a subdirectory of the test point directory. **Still open (deliberately
+deferred):** install-dependency automation — the INSTALLED flag surfaces which points still need
+`phoronix-test-suite install <test>` run by hand, but nothing installs it; and there's still no
+`wspy-run`-profile-driven equivalent of this flow (only the direct wspy/checklist Run tab path).
+
 **`cache_counter_group()`'s "instructions" entry opened at the wrong PMU type (`topdown.c`) —
 vendor-agnostic, not Intel-specific, though surfaced by the same real Coremark run above.** The
 synthetic `"instructions"` entry `cache_events[]` carries alongside its `PERF_TYPE_HW_CACHE` rows (a
@@ -823,27 +856,22 @@ this phase's own IBS sampling mode (Tier 1 above):**
     Still open: feeding this into the (shipped) `--tree` pass timeout item's `BATCH_RUN_MULTIPLIER` — a
     real combination count would replace that item's blind 5.0 guess with a grounded number.
 
-26. openbenchmarking.org-seeded single-test-point Phoronix suites, building toward a semi-automated
-    profiled-workload library. openbenchmarking.org result pages (e.g. a `pts/*`-suite run someone else
-    already published) carry an "Export Benchmark Data: Result File to Test Suite (XML)" link — a
-    documented export feature, distinct from the HTML/article scraping this tier's already-"Dropped, not
-    deferred" item ruled out (see "What shipped in 4.2"'s dropped-items note); no site-policy conflict
-    here since this consumes a result's own structured export, not scraped page content. Scope:
-    - Decompose that exported test-suite XML into one minimal single-test-point PTS suite per option
-      combination (e.g. `pts/build-linux-kernel-1.18.0` at a specific `defconfig`), saved as
-      `workload/phoronix/<test-name>/<options-info>/` — reusing the same `<TestSettings>/<Option>/
-      <Menu>/<Entry>` shape item 25 above already identified as the right static-parse target in
-      `test-definition.xml`, just applied to build suites instead of just counting combinations.
-    - A runner script copies each single-test-point suite into `~/.phoronix-test-suite/test-suites/
-      local/`, runs it under a saved `wspy-run` configuration (profile or `-c` file), and writes the
-      wspy output back into that same `workload/phoronix/<test-name>/<options-info>/` directory —
-      co-locating the PTS suite definition with its own wspy profile(s) instead of the current
-      `workload/phoronix` layout's single flat `run_test.sh` covering every test by name at invocation
-      time.
-    - Reuse check before running: skip regenerating/rerunning a `<test-name>/<options-info>` combination
-      that's already present, so building up the library is additive across sessions rather than
-      redoing prior work — same spirit as item 24's "skip re-running only if already complete" resume
-      check, but keyed on test identity rather than a single run's own pass list.
+26. ~~openbenchmarking.org-seeded single-test-point Phoronix suites, building toward a semi-automated
+    profiled-workload library~~ — **shipped** (`wspy-phoronix-import`, `web/joblib.py`, the web
+    launcher's Phoronix tab), see "Shipped since 4.2". Getting the source XML (result URL/ID, file on
+    disk, or an installed suite), decomposing it into one minimal single-test-point suite per option
+    combination, materializing it under `workload/phoronix/<test>/<options>/`, registering it with
+    `wspy-ledger --add`, and (Phoronix tab inventory's "Use in Run tab") copying it into
+    `~/.phoronix-test-suite/test-suites/local/<identity>/` and prefilling+launching a real wspy run
+    against it (symlinked back at `<test-name>/<options-info>/runs/<run-id>/` for browsing, real files
+    staying under the normal `--output-root` so the report page/`/compare`/bundle export needed no
+    changes) are all done, both as a CLI and a web UI tab. Still open:
+    - Install-dependency automation — the front end's per-test `installed` flag (`phoronix-test-suite
+      info`) surfaces which points still need `phoronix-test-suite install <test>` (or accepting the
+      install prompt) run by hand, but nothing installs it automatically.
+    - A `wspy-run`-profile-driven equivalent (a saved profile or `-c` file, run non-interactively/
+      scriptable/batchable across many test points at once) — only the direct wspy/checklist Run tab
+      path (one test point, launched by a human clicking Run) exists today.
     - Because each generated suite is exactly one test point, its wspy capture is *already* segmented at
       the source — no post-hoc composite.xml/log-timestamp correlation needed for runs built this way.
       Doesn't replace item 22 (`wspy-phoronix-segment`) for suites run the ordinary multi-test-point way,
@@ -853,9 +881,6 @@ this phase's own IBS sampling mode (Tier 1 above):**
       identity — a natural feed for Tier 2's clustering/nearest-neighbor work once that lands, and a
       cheaper way to grow `wspy-ledger`'s workload coverage than hand-authoring one-off `wspy-run`
       invocations per benchmark.
-    Not yet scoped: how much of "decompose XML → per-option local suite" is worth a dedicated tool vs.
-    a documented manual recipe for the first pass — start manual on 2-3 real openbenchmarking.org results
-    before deciding a script pays for itself.
 
 **Tier 8 — testing:**
 

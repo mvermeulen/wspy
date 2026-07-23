@@ -31,9 +31,10 @@ make clobber                  # also remove built binaries
 `wspy-store`/`wspy-summary`/`wspy-archetype` link against the system SQLite library — install
 `libsqlite3-dev` (or your distro's equivalent) before building. `wspy-plot` shells out to a `gnuplot`
 binary at run time, not a build-time dependency. `wspy-run` is a bash script; `wspy-sweep`,
-`wspy-queue`, `wspy-bundle`, `wspy-analyze`, and the web launcher (`web/server.py`) are plain Python 3
-scripts — stdlib only, nothing to build or install (`wspy-analyze` additionally needs a running
-Ollama daemon at use time, not build time, to do anything).
+`wspy-queue`, `wspy-bundle`, `wspy-analyze`, `wspy-phoronix-import`, and the web launcher
+(`web/server.py`) are plain Python 3 scripts — stdlib only, nothing to build or install
+(`wspy-analyze` additionally needs a running Ollama daemon at use time, not build time, to do
+anything; `wspy-phoronix-import`'s `--result` source needs `phoronix-test-suite` installed).
 
 Performance counters and `--tree` (which uses `ptrace`) generally need root, or
 `CAP_SYS_PTRACE` plus `perf_event_paranoid <= 1`. `scripts/setup_perf.sh` checks and, if you
@@ -430,6 +431,35 @@ report page has a "Download reproducibility bundle" link that produces the ident
 
 See `./wspy-bundle --help` for the full option list.
 
+## wspy-phoronix-import: openbenchmarking.org-seeded single-test-point suites
+
+`wspy-phoronix-import` decomposes an already-published Phoronix result or suite into one minimal
+single-test-point suite per (test, option-combination), materialized under
+`workload/phoronix/<test>/<options>/` and registered with `wspy-ledger --add` — growing a
+pre-profiled workload library cheaply instead of hand-authoring one `wspy-run` invocation per
+benchmark. Three source methods:
+
+```
+./wspy-phoronix-import --result https://openbenchmarking.org/result/2607160-PTS-7700X3D886
+./wspy-phoronix-import --file ~/Downloads/result-suite.xml --dry-run
+./wspy-phoronix-import --installed-suite pts/compression-1.1.4
+./wspy-phoronix-import --list-installed        # installed suites under ~/.phoronix-test-suite/test-suites
+./wspy-phoronix-import --list-materialized     # already-materialized test points under workload/phoronix/
+```
+
+Re-running against the same source is additive: an already-materialized `<test>/<options>/`
+directory is left untouched and reported as `exists` rather than overwritten. Materializing itself
+doesn't copy anything into `~/.phoronix-test-suite/test-suites/local/`, run anything, or install
+anything; the INSTALLED column (from `phoronix-test-suite info`) just flags which points still need
+`phoronix-test-suite install` run by hand. The web launcher's Phoronix tab drives the identical
+logic and additionally shows an inventory of already-materialized test points with a "Use in Run
+tab" button per point — it copies that point's suite into `test-suites/local/` (so the command
+actually works) and prefills the Run tab's workload/suite/benchmark fields; a run launched that way
+gets symlinked back under `workload/phoronix/<test>/<options>/runs/<run-id>/` for easy browsing,
+while the real files stay under the normal `--output-root` (so the report page, `/compare`, and
+bundle export need no special-casing). See `./wspy-phoronix-import --help` for the full option
+list.
+
 ## wspy-analyze: local LLM (Ollama) narrative analysis
 
 `wspy-analyze` turns a run directory's already-computed, already-validated numbers (raw counter
@@ -459,9 +489,10 @@ local-only default). See `./wspy-analyze --help` for the full option list.
 `web/server.py` is a stdlib-only Python web UI (no dependency, no build step) for launching runs
 (a preset dropdown or a configuration checklist, either way showing the exact command line about
 to run), browsing/curating/exporting reports, comparing runs side by side (with an optional
-annotation layer), searching run history, viewing/diffing process trees interactively, and running
+annotation layer), searching run history, viewing/diffing process trees interactively, running
 `wspy-validate`/`wspy-store`/`wspy-summary`/`wspy-core-report`/`wspy --capabilities`/`--preflight`
-without leaving the browser.
+without leaving the browser, and (Phoronix tab) decomposing an OpenBenchmarking result/suite into
+single-test-point suites via the same logic `wspy-phoronix-import` uses.
 
 ```
 python3 web/server.py                  # serves http://127.0.0.1:8765/ by default
