@@ -786,39 +786,68 @@ this phase's own IBS sampling mode (Tier 1 above):**
     static inclusion-depth mechanism (none/summary/excerpt/full) for the tree/interval blocks
     specifically; that mechanism stays the right default for a published, non-interactive report even
     once this exists.
+13. Test-point-level curated performance-summary README, building on this cycle's Phoronix
+    single-test-point suite hierarchy (`workload/phoronix/<test>/<options>/`, its per-test README.md,
+    and its `runs/<run-id>/` symlinks back to real run directories) — walk every run linked at one test
+    point, not just the latest, and curate a `README.md` inside that test point's own directory
+    (`workload/phoronix/<test>/<options>/README.md`, one level *below* the per-test README.md that
+    `write_phoronix_test_readme()` already writes and describing something different: measured
+    performance characteristics of this specific option combination, not `phoronix-test-suite info`'s
+    static test description). Several real design questions bundled into scoping this, not yet resolved:
+    - **Aggregation across N runs, not one.** Different from 4.1's curation studio (one report page, one
+      run) and `wspy-analyze --compare-rundir` (exactly two runs) — this needs the same "many runs of the
+      same command" aggregation `wspy-summary` already does (min/max/mean/median/stddev/outlier/CI95),
+      plus `wspy-archetype`'s per-run classification as a signal for whether a workload's characterization
+      is stable across its linked runs or drifting.
+    - **A template, then customizable.** Start from a fixed set of sections mirroring the report page's
+      own existing block categories (system/power overview, counter groups, tree) as a generation
+      template, then let a human curate/reorder/annotate on top of the generated draft — the same
+      reorderable-block-plus-commentary idiom 4.1's curation studio already established, just operating
+      over aggregated cross-run data instead of one run's blocks.
+    - **Git-tracked artifact, unlike the runs it summarizes.** `workload/phoronix/` is entirely gitignored
+      today (only the `runs/` symlinks and generated suite files live there); this README would need to
+      become the first thing actually checked in from that tree, while the runs it draws from stay
+      outside version control under `--output-root`, same as today.
+    - **A living document, not a write-once artifact.** Contrasts with `write_phoronix_test_readme()`'s
+      "never overwrite, write once" convention for the per-test README — new runs landing later (someone
+      investigated something and gathered more data) needs a re-curate path that doesn't silently clobber
+      a human's prior edits, closer to how 4.1's curation studio already treats saved commentary as
+      authoritative over freshly-regenerated content.
+    - Real potential overlap with this tier's own static-site/badge/drill-down items above — see "Open
+      questions for prioritization" below.
 
 **Tier 5 — report-layer additions on data already collected in 4.0:**
 
-13. `--tree-open` → file-I/O topology summary (hot paths, open-failure rates, startup storms,
+14. `--tree-open` → file-I/O topology summary (hot paths, open-failure rates, startup storms,
     process→file maps) — `tree_open`/`SYS_openat` capture already exists (`topdown.c`).
-14. System (`--system`) → per-interface network attribution and local-vs-system-pressure
+15. System (`--system`) → per-interface network attribution and local-vs-system-pressure
     attribution, plus steal-time capture (user/system/iowait are already captured and printed —
     `system.c`'s existing `/proc/stat` parsing — this item is the missing steal column and the
     analysis layer on top of what's already there, not the raw mix itself).
-15. Tree/lifecycle enrichments (exit code/signal summary, spawn/exit burst indicators, optional
+16. Tree/lifecycle enrichments (exit code/signal summary, spawn/exit burst indicators, optional
     `comm`-pattern role tagging).
 
 **Tier 6 — GPU deeper profiling:**
 
-16. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
+17. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
     heavier, optional trace-rich profile, same "default vs debug profile" pattern as IBS.
-17. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds
+18. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds
     on 4.2's (shipped) GPU fusion layer (`gpu_fusion.c`, `--gpu-metrics`) for consistent per-metric data.
-18. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`,
+19. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`,
     extended once GPU runs feed the same index.
-19. Fold into general environment-comparability scoring (power cap, memory clock, thermal state,
+20. Fold into general environment-comparability scoring (power cap, memory clock, thermal state,
     driver version) — no separate "GPU comparability score" needed; one scoring mechanism, not two.
 
 **Tier 7 — infra:**
 
-20. Low-overhead tracing alternative to `ptrace` (`ftrace` tracepoints or minimal eBPF) for
+21. Low-overhead tracing alternative to `ptrace` (`ftrace` tracepoints or minimal eBPF) for
     `--tree`/`--tree-open` — `ptrace` context-switches on every syscall entry/exit, which skews the
     very counters being measured for I/O-heavy or fork-heavy workloads. Also the eventual fix for the
     observer-effect caveat noted under "Critical-path / synchronization-latency: what's left" above.
-21. Collector-plugin implementation (perf stat / trace-cmd / GPU tools as collectors behind the
+22. Collector-plugin implementation (perf stat / trace-cmd / GPU tools as collectors behind the
     `collector` field, normalization path) — the schema seam shipped in 4.0; this is the actual
     implementation of wrapping a non-wspy collector.
-22. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
+23. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
     CSVs into per-test-case/per-trial datasets by correlating run manifests with PTS results,
     composite.xml, and log timestamps. See
     [phoronix_hook_investigation.md](file:///home/mev/source/wspy/doc/phoronix_hook_investigation.md)
@@ -831,7 +860,7 @@ this phase's own IBS sampling mode (Tier 1 above):**
     `result_notifier` hook capture: real-host findings" for the full story. **Still open:** teaching
     `wspy-phoronix-segment.py` to prefer `pts_hooks.log` over the composite.xml/log-timestamp
     correlation it uses today, and the segmentation tool itself.
-23. Collapse `wspy-run`'s builtin profiles onto native `--passes` bin-packing. Low value relative to
+24. Collapse `wspy-run`'s builtin profiles onto native `--passes` bin-packing. Low value relative to
     everything else on the 4.3 board, no dependents, safe to leave alone indefinitely. Most profiles
     are already collapsed as far as they can go: `deep-cpu`/`deep-gpu` folded their pure-counter middle
     pass onto `--passes=...` back in 4.1; their remaining separate passes all use `--interval 1`, which
@@ -843,7 +872,7 @@ this phase's own IBS sampling mode (Tier 1 above):**
     touch any `--passes`-incompatible flag — collapsing it to one pass is the entire remaining scope.
     Note: this changes on-disk output shape from 4 files to 1, so anything downstream assuming those 4
     filenames (external scripts, `tests/capability_matrix.sh`) would need checking.
-24. Detect and resume interrupted `wspy-run` profiles (raised after a real host crash mid-batch, twice,
+25. Detect and resume interrupted `wspy-run` profiles (raised after a real host crash mid-batch, twice,
     with no way to tell from a report that the run never finished, or to resume without redoing
     completed passes). Two phases, second depends on first:
     - **Phase A — surface incompleteness.** `generate_manifest()` writes the run-level `manifest.json`
@@ -860,7 +889,7 @@ this phase's own IBS sampling mode (Tier 1 above):**
     - Distinct from `wspy-queue`'s job lifecycle (whole-job scheduling/retry, not resuming partway
       through one multi-pass invocation's own internal passes) and from 4.4's much heavier config-first
       experiment system.
-25. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
+26. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
     (`web/joblib.py`/`wspy-phoronix-import`/web launcher's Phoronix tab; see "Shipped since 4.2" for
     what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
     across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
@@ -868,10 +897,10 @@ this phase's own IBS sampling mode (Tier 1 above):**
 
 **Tier 8 — testing:**
 
-26. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
+27. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
     guardrails — needs deterministic micro-workloads and 4.1's normalized store plus 4.2's
     stats/confidence infrastructure.
-27. Contributor guide for adding a collector/metric/schema bump safely.
+28. Contributor guide for adding a collector/metric/schema bump safely.
 
 ## 4.4 priorities
 Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
@@ -938,6 +967,14 @@ core/thread affinity, minimum metadata set for publishable — have been resolve
   work is making coverage/capability reporting explicit about "not implemented on this vendor" (a
   `raw_counter_group()` call that matched zero table entries) vs. "requested but failed to open" (a real
   per-run EINVAL/EACCES) — today both look identical (silently zero columns) from the CLI/web UI.
+- **Does the test-point-level curated performance-summary README (Tier 4) reduce the scope of, or
+  replace, this same tier's static-site publishing pipeline / characterization badges / interactive
+  drill-down items?** Raised 2026-07-23 alongside that item. Recommendation: not decidable yet — scope
+  the summary item first and see what it actually needs. A static-site pipeline that indexes these
+  per-test-point READMEs might turn out to *be* most of the static-site item's remaining value (a
+  browsable, multi-benchmark site) rather than a separate deliverable, and the characterization badges
+  are a plausible direct input to the summary rather than a competing surface. Revisit once the summary
+  item has a real design, not before.
 
 ## External brainstorming references
 - ReBench — reproducible experiment configuration, resumable execution, explicit benchmark
