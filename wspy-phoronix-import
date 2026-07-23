@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+"""
+wspy-phoronix-import -- openbenchmarking.org-seeded single-test-point
+Phoronix suites (INVESTIGATION.md item 26's front-end phase).
+
+Decomposes an already-published Phoronix result or suite into one minimal
+single-test-point PTS suite per (test, option-combination) -- growing
+workload/phoronix/ into a pre-profiled workload library cheaply, instead of
+hand-authoring one wspy-run invocation per benchmark. Three source methods,
+mutually exclusive:
+
+  --result <url-or-id>    an openbenchmarking.org result, e.g.
+                           https://openbenchmarking.org/result/2607160-PTS-7700X3D886
+                           or the bare ID. Tries a direct "Download Suite"-style
+                           fetch first, falls back to the locally-installed
+                           phoronix-test-suite client's own network path.
+  --file <path.xml>       an XML file already on disk -- either a suite
+                           export (small, <Execute> elements) or a raw
+                           composite/result file (<Result> elements); both
+                           shapes are detected automatically.
+  --installed-suite <name>  an already-installed PTS suite, e.g.
+                           "pts/compression-1.1.4" or "local/my-suite" (bare
+                           names are searched under both prefixes).
+  --list-installed         list installed suites under
+                           ~/.phoronix-test-suite/test-suites/{pts,local}
+                           and exit -- no source needed.
+  --list-materialized      list already-materialized test points under
+                           --dest (default workload/phoronix/) and exit --
+                           no source needed. Same inventory the web
+                           launcher's Phoronix tab shows.
+
+All the actual parsing/materialization/wspy-ledger-integration logic lives
+in web/joblib.py (import_phoronix_test_points() and friends), shared with
+web/server.py's Phoronix tab -- this script is a thin CLI wrapper, same
+"thin client, no duplicated logic" convention as wspy-bundle/wspy-queue/
+wspy-sweep.
+
+Deliberately stops at materializing suite files and registering them with
+`wspy-ledger --add` -- it does not copy anything into
+~/.phoronix-test-suite/test-suites/local/, does not run anything, and does
+not install anything. A materialized test point's "installed" column
+(phoronix-test-suite's own "Test Installed" field) tells a human which
+points still need `phoronix-test-suite install <test>` run by hand -- that
+"runner script" phase is separately-scoped future work.
+
+    wspy-phoronix-import --result https://openbenchmarking.org/result/2607160-PTS-7700X3D886
+    wspy-phoronix-import --file ~/Downloads/result-suite.xml --dry-run
+    wspy-phoronix-import --installed-suite pts/compression-1.1.4 --no-ledger
+    wspy-phoronix-import --list-installed
+"""
+import argparse
+import json
+import os
+import sys
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(SCRIPT_DIR, "web"))
+import joblib  # noqa: E402 -- reuses import_phoronix_test_points() and friends
+
+DEFAULT_DEST = "workload/phoronix"
+
+
+def resolve_source(args):
+    """Returns {"xml": bytes, "source_kind": str, "source_ref": str} or
+    {"error": str}, one branch per --result/--file/--installed-suite."""
+    if args.result:
+        return joblib.fetch_openbenchmarking_suite_xml(args.result, phoronix_bin=args.phoronix_bin)
+    if args.file:
+        if not os.path.isfile(args.file):
+            return {"error": f"no such file: {args.file}"}
+        with open(args.file, "rb") as f:
+            return {"xml": f.read(), "source_kind": "file", "source_ref": os.path.abspath(args.file)}
+    path, matched_name = joblib.resolve_installed_phoronix_suite(args.installed_suite)
+    if not path:
+        return {"error": f"no installed suite matching {args.installed_suite!r} under "
+                          f"{os.path.join(joblib.phoronix_user_data_dir(), 'test-suites')}/"
+                          "{pts,local} -- see --list-installed"}
+    with open(path, "rb") as f:
+        return {"xml": f.read(), "source_kind": "installed-suite", "source_ref": matched_name}
+
+
+def print_table(points):
+    if not points:
+        print("wspy-phoronix-import: no test points", file=sys.stderr)
+        return
+    installed_col = {True: "yes", False: "no", None: "?"}
+    rows = [("TEST", "OPTIONS", "INSTALLED", "STATUS", "LEDGER")]
+    for p in points:
+        ledger = p.get("ledger")
+        ledger_text = "-" if ledger is None else (
+            "ok" if ledger.get("exit_code") == 0 else f"FAIL({ledger.get('exit_code')})")
+        rows.append((p["bare_name"], p["options_slug"], installed_col.get(p.get("installed"), "?"),
+                     p["status"], ledger_text))
+    widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
+    for i, row in enumerate(rows):
+        line = "  ".join(cell.ljust(widths[j]) for j, cell in enumerate(row))
+        print(line)
+        if i == 0:
+            print("  ".join("-" * w for w in widths))
+
+
+def print_inventory_table(points):
+    if not points:
+        print("wspy-phoronix-import: no materialized test points", file=sys.stderr)
+        return
+    installed_col = {True: "yes", False: "no", None: "?"}
+    rows = [("TEST", "OPTIONS", "INSTALLED", "RUNS")]
+    for p in points:
+        runs_text = str(len(p["runs"])) if p["runs"] else "-"
+        rows.append((p["bare_name"], p["options_slug"], installed_col.get(p.get("installed"), "?"), runs_text))
+    widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
+    for i, row in enumerate(rows):
+        line = "  ".join(cell.ljust(widths[j]) for j, cell in enumerate(row))
+        print(line)
+        if i == 0:
+            print("  ".join("-" * w for w in widths))
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Decompose a Phoronix result/suite into one minimal single-test-point "
+                    "suite per option combination, materialized under workload/phoronix/ and "
+                    "registered with wspy-ledger --add.",
+        formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--result", metavar="URL-OR-ID", help="an openbenchmarking.org result URL or bare ID")
+    src.add_argument("--file", metavar="PATH", help="a suite or result/composite XML file already on disk")
+    src.add_argument("--installed-suite", metavar="NAME",
+                      help="an installed PTS suite, e.g. pts/compression-1.1.4 or a bare name")
+    src.add_argument("--list-installed", action="store_true",
+                      help="list installed suites under ~/.phoronix-test-suite/test-suites and exit")
+    src.add_argument("--list-materialized", action="store_true",
+                      help="list already-materialized test points under --dest and exit")
+    ap.add_argument("--dest", default=DEFAULT_DEST,
+                     help=f"destination root for materialized suites (default: {DEFAULT_DEST})")
+    ap.add_argument("--ledger-list", default=None,
+                     help="wspy-ledger --list path (default: <dest>/backlog.txt, wspy-ledger's own default)")
+    ap.add_argument("--no-ledger", action="store_true", help="don't call wspy-ledger --add")
+    ap.add_argument("--no-check-installed", action="store_true",
+                     help="skip the per-test 'phoronix-test-suite info' installed check (faster "
+                          "for a large result, but the INSTALLED column reports '?')")
+    ap.add_argument("--dry-run", action="store_true",
+                     help="show what would be materialized without writing files or calling wspy-ledger")
+    ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument("--phoronix-bin", default="phoronix-test-suite")
+    ap.add_argument("--ledger-bin", default=os.path.join(SCRIPT_DIR, "wspy-ledger"))
+    args = ap.parse_args()
+
+    if args.list_installed:
+        names = joblib.list_installed_phoronix_suites()
+        if args.json:
+            print(json.dumps(names, indent=2))
+        else:
+            for name in names:
+                print(name)
+            if not names:
+                print("wspy-phoronix-import: no installed suites found", file=sys.stderr)
+        return 0
+
+    if args.list_materialized:
+        points = joblib.list_materialized_phoronix_test_points(args.dest)
+        if args.json:
+            print(json.dumps(points, indent=2))
+        else:
+            print_inventory_table(points)
+        return 0
+
+    source = resolve_source(args)
+    if "error" in source:
+        print(f"wspy-phoronix-import: {source['error']}", file=sys.stderr)
+        return 2
+
+    result = joblib.import_phoronix_test_points(
+        source["xml"], args.dest, source["source_kind"], source["source_ref"],
+        phoronix_bin=args.phoronix_bin, ledger_bin=args.ledger_bin,
+        ledger_list_path=args.ledger_list, dry_run=args.dry_run,
+        check_installed=not args.no_check_installed, add_to_ledger=not args.no_ledger)
+
+    if result["error"]:
+        print(f"wspy-phoronix-import: {result['error']}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        mode = "would materialize" if args.dry_run else "materialized"
+        print(f"wspy-phoronix-import: {mode} {len(result['points'])} test point(s) from "
+              f"{source['source_kind']} ({source['source_ref']}) into {args.dest}/", file=sys.stderr)
+        print_table(result["points"])
+        failed_ledger = [p for p in result["points"]
+                          if p.get("ledger") and p["ledger"].get("exit_code") != 0]
+        if failed_ledger:
+            print(f"wspy-phoronix-import: warning: wspy-ledger --add failed for "
+                  f"{len(failed_ledger)} point(s)", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -38,6 +38,13 @@ Four groups of things live here:
      and server.py's own "Download reproducibility bundle" report-page link
      share the identical file list and archive contents instead of drifting
      into two independently-maintained enumerations.
+  5. Phoronix single-test-point suite import (parse_openbenchmarking_id()
+     through import_phoronix_test_points()) -- INVESTIGATION.md item 26's
+     front-end phase: decomposes an already-published OpenBenchmarking
+     result or an installed/exported Phoronix suite into one minimal
+     single-test-point suite per (test, option-combination), materialized
+     under workload/phoronix/ and registered with wspy-ledger --add. Shared
+     by wspy-phoronix-import's CLI and web/server.py's Phoronix tab.
 """
 import copy
 import hashlib
@@ -47,10 +54,14 @@ import os
 import re
 import secrets
 import shlex
+import shutil
 import subprocess
 import tarfile
 import threading
 import time
+import urllib.error
+import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1520,6 +1531,566 @@ def estimate_phoronix_workload_seconds(workload, phoronix_bin="phoronix-test-sui
         "total_seconds": total_seconds if (total_known and tests) else None,
         "truncated": len(test_names) > len(checked_names),
     }
+
+
+# ---------------------------------------------------------------------------
+# Phoronix single-test-point suite import (INVESTIGATION.md item 26's
+# front-end phase): decomposes an already-published OpenBenchmarking result,
+# a suite XML already on disk, or an installed PTS test-suite into one
+# minimal single-test-point suite per (test, option-combination),
+# materialized under workload/phoronix/<test>/<options>/ and registered with
+# `wspy-ledger --add`. Shared by wspy-phoronix-import's CLI and
+# web/server.py's Phoronix tab, same "thin client, no duplicated logic"
+# convention as the rest of this file.
+#
+# Deliberately stops here: it does not copy a materialized suite into
+# ~/.phoronix-test-suite/test-suites/local/ or run it, and does not install
+# anything -- that's item 26's separately-scoped "runner script" half. A
+# per-test "installed" flag (via `phoronix-test-suite info`, same field
+# estimate_phoronix_runtime() above already relies on) is surfaced so a
+# human knows which materialized points still need `phoronix-test-suite
+# install` run by hand.
+#
+# Two real Phoronix XML shapes feed this, confirmed against files on this
+# machine (2026-07-23 investigation) rather than assumed:
+#   - suite-definition shape: root <PhoronixTestSuite> with one or more
+#     <Execute><Test>pts/name-1.2.3</Test>[<Arguments>...</Arguments>]
+#     </Execute> children -- what's installed at
+#     ~/.phoronix-test-suite/test-suites/{pts,local}/<name>/
+#     suite-definition.xml, and also what OpenBenchmarking's own "Download
+#     Suite" result-page export produces.
+#   - result/composite shape: root <PhoronixTestSuite> with one or more
+#     <Result><Identifier>pts/name-1.2.3</Identifier>
+#     [<Arguments>...</Arguments>]...<Data>...</Result> children -- this is
+#     composite.xml, phoronix-test-suite's own raw per-run result format.
+#     Confirmed live: running `phoronix-test-suite info <id>` (or any
+#     [Test Result]-accepting subcommand) against a real OpenBenchmarking
+#     result ID transparently downloads and caches this file at
+#     ~/.phoronix-test-suite/test-results/<id>/composite.xml as a
+#     non-interactive side effect -- no prompts, unlike
+#     `result-file-to-suite`'s own interactive suite-building UI.
+# Both shapes carry the same information at the granularity this needs (one
+# entry per test+option-combination), so parse_phoronix_xml_test_points()
+# below just looks for both element types rather than sniffing which shape
+# a given source is -- a file only ever has one of the two anyway.
+# ---------------------------------------------------------------------------
+
+def phoronix_user_data_dir():
+    """~/.phoronix-test-suite, or $PTS_USER_PATH -- same resolution rule as
+    web/server.py's phoronix_user_config_path(), duplicated here (rather
+    than imported) since this file must stay importable without server.py
+    (wspy-queue's own reason for existing). Public (not underscore-
+    prefixed): also used directly by wspy-phoronix-import and
+    web/server.py to locate the installed test-suites directory."""
+    return os.environ.get("PTS_USER_PATH") or os.path.join(os.path.expanduser("~"), ".phoronix-test-suite")
+
+
+def list_installed_phoronix_suites():
+    """Suite names (e.g. "pts/compression-1.1.4") found under
+    ~/.phoronix-test-suite/test-suites/{pts,local}/*/suite-definition.xml,
+    sorted -- backs both wspy-phoronix-import's --list-installed and the
+    Phoronix tab's installed-suite dropdown."""
+    base = os.path.join(phoronix_user_data_dir(), "test-suites")
+    names = []
+    for prefix in ("pts", "local"):
+        prefix_dir = os.path.join(base, prefix)
+        if not os.path.isdir(prefix_dir):
+            continue
+        for entry in sorted(os.listdir(prefix_dir)):
+            if os.path.isfile(os.path.join(prefix_dir, entry, "suite-definition.xml")):
+                names.append(f"{prefix}/{entry}")
+    return names
+
+
+def resolve_installed_phoronix_suite(name):
+    """Resolves a bare or prefixed installed-suite name to its
+    suite-definition.xml path, searching both pts/ and local/ when no
+    prefix is given. Returns (path, matched_name) or (None, None)."""
+    base = os.path.join(phoronix_user_data_dir(), "test-suites")
+    candidates = [name] if "/" in name else [f"pts/{name}", f"local/{name}"]
+    for candidate in candidates:
+        path = os.path.join(base, candidate, "suite-definition.xml")
+        if os.path.isfile(path):
+            return path, candidate
+    return None, None
+
+
+def parse_openbenchmarking_id(result_ref):
+    """Accepts either a bare OpenBenchmarking result ID
+    ("2607160-PTS-7700X3D886") or a full result URL
+    (https://openbenchmarking.org/result/<id>[?...]) and returns the bare
+    ID. Not validated against OpenBenchmarking's real ID grammar -- an
+    unrecognized string is returned stripped of any query/fragment and just
+    fails later, at the fetch step, with a clear error instead of here."""
+    ref = (result_ref or "").strip()
+    m = re.search(r"openbenchmarking\.org/result/([^/?&#]+)", ref)
+    if m:
+        return m.group(1)
+    return re.split(r"[?&#]", ref, maxsplit=1)[0]
+
+
+def fetch_openbenchmarking_suite_xml(result_ref, phoronix_bin="phoronix-test-suite", cwd=None, timeout=60):
+    """Resolves result_ref (a result URL or bare ID) to suite/result XML
+    bytes, trying two paths in order:
+
+    1. Direct fetch of the small "Download Suite" export
+       (https://openbenchmarking.org/result/<id>?export=xml-suite) -- fast,
+       the same file a browser's "Download Suite" link gives, no
+       phoronix-test-suite dependency. Treated as failed (falls through to
+       #2) on any network error or a response that doesn't actually look
+       like Phoronix XML -- OpenBenchmarking sits behind Cloudflare, whose
+       bot-management can return an HTML challenge page instead of the
+       export depending on the requesting network's reputation (confirmed
+       from this codebase's own dev sandbox, which the challenge blocks
+       outright; unconfirmed whether a normal residential/office network
+       ever hits it).
+    2. `phoronix-test-suite info <id>` -- phoronix-test-suite's own network
+       path, confirmed live to transparently download and cache the full
+       composite.xml result file (see module-level comment above) as a
+       side effect of any [Test Result]-accepting subcommand, non-
+       interactively. Slower and a much bigger file than #1, but doesn't
+       depend on OpenBenchmarking's export URL/Cloudflare posture and only
+       needs phoronix-test-suite itself to reach the network.
+
+    Returns {"xml": bytes, "source_kind": "openbenchmarking-direct" or
+    "openbenchmarking-pts-cache", "source_ref": str} on success, or
+    {"error": str} if both paths fail."""
+    result_id = parse_openbenchmarking_id(result_ref)
+    if not result_id:
+        return {"error": f"could not determine an OpenBenchmarking result ID from {result_ref!r}"}
+
+    direct_url = f"https://openbenchmarking.org/result/{result_id}?export=xml-suite"
+    try:
+        req = urllib.request.Request(direct_url, headers={"User-Agent": "wspy-phoronix-import"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read()
+        stripped = body.lstrip()
+        if stripped.startswith(b"<?xml") or stripped.startswith(b"<PhoronixTestSuite"):
+            return {"xml": body, "source_kind": "openbenchmarking-direct", "source_ref": direct_url}
+    except (urllib.error.URLError, OSError):
+        pass  # fall through to the phoronix-test-suite path below
+
+    argv = [phoronix_bin, "info", result_id]
+    rc, output, timed_out = run_sync(argv, cwd=cwd, timeout=timeout)
+    if timed_out:
+        return {"error": f"direct fetch failed, and {shell_preview(argv)} timed out"}
+    if rc is None:
+        return {"error": f"direct fetch failed, and failed to launch {phoronix_bin} -- "
+                          "is phoronix-test-suite installed?"}
+    composite_path = os.path.join(phoronix_user_data_dir(), "test-results", result_id, "composite.xml")
+    if not os.path.isfile(composite_path):
+        return {"error": f"direct fetch failed, and {shell_preview(argv)} (exit {rc}) did not "
+                          f"produce {composite_path} -- check the result ID; output: "
+                          f"{output.strip()[:300]}"}
+    with open(composite_path, "rb") as f:
+        return {"xml": f.read(), "source_kind": "openbenchmarking-pts-cache", "source_ref": composite_path}
+
+
+def parse_phoronix_xml_test_points(xml_bytes):
+    """Decomposes suite-definition or result/composite Phoronix XML (see
+    the module-level comment above for both shapes) into a deduped, order-
+    preserving list of {"test_id": "pts/name-1.2.3", "arguments": "..."}
+    dicts, one per distinct (test, option-combination) pair. Raises
+    xml.etree.ElementTree.ParseError on unparseable input -- callers decide
+    how to surface that."""
+    root = ET.fromstring(xml_bytes)
+    points = []
+    seen = set()
+
+    def add(test_id, arguments):
+        test_id = (test_id or "").strip()
+        arguments = (arguments or "").strip()
+        if not test_id:
+            return
+        key = (test_id, arguments)
+        if key in seen:
+            return
+        seen.add(key)
+        points.append({"test_id": test_id, "arguments": arguments})
+
+    for execute in root.iter("Execute"):
+        test_el = execute.find("Test")
+        args_el = execute.find("Arguments")
+        add(test_el.text if test_el is not None else None,
+            args_el.text if args_el is not None else None)
+
+    for result in root.iter("Result"):
+        # .find() (not .iter()) only looks at Result's direct children, so
+        # this doesn't pick up the unrelated per-system-hardware
+        # <Data><Entry><Identifier> nested two levels deeper in the same
+        # <Result> block.
+        id_el = result.find("Identifier")
+        args_el = result.find("Arguments")
+        add(id_el.text if id_el is not None else None,
+            args_el.text if args_el is not None else None)
+
+    return points
+
+
+def _phoronix_looks_like_version(s):
+    """Mirrors ledger.c's looks_like_version(): digits and '.' only, at
+    least one digit."""
+    if not s:
+        return False
+    has_digit = False
+    for ch in s:
+        if ch == ".":
+            continue
+        if not ch.isdigit():
+            return False
+        has_digit = True
+    return has_digit
+
+
+def phoronix_bare_test_name(test_id):
+    """"pts/blender-1.2.1" -> "blender", "system/selenium-1.0.47" ->
+    "selenium" -- strips the suite-namespace prefix (pts/, system/, ...)
+    and the trailing "-<version>" every PTS test-profile directory carries,
+    mirroring ledger.c's strip_version_suffix() (same rule -- only strip
+    the text after the last '-' if it actually looks like a version --
+    just in Python, since strip_version_suffix() itself isn't exposed
+    outside ledger.c)."""
+    name = test_id.split("/", 1)[1] if "/" in test_id else test_id
+    last_dash = name.rfind("-")
+    if last_dash != -1 and _phoronix_looks_like_version(name[last_dash + 1:]):
+        name = name[:last_dash]
+    return name
+
+
+_PHORONIX_SLUG_RE = re.compile(r"[^a-z0-9]+")
+_PHORONIX_SLUG_MAX = 60
+_PHORONIX_SLUG_HASH_LEN = 8
+
+
+def slugify_phoronix_arguments(arguments):
+    """Filesystem/ledger-safe slug for a test point's Arguments string --
+    "" (a test with no options) becomes "default"; anything else is
+    lowercased with every run of non-alphanumeric characters collapsed to a
+    single '-'. Not reversible -- the verbatim Arguments string is always
+    additionally kept in the generated suite-definition.xml and
+    source.json, so this is only ever a directory name, never the source
+    of truth.
+
+    A slug longer than _PHORONIX_SLUG_MAX gets a short hash of the
+    *untruncated* text appended rather than being silently cut off --
+    confirmed live (2026-07-23) against a real OpenVINO result that a
+    plain truncation collapses two genuinely different option combinations
+    into one slug when they share a long common prefix and differ only
+    near the end: OpenVINO's "-hint throughput" vs "-hint latency"
+    variants share an ~83-character "-m models/intel/<model>/..." prefix,
+    so a bare 60-char cut discarded exactly the "throughput"/"latency"
+    text that distinguishes them, silently dropping half of every
+    OpenVINO test point materialize_phoronix_test_point() saw ("already
+    exists" instead of a second real directory). The hash guarantees two
+    different Arguments strings never collide here, regardless of where
+    their difference falls."""
+    text = (arguments or "").strip()
+    if not text:
+        return "default"
+    slug = _PHORONIX_SLUG_RE.sub("-", text.lower()).strip("-")
+    if not slug:
+        return "default"
+    if len(slug) <= _PHORONIX_SLUG_MAX:
+        return slug
+    digest = hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()[:_PHORONIX_SLUG_HASH_LEN]
+    prefix_len = _PHORONIX_SLUG_MAX - _PHORONIX_SLUG_HASH_LEN - 1
+    return f"{slug[:prefix_len].strip('-')}-{digest}"
+
+
+def _build_phoronix_suite_xml(identity, test_id, arguments, source_ref):
+    root = ET.Element("PhoronixTestSuite")
+    info = ET.SubElement(root, "SuiteInformation")
+    ET.SubElement(info, "Title").text = identity
+    ET.SubElement(info, "Version").text = "1.0.0"
+    ET.SubElement(info, "TestType").text = "Processor"
+    ET.SubElement(info, "Description").text = (
+        f"Single-test-point suite generated by wspy-phoronix-import from {source_ref}.")
+    ET.SubElement(info, "Maintainer").text = "wspy"
+    execute = ET.SubElement(root, "Execute")
+    ET.SubElement(execute, "Test").text = test_id
+    if arguments:
+        ET.SubElement(execute, "Arguments").text = arguments
+    ET.indent(root, space="  ")
+    return b'<?xml version="1.0"?>\n' + ET.tostring(root, encoding="utf-8") + b"\n"
+
+
+def materialize_phoronix_test_point(point, dest_root, source_kind, source_ref, installed=None):
+    """Writes one minimal single-test-point suite-definition.xml (plus a
+    source.json provenance sidecar) for `point` (a {"test_id",
+    "arguments"} dict from parse_phoronix_xml_test_points()) under
+    dest_root/<bare-test-name>/<options-slug>/ -- the layout
+    INVESTIGATION.md item 26 specifies. Returns a dict:
+      {"test_id", "arguments", "bare_name", "options_slug", "identity",
+       "dir", "status": "created" or "exists", "installed"}
+
+    "identity" ("<bare_name>-<options_slug>") is deliberately also what a
+    future copy-into-~/.phoronix-test-suite/test-suites/local/ step would
+    name the runnable local suite, so wspy-ledger's substring-against-run-
+    index-command matching (ledger.c's command_matches()) lines up
+    automatically once that later phase exists, with no renaming.
+
+    Idempotent/additive: if <dir>/suite-definition.xml already exists, this
+    leaves it untouched and reports "exists" instead of overwriting -- the
+    "additive across sessions" reuse check item 26's own text calls for,
+    the same idiom item 24's resume-check design note uses."""
+    test_id = point["test_id"]
+    arguments = point.get("arguments", "")
+    bare_name = phoronix_bare_test_name(test_id)
+    options_slug = slugify_phoronix_arguments(arguments)
+    identity = f"{bare_name}-{options_slug}"
+    out_dir = os.path.join(dest_root, bare_name, options_slug)
+    suite_path = os.path.join(out_dir, "suite-definition.xml")
+
+    result = {
+        "test_id": test_id, "arguments": arguments, "bare_name": bare_name,
+        "options_slug": options_slug, "identity": identity, "dir": out_dir,
+        "installed": installed,
+    }
+    if os.path.isfile(suite_path):
+        result["status"] = "exists"
+        return result
+
+    os.makedirs(out_dir, exist_ok=True)
+    with open(suite_path, "wb") as f:
+        f.write(_build_phoronix_suite_xml(identity, test_id, arguments, source_ref))
+    with open(os.path.join(out_dir, "source.json"), "w") as f:
+        json.dump({
+            "schema_version": 1,
+            "source_kind": source_kind,
+            "source_ref": source_ref,
+            "test_id": test_id,
+            "arguments": arguments,
+            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "installed": installed,
+        }, f, indent=2)
+        f.write("\n")
+    result["status"] = "created"
+    return result
+
+
+def add_phoronix_test_point_to_ledger(identity, list_path, ledger_bin="wspy-ledger", cwd=None, timeout=15):
+    """Thin subprocess wrapper around `wspy-ledger --add <identity> --list
+    <list_path>` (ledger.c's add_to_list() -- idempotent, so calling this
+    again for an identity already in the list is safe and just reports
+    "already in ... not added"). Returns {"command", "exit_code", "output",
+    "timed_out"}, the same shape run_sync()'s other callers already
+    surface to their own JSON responses."""
+    argv = [ledger_bin, "--add", identity, "--list", list_path]
+    rc, output, timed_out = run_sync(argv, cwd=cwd, timeout=timeout)
+    return {"command": shell_preview(argv), "exit_code": rc,
+            "output": (output or "").strip(), "timed_out": timed_out}
+
+
+def check_phoronix_test_installed(test_id, phoronix_bin="phoronix-test-suite", cwd=None, timeout=30):
+    """Runs `phoronix-test-suite info <test_id>` and returns the "Test
+    Installed" field (parse_phoronix_info_fields(), same field
+    estimate_phoronix_runtime() above already relies on) as True/False, or
+    None if the check itself failed (timeout, phoronix-test-suite missing,
+    unrecognized output) -- "unknown", not "not installed", since this is
+    advisory information for a human, not a gate on anything."""
+    argv = [phoronix_bin, "info", test_id]
+    rc, output, timed_out = run_sync(argv, cwd=cwd, timeout=timeout)
+    if timed_out or rc is None:
+        return None
+    fields = parse_phoronix_info_fields(output)
+    value = fields.get("Test Installed")
+    if value not in ("Yes", "No"):
+        return None
+    return value == "Yes"
+
+
+def import_phoronix_test_points(xml_bytes, dest_root, source_kind, source_ref,
+                                 phoronix_bin="phoronix-test-suite", ledger_bin="wspy-ledger",
+                                 ledger_list_path=None, cwd=None, dry_run=False,
+                                 check_installed=True, add_to_ledger=True):
+    """Top-level orchestration shared by wspy-phoronix-import and
+    web/server.py's Phoronix tab: parse -> materialize each test point ->
+    (unless dry_run/add_to_ledger is False) register with `wspy-ledger
+    --add`. Returns {"points": [...], "error": str or None} -- each
+    "points" entry is materialize_phoronix_test_point()'s own dict (or its
+    dry-run equivalent, status "would-create" instead of "created") plus a
+    "ledger" key (add_phoronix_test_point_to_ledger()'s result, or None
+    when skipped).
+
+    check_installed calls `phoronix-test-suite info` once per *unique*
+    test_id (option combinations of the same test share one lookup) --
+    still one subprocess per distinct test, so a big result (dozens of
+    tests) is noticeably slower with this on; callers that don't need the
+    installed flag (or are previewing a huge result) can pass False.
+
+    dry_run computes and reports everything, including what wspy-ledger
+    *would* be called with, without writing any file or invoking
+    wspy-ledger -- lets a caller preview a big result's decomposition
+    before committing it to workload/phoronix/."""
+    try:
+        raw_points = parse_phoronix_xml_test_points(xml_bytes)
+    except ET.ParseError as e:
+        return {"points": [], "error": f"could not parse source XML: {e}"}
+    if not raw_points:
+        return {"points": [], "error": "no <Execute>/<Result> test points found in source XML"}
+
+    list_path = ledger_list_path or os.path.join(dest_root, "backlog.txt")
+    installed_cache = {}
+
+    def is_installed(test_id):
+        if not check_installed:
+            return None
+        if test_id not in installed_cache:
+            installed_cache[test_id] = check_phoronix_test_installed(test_id, phoronix_bin=phoronix_bin, cwd=cwd)
+        return installed_cache[test_id]
+
+    out_points = []
+    for raw in raw_points:
+        installed = is_installed(raw["test_id"])
+        if dry_run:
+            bare_name = phoronix_bare_test_name(raw["test_id"])
+            options_slug = slugify_phoronix_arguments(raw["arguments"])
+            identity = f"{bare_name}-{options_slug}"
+            out_dir = os.path.join(dest_root, bare_name, options_slug)
+            already = os.path.isfile(os.path.join(out_dir, "suite-definition.xml"))
+            entry = {
+                **raw, "bare_name": bare_name, "options_slug": options_slug, "identity": identity,
+                "dir": out_dir, "status": "exists" if already else "would-create",
+                "installed": installed, "ledger": None,
+            }
+        else:
+            entry = materialize_phoronix_test_point(raw, dest_root, source_kind, source_ref, installed=installed)
+            entry["ledger"] = (add_phoronix_test_point_to_ledger(entry["identity"], list_path,
+                                                                  ledger_bin=ledger_bin, cwd=cwd)
+                                if add_to_ledger else None)
+        out_points.append(entry)
+    return {"points": out_points, "error": None}
+
+
+def list_materialized_phoronix_test_points(dest_root):
+    """Inventory of already-materialized test points under dest_root/<test>/
+    <options>/ -- backs the Phoronix tab's inventory table and
+    wspy-phoronix-import --list-materialized. Reads each source.json
+    sidecar materialize_phoronix_test_point() wrote (a directory with a
+    suite-definition.xml but no readable source.json is skipped rather
+    than erroring -- best-effort, matching this codebase's "degrade,
+    don't fail" convention for filesystem scans elsewhere, e.g.
+    scan_phoronix_dependencies() in ledger.c). Each entry also lists any
+    linked runs (link_phoronix_test_point_run()'s own <dir>/runs/<run_id>
+    symlinks): {run_id, suite, benchmark}, decoded from the symlink's own
+    target path (.../<suite>/<benchmark>/<run_id>, the last 3 components)
+    rather than re-deriving them some other way -- a dangling symlink
+    (target since deleted) is skipped. "installed" reflects whatever
+    materialize_phoronix_test_point() observed at materialize time (True/
+    False/None for unknown) -- this is not re-checked here, so it can go
+    stale (installed after materializing, or vice versa); re-materializing
+    the same point (check_installed=True) refreshes it. Returns a list of
+    {test_id, bare_name, options_slug, identity, dir, arguments,
+    source_kind, source_ref, generated_at, installed, runs}, newest
+    generated_at first."""
+    entries = []
+    if not os.path.isdir(dest_root):
+        return entries
+    for bare_name in sorted(os.listdir(dest_root)):
+        test_dir = os.path.join(dest_root, bare_name)
+        if not os.path.isdir(test_dir):
+            continue
+        for options_slug in sorted(os.listdir(test_dir)):
+            point_dir = os.path.join(test_dir, options_slug)
+            source_path = os.path.join(point_dir, "source.json")
+            if not os.path.isfile(os.path.join(point_dir, "suite-definition.xml")):
+                continue
+            try:
+                with open(source_path) as f:
+                    source = json.load(f)
+            except (OSError, ValueError):
+                continue
+
+            runs = []
+            runs_dir = os.path.join(point_dir, "runs")
+            if os.path.isdir(runs_dir):
+                for run_id in sorted(os.listdir(runs_dir)):
+                    link_path = os.path.join(runs_dir, run_id)
+                    target = os.path.realpath(link_path)
+                    if not os.path.isdir(target):
+                        continue  # dangling symlink -- target run directory is gone
+                    parts = os.path.normpath(target).split(os.sep)
+                    if len(parts) < 3:
+                        continue
+                    real_run_id, benchmark, suite = parts[-1], parts[-2], parts[-3]
+                    runs.append({"run_id": real_run_id, "suite": suite, "benchmark": benchmark})
+
+            entries.append({
+                "test_id": source.get("test_id", ""),
+                "bare_name": bare_name,
+                "options_slug": options_slug,
+                "identity": f"{bare_name}-{options_slug}",
+                "dir": point_dir,
+                "arguments": source.get("arguments", ""),
+                "source_kind": source.get("source_kind", ""),
+                "source_ref": source.get("source_ref", ""),
+                "generated_at": source.get("generated_at", ""),
+                "installed": source.get("installed"),
+                "runs": runs,
+            })
+    entries.sort(key=lambda e: e["generated_at"], reverse=True)
+    return entries
+
+
+def resolve_phoronix_test_point_dir(dest_root, raw_dir):
+    """Validates raw_dir (untrusted -- comes from a request body) is a real
+    materialized test point: resolves under dest_root (guards against a
+    stray '..'/typo pointing outside workload/phoronix/, the same
+    "local tool, guard against mistakes not adversaries" posture
+    valid_segment()/valid_relpath() already use elsewhere in this file)
+    and actually has a suite-definition.xml. Returns the realpath, or None
+    if either check fails."""
+    if not raw_dir:
+        return None
+    real_dest = os.path.realpath(dest_root)
+    real_dir = os.path.realpath(raw_dir)
+    if os.path.commonpath([real_dest, real_dir]) != real_dest:
+        return None
+    if not os.path.isfile(os.path.join(real_dir, "suite-definition.xml")):
+        return None
+    return real_dir
+
+
+def copy_phoronix_test_point_to_local_suite(test_point_dir, identity, user_data_dir=None):
+    """Copies <test_point_dir>/suite-definition.xml to
+    ~/.phoronix-test-suite/test-suites/local/<identity>/suite-definition.xml
+    (or under user_data_dir if given, e.g. a test's own PTS_USER_PATH
+    override) -- the minimum needed for `phoronix-test-suite batch-run
+    local/<identity>` to actually find the suite. Always overwrites
+    (idempotent refresh, not a one-time copy, so a later edit to the
+    materialized suite -- or a stale prior copy -- doesn't linger stale).
+    Returns the destination path."""
+    base = user_data_dir or phoronix_user_data_dir()
+    dest_dir = os.path.join(base, "test-suites", "local", identity)
+    os.makedirs(dest_dir, exist_ok=True)
+    dest_path = os.path.join(dest_dir, "suite-definition.xml")
+    shutil.copy2(os.path.join(test_point_dir, "suite-definition.xml"), dest_path)
+    return dest_path
+
+
+def link_phoronix_test_point_run(test_point_dir, run_id, rundir):
+    """Best-effort: symlinks <test_point_dir>/runs/<run_id> -> rundir (an
+    absolute path), so a run launched against a materialized test point is
+    still browsable as a subdirectory of that test point's own directory
+    -- purely a filesystem-browsing convenience layered on top of the run,
+    which otherwise lives entirely under the normal --output-root
+    unchanged (report page/compare/bundle/history all keep working
+    against the real location; nothing here changes where a run's own
+    files are written). Catches OSError and returns False rather than
+    raising -- a run that already started successfully shouldn't fail
+    just because e.g. the test point directory was deleted out from under
+    it since the Run tab was populated. Idempotent: replaces an existing
+    symlink at the same path (e.g. a re-run with an explicit run_id)."""
+    try:
+        runs_dir = os.path.join(test_point_dir, "runs")
+        os.makedirs(runs_dir, exist_ok=True)
+        link_path = os.path.join(runs_dir, run_id)
+        if os.path.islink(link_path) or os.path.exists(link_path):
+            os.remove(link_path)
+        os.symlink(os.path.abspath(rundir), link_path)
+        return True
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------

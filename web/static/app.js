@@ -450,6 +450,7 @@
           suite: getValue("suite"),
           benchmark: getValue("benchmark"),
           run_id: getValue("run_id"),
+          phoronix_test_point: getValue("phoronix_test_point"),
           toggles: buildToggles(),
           custom_plots: buildCustomPlots(),
           only_custom: getChecked("only_custom"),
@@ -462,6 +463,7 @@
           suite: getValue("suite"),
           benchmark: getValue("benchmark"),
           run_id: getValue("run_id"),
+          phoronix_test_point: getValue("phoronix_test_point"),
           checklist: buildChecklist(),
           toggles: buildToggles(),
           custom_plots: buildCustomPlots(),
@@ -1047,6 +1049,138 @@
     });
   }
 
+  // ---------------------------------------------------------------------
+  // Phoronix tab (INVESTIGATION.md item 26's front-end phase): decompose an
+  // OpenBenchmarking result/suite into single-test-point suites. A custom
+  // handler (not the generic runSyncEndpoint()) since the response is a
+  // structured points array rendered as a table, not preformatted text --
+  // same reasoning wireAnalyzeForm() already needed its own handler for.
+  // ---------------------------------------------------------------------
+  function wirePhoronixTab() {
+    var runButton = byId("phoronix-run");
+    if (!runButton) return;
+
+    var rows = {
+      result: byId("phoronix-result-row"),
+      file: byId("phoronix-file-row"),
+      installed: byId("phoronix-installed-row"),
+    };
+    document.querySelectorAll('input[name="phoronix-source"]').forEach(function (radio) {
+      radio.addEventListener("change", function () {
+        Object.keys(rows).forEach(function (key) {
+          if (rows[key]) rows[key].hidden = (key !== radio.value);
+        });
+      });
+    });
+
+    var errorEl = byId("phoronix-error");
+    var resultsEl = byId("phoronix-results");
+    var tbody = byId("phoronix-table-body");
+    var cmdEl = byId("phoronix-cmdline");
+
+    runButton.addEventListener("click", function () {
+      var source = (document.querySelector('input[name="phoronix-source"]:checked') || {}).value || "result";
+      var body = {
+        source: source,
+        result: getValue("phoronix-result"),
+        file: getValue("phoronix-file"),
+        installed_suite: byId("phoronix-installed") ? byId("phoronix-installed").value : "",
+        dest: getValue("phoronix-dest"),
+        ledger_list: getValue("phoronix-ledger-list"),
+        dry_run: getChecked("phoronix-dry-run"),
+        no_ledger: getChecked("phoronix-no-ledger"),
+        no_check_installed: getChecked("phoronix-no-check-installed"),
+      };
+      runButton.disabled = true;
+      errorEl.hidden = true;
+      resultsEl.hidden = true;
+      cmdEl.hidden = true;
+      tbody.innerHTML = "";
+      fetch("/api/phoronix/materialize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+        .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+        .then(function (res) {
+          runButton.disabled = false;
+          if (!res.ok || res.data.error) {
+            errorEl.hidden = false;
+            errorEl.textContent = "Error: " + (res.data.error || "unknown error");
+            return;
+          }
+          var data = res.data;
+          cmdEl.hidden = false;
+          cmdEl.textContent = (data.dry_run ? "would materialize " : "materialized ") +
+            data.points.length + " test point(s) from " + data.source_kind +
+            " (" + data.source_ref + ") into " + data.dest + "/";
+          data.points.forEach(function (p) {
+            var installedText = p.installed === true ? "yes" : p.installed === false ? "no" : "?";
+            var ledgerText = "-";
+            if (p.ledger) ledgerText = p.ledger.exit_code === 0 ? "ok" : "FAIL(" + p.ledger.exit_code + ")";
+            var tr = document.createElement("tr");
+            tr.innerHTML = "<td>" + escapeHtml(p.bare_name) + "</td>" +
+              "<td>" + escapeHtml(p.options_slug) + "</td>" +
+              "<td>" + installedText + "</td>" +
+              "<td>" + escapeHtml(p.status) + "</td>" +
+              "<td>" + ledgerText + "</td>";
+            tbody.appendChild(tr);
+          });
+          resultsEl.hidden = false;
+        })
+        .catch(function (err) {
+          runButton.disabled = false;
+          errorEl.hidden = false;
+          errorEl.textContent = "Error: " + err.message;
+        });
+    });
+
+    // Inventory's "Use in Run tab" buttons: copies the test point's suite
+    // into ~/.phoronix-test-suite/test-suites/local/ (server-side, see
+    // _phoronix_use_in_run()) so the prefilled command is immediately
+    // runnable, then fills the Run tab's fields directly -- both tabs are
+    // already in the same page (wireTabs() just toggles .hidden), so this
+    // is a field-fill + tab-switch, not a navigation/reload.
+    var useInRunErrorEl = byId("phoronix-use-in-run-error");
+    document.querySelectorAll(".phoronix-use-in-run").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        btn.disabled = true;
+        if (useInRunErrorEl) useInRunErrorEl.hidden = true;
+        fetch("/api/phoronix/use-in-run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ dir: btn.dataset.dir }),
+        })
+          .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+          .then(function (res) {
+            btn.disabled = false;
+            if (!res.ok || res.data.error) {
+              if (useInRunErrorEl) {
+                useInRunErrorEl.hidden = false;
+                useInRunErrorEl.textContent = "Error: " + (res.data.error || "unknown error");
+              }
+              return;
+            }
+            var data = res.data;
+            if (byId("workload")) byId("workload").value = data.workload;
+            if (byId("suite")) byId("suite").value = data.suite;
+            if (byId("benchmark")) byId("benchmark").value = data.benchmark;
+            if (byId("phoronix_test_point")) byId("phoronix_test_point").value = data.phoronix_test_point;
+            var runTabBtn = document.querySelector('.tab-btn[data-tab="run"]');
+            if (runTabBtn) runTabBtn.click();
+            schedulePreview();
+          })
+          .catch(function (err) {
+            btn.disabled = false;
+            if (useInRunErrorEl) {
+              useInRunErrorEl.hidden = false;
+              useInRunErrorEl.textContent = "Error: " + err.message;
+            }
+          });
+      });
+    });
+  }
+
   wireTabs();
   wireRunTab();
   wireCheckButton();
@@ -1054,4 +1188,5 @@
   wireStoreTab();
   wireDiscoveryTab();
   wireAnalyzeForm();
+  wirePhoronixTab();
 })();

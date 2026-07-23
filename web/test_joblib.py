@@ -762,6 +762,382 @@ class EstimatePhoronixWorkloadSecondsTest(unittest.TestCase):
             self.assertTrue(result["truncated"])
 
 
+class ParseOpenbenchmarkingIdTest(unittest.TestCase):
+    def test_extracts_id_from_result_url(self):
+        self.assertEqual(
+            joblib.parse_openbenchmarking_id("https://openbenchmarking.org/result/2607160-PTS-7700X3D886"),
+            "2607160-PTS-7700X3D886")
+
+    def test_extracts_id_from_url_with_query_string(self):
+        self.assertEqual(
+            joblib.parse_openbenchmarking_id(
+                "https://openbenchmarking.org/result/2607160-PTS-7700X3D886?export=xml-suite"),
+            "2607160-PTS-7700X3D886")
+
+    def test_bare_id_passes_through(self):
+        self.assertEqual(joblib.parse_openbenchmarking_id("2607160-PTS-7700X3D886"), "2607160-PTS-7700X3D886")
+
+    def test_strips_query_from_bare_ref(self):
+        self.assertEqual(joblib.parse_openbenchmarking_id("2607160-PTS-7700X3D886&export=xml-suite"),
+                          "2607160-PTS-7700X3D886")
+
+
+class ParsePhoronixXmlTestPointsTest(unittest.TestCase):
+    def test_suite_definition_shape(self):
+        xml = b"""<?xml version="1.0"?>
+<PhoronixTestSuite>
+  <SuiteInformation><Title>t</Title></SuiteInformation>
+  <Execute><Test>pts/compress-7zip</Test></Execute>
+  <Execute><Test>pts/blender-1.2.1</Test><Arguments>quad-mesh</Arguments></Execute>
+</PhoronixTestSuite>"""
+        points = joblib.parse_phoronix_xml_test_points(xml)
+        self.assertEqual(points, [
+            {"test_id": "pts/compress-7zip", "arguments": ""},
+            {"test_id": "pts/blender-1.2.1", "arguments": "quad-mesh"},
+        ])
+
+    def test_result_composite_shape(self):
+        # Trimmed real shape: a <Result> block's own <Identifier>/<Arguments>
+        # are direct children; the per-hardware <Data><Entry><Identifier>
+        # nested two levels deeper must NOT be picked up as a test id.
+        xml = b"""<?xml version="1.0"?>
+<PhoronixTestSuite>
+  <Result>
+    <Identifier>system/selenium-1.0.47</Identifier>
+    <Arguments>pspdfkit Firefox</Arguments>
+    <Data><Entry><Identifier>Ryzen 7 7700X</Identifier><Value>1.0</Value></Entry></Data>
+  </Result>
+  <Result>
+    <Identifier>pts/coremark-1.0.1</Identifier>
+    <Arguments></Arguments>
+    <Data><Entry><Identifier>Ryzen 7 7700X</Identifier><Value>2.0</Value></Entry></Data>
+  </Result>
+</PhoronixTestSuite>"""
+        points = joblib.parse_phoronix_xml_test_points(xml)
+        self.assertEqual(points, [
+            {"test_id": "system/selenium-1.0.47", "arguments": "pspdfkit Firefox"},
+            {"test_id": "pts/coremark-1.0.1", "arguments": ""},
+        ])
+
+    def test_dedupes_identical_pairs_preserving_order(self):
+        xml = b"""<?xml version="1.0"?>
+<PhoronixTestSuite>
+  <Execute><Test>pts/x-1.0</Test><Arguments>a</Arguments></Execute>
+  <Execute><Test>pts/x-1.0</Test><Arguments>a</Arguments></Execute>
+  <Execute><Test>pts/x-1.0</Test><Arguments>b</Arguments></Execute>
+</PhoronixTestSuite>"""
+        points = joblib.parse_phoronix_xml_test_points(xml)
+        self.assertEqual(len(points), 2)
+        self.assertEqual(points[0]["arguments"], "a")
+        self.assertEqual(points[1]["arguments"], "b")
+
+    def test_no_test_points_yields_empty_list(self):
+        xml = b'<?xml version="1.0"?><PhoronixTestSuite><SuiteInformation/></PhoronixTestSuite>'
+        self.assertEqual(joblib.parse_phoronix_xml_test_points(xml), [])
+
+    def test_unparseable_xml_raises_parse_error(self):
+        import xml.etree.ElementTree as ET
+        with self.assertRaises(ET.ParseError):
+            joblib.parse_phoronix_xml_test_points(b"not xml at all")
+
+
+class PhoronixBareTestNameTest(unittest.TestCase):
+    def test_strips_prefix_and_version(self):
+        self.assertEqual(joblib.phoronix_bare_test_name("pts/blender-1.2.1"), "blender")
+
+    def test_strips_system_prefix(self):
+        self.assertEqual(joblib.phoronix_bare_test_name("system/selenium-1.0.47"), "selenium")
+
+    def test_no_prefix_still_strips_version(self):
+        self.assertEqual(joblib.phoronix_bare_test_name("coremark-1.0.1"), "coremark")
+
+    def test_name_with_no_version_suffix_unchanged(self):
+        self.assertEqual(joblib.phoronix_bare_test_name("pts/build-linux-kernel"), "build-linux-kernel")
+
+    def test_trailing_non_version_dash_segment_kept(self):
+        # "-x264" doesn't look like a version (has letters), so nothing strips.
+        self.assertEqual(joblib.phoronix_bare_test_name("pts/compress-x264"), "compress-x264")
+
+
+class SlugifyPhoronixArgumentsTest(unittest.TestCase):
+    def test_empty_becomes_default(self):
+        self.assertEqual(joblib.slugify_phoronix_arguments(""), "default")
+        self.assertEqual(joblib.slugify_phoronix_arguments(None), "default")
+
+    def test_lowercases_and_collapses_punctuation(self):
+        self.assertEqual(joblib.slugify_phoronix_arguments("pspdfkit Firefox"), "pspdfkit-firefox")
+
+    def test_collapses_non_alnum_runs(self):
+        self.assertEqual(joblib.slugify_phoronix_arguments("-m ./data/x.mesh -p 14"), "m-data-x-mesh-p-14")
+
+    def test_truncates_long_arguments(self):
+        slug = joblib.slugify_phoronix_arguments("a" * 200)
+        self.assertLessEqual(len(slug), 60)
+
+    def test_long_arguments_differing_only_near_the_end_do_not_collide(self):
+        # Regression: real OpenVINO test points share an ~83-char common
+        # "-m models/intel/<model>/..." prefix and differ only in the
+        # trailing "-hint throughput" vs "-hint latency" -- a bare 60-char
+        # truncation collapsed both to the same slug (confirmed live
+        # 2026-07-23), silently dropping half of every OpenVINO test point.
+        prefix = "-m models/intel/face-detection-0206/FP16-INT8/face-detection-0206.xml -d CPU -hint "
+        throughput = joblib.slugify_phoronix_arguments(prefix + "throughput")
+        latency = joblib.slugify_phoronix_arguments(prefix + "latency")
+        self.assertNotEqual(throughput, latency)
+        self.assertLessEqual(len(throughput), 60)
+        self.assertLessEqual(len(latency), 60)
+
+    def test_hashed_slug_is_deterministic(self):
+        text = "a" * 200
+        self.assertEqual(joblib.slugify_phoronix_arguments(text), joblib.slugify_phoronix_arguments(text))
+
+
+class MaterializePhoronixTestPointTest(unittest.TestCase):
+    def test_creates_suite_definition_and_source_json(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            point = {"test_id": "pts/blender-1.2.1", "arguments": "quad-mesh"}
+            result = joblib.materialize_phoronix_test_point(point, tmpdir, "file", "/tmp/src.xml")
+            self.assertEqual(result["status"], "created")
+            self.assertEqual(result["identity"], "blender-quad-mesh")
+            suite_path = os.path.join(tmpdir, "blender", "quad-mesh", "suite-definition.xml")
+            self.assertTrue(os.path.isfile(suite_path))
+            source_path = os.path.join(tmpdir, "blender", "quad-mesh", "source.json")
+            with open(source_path) as f:
+                source = json.load(f)
+            self.assertEqual(source["test_id"], "pts/blender-1.2.1")
+            self.assertEqual(source["arguments"], "quad-mesh")
+
+            import xml.etree.ElementTree as ET
+            root = ET.parse(suite_path).getroot()
+            execute = root.find("Execute")
+            self.assertEqual(execute.find("Test").text, "pts/blender-1.2.1")
+            self.assertEqual(execute.find("Arguments").text, "quad-mesh")
+
+    def test_no_arguments_omits_arguments_element(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            point = {"test_id": "pts/compress-7zip", "arguments": ""}
+            joblib.materialize_phoronix_test_point(point, tmpdir, "file", "/tmp/src.xml")
+            import xml.etree.ElementTree as ET
+            root = ET.parse(os.path.join(tmpdir, "compress-7zip", "default", "suite-definition.xml")).getroot()
+            self.assertIsNone(root.find("Execute/Arguments"))
+
+    def test_reruns_report_exists_without_overwriting(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            point = {"test_id": "pts/blender-1.2.1", "arguments": "quad-mesh"}
+            first = joblib.materialize_phoronix_test_point(point, tmpdir, "file", "/tmp/src.xml")
+            suite_path = os.path.join(first["dir"], "suite-definition.xml")
+            with open(suite_path, "rb") as f:
+                original_bytes = f.read()
+            second = joblib.materialize_phoronix_test_point(point, tmpdir, "file", "/tmp/different-src.xml")
+            self.assertEqual(second["status"], "exists")
+            with open(suite_path, "rb") as f:
+                self.assertEqual(f.read(), original_bytes)
+
+
+class ImportPhoronixTestPointsTest(unittest.TestCase):
+    """Exercises the top-level orchestration with a fake wspy-ledger shell
+    script (mirroring EstimatePhoronixWorkloadSecondsTest's fake-phoronix-
+    binary convention above) rather than the real C binary."""
+
+    SUITE_XML = b"""<?xml version="1.0"?>
+<PhoronixTestSuite>
+  <Execute><Test>pts/compress-7zip</Test></Execute>
+  <Execute><Test>pts/compress-gzip</Test></Execute>
+</PhoronixTestSuite>"""
+
+    def _make_fake_ledger(self, tmpdir):
+        path = os.path.join(tmpdir, "fake-wspy-ledger")
+        with open(path, "w") as f:
+            f.write("#!/bin/sh\necho \"fake-ledger: $@\"\nexit 0\n")
+        os.chmod(path, 0o755)
+        return path
+
+    def test_dry_run_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            result = joblib.import_phoronix_test_points(
+                self.SUITE_XML, dest, "file", "/tmp/src.xml",
+                check_installed=False, dry_run=True)
+            self.assertIsNone(result["error"])
+            self.assertEqual(len(result["points"]), 2)
+            self.assertTrue(all(p["status"] == "would-create" for p in result["points"]))
+            self.assertFalse(os.path.isdir(dest))
+
+    def test_real_run_materializes_and_calls_ledger(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            fake_ledger = self._make_fake_ledger(tmpdir)
+            result = joblib.import_phoronix_test_points(
+                self.SUITE_XML, dest, "file", "/tmp/src.xml",
+                ledger_bin=fake_ledger, check_installed=False, dry_run=False)
+            self.assertIsNone(result["error"])
+            self.assertEqual(len(result["points"]), 2)
+            for p in result["points"]:
+                self.assertEqual(p["status"], "created")
+                self.assertIsNotNone(p["ledger"])
+                self.assertEqual(p["ledger"]["exit_code"], 0)
+            self.assertTrue(os.path.isfile(os.path.join(dest, "compress-7zip", "default",
+                                                          "suite-definition.xml")))
+
+    def test_no_ledger_skips_ledger_call(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            result = joblib.import_phoronix_test_points(
+                self.SUITE_XML, dest, "file", "/tmp/src.xml",
+                check_installed=False, dry_run=False, add_to_ledger=False)
+            self.assertTrue(all(p["ledger"] is None for p in result["points"]))
+
+    def test_empty_xml_reports_error(self):
+        xml = b'<?xml version="1.0"?><PhoronixTestSuite><SuiteInformation/></PhoronixTestSuite>'
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = joblib.import_phoronix_test_points(xml, os.path.join(tmpdir, "dest"), "file", "/tmp/src.xml")
+            self.assertIsNotNone(result["error"])
+            self.assertEqual(result["points"], [])
+
+    def test_installed_flag_persists_to_source_json_and_inventory(self):
+        # Regression: materialize_phoronix_test_point() used to compute
+        # "installed" for its own return value but never write it to
+        # source.json, so list_materialized_phoronix_test_points() could
+        # only ever report "?" for every already-materialized point.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            point = {"test_id": "pts/compress-7zip", "arguments": ""}
+            joblib.materialize_phoronix_test_point(point, dest, "file", "/tmp/src.xml", installed=True)
+            with open(os.path.join(dest, "compress-7zip", "default", "source.json")) as f:
+                source = json.load(f)
+            self.assertIs(source["installed"], True)
+            points = joblib.list_materialized_phoronix_test_points(dest)
+            self.assertEqual(len(points), 1)
+            self.assertIs(points[0]["installed"], True)
+
+
+class ListMaterializedPhoronixTestPointsTest(unittest.TestCase):
+    def test_lists_materialized_points_with_runs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            point = {"test_id": "pts/blender-1.2.1", "arguments": "quad-mesh"}
+            info = joblib.materialize_phoronix_test_point(point, dest, "file", "/tmp/src.xml")
+            rundir = os.path.join(tmpdir, "runs", "phoronix", info["identity"], "run1")
+            os.makedirs(rundir)
+            joblib.link_phoronix_test_point_run(info["dir"], "run1", rundir)
+
+            points = joblib.list_materialized_phoronix_test_points(dest)
+            self.assertEqual(len(points), 1)
+            self.assertEqual(points[0]["identity"], info["identity"])
+            self.assertEqual(points[0]["runs"], [
+                {"run_id": "run1", "suite": "phoronix", "benchmark": info["identity"]},
+            ])
+
+    def test_empty_dest_returns_empty_list(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertEqual(joblib.list_materialized_phoronix_test_points(os.path.join(tmpdir, "nope")), [])
+
+    def test_dir_without_source_json_is_skipped(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            point_dir = os.path.join(dest, "sometest", "default")
+            os.makedirs(point_dir)
+            with open(os.path.join(point_dir, "suite-definition.xml"), "w") as f:
+                f.write("<PhoronixTestSuite/>")
+            self.assertEqual(joblib.list_materialized_phoronix_test_points(dest), [])
+
+    def test_dangling_run_symlink_is_skipped(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            point = {"test_id": "pts/blender-1.2.1", "arguments": ""}
+            info = joblib.materialize_phoronix_test_point(point, dest, "file", "/tmp/src.xml")
+            os.makedirs(os.path.join(info["dir"], "runs"))
+            os.symlink(os.path.join(tmpdir, "does-not-exist"),
+                       os.path.join(info["dir"], "runs", "run1"))
+            points = joblib.list_materialized_phoronix_test_points(dest)
+            self.assertEqual(points[0]["runs"], [])
+
+
+class ResolvePhoronixTestPointDirTest(unittest.TestCase):
+    def test_accepts_real_materialized_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            point = {"test_id": "pts/blender-1.2.1", "arguments": ""}
+            info = joblib.materialize_phoronix_test_point(point, dest, "file", "/tmp/src.xml")
+            self.assertEqual(joblib.resolve_phoronix_test_point_dir(dest, info["dir"]), info["dir"])
+
+    def test_rejects_path_outside_dest_root(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            os.makedirs(dest)
+            outside = os.path.join(tmpdir, "elsewhere")
+            os.makedirs(outside)
+            self.assertIsNone(joblib.resolve_phoronix_test_point_dir(dest, outside))
+
+    def test_rejects_dir_without_suite_definition(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            empty_dir = os.path.join(dest, "sometest", "default")
+            os.makedirs(empty_dir)
+            self.assertIsNone(joblib.resolve_phoronix_test_point_dir(dest, empty_dir))
+
+    def test_rejects_empty_input(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertIsNone(joblib.resolve_phoronix_test_point_dir(tmpdir, ""))
+            self.assertIsNone(joblib.resolve_phoronix_test_point_dir(tmpdir, None))
+
+
+class CopyPhoronixTestPointToLocalSuiteTest(unittest.TestCase):
+    def test_copies_suite_definition_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            point = {"test_id": "pts/blender-1.2.1", "arguments": "quad-mesh"}
+            info = joblib.materialize_phoronix_test_point(point, dest, "file", "/tmp/src.xml")
+            fake_pts_home = os.path.join(tmpdir, "pts-home")
+
+            dest_path = joblib.copy_phoronix_test_point_to_local_suite(
+                info["dir"], info["identity"], user_data_dir=fake_pts_home)
+            expected = os.path.join(fake_pts_home, "test-suites", "local", info["identity"],
+                                     "suite-definition.xml")
+            self.assertEqual(dest_path, expected)
+            with open(dest_path) as f:
+                copied = f.read()
+            with open(os.path.join(info["dir"], "suite-definition.xml")) as f:
+                original = f.read()
+            self.assertEqual(copied, original)
+
+            # Idempotent: re-copy overwrites cleanly, doesn't error or duplicate.
+            joblib.copy_phoronix_test_point_to_local_suite(
+                info["dir"], info["identity"], user_data_dir=fake_pts_home)
+            self.assertTrue(os.path.isfile(dest_path))
+
+
+class LinkPhoronixTestPointRunTest(unittest.TestCase):
+    def test_creates_symlink_to_rundir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            point_dir = os.path.join(tmpdir, "point")
+            os.makedirs(point_dir)
+            rundir = os.path.join(tmpdir, "output", "phoronix", "x", "run1")
+            os.makedirs(rundir)
+            ok = joblib.link_phoronix_test_point_run(point_dir, "run1", rundir)
+            self.assertTrue(ok)
+            link_path = os.path.join(point_dir, "runs", "run1")
+            self.assertTrue(os.path.islink(link_path))
+            self.assertEqual(os.path.realpath(link_path), os.path.realpath(rundir))
+
+    def test_replaces_existing_link(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            point_dir = os.path.join(tmpdir, "point")
+            os.makedirs(point_dir)
+            rundir1 = os.path.join(tmpdir, "run1")
+            rundir2 = os.path.join(tmpdir, "run2")
+            os.makedirs(rundir1)
+            os.makedirs(rundir2)
+            joblib.link_phoronix_test_point_run(point_dir, "runid", rundir1)
+            joblib.link_phoronix_test_point_run(point_dir, "runid", rundir2)
+            link_path = os.path.join(point_dir, "runs", "runid")
+            self.assertEqual(os.path.realpath(link_path), os.path.realpath(rundir2))
+
+    def test_degrades_to_false_on_unwritable_path(self):
+        ok = joblib.link_phoronix_test_point_run("/proc/1/this-should-not-be-writable", "run1", "/tmp")
+        self.assertFalse(ok)
+
+
 class CollectRunFilesTest(unittest.TestCase):
     """collect_run_files() is shared between the curation studio's "+ add"
     buttons and build_reproducibility_bundle()'s archive contents -- exercise
