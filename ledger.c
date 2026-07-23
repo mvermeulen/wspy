@@ -62,6 +62,17 @@
  * stays auditable rather than silent. This is a read-time check against
  * the run index as it stands each run -- nothing here rewrites or prunes
  * the run-index file itself.
+ *
+ * --phoronix-option-combos is a third, independent use of the same
+ * --phoronix-profiles-dir scan: for each matching workload it reports the
+ * full option-combination count implied by its test-definition.xml's
+ * <TestSettings>/<Option>/<Menu>/<Entry> shape (INVESTIGATION.md's item 25
+ * -- a real, recurring pain point is discovering only after a long
+ * batch-run sweep that a test's full option matrix takes far longer than
+ * expected). Purely static parsing of an already-installed profile, no need
+ * to run anything. An <Option> with no <Menu> (a free-form input like a
+ * server address or disk target) can't be enumerated, so it's excluded
+ * from the product and the count is flagged as a lower bound instead.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -103,6 +114,13 @@ struct ledger_entry {
 
   int dep_unavailable;                /* 1 if a --unavailable-deps scan matched this workload */
   char dep_note[MAX_NOTE];            /* which tag/profile matched, valid only if dep_unavailable */
+
+  int combo_known;                    /* 1 if a --phoronix-option-combos scan matched a profile */
+  long combo_count;                   /* product of each <Option>'s <Menu> entry count, valid only if combo_known */
+  int combo_has_freeform;             /* 1 if a matched profile also has a non-Menu (free-form) option:
+                                        * combo_count excludes it, so it's a lower bound, not exact */
+  int combo_ambiguous;                /* 1 if multiple matching profiles disagreed on combo_count */
+  char combo_profile[MAX_NAME];       /* suite/test-id-version the count came from, valid only if combo_known */
 };
 
 static const char *status_label(enum ledger_status s){
@@ -390,6 +408,55 @@ static int extract_external_dependencies(const char *xml,char *out,size_t outsiz
   return 1;
 }
 
+/* Counts a test-definition.xml's full option-combination matrix: the
+ * product of each <TestSettings>/<Option>'s <Menu> <Entry> count (e.g.
+ * blender-1.2.1's 5-entry "Blend File" x 2-entry "Compute" = 10). An
+ * <Option> with no <Menu> at all (a free-form input like fio's "Disk
+ * Target" or iperf's "Server Address" -- not an enumerable choice) isn't
+ * counted toward the product; *has_freeform is set instead so the caller
+ * can report the count as a lower bound rather than silently undercounting.
+ * A profile with no <TestSettings> block, or an empty one, has exactly one
+ * combination. Deliberately not a real XML parser, same convention as
+ * extract_external_dependencies() above: walks <Option>...</Option> blocks
+ * in document order and counts <Entry> tags within each one's <Menu>. */
+static long count_option_combinations(const char *xml,int *has_freeform){
+  static const char *const settings_open = "<TestSettings>";
+  static const char *const settings_close = "</TestSettings>";
+  const char *settings_start = strstr(xml,settings_open);
+  const char *settings_end;
+  const char *p;
+  long total = 1;
+
+  if (!settings_start) return 1;
+  settings_start += strlen(settings_open);
+  settings_end = strstr(settings_start,settings_close);
+  if (!settings_end) return 1;
+
+  for (p = settings_start; p < settings_end; ){
+    const char *opt_start = strstr(p,"<Option>");
+    const char *opt_end;
+    const char *menu_start,*menu_end;
+    long entries = 0;
+
+    if (!opt_start || opt_start >= settings_end) break;
+    opt_start += strlen("<Option>");
+    opt_end = strstr(opt_start,"</Option>");
+    if (!opt_end || opt_end > settings_end) opt_end = settings_end;
+
+    menu_start = strstr(opt_start,"<Menu>");
+    if (menu_start && menu_start < opt_end){
+      menu_end = strstr(menu_start,"</Menu>");
+      if (!menu_end || menu_end > opt_end) menu_end = opt_end;
+      for (p = menu_start; (p = strstr(p,"<Entry>")) != NULL && p < menu_end; p += strlen("<Entry>")) entries++;
+      if (entries > 0) total *= entries;
+    } else {
+      *has_freeform = 1;
+    }
+    p = opt_end + strlen("</Option>");
+  }
+  return total;
+}
+
 /* Scans every "<profiles_dir>/<suite>/<test-id>-<version>/test-definition.xml"
  * for ExternalDependencies tags in unavail_tags, marking any matching
  * (by bare test id, case-insensitively) and not-already-annotated entry as
@@ -465,6 +532,94 @@ static void scan_phoronix_dependencies(const char *profiles_dir,char unavail_tag
     closedir(suite_dir);
   }
   closedir(suites_dir);
+}
+
+/* Scans every "<profiles_dir>/<suite>/<test-id>-<version>/test-definition.xml"
+ * for its full option-combination count (count_option_combinations() above),
+ * recording it against every not-yet-known, name-matching workload-list
+ * entry -- surfaced ahead of running so a full option-matrix sweep's size is
+ * known up front instead of discovered partway through a long batch-run.
+ * Unlike scan_phoronix_dependencies(), this doesn't need a tag list to test
+ * against, so it isn't gated on annotated/dep_unavailable -- every entry
+ * gets a count if any matching profile exists. If more than one matching
+ * profile is found (e.g. the same test id under two suites, or two kept
+ * versions) and they disagree on the count, the first match's count is kept
+ * but combo_ambiguous is set so the report can flag it as untrustworthy
+ * rather than silently picking one. Missing/unreadable profiles_dir is
+ * reported but not fatal, matching scan_phoronix_dependencies(). */
+static void scan_phoronix_option_combinations(const char *profiles_dir,struct ledger_entry *entries,int nentries){
+  DIR *suites_dir;
+  struct dirent *suite_ent;
+
+  suites_dir = opendir(profiles_dir);
+  if (!suites_dir){
+    fprintf(stderr,"wspy-ledger: --phoronix-profiles-dir: unable to open %s: %s\n",profiles_dir,strerror(errno));
+    return;
+  }
+  while ((suite_ent = readdir(suites_dir)) != NULL){
+    char suite_path[512];
+    struct stat st;
+    DIR *suite_dir;
+    struct dirent *test_ent;
+
+    if (suite_ent->d_name[0] == '.') continue;
+    snprintf(suite_path,sizeof(suite_path),"%s/%s",profiles_dir,suite_ent->d_name);
+    if (stat(suite_path,&st) != 0 || !S_ISDIR(st.st_mode)) continue;
+
+    suite_dir = opendir(suite_path);
+    if (!suite_dir) continue;
+    while ((test_ent = readdir(suite_dir)) != NULL){
+      char base_name[MAX_NAME];
+      char xml_path[1024];
+      char *xml;
+      long xml_size;
+      long combos;
+      int has_freeform = 0,i,any_entry_match = 0;
+
+      if (test_ent->d_name[0] == '.') continue;
+      strip_version_suffix(test_ent->d_name,base_name,sizeof(base_name));
+
+      for (i = 0; i < nentries; i++) if (!strcasecmp(entries[i].name,base_name)){ any_entry_match = 1; break; }
+      if (!any_entry_match) continue;
+
+      snprintf(xml_path,sizeof(xml_path),"%s/%s/test-definition.xml",suite_path,test_ent->d_name);
+      xml = read_whole_file(xml_path,&xml_size);
+      if (!xml) continue;
+      combos = count_option_combinations(xml,&has_freeform);
+      free(xml);
+
+      for (i = 0; i < nentries; i++){
+        struct ledger_entry *e = &entries[i];
+
+        if (strcasecmp(e->name,base_name)) continue;
+        if (!e->combo_known){
+          e->combo_known = 1;
+          e->combo_count = combos;
+          e->combo_has_freeform = has_freeform;
+          snprintf(e->combo_profile,sizeof(e->combo_profile),"%.60s/%.60s",suite_ent->d_name,test_ent->d_name);
+        } else if (e->combo_count != combos){
+          e->combo_ambiguous = 1;
+        }
+      }
+    }
+    closedir(suite_dir);
+  }
+  closedir(suites_dir);
+}
+
+/* Resolves the Phoronix test-profiles directory to scan: the explicit
+ * --phoronix-profiles-dir value if given, else $HOME/.phoronix-test-suite/
+ * test-profiles written into default_buf, else NULL if $HOME is unset.
+ * Shared by --unavailable-deps and --phoronix-option-combos, which both
+ * scan the same profile tree for different fields. */
+static const char *resolve_profiles_dir(const char *given,char *default_buf,size_t default_bufsize){
+  const char *home;
+
+  if (given) return given;
+  home = getenv("HOME");
+  if (!home) return NULL;
+  snprintf(default_buf,default_bufsize,"%s/.phoronix-test-suite/test-profiles",home);
+  return default_buf;
 }
 
 static int command_matches(const struct json_value *record,const char *name){
@@ -650,6 +805,29 @@ static void format_detail(const struct ledger_entry *e,enum ledger_status status
   }
 }
 
+/* Renders a combo-scanned entry's count/note as separate machine-readable
+ * fields: count_buf gets a bare integer (empty if combo_known is 0, so a
+ * CSV consumer can tell "unknown" from "1"), note_buf gets the matched
+ * profile plus any lower-bound/ambiguous caveats appended. */
+static void format_combo_fields(const struct ledger_entry *e,char *count_buf,size_t count_bufsize,
+                                 char *note_buf,size_t note_bufsize){
+  size_t len;
+
+  count_buf[0] = '\0';
+  note_buf[0] = '\0';
+  if (!e->combo_known) return;
+
+  snprintf(count_buf,count_bufsize,"%ld",e->combo_count);
+
+  snprintf(note_buf,note_bufsize,"%s",e->combo_profile);
+  len = strlen(note_buf);
+  if (e->combo_has_freeform)
+    snprintf(note_buf+len,note_bufsize-len,", lower bound (has free-form option(s) not counted)");
+  len = strlen(note_buf);
+  if (e->combo_ambiguous)
+    snprintf(note_buf+len,note_bufsize-len,", ambiguous across matching profiles");
+}
+
 static void print_csv_field(const char *s){
   int needs_quote = (strchr(s,',') != NULL) || (strchr(s,'"') != NULL);
   const char *p;
@@ -707,6 +885,17 @@ static void usage(const char *prog){
     "Does not override a workload that already has at least one successful\n"
     "matching run, or an explicit workload-list annotation.\n"
     "\n"
+    "--phoronix-option-combos scans the same --phoronix-profiles-dir for each\n"
+    "matching workload's full option-combination count -- the product of\n"
+    "every <TestSettings>/<Option>'s <Menu> entry count in its\n"
+    "test-definition.xml (e.g. blender's 5-entry \"Blend File\" x 2-entry\n"
+    "\"Compute\" = 10) -- so a full option-matrix sweep's size is known\n"
+    "before running it rather than discovered partway through a long\n"
+    "batch-run. An option with no <Menu> at all (a free-form input, e.g. a\n"
+    "server address) isn't counted, so the count is reported as a lower\n"
+    "bound in that case. Independent of --unavailable-deps; both may be\n"
+    "given together and share one profiles-dir scan setup.\n"
+    "\n"
     "Options:\n"
     "  --run-index <file>  run-index (JSONL) file to scan; may be repeated\n"
     "  --csv               machine-readable CSV output instead of the human report\n"
@@ -720,6 +909,10 @@ static void usage(const char *prog){
     "  --phoronix-profiles-dir <dir>\n"
     "                      Phoronix test-profiles dir to scan (default:\n"
     "                      $HOME/.phoronix-test-suite/test-profiles)\n"
+    "  --phoronix-option-combos\n"
+    "                      report each workload's full option-combination\n"
+    "                      count (see above), scanned from the same\n"
+    "                      --phoronix-profiles-dir\n"
     "  -h, --help          show this help\n"
     "\n"
     "Exit status: 0 normally (1 with --strict if any workload still needs\n"
@@ -737,6 +930,7 @@ int main(int argc,char **argv){
   const char *list_path = DEFAULT_LIST_PATH;
   const char *unavailable_deps_path = NULL;
   const char *phoronix_profiles_dir = NULL;
+  int combos_flag = 0;
   struct ledger_entry *entries;
   int nentries,counts[4] = {0,0,0,0};
 
@@ -749,6 +943,7 @@ int main(int argc,char **argv){
     { "list",                  required_argument, 0, 'l' },
     { "unavailable-deps",      required_argument, 0, 'u' },
     { "phoronix-profiles-dir", required_argument, 0, 'p' },
+    { "phoronix-option-combos", no_argument,      0, 'o' },
     { "help",                  no_argument,       0, 'h' },
     { 0,0,0,0 }
   };
@@ -769,6 +964,7 @@ int main(int argc,char **argv){
     case 'l': list_path = optarg; break;
     case 'u': unavailable_deps_path = optarg; break;
     case 'p': phoronix_profiles_dir = optarg; break;
+    case 'o': combos_flag = 1; break;
     case 'h': usage(argv[0]); return 0;
     default: usage(argv[0]); return 2;
     }
@@ -788,23 +984,17 @@ int main(int argc,char **argv){
     if (process_run_index_file(run_index_paths[i],entries,nentries) < 0) return 2;
   }
 
-  if (!unavailable_deps_path && phoronix_profiles_dir){
-    fprintf(stderr,"wspy-ledger: --phoronix-profiles-dir given without --unavailable-deps, ignoring\n");
+  if (!unavailable_deps_path && !combos_flag && phoronix_profiles_dir){
+    fprintf(stderr,"wspy-ledger: --phoronix-profiles-dir given without --unavailable-deps or "
+                    "--phoronix-option-combos, ignoring\n");
   }
   if (unavailable_deps_path){
     char tags[MAX_UNAVAILABLE_TAGS][MAX_DEP_TAG];
     int ntags = load_unavailable_deps(unavailable_deps_path,tags,MAX_UNAVAILABLE_TAGS);
-    const char *profiles_dir = phoronix_profiles_dir;
     char default_profiles_dir[512];
+    const char *profiles_dir = resolve_profiles_dir(phoronix_profiles_dir,default_profiles_dir,sizeof(default_profiles_dir));
 
     if (ntags < 0) return 2;
-    if (!profiles_dir){
-      const char *home = getenv("HOME");
-      if (home){
-        snprintf(default_profiles_dir,sizeof(default_profiles_dir),"%s/.phoronix-test-suite/test-profiles",home);
-        profiles_dir = default_profiles_dir;
-      }
-    }
     if (!profiles_dir){
       fprintf(stderr,"wspy-ledger: --unavailable-deps given but no --phoronix-profiles-dir and "
                       "$HOME is unset; skipping dependency scan\n");
@@ -812,13 +1002,27 @@ int main(int argc,char **argv){
       scan_phoronix_dependencies(profiles_dir,tags,ntags,entries,nentries);
     }
   }
+  if (combos_flag){
+    char default_profiles_dir[512];
+    const char *profiles_dir = resolve_profiles_dir(phoronix_profiles_dir,default_profiles_dir,sizeof(default_profiles_dir));
 
-  if (csvflag) printf("name,status,runs_matched,runs_succeeded,runs_stale,last_run_id,last_start_time,note\n");
+    if (!profiles_dir){
+      fprintf(stderr,"wspy-ledger: --phoronix-option-combos given but no --phoronix-profiles-dir and "
+                      "$HOME is unset; skipping option-combination scan\n");
+    } else {
+      scan_phoronix_option_combinations(profiles_dir,entries,nentries);
+    }
+  }
+
+  if (csvflag)
+    printf("name,status,runs_matched,runs_succeeded,runs_stale,last_run_id,last_start_time,note,"
+           "option_combinations,option_combinations_note\n");
 
   for (i = 0; i < nentries; i++){
     const struct ledger_entry *e = &entries[i];
     enum ledger_status status = entry_status(e);
     char detail[MAX_NOTE + 160];
+    char combo_count[32],combo_note[MAX_NAME + 96];
 
     counts[status]++;
     if (quiet && status == LEDGER_DONE) continue;
@@ -829,13 +1033,19 @@ int main(int argc,char **argv){
       snprintf(detail+len,sizeof(detail)-len," (%d stale run(s) excluded, output deleted, most recent %s)",
                e->runs_stale,e->last_stale_run_id);
     }
+    format_combo_fields(e,combo_count,sizeof(combo_count),combo_note,sizeof(combo_note));
     if (csvflag){
       print_csv_field(e->name); printf(",");
       printf("%s,%d,%d,%d,",status_label(status),e->runs_matched,e->runs_succeeded,e->runs_stale);
       print_csv_field(e->last_run_id); printf(",");
       print_csv_field(e->last_start_time); printf(",");
-      print_csv_field(detail);
+      print_csv_field(detail); printf(",");
+      print_csv_field(combo_count); printf(",");
+      print_csv_field(combo_note);
       printf("\n");
+    } else if (combo_count[0]){
+      printf("%-40s %-20s %s [%s option combination(s): %s]\n",
+             e->name,status_label(status),detail,combo_count,combo_note);
     } else {
       printf("%-40s %-20s %s\n",e->name,status_label(status),detail);
     }
