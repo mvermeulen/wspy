@@ -2229,6 +2229,7 @@ def render_phoronix_inventory_groups(dest_root):
                 runs_html = '<span class="muted">none yet</span>'
             installed_text = {True: "yes", False: "no"}.get(p.get("installed"), "?")
             pinned_version = joblib.phoronix_pinned_version(p["test_id"])
+            repin_html = ""
             if pinned_version and installed_versions and pinned_version not in installed_versions:
                 other_versions = installed_versions
                 mismatch_title = (f'pinned v{pinned_version} is not installed, but v'
@@ -2237,12 +2238,21 @@ def render_phoronix_inventory_groups(dest_root):
                 installed_text += (f' <span class="phoronix-version-mismatch" title="{html.escape(mismatch_title)}">'
                                     f'&#9888; v{html.escape(pinned_version)} pinned, '
                                     f'v{html.escape(", v".join(other_versions))} installed</span>')
+                version_options = "".join(f'<option value="{html.escape(v)}">v{html.escape(v)}</option>'
+                                           for v in other_versions)
+                repin_html = (f'<select class="phoronix-repin-version">{version_options}</select> '
+                               f'<button type="button" class="phoronix-repin" '
+                               f'data-dir="{html.escape(p["dir"])}" '
+                               f'title="Rewrite this test point\'s pinned version to the one selected -- '
+                               f'leaves other test points alone; a re-pin only ever moves forward to an '
+                               f'installed version, never automatic">Re-pin</button>'
+                               )
             rows.append(
                 f'<tr data-phoronix-options="{html.escape(p["options_slug"].lower())}">'
                 f'<td>{html.escape(p["options_slug"])}</td>'
                 f'<td>{installed_text}</td><td>{runs_html}</td>'
                 f'<td><button type="button" class="phoronix-use-in-run" '
-                f'data-dir="{html.escape(p["dir"])}">Use in Run tab</button></td></tr>'
+                f'data-dir="{html.escape(p["dir"])}">Use in Run tab</button> {repin_html}</td></tr>'
             )
 
         blocks.append(
@@ -2330,6 +2340,7 @@ def render_phoronix_tab(cfg):
     </table>
   </div>
   <p id="phoronix-use-in-run-error" class="muted" hidden></p>
+  <p id="phoronix-repin-error" class="muted" hidden></p>
 </section>
 """
 
@@ -3595,6 +3606,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/discovery/ollama-models": self._discovery_ollama_models,
             "/api/phoronix/materialize": self._phoronix_materialize,
             "/api/phoronix/use-in-run": self._phoronix_use_in_run,
+            "/api/phoronix/repin": self._phoronix_repin,
         }
         handler = POST_HANDLERS.get(parsed.path)
         if handler is None:
@@ -4452,6 +4464,43 @@ class Handler(BaseHTTPRequestHandler):
             "suite": "phoronix", "benchmark": identity,
             "phoronix_test_point": test_point_dir,
         })
+
+    def _phoronix_repin(self, cfg, body):
+        """Backs the Phoronix tab inventory's per-row "Re-pin" button (only
+        shown when the version-mismatch badge is showing): rewrites the
+        given test point's pinned version to whichever installed version
+        the user picked, via joblib.repin_phoronix_test_point(). Explicit
+        and per-point by design -- see that function's own docstring for
+        why this isn't done automatically. Re-validates new_version against
+        list_installed_phoronix_test_versions() server-side (not just
+        trusting the dropdown the client rendered) so a stale page can't
+        pin to a version that isn't actually installed."""
+        dest = os.path.join(REPO_ROOT, "workload", "phoronix")
+        test_point_dir = joblib.resolve_phoronix_test_point_dir(dest, (body.get("dir") or "").strip())
+        if not test_point_dir:
+            self._send_json(400, {"error": "not a materialized test point directory"})
+            return
+        new_version = (body.get("version") or "").strip()
+        if not new_version:
+            self._send_json(400, {"error": "a version is required"})
+            return
+        try:
+            with open(os.path.join(test_point_dir, "source.json")) as f:
+                current_test_id = json.load(f).get("test_id", "")
+        except (OSError, ValueError):
+            self._send_json(400, {"error": "could not read source.json for this test point"})
+            return
+        installed_versions = joblib.list_installed_phoronix_test_versions(current_test_id)
+        if new_version not in installed_versions:
+            self._send_json(400, {"error": f"v{new_version} is not among the versions installed on this "
+                                            f"host ({', '.join(installed_versions) or 'none'})"})
+            return
+        try:
+            result = joblib.repin_phoronix_test_point(test_point_dir, new_version)
+        except (FileNotFoundError, ValueError) as e:
+            self._send_json(400, {"error": str(e)})
+            return
+        self._send_json(200, result)
 
     def _discovery_ollama_models(self, cfg, body):
         """Backs the report page's "Discover installed models" button

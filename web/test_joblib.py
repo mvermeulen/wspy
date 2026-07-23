@@ -859,6 +859,17 @@ class PhoronixBareTestNameTest(unittest.TestCase):
         self.assertEqual(joblib.phoronix_bare_test_name("pts/compress-x264"), "compress-x264")
 
 
+class PhoronixPinnedVersionTest(unittest.TestCase):
+    def test_extracts_version_suffix(self):
+        self.assertEqual(joblib.phoronix_pinned_version("pts/build-linux-kernel-1.17.1"), "1.17.1")
+
+    def test_no_version_suffix_returns_none(self):
+        self.assertIsNone(joblib.phoronix_pinned_version("pts/build-linux-kernel"))
+
+    def test_letters_suffix_not_treated_as_version(self):
+        self.assertIsNone(joblib.phoronix_pinned_version("pts/compress-x264"))
+
+
 class SlugifyPhoronixArgumentsTest(unittest.TestCase):
     def test_empty_becomes_default(self):
         self.assertEqual(joblib.slugify_phoronix_arguments(""), "default")
@@ -1258,6 +1269,62 @@ class CopyPhoronixTestPointToLocalSuiteTest(unittest.TestCase):
             joblib.copy_phoronix_test_point_to_local_suite(
                 info["dir"], info["identity"], user_data_dir=fake_pts_home)
             self.assertTrue(os.path.isfile(dest_path))
+
+
+class ListInstalledPhoronixTestVersionsTest(unittest.TestCase):
+    def test_lists_matching_versions_sorted_numerically(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = os.path.join(tmpdir, "installed-tests", "pts")
+            for name in ["build-linux-kernel-1.18.0", "build-linux-kernel-1.9.1", "build-linux-kernel-1.17.1",
+                         "blender-1.2.1"]:
+                os.makedirs(os.path.join(base, name))
+            versions = joblib.list_installed_phoronix_test_versions(
+                "pts/build-linux-kernel-1.17.1", user_data_dir=tmpdir)
+            # Numeric sort, not lexicographic: 1.9.1 sorts before 1.17.1.
+            self.assertEqual(versions, ["1.9.1", "1.17.1", "1.18.0"])
+
+    def test_missing_namespace_dir_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertEqual(
+                joblib.list_installed_phoronix_test_versions("pts/nope-1.0.0", user_data_dir=tmpdir), [])
+
+
+class RepinPhoronixTestPointTest(unittest.TestCase):
+    def test_rewrites_suite_xml_and_source_json(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            point = {"test_id": "pts/build-linux-kernel-1.17.1", "arguments": "defconfig"}
+            info = joblib.materialize_phoronix_test_point(point, tmpdir, "file", "/tmp/src.xml", installed=False)
+
+            result = joblib.repin_phoronix_test_point(info["dir"], "1.18.0")
+            self.assertEqual(result, {
+                "old_test_id": "pts/build-linux-kernel-1.17.1",
+                "new_test_id": "pts/build-linux-kernel-1.18.0",
+                "dir": info["dir"],
+            })
+
+            import xml.etree.ElementTree as ET
+            root = ET.parse(os.path.join(info["dir"], "suite-definition.xml")).getroot()
+            self.assertEqual(root.find("Execute/Test").text, "pts/build-linux-kernel-1.18.0")
+            self.assertEqual(root.find("Execute/Arguments").text, "defconfig")
+
+            with open(os.path.join(info["dir"], "source.json")) as f:
+                source = json.load(f)
+            self.assertEqual(source["test_id"], "pts/build-linux-kernel-1.18.0")
+            self.assertEqual(source["previous_test_id"], "pts/build-linux-kernel-1.17.1")
+            self.assertIs(source["installed"], True)
+            self.assertIn("repinned_at", source)
+
+    def test_preserves_namespace_and_bare_name(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            point = {"test_id": "system/selenium-1.0.47", "arguments": ""}
+            info = joblib.materialize_phoronix_test_point(point, tmpdir, "file", "/tmp/src.xml")
+            result = joblib.repin_phoronix_test_point(info["dir"], "1.0.50")
+            self.assertEqual(result["new_test_id"], "system/selenium-1.0.50")
+
+    def test_missing_suite_definition_raises(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(FileNotFoundError):
+                joblib.repin_phoronix_test_point(tmpdir, "1.0.0")
 
 
 class LinkPhoronixTestPointRunTest(unittest.TestCase):
