@@ -7,6 +7,9 @@
   --accent: #0969da;
   --accent-fg: #ffffff;
   --code-bg: #f0f2f4;
+  --good: #2da44e;
+  --warn: #d4a72c;
+  --bad: #cf222e;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -19,6 +22,9 @@
     --accent: #4493f8;
     --accent-fg: #0d1117;
     --code-bg: #1c2128;
+    --good: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
   }
 }
 
@@ -211,6 +217,17 @@ details summary {
 .phoronix-test-group table.reports {
   margin-top: 0.5rem;
 }
+.phoronix-run-dot {
+  display: inline-block;
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+  margin-right: 0.45rem;
+  vertical-align: middle;
+}
+.phoronix-run-all { background: var(--good); }
+.phoronix-run-some { background: var(--warn); }
+.phoronix-run-none { background: var(--bad); }
 
 .block {
   border: 1px solid var(--border);

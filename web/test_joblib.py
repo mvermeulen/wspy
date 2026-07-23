@@ -1184,9 +1184,26 @@ class GroupMaterializedPhoronixPointsByTestTest(unittest.TestCase):
         self.assertEqual(blender["installed_count"], 1)
         # re-sorted by options_slug regardless of input order
         self.assertEqual([p["options_slug"] for p in blender["points"]], ["bmw27", "quad-mesh"])
+        # neither point has a "runs" key at all -- treated as no runs, not an error
+        self.assertEqual(blender["run_status"], "none")
 
     def test_empty_list_yields_empty_groups(self):
         self.assertEqual(joblib.group_materialized_phoronix_points_by_test([]), [])
+
+    def test_run_status_none_when_no_points_have_runs(self):
+        points = [{"bare_name": "blender", "options_slug": "a", "runs": []},
+                  {"bare_name": "blender", "options_slug": "b", "runs": []}]
+        self.assertEqual(joblib.group_materialized_phoronix_points_by_test(points)[0]["run_status"], "none")
+
+    def test_run_status_some_when_only_some_points_have_runs(self):
+        points = [{"bare_name": "blender", "options_slug": "a", "runs": [{"run_id": "r1"}]},
+                  {"bare_name": "blender", "options_slug": "b", "runs": []}]
+        self.assertEqual(joblib.group_materialized_phoronix_points_by_test(points)[0]["run_status"], "some")
+
+    def test_run_status_all_when_every_point_has_runs(self):
+        points = [{"bare_name": "blender", "options_slug": "a", "runs": [{"run_id": "r1"}]},
+                  {"bare_name": "blender", "options_slug": "b", "runs": [{"run_id": "r2"}]}]
+        self.assertEqual(joblib.group_materialized_phoronix_points_by_test(points)[0]["run_status"], "all")
 
 
 class ResolvePhoronixTestPointDirTest(unittest.TestCase):

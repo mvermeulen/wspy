@@ -2206,6 +2206,14 @@ def render_phoronix_inventory_groups(dest_root):
             summary_bits.append(f'{g["installed_count"]} installed')
         summary_extra = " &mdash; " + html.escape(description) if description else ""
         search_attr = html.escape(f'{g["bare_name"]} {description or ""}'.lower())
+        run_status = g["run_status"]
+        run_dot_title = {
+            "all": "every test point has at least one run",
+            "some": "some test points have at least one run",
+            "none": "no test points have any runs yet",
+        }[run_status]
+        run_dot_html = (f'<span class="phoronix-run-dot phoronix-run-{run_status}" '
+                         f'title="{html.escape(run_dot_title)}"></span>')
 
         rows = []
         for p in g["points"]:
@@ -2227,7 +2235,7 @@ def render_phoronix_inventory_groups(dest_root):
 
         blocks.append(
             f'<details class="phoronix-test-group" data-phoronix-search="{search_attr}">'
-            f'<summary><strong>{html.escape(g["bare_name"])}</strong> '
+            f'<summary>{run_dot_html}<strong>{html.escape(g["bare_name"])}</strong> '
             f'<span class="muted">({", ".join(summary_bits)}){summary_extra}</span></summary>'
             f'<table class="reports"><thead><tr><th>Options</th><th>Installed</th>'
             f'<th>Runs</th><th></th></tr></thead><tbody>{"".join(rows)}</tbody></table>'

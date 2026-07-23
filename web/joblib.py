@@ -2147,18 +2147,32 @@ def group_materialized_phoronix_points_by_test(points):
     Each group's own points are re-sorted by options_slug (recovering the
     ordering list_materialized_phoronix_test_points() had before its own
     final recency sort). Returns a list of {"bare_name", "points",
-    "total_count", "installed_count"}, sorted by bare_name."""
+    "total_count", "installed_count", "run_status"}, sorted by bare_name.
+    "run_status" is "all"/"some"/"none" depending on how many of the
+    group's points have at least one linked run -- a quick per-test
+    coverage signal (green/yellow/red dot in the Phoronix tab) distinct
+    from "installed_count", since a point can be installed but never run,
+    or (via a symlinked run from elsewhere) run without wspy-phoronix-import
+    itself having checked it installed."""
     groups = {}
     for p in points:
         groups.setdefault(p["bare_name"], []).append(p)
     result = []
     for bare_name in sorted(groups):
         pts = sorted(groups[bare_name], key=lambda p: p["options_slug"])
+        points_with_runs = sum(1 for p in pts if p.get("runs"))
+        if points_with_runs == 0:
+            run_status = "none"
+        elif points_with_runs == len(pts):
+            run_status = "all"
+        else:
+            run_status = "some"
         result.append({
             "bare_name": bare_name,
             "points": pts,
             "total_count": len(pts),
             "installed_count": sum(1 for p in pts if p.get("installed") is True),
+            "run_status": run_status,
         })
     return result
 
