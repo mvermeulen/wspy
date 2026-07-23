@@ -1689,30 +1689,42 @@ def fetch_openbenchmarking_suite_xml(result_ref, phoronix_bin="phoronix-test-sui
 def parse_phoronix_xml_test_points(xml_bytes):
     """Decomposes suite-definition or result/composite Phoronix XML (see
     the module-level comment above for both shapes) into a deduped, order-
-    preserving list of {"test_id": "pts/name-1.2.3", "arguments": "..."}
-    dicts, one per distinct (test, option-combination) pair. Raises
-    xml.etree.ElementTree.ParseError on unparseable input -- callers decide
-    how to surface that."""
+    preserving list of {"test_id": "pts/name-1.2.3", "arguments": "...",
+    "description": "..."} dicts, one per distinct (test, option-
+    combination) pair. "description" (a Result's sibling <Description>,
+    e.g. "Build: defconfig" -- distinct from a suite's own top-level
+    <SuiteInformation><Description>) is captured alongside <Arguments>
+    because materialize_phoronix_test_point() needs both: a real PTS
+    install (pts_test_suite.php's own suite parser, confirmed live
+    2026-07-23) silently ignores a custom suite's <Arguments> and instead
+    batch-runs *every* option in a test's menu whenever a test has
+    configurable options and its <Execute> block has no <Description> --
+    <Arguments> alone is not enough to pin a specific option combination.
+    Raises xml.etree.ElementTree.ParseError on unparseable input -- callers
+    decide how to surface that."""
     root = ET.fromstring(xml_bytes)
     points = []
     seen = set()
 
-    def add(test_id, arguments):
+    def add(test_id, arguments, description):
         test_id = (test_id or "").strip()
         arguments = (arguments or "").strip()
+        description = (description or "").strip()
         if not test_id:
             return
         key = (test_id, arguments)
         if key in seen:
             return
         seen.add(key)
-        points.append({"test_id": test_id, "arguments": arguments})
+        points.append({"test_id": test_id, "arguments": arguments, "description": description})
 
     for execute in root.iter("Execute"):
         test_el = execute.find("Test")
         args_el = execute.find("Arguments")
+        desc_el = execute.find("Description")
         add(test_el.text if test_el is not None else None,
-            args_el.text if args_el is not None else None)
+            args_el.text if args_el is not None else None,
+            desc_el.text if desc_el is not None else None)
 
     for result in root.iter("Result"):
         # .find() (not .iter()) only looks at Result's direct children, so
@@ -1721,8 +1733,10 @@ def parse_phoronix_xml_test_points(xml_bytes):
         # <Result> block.
         id_el = result.find("Identifier")
         args_el = result.find("Arguments")
+        desc_el = result.find("Description")
         add(id_el.text if id_el is not None else None,
-            args_el.text if args_el is not None else None)
+            args_el.text if args_el is not None else None,
+            desc_el.text if desc_el is not None else None)
 
     return points
 
@@ -1848,7 +1862,7 @@ def slugify_phoronix_arguments(arguments):
     return f"{slug[:prefix_len].strip('-')}-{digest}"
 
 
-def _build_phoronix_suite_xml(identity, test_id, arguments, source_ref):
+def _build_phoronix_suite_xml(identity, test_id, arguments, source_ref, description=""):
     root = ET.Element("PhoronixTestSuite")
     info = ET.SubElement(root, "SuiteInformation")
     ET.SubElement(info, "Title").text = identity
@@ -1861,6 +1875,17 @@ def _build_phoronix_suite_xml(identity, test_id, arguments, source_ref):
     ET.SubElement(execute, "Test").text = test_id
     if arguments:
         ET.SubElement(execute, "Arguments").text = arguments
+        # A real PTS install ignores <Arguments> entirely -- silently
+        # batch-running every option in the test's menu instead of just
+        # this one -- unless <Execute> also carries a non-empty
+        # <Description> (pts_test_suite.php's own BATCH-mode fallback,
+        # confirmed live 2026-07-23 against a build-linux-kernel test
+        # point: PTS ran both "defconfig" and "allmodconfig" when only
+        # <Arguments>defconfig</Arguments> was present). The *content*
+        # doesn't matter to PTS, only presence -- fall back to the
+        # arguments string itself when the source XML had no real
+        # Description to carry over.
+        ET.SubElement(execute, "Description").text = description or arguments
     ET.indent(root, space="  ")
     return b'<?xml version="1.0"?>\n' + ET.tostring(root, encoding="utf-8") + b"\n"
 
@@ -1868,8 +1893,8 @@ def _build_phoronix_suite_xml(identity, test_id, arguments, source_ref):
 def materialize_phoronix_test_point(point, dest_root, source_kind, source_ref, installed=None):
     """Writes one minimal single-test-point suite-definition.xml (plus a
     source.json provenance sidecar) for `point` (a {"test_id",
-    "arguments"} dict from parse_phoronix_xml_test_points()) under
-    dest_root/<bare-test-name>/<options-slug>/ -- the layout
+    "arguments", "description"} dict from parse_phoronix_xml_test_points())
+    under dest_root/<bare-test-name>/<options-slug>/ -- the layout
     INVESTIGATION.md item 26 specifies. Returns a dict:
       {"test_id", "arguments", "bare_name", "options_slug", "identity",
        "dir", "status": "created" or "exists", "installed"}
@@ -1886,6 +1911,7 @@ def materialize_phoronix_test_point(point, dest_root, source_kind, source_ref, i
     the same idiom item 24's resume-check design note uses."""
     test_id = point["test_id"]
     arguments = point.get("arguments", "")
+    description = point.get("description", "")
     bare_name = phoronix_bare_test_name(test_id)
     options_slug = slugify_phoronix_arguments(arguments)
     identity = f"{bare_name}-{options_slug}"
@@ -1903,7 +1929,7 @@ def materialize_phoronix_test_point(point, dest_root, source_kind, source_ref, i
 
     os.makedirs(out_dir, exist_ok=True)
     with open(suite_path, "wb") as f:
-        f.write(_build_phoronix_suite_xml(identity, test_id, arguments, source_ref))
+        f.write(_build_phoronix_suite_xml(identity, test_id, arguments, source_ref, description=description))
     with open(os.path.join(out_dir, "source.json"), "w") as f:
         json.dump({
             "schema_version": 1,
@@ -1911,6 +1937,7 @@ def materialize_phoronix_test_point(point, dest_root, source_kind, source_ref, i
             "source_ref": source_ref,
             "test_id": test_id,
             "arguments": arguments,
+            "description": description,
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "installed": installed,
         }, f, indent=2)
