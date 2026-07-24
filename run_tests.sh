@@ -542,7 +542,7 @@ fi
 # zen4plus-deep are composed from existing profiles via load_profiles(), not
 # hand-written flag strings -- --list confirms the composition actually
 # concatenates the constituent profiles' own passes (quick's "run" +
-# ibs-basic's "ibs"; deep-cpu's three passes + ibs-memory-deep's "ibs" +
+# ibs-basic's "ibs"; deep-cpu's three passes + ibs-sample's "ibs" +
 # tree-heavy's "tree").
 if ! ./wspy-run --list | grep -q "^zen-portable:"; then
     echo "FAIL: wspy-run --list did not show the zen-portable profile"
@@ -585,8 +585,16 @@ if ! echo "$ZEN4OUT" | grep -q -- "\[systemtime\].*--power"; then
     echo "FAIL: zen4plus-deep's dry-run did not include deep-cpu's --power systemtime pass"
     exit 1
 fi
-if ! echo "$ZEN4OUT" | grep -q -- "\[ibs\].*--ibs-memory-deep"; then
-    echo "FAIL: zen4plus-deep's dry-run did not include ibs-memory-deep's 'ibs' pass"
+if ! echo "$ZEN4OUT" | grep -q -- "\[ibs\].*--ibs-sample"; then
+    echo "FAIL: zen4plus-deep's dry-run did not include ibs-sample's 'ibs' pass"
+    exit 1
+fi
+if echo "$ZEN4OUT" | grep -q -- "\[ibs\].*--interval\|\[ibs\].*--csv"; then
+    echo "FAIL: zen4plus-deep's ibs-sample pass should skip --interval/--csv (named breakdown is human-readable-only, ring buffer drains once at end-of-run)"
+    exit 1
+fi
+if ! echo "$ZEN4OUT" | grep -q -- "\[ibs\].*--no-rusage"; then
+    echo "FAIL: zen4plus-deep's ibs-sample pass should carry --no-rusage (the 'counters' pass already captures elapsed/utime/stime/...)"
     exit 1
 fi
 if ! echo "$ZEN4OUT" | grep -q -- "\[tree\].*--tree "; then

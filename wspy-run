@@ -41,7 +41,7 @@ CONFIG_OPTIONS=()
 
 declare -A PASS_EXT PASS_OUTFILE PASS_MANIFEST PASS_IS_TREE PASS_STATUS PASS_PTSLOG
 
-BUILTIN_PROFILES=(quick deep-cpu deep-cpu-intel deep-gpu tree-heavy ibs-basic ibs-memory-deep gpu-compute zen-portable zen4plus-deep)
+BUILTIN_PROFILES=(quick deep-cpu deep-cpu-intel deep-gpu tree-heavy ibs-basic ibs-memory-deep ibs-sample gpu-compute zen-portable zen4plus-deep)
 
 usage(){
   cat <<EOF
@@ -88,6 +88,14 @@ Builtin profiles:
               ibs_op for memory-path analysis, one-second interval time series
               -- known to skew the effective sampling period, see the run's
               own output for skew annotations
+  ibs-sample  single pass: AMD IBS *sampling* mode (--ibs-sample, distinct
+              from ibs-basic/ibs-memory-deep's counting mode) -- decodes each
+              sample's memory-data-source field into a named cache/DRAM
+              hierarchy breakdown (L1/L2/L3/local-node-cache/DRAM/remote-
+              node/...), human-readable .txt output only (no --csv -- the
+              named breakdown isn't in CSV output) and no --interval (the
+              ring buffer only drains once at end-of-run, so periodic rows
+              would just read 0)
   gpu-compute single pass, one execution of the workload: process/syscall
               latency tracing (futex/io-wait/connect/wait/poll/nanosleep) +
               system CPU/load/network + package power + AMD sysfs GPU +
@@ -103,16 +111,15 @@ Builtin profiles:
               filtering (a Zen5-only hardware feature, see the Zen5/IBS
               deep-dive in INVESTIGATION.md) so it runs warning-free across
               the whole Zen family
-  zen4plus-deep    deep-cpu + ibs-memory-deep + tree-heavy composed (AMD
+  zen4plus-deep    deep-cpu + ibs-sample + tree-heavy composed (AMD
               Family 19h+, i.e. Zen4/Zen5) -- deep-cpu's full topdown/cache/
               branch sweep (already includes --power, real on Family 19h+)
-              plus IBS with l3missonly+ldlat memory-path filtering, which
-              needs a Zen5 feature check to actually apply (Zen4 still runs
-              this cleanly, just without l3missonly -- ibs.c degrades to
-              unfiltered rather than failing, see the run's own skew
-              annotations), plus a --tree pass for process-tree capture
-              (auto-timed by estimate_tree_pass_timeouts() same as
-              tree-heavy on its own)
+              plus IBS sampling mode's named memory-hierarchy breakdown
+              (human-readable .txt, no --interval -- see ibs-sample above;
+              --no-rusage here too, since the "counters" pass above already
+              captures the same elapsed/utime/stime/... block),
+              plus a --tree pass for process-tree capture (auto-timed by
+              estimate_tree_pass_timeouts() same as tree-heavy on its own)
 
 Options:
   -o, --outdir <dir>       Directory to write pass output files into (default: .;
@@ -316,6 +323,24 @@ load_builtin_profile(){
       PASS_NAMES=(ibs)
       PASS_FLAGS=("--csv --interval 1 --ibs-memory-deep --no-ipc")
       ;;
+    ibs-sample)
+      # --ibs-sample is IBS *sampling* mode (ibs_sample.h), distinct from
+      # ibs-basic/ibs-memory-deep's counting mode above -- it decodes each
+      # sample's IbsOpData2 memory-data-source field into a named cache/DRAM
+      # hierarchy breakdown (which level a load actually resolved from), not
+      # just a filtered/unfiltered sample count. Two reasons this pass omits
+      # flags the counting-mode ones above use: no --interval, since
+      # ibs_sample.c only drains its ring buffer once at end-of-run --
+      # combined with --interval every periodic row reads 0 and only the
+      # final row is populated, so --interval buys nothing here and would
+      # just be misleading; no --csv, since the named per-level breakdown
+      # (print_ibs_sample_data_src_breakdown()) only prints in human-readable
+      # output -- CSV mode only carries two scheme-independent numeric
+      # columns (dram_rate/remote_node_rate), not the full named table. No
+      # --csv also means run_pass() gives this pass a .txt output file.
+      PASS_NAMES=(ibs)
+      PASS_FLAGS=("--ibs-sample --no-ipc")
+      ;;
     gpu-compute)
       # For a GPU-bound/latency-driven workload (a game renderer, a Vulkan
       # compute kernel host loop like ollama's) the deep-cpu/deep-gpu shape
@@ -353,7 +378,20 @@ load_builtin_profile(){
       return
       ;;
     zen4plus-deep)
-      load_profiles "deep-cpu,ibs-memory-deep,tree-heavy"
+      load_profiles "deep-cpu,ibs-sample,tree-heavy"
+      # ibs-sample's own rusage-on default (elapsed/utime/stime/nvcsw/...) is
+      # right for standalone use, but this composition's "counters" pass
+      # (deep-cpu's --passes sweep) already captures the same block --
+      # appending --no-rusage here only for zen4plus-deep's own "ibs" pass
+      # avoids duplicating it in ibs.txt, without changing the standalone
+      # ibs-sample profile. Found by name, not position, in case
+      # load_profiles' pass order ever changes.
+      local i
+      for i in "${!PASS_NAMES[@]}"; do
+        if [ "${PASS_NAMES[$i]}" = "ibs" ]; then
+          PASS_FLAGS[$i]="${PASS_FLAGS[$i]} --no-rusage"
+        fi
+      done
       return
       ;;
     *)
