@@ -71,6 +71,11 @@ struct counter_info {
   // took the wrong (process-scoped) path otherwise -- see INVESTIGATION.md's
   // 4.3 Tier 0 "RAPL/energy-pkg opened with the wrong scope" item.
   unsigned int requires_system_wide : 1;
+  // AMD IBS sampling-mode marker (ibs_sample.h): this counter's fd is mmap'd
+  // for PERF_SAMPLE_RAW records rather than read() as a plain running count,
+  // so read_counters()/setup_counters() must special-case it -- see
+  // ibs_sample.h's own comment for why draining only happens at end-of-run.
+  unsigned int is_ibs_sample : 1;
   unsigned int device_type;
   unsigned long int config;
   unsigned long int config1; // extended config word (e.g. AMD IBS ldlat threshold); 0 for counters that don't use it
@@ -90,6 +95,11 @@ struct counter_info {
                          // for every counter that isn't power) means "no scaling"
   double scaled_value;  // this read's .value * scale, in the counter's own real unit (e.g.
                          // Joules) -- only meaningful when scale != 0.0; see read_counters()
+  // NULL for every counter except IBS sampling-mode ones (is_ibs_sample==1),
+  // where it holds the mmap'd ring buffer + decoded aggregate stats. Opaque
+  // here (struct defined in ibs_sample.h) since cpu_info.h is included by
+  // code that has no reason to know AMD IBS's internal sample layout.
+  struct ibs_sample_state *ibs_sample_state;
 };
 
 // CPU counter tables

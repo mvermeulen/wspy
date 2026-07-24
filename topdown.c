@@ -29,6 +29,7 @@
 #include "coverage.h"
 #include "ptrace_arch.h"
 #include "ibs.h"
+#include "ibs_sample.h"
 #include "power.h"
 #include "phase.h"
 #include "affinity.h"
@@ -1702,6 +1703,12 @@ void setup_counters(struct counter_group *counter_group_list){
       // a config bitfield -- 0 for every non-IBS counter, a no-op there.
       pe.sample_period = cgroup->cinfo[i].sample_period;
       pe.sample_type = PERF_SAMPLE_IDENTIFIER; // is this needed?
+      // AMD IBS sampling mode (ibs_sample.h): overrides sample_type to
+      // PERF_SAMPLE_RAW so the resulting fd carries real per-sample tag
+      // data instead of being a plain counting event -- must happen before
+      // perf_event_open() below, since sample_type is part of the syscall's
+      // own attr argument.
+      if (cgroup->cinfo[i].is_ibs_sample) ibs_sample_attr_init(&pe);
       pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED|PERF_FORMAT_TOTAL_TIME_RUNNING;
       pe.size = sizeof(struct perf_event_attr);
       //      pe.exclude_guest = 1; // is this needed
@@ -1734,6 +1741,13 @@ void setup_counters(struct counter_group *counter_group_list){
 	ioctl(cgroup->cinfo[i].fd,PERF_EVENT_IOC_ENABLE,0);
 	debug("   create %s performance counter, name=%s\n",cgroup->label,cgroup->cinfo[i].label);
 	if (group_id == -1) group_id = cgroup->cinfo[i].fd;
+	// AMD IBS sampling mode: mmap the ring buffer now that the fd exists.
+	// A failed mmap degrades to "no sampling data" (warning already
+	// logged by ibs_sample_mmap()) rather than treating the counter as
+	// unavailable -- the fd itself opened fine.
+	if (cgroup->cinfo[i].is_ibs_sample)
+	  cgroup->cinfo[i].ibs_sample_state = ibs_sample_mmap(cgroup->cinfo[i].fd,
+							       !strcmp(cgroup->cinfo[i].label,"ibs_sample_op"));
       }
     }
   }
@@ -1787,6 +1801,19 @@ void read_counters(struct counter_group *counter_group_list,int stop_counters){
     debug("Stopping %s counters\n",cgroup->label);
     for (i=0;i<cgroup->ncounters;i++){
       if (cgroup->cinfo[i].fd != -1){
+        // AMD IBS sampling mode (ibs_sample.h): never read()/ioctl() this
+        // fd like a plain counting counter -- its data lives in the mmap'd
+        // ring buffer instead. Draining that ring involves real parsing/
+        // allocation that isn't async-signal-safe, so it must never run
+        // from timer_callback()'s SIGALRM handler (stop_counters==0, the
+        // per-tick path) -- only the final, non-signal-handler tail call
+        // (stop_counters==1) drains it. See ibs_sample.h's file comment for
+        // why --ibs-sample + --interval's periodic rows are zeroed as a
+        // result.
+        if (cgroup->cinfo[i].is_ibs_sample){
+          if (stop_counters) ibs_sample_drain(cgroup->cinfo[i].ibs_sample_state);
+          continue;
+        }
         if (cgroup->mask & COUNTER_POWER && cgroup->cinfo[i].device_type == 9999) {
           char buf[64];
           lseek(cgroup->cinfo[i].fd, 0, SEEK_SET);
@@ -3545,6 +3572,8 @@ void print_metrics(struct counter_group *counter_group_list,enum output_format o
       print_arm_mem_align_tlb(cgroup,oformat);
     } else if (cgroup->mask & COUNTER_IBS){
       print_ibs(cgroup,oformat);
+    } else if (cgroup->mask & COUNTER_IBS_SAMPLE){
+      print_ibs_sample(cgroup,oformat);
     } else if (cgroup->mask & COUNTER_POWER){
       print_power(cgroup,oformat);
     } else if (cgroup->mask & COUNTER_POWER_CORE){

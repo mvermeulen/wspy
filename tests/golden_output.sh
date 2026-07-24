@@ -286,6 +286,11 @@ if [ "$vendor" = "AMD" ]; then
   assert_csv_header "cache1-not-yet-implemented"         --no-ipc --cache1          -- "${BASE}counters_measured,counters_requested,"
   assert_csv_header "ibs-basic"        --no-ipc --ibs-basic       -- "${BASE}ibs_fetch,ibs_op,counters_measured,counters_requested,"
   assert_csv_header "ibs-memory-deep"  --no-ipc --ibs-memory-deep -- "${BASE}ibs_fetch,ibs_op,ibs_op_unfiltered,ibs_op_accepted_ratio,ibs_l3missonly,ibs_ldlat_threshold,ibs_fetchlat_threshold,counters_measured,counters_requested,"
+  # AMD IBS *sampling*-mode (ibs_sample.h) -- unlike ibs-memory-deep's header
+  # above, print_ibs_sample() emits the same fixed column set unconditionally
+  # (no profile-dependent branch), so this holds regardless of which IBS
+  # caps this AMD host happens to expose.
+  assert_csv_header "ibs-sample"       --no-ipc --ibs-sample      -- "${BASE}ibs_sample_fetch_count,ibs_sample_ic_miss_rate,ibs_sample_l1tlb_miss_rate,ibs_sample_l2tlb_miss_rate,ibs_sample_op_count,ibs_sample_dc_miss_rate,ibs_sample_dc_l1tlb_miss_rate,ibs_sample_dc_l2tlb_miss_rate,ibs_sample_brn_misp_rate,ibs_sample_lost,counters_measured,counters_requested,"
   # Native multi-pass counter execution (--passes): ipc(3 counters)+cache2(6)
   # combined (9) exceeds the 6-slot budget, so this splits into exactly 2
   # passes (neither individually multiplexes) -- base/rusage columns once,
@@ -328,6 +333,7 @@ assert_csv_columns_match "rusage" --rusage
 assert_csv_columns_match "no-rusage" --no-rusage
 assert_csv_columns_match "ibs-basic" --ibs-basic
 assert_csv_columns_match "ibs-memory-deep" --ibs-memory-deep
+assert_csv_columns_match "ibs-sample" --ibs-sample
 assert_csv_columns_match "power" --power
 assert_csv_columns_match "arm-dcache-mem" --arm-dcache-mem
 assert_csv_columns_match "arm-icache-tlb" --arm-icache-tlb

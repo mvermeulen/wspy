@@ -28,6 +28,7 @@
 #include "coverage.h"
 #include "provenance.h"
 #include "ibs.h"
+#include "ibs_sample.h"
 #include "power.h"
 #include "preflight.h"
 #include "phase.h"
@@ -267,6 +268,7 @@ int parse_options(int argc,char *const argv[]){
     { "ibs-maxcnt", required_argument, 0, 58 },
     { "ibs-ldlat", required_argument, 0, 59 },
     { "ibs-fetchlat", required_argument, 0, 60 },
+    { "ibs-sample", no_argument, 0, 96 },
     { "icache", no_argument, 0, 12 },
     { "no-icache", no_argument, 0, 13 },
     { "interval", required_argument, 0, 34 },
@@ -573,6 +575,9 @@ int parse_options(int argc,char *const argv[]){
       } else {
 	warning("invalid argument to --ibs-fetchlat: %s, ignored\n",optarg);
       }
+      break;
+    case 96: // --ibs-sample
+      counter_mask |= COUNTER_IBS_SAMPLE;
       break;
     case 61: // --preflight
       preflightflag = 1;
@@ -1430,6 +1435,10 @@ static void print_full_usage(FILE *out,const char *prog){
 	  "\t--ibs-maxcnt <n>          - override IBS sampling interval (MaxCnt, via sample_period)\n"
 	  "\t--ibs-ldlat <n>           - override ibs-memory-deep load-latency threshold (cycles)\n"
 	  "\t--ibs-fetchlat <n>        - override ibs-memory-deep fetch-latency threshold (cycles)\n"
+	  "\t--ibs-sample              - sampling-mode IBS: per-sample tag data (dc/ic/tlb miss,\n"
+	  "\t                            branch mispredict rates), not just counts. Rates are\n"
+	  "\t                            computed once at end-of-run -- with --interval, periodic\n"
+	  "\t                            rows show 0 and only the final row is populated.\n"
 	  "\n"
 	  "CPU power/energy:\n"
 	  "\t--power                   - CPU package energy/power (power/energy-pkg dynamic PMU,\n"
@@ -1517,6 +1526,8 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       fatal("--passes is incompatible with --tree (ptrace child-tracing model conflicts with re-executing the child N times)\n");
     if (counter_mask & COUNTER_IBS)
       fatal("--passes is incompatible with --ibs-basic/--ibs-memory-deep (IBS has its own separate system-wide budget)\n");
+    if (counter_mask & COUNTER_IBS_SAMPLE)
+      fatal("--passes is incompatible with --ibs-sample (IBS has its own separate system-wide budget)\n");
     if (counter_mask & COUNTER_POWER)
       fatal("--passes is incompatible with --power (power/energy-pkg is a cumulative counter with"
             " its own separate system-wide budget, and scale-multiplication across separately-timed"
@@ -1679,6 +1690,15 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   // branch raw events are, so --per-core has no natural meaning here.
   if (counter_mask & COUNTER_IBS){
     if ((cgroup = ibs_counter_group("ibs",ibs_collection_profile,&ibs_params))){
+      cgroup->next = cpu_info->systemwide_counters;
+      cpu_info->systemwide_counters = cgroup;
+    }
+  }
+
+  // AMD IBS *sampling*-mode (--ibs-sample, ibs_sample.h) -- system-wide only,
+  // same reasoning as counting-mode IBS above.
+  if (counter_mask & COUNTER_IBS_SAMPLE){
+    if ((cgroup = ibs_sample_counter_group("ibs_sample",&ibs_params))){
       cgroup->next = cpu_info->systemwide_counters;
       cpu_info->systemwide_counters = cgroup;
     }

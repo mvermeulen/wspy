@@ -158,6 +158,10 @@ ARM notes:
     skew/quality annotations)
   * `--ibs-maxcnt <n>`, `--ibs-ldlat <n>`, `--ibs-fetchlat <n>` - override the built-in
     default sampling/filter thresholds
+  * `--ibs-sample` - sampling-mode IBS: decodes each individual sample's tagged register data
+    (dc/ic/TLB miss and branch-mispredict rates) instead of just a running count, via a mmap'd
+    perf ring buffer. Rates are computed once at end-of-run, not per-`--interval` tick — see
+    `ibs_sample.h`
 * AMD GPU metrics (only available when built with `AMDGPU=1`)
   * `--gpu-smi` - GPU info via ROCm's `amd_smi` library
   * `--gpu-busy` - instantaneous GPU busy percent, read from sysfs
