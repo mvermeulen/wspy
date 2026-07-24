@@ -159,9 +159,12 @@ ARM notes:
   * `--ibs-maxcnt <n>`, `--ibs-ldlat <n>`, `--ibs-fetchlat <n>` - override the built-in
     default sampling/filter thresholds
   * `--ibs-sample` - sampling-mode IBS: decodes each individual sample's tagged register data
-    (dc/ic/TLB miss and branch-mispredict rates) instead of just a running count, via a mmap'd
-    perf ring buffer. Rates are computed once at end-of-run, not per-`--interval` tick — see
-    `ibs_sample.h`
+    (dc/ic/TLB miss, branch-mispredict, DRAM-fill, and remote-NUMA-fill rates) instead of just a
+    running count, via a mmap'd perf ring buffer. Rates are computed once at end-of-run, not
+    per-`--interval` tick — see `ibs_sample.h`. The full named memory-data-source breakdown
+    (Local L3/CCX, DRAM, remote-NUMA CCX, long-latency DIMM, MMIO, ...) prints in the
+    human-readable output only, since the category meanings differ between pre-Zen4 and Zen4+
+    hardware — only the two scheme-independent rates above reach CSV
 * AMD GPU metrics (only available when built with `AMDGPU=1`)
   * `--gpu-smi` - GPU info via ROCm's `amd_smi` library
   * `--gpu-busy` - instantaneous GPU busy percent, read from sysfs

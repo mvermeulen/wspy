@@ -65,6 +65,85 @@ static void test_decode_op_short_record(void){
   printf("PASS: ibs_sample_decode_op short record\n");
 }
 
+static void test_decode_op_data_src_dram(void){
+  struct ibs_sample_state st;
+  uint64_t words[4] = {0,0,0,0};
+
+  printf("Testing ibs_sample_decode_op: IbsOpData2 data_src==3 (DRAM, scheme-independent)...\n");
+  memset(&st,0,sizeof(st));
+  words[3] = 3; // data_src_lo=3, data_src_hi=0 -> data_src=3
+
+  ibs_sample_decode_op(words,4,&st);
+
+  assert(st.op_dram_count == 1);
+  assert(st.op_remote_node_count == 0);
+  assert(st.op_data_src_count[3] == 1);
+  assert(st.op_data_src_other_count == 0);
+  printf("PASS: ibs_sample_decode_op data_src DRAM\n");
+}
+
+static void test_decode_op_data_src_remote_node(void){
+  struct ibs_sample_state st;
+  uint64_t words[4] = {0,0,0,0};
+
+  printf("Testing ibs_sample_decode_op: IbsOpData2.rmt_node bit (scheme-independent)...\n");
+  memset(&st,0,sizeof(st));
+  words[3] = (1ULL << 4); // rmt_node set, data_src_lo/hi both 0 -> data_src=0
+
+  ibs_sample_decode_op(words,4,&st);
+
+  assert(st.op_remote_node_count == 1);
+  assert(st.op_dram_count == 0);
+  assert(st.op_data_src_count[0] == 1); // "no source recorded" -- still counted at decode time,
+                                        // only skipped when *printing* the named breakdown
+  printf("PASS: ibs_sample_decode_op data_src rmt_node\n");
+}
+
+static void test_decode_op_data_src_in_range_index(void){
+  struct ibs_sample_state st;
+  uint64_t words[4] = {0,0,0,0};
+
+  printf("Testing ibs_sample_decode_op: IbsOpData2 in-range histogram index...\n");
+  memset(&st,0,sizeof(st));
+  words[3] = 6; // data_src=6 ("Long-latency DIMM" on zen4_ibs_extensions hardware)
+
+  ibs_sample_decode_op(words,4,&st);
+
+  assert(st.op_data_src_count[6] == 1);
+  assert(st.op_data_src_other_count == 0);
+  printf("PASS: ibs_sample_decode_op data_src in-range index\n");
+}
+
+static void test_decode_op_data_src_out_of_range_index(void){
+  struct ibs_sample_state st;
+  uint64_t words[4] = {0,0,0,0};
+
+  printf("Testing ibs_sample_decode_op: IbsOpData2 out-of-range index folds into other_count...\n");
+  memset(&st,0,sizeof(st));
+  words[3] = (1ULL << 6) | 7; // data_src_hi bit (bit 6) set + data_src_lo=7 -> data_src=(1<<3)|7=15 (>= table size 13)
+
+  ibs_sample_decode_op(words,4,&st);
+
+  assert(st.op_data_src_other_count == 1);
+  printf("PASS: ibs_sample_decode_op data_src out-of-range index\n");
+}
+
+static void test_decode_op_data_src_not_read_when_short(void){
+  struct ibs_sample_state st;
+  uint64_t words[3] = {0,0,0};
+
+  printf("Testing ibs_sample_decode_op: IbsOpData2 not read when nwords <= 3...\n");
+  memset(&st,0,sizeof(st));
+
+  ibs_sample_decode_op(words,3,&st);
+
+  assert(st.op_dram_count == 0);
+  assert(st.op_remote_node_count == 0);
+  assert(st.op_data_src_count[0] == 0);
+  assert(st.op_data_src_other_count == 0);
+  printf("PASS: ibs_sample_decode_op data_src not read when short\n");
+}
+
 static void test_decode_fetch_bits(void){
   struct ibs_sample_state st;
   uint64_t words[1];
@@ -311,6 +390,11 @@ int main(void){
   test_decode_op_dc_miss_and_tlb();
   test_decode_op_brn_misp_requires_brn_ret();
   test_decode_op_short_record();
+  test_decode_op_data_src_dram();
+  test_decode_op_data_src_remote_node();
+  test_decode_op_data_src_in_range_index();
+  test_decode_op_data_src_out_of_range_index();
+  test_decode_op_data_src_not_read_when_short();
   test_decode_fetch_bits();
   test_decode_null_safe();
   test_drain_single_op_record();
