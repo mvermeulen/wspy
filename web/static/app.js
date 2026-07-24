@@ -619,7 +619,9 @@
     if (data.ibs && data.ibs.length) {
       html += '<div class="check-section"><strong>AMD IBS probe</strong> '
         + '<span class="muted">(actually opens the counter(s) against a trivial workload -- '
-        + "sysfs presence alone can't catch a runtime perf_event_open() failure)</span>";
+        + "sysfs presence alone can't catch a runtime perf_event_open() failure; IBS is "
+        + "system-wide-only monitoring and needs root or CAP_PERFMON, the same requirement "
+        + "--power has below)</span>";
       data.ibs.forEach(function (p) { html += renderCounterProbe(p); });
       html += "</div>";
     }

@@ -6,12 +6,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REQ_NMI=0
 REQ_PERF=1     # documented minimum for wspy to work unprivileged (see README/CLAUDE.md)
 REQ_PERF_PERMISSIVE=-1
-# --power's RAPL/energy-pkg access needs root or CAP_PERFMON specifically --
-# stricter than perf_event_paranoid alone covers (confirmed live: --ibs-basic
-# opens fine at the same paranoid level that denies --power). Repo-root
-# wspy binary, relative to this script's own location so it doesn't matter
-# what directory this is invoked from. Overridable via --wspy-binary for a
-# build living elsewhere.
+# --power's RAPL/energy-pkg access, and AMD IBS's system-wide-only counters
+# (--ibs-basic/--ibs-memory-deep/--ibs-sample), both need root or CAP_PERFMON
+# specifically -- stricter than perf_event_paranoid alone covers. Confirmed
+# live end-to-end (not just the EACCES symptom, the actual fix): granting
+# cap_perfmon=ep to the wspy binary took --ibs-sample from EACCES on every
+# counter to "counter coverage 2/2 measured" with real sample counts, on the
+# same host/kernel where --power already needed this grant -- per
+# perf_event_open(2), CAP_PERFMON bypasses perf_event_paranoid entirely via
+# the kernel's perfmon_capable() check, which gates both RAPL and
+# system-wide PMU access identically, so one grant below covers both.
+# Repo-root wspy binary, relative to this script's own location so it
+# doesn't matter what directory this is invoked from. Overridable via
+# --wspy-binary for a build living elsewhere.
 WSPY_BIN="$(cd "${SCRIPT_DIR}/.." && pwd)/wspy"
 DESIRED_CAP="cap_perfmon+ep"
 DO_SETCAP=1
@@ -22,8 +29,9 @@ Usage: $SCRIPT_NAME [-y] [-p|--permissive] [--wspy-binary <path>] [--no-setcap]
 
 Checks current kernel settings for nmi_watchdog and perf_event_paranoid and
 asks to update them if necessary, then checks/grants the wspy binary
-CAP_PERFMON (needed for --power specifically -- see CLAUDE.md's power.c
-entry) so it works without sudo.
+CAP_PERFMON (needed for --power specifically, and for AMD IBS's
+--ibs-basic/--ibs-memory-deep/--ibs-sample -- all are system-wide-only PMU
+access, see CLAUDE.md's power.c/ibs.c entries) so they work without sudo.
 
 Options:
   -y                  Apply changes without prompting.
@@ -43,7 +51,7 @@ Notes:
 - CAP_PERFMON is a file capability attached to the wspy binary's own inode --
   rebuilding wspy (make) replaces that file and drops the grant. Re-run this
   script (or just \`sudo setcap $DESIRED_CAP <path to wspy>\`) after every
-  rebuild if --power access without sudo matters to you.
+  rebuild if --power or IBS access without sudo matters to you.
 - This script will use sudo if not run as root.
 EOF
 }
@@ -134,11 +142,11 @@ check_setcap(){
     return 0
   fi
   if ! command -v getcap >/dev/null 2>&1 || ! command -v setcap >/dev/null 2>&1; then
-    echo "CAP_PERFMON (--power): getcap/setcap not found (install libcap2-bin on Debian/Ubuntu, libcap on Fedora/RHEL) -- skipping"
+    echo "CAP_PERFMON (--power/IBS): getcap/setcap not found (install libcap2-bin on Debian/Ubuntu, libcap on Fedora/RHEL) -- skipping"
     return 0
   fi
   if [ ! -e "$WSPY_BIN" ]; then
-    echo "CAP_PERFMON (--power): $WSPY_BIN not found -- run 'make' first, then re-run this script if --power access without sudo matters to you"
+    echo "CAP_PERFMON (--power/IBS): $WSPY_BIN not found -- run 'make' first, then re-run this script if --power access without sudo matters to you"
     return 0
   fi
 
@@ -151,10 +159,10 @@ check_setcap(){
   local cur_cap
   cur_cap=$(getcap "$WSPY_BIN" 2>/dev/null || true)
   if echo "$cur_cap" | grep -q 'cap_perfmon'; then
-    echo "CAP_PERFMON (--power): $WSPY_BIN already has it -- OK"
+    echo "CAP_PERFMON (--power/IBS): $WSPY_BIN already has it -- OK"
     return 0
   fi
-  echo "CAP_PERFMON (--power): $WSPY_BIN does not have it (current: ${cur_cap:-none})"
+  echo "CAP_PERFMON (--power/IBS): $WSPY_BIN does not have it (current: ${cur_cap:-none})"
 
   if [ "$AUTO_APPLY" -eq 0 ]; then
     read -r -p "Grant $DESIRED_CAP to $WSPY_BIN now? [y/N] " ans || ans="n"
@@ -178,7 +186,7 @@ check_setcap(){
   fi
 
   if getcap "$WSPY_BIN" 2>/dev/null | grep -q 'cap_perfmon'; then
-    echo "CAP_PERFMON: granted -- $WSPY_BIN can now use --power without sudo"
+    echo "CAP_PERFMON: granted -- $WSPY_BIN can now use --power/IBS without sudo"
   else
     echo "CAP_PERFMON: setcap did not report an error but the capability isn't visible afterward -- verify manually with 'getcap $WSPY_BIN'" >&2
     return 1

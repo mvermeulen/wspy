@@ -100,7 +100,34 @@ TOPLEVEL_MARKER_FILES = ARTIFACT_FILES + (RUN_MANIFEST_NAME, SUMMARY_NAME)
 # order; everything else follows alphabetically.
 BUILTIN_PROFILES = ("quick", "zen4plus-deep", "deep-cpu", "deep-gpu",
                      "deep-cpu-intel", "gpu-compute", "ibs-basic",
-                     "ibs-memory-deep", "tree-heavy", "zen-portable")
+                     "ibs-memory-deep", "ibs-sample", "tree-heavy", "zen-portable")
+
+# wspy-run's zen-portable/zen4plus-deep are themselves composed from other
+# builtin profiles via wspy-run's own load_profiles() (hand-derived here,
+# same "not otherwise discoverable from Python without parsing wspy-run's
+# bash" reasoning as POWER_PRESET_NAMES/PROFILE_PLOTTABLE_COLUMNS below) --
+# the web launcher only ever submits the single top-level preset name
+# ("zen4plus-deep"), never wspy-run's own expanded "deep-cpu,ibs-sample,
+# tree-heavy" comma list, so ibs_probes_for_request()/power_probes_for_
+# request() below need this table to know what a composite preset actually
+# runs. Without it, a composite preset's IBS/power passes silently never got
+# probed by the Check button -- not a regression from any specific change,
+# just unreachable until zen-portable/zen4plus-deep became selectable here.
+COMPOSITE_PRESET_PROFILES = {
+    "zen-portable": ("quick", "ibs-basic"),
+    "zen4plus-deep": ("deep-cpu", "ibs-sample", "tree-heavy"),
+}
+
+
+def _expand_preset_names(preset):
+    """preset.split(',') with each composite name (see COMPOSITE_PRESET_
+    PROFILES) expanded to its constituent builtin profiles -- so probe/plot
+    logic keyed on wspy-run's own profile names (e.g. "ibs-sample",
+    "deep-cpu") sees them even when the request only named the composite."""
+    names = []
+    for name in (n.strip() for n in preset.split(",")):
+        names.extend(COMPOSITE_PRESET_PROFILES.get(name, (name,)))
+    return names
 
 # ALL_GROUPS/counter_group_flags/COLUMN_TO_GROUP/resolve_column_group/
 # autofit_checklist_for_custom_plots/PROFILE_PLOTTABLE_COLUMNS/
@@ -708,25 +735,61 @@ def check_tooling():
 # than only re-deriving sysfs presence. topdown.c:setup_counters()'s error()
 # text is identical regardless of which counter group failed to open, so
 # this same regex also parses probe_power()'s failures below.
+#
+# IBS is also system-wide-only (requires_system_wide, ibs.c), and a prior
+# comment here claimed it opens fine at perf_event_paranoid=1 without
+# CAP_PERFMON/root -- confirmed live (this session, kernel 7.0.0-28-generic)
+# that this is no longer true: --ibs-basic/--ibs-sample return the same
+# EACCES as --power at paranoid=1 with no capability granted. Per
+# perf_event_open(2), CAP_PERFMON bypasses perf_event_paranoid entirely (the
+# kernel's perfmon_capable() check gates both the RAPL/power PMU and
+# system-wide IBS access identically) -- confirmed live end-to-end this
+# session: granting cap_perfmon=ep to the wspy binary (scripts/setup_perf.sh)
+# took --ibs-sample from EACCES on both counters to "counter coverage 2/2
+# measured" with real ibs_sample_fetch_count/ibs_sample_op_count values, so
+# IBS_EACCES_HINT below reusing POWER_EACCES_HINT's scripts/setup_perf.sh
+# remediation is verified, not just documented.
 COUNTER_UNAVAILABLE_RE = re.compile(
     r"unable to create \S+ performance counter, name=(\S+), errno=(\d+) - (.+)")
 IBS_UNSUPPORTED_TEXT = "AMD IBS not supported on this host/kernel"
+IBS_EACCES_ERRNO = "13"
+IBS_EACCES_HINT = (
+    "AMD IBS is system-wide-only monitoring and needs root or the CAP_PERFMON capability, "
+    "the same requirement --power has (see the comment above this probe) -- either run wspy "
+    "under sudo, or run `scripts/setup_perf.sh` (it checks/grants CAP_PERFMON on the wspy "
+    "binary for both --power and IBS -- note the grant is tied to that exact binary file and "
+    "needs re-running after every rebuild)"
+)
 
 
 def ibs_probes_for_request(cfg, preset, checklist):
     """Returns [(label, flags)] for every IBS profile this request would
-    actually invoke -- a composite preset's ibs-basic/ibs-memory-deep
-    entries, or the Run tab's IBS checklist row in custom mode -- so the
-    probe below tests exactly what would run, not a guess. [] when IBS
+    actually invoke -- a preset's (or a composite preset's, e.g.
+    zen4plus-deep -- see COMPOSITE_PRESET_PROFILES) ibs-basic/ibs-memory-deep/
+    ibs-sample entry, or the Run tab's IBS checklist row in custom mode -- so
+    the probe below tests exactly what would run, not a guess. [] when IBS
     isn't in play for this request at all."""
     preset = (preset or "").strip()
     probes = []
     if preset:
-        for name in [p.strip() for p in preset.split(",")]:
+        for name in _expand_preset_names(preset):
             if name == "ibs-basic":
                 probes.append(("ibs-basic", ["--ibs-basic", "--no-ipc", "--csv"]))
             elif name == "ibs-memory-deep":
                 probes.append(("ibs-memory-deep", ["--ibs-memory-deep", "--no-ipc", "--csv"]))
+            elif name == "ibs-sample":
+                # The real ibs-sample pass omits --csv (its named breakdown is
+                # human-readable-only) -- but the probe adds it back, same as
+                # every other probe here, purely so its counters_measured/
+                # counters_requested trailer is easy to parse below (a real
+                # column pair even for --ibs-sample -- confirmed via
+                # tests/golden_output.sh's ibs-sample header assertion and a
+                # live run: --csv's coverage trailer is generic across every
+                # counter group, not specific to counting-mode's print_ibs()).
+                # Human-readable mode has the same coverage numbers but as a
+                # single "counter coverage N/M measured" line, which the
+                # CSV-row parser below can't consume.
+                probes.append(("ibs-sample", ["--ibs-sample", "--no-ipc", "--csv"]))
         return probes
 
     ibs = (checklist or {}).get("ibs") or {}
@@ -777,17 +840,33 @@ def probe_ibs(wspy_bin, label, flags):
                 measured = requested = None
             break
 
+    # failures checked before the measured/requested parse result -- ibs-basic/
+    # ibs-memory-deep's counting-mode print_ibs() carries its own
+    # counters_measured/counters_requested columns (parsed above), but
+    # ibs-sample's print_ibs_sample() has no such columns in either CSV or
+    # human-readable output (see ibs_sample.c) -- so requested stays None for
+    # every ibs-sample probe regardless of whether it succeeded, and checking
+    # failures only in the requested-is-not-None branch silently dropped a
+    # real EACCES here (reported as "could not parse", not "warn"+the hint).
     failures = COUNTER_UNAVAILABLE_RE.findall(output)
-    if requested is None:
-        entry.update(status="unknown", detail="could not parse counter coverage from probe output")
+    if failures:
+        detail = "; ".join(f"{name}: errno={errnum} ({reason})" for name, errnum, reason in failures)
+        if any(errnum == IBS_EACCES_ERRNO for _, errnum, _ in failures):
+            detail += " -- " + IBS_EACCES_HINT
+        entry.update(status="warn", detail=detail)
+    elif requested is None:
+        # No explicit open failures and no counters_measured/requested line to
+        # cross-check (expected for ibs-sample) -- absence of failures is the
+        # best success signal this probe has for that profile.
+        entry.update(status="ok",
+                      detail="no counter-open failures reported (this IBS profile has no "
+                              "measured/requested coverage line to cross-check)")
     elif requested == 0:
         entry.update(status="unknown", detail="probe requested 0 IBS counters unexpectedly")
-    elif measured == requested and not failures:
+    elif measured == requested:
         entry.update(status="ok", detail=f"{measured}/{requested} IBS counter(s) opened successfully")
     else:
-        detail = "; ".join(f"{name}: errno={errnum} ({reason})" for name, errnum, reason in failures) \
-            or f"only {measured}/{requested} IBS counter(s) opened"
-        entry.update(status="warn", detail=detail)
+        entry.update(status="warn", detail=f"only {measured}/{requested} IBS counter(s) opened")
     entry["measured"] = measured
     entry["requested"] = requested
     return entry
@@ -796,13 +875,16 @@ def probe_ibs(wspy_bin, label, flags):
 # power/energy-pkg's own permission story is stricter than the general
 # perf_event_paranoid gate check_perf_access() already covers -- confirmed
 # live: at perf_event_paranoid=1 (wspy's own documented minimum,
-# scripts/setup_perf.sh's default target), --ibs-basic opens its counters
-# fine but --power gets EACCES, because RAPL/power-PMU access needs
-# CAP_PERFMON or root specifically (the Platypus-CVE-era kernel hardening),
-# not just a permissive-enough paranoid value. --capabilities' sysfs-only
-# discovery can't see this either (it happily reports the PMU as
-# "supported" from sysfs alone) -- only an actual open attempt catches it,
-# same reasoning as the IBS probe above.
+# scripts/setup_perf.sh's default target), --power gets EACCES, because
+# RAPL/power-PMU access needs CAP_PERFMON or root specifically (the
+# Platypus-CVE-era kernel hardening), not just a permissive-enough paranoid
+# value. --capabilities' sysfs-only discovery can't see this either (it
+# happily reports the PMU as "supported" from sysfs alone) -- only an actual
+# open attempt catches it, same reasoning as the IBS probe above. (An older
+# version of this comment claimed --ibs-basic opens fine at this same
+# paranoid level, unlike --power -- confirmed live elsewhere in this file
+# that this is no longer true on at least one host/kernel combination; IBS
+# hits the identical EACCES/CAP_PERFMON requirement, see IBS_EACCES_HINT.)
 POWER_UNSUPPORTED_TEXT = "CPU power/energy (power/energy-pkg) not supported on this host/kernel"
 # EACCES specifically -- the exact errno RAPL's CAP_PERFMON/root requirement
 # produces, distinct from e.g. EINVAL on a malformed config -- gets an
@@ -810,8 +892,7 @@ POWER_UNSUPPORTED_TEXT = "CPU power/energy (power/energy-pkg) not supported on t
 POWER_EACCES_ERRNO = "13"
 POWER_EACCES_HINT = (
     "power/energy-pkg needs root or the CAP_PERFMON capability, stricter than "
-    "perf_event_paranoid alone covers (confirmed: --ibs-basic opens fine at the same "
-    "paranoid level that denies this) -- either run wspy under sudo, or run "
+    "perf_event_paranoid alone covers -- either run wspy under sudo, or run "
     "`scripts/setup_perf.sh` (it now checks/grants CAP_PERFMON on the wspy binary "
     "alongside its existing sysctl checks -- note the grant is tied to that exact binary "
     "file and needs re-running after every rebuild)"
@@ -844,7 +925,7 @@ def power_probes_for_request(cfg, preset, checklist):
     at all."""
     preset = (preset or "").strip()
     if preset:
-        names = {p.strip() for p in preset.split(",")}
+        names = set(_expand_preset_names(preset))
         if names & POWER_PRESET_NAMES:
             return [("power", ["--power", "--no-ipc", "--csv"])]
         return []
