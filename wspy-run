@@ -103,14 +103,16 @@ Builtin profiles:
               filtering (a Zen5-only hardware feature, see the Zen5/IBS
               deep-dive in INVESTIGATION.md) so it runs warning-free across
               the whole Zen family
-  zen4plus-deep    deep-cpu + ibs-memory-deep composed (AMD Family 19h+,
-              i.e. Zen4/Zen5) -- deep-cpu's full topdown/cache/branch sweep
-              (already includes --power, real on Family 19h+) plus IBS with
-              l3missonly+ldlat memory-path filtering, which needs a Zen5
-              feature check to actually apply (Zen4 still runs this
-              cleanly, just without l3missonly -- ibs.c degrades to
+  zen4plus-deep    deep-cpu + ibs-memory-deep + tree-heavy composed (AMD
+              Family 19h+, i.e. Zen4/Zen5) -- deep-cpu's full topdown/cache/
+              branch sweep (already includes --power, real on Family 19h+)
+              plus IBS with l3missonly+ldlat memory-path filtering, which
+              needs a Zen5 feature check to actually apply (Zen4 still runs
+              this cleanly, just without l3missonly -- ibs.c degrades to
               unfiltered rather than failing, see the run's own skew
-              annotations)
+              annotations), plus a --tree pass for process-tree capture
+              (auto-timed by estimate_tree_pass_timeouts() same as
+              tree-heavy on its own)
 
 Options:
   -o, --outdir <dir>       Directory to write pass output files into (default: .;
@@ -351,7 +353,7 @@ load_builtin_profile(){
       return
       ;;
     zen4plus-deep)
-      load_profiles "deep-cpu,ibs-memory-deep"
+      load_profiles "deep-cpu,ibs-memory-deep,tree-heavy"
       return
       ;;
     *)

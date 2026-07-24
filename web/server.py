@@ -95,8 +95,12 @@ TOPLEVEL_MARKER_FILES = ARTIFACT_FILES + (RUN_MANIFEST_NAME, SUMMARY_NAME)
 # wspy-run's own builtin profile catalog (wspy-run, BUILTIN_PROFILES) --
 # offered as a datalist in the UI; wspy-run itself is still the source of
 # truth and rejects anything else, so this list is a convenience, not a gate.
-BUILTIN_PROFILES = ("quick", "deep-cpu", "deep-cpu-intel", "deep-gpu",
-                     "tree-heavy", "ibs-basic", "ibs-memory-deep", "gpu-compute")
+# Order is deliberate, not alphabetical: quick, zen4plus-deep, deep-cpu,
+# deep-gpu are the most commonly reached-for profiles and sit first in that
+# order; everything else follows alphabetically.
+BUILTIN_PROFILES = ("quick", "zen4plus-deep", "deep-cpu", "deep-gpu",
+                     "deep-cpu-intel", "gpu-compute", "ibs-basic",
+                     "ibs-memory-deep", "tree-heavy", "zen-portable")
 
 # ALL_GROUPS/counter_group_flags/COLUMN_TO_GROUP/resolve_column_group/
 # autofit_checklist_for_custom_plots/PROFILE_PLOTTABLE_COLUMNS/

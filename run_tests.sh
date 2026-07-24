@@ -542,7 +542,8 @@ fi
 # zen4plus-deep are composed from existing profiles via load_profiles(), not
 # hand-written flag strings -- --list confirms the composition actually
 # concatenates the constituent profiles' own passes (quick's "run" +
-# ibs-basic's "ibs"; deep-cpu's three passes + ibs-memory-deep's "ibs").
+# ibs-basic's "ibs"; deep-cpu's three passes + ibs-memory-deep's "ibs" +
+# tree-heavy's "tree").
 if ! ./wspy-run --list | grep -q "^zen-portable:"; then
     echo "FAIL: wspy-run --list did not show the zen-portable profile"
     exit 1
@@ -586,6 +587,10 @@ if ! echo "$ZEN4OUT" | grep -q -- "\[systemtime\].*--power"; then
 fi
 if ! echo "$ZEN4OUT" | grep -q -- "\[ibs\].*--ibs-memory-deep"; then
     echo "FAIL: zen4plus-deep's dry-run did not include ibs-memory-deep's 'ibs' pass"
+    exit 1
+fi
+if ! echo "$ZEN4OUT" | grep -q -- "\[tree\].*--tree "; then
+    echo "FAIL: zen4plus-deep's dry-run did not include tree-heavy's 'tree' pass"
     exit 1
 fi
 if [ -e test_wspy_run_zen ] || [ -e test_wspy_run_zen4 ]; then
