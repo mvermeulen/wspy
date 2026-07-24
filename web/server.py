@@ -3858,6 +3858,26 @@ class Handler(BaseHTTPRequestHandler):
         if test_point_dir:
             joblib.link_phoronix_test_point_run(test_point_dir, run_id, rundir)
 
+    @staticmethod
+    def _phoronix_test_point_identity(body):
+        """Used by _enqueue_job() instead of _link_phoronix_test_point() --
+        there's no rundir yet to link against at queue time, only a job
+        document to stash a value in. Re-validates body["phoronix_test_point"]
+        the same way _link_phoronix_test_point() does, but returns a path
+        relative to workload/phoronix/ (or None) rather than linking: a
+        queued job is meant to stay portable (joblib.build_job()'s own
+        docstring), and wspy-queue's process_job() may run on a different
+        checkout than this one, so an absolute path resolved against *this*
+        REPO_ROOT would be the wrong thing to store."""
+        raw = (body.get("phoronix_test_point") or "").strip()
+        if not raw:
+            return None
+        dest = os.path.join(REPO_ROOT, "workload", "phoronix")
+        test_point_dir = joblib.resolve_phoronix_test_point_dir(dest, raw)
+        if not test_point_dir:
+            return None
+        return os.path.relpath(test_point_dir, dest)
+
     def _start_run(self, cfg, body):
         workload_argv, suite, benchmark, run_id, err = self._parse_workload_and_ids(body)
         if err:
@@ -4190,6 +4210,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         toggles = body.get("toggles") or {}
         notes = (body.get("notes") or "").strip()
+        phoronix_test_point = self._phoronix_test_point_identity(body)
 
         preset = (body.get("preset") or "").strip()
         if preset:
@@ -4198,7 +4219,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             job = joblib.build_job(workload_argv, suite, benchmark, "preset", profile=preset,
                                     custom_plots=custom_plots, only_custom=only_custom,
-                                    toggles=toggles, run_id=run_id, notes=notes, affinity=affinity)
+                                    toggles=toggles, run_id=run_id, notes=notes, affinity=affinity,
+                                    phoronix_test_point=phoronix_test_point)
         else:
             checklist = body.get("checklist") or {}
             # Placeholder rundir: build_configuration_passes() only ever uses
@@ -4212,7 +4234,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             job = joblib.build_job(workload_argv, suite, benchmark, "custom", checklist=checklist,
                                     custom_plots=custom_plots, only_custom=only_custom,
-                                    toggles=toggles, run_id=run_id, notes=notes, affinity=affinity)
+                                    toggles=toggles, run_id=run_id, notes=notes, affinity=affinity,
+                                    phoronix_test_point=phoronix_test_point)
 
         errors = joblib.validate_job(job)
         if errors:

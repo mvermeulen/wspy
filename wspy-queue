@@ -141,6 +141,23 @@ def fail_job(running_path, dirs, job, job_id, message):
     print(f"[{job_id}] FAILED: {message}")
 
 
+def link_phoronix_test_point(identity, run_id, rundir):
+    """Mirrors web/server.py's Handler._link_phoronix_test_point(), but from
+    a job's stored identity (a path relative to workload/phoronix/ --
+    joblib.build_job()'s "phoronix_test_point" param) instead of a raw
+    request body, and resolved against *this* process's own REPO_ROOT
+    rather than whichever machine originally queued the job (the whole
+    point of storing a relative identity rather than an absolute path --
+    see build_job()'s docstring). Best-effort/no-op if identity is falsy or
+    no longer resolves to a real materialized test point."""
+    if not identity:
+        return
+    dest = os.path.join(joblib.REPO_ROOT, "workload", "phoronix")
+    test_point_dir = joblib.resolve_phoronix_test_point_dir(dest, os.path.join(dest, identity))
+    if test_point_dir:
+        joblib.link_phoronix_test_point_run(test_point_dir, run_id, rundir)
+
+
 def process_job(running_path, cfg, dirs):
     """Runs exactly one already-claimed job (already moved into running/).
     Returns True if it finished successfully (moved to done/), False
@@ -162,6 +179,7 @@ def process_job(running_path, cfg, dirs):
         fail_job(running_path, dirs, job, job_id, f"run directory already exists: {rundir}")
         return False
     os.makedirs(rundir)
+    link_phoronix_test_point(job.get("phoronix_test_point"), run_id, rundir)
 
     manifest_on, run_index_path, store_ingest = joblib.resolve_toggles(cfg, job.get("toggles"))
     custom_plots = job.get("custom_plots") or []
