@@ -22,14 +22,31 @@
  *
  * Decode scope is intentionally partial this cycle (see INVESTIGATION.md):
  * only the caps-independent fixed-offset prefix each record always has --
- * op-side op_brn_ret/op_brn_misp (IbsOpData, bits 37/36) and
- * dc_miss/dc_l1tlb_miss/dc_l2tlb_miss (IbsOpData3, bits 7/2/3); fetch-side
+ * op-side op_brn_ret/op_brn_misp (IbsOpData, bits 37/36),
+ * dc_miss/dc_l1tlb_miss/dc_l2tlb_miss (IbsOpData3, bits 7/2/3), and
+ * IbsOpData2's memory-data-source field (rmt_node bit 4; data_src_lo bits
+ * 0-2 + data_src_hi bits 6-7 combined into a 0-31 index); fetch-side
  * ic_miss/l1tlb_miss/l2tlb_miss (IbsFetchCtl, bits 51/55/56). Bit positions
  * verified against the kernel's union ibs_fetch_ctl/ibs_op_data/
- * ibs_op_data3 definitions (arch/x86/include/asm/amd/ibs.h), not guessed.
- * IbsOpData2's memory-data-source field and the optional/variable-position
- * words are deferred to a follow-up (feeds the separate "IBS-derived
- * memory-path bottleneck decomposition" backlog item).
+ * ibs_op_data2/ibs_op_data3 definitions (arch/x86/include/asm/amd/ibs.h),
+ * not guessed. The optional/variable-position words (IbsBrTarget/
+ * IbsOpData4/IbsDcLinAd/IbsDcPhysAd) are still deferred to a follow-up
+ * (feeds the separate "IBS-derived memory-path bottleneck decomposition"
+ * backlog item).
+ *
+ * IbsOpData2's data-source index means different things on pre-Zen4 vs
+ * Zen4+ (zen4_ibs_extensions cap) hardware -- confirmed against the
+ * kernel's own decoder (tools/perf/util/amd-sample-raw.c): e.g. index 2 is
+ * "Local node cache" on the default table but "another CCX cache in the
+ * same NUMA node" on the zen4_ibs_extensions table. To avoid baking a
+ * cross-scheme category mapping into a permanent CSV schema, only two
+ * scheme-independent signals reach CSV (ibs_sample_dram_rate -- data_src==3
+ * means "DRAM" identically on both tables; ibs_sample_remote_node_rate --
+ * the rmt_node bit, printed unconditionally by the kernel's own decoder on
+ * both tables, never cap-gated). The full named breakdown is decoded as a
+ * raw index histogram (scheme-agnostic at decode time) and only named at
+ * print time, in the human-readable (non-CSV) output -- see
+ * print_ibs_sample() in ibs_sample.c.
  *
  * Draining only happens once, at end-of-run (read_counters()'s final
  * stop_counters==1 call in topdown.c) -- never from timer_callback()'s
@@ -59,6 +76,13 @@
  * file comment); must be a power of 2 per the perf mmap ABI. */
 #define IBS_SAMPLE_MMAP_DATA_PAGES 64
 
+/* IbsOpData2 data-source histogram width -- covers the documented index
+ * range (0-12) of the richer zen4_ibs_extensions table; the older default
+ * table only ever populates 0-7, a strict subset. Any index >= this
+ * (reserved/undocumented on both known schemes) folds into
+ * op_data_src_other_count rather than growing the array unbounded. */
+#define IBS_SAMPLE_DATA_SRC_TABLE_SIZE 13
+
 /* One mmap'd IBS sampling event's ring buffer + running decode stats.
  * Opaque to every caller except ibs_sample.c itself; cpu_info.h forward-
  * declares this exact type for counter_info.ibs_sample_state. */
@@ -80,6 +104,14 @@ struct ibs_sample_state {
   unsigned long op_dc_miss_count;
   unsigned long op_dc_l1tlb_miss_count;
   unsigned long op_dc_l2tlb_miss_count;
+  unsigned long op_dram_count;          /* IbsOpData2.data_src == 3 -- "DRAM", scheme-independent */
+  unsigned long op_remote_node_count;   /* IbsOpData2.rmt_node bit -- scheme-independent */
+  /* Raw data_src index histogram (0..IBS_SAMPLE_DATA_SRC_TABLE_SIZE-1) --
+   * decode-time counting is scheme-agnostic; index 0 means "no source
+   * recorded" (not a real category, see print_ibs_sample()), 1-12 are
+   * named per-scheme only at print time. */
+  unsigned long op_data_src_count[IBS_SAMPLE_DATA_SRC_TABLE_SIZE];
+  unsigned long op_data_src_other_count; /* data_src >= table size (reserved/undocumented) */
 
   /* Fetch-side aggregate counts (only touched when is_op==0) */
   unsigned long fetch_count;           /* denominator: total fetch samples decoded */

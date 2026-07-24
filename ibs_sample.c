@@ -178,6 +178,22 @@ void ibs_sample_decode_op(const uint64_t *words,int nwords,struct ibs_sample_sta
     if ((op_data3 >> 2) & 0x1) state->op_dc_l1tlb_miss_count++;
     if ((op_data3 >> 3) & 0x1) state->op_dc_l2tlb_miss_count++;
   }
+
+  if (nwords > 3){ // words[3] = IbsOpData2
+    uint64_t op_data2 = words[3];
+    unsigned int data_src_lo = op_data2 & 0x7;
+    unsigned int data_src_hi = (op_data2 >> 6) & 0x3;
+    unsigned int rmt_node = (op_data2 >> 4) & 0x1;
+    // Combined 5-bit data-source index -- scheme-dependent naming (see
+    // ibs_sample.h's file comment), but the combination itself and the two
+    // signals extracted below (data_src==3, rmt_node) are not.
+    unsigned int data_src = (data_src_hi << 3) | data_src_lo;
+
+    if (rmt_node) state->op_remote_node_count++;
+    if (data_src == 3) state->op_dram_count++;
+    if (data_src < IBS_SAMPLE_DATA_SRC_TABLE_SIZE) state->op_data_src_count[data_src]++;
+    else state->op_data_src_other_count++;
+  }
 }
 
 void ibs_sample_decode_fetch(const uint64_t *words,int nwords,struct ibs_sample_state *state){
@@ -259,6 +275,40 @@ static double sample_rate(unsigned long numerator,unsigned long denominator){
   return (double)numerator / (double)denominator;
 }
 
+// IbsOpData2 data-source category names, transcribed verbatim from the
+// kernel's own decoder (tools/perf/util/amd-sample-raw.c's
+// pr_ibs_op_data2_default()/pr_ibs_op_data2_extended() string tables) --
+// not re-derived. NULL entries are reserved/undocumented indices, folded
+// into "(reserved/unrecognized)" at print time; index 0 ("no source
+// recorded") is skipped entirely rather than treated as reserved -- see
+// ibs_sample.h's file comment on why cross-scheme category names never
+// reach the CSV schema, only this human-readable breakdown.
+static const char *const ibs_data_src_names_default[IBS_SAMPLE_DATA_SRC_TABLE_SIZE] = {
+  NULL,                  // 0: no source recorded
+  NULL,                  // 1: reserved
+  "Local node cache",    // 2
+  "DRAM",                // 3
+  "Remote node cache",   // 4
+  NULL,                  // 5: reserved
+  NULL,                  // 6: reserved
+  "Other",               // 7
+  NULL,NULL,NULL,NULL,NULL, // 8-12: not defined in the default (pre-Zen4) scheme
+};
+
+static const char *const ibs_data_src_names_zen4_ext[IBS_SAMPLE_DATA_SRC_TABLE_SIZE] = {
+  NULL,                                             // 0: no source recorded
+  "Local L3 or other L1/L2 in CCX",                 // 1
+  "Another CCX cache in the same NUMA node",        // 2
+  "DRAM",                                           // 3
+  NULL,                                             // 4: reserved
+  "Another CCX cache in a different NUMA node",     // 5
+  "Long-latency DIMM",                              // 6
+  "MMIO/Config/PCI/APIC",                           // 7
+  "Extension Memory",                               // 8
+  NULL,NULL,NULL,                                   // 9-11: reserved
+  "Coherent Memory of a different processor type",  // 12
+};
+
 // Deliberately not topdown.c's find_ci_label() -- that would pull a
 // cross-translation-unit dependency on topdown.c into ibs_sample.c purely
 // for this one lookup, which would also drag test_ibs_sample's build (see
@@ -269,6 +319,39 @@ static struct counter_info *ibs_sample_find(struct counter_group *cgroup,const c
   for (i=0;i<cgroup->ncounters;i++)
     if (!strcmp(cgroup->cinfo[i].label,label)) return &cgroup->cinfo[i];
   return NULL;
+}
+
+// Prints the full named IbsOpData2 data-source breakdown -- human-readable
+// output only, never CSV (see ibs_sample.h's file comment on why). Picks
+// the default vs zen4_ibs_extensions name table by recomputing ibs_probe()
+// fresh, the same "keeps this print path independent of any extra state"
+// precedent topdown.c's print_ibs() already established for its own
+// requested-vs-applied annotations.
+static void print_ibs_sample_data_src_breakdown(struct ibs_sample_state *os){
+  struct ibs_capabilities caps;
+  const struct ibs_cap *ext_cap;
+  int zen4_ext;
+  const char *const *names;
+  unsigned long other_total;
+  int i;
+
+  caps = ibs_probe();
+  ext_cap = ibs_pmu_cap(&caps.op,"zen4_ibs_extensions");
+  zen4_ext = ext_cap && ext_cap->enabled;
+  names = zen4_ext ? ibs_data_src_names_zen4_ext : ibs_data_src_names_default;
+
+  fprintf(outfile,"ibs_sample_data_src_breakdown (scheme: %s):\n",zen4_ext ? "zen4_ibs_extensions" : "default");
+  other_total = os->op_data_src_other_count;
+  for (i = 1; i < IBS_SAMPLE_DATA_SRC_TABLE_SIZE; i++){ // skip index 0 -- "no source recorded", not a category
+    if (!os->op_data_src_count[i]) continue;
+    if (!names[i]){
+      other_total += os->op_data_src_count[i];
+      continue;
+    }
+    fprintf(outfile,"  %-46s %5.1f%%\n",names[i],sample_rate(os->op_data_src_count[i],os->op_count)*100.0);
+  }
+  if (other_total)
+    fprintf(outfile,"  %-46s %5.1f%%\n","(reserved/unrecognized)",sample_rate(other_total,os->op_count)*100.0);
 }
 
 // Prints per-sample-decoded rate estimates from AMD IBS *sampling* mode --
@@ -287,12 +370,12 @@ void print_ibs_sample(struct counter_group *cgroup,enum output_format oformat){
     fprintf(outfile,"ibs_sample_fetch_count,ibs_sample_ic_miss_rate,ibs_sample_l1tlb_miss_rate,"
 	    "ibs_sample_l2tlb_miss_rate,ibs_sample_op_count,ibs_sample_dc_miss_rate,"
 	    "ibs_sample_dc_l1tlb_miss_rate,ibs_sample_dc_l2tlb_miss_rate,ibs_sample_brn_misp_rate,"
-	    "ibs_sample_lost,");
+	    "ibs_sample_lost,ibs_sample_dram_rate,ibs_sample_remote_node_rate,");
     return;
   }
 
   if (oformat == PRINT_CSV){
-    fprintf(outfile,"%lu,%.4f,%.4f,%.4f,%lu,%.4f,%.4f,%.4f,%.4f,%lu,",
+    fprintf(outfile,"%lu,%.4f,%.4f,%.4f,%lu,%.4f,%.4f,%.4f,%.4f,%lu,%.4f,%.4f,",
 	    fs ? fs->fetch_count : 0,
 	    fs ? sample_rate(fs->fetch_ic_miss_count,fs->fetch_count) : 0.0,
 	    fs ? sample_rate(fs->fetch_l1tlb_miss_count,fs->fetch_count) : 0.0,
@@ -302,7 +385,9 @@ void print_ibs_sample(struct counter_group *cgroup,enum output_format oformat){
 	    os ? sample_rate(os->op_dc_l1tlb_miss_count,os->op_count) : 0.0,
 	    os ? sample_rate(os->op_dc_l2tlb_miss_count,os->op_count) : 0.0,
 	    os ? sample_rate(os->op_brn_misp_count,os->op_brn_ret_count) : 0.0,
-	    samples_lost);
+	    samples_lost,
+	    os ? sample_rate(os->op_dram_count,os->op_count) : 0.0,
+	    os ? sample_rate(os->op_remote_node_count,os->op_count) : 0.0);
     return;
   }
 
@@ -320,6 +405,9 @@ void print_ibs_sample(struct counter_group *cgroup,enum output_format oformat){
     if (os->op_brn_ret_count)
       fprintf(outfile,"ibs_sample_brn_misp_rate      %5.1f%%          # of %lu branch-retiring ops\n",
 	      sample_rate(os->op_brn_misp_count,os->op_brn_ret_count)*100.0,os->op_brn_ret_count);
+    fprintf(outfile,"ibs_sample_dram_rate          %5.1f%%\n",sample_rate(os->op_dram_count,os->op_count)*100.0);
+    fprintf(outfile,"ibs_sample_remote_node_rate   %5.1f%%\n",sample_rate(os->op_remote_node_count,os->op_count)*100.0);
+    print_ibs_sample_data_src_breakdown(os);
   }
   if (samples_lost)
     fprintf(outfile,"# warning: %lu IBS sample(s) lost (ring buffer overrun) -- rates above are a lower bound\n",samples_lost);

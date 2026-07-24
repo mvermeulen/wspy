@@ -290,7 +290,7 @@ if [ "$vendor" = "AMD" ]; then
   # above, print_ibs_sample() emits the same fixed column set unconditionally
   # (no profile-dependent branch), so this holds regardless of which IBS
   # caps this AMD host happens to expose.
-  assert_csv_header "ibs-sample"       --no-ipc --ibs-sample      -- "${BASE}ibs_sample_fetch_count,ibs_sample_ic_miss_rate,ibs_sample_l1tlb_miss_rate,ibs_sample_l2tlb_miss_rate,ibs_sample_op_count,ibs_sample_dc_miss_rate,ibs_sample_dc_l1tlb_miss_rate,ibs_sample_dc_l2tlb_miss_rate,ibs_sample_brn_misp_rate,ibs_sample_lost,counters_measured,counters_requested,"
+  assert_csv_header "ibs-sample"       --no-ipc --ibs-sample      -- "${BASE}ibs_sample_fetch_count,ibs_sample_ic_miss_rate,ibs_sample_l1tlb_miss_rate,ibs_sample_l2tlb_miss_rate,ibs_sample_op_count,ibs_sample_dc_miss_rate,ibs_sample_dc_l1tlb_miss_rate,ibs_sample_dc_l2tlb_miss_rate,ibs_sample_brn_misp_rate,ibs_sample_lost,ibs_sample_dram_rate,ibs_sample_remote_node_rate,counters_measured,counters_requested,"
   # Native multi-pass counter execution (--passes): ipc(3 counters)+cache2(6)
   # combined (9) exceeds the 6-slot budget, so this splits into exactly 2
   # passes (neither individually multiplexes) -- base/rusage columns once,
