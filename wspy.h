@@ -94,6 +94,11 @@ extern struct timespec start_time,finish_time;
  * other pair of related-but-differently-shaped groups (e.g. COUNTER_TOPDOWN
  * vs COUNTER_TOPDOWN_BE). */
 #define COUNTER_POWER_CORE  0x400000
+/* AMD IBS *sampling*-mode (--ibs-sample, see ibs_sample.h) -- mmaps the perf
+ * ring buffer for PERF_SAMPLE_RAW records, distinct from COUNTER_IBS's
+ * counting-mode ibs-basic/ibs-memory-deep profiles (a plain read() count).
+ * Not folded into COUNTER_ALL, same reasoning as COUNTER_IBS above. */
+#define COUNTER_IBS_SAMPLE  0x800000
 
 /* every counter type wspy knows how to request; used by --capabilities to
  * probe the full set regardless of what counter flags were also given */

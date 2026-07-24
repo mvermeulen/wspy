@@ -193,6 +193,10 @@ run_bundle "software"              0 --csv --no-ipc --software      -- /bin/true
 run_bundle "system"                0 --csv --no-ipc --system        -- /bin/true
 run_bundle "ibs-basic"             0 --csv --no-ipc --ibs-basic     -- /bin/true
 run_bundle "ibs-memory-deep"       0 --csv --no-ipc --ibs-memory-deep -- /bin/true
+# AMD IBS *sampling*-mode (ibs_sample.h) -- same graceful-degradation
+# contract as ibs-basic/ibs-memory-deep above: a non-AMD/no-IBS host just
+# yields zero extra columns, not a fatal error.
+run_bundle "ibs-sample"            0 --csv --no-ipc --ibs-sample     -- /bin/true
 # CPU energy/power (power/energy-pkg dynamic PMU, RAPL-equivalent, power.c) --
 # same graceful-degradation contract as ibs-basic above: an unsupported
 # host/kernel just yields zero extra columns (see golden_output.sh's
@@ -368,6 +372,7 @@ run_expected_fatal_bundle "passes-interval-incompatible" 1 --no-ipc --passes=ipc
 run_expected_fatal_bundle "passes-per-core-incompatible" 1 --no-ipc --passes=ipc --per-core -- /bin/true
 run_expected_fatal_bundle "passes-tree-incompatible"     1 --no-ipc --passes=ipc --tree "$TREE_OUT" -- /bin/true
 run_expected_fatal_bundle "passes-ibs-incompatible"      1 --no-ipc --passes=ipc --ibs-basic -- /bin/true
+run_expected_fatal_bundle "passes-ibs-sample-incompatible" 1 --no-ipc --passes=ipc --ibs-sample -- /bin/true
 run_expected_fatal_bundle "passes-power-incompatible"    1 --no-ipc --passes=ipc --power -- /bin/true
 # --multiplex only means something alongside --passes -- without it, it's
 # rejected the same way the other --passes-only modifiers would be if they
