@@ -415,6 +415,7 @@
           custom_plots: buildCustomPlots(),
           only_custom: getChecked("only_custom"),
           affinity: getAffinitySpec(),
+          phoronix_test_point: getValue("phoronix_test_point"),
         };
         fetch("/api/enqueue-job", {
           method: "POST",

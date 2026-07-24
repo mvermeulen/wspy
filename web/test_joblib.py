@@ -376,6 +376,21 @@ class AffinitySpecTest(unittest.TestCase):
         job["affinity"] = "bogus"
         self.assertTrue(joblib.validate_job(job))
 
+    def test_build_job_round_trips_phoronix_test_point(self):
+        job = joblib.build_job(["sleep", "1"], "manual", "sleep", "preset", profile="quick",
+                                phoronix_test_point="coremark/default")
+        self.assertEqual(joblib.validate_job(job), [])
+        self.assertEqual(job["phoronix_test_point"], "coremark/default")
+
+    def test_build_job_defaults_phoronix_test_point_to_none(self):
+        job = joblib.build_job(["sleep", "1"], "manual", "sleep", "preset", profile="quick")
+        self.assertIsNone(job["phoronix_test_point"])
+
+    def test_validate_job_rejects_non_string_phoronix_test_point(self):
+        job = joblib.build_job(["sleep", "1"], "manual", "sleep", "preset", profile="quick")
+        job["phoronix_test_point"] = ["not", "a", "string"]
+        self.assertTrue(joblib.validate_job(job))
+
 
 class ResolveColumnGroupTest(unittest.TestCase):
     def test_counters_column(self):

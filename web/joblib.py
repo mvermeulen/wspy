@@ -2728,7 +2728,7 @@ def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_ar
 # one definition of what a valid job looks like.
 # ---------------------------------------------------------------------------
 
-JOB_SCHEMA_VERSION = "1.0.0"
+JOB_SCHEMA_VERSION = "1.1.0"
 JOB_STATES = ("pending", "running", "done", "failed")
 
 
@@ -2759,7 +2759,7 @@ def resolve_toggles(cfg, toggles):
 
 def build_job(workload_argv, suite, benchmark, mode, profile=None, checklist=None,
               custom_plots=None, only_custom=False, toggles=None, run_id=None, notes=None,
-              affinity=None):
+              affinity=None, phoronix_test_point=None):
     """Builds a portable job document. mode is "preset" (profile is a
     wspy-run BUILTIN_PROFILES spec, e.g. "deep-cpu,tree-heavy") or "custom"
     (checklist is the same object build_configuration_passes() consumes).
@@ -2777,7 +2777,15 @@ def build_job(workload_argv, suite, benchmark, mode, profile=None, checklist=Non
     domain=<id>) or an explicit cpuset, not anything host-specific beyond
     that (a job replayed on a machine with fewer CPUs/domains than the one
     that created it will fail loudly at wspy's own --affinity resolution,
-    same as any other under-provisioned replay target)."""
+    same as any other under-provisioned replay target). phoronix_test_point,
+    if given, is a path *relative to workload/phoronix/* (e.g.
+    "coremark/default") identifying the materialized test point this run
+    was launched against -- deliberately not an absolute path, so the job
+    stays portable across machines the same way everything else here does;
+    server.py's Handler._phoronix_test_point_identity() computes it and
+    wspy-queue's process_job() re-resolves it under the *processing*
+    machine's own workload/phoronix/ before calling
+    link_phoronix_test_point_run()."""
     toggles = toggles or {}
     return {
         "job_schema_version": JOB_SCHEMA_VERSION,
@@ -2798,6 +2806,7 @@ def build_job(workload_argv, suite, benchmark, mode, profile=None, checklist=Non
             "store_ingest": bool(toggles.get("store_ingest", True)),
         },
         "affinity": affinity or None,
+        "phoronix_test_point": phoronix_test_point or None,
         "notes": notes or "",
     }
 
@@ -2853,5 +2862,9 @@ def validate_job(job):
     affinity = job.get("affinity")
     if affinity is not None and not valid_affinity_spec(affinity):
         errors.append("affinity, if given, must be all/nosmt/thread=<id>/domain=<id>/cpuset=<c0,c1,...>")
+
+    phoronix_test_point = job.get("phoronix_test_point")
+    if phoronix_test_point is not None and not isinstance(phoronix_test_point, str):
+        errors.append("phoronix_test_point, if given, must be a string")
 
     return errors
