@@ -417,6 +417,27 @@ retirement, on every vendor. Fix: `cache_counter_group()` now records each `cach
 `PERF_TYPE_HW_CACHE` groups (previously that per-counter override only applied to `PERF_TYPE_RAW`
 groups).
 
+**AMD IBS sampling-mode capture + core decode (`ibs_sample.c`/`ibs_sample.h`, PRs #143/#144) — 4.3 Tier
+1 item 1's decode scope, functionally done for this cycle.** `--ibs-sample` mmaps the perf ring buffer
+with `PERF_SAMPLE_RAW` (nothing in wspy read a perf mmap ring buffer before this) and decodes each
+sample's fixed-offset fields into end-of-run rate estimates: op-side `dc_miss`/`dc_l1tlb_miss`/
+`dc_l2tlb_miss`/`op_brn_misp` (of branch-retiring ops) plus `IbsOpData2`'s two scheme-independent
+signals (`dram_rate`, `remote_node_rate`); fetch-side `ic_miss`/`l1tlb_miss`/`l2tlb_miss`. Draining only
+happens once, at end-of-run (never from `timer_callback()`'s `SIGALRM` handler — ring parsing isn't
+async-signal-safe and wspy has no poll loop), so `--ibs-sample` + `--interval` zeroes periodic rows and
+populates only the final tail row — documented, not silent. `IbsOpData2`'s full named category
+breakdown (its meaning differs between pre-Zen4 and Zen4+/`zen4_ibs_extensions` hardware, confirmed
+against the kernel's own decoder) is decoded scheme-agnostically but only *named* in human-readable
+output, never baked into a permanent CSV column. **Deliberately not pursued further this cycle** (real
+findings, not just deferred for time): the remaining "variable-position words" — `IbsBrTarget`,
+`IbsDcLinAd`/`IbsDcPhysAd` — are raw addresses, not rate-shaped data, and don't fit wspy's reporting
+model without a NUMA-node-of-address or symbol-resolution layer that's really its own separate feature;
+`IbsOpData4` has no documented bitfield layout anywhere in current kernel/`perf` source, so decoding it
+would mean inventing bit positions, which this project's own conventions forbid. `--interval`-integrated
+periodic rates (a real poll-loop architectural change) remains open and is the one legitimately
+deferred-for-scope piece — a candidate 4.3/4.4 item on its own if there's demand, not re-added to this
+item's own remaining scope.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -738,6 +759,12 @@ topdown/IBS attribution, static-site publishing, and a lower-overhead tracing ba
    dependency on anything else in 4.2's own remaining work (characterization prerequisites,
    launcher/infra, docs/testing/release) — only on already-shipped
    4.0/4.2 IBS capability-discovery work (`ibs.c`), so it's equally startable as 4.3's own first item.
+   **Status: capture + core decode shipped (PRs #143/#144, see "Shipped since 4.2") — the fixed-offset
+   flag fields and `IbsOpData2`'s two scheme-independent rates are done. Deliberately not pursued
+   further this cycle:** `IbsBrTarget`/`IbsDcLinAd`/`IbsDcPhysAd` are raw addresses, not rate-shaped
+   data, and `IbsOpData4` has no documented bitfield layout in current kernel/`perf` source — see the
+   "Shipped since 4.2" entry for the full reasoning. `--interval`-integrated periodic rates (needs a
+   real poll-loop architectural change) is the one genuinely open piece, not scoped further here.
 
 **Tier 2 — needs 4.1's normalized store/history:**
 
