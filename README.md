@@ -337,14 +337,23 @@ See `./wspy-store --help` for the full option list.
 `wspy-summary` queries a `wspy-store` database directly and computes min/max/mean/median/stddev/CV,
 a 95% confidence interval of the mean, a repeatability verdict (`PASS`, or `WARN:` plus any
 combination of `thin` — too few runs, `noisy` — too much spread, `mixed-pmu` — contributing runs
-differ in CPU vendor or requested/measured counter coverage), and z-score outlier flags per
-`(group,metric)` bucket — grouped by workload command (default),
+differ in CPU vendor or requested/measured counter coverage, `mixed-env` — see `env_score` below),
+and z-score outlier flags per `(group,metric)` bucket — grouped by workload command (default),
 hostname, CPU vendor, `affinity_mode`/`preset_name`/`config_name`, or `cpu_governor`/`virt_role` —
 so a summary table can always be regenerated from indexed data with no manual copy/paste.
 `--group-by-option <name>` composes a *second* grouping axis from an arbitrary `--config-option`
 key (e.g. a `wspy-sweep` cell's axis tag), for "this workload, broken out by X" comparisons.
 `--strict` fails if any bucket is too thin (`--min-runs`), too noisy (`--max-cv`, default 5%), or
 nothing matched.
+
+`env_score` is the fraction of 8 tracked machine-environment fields (`virt_role`, `hypervisor_vendor`,
+`microcode_version`, `bios_vendor`/`bios_version`/`bios_date`, `cpu_governor`, `memory_total_kb` —
+`memory_total_kb` within 5% counts as agreeing, to tolerate routine firmware/DIMM-population jitter)
+that agreed across a bucket's contributing runs, unweighted (no per-field point values — the same
+reasoning that keeps `--ibs-sample`'s cross-scheme memory-source categories out of its own CSV
+schema), or empty when none of them were ever mutually comparable — never treated as a mismatch,
+absence of provenance data is not evidence of one. `--min-env-score <fraction>` (default 0.8) is the
+threshold below which a bucket's verdict carries `mixed-env`.
 
 `--check-regression <hostname>:<run_id>` is a standalone mode (mutually exclusive with `--trace`):
 compares that run's own per-metric values against a *rolling* baseline — every strictly-earlier run

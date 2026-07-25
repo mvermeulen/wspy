@@ -445,6 +445,24 @@ static void bind_text_or_null(sqlite3_stmt *stmt,int idx,const char *val){
   else sqlite3_bind_null(stmt,idx);
 }
 
+// json_get_number()/json_get_bool() collapse a genuine JSON null to their
+// caller-given default -- correct for a non-nullable field with a sane
+// default, wrong for an independently-probed provenance field (provenance.c)
+// where "unavailable" must stay distinguishable from a real 0/false
+// measurement. Inspects the raw json_value directly instead, mirroring
+// bind_text_or_null()'s pointer-as-sentinel trick for the numeric/bool case.
+static void bind_number_or_null(sqlite3_stmt *stmt,int idx,const struct json_value *obj,const char *key){
+  const struct json_value *v = json_object_get(obj,key);
+  if (v && v->type == JSON_NUMBER) sqlite3_bind_int64(stmt,idx,(sqlite3_int64)v->u.number);
+  else sqlite3_bind_null(stmt,idx);
+}
+
+static void bind_bool_or_null(sqlite3_stmt *stmt,int idx,const struct json_value *obj,const char *key){
+  const struct json_value *v = json_object_get(obj,key);
+  if (v && v->type == JSON_BOOL) sqlite3_bind_int(stmt,idx,v->u.boolean);
+  else sqlite3_bind_null(stmt,idx);
+}
+
 /* Inserts/updates the run_environment row for run_row_id from the
  * record's "environment"/"environment_coverage" objects (both are
  * present directly in every run-index record -- unlike host detail,
@@ -478,8 +496,8 @@ static void upsert_run_environment(sqlite3 *db,sqlite3_int64 run_row_id,const st
   bind_text_or_null(stmt,7,json_get_string(env,"bios_date",NULL));
   bind_text_or_null(stmt,8,json_get_string(env,"cpu_governor",NULL));
   bind_text_or_null(stmt,9,json_get_string(env,"cpu_scaling_driver",NULL));
-  sqlite3_bind_int(stmt,10,json_get_bool(env,"cpu_governor_uniform",0));
-  sqlite3_bind_int64(stmt,11,(sqlite3_int64)json_get_number(env,"memory_total_kb",0));
+  bind_bool_or_null(stmt,10,env,"cpu_governor_uniform");
+  bind_number_or_null(stmt,11,env,"memory_total_kb");
   bind_text_or_null(stmt,12,json_get_string(env,"compiler_version",NULL));
   bind_text_or_null(stmt,13,json_get_string(env,"libc_version",NULL));
   sqlite3_bind_int(stmt,14,cov ? (int)json_get_number(cov,"captured",0) : 0);

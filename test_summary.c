@@ -17,6 +17,9 @@ static struct summary_opts default_opts(void){
   opts.outlier_z = 2.0;
   opts.min_runs = 1;
   opts.max_cv = 5.0;
+  opts.min_env_score = 0.8; /* matches main()'s real CLI default -- without this, every test using
+                             * this fixture gets min_env_score=0.0 (memset's zero value), under which
+                             * mixed-env can never fire regardless of env_score. */
   return opts;
 }
 
@@ -38,7 +41,9 @@ static sqlite3 *open_memory_db(void){
     "manifest_path TEXT, output_path TEXT, tree_output_path TEXT);"
     "CREATE TABLE metric_values (id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, "
     "metric_name TEXT NOT NULL, value REAL);"
-    "CREATE TABLE run_environment (run_id INTEGER PRIMARY KEY, cpu_governor TEXT, virt_role TEXT);"
+    "CREATE TABLE run_environment (run_id INTEGER PRIMARY KEY, cpu_governor TEXT, virt_role TEXT, "
+    "hypervisor_vendor TEXT, microcode_version TEXT, bios_vendor TEXT, bios_version TEXT, "
+    "bios_date TEXT, memory_total_kb INTEGER);"
     "CREATE TABLE run_config_options (run_id INTEGER NOT NULL, option_name TEXT NOT NULL, "
     "option_value TEXT NOT NULL, PRIMARY KEY (run_id, option_name));",
     NULL,NULL,NULL) == SQLITE_OK);
@@ -66,15 +71,36 @@ static void insert_config_option(sqlite3 *db,int run_id,const char *name,const c
   sqlite3_finalize(stmt);
 }
 
-static void insert_run_environment(sqlite3 *db,int run_id,const char *cpu_governor){
+/* Full 8-tracked-field run_environment fixture (env_score's scoring surface,
+ * see summary.c's ENV_FIELD_COUNT) -- every text arg is NULL for
+ * "unavailable" (bound via sqlite3_bind_null, same pattern insert_run()'s
+ * cpu_vendor arg already uses), memory_total_kb is a double so a caller can
+ * pass -1.0 for "unavailable" (bound as NULL) or a real KB value. */
+static void insert_run_environment_full(sqlite3 *db,int run_id,const char *virt_role,
+                                         const char *hypervisor_vendor,const char *microcode_version,
+                                         const char *bios_vendor,const char *bios_version,
+                                         const char *bios_date,const char *cpu_governor,
+                                         double memory_total_kb){
   sqlite3_stmt *stmt;
   assert(sqlite3_prepare_v2(db,
-    "INSERT INTO run_environment (run_id,cpu_governor) VALUES (?,?);",
+    "INSERT INTO run_environment (run_id,virt_role,hypervisor_vendor,microcode_version,"
+    "bios_vendor,bios_version,bios_date,cpu_governor,memory_total_kb) VALUES (?,?,?,?,?,?,?,?,?);",
     -1,&stmt,NULL) == SQLITE_OK);
   sqlite3_bind_int(stmt,1,run_id);
-  sqlite3_bind_text(stmt,2,cpu_governor,-1,SQLITE_TRANSIENT);
+  if (virt_role) sqlite3_bind_text(stmt,2,virt_role,-1,SQLITE_TRANSIENT); else sqlite3_bind_null(stmt,2);
+  if (hypervisor_vendor) sqlite3_bind_text(stmt,3,hypervisor_vendor,-1,SQLITE_TRANSIENT); else sqlite3_bind_null(stmt,3);
+  if (microcode_version) sqlite3_bind_text(stmt,4,microcode_version,-1,SQLITE_TRANSIENT); else sqlite3_bind_null(stmt,4);
+  if (bios_vendor) sqlite3_bind_text(stmt,5,bios_vendor,-1,SQLITE_TRANSIENT); else sqlite3_bind_null(stmt,5);
+  if (bios_version) sqlite3_bind_text(stmt,6,bios_version,-1,SQLITE_TRANSIENT); else sqlite3_bind_null(stmt,6);
+  if (bios_date) sqlite3_bind_text(stmt,7,bios_date,-1,SQLITE_TRANSIENT); else sqlite3_bind_null(stmt,7);
+  if (cpu_governor) sqlite3_bind_text(stmt,8,cpu_governor,-1,SQLITE_TRANSIENT); else sqlite3_bind_null(stmt,8);
+  if (memory_total_kb >= 0.0) sqlite3_bind_int64(stmt,9,(sqlite3_int64)memory_total_kb); else sqlite3_bind_null(stmt,9);
   assert(sqlite3_step(stmt) == SQLITE_DONE);
   sqlite3_finalize(stmt);
+}
+
+static void insert_run_environment(sqlite3 *db,int run_id,const char *cpu_governor){
+  insert_run_environment_full(db,run_id,NULL,NULL,NULL,NULL,NULL,NULL,cpu_governor,-1.0);
 }
 
 /* trace_run() reads runs.{manifest_path,output_path,tree_output_path}, which
@@ -174,10 +200,16 @@ static void insert_metric_null(sqlite3 *db,int run_id,const char *metric_name){
  * itself (WARN:thin,noisy) isn't parseable this way; those cases are
  * checked directly against the raw buffer with strstr() instead (see
  * test_summarize_verdict_thin_and_noisy_both_fire below). verdict_buf must
- * be caller-allocated, >=32 bytes. Returns 1 if found. */
+ * be caller-allocated, >=32 bytes. env_score is read as a raw token first
+ * (not %lf directly, since sscanf's "%[^,]" refuses to match a zero-length
+ * field) because the CSV field is genuinely empty -- not "-", that's the
+ * human-format-only placeholder -- whenever no field was ever mutually
+ * comparable; most fixtures below never populate run_environment at all, so
+ * this is the common case, not an edge case. *env_score_out is -1.0 for an
+ * empty field, the parsed value otherwise. Returns 1 if found. */
 static int find_csv_row(const char *buf,const char *group,const char *metric,
                          int *n,double *min_v,double *max_v,double *mean_v,
-                         double *median_v,double *stddev_v,double *cv,
+                         double *median_v,double *stddev_v,double *cv,double *env_score_out,
                          double *ci_low,double *ci_high,char *verdict_buf,int *outlier_count){
   char prefix[256];
   const char *line = buf;
@@ -189,8 +221,26 @@ static int find_csv_row(const char *buf,const char *group,const char *metric,
     const char *eol = strchr(line,'\n');
     size_t linelen = eol ? (size_t)(eol - line) : strlen(line);
     if (linelen >= prefix_len && !strncmp(line,prefix,prefix_len)){
-      sscanf(line + prefix_len,"%d,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%31[^,],%d,",
-             n,min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high,verdict_buf,outlier_count);
+      const char *p = line + prefix_len;
+      const char *comma;
+      int i;
+
+      sscanf(p,"%d,%lf,%lf,%lf,%lf,%lf,%lf,",n,min_v,max_v,mean_v,median_v,stddev_v,cv);
+      for (i = 0; i < 7; i++){
+        comma = strchr(p,',');
+        if (!comma) return 1;
+        p = comma + 1;
+      }
+      comma = strchr(p,',');
+      if (comma && comma > p){
+        char env_score_buf[16];
+        snprintf(env_score_buf,sizeof(env_score_buf),"%.*s",(int)(comma - p),p);
+        *env_score_out = atof(env_score_buf);
+      } else {
+        *env_score_out = -1.0;
+      }
+      if (comma) p = comma + 1;
+      sscanf(p,"%lf,%lf,%31[^,],%d,",ci_low,ci_high,verdict_buf,outlier_count);
       return 1;
     }
     line = eol ? eol + 1 : NULL;
@@ -292,28 +342,28 @@ static void test_compute_ci95_matches_formula(void){
 
 static void test_compute_verdict_pass(void){
   char verdict[32];
-  compute_verdict(5,2.0,5.0,0,verdict,sizeof(verdict)); /* n>=3, cv < max_cv, not mixed */
+  compute_verdict(5,2.0,5.0,0,-1.0,0.8,verdict,sizeof(verdict)); /* n>=3, cv < max_cv, not mixed */
   assert(strcmp(verdict,"PASS") == 0);
   printf("test_compute_verdict_pass passed\n");
 }
 
 static void test_compute_verdict_thin_only(void){
   char verdict[32];
-  compute_verdict(2,0.0,5.0,0,verdict,sizeof(verdict)); /* n<3, cv well under max_cv */
+  compute_verdict(2,0.0,5.0,0,-1.0,0.8,verdict,sizeof(verdict)); /* n<3, cv well under max_cv */
   assert(strcmp(verdict,"WARN:thin") == 0);
   printf("test_compute_verdict_thin_only passed\n");
 }
 
 static void test_compute_verdict_noisy_only(void){
   char verdict[32];
-  compute_verdict(10,50.0,5.0,0,verdict,sizeof(verdict)); /* n>=3, cv far over max_cv */
+  compute_verdict(10,50.0,5.0,0,-1.0,0.8,verdict,sizeof(verdict)); /* n>=3, cv far over max_cv */
   assert(strcmp(verdict,"WARN:noisy") == 0);
   printf("test_compute_verdict_noisy_only passed\n");
 }
 
 static void test_compute_verdict_thin_and_noisy(void){
   char verdict[32];
-  compute_verdict(2,50.0,5.0,0,verdict,sizeof(verdict));
+  compute_verdict(2,50.0,5.0,0,-1.0,0.8,verdict,sizeof(verdict));
   assert(strcmp(verdict,"WARN:thin,noisy") == 0);
   printf("test_compute_verdict_thin_and_noisy passed\n");
 }
@@ -322,21 +372,21 @@ static void test_compute_verdict_boundary_not_noisy(void){
   char verdict[32];
   /* Exactly at --max-cv: the check is strictly-greater-than, so the
    * boundary itself is not flagged. */
-  compute_verdict(5,5.0,5.0,0,verdict,sizeof(verdict));
+  compute_verdict(5,5.0,5.0,0,-1.0,0.8,verdict,sizeof(verdict));
   assert(strcmp(verdict,"PASS") == 0);
   printf("test_compute_verdict_boundary_not_noisy passed\n");
 }
 
 static void test_compute_verdict_mixed_pmu_only(void){
   char verdict[32];
-  compute_verdict(5,2.0,5.0,1,verdict,sizeof(verdict)); /* n>=3, cv low, but mixed_pmu set */
+  compute_verdict(5,2.0,5.0,1,-1.0,0.8,verdict,sizeof(verdict)); /* n>=3, cv low, but mixed_pmu set */
   assert(strcmp(verdict,"WARN:mixed-pmu") == 0);
   printf("test_compute_verdict_mixed_pmu_only passed\n");
 }
 
 static void test_compute_verdict_all_three_reasons(void){
   char verdict[32];
-  compute_verdict(2,50.0,5.0,1,verdict,sizeof(verdict));
+  compute_verdict(2,50.0,5.0,1,-1.0,0.8,verdict,sizeof(verdict));
   /* Fixed reason order (thin, noisy, mixed-pmu) regardless of internal
    * evaluation order -- see compute_verdict()'s own comment. */
   assert(strcmp(verdict,"WARN:thin,noisy,mixed-pmu") == 0);
@@ -394,7 +444,7 @@ static void test_summarize_averages_per_run_and_groups_by_command(void){
   size_t size;
   FILE *fp;
   int n,outliers;
-  double min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,env_score,ci_low,ci_high;
   char verdict[32];
 
   /* workloadA: 3 runs, one aggregate "ipc" value each -> stats span those
@@ -419,14 +469,14 @@ static void test_summarize_averages_per_run_and_groups_by_command(void){
   assert(summarize(db,&opts,fp,&totals) == 0);
   fclose(fp);
 
-  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,
+  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,&env_score,
                        &ci_low,&ci_high,verdict,&outliers));
   assert(n == 3);
   assert(fabs(min_v - 1.0) < 1e-9);
   assert(fabs(max_v - 1.2) < 1e-9);
   assert(fabs(mean_v - 1.1) < 1e-9);
 
-  assert(find_csv_row(buf,"/bin/workloadA","cache_miss",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,
+  assert(find_csv_row(buf,"/bin/workloadA","cache_miss",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,&env_score,
                        &ci_low,&ci_high,verdict,&outliers));
   assert(n == 1);
   assert(fabs(mean_v - 20.0) < 1e-9); /* the one run's 3 ticks averaged */
@@ -476,7 +526,7 @@ static void test_summarize_hostname_filter(void){
   size_t size;
   FILE *fp;
   int n,outliers;
-  double min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,env_score,ci_low,ci_high;
   char verdict[32];
 
   insert_run(db,1,"r1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
@@ -491,7 +541,7 @@ static void test_summarize_hostname_filter(void){
   assert(summarize(db,&opts,fp,&totals) == 0);
   fclose(fp);
 
-  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,
+  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,&env_score,
                        &ci_low,&ci_high,verdict,&outliers));
   assert(n == 1);
   assert(fabs(min_v - 2.0) < 1e-9 && fabs(max_v - 2.0) < 1e-9 && fabs(mean_v - 2.0) < 1e-9);
@@ -566,7 +616,7 @@ static void test_summarize_verdict_pass_low_cv_enough_runs(void){
   size_t size;
   FILE *fp;
   int n,outliers,i;
-  double min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,env_score,ci_low,ci_high;
   char verdict[32];
 
   for (i = 0; i < 4; i++){
@@ -583,7 +633,7 @@ static void test_summarize_verdict_pass_low_cv_enough_runs(void){
   assert(summarize(db,&opts,fp,&totals) == 0);
   fclose(fp);
 
-  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,
+  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,&env_score,
                        &ci_low,&ci_high,verdict,&outliers));
   assert(strcmp(verdict,"PASS") == 0);
   assert(totals.groups_warned == 0);
@@ -601,7 +651,7 @@ static void test_summarize_verdict_thin_when_fewer_than_three_runs(void){
   size_t size;
   FILE *fp;
   int n,outliers;
-  double min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,env_score,ci_low,ci_high;
   char verdict[32];
 
   insert_run(db,1,"r1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
@@ -615,7 +665,7 @@ static void test_summarize_verdict_thin_when_fewer_than_three_runs(void){
   assert(summarize(db,&opts,fp,&totals) == 0);
   fclose(fp);
 
-  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,
+  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,&env_score,
                        &ci_low,&ci_high,verdict,&outliers));
   assert(n == 2);
   assert(strcmp(verdict,"WARN:thin") == 0);
@@ -634,7 +684,7 @@ static void test_summarize_verdict_noisy_when_cv_exceeds_default_max_cv(void){
   size_t size;
   FILE *fp;
   int n,outliers;
-  double min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,env_score,ci_low,ci_high;
   char verdict[32];
 
   /* n=3 (clears the "thin" threshold), but CV ~9.1% is well over the
@@ -652,7 +702,7 @@ static void test_summarize_verdict_noisy_when_cv_exceeds_default_max_cv(void){
   assert(summarize(db,&opts,fp,&totals) == 0);
   fclose(fp);
 
-  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,
+  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,&env_score,
                        &ci_low,&ci_high,verdict,&outliers));
   assert(n == 3);
   assert(cv > 5.0);
@@ -672,7 +722,7 @@ static void test_summarize_max_cv_flag_raises_noisy_threshold(void){
   size_t size;
   FILE *fp;
   int n,outliers;
-  double min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,env_score,ci_low,ci_high;
   char verdict[32];
 
   /* Same ~9.1%-CV data as the default-threshold test above, but with
@@ -692,7 +742,7 @@ static void test_summarize_max_cv_flag_raises_noisy_threshold(void){
   assert(summarize(db,&opts,fp,&totals) == 0);
   fclose(fp);
 
-  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,
+  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,&env_score,
                        &ci_low,&ci_high,verdict,&outliers));
   assert(strcmp(verdict,"PASS") == 0);
   assert(totals.groups_warned == 0);
@@ -811,7 +861,7 @@ static void test_summarize_verdict_same_pmu_signature_not_mixed(void){
   size_t size;
   FILE *fp;
   int n,outliers;
-  double min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,env_score,ci_low,ci_high;
   char verdict[32];
 
   insert_run_with_pmu(db,1,"r1","host1","/bin/workloadA","AMD","2026-01-01T00:00:00Z",9,9);
@@ -828,7 +878,7 @@ static void test_summarize_verdict_same_pmu_signature_not_mixed(void){
   fclose(fp);
 
   assert(strstr(buf,"mixed-pmu") == NULL);
-  assert(find_csv_row(buf,"/bin/workloadA","retire",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,
+  assert(find_csv_row(buf,"/bin/workloadA","retire",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,&env_score,
                        &ci_low,&ci_high,verdict,&outliers));
   assert(strcmp(verdict,"PASS") == 0);
   assert(totals.groups_warned == 0);
@@ -1428,7 +1478,7 @@ static void test_check_regression_flags_above_baseline(void){
   assert(rc == 0);
   assert(find_regression_line(buf,"ipc",line,sizeof(line)));
   assert(!strcmp(last_csv_field(line),"above"));
-  assert(sscanf(line,"ipc,%lf,%d,%lf,%lf,%lf,%31[^,]",&tv,&n,&mean_v,&ci_low,&ci_high,verdict) == 6);
+  assert(sscanf(line,"ipc,%lf,%d,%lf,%lf,%lf,,%31[^,]",&tv,&n,&mean_v,&ci_low,&ci_high,verdict) == 6);
   assert(fabs(tv - 5.0) < 1e-9);
   assert(n == 3);
   assert(fabs(mean_v - 1.0) < 1e-9);
@@ -1575,7 +1625,7 @@ static void test_check_regression_null_group_key_matches(void){
     double tv,mean_v,ci_low,ci_high;
     int n;
     char verdict[32];
-    assert(sscanf(line,"ipc,%lf,%d,%lf,%lf,%lf,%31[^,]",&tv,&n,&mean_v,&ci_low,&ci_high,verdict) == 6);
+    assert(sscanf(line,"ipc,%lf,%d,%lf,%lf,%lf,,%31[^,]",&tv,&n,&mean_v,&ci_low,&ci_high,verdict) == 6);
     assert(n == 1); /* baseline n=1 -- the IS-based NULL-safe match found base1 */
   }
 
@@ -1608,7 +1658,7 @@ static void test_check_regression_ignores_later_runs(void){
     double tv,mean_v,ci_low,ci_high;
     int n;
     char verdict[32];
-    assert(sscanf(line,"ipc,%lf,%d,%lf,%lf,%lf,%31[^,]",&tv,&n,&mean_v,&ci_low,&ci_high,verdict) == 6);
+    assert(sscanf(line,"ipc,%lf,%d,%lf,%lf,%lf,,%31[^,]",&tv,&n,&mean_v,&ci_low,&ci_high,verdict) == 6);
     assert(n == 1); /* baseline n=1 (earlier only), not 2 -- "later" excluded */
     assert(fabs(mean_v - 1.0) < 1e-9); /* if "later" (ipc=9.0) leaked in, mean would shift */
   }
@@ -1664,6 +1714,305 @@ static void test_check_regression_metric_filter_restricts_checked_set(void){
   free(buf);
   sqlite3_close(db);
   printf("test_check_regression_metric_filter_restricts_checked_set passed\n");
+}
+
+// ---- env_score / "mixed-env" tests (INVESTIGATION.md's 4.3 "Machine/
+// environment comparability scoring") ----
+
+static void test_env_score_all_fields_agree(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf; size_t size; FILE *fp;
+  int n,outliers,i;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,env_score,ci_low,ci_high;
+  char verdict[32];
+
+  printf("Testing env_score: every tracked field agrees across contributing runs...\n");
+  for (i = 0; i < 3; i++){
+    char run_id[8],start_time[32];
+    snprintf(run_id,sizeof(run_id),"r%d",i);
+    snprintf(start_time,sizeof(start_time),"2026-01-01T00:0%d:00Z",i);
+    insert_run(db,i+1,run_id,"host1","/bin/workloadA",NULL,start_time);
+    insert_metric(db,i+1,"ipc",1.0);
+    /* hypervisor_vendor left NULL throughout (host runs) -- see
+     * test_env_score_hypervisor_vendor_self_excludes below for why that
+     * must not drag the score down. */
+    insert_run_environment_full(db,i+1,"host",NULL,"0x1a",
+                                 "AMD","2.5","2026-01-01","performance",16000000.0);
+  }
+
+  opts.csvflag = 1;
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,&env_score,
+                       &ci_low,&ci_high,verdict,&outliers));
+  assert(fabs(env_score - 1.0) < 1e-9);
+  assert(strcmp(verdict,"PASS") == 0);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("PASS: env_score all fields agree\n");
+}
+
+static void test_env_score_one_field_disagrees_still_passes(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf; size_t size; FILE *fp;
+  int n,outliers;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,env_score,ci_low,ci_high;
+  char verdict[32];
+
+  printf("Testing env_score: one of 7 comparable fields disagreeing stays PASS at the default threshold...\n");
+  /* 3 runs (not 2) so n >= VERDICT_MIN_RUNS_FOR_CONFIDENCE and "thin" doesn't
+   * also fire, muddying the PASS assertion below -- this test is about
+   * mixed-env specifically, not repeatability. */
+  insert_run(db,1,"r0","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"ipc",1.0);
+  insert_run_environment_full(db,1,"host",NULL,"0x1a","AMD","2.5","2026-01-01","performance",16000000.0);
+  insert_run(db,2,"r1","host1","/bin/workloadA",NULL,"2026-01-01T00:01:00Z");
+  insert_metric(db,2,"ipc",1.0);
+  /* bios_version differs -- the only mismatch */
+  insert_run_environment_full(db,2,"host",NULL,"0x1a","AMD","2.6","2026-01-01","performance",16000000.0);
+  insert_run(db,3,"r2","host1","/bin/workloadA",NULL,"2026-01-01T00:02:00Z");
+  insert_metric(db,3,"ipc",1.0);
+  insert_run_environment_full(db,3,"host",NULL,"0x1a","AMD","2.5","2026-01-01","performance",16000000.0);
+
+  opts.csvflag = 1;
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,&env_score,
+                       &ci_low,&ci_high,verdict,&outliers));
+  /* env_score round-trips through %.4g in the CSV (4 significant digits),
+   * so 6/7=0.857142857... prints as "0.8571" -- a 1e-3 tolerance accounts
+   * for that formatting precision loss, not real computation error. */
+  assert(fabs(env_score - 6.0/7.0) < 1e-3); /* 6 of 7 comparable fields agreed (hypervisor_vendor excluded) */
+  assert(strcmp(verdict,"PASS") == 0); /* 0.857 >= --min-env-score's 0.8 default */
+
+  free(buf);
+  sqlite3_close(db);
+  printf("PASS: env_score one field disagrees, still PASS\n");
+}
+
+static void test_env_score_two_fields_disagree_flags_mixed_env(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf; size_t size; FILE *fp;
+  int n,outliers;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,env_score,ci_low,ci_high;
+  char verdict[32];
+
+  printf("Testing env_score: two disagreeing fields drop below --min-env-score, verdict carries mixed-env...\n");
+  insert_run(db,1,"r0","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"ipc",1.0);
+  insert_run_environment_full(db,1,"host",NULL,"0x1a","AMD","2.5","2026-01-01","performance",16000000.0);
+  insert_run(db,2,"r1","host1","/bin/workloadA",NULL,"2026-01-01T00:01:00Z");
+  insert_metric(db,2,"ipc",1.0);
+  /* bios_version AND cpu_governor both differ -- 2 of 7 comparable fields mismatch */
+  insert_run_environment_full(db,2,"host",NULL,"0x1a","AMD","2.6","2026-01-01","powersave",16000000.0);
+
+  opts.csvflag = 1;
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,&env_score,
+                       &ci_low,&ci_high,verdict,&outliers));
+  assert(fabs(env_score - 5.0/7.0) < 1e-3); /* 0.714 < 0.8 default -- %.4g CSV round-trip tolerance */
+  /* verdict here is "WARN:thin,mixed-env" (n=2 also trips "thin") -- a
+   * comma-containing field print_csv_field() quotes, which find_csv_row()'s
+   * "%31[^,]" scan can't parse (same caveat its own header comment already
+   * documents) -- check the raw buffer directly instead, same convention
+   * test_summarize_verdict_thin_and_noisy_both_fire already uses. */
+  assert(strstr(buf,"mixed-env") != NULL);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("PASS: env_score two fields disagree, mixed-env flagged\n");
+}
+
+static void test_env_score_memory_tolerance(void){
+  sqlite3 *db;
+  struct summary_opts opts;
+  struct summary_totals totals;
+  char *buf; size_t size; FILE *fp;
+  int n,outliers;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,env_score,ci_low,ci_high;
+  char verdict[32];
+
+  printf("Testing env_score: memory_total_kb within 5%% tolerance agrees, beyond it mismatches...\n");
+
+  /* Within tolerance: 16000000 vs 16300000 (~1.9% difference) */
+  db = open_memory_db();
+  opts = default_opts();
+  insert_run(db,1,"r0","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"ipc",1.0);
+  insert_run_environment_full(db,1,"host",NULL,NULL,NULL,NULL,NULL,NULL,16000000.0);
+  insert_run(db,2,"r1","host1","/bin/workloadA",NULL,"2026-01-01T00:01:00Z");
+  insert_metric(db,2,"ipc",1.0);
+  insert_run_environment_full(db,2,"host",NULL,NULL,NULL,NULL,NULL,NULL,16300000.0);
+
+  opts.csvflag = 1;
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,&env_score,
+                       &ci_low,&ci_high,verdict,&outliers));
+  assert(fabs(env_score - 1.0) < 1e-9); /* virt_role + memory_total_kb both agree -- 2/2 */
+  free(buf);
+  sqlite3_close(db);
+
+  /* Beyond tolerance: 16000000 vs 20000000 (25% difference) */
+  db = open_memory_db();
+  opts = default_opts();
+  insert_run(db,1,"r0","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"ipc",1.0);
+  insert_run_environment_full(db,1,"host",NULL,NULL,NULL,NULL,NULL,NULL,16000000.0);
+  insert_run(db,2,"r1","host1","/bin/workloadA",NULL,"2026-01-01T00:01:00Z");
+  insert_metric(db,2,"ipc",1.0);
+  insert_run_environment_full(db,2,"host",NULL,NULL,NULL,NULL,NULL,NULL,20000000.0);
+
+  opts.csvflag = 1;
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,&env_score,
+                       &ci_low,&ci_high,verdict,&outliers));
+  assert(fabs(env_score - 0.5) < 1e-9); /* virt_role agrees, memory_total_kb mismatches -- 1/2 */
+  free(buf);
+  sqlite3_close(db);
+  printf("PASS: env_score memory_total_kb tolerance\n");
+}
+
+static void test_env_score_no_data_is_not_a_mismatch(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf; size_t size; FILE *fp;
+  int n,outliers,i;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,env_score,ci_low,ci_high;
+  char verdict[32];
+
+  printf("Testing env_score: no run_environment data at all -> no-data sentinel, never mixed-env...\n");
+  for (i = 0; i < 3; i++){
+    char run_id[8],start_time[32];
+    snprintf(run_id,sizeof(run_id),"r%d",i);
+    snprintf(start_time,sizeof(start_time),"2026-01-01T00:0%d:00Z",i);
+    insert_run(db,i+1,run_id,"host1","/bin/workloadA",NULL,start_time);
+    insert_metric(db,i+1,"ipc",1.0); /* insert_run_environment_full() deliberately never called */
+  }
+
+  opts.csvflag = 1;
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,&env_score,
+                       &ci_low,&ci_high,verdict,&outliers));
+  assert(env_score == -1.0); /* the no-data sentinel */
+  assert(strcmp(verdict,"PASS") == 0); /* absence of data is never itself evidence of a mismatch */
+
+  free(buf);
+  sqlite3_close(db);
+  printf("PASS: env_score no-data sentinel\n");
+}
+
+static void test_env_score_hypervisor_vendor_self_excludes(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf; size_t size; FILE *fp;
+  int n,outliers,i;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,env_score,ci_low,ci_high;
+  char verdict[32];
+
+  printf("Testing env_score: hypervisor_vendor (NULL on every host run) doesn't drag the score down...\n");
+  for (i = 0; i < 3; i++){
+    char run_id[8],start_time[32];
+    snprintf(run_id,sizeof(run_id),"r%d",i);
+    snprintf(start_time,sizeof(start_time),"2026-01-01T00:0%d:00Z",i);
+    insert_run(db,i+1,run_id,"host1","/bin/workloadA",NULL,start_time);
+    insert_metric(db,i+1,"ipc",1.0);
+    /* virt_role="host" -> hypervisor_vendor is legitimately NULL, exactly
+     * as provenance.c never populates it for a host run. */
+    insert_run_environment_full(db,i+1,"host",NULL,NULL,NULL,NULL,NULL,NULL,-1.0);
+  }
+
+  opts.csvflag = 1;
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,&env_score,
+                       &ci_low,&ci_high,verdict,&outliers));
+  assert(fabs(env_score - 1.0) < 1e-9); /* only virt_role was ever comparable, and it agreed: 1/1, not 1/8 */
+
+  free(buf);
+  sqlite3_close(db);
+  printf("PASS: env_score hypervisor_vendor self-excludes\n");
+}
+
+static void test_check_regression_env_score_differs_per_metric(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  char *buf; size_t size; FILE *fp; int rc;
+  char ipc_line[512],cache_line[512];
+
+  printf("Testing check_regression: env_score can differ row-to-row when metrics have different baseline contributors...\n");
+  /* r0/r1 both record "ipc" with agreeing environments. */
+  insert_run(db,1,"r0","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"ipc",1.0);
+  insert_run_environment_full(db,1,"host",NULL,NULL,NULL,"AMD","2.5",NULL,-1.0);
+  insert_run(db,2,"r1","host1","/bin/workloadA",NULL,"2026-01-01T00:01:00Z");
+  insert_metric(db,2,"ipc",1.0);
+  insert_run_environment_full(db,2,"host",NULL,NULL,NULL,"AMD","2.5",NULL,-1.0);
+  /* r0/r2 both record "cache_miss", but r2's bios_vendor disagrees with r0's. */
+  insert_metric(db,1,"cache_miss",2.0);
+  insert_run(db,3,"r2","host1","/bin/workloadA",NULL,"2026-01-01T00:02:00Z");
+  insert_metric(db,3,"cache_miss",2.0);
+  insert_run_environment_full(db,3,"host",NULL,NULL,NULL,"Intel",NULL,NULL,-1.0);
+
+  insert_run(db,4,"target","host1","/bin/workloadA",NULL,"2026-01-01T00:03:00Z");
+  insert_metric(db,4,"ipc",1.0);
+  insert_metric(db,4,"cache_miss",2.0);
+
+  opts.csvflag = 1;
+  fp = open_memstream(&buf,&size);
+  rc = check_regression(db,&opts,"host1","target",fp);
+  fclose(fp);
+
+  assert(rc == 0);
+  assert(find_regression_line(buf,"ipc",ipc_line,sizeof(ipc_line)));
+  assert(find_regression_line(buf,"cache_miss",cache_line,sizeof(cache_line)));
+  {
+    double tv,mean_v,ci_low,ci_high,ipc_env,cache_env;
+    int n;
+    char verdict[32];
+    /* metric,target_value,n,mean,ci_low,ci_high,env_score,verdict,status */
+    assert(sscanf(ipc_line,"ipc,%lf,%d,%lf,%lf,%lf,%lf,%31[^,]",
+                  &tv,&n,&mean_v,&ci_low,&ci_high,&ipc_env,verdict) == 7);
+    assert(sscanf(cache_line,"cache_miss,%lf,%d,%lf,%lf,%lf,%lf,%31[^,]",
+                  &tv,&n,&mean_v,&ci_low,&ci_high,&cache_env,verdict) == 7);
+    assert(fabs(ipc_env - 1.0) < 1e-9);   /* r0/r1: virt_role + bios_vendor + bios_version all agree -- 3/3 */
+    assert(fabs(cache_env - 0.5) < 1e-9); /* r0/r2: virt_role agrees, bios_vendor disagrees -- 1/2 */
+  }
+
+  free(buf);
+  sqlite3_close(db);
+  printf("PASS: check_regression env_score differs per metric\n");
 }
 
 int main(void){
@@ -1723,6 +2072,13 @@ int main(void){
   test_check_regression_ignores_later_runs();
   test_check_regression_target_not_found();
   test_check_regression_metric_filter_restricts_checked_set();
+  test_env_score_all_fields_agree();
+  test_env_score_one_field_disagrees_still_passes();
+  test_env_score_two_fields_disagree_flags_mixed_env();
+  test_env_score_memory_tolerance();
+  test_env_score_no_data_is_not_a_mismatch();
+  test_env_score_hypervisor_vendor_self_excludes();
+  test_check_regression_env_score_differs_per_metric();
 
   printf("\nAll test_summary tests passed.\n");
   return 0;

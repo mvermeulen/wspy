@@ -121,6 +121,44 @@
  * INVESTIGATION.md's "Repeatability policy + confidence metadata deep-dive". */
 #define VERDICT_MIN_RUNS_FOR_CONFIDENCE 3
 
+/* "mixed-env" verdict tracking -- INVESTIGATION.md's 4.3 "Machine/environment
+ * comparability scoring": the deferred, *scored* version of "mixed-pmu"
+ * above, across run_environment's provenance surface rather than just
+ * (cpu_vendor,counters_requested,counters_measured). Deliberately excludes
+ * cpu_scaling_driver (redundant companion to cpu_governor, provenance.h's
+ * own "not a separate probe" framing), cpu_governor_uniform (a within-run
+ * property of the governor measurement, not a cross-run comparability
+ * axis), and compiler_version/libc_version (wspy's own build toolchain, not
+ * the machine being benchmarked -- the backlog's own field list never
+ * mentions them). Every field contributes equally to the score -- no
+ * hand-tuned per-field point values, the same reasoning that kept IBS
+ * sampling-mode's cross-scheme data-source category mapping out of a
+ * permanent CSV schema applies here too: an invented weighting scheme would
+ * be exactly as arbitrary and just as hard to walk back once shipped. */
+enum env_field {
+  ENV_VIRT_ROLE, ENV_HYPERVISOR_VENDOR, ENV_MICROCODE_VERSION,
+  ENV_BIOS_VENDOR, ENV_BIOS_VERSION, ENV_BIOS_DATE,
+  ENV_CPU_GOVERNOR, ENV_MEMORY_TOTAL_KB,
+  ENV_FIELD_COUNT
+};
+
+/* run_environment column name for each enum value -- drives both the SQL
+ * SELECT list (summarize()/load_baseline_buckets()) and env_score's field
+ * loop from one table instead of two hand-kept lists. */
+static const char *const ENV_FIELD_COLUMN[ENV_FIELD_COUNT] = {
+  "virt_role","hypervisor_vendor","microcode_version",
+  "bios_vendor","bios_version","bios_date","cpu_governor","memory_total_kb"
+};
+
+/* memory_total_kb needs a tolerance, not exact match: firmware-reserved
+ * memory and DIMM population legitimately vary a few percent between
+ * otherwise-identical machines (e.g. /proc/meminfo's MemTotal on nominally-
+ * identical boxes commonly differs by tens of MB across BIOS/firmware
+ * revisions) -- exact match would produce false "mixed-env" noise. 5%
+ * tolerates that routine jitter while still catching a genuinely different
+ * memory configuration (e.g. 16GB vs 32GB). */
+#define ENV_MEMORY_TOLERANCE_FRACTION 0.05
+
 /* command/hostname/cpu_vendor are the original 4.1 whitelist; affinity_mode/
  * preset_name/config_name (runs columns) and cpu_governor/virt_role
  * (run_environment columns, already ingested since 4.0's provenance.c but
@@ -144,6 +182,7 @@ struct summary_opts {
                                   * an arbitrary run_config_options.option_name (NULL = none) */
   double outlier_z;
   double max_cv;      /* --max-cv: CV percent threshold above which a bucket's verdict is WARN:noisy */
+  double min_env_score; /* --min-env-score: below this fraction (0.0-1.0), a bucket's verdict is WARN:mixed-env */
   int min_runs;
   int csvflag;
   int quiet;
@@ -361,23 +400,31 @@ static void compute_ci95(double mean,double stddev,int n,double *ci_low_out,doub
  * wrapped child process to tell the two apart. "mixed_pmu" is a distinct,
  * independently-combinable reason -- see this file's header comment on
  * "mixed-pmu" for what it means and why it's exact-match rather than a
- * numeric threshold like noisy's. Reasons are joined in a fixed order
- * (thin, noisy, mixed-pmu) regardless of which combination fired, so the
- * verdict string is deterministic rather than depending on evaluation
- * order. */
+ * numeric threshold like noisy's. "env_score"/"min_env_score" are the scored
+ * counterpart (see ENV_FIELD_COUNT's comment): env_score == -1.0 (no field
+ * was ever mutually comparable) never trips "mixed-env", regardless of
+ * min_env_score -- absence of data is not evidence of a mismatch. Reasons
+ * are joined in a fixed order (thin, noisy, mixed-pmu, mixed-env) regardless
+ * of which combination fired -- new reasons append at the end so existing
+ * verdict strings/assertions never need reordering -- so the verdict string
+ * is deterministic rather than depending on evaluation order. */
 static void compute_verdict(int n,double cv_percent,double max_cv,int mixed_pmu,
+                             double env_score,double min_env_score,
                              char *verdict_out,size_t verdict_size){
   int thin = (n < VERDICT_MIN_RUNS_FOR_CONFIDENCE);
   int noisy = (cv_percent > max_cv);
+  int mixed_env = (env_score >= 0.0 && env_score < min_env_score);
   size_t used;
 
-  if (!thin && !noisy && !mixed_pmu){ snprintf(verdict_out,verdict_size,"PASS"); return; }
+  if (!thin && !noisy && !mixed_pmu && !mixed_env){ snprintf(verdict_out,verdict_size,"PASS"); return; }
   snprintf(verdict_out,verdict_size,"WARN:");
   used = strlen(verdict_out);
   if (thin) used += (size_t)snprintf(verdict_out+used,verdict_size-used,"thin");
   if (noisy) used += (size_t)snprintf(verdict_out+used,verdict_size-used,"%snoisy",
                                        used > 5 ? "," : "");
   if (mixed_pmu) used += (size_t)snprintf(verdict_out+used,verdict_size-used,"%smixed-pmu",
+                                           used > 5 ? "," : "");
+  if (mixed_env) used += (size_t)snprintf(verdict_out+used,verdict_size-used,"%smixed-env",
                                            used > 5 ? "," : "");
 }
 
@@ -416,6 +463,18 @@ struct bucket {
   int pmu_requested,pmu_measured;
   int pmu_signature_set;
   int pmu_mixed;
+  /* "mixed-env" verdict tracking (see ENV_FIELD_COUNT's comment above): the
+   * first-contributing-run's value per tracked field becomes that field's
+   * signature (env_sig[f]/env_sig_set[f]); every later run that has a
+   * comparable value for that field grows env_compared[f] (the score's
+   * per-field denominator) and, on disagreement, sets env_mismatched[f].
+   * memory_total_kb's signature/comparison values are decimal strings,
+   * atof()'d at comparison time -- same char[] style as pmu_vendor, no
+   * separate double field needed. */
+  char env_sig[ENV_FIELD_COUNT][80];
+  int env_sig_set[ENV_FIELD_COUNT];
+  int env_compared[ENV_FIELD_COUNT];
+  int env_mismatched[ENV_FIELD_COUNT];
 };
 
 static void bucket_reset(struct bucket *b,const char *group_val,const char *secondary_val,
@@ -433,10 +492,37 @@ static void bucket_reset(struct bucket *b,const char *group_val,const char *seco
   b->pmu_measured = 0;
   b->pmu_signature_set = 0;
   b->pmu_mixed = 0;
+  memset(b->env_sig,0,sizeof(b->env_sig));
+  memset(b->env_sig_set,0,sizeof(b->env_sig_set));
+  memset(b->env_compared,0,sizeof(b->env_compared));
+  memset(b->env_mismatched,0,sizeof(b->env_mismatched));
+}
+
+/* Environment comparability score for a bucket: fraction of ENV_FIELD_COUNT
+ * tracked fields that agreed across contributing runs, counting only fields
+ * that were actually mutually comparable (env_compared[f] > 0 -- a field
+ * unavailable on every run but the first never counts at all). Returns
+ * -1.0 when NO field was ever mutually comparable -- distinct from a real
+ * 0.0 ("compared >=1 field, all mismatched"), the same "absence of data is
+ * not itself evidence of a mismatch" principle check_regression()'s own
+ * no-baseline status already follows. Callers must never display -1.0 as a
+ * measured 0%/0.0 -- see print_regression_row()/emit_bucket()'s env_score_buf
+ * "-" handling. */
+static double compute_env_score(const struct bucket *b){
+  int f,denom = 0,agree = 0;
+  for (f = 0; f < ENV_FIELD_COUNT; f++){
+    if (b->env_compared[f] == 0) continue;
+    denom++;
+    if (!b->env_mismatched[f]) agree++;
+  }
+  return denom == 0 ? -1.0 : (double)agree / (double)denom;
 }
 
 static void bucket_add(struct bucket *b,double value,const char *run_id,const char *hostname,
-                        const char *cpu_vendor,int counters_requested,int counters_measured){
+                        const char *cpu_vendor,int counters_requested,int counters_measured,
+                        const char *const env_values[ENV_FIELD_COUNT]){
+  int f;
+
   if (b->n == b->cap){
     b->cap = b->cap ? b->cap * 2 : 8;
     b->values = realloc(b->values,sizeof(double) * (size_t)b->cap);
@@ -458,6 +544,38 @@ static void bucket_add(struct bucket *b,double value,const char *run_id,const ch
              b->pmu_measured != counters_measured){
     b->pmu_mixed = 1;
   }
+
+  for (f = 0; f < ENV_FIELD_COUNT; f++){
+    const char *v = env_values[f];
+    if (!v) continue; /* unavailable on this run -- doesn't touch this field's signature/denominator */
+    if (!b->env_sig_set[f]){
+      snprintf(b->env_sig[f],sizeof(b->env_sig[f]),"%s",v);
+      b->env_sig_set[f] = 1; /* first contributing value becomes the signature -- nothing to
+                               * compare it against yet, same as pmu_vendor's own first-add */
+      continue;
+    }
+    b->env_compared[f]++;
+    if (f == ENV_MEMORY_TOTAL_KB){
+      double sig_kb = atof(b->env_sig[f]),this_kb = atof(v);
+      double tol = sig_kb * ENV_MEMORY_TOLERANCE_FRACTION;
+      if (fabs(this_kb - sig_kb) > tol) b->env_mismatched[f] = 1;
+    } else if (strcmp(b->env_sig[f],v) != 0){
+      b->env_mismatched[f] = 1;
+    }
+  }
+}
+
+/* Reads ENV_FIELD_COUNT consecutive sqlite3_column_text() values starting
+ * at first_col into env_values, in ENV_FIELD_COLUMN's order -- shared by
+ * summarize() and load_baseline_buckets(), whose SELECT lists both append
+ * the same 8 run_environment columns in that order right before calling
+ * bucket_add(). NULL entries (SQL NULL) are preserved as NULL, not
+ * "(unknown)" -- bucket_add() treats NULL as "unavailable on this run",
+ * a real state distinct from any display placeholder. */
+static void read_env_values(sqlite3_stmt *stmt,int first_col,const char *env_values[ENV_FIELD_COUNT]){
+  int f;
+  for (f = 0; f < ENV_FIELD_COUNT; f++)
+    env_values[f] = (const char *)sqlite3_column_text(stmt,first_col + f);
 }
 
 static void bucket_free_contents(struct bucket *b){
@@ -521,12 +639,13 @@ static void format_contributing_runs(const struct bucket *b,char *buf,size_t buf
  * still is). */
 static void emit_bucket(const struct bucket *b,const struct summary_opts *opts,FILE *out,
                          struct summary_totals *totals){
-  double min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high,env_score;
   int *outlier_flags;
   int outlier_count,i;
   char outlier_ids[512];
   char contributing_runs[4096];
-  char verdict[32]; /* longest possible: "WARN:thin,noisy,mixed-pmu" (25 chars) + NUL */
+  char env_score_buf[16];
+  char verdict[40]; /* longest possible: "WARN:thin,noisy,mixed-pmu,mixed-env" (36 chars) + NUL */
   size_t used = 0;
 
   if (b->n < opts->min_runs){
@@ -547,15 +666,21 @@ static void emit_bucket(const struct bucket *b,const struct summary_opts *opts,F
 
   cv = (mean_v != 0.0) ? (stddev_v / fabs(mean_v)) * 100.0 : 0.0;
   compute_ci95(mean_v,stddev_v,b->n,&ci_low,&ci_high);
-  compute_verdict(b->n,cv,opts->max_cv,b->pmu_mixed,verdict,sizeof(verdict));
+  env_score = compute_env_score(b);
+  compute_verdict(b->n,cv,opts->max_cv,b->pmu_mixed,env_score,opts->min_env_score,verdict,sizeof(verdict));
   if (strcmp(verdict,"PASS") != 0) totals->groups_warned++;
+
+  if (env_score >= 0.0) snprintf(env_score_buf,sizeof(env_score_buf),"%.4g",env_score);
+  else snprintf(env_score_buf,sizeof(env_score_buf),"-");
 
   if (opts->csvflag){
     print_csv_field(out,b->group_val); fputc(',',out);
     if (opts->group_by_option){ print_csv_field(out,b->secondary_val); fputc(',',out); }
     print_csv_field(out,b->metric_name); fputc(',',out);
-    fprintf(out,"%d,%.6g,%.6g,%.6g,%.6g,%.6g,%.4g,%.6g,%.6g,",
-            b->n,min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high);
+    fprintf(out,"%d,%.6g,%.6g,%.6g,%.6g,%.6g,%.4g,",
+            b->n,min_v,max_v,mean_v,median_v,stddev_v,cv);
+    if (env_score >= 0.0) fprintf(out,"%.4g,",env_score); else fprintf(out,",");
+    fprintf(out,"%.6g,%.6g,",ci_low,ci_high);
     print_csv_field(out,verdict); fputc(',',out);
     fprintf(out,"%d,",outlier_count);
     print_csv_field(out,outlier_ids);
@@ -564,9 +689,9 @@ static void emit_bucket(const struct bucket *b,const struct summary_opts *opts,F
   } else {
     fprintf(out,"%-28.28s ",b->group_val);
     if (opts->group_by_option) fprintf(out,"%-20.20s ",b->secondary_val);
-    fprintf(out,"%-24.24s %4d %10.6g %10.6g %10.6g %10.6g %10.6g %7.2f%% %10.6g %10.6g %-16s %3d  %s",
-            b->metric_name,b->n,min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high,verdict,
-            outlier_count,outlier_ids);
+    fprintf(out,"%-24.24s %4d %10.6g %10.6g %10.6g %10.6g %10.6g %7.2f%% %9s %10.6g %10.6g %-16s %3d  %s",
+            b->metric_name,b->n,min_v,max_v,mean_v,median_v,stddev_v,cv,env_score_buf,ci_low,ci_high,
+            verdict,outlier_count,outlier_ids);
     if (opts->show_runs) fprintf(out,"  %s",contributing_runs);
     fputc('\n',out);
   }
@@ -590,7 +715,7 @@ static void emit_bucket(const struct bucket *b,const struct summary_opts *opts,F
  * is uniformly NULL/"(unknown)" and effectively inert when the flag isn't
  * in use, rather than needing a second query shape). */
 static int summarize(sqlite3 *db,const struct summary_opts *opts,FILE *out,struct summary_totals *totals){
-  char sql[1400];
+  char sql[1600];
   sqlite3_stmt *stmt;
   struct bucket cur;
   int have_bucket = 0;
@@ -600,7 +725,9 @@ static int summarize(sqlite3 *db,const struct summary_opts *opts,FILE *out,struc
     "r.run_id AS run_id, r.hostname AS run_hostname, "
     "mv.metric_name AS metric_name, AVG(mv.value) AS avg_value, "
     "r.cpu_vendor AS run_cpu_vendor, r.counters_requested AS run_counters_requested, "
-    "r.counters_measured AS run_counters_measured "
+    "r.counters_measured AS run_counters_measured, "
+    "e.virt_role, e.hypervisor_vendor, e.microcode_version, "
+    "e.bios_vendor, e.bios_version, e.bios_date, e.cpu_governor, e.memory_total_kb "
     "FROM metric_values mv JOIN runs r ON r.id = mv.run_id "
     "LEFT JOIN run_environment e ON e.run_id = r.id "
     "LEFT JOIN run_config_options rco ON rco.run_id = r.id AND rco.option_name = ?3 "
@@ -629,12 +756,15 @@ static int summarize(sqlite3 *db,const struct summary_opts *opts,FILE *out,struc
     const unsigned char *cpu_vendor_raw = sqlite3_column_text(stmt,6);
     int counters_requested = sqlite3_column_int(stmt,7);
     int counters_measured = sqlite3_column_int(stmt,8);
+    const char *env_values[ENV_FIELD_COUNT];
     const char *group_val = group_raw ? (const char *)group_raw : "(unknown)";
     const char *secondary_val = secondary_raw ? (const char *)secondary_raw : "(unknown)";
     const char *run_id = run_id_raw ? (const char *)run_id_raw : "?";
     const char *hostname = hostname_raw ? (const char *)hostname_raw : "?";
     const char *metric_name = metric_raw ? (const char *)metric_raw : "?";
     const char *cpu_vendor = cpu_vendor_raw ? (const char *)cpu_vendor_raw : "(unknown)";
+
+    read_env_values(stmt,9,env_values);
 
     if (!metric_wanted(opts,metric_name)) continue;
     totals->rows_scanned++;
@@ -645,7 +775,7 @@ static int summarize(sqlite3 *db,const struct summary_opts *opts,FILE *out,struc
       bucket_reset(&cur,group_val,secondary_val,metric_name);
       have_bucket = 1;
     }
-    bucket_add(&cur,value,run_id,hostname,cpu_vendor,counters_requested,counters_measured);
+    bucket_add(&cur,value,run_id,hostname,cpu_vendor,counters_requested,counters_measured,env_values);
   }
   if (have_bucket){ emit_bucket(&cur,opts,out,totals); bucket_free_contents(&cur); }
 
@@ -873,7 +1003,7 @@ static int load_target_metrics(sqlite3 *db,sqlite3_int64 run_id,struct metric_va
 static int load_baseline_buckets(sqlite3 *db,const struct summary_opts *opts,
                                   const struct target_run *target,
                                   struct bucket **out_buckets,int *out_n){
-  char sql[900];
+  char sql[1200];
   sqlite3_stmt *stmt;
   struct bucket *buckets = NULL;
   int n = 0,cap = 0;
@@ -884,7 +1014,9 @@ static int load_baseline_buckets(sqlite3 *db,const struct summary_opts *opts,
     "SELECT mv.metric_name AS metric_name, AVG(mv.value) AS avg_value, "
     "r.run_id AS run_id, r.hostname AS run_hostname, "
     "r.cpu_vendor AS run_cpu_vendor, r.counters_requested AS run_counters_requested, "
-    "r.counters_measured AS run_counters_measured "
+    "r.counters_measured AS run_counters_measured, "
+    "e.virt_role, e.hypervisor_vendor, e.microcode_version, "
+    "e.bios_vendor, e.bios_version, e.bios_date, e.cpu_governor, e.memory_total_kb "
     "FROM metric_values mv JOIN runs r ON r.id = mv.run_id "
     "LEFT JOIN run_environment e ON e.run_id = r.id "
     "LEFT JOIN run_config_options rco ON rco.run_id = r.id AND rco.option_name = ?5 "
@@ -914,10 +1046,13 @@ static int load_baseline_buckets(sqlite3 *db,const struct summary_opts *opts,
     const unsigned char *cpu_vendor_raw = sqlite3_column_text(stmt,4);
     int counters_requested = sqlite3_column_int(stmt,5);
     int counters_measured = sqlite3_column_int(stmt,6);
+    const char *env_values[ENV_FIELD_COUNT];
     const char *metric_name = metric_raw ? (const char *)metric_raw : "?";
     const char *run_id = run_id_raw ? (const char *)run_id_raw : "?";
     const char *hostname = hostname_raw ? (const char *)hostname_raw : "?";
     const char *cpu_vendor = cpu_vendor_raw ? (const char *)cpu_vendor_raw : "(unknown)";
+
+    read_env_values(stmt,7,env_values);
 
     if (!metric_wanted(opts,metric_name)) continue;
 
@@ -929,7 +1064,7 @@ static int load_baseline_buckets(sqlite3 *db,const struct summary_opts *opts,
       bucket_reset(&cur,"","",metric_name);
       have_bucket = 1;
     }
-    bucket_add(&cur,value,run_id,hostname,cpu_vendor,counters_requested,counters_measured);
+    bucket_add(&cur,value,run_id,hostname,cpu_vendor,counters_requested,counters_measured,env_values);
   }
   if (have_bucket){
     if (n == cap){ cap = cap ? cap * 2 : 8; buckets = realloc(buckets,sizeof(struct bucket) * (size_t)cap); }
@@ -958,26 +1093,31 @@ static const struct bucket *find_baseline_bucket(const struct bucket *buckets,in
  * no-baseline/thin cases, so "no data" is never misread as "baseline mean is zero". */
 static void print_regression_row(FILE *out,int csvflag,const char *metric_name,double target_value,
                                   const char *status,int n,double mean,double ci_low,double ci_high,
-                                  const char *verdict){
+                                  double env_score,const char *verdict){
   if (csvflag){
     print_csv_field(out,metric_name); fputc(',',out);
     fprintf(out,"%.6g,",target_value);
     if (n >= 0){
       fprintf(out,"%d,%.6g,%.6g,%.6g,",n,mean,ci_low,ci_high);
+      if (env_score >= 0.0) fprintf(out,"%.4g,",env_score); else fprintf(out,",");
       print_csv_field(out,verdict);
     } else {
-      fprintf(out,",,,,");
+      fprintf(out,",,,,,");
     }
     fputc(',',out);
     print_csv_field(out,status);
     fputc('\n',out);
   } else {
-    if (n >= 0)
-      fprintf(out,"%-32.32s %12.6g %4d %12.6g %12.6g %12.6g %-16s %-12s\n",
-              metric_name,target_value,n,mean,ci_low,ci_high,verdict,status);
-    else
-      fprintf(out,"%-32.32s %12.6g %4s %12s %12s %12s %-16s %-12s\n",
-              metric_name,target_value,"-","-","-","-","-",status);
+    if (n >= 0){
+      char env_score_buf[16];
+      if (env_score >= 0.0) snprintf(env_score_buf,sizeof(env_score_buf),"%.4g",env_score);
+      else snprintf(env_score_buf,sizeof(env_score_buf),"-");
+      fprintf(out,"%-32.32s %12.6g %4d %12.6g %12.6g %12.6g %8s %-16s %-12s\n",
+              metric_name,target_value,n,mean,ci_low,ci_high,env_score_buf,verdict,status);
+    } else {
+      fprintf(out,"%-32.32s %12.6g %4s %12s %12s %12s %8s %-16s %-12s\n",
+              metric_name,target_value,"-","-","-","-","-","-",status);
+    }
   }
 }
 
@@ -1007,10 +1147,11 @@ static int check_regression(sqlite3 *db,const struct summary_opts *opts,
   }
 
   if (opts->csvflag){
-    fprintf(out,"metric,target_value,baseline_n,baseline_mean,ci95_low,ci95_high,baseline_verdict,status\n");
+    fprintf(out,"metric,target_value,baseline_n,baseline_mean,ci95_low,ci95_high,baseline_env_score,"
+                "baseline_verdict,status\n");
   } else {
-    fprintf(out,"%-32s %12s %4s %12s %12s %12s %-16s %-12s\n",
-            "metric","target","n","base_mean","ci95_low","ci95_high","base_verdict","status");
+    fprintf(out,"%-32s %12s %4s %12s %12s %12s %8s %-16s %-12s\n",
+            "metric","target","n","base_mean","ci95_low","ci95_high","env_score","base_verdict","status");
   }
 
   for (i = 0; i < target_metrics.n; i++){
@@ -1024,27 +1165,30 @@ static int check_regression(sqlite3 *db,const struct summary_opts *opts,
     b = find_baseline_bucket(baselines,nbaselines,metric_name);
     if (!b){
       no_baseline++;
-      print_regression_row(out,opts->csvflag,metric_name,target_value,"no-baseline",-1,0,0,0,"");
+      print_regression_row(out,opts->csvflag,metric_name,target_value,"no-baseline",-1,0,0,0,-1.0,"");
     } else if (b->n < opts->min_runs){
-      print_regression_row(out,opts->csvflag,metric_name,target_value,"thin",-1,0,0,0,"");
+      print_regression_row(out,opts->csvflag,metric_name,target_value,"thin",-1,0,0,0,-1.0,"");
     } else {
       double min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high;
       int *outlier_flags = malloc(sizeof(int) * (size_t)b->n);
-      char verdict[32];
+      char verdict[40];
+      double env_score;
       const char *status;
 
       compute_stats(b->values,b->n,opts->outlier_z,&min_v,&max_v,&mean_v,&median_v,&stddev_v,outlier_flags);
       free(outlier_flags);
       cv = (mean_v != 0.0) ? (stddev_v / fabs(mean_v)) * 100.0 : 0.0;
       compute_ci95(mean_v,stddev_v,b->n,&ci_low,&ci_high);
-      compute_verdict(b->n,cv,opts->max_cv,b->pmu_mixed,verdict,sizeof(verdict));
+      env_score = compute_env_score(b);
+      compute_verdict(b->n,cv,opts->max_cv,b->pmu_mixed,env_score,opts->min_env_score,verdict,sizeof(verdict));
 
       if (target_value < ci_low) status = "below";
       else if (target_value > ci_high) status = "above";
       else status = "within";
       if (!strcmp(status,"above") || !strcmp(status,"below")) flagged++;
 
-      print_regression_row(out,opts->csvflag,metric_name,target_value,status,b->n,mean_v,ci_low,ci_high,verdict);
+      print_regression_row(out,opts->csvflag,metric_name,target_value,status,b->n,mean_v,ci_low,ci_high,
+                            env_score,verdict);
     }
   }
 
@@ -1087,6 +1231,9 @@ static void usage(const char *prog){
     "  --outlier-stddev <n>   z-score threshold for flagging outliers (default 2.0)\n"
     "  --min-runs <n>         only report (group,metric) buckets with >= n runs (default 1)\n"
     "  --max-cv <percent>     CV%% above which a bucket's verdict is WARN:noisy (default 5.0)\n"
+    "  --min-env-score <frac> env_score below which a bucket's verdict is WARN:mixed-env\n"
+    "                         (default 0.8 -- at most 1 of 8 tracked provenance fields\n"
+    "                         may disagree across the bucket's contributing runs)\n"
     "  --csv                  machine-readable CSV output instead of the human table\n"
     "  --show-runs            append every contributing run's hostname:run_id to each\n"
     "                         bucket (traceability: chase a surprising number to its runs)\n"
@@ -1106,8 +1253,8 @@ static void usage(const char *prog){
     "                         per-metric values against a rolling baseline (every\n"
     "                         strictly-earlier run sharing the same --group-by/\n"
     "                         --group-by-option bucket). --group-by/--group-by-option/\n"
-    "                         --metric/--min-runs/--max-cv apply as modifiers; every\n"
-    "                         other option above is ignored except --db/--csv/--quiet/\n"
+    "                         --metric/--min-runs/--max-cv/--min-env-score apply as\n"
+    "                         modifiers; every other option above is ignored except --db/--csv/--quiet/\n"
     "                         --strict. A metric outside the baseline's 95%% CI is\n"
     "                         reported as \"above\" or \"below\" (direction-neutral --\n"
     "                         this tool doesn't know which direction is bad for a\n"
@@ -1116,12 +1263,17 @@ static void usage(const char *prog){
     "\n"
     "Every reported bucket carries a 95%% confidence interval of the mean (ci95_low/\n"
     "ci95_high, Student's t) and a repeatability verdict (PASS, or WARN:thin for\n"
-    "n<3 runs, WARN:noisy for CV over --max-cv, and/or WARN:mixed-pmu when the\n"
-    "bucket's contributing runs don't all share the same cpu_vendor/counter\n"
-    "coverage -- same-named columns computed from genuinely different hardware\n"
-    "or a different counter-collection setup, not just repeat-to-repeat noise)\n"
-    "alongside min/max/mean/median/stddev/cv_percent -- all default output, no\n"
-    "flag needed.\n"
+    "n<3 runs, WARN:noisy for CV over --max-cv, WARN:mixed-pmu when the bucket's\n"
+    "contributing runs don't all share the same cpu_vendor/counter coverage --\n"
+    "same-named columns computed from genuinely different hardware or a different\n"
+    "counter-collection setup, not just repeat-to-repeat noise -- and/or WARN:mixed-env\n"
+    "when env_score falls below --min-env-score) alongside min/max/mean/median/\n"
+    "stddev/cv_percent/env_score -- all default output, no flag needed. env_score is\n"
+    "the fraction of 8 tracked environment fields (virt_role, hypervisor_vendor,\n"
+    "microcode_version, bios_vendor/version/date, cpu_governor, memory_total_kb) that\n"
+    "agreed across the bucket's contributing runs, or \"-\" when none of them were ever\n"
+    "mutually comparable (never treated as a mismatch -- absence of data is not\n"
+    "evidence of one).\n"
     "\n"
     "Exit status: 0 normally (1 with --strict if any bucket still needs more\n"
     "runs or carried a WARN verdict, or nothing matched; 1 with --trace or\n"
@@ -1148,6 +1300,7 @@ int main(int argc,char **argv){
     { "outlier-stddev", required_argument, 0, 'z' },
     { "min-runs",       required_argument, 0, 'n' },
     { "max-cv",         required_argument, 0, 'X' },
+    { "min-env-score",  required_argument, 0, 'E' },
     { "csv",            no_argument,       0, 'C' },
     { "show-runs",      no_argument,       0, 'R' },
     { "trace",          required_argument, 0, 'T' },
@@ -1165,6 +1318,7 @@ int main(int argc,char **argv){
   opts.outlier_z = 2.0;
   opts.min_runs = 1;
   opts.max_cv = 5.0;
+  opts.min_env_score = 0.8;
 
   while ((opt = getopt_long(argc,argv,"qsh",long_options,NULL)) != -1){
     switch (opt){
@@ -1183,6 +1337,7 @@ int main(int argc,char **argv){
     case 'z': opts.outlier_z = atof(optarg); break;
     case 'n': opts.min_runs = atoi(optarg); break;
     case 'X': opts.max_cv = atof(optarg); break;
+    case 'E': opts.min_env_score = atof(optarg); break;
     case 'C': opts.csvflag = 1; break;
     case 'R': opts.show_runs = 1; break;
     case 'T': opts.trace_key = optarg; break;
@@ -1263,15 +1418,15 @@ int main(int argc,char **argv){
   if (opts.csvflag){
     printf("group,");
     if (opts.group_by_option) printf("group_by_option,");
-    printf("metric,n,min,max,mean,median,stddev,cv_percent,ci95_low,ci95_high,verdict,"
+    printf("metric,n,min,max,mean,median,stddev,cv_percent,env_score,ci95_low,ci95_high,verdict,"
            "outlier_count,outlier_run_ids");
     if (opts.show_runs) printf(",contributing_runs");
     printf("\n");
   } else {
     printf("%-28s ","group");
     if (opts.group_by_option) printf("%-20s ","group_by_option");
-    printf("%-24s %4s %10s %10s %10s %10s %10s %8s %10s %10s %-16s %3s  %s",
-           "metric","n","min","max","mean","median","stddev","cv",
+    printf("%-24s %4s %10s %10s %10s %10s %10s %8s %9s %10s %10s %-16s %3s  %s",
+           "metric","n","min","max","mean","median","stddev","cv","env_score",
            "ci95_low","ci95_high","verdict","out","outlier run(s)");
     if (opts.show_runs) printf("  %s","contributing runs (host:run_id)");
     printf("\n");
