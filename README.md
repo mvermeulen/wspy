@@ -346,6 +346,15 @@ key (e.g. a `wspy-sweep` cell's axis tag), for "this workload, broken out by X" 
 `--strict` fails if any bucket is too thin (`--min-runs`), too noisy (`--max-cv`, default 5%), or
 nothing matched.
 
+`--check-regression <hostname>:<run_id>` is a standalone mode (mutually exclusive with `--trace`):
+compares that run's own per-metric values against a *rolling* baseline — every strictly-earlier run
+sharing the same `--group-by`/`--group-by-option` bucket the target run itself would belong to (no
+separate matching-key concept, no new store schema). A metric outside the baseline's 95% CI is
+reported as `above`/`below` (direction-neutral — this tool has no per-metric notion of which
+direction is a regression vs. an improvement, so it reports the deviation and lets a human judge
+it), alongside `within`/`no-baseline`/`thin` (fewer than `--min-runs` baseline runs). `--strict`
+fails if any metric was flagged `above`/`below`.
+
 ```
 ./wspy-summary --db results/store.db                                # human table
 ./wspy-summary --db results/store.db --csv --metric ipc --metric retire
@@ -355,6 +364,8 @@ nothing matched.
                                                                        # hostname:run_id per bucket
 ./wspy-summary --db results/store.db --trace myhost:1731000000-1234 # resolve one run to its
                                                                        # manifest/CSV/tree/plots
+./wspy-summary --db results/store.db --check-regression myhost:1731000000-1234  # compare against
+                                                                       # every earlier matching run
 ```
 
 See `./wspy-summary --help` for the full option list.

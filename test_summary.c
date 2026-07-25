@@ -1337,6 +1337,335 @@ static void test_open_summary_db_schema_gate(void){
   printf("test_open_summary_db_schema_gate passed\n");
 }
 
+/* Finds the --check-regression CSV data line for `metric` (prefix match,
+ * "<metric>," -- same rationale as find_csv_row() above: test metric names
+ * never contain a comma/quote). Copies the whole line (sans trailing \n)
+ * into line_out. Returns 1 if found. */
+static int find_regression_line(const char *buf,const char *metric,char *line_out,size_t line_out_size){
+  char prefix[256];
+  const char *line = buf;
+  size_t prefix_len;
+
+  snprintf(prefix,sizeof(prefix),"%s,",metric);
+  prefix_len = strlen(prefix);
+  while (line && *line){
+    const char *eol = strchr(line,'\n');
+    size_t linelen = eol ? (size_t)(eol - line) : strlen(line);
+    if (linelen >= prefix_len && !strncmp(line,prefix,prefix_len)){
+      snprintf(line_out,line_out_size,"%.*s",(int)linelen,line);
+      return 1;
+    }
+    line = eol ? eol + 1 : NULL;
+  }
+  return 0;
+}
+
+/* The last comma-separated field of a --check-regression CSV row is always
+ * the deviation status ("within"/"above"/"below"/"no-baseline"/"thin") --
+ * this is what lets tests tell a row-level "thin" status (baseline bucket
+ * has fewer than --min-runs contributing runs, print_regression_row()'s
+ * n<0 branch) apart from a populated row whose baseline_verdict column
+ * happens to contain the reason "WARN:thin" (compute_verdict()'s own,
+ * unrelated, n<VERDICT_MIN_RUNS_FOR_CONFIDENCE=3 threshold) without either
+ * one accidentally matching a plain strstr() for "thin". */
+static const char *last_csv_field(const char *line){
+  const char *last_comma = strrchr(line,',');
+  return last_comma ? last_comma + 1 : line;
+}
+
+static void test_check_regression_within_baseline(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  char *buf; size_t size; FILE *fp; int rc;
+  char line[512];
+
+  insert_run(db,1,"base1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"ipc",1.0);
+  insert_run(db,2,"base2","host1","/bin/workloadA",NULL,"2026-01-02T00:00:00Z");
+  insert_metric(db,2,"ipc",1.0);
+  insert_run(db,3,"base3","host1","/bin/workloadA",NULL,"2026-01-03T00:00:00Z");
+  insert_metric(db,3,"ipc",1.0);
+  insert_run(db,4,"target","host1","/bin/workloadA",NULL,"2026-01-04T00:00:00Z");
+  insert_metric(db,4,"ipc",1.0); /* == baseline mean/ci exactly (stddev=0) -> within, not a boundary fluke */
+
+  opts.csvflag = 1;
+  fp = open_memstream(&buf,&size);
+  rc = check_regression(db,&opts,"host1","target",fp);
+  fclose(fp);
+
+  assert(rc == 0);
+  assert(find_regression_line(buf,"ipc",line,sizeof(line)));
+  assert(!strcmp(last_csv_field(line),"within"));
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_check_regression_within_baseline passed\n");
+}
+
+static void test_check_regression_flags_above_baseline(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  char *buf; size_t size; FILE *fp; int rc;
+  char line[512];
+  double tv,mean_v,ci_low,ci_high;
+  int n;
+  char verdict[32];
+
+  insert_run(db,1,"base1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"ipc",1.0);
+  insert_run(db,2,"base2","host1","/bin/workloadA",NULL,"2026-01-02T00:00:00Z");
+  insert_metric(db,2,"ipc",1.0);
+  insert_run(db,3,"base3","host1","/bin/workloadA",NULL,"2026-01-03T00:00:00Z");
+  insert_metric(db,3,"ipc",1.0);
+  insert_run(db,4,"target","host1","/bin/workloadA",NULL,"2026-01-04T00:00:00Z");
+  insert_metric(db,4,"ipc",5.0); /* far above a zero-variance baseline */
+
+  opts.csvflag = 1;
+  fp = open_memstream(&buf,&size);
+  rc = check_regression(db,&opts,"host1","target",fp);
+  fclose(fp);
+
+  assert(rc == 0);
+  assert(find_regression_line(buf,"ipc",line,sizeof(line)));
+  assert(!strcmp(last_csv_field(line),"above"));
+  assert(sscanf(line,"ipc,%lf,%d,%lf,%lf,%lf,%31[^,]",&tv,&n,&mean_v,&ci_low,&ci_high,verdict) == 6);
+  assert(fabs(tv - 5.0) < 1e-9);
+  assert(n == 3);
+  assert(fabs(mean_v - 1.0) < 1e-9);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_check_regression_flags_above_baseline passed\n");
+}
+
+static void test_check_regression_flags_below_baseline(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  char *buf; size_t size; FILE *fp; int rc;
+  char line[512];
+
+  insert_run(db,1,"base1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"ipc",1.0);
+  insert_run(db,2,"base2","host1","/bin/workloadA",NULL,"2026-01-02T00:00:00Z");
+  insert_metric(db,2,"ipc",1.0);
+  insert_run(db,3,"base3","host1","/bin/workloadA",NULL,"2026-01-03T00:00:00Z");
+  insert_metric(db,3,"ipc",1.0);
+  insert_run(db,4,"target","host1","/bin/workloadA",NULL,"2026-01-04T00:00:00Z");
+  insert_metric(db,4,"ipc",0.1); /* far below a zero-variance baseline */
+
+  opts.csvflag = 1;
+  fp = open_memstream(&buf,&size);
+  rc = check_regression(db,&opts,"host1","target",fp);
+  fclose(fp);
+
+  assert(rc == 0);
+  assert(find_regression_line(buf,"ipc",line,sizeof(line)));
+  assert(!strcmp(last_csv_field(line),"below"));
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_check_regression_flags_below_baseline passed\n");
+}
+
+static void test_check_regression_no_baseline_history(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  char *buf; size_t size; FILE *fp; int rc;
+  char line[512];
+
+  insert_run(db,1,"target","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"brand_new_metric",42.0); /* no earlier run ever recorded this metric */
+
+  opts.csvflag = 1;
+  fp = open_memstream(&buf,&size);
+  rc = check_regression(db,&opts,"host1","target",fp);
+  fclose(fp);
+
+  assert(rc == 0);
+  assert(find_regression_line(buf,"brand_new_metric",line,sizeof(line)));
+  assert(!strcmp(last_csv_field(line),"no-baseline"));
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_check_regression_no_baseline_history passed\n");
+}
+
+static void test_check_regression_thin_baseline(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  char *buf; size_t size; FILE *fp; int rc;
+  char line[512];
+
+  insert_run(db,1,"base1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"ipc",1.0);
+  insert_run(db,2,"base2","host1","/bin/workloadA",NULL,"2026-01-02T00:00:00Z");
+  insert_metric(db,2,"ipc",1.0); /* only 2 earlier runs */
+  insert_run(db,3,"target","host1","/bin/workloadA",NULL,"2026-01-03T00:00:00Z");
+  insert_metric(db,3,"ipc",1.0);
+
+  opts.csvflag = 1;
+  opts.min_runs = 3; /* > 2 available baseline runs */
+  fp = open_memstream(&buf,&size);
+  rc = check_regression(db,&opts,"host1","target",fp);
+  fclose(fp);
+
+  assert(rc == 0);
+  assert(find_regression_line(buf,"ipc",line,sizeof(line)));
+  assert(!strcmp(last_csv_field(line),"thin")); /* row-level thin, not compute_verdict()'s own WARN:thin reason */
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_check_regression_thin_baseline passed\n");
+}
+
+static void test_check_regression_mixed_pmu_caveat(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  char *buf; size_t size; FILE *fp; int rc;
+  char line[512];
+
+  insert_run_with_pmu(db,1,"base1","host1","/bin/workloadA","AMD","2026-01-01T00:00:00Z",5,5);
+  insert_metric(db,1,"ipc",1.0);
+  insert_run_with_pmu(db,2,"base2","host1","/bin/workloadA","Intel","2026-01-02T00:00:00Z",5,5);
+  insert_metric(db,2,"ipc",1.0);
+  insert_run_with_pmu(db,3,"base3","host1","/bin/workloadA","AMD","2026-01-03T00:00:00Z",5,5);
+  insert_metric(db,3,"ipc",1.0);
+  insert_run_with_pmu(db,4,"target","host1","/bin/workloadA","AMD","2026-01-04T00:00:00Z",5,5);
+  insert_metric(db,4,"ipc",1.0);
+
+  opts.csvflag = 1;
+  fp = open_memstream(&buf,&size);
+  rc = check_regression(db,&opts,"host1","target",fp);
+  fclose(fp);
+
+  assert(rc == 0);
+  assert(find_regression_line(buf,"ipc",line,sizeof(line)));
+  assert(strstr(line,"mixed-pmu") != NULL);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_check_regression_mixed_pmu_caveat passed\n");
+}
+
+static void test_check_regression_null_group_key_matches(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  char *buf; size_t size; FILE *fp; int rc;
+  char line[512];
+
+  /* insert_run() never sets preset_name -- both rows leave it NULL, same as
+   * a plain wspy invocation with no --preset-name. */
+  insert_run(db,1,"base1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"ipc",1.0);
+  insert_run(db,2,"target","host1","/bin/workloadA",NULL,"2026-01-02T00:00:00Z");
+  insert_metric(db,2,"ipc",1.0);
+
+  opts.csvflag = 1;
+  opts.min_runs = 1;
+  assert(parse_group_by("preset_name",&opts.group_by));
+  fp = open_memstream(&buf,&size);
+  rc = check_regression(db,&opts,"host1","target",fp);
+  fclose(fp);
+
+  assert(rc == 0);
+  assert(find_regression_line(buf,"ipc",line,sizeof(line)));
+  /* NULL preset_name IS NULL preset_name -> base1 must still contribute (n=1), not "no-baseline" */
+  assert(!strcmp(last_csv_field(line),"within"));
+  {
+    double tv,mean_v,ci_low,ci_high;
+    int n;
+    char verdict[32];
+    assert(sscanf(line,"ipc,%lf,%d,%lf,%lf,%lf,%31[^,]",&tv,&n,&mean_v,&ci_low,&ci_high,verdict) == 6);
+    assert(n == 1); /* baseline n=1 -- the IS-based NULL-safe match found base1 */
+  }
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_check_regression_null_group_key_matches passed\n");
+}
+
+static void test_check_regression_ignores_later_runs(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  char *buf; size_t size; FILE *fp; int rc;
+  char line[512];
+
+  insert_run(db,1,"earlier","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"ipc",1.0);
+  insert_run(db,2,"target","host1","/bin/workloadA",NULL,"2026-01-02T00:00:00Z");
+  insert_metric(db,2,"ipc",1.0);
+  insert_run(db,3,"later","host1","/bin/workloadA",NULL,"2026-01-03T00:00:00Z");
+  insert_metric(db,3,"ipc",9.0); /* must NOT contribute to target's baseline */
+
+  opts.csvflag = 1;
+  fp = open_memstream(&buf,&size);
+  rc = check_regression(db,&opts,"host1","target",fp);
+  fclose(fp);
+
+  assert(rc == 0);
+  assert(find_regression_line(buf,"ipc",line,sizeof(line)));
+  {
+    double tv,mean_v,ci_low,ci_high;
+    int n;
+    char verdict[32];
+    assert(sscanf(line,"ipc,%lf,%d,%lf,%lf,%lf,%31[^,]",&tv,&n,&mean_v,&ci_low,&ci_high,verdict) == 6);
+    assert(n == 1); /* baseline n=1 (earlier only), not 2 -- "later" excluded */
+    assert(fabs(mean_v - 1.0) < 1e-9); /* if "later" (ipc=9.0) leaked in, mean would shift */
+  }
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_check_regression_ignores_later_runs passed\n");
+}
+
+static void test_check_regression_target_not_found(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  char *buf; size_t size; FILE *fp; int rc;
+
+  insert_run(db,1,"r1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"ipc",1.0);
+
+  fp = open_memstream(&buf,&size);
+  rc = check_regression(db,&opts,"host1","no-such-run",fp);
+  fclose(fp);
+
+  assert(rc == 1);
+  assert(strlen(buf) == 0); /* nothing printed to out on a miss -- "not found" is stderr's job */
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_check_regression_target_not_found passed\n");
+}
+
+static void test_check_regression_metric_filter_restricts_checked_set(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  char *buf; size_t size; FILE *fp; int rc;
+  char line[512];
+
+  insert_run(db,1,"base1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"ipc",1.0);
+  insert_metric(db,1,"cache_miss",2.0);
+  insert_run(db,2,"target","host1","/bin/workloadA",NULL,"2026-01-02T00:00:00Z");
+  insert_metric(db,2,"ipc",1.0);
+  insert_metric(db,2,"cache_miss",2.0);
+
+  opts.csvflag = 1;
+  opts.metrics[opts.nmetrics++] = "ipc";
+  fp = open_memstream(&buf,&size);
+  rc = check_regression(db,&opts,"host1","target",fp);
+  fclose(fp);
+
+  assert(rc == 0);
+  assert(find_regression_line(buf,"ipc",line,sizeof(line)));
+  assert(!find_regression_line(buf,"cache_miss",line,sizeof(line)));
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_check_regression_metric_filter_restricts_checked_set passed\n");
+}
+
 int main(void){
   test_compute_stats_basic();
   test_compute_stats_single_sample();
@@ -1384,6 +1713,16 @@ int main(void){
   test_summarize_show_runs_truncates_with_marker();
   test_trace_run_no_such_run();
   test_open_summary_db_schema_gate();
+  test_check_regression_within_baseline();
+  test_check_regression_flags_above_baseline();
+  test_check_regression_flags_below_baseline();
+  test_check_regression_no_baseline_history();
+  test_check_regression_thin_baseline();
+  test_check_regression_mixed_pmu_caveat();
+  test_check_regression_null_group_key_matches();
+  test_check_regression_ignores_later_runs();
+  test_check_regression_target_not_found();
+  test_check_regression_metric_filter_restricts_checked_set();
 
   printf("\nAll test_summary tests passed.\n");
   return 0;
