@@ -37,7 +37,7 @@
  * (wspy.h) is versioned separately from MANIFEST_SCHEMA_VERSION. Recorded
  * on every run_features row so a later reader can tell which rule set
  * produced a given value. */
-#define FEATURE_SET_VERSION "1.1"
+#define FEATURE_SET_VERSION "1.2"
 
 /* Noise floor for active_core_count (below): a --per-core core averaging
  * at or under this IPC is treated as not meaningfully participating in the
@@ -45,6 +45,14 @@
  * starting point, same style preflight.c/phase.c already use for their own
  * heuristics, not derived from a formal study. */
 #define ACTIVE_CORE_IPC_THRESHOLD 0.05
+
+/* Minimum --interval tick count before a per-run quantile feature (see
+ * extract_quantile_features_for_metric() below) is trusted -- mirrors
+ * summary.c's own compute_stats() n>=3 outlier-detection threshold, bumped
+ * slightly since percentiles need more points to be meaningful than a
+ * mean/stddev does. Below this, all three features (_p10/_p90/_iqr) are
+ * recorded unavailable rather than computed from too few points. */
+#define QUANTILE_MIN_TICKS 4
 
 static int now_iso8601(char *buf,size_t bufsize);
 
@@ -831,6 +839,80 @@ static void upsert_feature(sqlite3 *db,sqlite3_int64 run_row_id,const char *feat
   sqlite3_finalize(stmt);
 }
 
+static int cmp_double(const void *a,const void *b){
+  double da = *(const double *)a,db = *(const double *)b;
+  if (da < db) return -1;
+  if (da > db) return 1;
+  return 0;
+}
+
+/* Linear-interpolation percentile (R-7/numpy-default method) over an
+ * already-sorted array -- the same "no external stats library" idiom
+ * summary.c's own median calculation uses, generalized to an arbitrary
+ * fraction p in [0,1]. Caller-checked n>=1 (extract_quantile_features_for_
+ * metric() below never calls this below QUANTILE_MIN_TICKS). */
+static double compute_percentile(const double *sorted_values,int n,double p){
+  double rank = p * (n - 1);
+  int lo = (int)floor(rank),hi = (int)ceil(rank);
+  double frac = rank - lo;
+  if (hi >= n) hi = n - 1;
+  return sorted_values[lo] + frac * (sorted_values[hi] - sorted_values[lo]);
+}
+
+/* Per-run distribution-shape features (INVESTIGATION.md's 4.3 "Distribution-
+ * first reporting" -- clustering-prep feature-vocabulary richness, not
+ * clustering itself): <feature_prefix>_p10/_p90/_iqr from metric_name's own
+ * --interval tick values for this one run. "core IS NULL" is load-bearing,
+ * not decorative -- ingest_csv_metrics()'s own header comment documents that
+ * metric_values.row_index means a genuine tick ordinal for --interval runs
+ * but one core's single snapshot for --per-core runs (core non-NULL,
+ * tick_time NULL); without this guard, a --per-core-only run would silently
+ * have its cross-core spread quantiled as if it were a time series (a
+ * different statistical object wearing the same shape as parallelism_proxy's
+ * own already-covered cross-core CV). Fewer than QUANTILE_MIN_TICKS
+ * qualifying rows records all three features unavailable, matching
+ * upsert_feature()'s existing convention -- never a fabricated value from
+ * too few points. Deliberately callable per-metric (not just for "ipc") so
+ * extending to the other SIMPLE_METRIC_FEATURES metrics later is a one-line
+ * addition at the call site, not a redesign. */
+static void extract_quantile_features_for_metric(sqlite3 *db,sqlite3_int64 run_row_id,
+                                                   const char *metric_name,const char *feature_prefix){
+  static const char *sql =
+    "SELECT value FROM metric_values WHERE run_id=?1 AND metric_name=?2 "
+    "AND value IS NOT NULL AND core IS NULL ORDER BY row_index;";
+  sqlite3_stmt *stmt;
+  double *values = NULL;
+  int n = 0,cap = 0;
+  char p10_name[32],p90_name[32],iqr_name[32];
+
+  snprintf(p10_name,sizeof(p10_name),"%s_p10",feature_prefix);
+  snprintf(p90_name,sizeof(p90_name),"%s_p90",feature_prefix);
+  snprintf(iqr_name,sizeof(iqr_name),"%s_iqr",feature_prefix);
+
+  if (sqlite3_prepare_v2(db,sql,-1,&stmt,NULL) == SQLITE_OK){
+    sqlite3_bind_int64(stmt,1,run_row_id);
+    sqlite3_bind_text(stmt,2,metric_name,-1,SQLITE_TRANSIENT);
+    while (sqlite3_step(stmt) == SQLITE_ROW){
+      if (n == cap){ cap = cap ? cap*2 : 16; values = realloc(values,sizeof(double)*(size_t)cap); }
+      values[n++] = sqlite3_column_double(stmt,0);
+    }
+    sqlite3_finalize(stmt);
+  }
+
+  if (n >= QUANTILE_MIN_TICKS){
+    qsort(values,(size_t)n,sizeof(double),cmp_double);
+    upsert_feature(db,run_row_id,p10_name,1,compute_percentile(values,n,0.10));
+    upsert_feature(db,run_row_id,p90_name,1,compute_percentile(values,n,0.90));
+    upsert_feature(db,run_row_id,iqr_name,1,
+                   compute_percentile(values,n,0.75) - compute_percentile(values,n,0.25));
+  } else {
+    upsert_feature(db,run_row_id,p10_name,0,0);
+    upsert_feature(db,run_row_id,p90_name,0,0);
+    upsert_feature(db,run_row_id,iqr_name,0,0);
+  }
+  free(values);
+}
+
 /* A feature that's a plain AVG() of one metric_values.metric_name column --
  * the CSV header text the column actually carries (topdown.c's own
  * PRINT_CSV_HEADER strings), not an invented name. AVG() over zero rows (the
@@ -907,6 +989,11 @@ static void extract_run_features(sqlite3 *db,sqlite3_int64 run_row_id,struct sto
       upsert_feature(db,run_row_id,f->feature_name,0,0);
     sqlite3_finalize(avg_stmt);
   }
+
+  /* Distribution-shape features (see extract_quantile_features_for_metric()'s
+   * own comment) -- ipc only for this first pass; extending to the other
+   * SIMPLE_METRIC_FEATURES metrics is a one-line addition per metric. */
+  extract_quantile_features_for_metric(db,run_row_id,"ipc","ipc");
 
   /* fault_rate / ctxswitch_rate: rusage counts always live in metric_values
    * once ingested (topdown.c's base CSV header, present regardless of

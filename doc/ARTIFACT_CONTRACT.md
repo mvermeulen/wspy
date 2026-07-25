@@ -428,7 +428,7 @@ Each row is `(run_id, feature_name, value, coverage, feature_set_version)`. `cov
 or `"unavailable"` — a feature whose source column(s)/flag(s) weren't collected this run is
 `unavailable`/`value=NULL`, **never a silent zero** — the same "measured vs unavailable" idiom
 `coverage.c`/`provenance.c` use elsewhere, applied per feature instead of per run. `feature_set_version`
-(`FEATURE_SET_VERSION`, `store.c` — currently `"1.1"`) tags which derivation-rule vocabulary produced
+(`FEATURE_SET_VERSION`, `store.c` — currently `"1.2"`) tags which derivation-rule vocabulary produced
 each row, versioned independently of `STORE_SCHEMA_VERSION` (the table shape can stay put while the
 rules evolve), same reasoning `TOPDOWN_FORMULA_VERSION` is versioned separately from
 `MANIFEST_SCHEMA_VERSION`.
@@ -448,6 +448,13 @@ Two families of features:
   `n>=2` cores); `active_core_count` (how many `--per-core` cores averaged more than a `0.05` IPC noise
   floor, needs only `n>=1`) — the same per-core query `parallelism_proxy` runs, answering a different
   question (*how many* cores did work vs. *how evenly balanced* work was across them).
+- **Distribution-shape features** (INVESTIGATION.md's 4.3 "Distribution-first reporting" — clustering-
+  prep feature-vocabulary richness, not clustering itself): `ipc_p10`/`ipc_p90`/`ipc_iqr`, linear-
+  interpolation percentiles over one run's own `--interval` IPC ticks (`core IS NULL` — a `--per-core`
+  run's cross-core snapshots are a different statistical object, already `parallelism_proxy`'s job, not
+  quantiled here), needs `--interval` + `QUANTILE_MIN_TICKS` (4) or more ticks. `ipc`-only for now;
+  extending to the other `SIMPLE_METRIC_FEATURES` metrics is a one-line addition per metric at the call
+  site in `extract_run_features()`.
 
 Deliberately out of scope: per-process I/O-rate features — `--tree-io`'s `rchar`/`wchar` live in the
 *tree* output file, which nothing ingests into the store today, so there's no `metric_values` column
