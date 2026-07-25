@@ -1312,6 +1312,245 @@ static void test_extract_run_features_reingest_idempotent(void){
   printf("PASS: extract_run_features re-extraction idempotent and refreshes\n");
 }
 
+// ---- ipc_p10/ipc_p90/ipc_iqr tests (INVESTIGATION.md's 4.3 "Distribution-
+// first reporting") ----
+
+static void test_extract_run_features_quantile_measured(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_int64 run_id;
+  double value;
+  char coverage[16];
+  const char *csv_path = "/tmp/test_store_features_quantile.csv";
+
+  printf("Testing extract_run_features: ipc_p10/ipc_p90/ipc_iqr from >=4 --interval ticks...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  /* 5 ticks, sorted IPC = [0.2,0.4,0.6,0.8,1.0] -- linear-interpolation
+   * (R-7) expected values, rank=p*(n-1)=p*4: p10 rank=0.4 -> lo=0,hi=1,
+   * frac=0.4 -> 0.2+0.4*(0.4-0.2)=0.28; p90 rank=3.6 -> lo=3,hi=4,frac=0.6
+   * -> 0.8+0.6*(1.0-0.8)=0.92; p25 rank=1.0 -> exactly sorted[1]=0.4;
+   * p75 rank=3.0 -> exactly sorted[3]=0.8; iqr=0.8-0.4=0.4. */
+  write_file(csv_path,
+    "time,phase,ipc,counters_measured,counters_requested,\n"
+    "1.0,steady,0.6,9,9,\n"
+    "2.0,steady,0.2,9,9,\n"
+    "3.0,steady,1.0,9,9,\n"
+    "4.0,steady,0.4,9,9,\n"
+    "5.0,steady,0.8,9,9,\n");
+  build_csv_record(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","sleep",csv_path);
+
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,1,1,&stats);
+  json_free(root);
+
+  run_id = lookup_run_id(db,"run1");
+  assert(run_id > 0);
+
+  assert(feature_row(db,run_id,"ipc_p10",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && fabs(value - 0.28) < 1e-9);
+  assert(feature_row(db,run_id,"ipc_p90",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && fabs(value - 0.92) < 1e-9);
+  assert(feature_row(db,run_id,"ipc_iqr",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && fabs(value - 0.4) < 1e-9);
+
+  sqlite3_close(db);
+  remove(csv_path);
+  printf("PASS: extract_run_features ipc quantiles measured\n");
+}
+
+static void test_extract_run_features_quantile_insufficient_ticks_unavailable(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_int64 run_id;
+  double value;
+  char coverage[16];
+  const char *csv_path = "/tmp/test_store_features_quantile_thin.csv";
+
+  printf("Testing extract_run_features: fewer than QUANTILE_MIN_TICKS ticks -> unavailable, not fabricated...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  /* Only 3 ticks -- below QUANTILE_MIN_TICKS (4). */
+  write_file(csv_path,
+    "time,phase,ipc,counters_measured,counters_requested,\n"
+    "1.0,steady,0.2,9,9,\n"
+    "2.0,steady,0.6,9,9,\n"
+    "3.0,steady,1.0,9,9,\n");
+  build_csv_record(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","sleep",csv_path);
+
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,1,1,&stats);
+  json_free(root);
+
+  run_id = lookup_run_id(db,"run1");
+  assert(run_id > 0);
+
+  assert(feature_row(db,run_id,"ipc_p10",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"unavailable"));
+  assert(feature_row(db,run_id,"ipc_p90",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"unavailable"));
+  assert(feature_row(db,run_id,"ipc_iqr",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"unavailable"));
+
+  sqlite3_close(db);
+  remove(csv_path);
+  printf("PASS: extract_run_features ipc quantiles insufficient ticks\n");
+}
+
+static void test_extract_run_features_quantile_aggregate_run_unavailable(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_int64 run_id;
+  double value;
+  char coverage[16];
+  const char *csv_path = "/tmp/test_store_features_quantile_agg.csv";
+
+  printf("Testing extract_run_features: single-row aggregate run (no --interval) -> ipc quantiles unavailable...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  write_file(csv_path,"elapsed,ipc,counters_measured,counters_requested,\n1.0,1.5,9,9,\n");
+  build_csv_record(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","/bin/true",csv_path);
+
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,1,1,&stats);
+  json_free(root);
+
+  run_id = lookup_run_id(db,"run1");
+  assert(run_id > 0);
+
+  assert(feature_row(db,run_id,"ipc_p10",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"unavailable"));
+  assert(feature_row(db,run_id,"ipc_p90",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"unavailable"));
+  assert(feature_row(db,run_id,"ipc_iqr",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"unavailable"));
+
+  sqlite3_close(db);
+  remove(csv_path);
+  printf("PASS: extract_run_features ipc quantiles aggregate run unavailable\n");
+}
+
+static void test_extract_run_features_quantile_per_core_run_unavailable(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_int64 run_id;
+  double value;
+  char coverage[16];
+  const char *csv_path = "/tmp/test_store_features_quantile_percore.csv";
+
+  printf("Testing extract_run_features: --per-core-only run -> ipc quantiles unavailable (core IS NULL guard)...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  /* 4 core rows -- deliberately >= QUANTILE_MIN_TICKS, so this only proves
+   * the "core IS NULL" guard actually excludes them (measured coverage from
+   * cross-core spread masquerading as a time series) rather than merely
+   * being too few rows to trigger measurement either way. */
+  write_file(csv_path,
+    "elapsed,core,ipc,counters_measured,counters_requested,\n"
+    "1.0,0,2.0,9,9,\n"
+    "1.0,1,0.2,9,9,\n"
+    "1.0,2,1.0,9,9,\n"
+    "1.0,3,0.5,9,9,\n");
+  build_csv_record(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","/bin/true",csv_path);
+
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,1,1,&stats);
+  json_free(root);
+
+  run_id = lookup_run_id(db,"run1");
+  assert(run_id > 0);
+
+  /* 4 core rows would satisfy QUANTILE_MIN_TICKS if core IS NULL weren't
+   * filtering them out -- coverage must still be unavailable. */
+  assert(feature_row(db,run_id,"ipc_p10",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"unavailable"));
+  assert(feature_row(db,run_id,"ipc_p90",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"unavailable"));
+  assert(feature_row(db,run_id,"ipc_iqr",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"unavailable"));
+
+  sqlite3_close(db);
+  remove(csv_path);
+  printf("PASS: extract_run_features ipc quantiles per-core run unavailable\n");
+}
+
+static void test_extract_run_features_quantile_reingest_idempotent(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_int64 run_id;
+  double value;
+  char coverage[16];
+  int count;
+  sqlite3_stmt *stmt;
+  const char *csv_path = "/tmp/test_store_features_quantile_reingest.csv";
+
+  printf("Testing extract_run_features: ipc_p90 re-extraction upserts, doesn't duplicate or ignore updated data...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  write_file(csv_path,
+    "time,phase,ipc,counters_measured,counters_requested,\n"
+    "1.0,steady,0.2,9,9,\n2.0,steady,0.4,9,9,\n3.0,steady,0.6,9,9,\n4.0,steady,0.8,9,9,\n");
+  build_csv_record(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","sleep",csv_path);
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,1,1,&stats);
+  json_free(root);
+
+  write_file(csv_path,
+    "time,phase,ipc,counters_measured,counters_requested,\n"
+    "1.0,steady,2.0,9,9,\n2.0,steady,4.0,9,9,\n3.0,steady,6.0,9,9,\n4.0,steady,8.0,9,9,\n");
+  memset(&stats,0,sizeof(stats));
+  root = json_parse(buf,errbuf,sizeof(errbuf)); /* same record, same output_path */
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,1,1,&stats);
+  json_free(root);
+
+  run_id = lookup_run_id(db,"run1");
+  assert(run_id > 0);
+
+  assert(sqlite3_prepare_v2(db,"SELECT COUNT(*) FROM run_features WHERE run_id=? AND feature_name='ipc_p90';",
+                             -1,&stmt,NULL) == SQLITE_OK);
+  sqlite3_bind_int64(stmt,1,run_id);
+  assert(sqlite3_step(stmt) == SQLITE_ROW);
+  count = sqlite3_column_int(stmt,0);
+  sqlite3_finalize(stmt);
+  assert(count == 1); /* upserted, not duplicated */
+
+  assert(feature_row(db,run_id,"ipc_p90",&value,coverage,sizeof(coverage)));
+  /* new CSV IPC ticks [2,4,6,8]: p90 rank=0.9*3=2.7 -> lo=2,hi=3,frac=0.7 ->
+   * 6.0+0.7*(8.0-6.0)=7.4 -- reflects the new CSV, not the old ([0.2..0.8]'s
+   * own p90 would be under 1.0). */
+  assert(!strcmp(coverage,"measured") && fabs(value - 7.4) < 1e-9);
+
+  sqlite3_close(db);
+  remove(csv_path);
+  printf("PASS: extract_run_features ipc quantiles re-extraction idempotent and refreshes\n");
+}
+
 static void test_schema_migration_v3_to_v4(void){
   sqlite3 *db;
   sqlite3_stmt *stmt;
@@ -1532,6 +1771,11 @@ int main(void){
   test_extract_run_features_active_core_count_threshold();
   test_extract_run_features_single_core_unavailable();
   test_extract_run_features_reingest_idempotent();
+  test_extract_run_features_quantile_measured();
+  test_extract_run_features_quantile_insufficient_ticks_unavailable();
+  test_extract_run_features_quantile_aggregate_run_unavailable();
+  test_extract_run_features_quantile_per_core_run_unavailable();
+  test_extract_run_features_quantile_reingest_idempotent();
   test_schema_migration_v1_to_v2();
   test_schema_migration_v2_to_v3();
   test_schema_migration_v3_to_v4();
