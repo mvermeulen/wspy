@@ -534,7 +534,7 @@ run_pass(){
   read -r -a flagarr <<< "$flags"
   local -a cmd=()
   if [ -n "$timeout_secs" ]; then
-    cmd+=(timeout "$timeout_secs")
+    cmd+=(timeout --foreground "$timeout_secs")
   fi
   cmd+=("$WSPY" "${flagarr[@]}" -o "$outfile")
   if [ -n "$AFFINITY" ]; then
