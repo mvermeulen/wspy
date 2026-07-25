@@ -343,6 +343,94 @@ static void test_upsert_run_missing_provenance_degrades_to_null(void){
   printf("PASS: upsert_run degrades to NULL when affinity/configuration_provenance are absent\n");
 }
 
+/* Regression test for a real pre-existing bug: json_get_number()/
+ * json_get_bool() collapse a genuine JSON null to their caller-given
+ * default (0/false), indistinguishable from a real "0 KB"/"non-uniform"
+ * measurement -- unlike every text provenance field, which correctly uses
+ * bind_text_or_null() and stores SQL NULL. Fixed via bind_number_or_null()/
+ * bind_bool_or_null(). Covers both directions: a genuine null must read
+ * back as SQL NULL (the bug), and a genuine 0/false must still read back
+ * as the literal value 0/false (the fix must not regress the ordinary
+ * path -- this is the case that would silently "work" even with the bug,
+ * since 0 happens to equal the buggy default). */
+static void test_upsert_run_environment_null_vs_zero_preserved(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_stmt *stmt;
+
+  printf("Testing upsert_run_environment: null memory_total_kb/cpu_governor_uniform preserved as SQL NULL...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  snprintf(buf,sizeof(buf),
+    "{\"schema_version\":\"%s\",\"run_id\":\"run1\",\"collector\":\"wspy\",\"wspy_version\":\"4.3\","
+    "\"hostname\":\"host1\",\"cpu_vendor\":\"AMD\",\"cpu_family\":25,\"cpu_model\":1,"
+    "\"environment\":{\"virt_role\":\"host\",\"hypervisor_vendor\":null,\"microcode_version\":null,"
+    "\"bios_vendor\":null,\"bios_version\":null,\"bios_date\":null,\"cpu_governor\":null,"
+    "\"cpu_scaling_driver\":null,\"cpu_governor_uniform\":null,\"memory_total_kb\":null,"
+    "\"compiler_version\":null,\"libc_version\":null},"
+    "\"environment_coverage\":{\"captured\":0,\"probed\":9},"
+    "\"start_time\":\"2026-07-19T00:00:00.000Z\",\"finish_time\":\"2026-07-19T00:00:01.000Z\","
+    "\"elapsed_seconds\":1.0,\"command\":[\"/bin/true\"],"
+    "\"exit_status\":{\"known\":true,\"exited\":true,\"exit_code\":0,\"signaled\":false,\"term_signal\":null},"
+    "\"options\":{\"counter_mask\":\"0x1\",\"per_core\":false,\"system\":true,\"csv\":false,\"tree\":false,\"interval_seconds\":0},"
+    "\"counter_coverage\":{\"requested\":4,\"measured\":4},"
+    "\"output_files\":{\"output_path\":null,\"tree_output_path\":null,\"manifest_path\":null}}\n",
+    RUN_INDEX_SCHEMA_VERSION);
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,0,0,&stats);
+  json_free(root);
+
+  assert(sqlite3_prepare_v2(db,
+    "SELECT memory_total_kb,cpu_governor_uniform FROM run_environment;",-1,&stmt,NULL) == SQLITE_OK);
+  assert(sqlite3_step(stmt) == SQLITE_ROW);
+  assert(sqlite3_column_type(stmt,0) == SQLITE_NULL); /* pre-fix: read back as 0 */
+  assert(sqlite3_column_type(stmt,1) == SQLITE_NULL); /* pre-fix: read back as 0 (false) */
+  sqlite3_finalize(stmt);
+  sqlite3_close(db);
+  printf("PASS: upsert_run_environment null preserved as SQL NULL\n");
+
+  printf("Testing upsert_run_environment: real 0/false still preserved as the literal value...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  snprintf(buf,sizeof(buf),
+    "{\"schema_version\":\"%s\",\"run_id\":\"run1\",\"collector\":\"wspy\",\"wspy_version\":\"4.3\","
+    "\"hostname\":\"host1\",\"cpu_vendor\":\"AMD\",\"cpu_family\":25,\"cpu_model\":1,"
+    "\"environment\":{\"virt_role\":\"host\",\"hypervisor_vendor\":null,\"microcode_version\":null,"
+    "\"bios_vendor\":null,\"bios_version\":null,\"bios_date\":null,\"cpu_governor\":\"performance\","
+    "\"cpu_scaling_driver\":null,\"cpu_governor_uniform\":false,\"memory_total_kb\":0,"
+    "\"compiler_version\":null,\"libc_version\":null},"
+    "\"environment_coverage\":{\"captured\":0,\"probed\":9},"
+    "\"start_time\":\"2026-07-19T00:00:00.000Z\",\"finish_time\":\"2026-07-19T00:00:01.000Z\","
+    "\"elapsed_seconds\":1.0,\"command\":[\"/bin/true\"],"
+    "\"exit_status\":{\"known\":true,\"exited\":true,\"exit_code\":0,\"signaled\":false,\"term_signal\":null},"
+    "\"options\":{\"counter_mask\":\"0x1\",\"per_core\":false,\"system\":true,\"csv\":false,\"tree\":false,\"interval_seconds\":0},"
+    "\"counter_coverage\":{\"requested\":4,\"measured\":4},"
+    "\"output_files\":{\"output_path\":null,\"tree_output_path\":null,\"manifest_path\":null}}\n",
+    RUN_INDEX_SCHEMA_VERSION);
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,0,0,&stats);
+  json_free(root);
+
+  assert(sqlite3_prepare_v2(db,
+    "SELECT memory_total_kb,cpu_governor_uniform FROM run_environment;",-1,&stmt,NULL) == SQLITE_OK);
+  assert(sqlite3_step(stmt) == SQLITE_ROW);
+  assert(sqlite3_column_type(stmt,0) == SQLITE_INTEGER);
+  assert(sqlite3_column_int64(stmt,0) == 0);
+  assert(sqlite3_column_type(stmt,1) == SQLITE_INTEGER);
+  assert(sqlite3_column_int(stmt,1) == 0);
+  sqlite3_finalize(stmt);
+  sqlite3_close(db);
+  printf("PASS: upsert_run_environment real 0/false preserved as the literal value\n");
+}
+
 static void test_collision_detected_and_not_overwritten(void){
   sqlite3 *db;
   struct store_stats stats;
@@ -1421,6 +1509,7 @@ int main(void){
   test_upsert_run_ingests_affinity_and_config_provenance();
   test_upsert_run_config_options_value_updates_on_reingest();
   test_upsert_run_missing_provenance_degrades_to_null();
+  test_upsert_run_environment_null_vs_zero_preserved();
   test_collision_detected_and_not_overwritten();
   test_malformed_line_and_schema_mismatch();
   test_schema_major_mismatch_warns_once();
