@@ -468,6 +468,26 @@ same cross-scheme category-mapping risk `--ibs-sample`'s `IbsOpData2` decode alr
 future per-metric semantics table. Verified against real `wspy-store` data end-to-end, including a
 genuine flagged deviation from a zero-variance baseline.
 
+**Machine/environment comparability scoring (`env_score`/`mixed-env`, PR #149) — done for this cycle,
+removed from the open backlog.** The deferred, *scored* version of 4.2's exact-match "mixed-pmu" bucket
+check, extended across `run_environment`'s fuller provenance surface (BIOS, microcode, governor, memory,
+virtualization) rather than just PMU setup — no diff/score between two runs' environments existed
+anywhere in the codebase before this. Extends the existing `struct bucket`/`compute_verdict()` machinery
+rather than adding a new CLI mode: `env_score` is a default-on column on every bucket row, in both the
+main group-by table and `--check-regression`'s baseline rows. Unweighted fraction of 8 tracked fields
+(`virt_role`, `hypervisor_vendor`, `microcode_version`, `bios_vendor`/`bios_version`/`bios_date`,
+`cpu_governor`, `memory_total_kb`) that agreed across a bucket's contributing runs — deliberately not a
+hand-tuned per-field point scheme, the same reasoning that kept IBS sampling-mode's cross-scheme category
+mapping out of a permanent CSV schema. `memory_total_kb` uses a 5% tolerance (routine firmware/DIMM
+jitter); every other field is exact match; a field only counts once mutually comparable
+(`hypervisor_vendor` self-excludes on host runs with zero special-casing). A bucket with zero comparable
+fields gets an explicit no-data sentinel, never a fabricated 0%/100% — absence of provenance data is not
+evidence of a mismatch. New `--min-env-score` flag, default 0.8. Also fixed a real pre-existing bug found
+while researching this: `upsert_run_environment()` (`store.c`) silently collapsed a genuine JSON `null`
+for `memory_total_kb`/`cpu_governor_uniform` to `0`/`false`, indistinguishable from a real measurement —
+every text provenance field already preserved `null` correctly via `bind_text_or_null()`, these two
+numeric/bool fields had no equivalent. Verified against real `wspy-store` data end-to-end.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -777,26 +797,21 @@ topdown/IBS attribution, static-site publishing, and a lower-overhead tracing ba
 
 **Tier 1 — needs 4.1's normalized store/history:**
 
-1. Machine/environment comparability scoring — depends on provenance capture (shipped, `provenance.c`)
-   existing across enough runs to score against. Broader than 4.2's (shipped) "PMU-capability-aware
-   comparability warnings": that item is a narrow, immediate per-bucket exact-match check on
-   `(cpu_vendor,counters_requested,counters_measured)`; this item is the deferred, scored version across
-   the fuller provenance surface (BIOS, microcode, governor, memory, virtualization, etc.).
-2. Distribution-first reporting (quantiles, clustering prep).
-3. Clustering + nearest-neighbor + cluster profile cards, coverage-aware distance (common-subspace
+1. Distribution-first reporting (quantiles, clustering prep).
+2. Clustering + nearest-neighbor + cluster profile cards, coverage-aware distance (common-subspace
    only when data coverage differs).
 
 **Tier 2 — topdown/attribution, needs 4.2's hierarchical schema + phase detection (both shipped) +
 AMD IBS sampling-mode support (shipped, see "Shipped since 4.2" and the Zen5/IBS deep-dive):**
 
-4. Phase-aware topdown (warmup/steady/degraded segmentation, drift signal).
-5. Composite attribution (topdown + cache/TLB/IBS signals) — the "no blocking-syscall activity" vs.
+3. Phase-aware topdown (warmup/steady/degraded segmentation, drift signal).
+4. Composite attribution (topdown + cache/TLB/IBS signals) — the "no blocking-syscall activity" vs.
    "heavy blocking-syscall activity" split from the critical-path work (shipped, see "Shipped since
    4.1") is a direct input here, alongside topdown/cache/TLB/IBS.
-6. IBS-derived memory-path bottleneck decomposition (combine with topdown/cache) — AMD IBS
+5. IBS-derived memory-path bottleneck decomposition (combine with topdown/cache) — AMD IBS
    sampling-mode support (shipped) now provides real per-sample tag data to decompose; previously
    counting-mode IBS had none.
-7. Core-class-aware topdown (hybrid Intel Atom+Core; weighted aggregate) — **no longer blocked at
+6. Core-class-aware topdown (hybrid Intel Atom+Core; weighted aggregate) — **no longer blocked at
    all.** AMD Zen5/Zen5c hardware was already available (per-core classification shipped in 4.2); Intel
    hybrid hardware became available this cycle ("carlsbad") and its first real-hardware pass turned up
    correctness bugs more fundamental than the E-core-exclusion gap this item was originally scoped
@@ -809,19 +824,19 @@ AMD IBS sampling-mode support (shipped, see "Shipped since 4.2" and the Zen5/IBS
 
 **Tier 3 — publishing/reporting expansion, needs 4.1's report studio:**
 
-8. Static-site publishing pipeline (per-benchmark + suite + cross-suite pages from templates). Distinct
+7. Static-site publishing pipeline (per-benchmark + suite + cross-suite pages from templates). Distinct
    from 4.1's per-run curation studio, not a replacement for it: the studio is where one report gets
    curated by a person; this is what turns *many* already-curated (or un-curated, template-driven)
    reports into a browsable site. Likely consumes the same export formats (WordPress/HTML/Markdown,
    4.1) rather than inventing a fourth.
-9. Characterization badges + similarity panels in reports — a new block type in 4.1's curation studio
+8. Characterization badges + similarity panels in reports — a new block type in 4.1's curation studio
    drawing a badge from 4.2's (shipped) archetype scorecard (`wspy-archetype`), not a separate report
    surface.
-10. Interactive tree/timeline drill-down, GPU phase overlays — the interactive counterpart to 4.1's
-    static inclusion-depth mechanism (none/summary/excerpt/full) for the tree/interval blocks
-    specifically; that mechanism stays the right default for a published, non-interactive report even
-    once this exists.
-11. Test-point-level curated performance-summary README, building on this cycle's Phoronix
+9. Interactive tree/timeline drill-down, GPU phase overlays — the interactive counterpart to 4.1's
+   static inclusion-depth mechanism (none/summary/excerpt/full) for the tree/interval blocks
+   specifically; that mechanism stays the right default for a published, non-interactive report even
+   once this exists.
+10. Test-point-level curated performance-summary README, building on this cycle's Phoronix
     single-test-point suite hierarchy (`workload/phoronix/<test>/<options>/`, its per-test README.md,
     and its `runs/<run-id>/` symlinks back to real run directories) — walk every run linked at one test
     point, not just the latest, and curate a `README.md` inside that test point's own directory
@@ -853,36 +868,37 @@ AMD IBS sampling-mode support (shipped, see "Shipped since 4.2" and the Zen5/IBS
 
 **Tier 4 — report-layer additions on data already collected in 4.0:**
 
-12. `--tree-open` → file-I/O topology summary (hot paths, open-failure rates, startup storms,
+11. `--tree-open` → file-I/O topology summary (hot paths, open-failure rates, startup storms,
     process→file maps) — `tree_open`/`SYS_openat` capture already exists (`topdown.c`).
-13. System (`--system`) → per-interface network attribution and local-vs-system-pressure
+12. System (`--system`) → per-interface network attribution and local-vs-system-pressure
     attribution, plus steal-time capture (user/system/iowait are already captured and printed —
     `system.c`'s existing `/proc/stat` parsing — this item is the missing steal column and the
     analysis layer on top of what's already there, not the raw mix itself).
-14. Tree/lifecycle enrichments (exit code/signal summary, spawn/exit burst indicators, optional
+13. Tree/lifecycle enrichments (exit code/signal summary, spawn/exit burst indicators, optional
     `comm`-pattern role tagging).
 
 **Tier 5 — GPU deeper profiling:**
 
-15. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
+14. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
     heavier, optional trace-rich profile, same "default vs debug profile" pattern as IBS.
-16. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds
+15. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds
     on 4.2's (shipped) GPU fusion layer (`gpu_fusion.c`, `--gpu-metrics`) for consistent per-metric data.
-17. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`,
+16. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`,
     extended once GPU runs feed the same index.
-18. Fold into general environment-comparability scoring (power cap, memory clock, thermal state,
-    driver version) — no separate "GPU comparability score" needed; one scoring mechanism, not two.
+17. Fold into general environment-comparability scoring (power cap, memory clock, thermal state,
+    driver version) — no separate "GPU comparability score" needed; one scoring mechanism, not two
+    (shipped, see "Shipped since 4.2" — `env_score`/`--min-env-score` in `summary.c`).
 
 **Tier 6 — infra:**
 
-19. Low-overhead tracing alternative to `ptrace` (`ftrace` tracepoints or minimal eBPF) for
+18. Low-overhead tracing alternative to `ptrace` (`ftrace` tracepoints or minimal eBPF) for
     `--tree`/`--tree-open` — `ptrace` context-switches on every syscall entry/exit, which skews the
     very counters being measured for I/O-heavy or fork-heavy workloads. Also the eventual fix for the
     observer-effect caveat noted under "Critical-path / synchronization-latency: what's left" above.
-20. Collector-plugin implementation (perf stat / trace-cmd / GPU tools as collectors behind the
+19. Collector-plugin implementation (perf stat / trace-cmd / GPU tools as collectors behind the
     `collector` field, normalization path) — the schema seam shipped in 4.0; this is the actual
     implementation of wrapping a non-wspy collector.
-21. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
+20. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
     CSVs into per-test-case/per-trial datasets by correlating run manifests with PTS results,
     composite.xml, and log timestamps. See
     [phoronix_hook_investigation.md](file:///home/mev/source/wspy/doc/phoronix_hook_investigation.md)
@@ -895,7 +911,7 @@ AMD IBS sampling-mode support (shipped, see "Shipped since 4.2" and the Zen5/IBS
     `result_notifier` hook capture: real-host findings" for the full story. **Still open:** teaching
     `wspy-phoronix-segment.py` to prefer `pts_hooks.log` over the composite.xml/log-timestamp
     correlation it uses today, and the segmentation tool itself.
-22. Collapse `wspy-run`'s builtin profiles onto native `--passes` bin-packing. Low value relative to
+21. Collapse `wspy-run`'s builtin profiles onto native `--passes` bin-packing. Low value relative to
     everything else on the 4.3 board, no dependents, safe to leave alone indefinitely. Most profiles
     are already collapsed as far as they can go: `deep-cpu`/`deep-gpu` folded their pure-counter middle
     pass onto `--passes=...` back in 4.1; their remaining separate passes all use `--interval 1`, which
@@ -907,7 +923,7 @@ AMD IBS sampling-mode support (shipped, see "Shipped since 4.2" and the Zen5/IBS
     that don't touch any `--passes`-incompatible flag — collapsing it to one pass is the entire
     remaining scope. Note: this changes on-disk output shape from 4 files to 1, so anything downstream
     assuming those 4 filenames (external scripts, `tests/capability_matrix.sh`) would need checking.
-23. Detect and resume interrupted `wspy-run` profiles (raised after a real host crash mid-batch, twice,
+22. Detect and resume interrupted `wspy-run` profiles (raised after a real host crash mid-batch, twice,
     with no way to tell from a report that the run never finished, or to resume without redoing
     completed passes). Two phases, second depends on first:
     - **Phase A — surface incompleteness.** `generate_manifest()` writes the run-level `manifest.json`
@@ -924,7 +940,7 @@ AMD IBS sampling-mode support (shipped, see "Shipped since 4.2" and the Zen5/IBS
     - Distinct from `wspy-queue`'s job lifecycle (whole-job scheduling/retry, not resuming partway
       through one multi-pass invocation's own internal passes) and from 4.4's much heavier config-first
       experiment system.
-24. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
+23. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
     (`web/joblib.py`/`wspy-phoronix-import`/web launcher's Phoronix tab; see "Shipped since 4.2" for
     what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
     across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
@@ -932,10 +948,10 @@ AMD IBS sampling-mode support (shipped, see "Shipped since 4.2" and the Zen5/IBS
 
 **Tier 7 — testing:**
 
-25. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
+24. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
     guardrails — needs deterministic micro-workloads and 4.1's normalized store plus 4.2's
     stats/confidence infrastructure.
-26. Contributor guide for adding a collector/metric/schema bump safely.
+25. Contributor guide for adding a collector/metric/schema bump safely.
 
 ## 4.4 priorities
 Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
