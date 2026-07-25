@@ -2490,7 +2490,7 @@ def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
                                                           affinity=affinity)
         full_argv = argv + ["--"] + workload_argv
         if p["timeout"]:
-            full_argv = ["timeout", str(p["timeout"])] + full_argv
+            full_argv = ["timeout", "--foreground", str(p["timeout"])] + full_argv
         emit(f"[{p['name']}] $ " + shell_preview(full_argv))
         _archive_stale_pts_hooks_log(emit)
         try:
@@ -2637,7 +2637,7 @@ def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_ar
                                                          affinity=affinity)
         full_argv = argv + ["--"] + workload_argv
         if p["timeout"]:
-            full_argv = ["timeout", str(p["timeout"])] + full_argv
+            full_argv = ["timeout", "--foreground", str(p["timeout"])] + full_argv
         emit(f"[{p['name']}] $ " + shell_preview(full_argv))
         _archive_stale_pts_hooks_log(emit)
         try:
