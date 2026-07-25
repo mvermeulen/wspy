@@ -489,6 +489,342 @@ static int trace_run_archetype(sqlite3 *db,const char *hostname,const char *run_
   return 0;
 }
 
+/* ---- --nearest: coverage-aware nearest-neighbor search (INVESTIGATION.md's
+ * 4.3 "Clustering + nearest-neighbor + cluster profile cards" -- nearest-
+ * neighbor only this cycle; K-means clustering + cluster profile cards are a
+ * deliberately separate follow-up, since a common-subspace centroid has no
+ * clean textbook definition when cluster members don't all share the same
+ * available features -- real design work, not yet done here).
+ *
+ * struct run_snapshot above is a fixed 9-named-field struct built for this
+ * file's own rule-based axis classification -- it doesn't even cover
+ * ipc_mean or the ipc_p10/p90/iqr quantile features, let alone the full
+ * run_features vocabulary (~21 names and growing). Nearest-neighbor needs
+ * every measured feature a run has, generically, so any future run_features
+ * addition (a new metric's quantiles, say) shows up here automatically with
+ * zero code changes -- a name->value vector, not a named struct. Mirrors
+ * summary.c's own struct metric_value_map/metric_map_add() growable-array-
+ * by-name idiom (~21 names is small enough that linear scan is entirely
+ * appropriate, no hash table needed). */
+struct feature_vector {
+  sqlite3_int64 run_id;
+  char hostname[256],run_id_text[128];
+  char **names;   /* measured feature names only -- an unavailable feature is
+                    * simply absent, never stored as a sentinel value, so
+                    * "shared dimensions" between two vectors is a real set
+                    * intersection, not a NULL-check */
+  double *values; /* raw (not yet standardized) values, same index as names */
+  int n,cap;
+};
+
+static void feature_vector_add(struct feature_vector *fv,const char *name,double value){
+  if (fv->n == fv->cap){
+    fv->cap = fv->cap ? fv->cap * 2 : 8;
+    fv->names = realloc(fv->names,sizeof(char *) * (size_t)fv->cap);
+    fv->values = realloc(fv->values,sizeof(double) * (size_t)fv->cap);
+  }
+  fv->names[fv->n] = strdup(name);
+  fv->values[fv->n] = value;
+  fv->n++;
+}
+
+static void feature_vector_free_contents(struct feature_vector *fv){
+  int i;
+  for (i = 0; i < fv->n; i++) free(fv->names[i]);
+  free(fv->names);
+  free(fv->values);
+}
+
+static int feature_vector_find(const struct feature_vector *fv,const char *name,double *value_out){
+  int i;
+  for (i = 0; i < fv->n; i++){
+    if (!strcmp(fv->names[i],name)){ *value_out = fv->values[i]; return 1; }
+  }
+  return 0;
+}
+
+/* Population statistics for one feature name, across every loaded
+ * candidate -- standardization must use the same population for every
+ * pairwise distance, not be recomputed per pair, or distances between
+ * different pairs wouldn't be comparable to each other. */
+struct feature_stats {
+  char name[64];
+  double mean,stddev;
+  int count;
+};
+
+static struct feature_stats *feature_stats_find_or_add(struct feature_stats **stats,int *n,int *cap,
+                                                         const char *name){
+  int i;
+  for (i = 0; i < *n; i++) if (!strcmp((*stats)[i].name,name)) return &(*stats)[i];
+  if (*n == *cap){
+    *cap = *cap ? *cap * 2 : 8;
+    *stats = realloc(*stats,sizeof(struct feature_stats) * (size_t)*cap);
+  }
+  memset(&(*stats)[*n],0,sizeof(struct feature_stats));
+  snprintf((*stats)[*n].name,sizeof((*stats)[*n].name),"%s",name);
+  return &(*stats)[(*n)++];
+}
+
+/* Loads every run matching the optional command/hostname filters (same
+ * shape as score_runs()'s own WHERE clause) into a growable array of
+ * struct feature_vector, one per run -- coverage='measured' in the SQL
+ * itself means an unavailable feature never enters a vector at all, so no
+ * NULL-handling is needed downstream. Same realloc-doubling idiom
+ * load_baseline_buckets() (summary.c) already uses for a growable array of
+ * structs. Caller owns the returned array (feature_vector_free_contents()
+ * each entry, then free() the array). */
+static int load_feature_vectors(sqlite3 *db,const char *command_filter,const char *hostname_filter,
+                                 struct feature_vector **out_vectors,int *out_n){
+  const char *sql =
+    "SELECT r.id, r.hostname, r.run_id, rf.feature_name, rf.value "
+    "FROM runs r JOIN run_features rf ON rf.run_id = r.id "
+    "WHERE rf.coverage = 'measured' "
+    "AND (?1 = '' OR r.command LIKE '%' || ?1 || '%') "
+    "AND (?2 = '' OR r.hostname = ?2) "
+    "ORDER BY r.id;";
+  sqlite3_stmt *stmt;
+  struct feature_vector *vectors = NULL;
+  int n = 0,cap = 0;
+  int have_vec = 0;
+  struct feature_vector cur;
+
+  if (sqlite3_prepare_v2(db,sql,-1,&stmt,NULL) != SQLITE_OK){
+    fprintf(stderr,"wspy-archetype: query failed: %s\n",sqlite3_errmsg(db));
+    return -1;
+  }
+  sqlite3_bind_text(stmt,1,command_filter,-1,SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt,2,hostname_filter,-1,SQLITE_TRANSIENT);
+
+  memset(&cur,0,sizeof(cur));
+  while (sqlite3_step(stmt) == SQLITE_ROW){
+    sqlite3_int64 run_id = sqlite3_column_int64(stmt,0);
+    const unsigned char *hostname = sqlite3_column_text(stmt,1);
+    const unsigned char *run_id_text = sqlite3_column_text(stmt,2);
+    const unsigned char *feature_name = sqlite3_column_text(stmt,3);
+    double value = sqlite3_column_double(stmt,4);
+
+    if (!have_vec || cur.run_id != run_id){
+      if (have_vec){
+        if (n == cap){ cap = cap ? cap * 2 : 8; vectors = realloc(vectors,sizeof(struct feature_vector) * (size_t)cap); }
+        vectors[n++] = cur;
+      }
+      memset(&cur,0,sizeof(cur));
+      cur.run_id = run_id;
+      snprintf(cur.hostname,sizeof(cur.hostname),"%s",hostname ? (const char *)hostname : "?");
+      snprintf(cur.run_id_text,sizeof(cur.run_id_text),"%s",run_id_text ? (const char *)run_id_text : "?");
+      have_vec = 1;
+    }
+    if (feature_name) feature_vector_add(&cur,(const char *)feature_name,value);
+  }
+  if (have_vec){
+    if (n == cap){ cap = cap ? cap * 2 : 8; vectors = realloc(vectors,sizeof(struct feature_vector) * (size_t)cap); }
+    vectors[n++] = cur;
+  }
+
+  sqlite3_finalize(stmt);
+  *out_vectors = vectors;
+  *out_n = n;
+  return 0;
+}
+
+/* Two-pass population mean/stddev per feature name, across every loaded
+ * vector -- first pass discovers the feature-name universe and accumulates
+ * sum/count (-> mean), second pass accumulates sum-of-squared-deviation
+ * (-> sample stddev). Z-score standardization ((value-mean)/stddev) is why
+ * this exists: raw feature scales are wildly different (ipc_mean ~0-2 vs
+ * dcache_miss_pct ~0-100) and would otherwise let one dimension dominate
+ * Euclidean distance for no principled reason. A feature seen on fewer than
+ * 2 vectors has no meaningful stddev (stays 0, see the zero-variance
+ * exclusion in nearest_neighbor_distance() below). */
+static void compute_feature_stats(const struct feature_vector *vectors,int nvectors,
+                                   struct feature_stats **out_stats,int *out_n){
+  struct feature_stats *stats = NULL;
+  int n = 0,cap = 0;
+  int i,j;
+
+  for (i = 0; i < nvectors; i++){
+    for (j = 0; j < vectors[i].n; j++){
+      struct feature_stats *s = feature_stats_find_or_add(&stats,&n,&cap,vectors[i].names[j]);
+      s->mean += vectors[i].values[j];
+      s->count++;
+    }
+  }
+  for (i = 0; i < n; i++) if (stats[i].count > 0) stats[i].mean /= stats[i].count;
+
+  for (i = 0; i < nvectors; i++){
+    for (j = 0; j < vectors[i].n; j++){
+      struct feature_stats *s = feature_stats_find_or_add(&stats,&n,&cap,vectors[i].names[j]);
+      double d = vectors[i].values[j] - s->mean;
+      s->stddev += d * d;
+    }
+  }
+  for (i = 0; i < n; i++){
+    if (stats[i].count >= 2) stats[i].stddev = sqrt(stats[i].stddev / (stats[i].count - 1));
+    else stats[i].stddev = 0.0; /* one contributing run -- "variance" is meaningless, treat as zero */
+  }
+
+  *out_stats = stats;
+  *out_n = n;
+}
+
+static const struct feature_stats *feature_stats_lookup(const struct feature_stats *stats,int n,
+                                                          const char *name){
+  int i;
+  for (i = 0; i < n; i++) if (!strcmp(stats[i].name,name)) return &stats[i];
+  return NULL;
+}
+
+/* Coverage-aware distance -- the "common-subspace" requirement: only
+ * features BOTH a and b actually measured contribute, and a zero-variance
+ * feature (every candidate has the identical value -- zero discriminating
+ * information, and would divide-by-zero under standardization) is skipped
+ * entirely. Root-*mean*-square, not root-sum-square, over the shared
+ * dimensions -- dividing by n_shared is what makes distances comparable
+ * across differently-covered pairs: two runs sharing 18 dimensions and two
+ * runs sharing 6 shouldn't be penalized/rewarded purely for how much they
+ * happened to have in common, only the RMS standardized difference across
+ * whatever they *do* share matters. Returns 0 (pair excluded from results)
+ * when n_shared is 0 -- an undefined distance is never fabricated as 0.0
+ * ("identical") or left uninitialized. */
+static int nearest_neighbor_distance(const struct feature_vector *a,const struct feature_vector *b,
+                                      const struct feature_stats *stats,int nstats,
+                                      double *distance_out,int *n_shared_out){
+  double sumsq = 0;
+  int n_shared = 0;
+  int i;
+
+  for (i = 0; i < a->n; i++){
+    double bval;
+    const struct feature_stats *s;
+    double za,zb,diff;
+
+    if (!feature_vector_find(b,a->names[i],&bval)) continue;
+    s = feature_stats_lookup(stats,nstats,a->names[i]);
+    if (!s || s->stddev <= 0.0) continue; /* zero-variance: carries no discriminating information */
+
+    za = (a->values[i] - s->mean) / s->stddev;
+    zb = (bval - s->mean) / s->stddev;
+    diff = za - zb;
+    sumsq += diff * diff;
+    n_shared++;
+  }
+
+  if (n_shared == 0) return 0;
+  *distance_out = sqrt(sumsq / n_shared);
+  *n_shared_out = n_shared;
+  return 1;
+}
+
+struct neighbor_result {
+  const struct feature_vector *candidate;
+  double distance;
+  int n_shared;
+};
+
+static int cmp_neighbor_result(const void *a,const void *b){
+  double da = ((const struct neighbor_result *)a)->distance;
+  double db = ((const struct neighbor_result *)b)->distance;
+  if (da < db) return -1;
+  if (da > db) return 1;
+  return 0;
+}
+
+static void print_neighbor_row(FILE *out,int csvflag,const char *hostname,const char *run_id_text,
+                                double distance,int n_shared){
+  if (csvflag){
+    print_csv_field(out,hostname); fputc(',',out);
+    print_csv_field(out,run_id_text); fputc(',',out);
+    fprintf(out,"%.4g,%d\n",distance,n_shared);
+  } else {
+    char host_run[400];
+    snprintf(host_run,sizeof(host_run),"%s:%s",hostname,run_id_text);
+    fprintf(out,"%-40.40s %10.4g %18d\n",host_run,distance,n_shared);
+  }
+}
+
+#define NEAREST_DEFAULT_K 5
+
+/* --nearest <hostname>:<run_id>: ranks every other run matching the
+ * optional command/hostname filters by coverage-aware distance to the
+ * target, prints the closest k. Returns 1 if the target run isn't found
+ * (matches --run's own not-found exit-code convention), 2 on a query
+ * failure, else 0 -- including the "target has zero measured features" and
+ * "no other candidates" cases, both of which print an empty result rather
+ * than failing (degrade, don't crash -- same convention as every other
+ * coverage-driven feature in this codebase). */
+static int nearest_neighbors(sqlite3 *db,const char *hostname,const char *run_id_text,int k,
+                              const char *command_filter,const char *hostname_filter,
+                              int csvflag,FILE *out){
+  struct feature_vector *vectors = NULL;
+  int nvectors = 0;
+  struct feature_stats *stats = NULL;
+  int nstats = 0;
+  struct neighbor_result *results = NULL;
+  int nresults = 0;
+  const struct feature_vector *target = NULL;
+  int i,rc = 0;
+
+  if (load_feature_vectors(db,command_filter,hostname_filter,&vectors,&nvectors) != 0) return 2;
+
+  for (i = 0; i < nvectors; i++){
+    if (!strcmp(vectors[i].hostname,hostname) && !strcmp(vectors[i].run_id_text,run_id_text)){
+      target = &vectors[i];
+      break;
+    }
+  }
+  if (!target){
+    /* Distinguish "not in the store at all" from "in the store, but excluded
+     * by --command/--hostname or has zero measured features" -- mirrors
+     * trace_run_archetype()'s own two-query existence check. */
+    sqlite3_stmt *stmt;
+    int exists = 0;
+    if (sqlite3_prepare_v2(db,"SELECT 1 FROM runs WHERE hostname=? AND run_id=?;",-1,&stmt,NULL) == SQLITE_OK){
+      sqlite3_bind_text(stmt,1,hostname,-1,SQLITE_TRANSIENT);
+      sqlite3_bind_text(stmt,2,run_id_text,-1,SQLITE_TRANSIENT);
+      exists = (sqlite3_step(stmt) == SQLITE_ROW);
+      sqlite3_finalize(stmt);
+    }
+    if (!exists){
+      fprintf(stderr,"wspy-archetype: no run found for %s:%s\n",hostname,run_id_text);
+      rc = 1;
+      goto done;
+    }
+    /* Exists, but no measured features (or filtered out) -- empty result, not an error. */
+  }
+
+  if (target){
+    compute_feature_stats(vectors,nvectors,&stats,&nstats);
+    results = calloc((size_t)nvectors,sizeof(struct neighbor_result));
+    for (i = 0; i < nvectors; i++){
+      double distance;
+      int n_shared;
+      if (&vectors[i] == target) continue;
+      if (!nearest_neighbor_distance(target,&vectors[i],stats,nstats,&distance,&n_shared)) continue;
+      results[nresults].candidate = &vectors[i];
+      results[nresults].distance = distance;
+      results[nresults].n_shared = n_shared;
+      nresults++;
+    }
+    qsort(results,(size_t)nresults,sizeof(struct neighbor_result),cmp_neighbor_result);
+  }
+
+  if (csvflag) fprintf(out,"hostname,run_id,distance,compared_features\n");
+  else fprintf(out,"%-40s %10s %18s\n","hostname:run_id","distance","compared_features");
+
+  for (i = 0; i < nresults && i < k; i++){
+    print_neighbor_row(out,csvflag,results[i].candidate->hostname,results[i].candidate->run_id_text,
+                        results[i].distance,results[i].n_shared);
+  }
+
+done:
+  free(results);
+  free(stats);
+  for (i = 0; i < nvectors; i++) feature_vector_free_contents(&vectors[i]);
+  free(vectors);
+  return rc;
+}
+
 #ifndef TEST_ARCHETYPE
 static void usage(const char *prog){
   fprintf(stderr,
@@ -518,13 +854,24 @@ static void usage(const char *prog){
     "                       other option above except --db. Prints key=value\n"
     "                       lines.\n"
     "\n"
+    "  --nearest <host>:<run_id>  standalone mode: rank every other run in the\n"
+    "                       store by similarity to this one, over whichever\n"
+    "                       run_features both runs have measured (a\n"
+    "                       coverage-aware, z-score-standardized RMS distance\n"
+    "                       -- a pair sharing 6 features isn't penalized just\n"
+    "                       for sharing less than a pair sharing 18). --command/\n"
+    "                       --hostname filter the candidate pool; --db is the\n"
+    "                       only other option honored alongside it.\n"
+    "  --k <n>              number of nearest neighbors to print with --nearest\n"
+    "                       (default 5)\n"
+    "\n"
     "Only runs that have gone through feature extraction (default on in\n"
     "wspy-store, opt out via --no-feature-extract) are scored -- a run with\n"
     "no run_features rows at all has nothing to classify, distinct from one\n"
     "whose axes all came back \"unknown\"/\"unavailable\".\n"
     "\n"
-    "Exit status: 0 normally; 1 with --run if no such run is recorded; 2 on\n"
-    "a usage error or if the database could not be opened.\n",
+    "Exit status: 0 normally; 1 with --run/--nearest if no such run is\n"
+    "recorded; 2 on a usage error or if the database could not be opened.\n",
     prog);
 }
 
@@ -534,6 +881,8 @@ int main(int argc,char **argv){
   const char *command_filter = "";
   const char *hostname_filter = "";
   const char *run_key = NULL;
+  const char *nearest_key = NULL;
+  int k = NEAREST_DEFAULT_K;
   int csvflag = 0;
   sqlite3 *db;
   int rc;
@@ -544,6 +893,8 @@ int main(int argc,char **argv){
     { "hostname",  required_argument, 0, 'H' },
     { "csv",       no_argument,       0, 'C' },
     { "run",       required_argument, 0, 'r' },
+    { "nearest",   required_argument, 0, 'n' },
+    { "k",         required_argument, 0, 'k' },
     { "help",      no_argument,       0, 'h' },
     { 0,0,0,0 }
   };
@@ -555,6 +906,8 @@ int main(int argc,char **argv){
     case 'H': hostname_filter = optarg; break;
     case 'C': csvflag = 1; break;
     case 'r': run_key = optarg; break;
+    case 'n': nearest_key = optarg; break;
+    case 'k': k = atoi(optarg); break;
     case 'h': usage(argv[0]); return 0;
     default: usage(argv[0]); return 2;
     }
@@ -563,6 +916,30 @@ int main(int argc,char **argv){
     fprintf(stderr,"wspy-archetype: --db <path> is required\n\n");
     usage(argv[0]);
     return 2;
+  }
+  if (run_key && nearest_key){
+    fprintf(stderr,"wspy-archetype: --run and --nearest are mutually exclusive\n\n");
+    usage(argv[0]);
+    return 2;
+  }
+  if (k < 1) k = 1;
+
+  if (nearest_key){
+    const char *colon = strchr(nearest_key,':');
+    char hostname_buf[256];
+
+    if (!colon || colon == nearest_key || colon[1] == '\0'){
+      fprintf(stderr,"wspy-archetype: --nearest expects <hostname>:<run_id>, got '%s'\n\n",nearest_key);
+      usage(argv[0]);
+      return 2;
+    }
+    snprintf(hostname_buf,sizeof(hostname_buf),"%.*s",(int)(colon - nearest_key),nearest_key);
+
+    db = open_archetype_db(db_path);
+    if (!db) return 2;
+    rc = nearest_neighbors(db,hostname_buf,colon + 1,k,command_filter,hostname_filter,csvflag,stdout);
+    sqlite3_close(db);
+    return rc;
   }
 
   if (run_key){

@@ -347,6 +347,346 @@ static void test_trace_run_archetype_not_found(void){
   printf("PASS: trace_run_archetype not found\n");
 }
 
+/* --- end-to-end: nearest_neighbors() (--nearest mode) --- */
+
+static FILE *open_tmp_out(char *tmpfile_template){
+  int fd = mkstemp(tmpfile_template);
+  FILE *out;
+  assert(fd >= 0);
+  out = fdopen(fd,"w+");
+  assert(out != NULL);
+  return out;
+}
+
+static char *slurp(FILE *out,char *buf,size_t bufsize){
+  size_t n;
+  rewind(out);
+  n = fread(buf,1,bufsize - 1,out);
+  buf[n] = '\0';
+  return buf;
+}
+
+/* CSV row shape is "hostname,run_id,distance,compared_features\n" -- finds the
+ * row for run_id_text and returns its compared_features column, or -1 if the
+ * run isn't present in the output at all. */
+static int csv_compared_features_for(const char *buf,const char *run_id_text){
+  char needle[80];
+  const char *p;
+  int shared;
+  snprintf(needle,sizeof(needle),",%s,",run_id_text);
+  p = strstr(buf,needle);
+  if (!p) return -1;
+  p += strlen(needle);
+  if (sscanf(p,"%*[^,],%d",&shared) != 1) return -1;
+  return shared;
+}
+
+static void test_nearest_basic_ranking(void){
+  sqlite3 *db;
+  char tmpfile[] = "/tmp/test_archetype_nn_basic_XXXXXX";
+  FILE *out;
+  char buf[8192];
+  sqlite3_int64 t,near,far;
+  int rc;
+  char *p_near,*p_far;
+
+  printf("Testing nearest_neighbors: the more-similar run ranks ahead of the more-different run...\n");
+  db = open_memory_db();
+  t = insert_run(db,"runT","host1","/bin/workload");
+  near = insert_run(db,"runNear","host1","/bin/workload");
+  far = insert_run(db,"runFar","host1","/bin/workload");
+  (void)near; (void)far;
+
+  insert_feature_measured(db,t,"f1",10.0);
+  insert_feature_measured(db,t,"f2",10.0);
+  insert_feature_measured(db,insert_run(db,"dummy1","host1","/bin/workload"),"f1",10.0); /* pad variance */
+
+  insert_feature_measured(db,near,"f1",11.0);
+  insert_feature_measured(db,near,"f2",11.0);
+
+  insert_feature_measured(db,far,"f1",50.0);
+  insert_feature_measured(db,far,"f2",50.0);
+
+  out = open_tmp_out(tmpfile);
+  rc = nearest_neighbors(db,"host1","runT",NEAREST_DEFAULT_K,"","",1,out);
+  assert(rc == 0);
+  slurp(out,buf,sizeof(buf));
+
+  p_near = strstr(buf,"runNear");
+  p_far = strstr(buf,"runFar");
+  assert(p_near != NULL && p_far != NULL);
+  assert(p_near < p_far); /* runNear is genuinely closer to runT, must rank first */
+
+  fclose(out);
+  remove(tmpfile);
+  sqlite3_close(db);
+  printf("PASS: nearest_neighbors basic ranking\n");
+}
+
+static void test_nearest_common_subspace_normalization(void){
+  sqlite3 *db;
+  char tmpfile[] = "/tmp/test_archetype_nn_subspace_XXXXXX";
+  FILE *out;
+  char buf[8192];
+  sqlite3_int64 t,x,y;
+  int rc;
+  char *p_x,*p_y;
+
+  printf("Testing nearest_neighbors: fewer shared features (but genuinely closer) still ranks correctly, "
+         "RMS-normalized rather than penalized for lower overlap...\n");
+  db = open_memory_db();
+  t = insert_run(db,"runT","host1","/bin/workload");
+  x = insert_run(db,"runX","host1","/bin/workload"); /* shares only f1,f2 -- very close values */
+  y = insert_run(db,"runY","host1","/bin/workload"); /* shares f1..f4 -- moderately further on each */
+
+  insert_feature_measured(db,t,"f1",10.0);
+  insert_feature_measured(db,t,"f2",10.0);
+  insert_feature_measured(db,t,"f3",10.0);
+  insert_feature_measured(db,t,"f4",10.0);
+
+  insert_feature_measured(db,x,"f1",10.1);
+  insert_feature_measured(db,x,"f2",10.1);
+
+  insert_feature_measured(db,y,"f1",12.0);
+  insert_feature_measured(db,y,"f2",12.0);
+  insert_feature_measured(db,y,"f3",12.0);
+  insert_feature_measured(db,y,"f4",12.0);
+
+  out = open_tmp_out(tmpfile);
+  rc = nearest_neighbors(db,"host1","runT",NEAREST_DEFAULT_K,"","",1,out);
+  assert(rc == 0);
+  slurp(out,buf,sizeof(buf));
+
+  assert(csv_compared_features_for(buf,"runX") == 2);
+  assert(csv_compared_features_for(buf,"runY") == 4);
+
+  p_x = strstr(buf,"runX");
+  p_y = strstr(buf,"runY");
+  assert(p_x != NULL && p_y != NULL);
+  assert(p_x < p_y); /* runX is genuinely closer despite sharing fewer features */
+
+  fclose(out);
+  remove(tmpfile);
+  sqlite3_close(db);
+  printf("PASS: nearest_neighbors common-subspace normalization\n");
+}
+
+static void test_nearest_zero_shared_features_excluded(void){
+  sqlite3 *db;
+  char tmpfile[] = "/tmp/test_archetype_nn_noshare_XXXXXX";
+  FILE *out;
+  char buf[8192];
+  sqlite3_int64 t,disjoint,near;
+  int rc;
+
+  printf("Testing nearest_neighbors: a candidate with zero overlapping measured features is excluded "
+         "entirely, not shown with a fabricated distance...\n");
+  db = open_memory_db();
+  t = insert_run(db,"runT","host1","/bin/workload");
+  disjoint = insert_run(db,"runDisjoint","host1","/bin/workload");
+  near = insert_run(db,"runNear","host1","/bin/workload");
+
+  insert_feature_measured(db,t,"f1",10.0);
+  insert_feature_measured(db,near,"f1",11.0);
+  insert_feature_measured(db,disjoint,"g1",99.0); /* no feature name in common with runT */
+
+  out = open_tmp_out(tmpfile);
+  rc = nearest_neighbors(db,"host1","runT",NEAREST_DEFAULT_K,"","",1,out);
+  assert(rc == 0);
+  slurp(out,buf,sizeof(buf));
+
+  assert(strstr(buf,"runNear") != NULL);
+  assert(strstr(buf,"runDisjoint") == NULL);
+
+  fclose(out);
+  remove(tmpfile);
+  sqlite3_close(db);
+  printf("PASS: nearest_neighbors zero-shared-features exclusion\n");
+}
+
+static void test_nearest_zero_variance_feature_no_crash(void){
+  sqlite3 *db;
+  char tmpfile[] = "/tmp/test_archetype_nn_zerovar_XXXXXX";
+  FILE *out;
+  char buf[8192];
+  sqlite3_int64 t,near,far;
+  int rc;
+  char *p_near,*p_far;
+
+  printf("Testing nearest_neighbors: a feature with identical value everywhere (zero variance) doesn't "
+         "crash (divide-by-zero) or distort ranking...\n");
+  db = open_memory_db();
+  t = insert_run(db,"runT","host1","/bin/workload");
+  near = insert_run(db,"runNear","host1","/bin/workload");
+  far = insert_run(db,"runFar","host1","/bin/workload");
+
+  insert_feature_measured(db,t,"f1",10.0);
+  insert_feature_measured(db,t,"const_feat",5.0);
+  insert_feature_measured(db,near,"f1",11.0);
+  insert_feature_measured(db,near,"const_feat",5.0);
+  insert_feature_measured(db,far,"f1",50.0);
+  insert_feature_measured(db,far,"const_feat",5.0);
+
+  out = open_tmp_out(tmpfile);
+  rc = nearest_neighbors(db,"host1","runT",NEAREST_DEFAULT_K,"","",1,out);
+  assert(rc == 0);
+  slurp(out,buf,sizeof(buf));
+
+  assert(strstr(buf,"nan") == NULL);
+  assert(strstr(buf,"inf") == NULL);
+  p_near = strstr(buf,"runNear");
+  p_far = strstr(buf,"runFar");
+  assert(p_near != NULL && p_far != NULL);
+  assert(p_near < p_far);
+
+  fclose(out);
+  remove(tmpfile);
+  sqlite3_close(db);
+  printf("PASS: nearest_neighbors zero-variance feature no-crash\n");
+}
+
+static void test_nearest_k_limiting(void){
+  sqlite3 *db;
+  char tmpfile[] = "/tmp/test_archetype_nn_klimit_XXXXXX";
+  FILE *out;
+  char buf[8192];
+  sqlite3_int64 t;
+  int rc,i,rows = 0;
+  char *p;
+  double last_distance = -1.0;
+
+  printf("Testing nearest_neighbors: --k limits output to the closest k, ascending by distance...\n");
+  db = open_memory_db();
+  t = insert_run(db,"runT","host1","/bin/workload");
+  insert_feature_measured(db,t,"f1",0.0);
+  for (i = 0; i < 6; i++){
+    char run_id[32],cmd[64];
+    sqlite3_int64 r;
+    snprintf(run_id,sizeof(run_id),"run%d",i);
+    snprintf(cmd,sizeof(cmd),"/bin/workload");
+    r = insert_run(db,run_id,"host1",cmd);
+    insert_feature_measured(db,r,"f1",(double)(i + 1) * 10.0); /* strictly increasing distance from runT */
+  }
+
+  out = open_tmp_out(tmpfile);
+  rc = nearest_neighbors(db,"host1","runT",3,"","",1,out);
+  assert(rc == 0);
+  slurp(out,buf,sizeof(buf));
+
+  p = buf;
+  p = strstr(p,"\n"); /* skip header */
+  assert(p != NULL);
+  p++;
+  while (*p){
+    char host[64],rid[64];
+    double dist;
+    int shared;
+    if (sscanf(p,"%63[^,],%63[^,],%lf,%d",host,rid,&dist,&shared) == 4){
+      assert(dist >= last_distance);
+      last_distance = dist;
+      rows++;
+    }
+    p = strchr(p,'\n');
+    if (!p) break;
+    p++;
+  }
+  assert(rows == 3);
+
+  fclose(out);
+  remove(tmpfile);
+  sqlite3_close(db);
+  printf("PASS: nearest_neighbors --k limiting\n");
+}
+
+static void test_nearest_filters_restrict_pool(void){
+  sqlite3 *db;
+  char tmpfile1[] = "/tmp/test_archetype_nn_filter1_XXXXXX";
+  char tmpfile2[] = "/tmp/test_archetype_nn_filter2_XXXXXX";
+  FILE *out;
+  char buf[8192];
+  sqlite3_int64 t,same_host,other_host,other_cmd;
+  int rc;
+
+  printf("Testing nearest_neighbors: --hostname/--command filters restrict the candidate pool...\n");
+  db = open_memory_db();
+  t = insert_run(db,"runT","host1","/bin/workload_a");
+  same_host = insert_run(db,"runSameHost","host1","/bin/workload_a");
+  other_host = insert_run(db,"runOtherHost","host2","/bin/workload_a");
+  other_cmd = insert_run(db,"runOtherCmd","host1","/bin/workload_b");
+
+  insert_feature_measured(db,t,"f1",10.0);
+  insert_feature_measured(db,same_host,"f1",11.0);
+  insert_feature_measured(db,other_host,"f1",12.0);
+  insert_feature_measured(db,other_cmd,"f1",13.0);
+
+  out = open_tmp_out(tmpfile1);
+  rc = nearest_neighbors(db,"host1","runT",NEAREST_DEFAULT_K,"","host1",1,out); /* hostname filter */
+  assert(rc == 0);
+  slurp(out,buf,sizeof(buf));
+  assert(strstr(buf,"runSameHost") != NULL);
+  assert(strstr(buf,"runOtherHost") == NULL);
+  assert(strstr(buf,"runOtherCmd") != NULL); /* same host, different command -- not filtered by hostname */
+  fclose(out);
+  remove(tmpfile1);
+
+  out = open_tmp_out(tmpfile2);
+  rc = nearest_neighbors(db,"host1","runT",NEAREST_DEFAULT_K,"workload_a","",1,out); /* command filter */
+  assert(rc == 0);
+  slurp(out,buf,sizeof(buf));
+  assert(strstr(buf,"runSameHost") != NULL);
+  assert(strstr(buf,"runOtherHost") != NULL); /* same command, different host -- not filtered by command */
+  assert(strstr(buf,"runOtherCmd") == NULL);
+  fclose(out);
+  remove(tmpfile2);
+
+  sqlite3_close(db);
+  printf("PASS: nearest_neighbors filters restrict pool\n");
+}
+
+static void test_nearest_target_not_found(void){
+  sqlite3 *db;
+  FILE *devnull;
+  int rc;
+
+  printf("Testing nearest_neighbors: unknown (hostname,run_id) returns 1, matching --run's convention...\n");
+  db = open_memory_db();
+  insert_run(db,"run1","host1","/bin/workload");
+
+  devnull = fopen("/dev/null","w");
+  assert(devnull != NULL);
+  rc = nearest_neighbors(db,"host1","no-such-run",NEAREST_DEFAULT_K,"","",1,devnull);
+  assert(rc == 1);
+
+  fclose(devnull);
+  sqlite3_close(db);
+  printf("PASS: nearest_neighbors target not found\n");
+}
+
+static void test_nearest_target_no_features_empty_result(void){
+  sqlite3 *db;
+  char tmpfile[] = "/tmp/test_archetype_nn_empty_XXXXXX";
+  FILE *out;
+  char buf[8192];
+  int rc;
+
+  printf("Testing nearest_neighbors: target exists but has zero measured features -> graceful empty "
+         "result, not a crash...\n");
+  db = open_memory_db();
+  insert_run(db,"runT","host1","/bin/workload"); /* no run_features rows at all */
+
+  out = open_tmp_out(tmpfile);
+  rc = nearest_neighbors(db,"host1","runT",NEAREST_DEFAULT_K,"","",1,out);
+  assert(rc == 0);
+  slurp(out,buf,sizeof(buf));
+
+  assert(!strcmp(buf,"hostname,run_id,distance,compared_features\n")); /* header only, no data rows */
+
+  fclose(out);
+  remove(tmpfile);
+  sqlite3_close(db);
+  printf("PASS: nearest_neighbors target with no features -> empty result\n");
+}
+
 int main(void){
   test_classify_simple_axis_thresholds();
   test_classify_simple_axis_unavailable();
@@ -361,6 +701,14 @@ int main(void){
   test_score_runs_skips_runs_with_no_features();
   test_trace_run_archetype_found();
   test_trace_run_archetype_not_found();
+  test_nearest_basic_ranking();
+  test_nearest_common_subspace_normalization();
+  test_nearest_zero_shared_features_excluded();
+  test_nearest_zero_variance_feature_no_crash();
+  test_nearest_k_limiting();
+  test_nearest_filters_restrict_pool();
+  test_nearest_target_not_found();
+  test_nearest_target_no_features_empty_result();
 
   printf("\nAll test_archetype tests passed.\n");
   return 0;

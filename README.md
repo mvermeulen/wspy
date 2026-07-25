@@ -417,11 +417,15 @@ four workload axes derived from `run_features`: `resource_dominance` (the headli
 compute-bound/frontend-bound/memory-bound/speculation-bound, ranked from topdown L1 percentages,
 with a top-2 alternative and a confidence level) plus `parallelism_shape`/`control_flow_style`/
 `runtime_stability` as simpler supporting tags, each `unknown` when its source feature wasn't
-collected.
+collected. `--nearest` ranks other runs by similarity to one target run, using a coverage-aware
+distance over whichever `run_features` both runs actually have `measured` (z-score-standardized,
+root-*mean*-square over the shared feature set, so a pair sharing fewer features isn't penalized
+just for sharing less).
 
 ```
 ./wspy-archetype --db store.db                          # score every run, one row per run
 ./wspy-archetype --db store.db --run somehost:2026...    # detailed single-run scorecard
+./wspy-archetype --db store.db --nearest somehost:2026... --k 5   # 5 most-similar runs
 ```
 
 See `./wspy-archetype --help` for the full option list.
