@@ -506,6 +506,26 @@ feature name. `FEATURE_SET_VERSION` 1.1→1.2 (informational only). Verified aga
 run end-to-end: sorted IPC ticks `[0.15,0.15,0.17,0.23,0.87,0.93]` produced `p10=0.15`/`p90=0.9`/
 `iqr=0.555`, matching hand-computed expected values exactly.
 
+**Nearest-neighbor search (`wspy-archetype --nearest`, PR #152) — the nearest-neighbor slice of Tier 1
+item 1 below; K-means clustering and cluster profile cards remain open, rescoped there.** New standalone
+`wspy-archetype --nearest <host>:<run_id> [--k N]` mode: given a target run, ranks every other run in the
+store by a coverage-aware distance computed only over the `run_features` both runs actually have
+`measured` — root-*mean*-square (dividing by the shared-feature count, not taking a root-sum-square) over
+z-score-standardized differences, so a pair sharing 6 features isn't penalized purely for sharing less
+than a pair sharing 18. Population mean/stddev for standardization are computed once across every loaded
+candidate, not per-pair, so every pairwise distance shares the same scale; a zero-variance feature
+(identical value across every candidate) is excluded rather than causing a divide-by-zero. The
+`compared_features` shared-dimension count is always reported alongside each distance — coverage
+transparency, matching the `env_score`/baseline-`n` convention already established elsewhere in this
+codebase, rather than silently hidden. Mirrors `--run`'s colon-parsing and not-found exit-code
+conventions; `--command`/`--hostname` reused as candidate-pool filters. Clustering/cluster-profile-cards
+deliberately left out of this pass: K-means with a common-subspace distance has no clean textbook answer
+for how a centroid should be computed when cluster members don't all share the same available features —
+real, separate design work, not wasted effort building this distance function first. Verified via 8 new
+`test_archetype.c` cases (basic ranking, common-subspace RMS normalization, zero-shared-feature exclusion,
+zero-variance no-crash, `--k` limiting, `--command`/`--hostname` filters, target-not-found,
+target-with-no-measured-features) plus the full `run_tests.sh` matrix.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -815,8 +835,12 @@ topdown/IBS attribution, static-site publishing, and a lower-overhead tracing ba
 
 **Tier 1 — needs 4.1's normalized store/history:**
 
-1. Clustering + nearest-neighbor + cluster profile cards, coverage-aware distance (common-subspace
-   only when data coverage differs).
+1. Clustering + cluster profile cards, coverage-aware distance (common-subspace only when data
+   coverage differs) — **nearest-neighbor search now shipped** (`wspy-archetype --nearest`, see
+   "Shipped since 4.2"), including the coverage-aware distance function this item's remaining scope
+   reuses. What's left is K-means clustering + cluster profile cards on top of that same distance —
+   deliberately deferred as its own design problem: no clean textbook answer for how a centroid should
+   be computed when cluster members don't all share the same available features.
 
 **Tier 2 — topdown/attribution, needs 4.2's hierarchical schema + phase detection (both shipped) +
 AMD IBS sampling-mode support (shipped, see "Shipped since 4.2" and the Zen5/IBS deep-dive):**
