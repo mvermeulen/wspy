@@ -150,7 +150,61 @@ struct summary_opts {
   int strict;
   int show_runs;         /* --show-runs: append every contributing hostname:run_id to a bucket */
   const char *trace_key; /* --trace <hostname>:<run_id>: standalone artifact-resolution mode */
+  const char *check_regression_key; /* --check-regression <hostname>:<run_id>: standalone
+                                      * baseline/anomaly-check mode, see check_regression() */
 };
+
+/* --check-regression's target-run identity: which bucket (per --group-by/--group-by-option)
+ * the named run belongs to, and its own runs.id/start_time -- resolved once by
+ * resolve_target_run() and then used both to build the baseline query (strictly-earlier runs
+ * sharing this same bucket) and to know which "runs.id" load_target_metrics() should read. The
+ * *_isnull flags matter because plain SQL "=" never matches NULL -- the baseline query below
+ * binds NULL (not an empty string) for a NULL bucket key, using "IS ?" instead of "= ?". */
+struct target_run {
+  sqlite3_int64 id;
+  char start_time[64];
+  int group_val_isnull;
+  char group_val[160];
+  int secondary_val_isnull;
+  char secondary_val[160];
+};
+
+/* Target run's own metric_name -> AVG(value) map, loaded once by load_target_metrics() and
+ * consulted per baseline bucket in check_regression(). Same growable-array idiom as
+ * struct bucket's values/run_ids/hostnames arrays (bucket_add(), below). */
+struct metric_value_map {
+  char **names;
+  double *values;
+  int n,cap;
+};
+
+static void metric_map_add(struct metric_value_map *m,const char *name,double value){
+  if (m->n == m->cap){
+    m->cap = m->cap ? m->cap * 2 : 8;
+    m->names = realloc(m->names,sizeof(char *) * (size_t)m->cap);
+    m->values = realloc(m->values,sizeof(double) * (size_t)m->cap);
+  }
+  m->names[m->n] = strdup(name);
+  m->values[m->n] = value;
+  m->n++;
+}
+
+static void metric_map_free(struct metric_value_map *m){
+  int i;
+  for (i = 0; i < m->n; i++) free(m->names[i]);
+  free(m->names);
+  free(m->values);
+}
+
+/* Linear scan -- metric_value_map is per-run (typically a few dozen metrics at most), not worth
+ * a hash table. Returns 1 and sets *value_out if found, else 0. */
+static int metric_map_find(const struct metric_value_map *m,const char *name,double *value_out){
+  int i;
+  for (i = 0; i < m->n; i++){
+    if (!strcmp(m->names[i],name)){ *value_out = m->values[i]; return 1; }
+  }
+  return 0;
+}
 
 struct summary_totals {
   int groups_reported;
@@ -745,6 +799,266 @@ static int trace_run(sqlite3 *db,const char *hostname,const char *run_id,FILE *o
   return found ? 0 : 1;
 }
 
+/* --check-regression's first step: resolve (hostname,run_id) to its runs.id/start_time and the
+ * bucket key (group_val/secondary_val) it belongs to under the *current* --group-by/
+ * --group-by-option settings -- reuses group_by_column() exactly as summarize()'s own query does
+ * (same whitelisted-interpolation safety argument), so "which historical runs count as
+ * comparable" is defined identically here and in the plain group-by summary table, not by a
+ * second, separately-invented matching-key set. Returns 1 if found, 0 otherwise (caller prints
+ * the not-found message, mirroring trace_run()'s own convention above). */
+static int resolve_target_run(sqlite3 *db,const struct summary_opts *opts,
+                               const char *hostname,const char *run_id,struct target_run *out){
+  char sql[600];
+  sqlite3_stmt *stmt;
+  int found = 0;
+
+  snprintf(sql,sizeof(sql),
+    "SELECT r.id, r.start_time, %s AS group_val, rco.option_value AS secondary_val "
+    "FROM runs r "
+    "LEFT JOIN run_environment e ON e.run_id = r.id "
+    "LEFT JOIN run_config_options rco ON rco.run_id = r.id AND rco.option_name = ?3 "
+    "WHERE r.hostname = ?1 AND r.run_id = ?2;",
+    group_by_column(opts->group_by));
+
+  if (sqlite3_prepare_v2(db,sql,-1,&stmt,NULL) != SQLITE_OK){
+    fprintf(stderr,"wspy-summary: query failed: %s\n",sqlite3_errmsg(db));
+    return 0;
+  }
+  sqlite3_bind_text(stmt,1,hostname,-1,SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt,2,run_id,-1,SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt,3,opts->group_by_option ? opts->group_by_option : "",-1,SQLITE_TRANSIENT);
+
+  if (sqlite3_step(stmt) == SQLITE_ROW){
+    out->id = sqlite3_column_int64(stmt,0);
+    snprintf(out->start_time,sizeof(out->start_time),"%s",
+             (const char *)sqlite3_column_text(stmt,1));
+    out->group_val_isnull = (sqlite3_column_type(stmt,2) == SQLITE_NULL);
+    snprintf(out->group_val,sizeof(out->group_val),"%s",
+             out->group_val_isnull ? "" : (const char *)sqlite3_column_text(stmt,2));
+    out->secondary_val_isnull = (sqlite3_column_type(stmt,3) == SQLITE_NULL);
+    snprintf(out->secondary_val,sizeof(out->secondary_val),"%s",
+             out->secondary_val_isnull ? "" : (const char *)sqlite3_column_text(stmt,3));
+    found = 1;
+  }
+  sqlite3_finalize(stmt);
+  return found;
+}
+
+/* The target run's own per-metric values -- run_id here is the resolved integer runs.id
+ * (struct target_run.id), not the string run-index run_id metric_values doesn't key on. */
+static int load_target_metrics(sqlite3 *db,sqlite3_int64 run_id,struct metric_value_map *out){
+  sqlite3_stmt *stmt;
+  const char *sql =
+    "SELECT metric_name, AVG(value) FROM metric_values "
+    "WHERE run_id = ?1 AND value IS NOT NULL GROUP BY metric_name;";
+
+  if (sqlite3_prepare_v2(db,sql,-1,&stmt,NULL) != SQLITE_OK){
+    fprintf(stderr,"wspy-summary: query failed: %s\n",sqlite3_errmsg(db));
+    return -1;
+  }
+  sqlite3_bind_int64(stmt,1,run_id);
+  while (sqlite3_step(stmt) == SQLITE_ROW){
+    metric_map_add(out,(const char *)sqlite3_column_text(stmt,0),sqlite3_column_double(stmt,1));
+  }
+  sqlite3_finalize(stmt);
+  return 0;
+}
+
+/* Streams the baseline query (every strictly-earlier run sharing the target's bucket) into a
+ * growable array of per-metric struct bucket -- same per-run AVG(mv.value) collapse and JOIN
+ * shape as summarize()'s own query, but WHERE-scoped to one already-resolved bucket via
+ * target->group_val/secondary_val (NULL-safely, via "IS ?" -- see struct target_run's comment),
+ * so buckets here are keyed by metric_name alone (the group axis is already fixed). Caller owns
+ * the returned array (bucket_free_contents() each entry, then free() the array itself). */
+static int load_baseline_buckets(sqlite3 *db,const struct summary_opts *opts,
+                                  const struct target_run *target,
+                                  struct bucket **out_buckets,int *out_n){
+  char sql[900];
+  sqlite3_stmt *stmt;
+  struct bucket *buckets = NULL;
+  int n = 0,cap = 0;
+  int have_bucket = 0;
+  struct bucket cur;
+
+  snprintf(sql,sizeof(sql),
+    "SELECT mv.metric_name AS metric_name, AVG(mv.value) AS avg_value, "
+    "r.run_id AS run_id, r.hostname AS run_hostname, "
+    "r.cpu_vendor AS run_cpu_vendor, r.counters_requested AS run_counters_requested, "
+    "r.counters_measured AS run_counters_measured "
+    "FROM metric_values mv JOIN runs r ON r.id = mv.run_id "
+    "LEFT JOIN run_environment e ON e.run_id = r.id "
+    "LEFT JOIN run_config_options rco ON rco.run_id = r.id AND rco.option_name = ?5 "
+    "WHERE mv.value IS NOT NULL AND r.start_time < ?1 AND r.id != ?2 "
+    "AND %s IS ?3 AND rco.option_value IS ?4 "
+    "GROUP BY r.id, mv.metric_name "
+    "ORDER BY mv.metric_name, r.start_time, r.id;",
+    group_by_column(opts->group_by));
+
+  if (sqlite3_prepare_v2(db,sql,-1,&stmt,NULL) != SQLITE_OK){
+    fprintf(stderr,"wspy-summary: query failed: %s\n",sqlite3_errmsg(db));
+    return -1;
+  }
+  sqlite3_bind_text(stmt,1,target->start_time,-1,SQLITE_TRANSIENT);
+  sqlite3_bind_int64(stmt,2,target->id);
+  if (target->group_val_isnull) sqlite3_bind_null(stmt,3);
+  else sqlite3_bind_text(stmt,3,target->group_val,-1,SQLITE_TRANSIENT);
+  if (target->secondary_val_isnull) sqlite3_bind_null(stmt,4);
+  else sqlite3_bind_text(stmt,4,target->secondary_val,-1,SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt,5,opts->group_by_option ? opts->group_by_option : "",-1,SQLITE_TRANSIENT);
+
+  while (sqlite3_step(stmt) == SQLITE_ROW){
+    const unsigned char *metric_raw = sqlite3_column_text(stmt,0);
+    double value = sqlite3_column_double(stmt,1);
+    const unsigned char *run_id_raw = sqlite3_column_text(stmt,2);
+    const unsigned char *hostname_raw = sqlite3_column_text(stmt,3);
+    const unsigned char *cpu_vendor_raw = sqlite3_column_text(stmt,4);
+    int counters_requested = sqlite3_column_int(stmt,5);
+    int counters_measured = sqlite3_column_int(stmt,6);
+    const char *metric_name = metric_raw ? (const char *)metric_raw : "?";
+    const char *run_id = run_id_raw ? (const char *)run_id_raw : "?";
+    const char *hostname = hostname_raw ? (const char *)hostname_raw : "?";
+    const char *cpu_vendor = cpu_vendor_raw ? (const char *)cpu_vendor_raw : "(unknown)";
+
+    if (!metric_wanted(opts,metric_name)) continue;
+
+    if (!have_bucket || strcmp(cur.metric_name,metric_name) != 0){
+      if (have_bucket){
+        if (n == cap){ cap = cap ? cap * 2 : 8; buckets = realloc(buckets,sizeof(struct bucket) * (size_t)cap); }
+        buckets[n++] = cur;
+      }
+      bucket_reset(&cur,"","",metric_name);
+      have_bucket = 1;
+    }
+    bucket_add(&cur,value,run_id,hostname,cpu_vendor,counters_requested,counters_measured);
+  }
+  if (have_bucket){
+    if (n == cap){ cap = cap ? cap * 2 : 8; buckets = realloc(buckets,sizeof(struct bucket) * (size_t)cap); }
+    buckets[n++] = cur;
+  }
+
+  sqlite3_finalize(stmt);
+  *out_buckets = buckets;
+  *out_n = n;
+  return 0;
+}
+
+static const struct bucket *find_baseline_bucket(const struct bucket *buckets,int n,const char *metric_name){
+  int i;
+  for (i = 0; i < n; i++) if (!strcmp(buckets[i].metric_name,metric_name)) return &buckets[i];
+  return NULL;
+}
+
+/* One --check-regression output row: target run's own value for one metric versus that metric's
+ * baseline (strictly-earlier, same-bucket runs). status is direction-neutral ("above"/"below"
+ * baseline's 95% CI, or "within" it) rather than an asserted "regression" -- this codebase has no
+ * per-metric higher-is-better/lower-is-better table anywhere to make that call correctly (see
+ * this file's header comment for the header-comment-level version of this reasoning once added
+ * there), so a human (or a future per-metric semantics table) decides whether a flagged
+ * deviation is actually bad. "-" (not 0/empty) marks fields with no meaningful value for the
+ * no-baseline/thin cases, so "no data" is never misread as "baseline mean is zero". */
+static void print_regression_row(FILE *out,int csvflag,const char *metric_name,double target_value,
+                                  const char *status,int n,double mean,double ci_low,double ci_high,
+                                  const char *verdict){
+  if (csvflag){
+    print_csv_field(out,metric_name); fputc(',',out);
+    fprintf(out,"%.6g,",target_value);
+    if (n >= 0){
+      fprintf(out,"%d,%.6g,%.6g,%.6g,",n,mean,ci_low,ci_high);
+      print_csv_field(out,verdict);
+    } else {
+      fprintf(out,",,,,");
+    }
+    fputc(',',out);
+    print_csv_field(out,status);
+    fputc('\n',out);
+  } else {
+    if (n >= 0)
+      fprintf(out,"%-32.32s %12.6g %4d %12.6g %12.6g %12.6g %-16s %-12s\n",
+              metric_name,target_value,n,mean,ci_low,ci_high,verdict,status);
+    else
+      fprintf(out,"%-32.32s %12.6g %4s %12s %12s %12s %-16s %-12s\n",
+              metric_name,target_value,"-","-","-","-","-",status);
+  }
+}
+
+/* --check-regression driver: resolves the target run + its bucket key, loads the target run's
+ * own per-metric values, loads the baseline (strictly-earlier same-bucket runs) per metric, and
+ * compares. Returns 1 if the target run wasn't found (mirrors trace_run()'s unconditional
+ * not-found return, not gated by --strict); otherwise (opts->strict && flagged>0) ? 1 : 0. */
+static int check_regression(sqlite3 *db,const struct summary_opts *opts,
+                             const char *hostname,const char *run_id,FILE *out){
+  struct target_run target;
+  struct metric_value_map target_metrics;
+  struct bucket *baselines = NULL;
+  int nbaselines = 0;
+  int checked = 0,flagged = 0,no_baseline = 0;
+  int i;
+
+  if (!resolve_target_run(db,opts,hostname,run_id,&target)){
+    fprintf(stderr,"wspy-summary: no run found for %s:%s\n",hostname,run_id);
+    return 1;
+  }
+
+  memset(&target_metrics,0,sizeof(target_metrics));
+  if (load_target_metrics(db,target.id,&target_metrics) != 0) return 1;
+  if (load_baseline_buckets(db,opts,&target,&baselines,&nbaselines) != 0){
+    metric_map_free(&target_metrics);
+    return 1;
+  }
+
+  if (opts->csvflag){
+    fprintf(out,"metric,target_value,baseline_n,baseline_mean,ci95_low,ci95_high,baseline_verdict,status\n");
+  } else {
+    fprintf(out,"%-32s %12s %4s %12s %12s %12s %-16s %-12s\n",
+            "metric","target","n","base_mean","ci95_low","ci95_high","base_verdict","status");
+  }
+
+  for (i = 0; i < target_metrics.n; i++){
+    const char *metric_name = target_metrics.names[i];
+    double target_value = target_metrics.values[i];
+    const struct bucket *b;
+
+    if (!metric_wanted(opts,metric_name)) continue;
+    checked++;
+
+    b = find_baseline_bucket(baselines,nbaselines,metric_name);
+    if (!b){
+      no_baseline++;
+      print_regression_row(out,opts->csvflag,metric_name,target_value,"no-baseline",-1,0,0,0,"");
+    } else if (b->n < opts->min_runs){
+      print_regression_row(out,opts->csvflag,metric_name,target_value,"thin",-1,0,0,0,"");
+    } else {
+      double min_v,max_v,mean_v,median_v,stddev_v,cv,ci_low,ci_high;
+      int *outlier_flags = malloc(sizeof(int) * (size_t)b->n);
+      char verdict[32];
+      const char *status;
+
+      compute_stats(b->values,b->n,opts->outlier_z,&min_v,&max_v,&mean_v,&median_v,&stddev_v,outlier_flags);
+      free(outlier_flags);
+      cv = (mean_v != 0.0) ? (stddev_v / fabs(mean_v)) * 100.0 : 0.0;
+      compute_ci95(mean_v,stddev_v,b->n,&ci_low,&ci_high);
+      compute_verdict(b->n,cv,opts->max_cv,b->pmu_mixed,verdict,sizeof(verdict));
+
+      if (target_value < ci_low) status = "below";
+      else if (target_value > ci_high) status = "above";
+      else status = "within";
+      if (!strcmp(status,"above") || !strcmp(status,"below")) flagged++;
+
+      print_regression_row(out,opts->csvflag,metric_name,target_value,status,b->n,mean_v,ci_low,ci_high,verdict);
+    }
+  }
+
+  if (!opts->quiet)
+    fprintf(out,"wspy-summary: %d metric(s) checked, %d flagged, %d with no baseline history\n",
+            checked,flagged,no_baseline);
+
+  for (i = 0; i < nbaselines; i++) bucket_free_contents(&baselines[i]);
+  free(baselines);
+  metric_map_free(&target_metrics);
+
+  return (opts->strict && flagged > 0) ? 1 : 0;
+}
+
 #ifndef TEST_SUMMARY
 static void usage(const char *prog){
   fprintf(stderr,
@@ -788,6 +1102,18 @@ static void usage(const char *prog){
     "                         still exist on disk. Ignores every other option\n"
     "                         above except --db. Prints key=value lines.\n"
     "\n"
+    "  --check-regression <host>:<run_id>  standalone mode: compares this run's own\n"
+    "                         per-metric values against a rolling baseline (every\n"
+    "                         strictly-earlier run sharing the same --group-by/\n"
+    "                         --group-by-option bucket). --group-by/--group-by-option/\n"
+    "                         --metric/--min-runs/--max-cv apply as modifiers; every\n"
+    "                         other option above is ignored except --db/--csv/--quiet/\n"
+    "                         --strict. A metric outside the baseline's 95%% CI is\n"
+    "                         reported as \"above\" or \"below\" (direction-neutral --\n"
+    "                         this tool doesn't know which direction is bad for a\n"
+    "                         given metric), alongside \"within\"/\"no-baseline\"/\"thin\".\n"
+    "                         Mutually exclusive with --trace.\n"
+    "\n"
     "Every reported bucket carries a 95%% confidence interval of the mean (ci95_low/\n"
     "ci95_high, Student's t) and a repeatability verdict (PASS, or WARN:thin for\n"
     "n<3 runs, WARN:noisy for CV over --max-cv, and/or WARN:mixed-pmu when the\n"
@@ -798,9 +1124,10 @@ static void usage(const char *prog){
     "flag needed.\n"
     "\n"
     "Exit status: 0 normally (1 with --strict if any bucket still needs more\n"
-    "runs or carried a WARN verdict, or nothing matched; 1 with --trace if no\n"
-    "such run is recorded), 2 on a usage error or if the database could not be\n"
-    "opened.\n",
+    "runs or carried a WARN verdict, or nothing matched; 1 with --trace or\n"
+    "--check-regression if no such run is recorded, or with --check-regression\n"
+    "--strict if any metric was flagged above/below baseline), 2 on a usage\n"
+    "error or if the database could not be opened.\n",
     prog);
 }
 
@@ -824,6 +1151,7 @@ int main(int argc,char **argv){
     { "csv",            no_argument,       0, 'C' },
     { "show-runs",      no_argument,       0, 'R' },
     { "trace",          required_argument, 0, 'T' },
+    { "check-regression", required_argument, 0, 'K' },
     { "quiet",          no_argument,       0, 'q' },
     { "strict",         no_argument,       0, 's' },
     { "help",           no_argument,       0, 'h' },
@@ -858,6 +1186,7 @@ int main(int argc,char **argv){
     case 'C': opts.csvflag = 1; break;
     case 'R': opts.show_runs = 1; break;
     case 'T': opts.trace_key = optarg; break;
+    case 'K': opts.check_regression_key = optarg; break;
     case 'q': opts.quiet = 1; break;
     case 's': opts.strict = 1; break;
     case 'h': usage(argv[0]); return 0;
@@ -866,6 +1195,12 @@ int main(int argc,char **argv){
   }
   if (!opts.db_path){
     fprintf(stderr,"wspy-summary: --db <path> is required\n\n");
+    usage(argv[0]);
+    return 2;
+  }
+
+  if (opts.trace_key && opts.check_regression_key){
+    fprintf(stderr,"wspy-summary: --trace and --check-regression are mutually exclusive\n\n");
     usage(argv[0]);
     return 2;
   }
@@ -898,6 +1233,27 @@ int main(int argc,char **argv){
     return 2;
   }
   if (opts.min_runs < 1) opts.min_runs = 1;
+
+  if (opts.check_regression_key){
+    const char *colon = strchr(opts.check_regression_key,':');
+    char hostname_buf[256];
+    int rc;
+
+    if (!colon || colon == opts.check_regression_key || colon[1] == '\0'){
+      fprintf(stderr,"wspy-summary: --check-regression expects <hostname>:<run_id>, got '%s'\n\n",
+              opts.check_regression_key);
+      usage(argv[0]);
+      return 2;
+    }
+    snprintf(hostname_buf,sizeof(hostname_buf),"%.*s",
+             (int)(colon - opts.check_regression_key),opts.check_regression_key);
+
+    db = open_summary_db(opts.db_path);
+    if (!db) return 2;
+    rc = check_regression(db,&opts,hostname_buf,colon + 1,stdout);
+    sqlite3_close(db);
+    return rc;
+  }
 
   db = open_summary_db(opts.db_path);
   if (!db) return 2;
