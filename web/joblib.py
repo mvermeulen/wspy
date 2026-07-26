@@ -1875,17 +1875,20 @@ def _build_phoronix_suite_xml(identity, test_id, arguments, source_ref, descript
     ET.SubElement(execute, "Test").text = test_id
     if arguments:
         ET.SubElement(execute, "Arguments").text = arguments
-        # A real PTS install ignores <Arguments> entirely -- silently
-        # batch-running every option in the test's menu instead of just
-        # this one -- unless <Execute> also carries a non-empty
-        # <Description> (pts_test_suite.php's own BATCH-mode fallback,
-        # confirmed live 2026-07-23 against a build-linux-kernel test
-        # point: PTS ran both "defconfig" and "allmodconfig" when only
-        # <Arguments>defconfig</Arguments> was present). The *content*
-        # doesn't matter to PTS, only presence -- fall back to the
-        # arguments string itself when the source XML had no real
-        # Description to carry over.
-        ET.SubElement(execute, "Description").text = description or arguments
+    # A real PTS install ignores <Arguments> entirely -- silently
+    # batch-running every option in the test's menu instead of just
+    # this one -- unless <Execute> also carries a non-empty
+    # <Description> (pts_test_suite.php's own BATCH-mode fallback,
+    # confirmed live 2026-07-23 against a build-linux-kernel test
+    # point: PTS ran both "defconfig" and "allmodconfig" when only
+    # <Arguments>defconfig</Arguments> was present). This applies equally
+    # when <Arguments> is empty (e.g. default option): without <Description>,
+    # PTS batch-mode runs every option menu entry. The *content* doesn't
+    # matter to PTS, only presence -- fall back to the arguments string
+    # itself when the source XML had no real Description to carry over.
+    desc = description or arguments
+    if desc:
+        ET.SubElement(execute, "Description").text = desc
     ET.indent(root, space="  ")
     return b'<?xml version="1.0"?>\n' + ET.tostring(root, encoding="utf-8") + b"\n"
 
