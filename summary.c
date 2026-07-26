@@ -191,6 +191,8 @@ struct summary_opts {
   const char *trace_key; /* --trace <hostname>:<run_id>: standalone artifact-resolution mode */
   const char *check_regression_key; /* --check-regression <hostname>:<run_id>: standalone
                                       * baseline/anomaly-check mode, see check_regression() */
+  const char *phase_topdown_key; /* --phase-topdown <hostname>:<run_id>: standalone per-phase
+                                   * topdown breakdown mode, see phase_topdown() */
 };
 
 /* --check-regression's target-run identity: which bucket (per --group-by/--group-by-option)
@@ -1203,6 +1205,221 @@ static int check_regression(sqlite3 *db,const struct summary_opts *opts,
   return (opts->strict && flagged > 0) ? 1 : 0;
 }
 
+/* ---- --phase-topdown: per-phase topdown breakdown (INVESTIGATION.md's 4.3
+ * "Phase-aware topdown" item). store.c's ingest_csv_metrics() already tags
+ * every metric_values row with the tick's phase label whenever --interval +
+ * phase detection were active (phase.c's per-tick CSV "phase" column,
+ * carried straight through unchanged) -- this is the first thing that
+ * actually reads that column back out and correlates it with topdown
+ * specifically, closing the deferred MVP criterion ("one benchmark run
+ * demonstrates phase-specific topdown shifts in generated summary output",
+ * see the topdown deep-dive above).
+ *
+ * Deliberately scoped to topdown's own CSV columns (PHASE_TOPDOWN_METRICS
+ * below), not "every metric vs. phase" -- every other metric_values row for
+ * this run (branch, cache, system, ...) carries the same phase label, but a
+ * generic phase-vs-everything report is a different, broader feature this
+ * item doesn't ask for. */
+
+#define PHASE_TOPDOWN_NPHASES 3
+static const char *const PHASE_NAMES[PHASE_TOPDOWN_NPHASES] = { "warmup","steady","degraded" };
+
+/* Fixed vocabulary and display order, matching print_topdown()'s own raw CSV
+ * header order exactly (topdown.c: "retire,frontend,backend,speculate,
+ * confidence,sanity,contention_pct,retire_ucode_pct,...") -- the literal
+ * column names metric_values.metric_name stores verbatim, NOT the
+ * "retire_pct"/etc. run_features feature-vocabulary names store.c's
+ * extract_run_features() derives from these same columns elsewhere
+ * (archetype.c reads that separate table/vocabulary, not this one).
+ * confidence/sanity are measurement-quality metadata, not a resource
+ * category, so they're deliberately excluded here -- this list is the four
+ * L1 resource_dominance categories (archetype.c) plus contention_pct plus
+ * the L2 splits, the same order a human reads counters.txt in. */
+static const char *const PHASE_TOPDOWN_METRICS[] = {
+  "retire","frontend","backend","speculate","contention_pct",
+  "retire_ucode_pct","retire_fastpath_pct",
+  "frontend_latency_pct","frontend_bandwidth_pct",
+  "backend_cpu_pct","backend_memory_pct",
+  "spec_branch_pct","spec_pipeline_pct",
+};
+#define NUM_PHASE_TOPDOWN_METRICS ((int)(sizeof(PHASE_TOPDOWN_METRICS)/sizeof(PHASE_TOPDOWN_METRICS[0])))
+
+struct phase_topdown_row {
+  double mean[PHASE_TOPDOWN_NPHASES];
+  int n[PHASE_TOPDOWN_NPHASES];
+  int have[PHASE_TOPDOWN_NPHASES];
+};
+
+static int phase_name_index(const char *phase){
+  int i;
+  for (i = 0; i < PHASE_TOPDOWN_NPHASES; i++) if (!strcmp(PHASE_NAMES[i],phase)) return i;
+  return -1;
+}
+
+static int phase_topdown_metric_index(const char *name){
+  int i;
+  for (i = 0; i < NUM_PHASE_TOPDOWN_METRICS; i++) if (!strcmp(PHASE_TOPDOWN_METRICS[i],name)) return i;
+  return -1;
+}
+
+static int resolve_run_id(sqlite3 *db,const char *hostname,const char *run_id_text,sqlite3_int64 *id_out){
+  sqlite3_stmt *stmt;
+  int found = 0;
+
+  if (sqlite3_prepare_v2(db,"SELECT id FROM runs WHERE hostname=? AND run_id=?;",-1,&stmt,NULL) != SQLITE_OK)
+    return 0;
+  sqlite3_bind_text(stmt,1,hostname,-1,SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt,2,run_id_text,-1,SQLITE_TRANSIENT);
+  if (sqlite3_step(stmt) == SQLITE_ROW){ *id_out = sqlite3_column_int64(stmt,0); found = 1; }
+  sqlite3_finalize(stmt);
+  return found;
+}
+
+/* One output row: metric name, each phase's mean/n (blank when that phase
+ * has no data for this metric -- never fabricated as 0, same "-"/blank-field
+ * convention print_regression_row() already uses), and drift_pct (max-mean
+ * minus min-mean across whichever phases *do* have data; blank when fewer
+ * than 2 phases have data for this metric, an undefined drift rather than a
+ * fabricated 0.0). Every field position is emitted unconditionally even
+ * when blank, so column count/order never drifts by phase coverage (see
+ * CLAUDE.md's CSV pitfalls). */
+static void print_phase_topdown_row(FILE *out,int csvflag,const char *metric_name,
+                                     const struct phase_topdown_row *row,
+                                     int have_drift,double drift){
+  int p;
+
+  if (csvflag){
+    print_csv_field(out,metric_name);
+    for (p = 0; p < PHASE_TOPDOWN_NPHASES; p++){
+      fputc(',',out);
+      if (row->have[p]) fprintf(out,"%.4g",row->mean[p]);
+      fputc(',',out);
+      if (row->have[p]) fprintf(out,"%d",row->n[p]);
+    }
+    fputc(',',out);
+    if (have_drift) fprintf(out,"%.4g",drift);
+    fputc('\n',out);
+  } else {
+    char cells[PHASE_TOPDOWN_NPHASES][24];
+    char drift_buf[16];
+
+    for (p = 0; p < PHASE_TOPDOWN_NPHASES; p++){
+      if (row->have[p]) snprintf(cells[p],sizeof(cells[p]),"%.2f(n=%d)",row->mean[p],row->n[p]);
+      else snprintf(cells[p],sizeof(cells[p]),"-");
+    }
+    if (have_drift) snprintf(drift_buf,sizeof(drift_buf),"%.2f",drift);
+    else snprintf(drift_buf,sizeof(drift_buf),"-");
+    fprintf(out,"%-24.24s %-16s %-16s %-16s %10s\n",metric_name,cells[0],cells[1],cells[2],drift_buf);
+  }
+}
+
+/* --phase-topdown <host>:<run_id>: breaks one run's own topdown-family
+ * metric_values rows down by --interval phase. Returns 1 if the run isn't
+ * found (mirrors --trace/--check-regression's own not-found convention),
+ * else 0 -- including the "run exists but has no phase-tagged topdown
+ * data" case (no --interval, no IPC counters, --per-core, or a run whose
+ * phase detector never left warmup produces no rows with a *different*
+ * phase to contrast -- see phase.h), which prints an explicit notice
+ * rather than a silently-empty table, same degrade-don't-fail convention
+ * as --nearest's "target has zero measured features" case (archetype.c). */
+static int phase_topdown(sqlite3 *db,const char *hostname,const char *run_id_text,int csvflag,FILE *out){
+  sqlite3_int64 run_id;
+  struct phase_topdown_row rows[NUM_PHASE_TOPDOWN_METRICS];
+  sqlite3_stmt *stmt;
+  int i,p;
+  int phases_seen[PHASE_TOPDOWN_NPHASES] = {0,0,0};
+  int nphases_seen = 0;
+  int single_phase = -1;
+  double max_drift = -1.0;
+  int max_drift_mi = -1,max_drift_lo = -1,max_drift_hi = -1;
+
+  if (!resolve_run_id(db,hostname,run_id_text,&run_id)){
+    fprintf(stderr,"wspy-summary: no run found for %s:%s\n",hostname,run_id_text);
+    return 1;
+  }
+
+  memset(rows,0,sizeof(rows));
+
+  if (sqlite3_prepare_v2(db,
+        "SELECT phase, metric_name, AVG(value), COUNT(*) FROM metric_values "
+        "WHERE run_id=?1 AND phase IS NOT NULL AND value IS NOT NULL "
+        "GROUP BY phase, metric_name;",-1,&stmt,NULL) != SQLITE_OK){
+    fprintf(stderr,"wspy-summary: query failed: %s\n",sqlite3_errmsg(db));
+    return 1;
+  }
+  sqlite3_bind_int64(stmt,1,run_id);
+  while (sqlite3_step(stmt) == SQLITE_ROW){
+    const char *phase = (const char *)sqlite3_column_text(stmt,0);
+    const char *metric_name = (const char *)sqlite3_column_text(stmt,1);
+    int pi = phase ? phase_name_index(phase) : -1;
+    int mi = metric_name ? phase_topdown_metric_index(metric_name) : -1;
+
+    if (pi < 0 || mi < 0) continue;
+    rows[mi].mean[pi] = sqlite3_column_double(stmt,2);
+    rows[mi].n[pi] = sqlite3_column_int(stmt,3);
+    rows[mi].have[pi] = 1;
+    if (!phases_seen[pi]){ phases_seen[pi] = 1; nphases_seen++; single_phase = pi; }
+  }
+  sqlite3_finalize(stmt);
+
+  if (nphases_seen == 0){
+    fprintf(out,"wspy-summary: %s:%s has no phase-tagged topdown data (needs --interval, IPC "
+                 "counters, and phase detection active -- not --per-core, and not disabled)\n",
+            hostname,run_id_text);
+    return 0;
+  }
+
+  if (csvflag){
+    fprintf(out,"metric,warmup_mean,warmup_n,steady_mean,steady_n,degraded_mean,degraded_n,drift_pct\n");
+  } else {
+    fprintf(out,"%-24s %-16s %-16s %-16s %10s\n","metric","warmup","steady","degraded","drift_pct");
+  }
+
+  for (i = 0; i < NUM_PHASE_TOPDOWN_METRICS; i++){
+    double lo = 0.0,hi = 0.0;
+    int lo_p = -1,hi_p = -1;
+    int have_drift;
+
+    for (p = 0; p < PHASE_TOPDOWN_NPHASES; p++){
+      if (!rows[i].have[p]) continue;
+      if (lo_p < 0 || rows[i].mean[p] < lo){ lo = rows[i].mean[p]; lo_p = p; }
+      if (hi_p < 0 || rows[i].mean[p] > hi){ hi = rows[i].mean[p]; hi_p = p; }
+    }
+    have_drift = (lo_p >= 0 && hi_p >= 0 && lo_p != hi_p);
+
+    print_phase_topdown_row(out,csvflag,PHASE_TOPDOWN_METRICS[i],&rows[i],have_drift,
+                             have_drift ? (hi - lo) : 0.0);
+
+    if (have_drift && (hi - lo) > max_drift){
+      max_drift = hi - lo;
+      max_drift_mi = i;
+      max_drift_lo = lo_p;
+      max_drift_hi = hi_p;
+    }
+  }
+
+  if (!csvflag){
+    if (max_drift_mi >= 0){
+      /* Named chronologically (PHASE_NAMES order, not lo/hi value order) --
+       * "between warmup and steady" reads as a phase pair, not a claimed
+       * transition direction; which one is actually higher is already
+       * visible in the table above. */
+      int first = max_drift_lo < max_drift_hi ? max_drift_lo : max_drift_hi;
+      int second = max_drift_lo < max_drift_hi ? max_drift_hi : max_drift_lo;
+      fprintf(out,"wspy-summary: largest phase drift: %s (%.2f pts, between %s and %s)\n",
+              PHASE_TOPDOWN_METRICS[max_drift_mi],max_drift,
+              PHASE_NAMES[first],PHASE_NAMES[second]);
+    } else if (nphases_seen == 1){
+      fprintf(out,"wspy-summary: only 1 phase observed (%s) -- no drift computable\n",
+              PHASE_NAMES[single_phase]);
+    } else {
+      fprintf(out,"wspy-summary: no topdown metric had data in 2+ phases -- no drift computable\n");
+    }
+  }
+
+  return 0;
+}
+
 #ifndef TEST_SUMMARY
 static void usage(const char *prog){
   fprintf(stderr,
@@ -1259,7 +1476,17 @@ static void usage(const char *prog){
     "                         reported as \"above\" or \"below\" (direction-neutral --\n"
     "                         this tool doesn't know which direction is bad for a\n"
     "                         given metric), alongside \"within\"/\"no-baseline\"/\"thin\".\n"
-    "                         Mutually exclusive with --trace.\n"
+    "                         Mutually exclusive with --trace and --phase-topdown.\n"
+    "\n"
+    "  --phase-topdown <host>:<run_id>  standalone mode: breaks this run's own\n"
+    "                         topdown output down by --interval phase (warmup/\n"
+    "                         steady/degraded, phase.c), reporting each phase's\n"
+    "                         mean per topdown column and a drift_pct (largest\n"
+    "                         phase-to-phase swing). Needs a run collected with\n"
+    "                         --interval + IPC counters + phase detection (not\n"
+    "                         --per-core); every other option above is ignored\n"
+    "                         except --db/--csv. Mutually exclusive with --trace\n"
+    "                         and --check-regression.\n"
     "\n"
     "Every reported bucket carries a 95%% confidence interval of the mean (ci95_low/\n"
     "ci95_high, Student's t) and a repeatability verdict (PASS, or WARN:thin for\n"
@@ -1276,10 +1503,10 @@ static void usage(const char *prog){
     "evidence of one).\n"
     "\n"
     "Exit status: 0 normally (1 with --strict if any bucket still needs more\n"
-    "runs or carried a WARN verdict, or nothing matched; 1 with --trace or\n"
-    "--check-regression if no such run is recorded, or with --check-regression\n"
-    "--strict if any metric was flagged above/below baseline), 2 on a usage\n"
-    "error or if the database could not be opened.\n",
+    "runs or carried a WARN verdict, or nothing matched; 1 with --trace,\n"
+    "--check-regression, or --phase-topdown if no such run is recorded, or with\n"
+    "--check-regression --strict if any metric was flagged above/below baseline),\n"
+    "2 on a usage error or if the database could not be opened.\n",
     prog);
 }
 
@@ -1305,6 +1532,7 @@ int main(int argc,char **argv){
     { "show-runs",      no_argument,       0, 'R' },
     { "trace",          required_argument, 0, 'T' },
     { "check-regression", required_argument, 0, 'K' },
+    { "phase-topdown",  required_argument, 0, 'P' },
     { "quiet",          no_argument,       0, 'q' },
     { "strict",         no_argument,       0, 's' },
     { "help",           no_argument,       0, 'h' },
@@ -1342,6 +1570,7 @@ int main(int argc,char **argv){
     case 'R': opts.show_runs = 1; break;
     case 'T': opts.trace_key = optarg; break;
     case 'K': opts.check_regression_key = optarg; break;
+    case 'P': opts.phase_topdown_key = optarg; break;
     case 'q': opts.quiet = 1; break;
     case 's': opts.strict = 1; break;
     case 'h': usage(argv[0]); return 0;
@@ -1354,10 +1583,34 @@ int main(int argc,char **argv){
     return 2;
   }
 
-  if (opts.trace_key && opts.check_regression_key){
-    fprintf(stderr,"wspy-summary: --trace and --check-regression are mutually exclusive\n\n");
+  if ((opts.trace_key && opts.check_regression_key) ||
+      (opts.trace_key && opts.phase_topdown_key) ||
+      (opts.check_regression_key && opts.phase_topdown_key)){
+    fprintf(stderr,"wspy-summary: --trace, --check-regression, and --phase-topdown are mutually "
+                    "exclusive\n\n");
     usage(argv[0]);
     return 2;
+  }
+
+  if (opts.phase_topdown_key){
+    const char *colon = strchr(opts.phase_topdown_key,':');
+    char hostname_buf[256];
+    int rc;
+
+    if (!colon || colon == opts.phase_topdown_key || colon[1] == '\0'){
+      fprintf(stderr,"wspy-summary: --phase-topdown expects <hostname>:<run_id>, got '%s'\n\n",
+              opts.phase_topdown_key);
+      usage(argv[0]);
+      return 2;
+    }
+    snprintf(hostname_buf,sizeof(hostname_buf),"%.*s",
+             (int)(colon - opts.phase_topdown_key),opts.phase_topdown_key);
+
+    db = open_summary_db(opts.db_path);
+    if (!db) return 2;
+    rc = phase_topdown(db,hostname_buf,colon + 1,opts.csvflag,stdout);
+    sqlite3_close(db);
+    return rc;
   }
 
   if (opts.trace_key){

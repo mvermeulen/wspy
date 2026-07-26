@@ -551,6 +551,28 @@ centroid computation doesn't crash, `k` greater than candidate count returns the
 data" exit code, same-seed determinism, and `k` larger than the natural group count still yields `k`
 non-empty clusters) plus the full `run_tests.sh` matrix.
 
+**Phase-aware topdown (`wspy-summary --phase-topdown`) — closes 4.3 Tier 2 item 2.** New standalone
+`wspy-summary --phase-topdown <hostname>:<run_id>` mode: breaks one run's own topdown output down by
+`--interval` phase (warmup/steady/degraded, `phase.c`'s per-tick classification). store.c's
+`ingest_csv_metrics()` already tagged every `metric_values` row with its tick's phase label the moment
+`phase.c` shipped (the CSV's `phase` column is carried straight through, no schema change needed here)
+— this is simply the first thing that actually reads that column back out and correlates it with
+topdown specifically, closing the topdown deep-dive's long-deferred MVP criterion ("one benchmark run
+demonstrates phase-specific topdown shifts in generated summary output"). Reports each topdown column's
+per-phase mean/n (blank, never fabricated as 0, when a phase has no data for that column) plus a
+`drift_pct` (largest phase-to-phase swing for that column) and a trailing note naming the single
+largest drifter overall; deliberately scoped to topdown's own CSV columns
+(`retire`/`frontend`/`backend`/`speculate`/`contention_pct` plus the L2 splits — the literal raw CSV
+column names `metric_values.metric_name` stores, *not* the `retire_pct`-style `run_features` feature-
+vocabulary names `archetype.c` reads from a separate table), not a generic phase-vs-every-metric report.
+A run collected without phase data (aggregate, `--per-core`, or no `--interval`) degrades to an
+explicit notice rather than a silently-empty table, same convention as `--nearest`'s "target has zero
+measured features" case. Verified end-to-end against a real AMD Zen5 host run (`--interval --topdown`,
+piped through `--run-index`/`wspy-store`) in addition to 6 new `test_summary.c` cases (full 3-phase
+drift, largest-drift trailing note, no-phase-data graceful degradation, target-not-found, single-
+phase-observed, and a metric present in only one of two observed phases) plus the full `run_tests.sh`
+matrix.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -760,7 +782,7 @@ event_source/devices/` enumerated live, not from documentation alone):
 → Findings 1-4 and half of 5 (the underflow fix) shipped (see "Shipped since 4.2"); finding 5's other
 half is a documented, non-actionable perf-subsystem limitation (see "Known gaps"), not open backlog.
 The E-core raw-event gap above (not one of the original 5 findings) has also shipped — nothing remains
-open from this pass. This also removes the last blocker from Tier 3's "Core-class-aware topdown" item,
+open from this pass. This also removes the last blocker from Tier 2's "Core-class-aware topdown" item,
 which is now just the weighted-aggregate work itself.
 
 ### Topdown deep-dive
@@ -773,8 +795,8 @@ Advancements worth adopting, in priority order for `wspy` specifically:
 4. ~~SMT/contention-aware normalization — publish both denominators, document which one drives
    classification~~ — shipped alongside #3 (`contention_pct` CSV column; every other percentage
    documented as a fraction of `slots_no_contention`).
-5. Phase-aware topdown (warmup/steady/degraded) — depends on interval phase segmentation (shipped,
-   `phase.c`).
+5. ~~Phase-aware topdown (warmup/steady/degraded)~~ — shipped as `wspy-summary --phase-topdown`, see
+   "Shipped since 4.2".
 6. Hybrid/heterogeneous core-class summaries — don't mix Atom+Core topdown into one headline number.
 7. Cross-signal attribution (topdown + cache/TLB/IBS) — composite bottleneck rules over single-
    counter heuristics.
@@ -785,14 +807,14 @@ Advancements worth adopting, in priority order for `wspy` specifically:
 - ≥95% of topdown fields in standard profiles include confidence metadata. **Met** for the level-1
   breakdown (shipped).
 - Reports clearly mark low-confidence topdown rows and avoid strong claims from them. **Met.**
-- One benchmark run demonstrates phase-specific topdown shifts in generated summary output. **Not
-  met** — phase detection exists (`phase.c`) but nothing correlates it with topdown output yet
-  (items 5/6 above, and 4.3's "Phase-aware topdown" entry).
+- One benchmark run demonstrates phase-specific topdown shifts in generated summary output. **Met** —
+  `wspy-summary --phase-topdown`, verified against a real AMD Zen5 host run (see "Shipped since 4.2").
 
-→ Items 3-8 map to 4.2's "Hierarchical topdown schema" (shipped) and 4.3's "Phase-aware topdown,"
-"Composite attribution," and "Core-class-aware topdown" (moved to 4.3, no longer blocked at all — real
-Intel/AMD hybrid hardware became available this cycle, and the Gracemont E-core raw-event gap that
-briefly blocked it has since shipped too, see "Core-class-aware topdown" in Tier 3 above).
+→ Items 3-8 map to 4.2's "Hierarchical topdown schema" (shipped), 4.3's now-shipped "Phase-aware
+topdown," and 4.3's still-open "Composite attribution" and "Core-class-aware topdown" (moved to 4.3,
+no longer blocked at all — real Intel/AMD hybrid hardware became available this cycle, and the
+Gracemont E-core raw-event gap that briefly blocked it has since shipped too, see "Core-class-aware
+topdown" in Tier 2 above).
 
 ### Preset / Configuration / Option hierarchy deep-dive
 A three-level vocabulary for describing what wspy can be asked to do, surfaced while iterating the
@@ -868,7 +890,9 @@ cross-reference them by tier number.
 **Tier 2 — topdown/attribution, needs 4.2's hierarchical schema + phase detection (both shipped) +
 AMD IBS sampling-mode support (shipped, see "Shipped since 4.2" and the Zen5/IBS deep-dive):**
 
-2. Phase-aware topdown (warmup/steady/degraded segmentation, drift signal).
+Item 2 (phase-aware topdown, warmup/steady/degraded segmentation, drift signal) shipped as
+`wspy-summary --phase-topdown` — see "Shipped since 4.2".
+
 3. Composite attribution (topdown + cache/TLB/IBS signals) — the "no blocking-syscall activity" vs.
    "heavy blocking-syscall activity" split from the critical-path work (shipped, see "Shipped since
    4.1") is a direct input here, alongside topdown/cache/TLB/IBS.
