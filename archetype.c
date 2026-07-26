@@ -58,6 +58,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <float.h>
 #include <getopt.h>
 #include <sqlite3.h>
 
@@ -825,6 +826,459 @@ done:
   return rc;
 }
 
+/* ---- --kmeans: K-means clustering + cluster profile cards (INVESTIGATION.md's
+ * 4.3 Tier 1 item 1, the remaining scope after --nearest shipped the
+ * coverage-aware distance function this reuses).
+ *
+ * The design problem the backlog entry flagged -- "no clean textbook answer
+ * for how a centroid should be computed when cluster members don't all share
+ * the same available features" -- is resolved here the same way
+ * nearest_neighbor_distance() already resolves pairwise comparison: a
+ * per-dimension *available-case* mean (average the z-scored value of
+ * whichever members actually measured that dimension; a dimension no
+ * member measured simply doesn't exist in the centroid). This is the
+ * "partial distance strategy" documented in the missing-data-clustering
+ * literature (e.g. Dixon 1979; Hathaway & Bezdek's fuzzy c-means-with-
+ * missing-data extension) applied to plain K-means -- not a novel
+ * invention, just not previously wired up in this codebase. Assignment
+ * uses the exact same coverage-aware RMS-over-shared-dimensions distance
+ * --nearest uses, just against a centroid's defined dimensions instead of
+ * another run's measured ones.
+ *
+ * Initialization is k-means++ (Arthur & Vassilvitskii 2007) seeded from real data
+ * points (never a fabricated average point, which would need to invent
+ * values for dimensions no nearby run actually measured) -- a real point is
+ * always a well-defined centroid to start from, sidestepping the missing-
+ * data question entirely for the one place it would otherwise bite hardest
+ * (an initial centroid with literally zero members to average over yet). */
+
+struct centroid_dim { char name[64]; double z; };
+
+struct centroid {
+  struct centroid_dim *dims;
+  int n,cap;
+  int size; /* member count in this iteration's assignment */
+};
+
+static void centroid_reset(struct centroid *c){
+  free(c->dims);
+  c->dims = NULL;
+  c->n = c->cap = c->size = 0;
+}
+
+static int centroid_dim_find(const struct centroid *c,const char *name,double *z_out){
+  int i;
+  for (i = 0; i < c->n; i++){
+    if (!strcmp(c->dims[i].name,name)){ *z_out = c->dims[i].z; return 1; }
+  }
+  return 0;
+}
+
+/* Coverage-aware distance from a raw data point to a centroid -- mirrors
+ * nearest_neighbor_distance() exactly (same RMS-over-shared-dimensions,
+ * same zero-variance exclusion), just against centroid dims instead of a
+ * second feature_vector. */
+static int centroid_distance(const struct feature_vector *v,const struct centroid *c,
+                              const struct feature_stats *stats,int nstats,
+                              double *distance_out,int *n_shared_out){
+  double sumsq = 0;
+  int n_shared = 0;
+  int i;
+
+  for (i = 0; i < v->n; i++){
+    double cz,diff;
+    const struct feature_stats *s;
+
+    if (!centroid_dim_find(c,v->names[i],&cz)) continue;
+    s = feature_stats_lookup(stats,nstats,v->names[i]);
+    if (!s || s->stddev <= 0.0) continue;
+
+    diff = ((v->values[i] - s->mean) / s->stddev) - cz;
+    sumsq += diff * diff;
+    n_shared++;
+  }
+
+  if (n_shared == 0) return 0;
+  *distance_out = sqrt(sumsq / n_shared);
+  *n_shared_out = n_shared;
+  return 1;
+}
+
+/* Recomputes one centroid from whichever vectors are currently assigned to
+ * cluster_id -- available-case mean per dimension, see file comment above.
+ * A cluster with zero members leaves the centroid empty (n=0,size=0); the
+ * caller (kmeans_cluster()) never lets an empty cluster survive past
+ * reassignment, but this function itself stays a pure "recompute from
+ * current assignment" step with no reinit policy baked in. */
+static void centroid_update(struct centroid *c,const struct feature_vector *vectors,int nvectors,
+                             const int *assignments,int cluster_id,
+                             const struct feature_stats *stats,int nstats){
+  struct { char name[64]; double sum; int count; } *accum = NULL;
+  int n = 0,cap = 0;
+  int i,j,size = 0;
+
+  for (i = 0; i < nvectors; i++){
+    if (assignments[i] != cluster_id) continue;
+    size++;
+    for (j = 0; j < vectors[i].n; j++){
+      const struct feature_stats *s = feature_stats_lookup(stats,nstats,vectors[i].names[j]);
+      double z;
+      int k;
+
+      if (!s || s->stddev <= 0.0) continue;
+      z = (vectors[i].values[j] - s->mean) / s->stddev;
+
+      for (k = 0; k < n; k++) if (!strcmp(accum[k].name,vectors[i].names[j])) break;
+      if (k == n){
+        if (n == cap){ cap = cap ? cap * 2 : 8; accum = realloc(accum,sizeof(*accum) * (size_t)cap); }
+        snprintf(accum[n].name,sizeof(accum[n].name),"%s",vectors[i].names[j]);
+        accum[n].sum = 0; accum[n].count = 0;
+        n++;
+      }
+      accum[k].sum += z;
+      accum[k].count++;
+    }
+  }
+
+  centroid_reset(c);
+  c->size = size;
+  if (n > 0){
+    c->dims = malloc(sizeof(struct centroid_dim) * (size_t)n);
+    c->cap = c->n = n;
+    for (i = 0; i < n; i++){
+      snprintf(c->dims[i].name,sizeof(c->dims[i].name),"%s",accum[i].name);
+      c->dims[i].z = accum[i].sum / accum[i].count;
+    }
+  }
+  free(accum);
+}
+
+/* k-means++ seeding (Arthur & Vassilvitskii 2007): pick the first centroid
+ * uniformly at random, then each subsequent one with probability
+ * proportional to its squared distance from the nearest centroid chosen so
+ * far -- spreads initial centroids out instead of risking several landing
+ * in the same real cluster (plain-random init's classic failure mode).
+ * rand_r() with a caller-supplied seed, not rand()/srand(), so results are
+ * reproducible independent of any other code's global RNG state -- the
+ * whole point of exposing --seed.
+ *
+ * dist2[i] tracks the squared distance from vector i to the nearest
+ * already-chosen centroid; a pair with zero shared measured dimensions
+ * (nearest_neighbor_distance() returns 0/undefined) leaves dist2[i]
+ * unchanged rather than fabricating a value -- "no information" must never
+ * silently read as "identical" (would starve that point of ever being
+ * picked) or bias the weighting. Any entries still at the initial
+ * DBL_MAX sentinel after all rounds so far (never shared a dimension with
+ * any chosen centroid yet) are capped to the largest real distance seen,
+ * once, right before the weighted draw -- so they're treated as "maximally
+ * dissimilar so far" for selection purposes without ever contributing an
+ * infinite/undefined weight to the sum. */
+static void kmeans_plusplus_init(const struct feature_vector *vectors,int nvectors,int k,
+                                  const struct feature_stats *stats,int nstats,
+                                  unsigned int seed,int *chosen){
+  double *dist2 = malloc(sizeof(double) * (size_t)nvectors);
+  unsigned int state = seed;
+  int i,c;
+
+  for (i = 0; i < nvectors; i++) dist2[i] = DBL_MAX;
+  chosen[0] = (int)(rand_r(&state) % (unsigned)nvectors);
+  dist2[chosen[0]] = 0.0;
+
+  for (c = 1; c < k; c++){
+    int last = chosen[c - 1];
+    double max_finite = 0.0;
+    double total = 0.0;
+    double r,running;
+
+    for (i = 0; i < nvectors; i++){
+      double d,d2;
+      int n_shared;
+      if (nearest_neighbor_distance(&vectors[i],&vectors[last],stats,nstats,&d,&n_shared)){
+        d2 = d * d;
+        if (d2 < dist2[i]) dist2[i] = d2;
+      }
+      if (dist2[i] < DBL_MAX && dist2[i] > max_finite) max_finite = dist2[i];
+    }
+    for (i = 0; i < nvectors; i++) if (dist2[i] >= DBL_MAX) dist2[i] = max_finite;
+    dist2[chosen[c - 1]] = 0.0;
+
+    for (i = 0; i < nvectors; i++) total += dist2[i];
+
+    if (total <= 0.0){
+      /* every remaining point already coincides (in shared-dimension terms)
+       * with a chosen centroid -- fall back to the first not-yet-chosen
+       * index so we still return k distinct centroids. */
+      int already,j;
+      for (i = 0; i < nvectors; i++){
+        already = 0;
+        for (j = 0; j < c; j++) if (chosen[j] == i){ already = 1; break; }
+        if (!already) break;
+      }
+      chosen[c] = (i < nvectors) ? i : chosen[c - 1];
+      continue;
+    }
+
+    r = ((double)rand_r(&state) / ((double)RAND_MAX + 1.0)) * total;
+    running = 0.0;
+    chosen[c] = chosen[c - 1]; /* fallback if float rounding leaves running < r for all i */
+    for (i = 0; i < nvectors; i++){
+      running += dist2[i];
+      if (running >= r){ chosen[c] = i; break; }
+    }
+  }
+
+  free(dist2);
+}
+
+#define KMEANS_DEFAULT_ITERATIONS 50
+#define KMEANS_DEFAULT_SEED 1
+#define KMEANS_TOP_FEATURES 5
+
+struct cluster_member { const struct feature_vector *vector; double distance; };
+
+static int cmp_cluster_member(const void *a,const void *b){
+  double da = ((const struct cluster_member *)a)->distance;
+  double db = ((const struct cluster_member *)b)->distance;
+  if (da < db) return -1;
+  if (da > db) return 1;
+  return 0;
+}
+
+/* Runs Lloyd's algorithm (assign -> recompute centroids -> repeat) to
+ * convergence or max_iterations, whichever first, over the coverage-aware
+ * z-standardized space compute_feature_stats() defines. Returns the final
+ * per-vector cluster assignment (0..k-1) and per-cluster centroids; caller
+ * owns both (free(assignments), centroid_reset() each centroid then
+ * free(centroids)).
+ *
+ * Empty-cluster handling: after each assignment pass, any cluster with zero
+ * members steals the single worst-fit point (largest distance to its own
+ * assigned centroid) from whichever cluster currently has more than one
+ * member -- keeps every cluster non-empty without ever leaving a vector
+ * unassigned, the standard practical fix for K-means' "centroid drifts to
+ * where no point wants it" failure mode. */
+static void kmeans_cluster(const struct feature_vector *vectors,int nvectors,int k,
+                            const struct feature_stats *stats,int nstats,
+                            unsigned int seed,int max_iterations,
+                            int **out_assignments,struct centroid **out_centroids,
+                            double **out_distances){
+  int *chosen = malloc(sizeof(int) * (size_t)k);
+  int *assignments = malloc(sizeof(int) * (size_t)nvectors);
+  int *prev_assignments = malloc(sizeof(int) * (size_t)nvectors);
+  double *distances = malloc(sizeof(double) * (size_t)nvectors);
+  struct centroid *centroids = calloc((size_t)k,sizeof(struct centroid));
+  int i,c,iter;
+
+  kmeans_plusplus_init(vectors,nvectors,k,stats,nstats,seed,chosen);
+  for (i = 0; i < nvectors; i++) assignments[i] = -1;
+  for (c = 0; c < k; c++){
+    /* seed centroid c directly from the chosen real data point's own
+     * z-scored values -- a real point is always fully defined on its own
+     * measured dimensions, unlike an averaged centroid with no members yet. */
+    const struct feature_vector *seedv = &vectors[chosen[c]];
+    int j;
+    centroids[c].dims = malloc(sizeof(struct centroid_dim) * (size_t)(seedv->n ? seedv->n : 1));
+    centroids[c].n = centroids[c].cap = 0;
+    for (j = 0; j < seedv->n; j++){
+      const struct feature_stats *s = feature_stats_lookup(stats,nstats,seedv->names[j]);
+      if (!s || s->stddev <= 0.0) continue;
+      snprintf(centroids[c].dims[centroids[c].n].name,sizeof(centroids[c].dims[0].name),"%s",seedv->names[j]);
+      centroids[c].dims[centroids[c].n].z = (seedv->values[j] - s->mean) / s->stddev;
+      centroids[c].n++;
+    }
+    centroids[c].cap = seedv->n ? seedv->n : 1;
+    centroids[c].size = 0;
+  }
+
+  for (iter = 0; iter < max_iterations; iter++){
+    int changed = 0;
+    int *sizes = calloc((size_t)k,sizeof(int));
+
+    memcpy(prev_assignments,assignments,sizeof(int) * (size_t)nvectors);
+
+    for (i = 0; i < nvectors; i++){
+      double best_d = 0.0;
+      int best_c = -1;
+      for (c = 0; c < k; c++){
+        double d; int n_shared;
+        if (!centroid_distance(&vectors[i],&centroids[c],stats,nstats,&d,&n_shared)) continue;
+        if (best_c < 0 || d < best_d){ best_d = d; best_c = c; }
+      }
+      if (best_c < 0){
+        /* vector shares zero measured dimensions with every centroid
+         * (pathological -- only possible with wildly heterogeneous
+         * coverage across the candidate pool): park it on the smallest
+         * cluster so far rather than leaving it unassigned. */
+        int smallest = 0;
+        for (c = 1; c < k; c++) if (sizes[c] < sizes[smallest]) smallest = c;
+        best_c = smallest;
+        best_d = 0.0;
+      }
+      assignments[i] = best_c;
+      distances[i] = best_d;
+      sizes[best_c]++;
+      if (assignments[i] != prev_assignments[i]) changed = 1;
+    }
+
+    for (c = 0; c < k; c++){
+      while (sizes[c] == 0){
+        int worst = -1,donor = -1;
+        for (i = 0; i < nvectors; i++){
+          if (sizes[assignments[i]] <= 1) continue; /* would create a new empty cluster */
+          if (worst < 0 || distances[i] > distances[worst]){ worst = i; donor = assignments[i]; }
+        }
+        if (worst < 0) break; /* nvectors < k already rejected by the caller; defensive only */
+        sizes[donor]--;
+        assignments[worst] = c;
+        distances[worst] = 0.0;
+        sizes[c]++;
+        changed = 1;
+      }
+    }
+    free(sizes);
+
+    for (c = 0; c < k; c++) centroid_update(&centroids[c],vectors,nvectors,assignments,c,stats,nstats);
+
+    if (!changed && iter > 0) break;
+  }
+
+  /* Final distances must reflect the *final* centroids, not the ones from
+   * the assignment step that produced the last `changed` -- recompute once
+   * more so cluster-card distances and member ordering are accurate. */
+  for (i = 0; i < nvectors; i++){
+    double d; int n_shared;
+    if (centroid_distance(&vectors[i],&centroids[assignments[i]],stats,nstats,&d,&n_shared)) distances[i] = d;
+  }
+
+  free(chosen);
+  free(prev_assignments);
+  *out_assignments = assignments;
+  *out_centroids = centroids;
+  *out_distances = distances;
+}
+
+static int cmp_centroid_dim_by_abs_z(const void *a,const void *b){
+  double za = fabs(((const struct centroid_dim *)a)->z);
+  double zb = fabs(((const struct centroid_dim *)b)->z);
+  if (za > zb) return -1; /* descending by |z| -- most-distinguishing first */
+  if (za < zb) return 1;
+  return 0;
+}
+
+/* Renders a cluster's "profile card" headline -- the KMEANS_TOP_FEATURES
+ * dimensions where this cluster's centroid sits furthest (in either
+ * direction) from the overall population mean, formatted "name:+z;name:-z".
+ * A copy of the centroid's dims is sorted rather than the centroid itself,
+ * since the centroid is still live (read again on subsequent calls for
+ * other member rows of the same cluster). */
+static void format_top_features(const struct centroid *c,char *buf,size_t bufsize){
+  struct centroid_dim *sorted;
+  int i,shown,limit;
+  size_t used = 0;
+
+  buf[0] = '\0';
+  if (c->n == 0) return;
+
+  sorted = malloc(sizeof(struct centroid_dim) * (size_t)c->n);
+  memcpy(sorted,c->dims,sizeof(struct centroid_dim) * (size_t)c->n);
+  qsort(sorted,(size_t)c->n,sizeof(struct centroid_dim),cmp_centroid_dim_by_abs_z);
+
+  limit = c->n < KMEANS_TOP_FEATURES ? c->n : KMEANS_TOP_FEATURES;
+  for (i = 0,shown = 0; i < limit; i++){
+    int n = snprintf(buf + used,bufsize - used,"%s%s:%+.2f",
+                      shown ? ";" : "",sorted[i].name,sorted[i].z);
+    if (n < 0 || (size_t)n >= bufsize - used) break;
+    used += (size_t)n;
+    shown++;
+  }
+  free(sorted);
+}
+
+static void print_cluster_member_row(FILE *out,int csvflag,int cluster_id,int cluster_size,
+                                      const char *hostname,const char *run_id_text,
+                                      double distance,const char *top_features){
+  if (csvflag){
+    fprintf(out,"%d,%d,",cluster_id,cluster_size);
+    print_csv_field(out,hostname); fputc(',',out);
+    print_csv_field(out,run_id_text); fputc(',',out);
+    fprintf(out,"%.4g,",distance);
+    print_csv_field(out,top_features);
+    fputc('\n',out);
+  } else {
+    char host_run[400];
+    snprintf(host_run,sizeof(host_run),"%s:%s",hostname,run_id_text);
+    fprintf(out,"%6d %6d %-40.40s %10.4g  %s\n",cluster_id,cluster_size,host_run,distance,top_features);
+  }
+}
+
+/* --kmeans <k>: partitions every run matching the optional --command/
+ * --hostname filters into k clusters (see the design comment above
+ * kmeans_cluster()) and prints one row per member, grouped by cluster
+ * ascending then by distance-to-centroid ascending (the most representative
+ * member of each cluster prints first). Returns 1 when there are fewer
+ * candidate runs than k (not enough data to form k clusters -- a data-
+ * availability condition, same rc convention as --run/--nearest's
+ * "no such run"), 2 on a query failure, else 0. */
+static int kmeans_report(sqlite3 *db,int k,unsigned int seed,int max_iterations,
+                          const char *command_filter,const char *hostname_filter,
+                          int csvflag,FILE *out){
+  struct feature_vector *vectors = NULL;
+  int nvectors = 0;
+  struct feature_stats *stats = NULL;
+  int nstats = 0;
+  int *assignments = NULL;
+  struct centroid *centroids = NULL;
+  double *distances = NULL;
+  int c,i;
+
+  if (load_feature_vectors(db,command_filter,hostname_filter,&vectors,&nvectors) != 0) return 2;
+
+  if (nvectors < k){
+    fprintf(stderr,"wspy-archetype: only %d candidate run(s) available, need at least k=%d\n",nvectors,k);
+    for (i = 0; i < nvectors; i++) feature_vector_free_contents(&vectors[i]);
+    free(vectors);
+    return 1;
+  }
+
+  compute_feature_stats(vectors,nvectors,&stats,&nstats);
+  kmeans_cluster(vectors,nvectors,k,stats,nstats,seed,max_iterations,&assignments,&centroids,&distances);
+
+  if (csvflag) fprintf(out,"cluster,size,hostname,run_id,distance,top_features\n");
+  else fprintf(out,"%6s %6s %-40s %10s  %s\n","cluster","size","hostname:run_id","distance","top_features (name:z-score)");
+
+  for (c = 0; c < k; c++){
+    char top_features[512];
+    struct cluster_member *members = malloc(sizeof(struct cluster_member) * (size_t)centroids[c].size);
+    int nmembers = 0;
+
+    format_top_features(&centroids[c],top_features,sizeof(top_features));
+
+    for (i = 0; i < nvectors; i++){
+      if (assignments[i] != c) continue;
+      members[nmembers].vector = &vectors[i];
+      members[nmembers].distance = distances[i];
+      nmembers++;
+    }
+    qsort(members,(size_t)nmembers,sizeof(struct cluster_member),cmp_cluster_member);
+
+    for (i = 0; i < nmembers; i++){
+      print_cluster_member_row(out,csvflag,c,centroids[c].size,
+                                members[i].vector->hostname,members[i].vector->run_id_text,
+                                members[i].distance,top_features);
+    }
+    free(members);
+  }
+
+  free(assignments);
+  free(distances);
+  for (c = 0; c < k; c++) centroid_reset(&centroids[c]);
+  free(centroids);
+  free(stats);
+  for (i = 0; i < nvectors; i++) feature_vector_free_contents(&vectors[i]);
+  free(vectors);
+  return 0;
+}
+
 #ifndef TEST_ARCHETYPE
 static void usage(const char *prog){
   fprintf(stderr,
@@ -865,13 +1319,34 @@ static void usage(const char *prog){
     "  --k <n>              number of nearest neighbors to print with --nearest\n"
     "                       (default 5)\n"
     "\n"
+    "  --kmeans <n>         standalone mode: partition every run matching\n"
+    "                       --command/--hostname into n clusters (K-means over\n"
+    "                       the same coverage-aware z-standardized distance\n"
+    "                       --nearest uses) and print one row per member,\n"
+    "                       grouped by cluster then by distance-to-centroid\n"
+    "                       (most representative member first). A cluster's\n"
+    "                       centroid, per dimension, averages only the members\n"
+    "                       that actually measured that feature -- there's no\n"
+    "                       single textbook centroid definition when members\n"
+    "                       don't all share the same coverage, so this is the\n"
+    "                       same \"whatever they share\" idiom --nearest's\n"
+    "                       distance already uses. --db, --command, --hostname,\n"
+    "                       --csv, --seed, --iterations are the only other\n"
+    "                       options honored alongside it.\n"
+    "  --seed <n>           RNG seed for --kmeans' k-means++ initialization\n"
+    "                       (default 1; same seed + same data always yields\n"
+    "                       the same clustering)\n"
+    "  --iterations <n>     max Lloyd's-algorithm iterations for --kmeans\n"
+    "                       before giving up on convergence (default 50)\n"
+    "\n"
     "Only runs that have gone through feature extraction (default on in\n"
     "wspy-store, opt out via --no-feature-extract) are scored -- a run with\n"
     "no run_features rows at all has nothing to classify, distinct from one\n"
     "whose axes all came back \"unknown\"/\"unavailable\".\n"
     "\n"
     "Exit status: 0 normally; 1 with --run/--nearest if no such run is\n"
-    "recorded; 2 on a usage error or if the database could not be opened.\n",
+    "recorded, or with --kmeans if fewer candidate runs than n are available;\n"
+    "2 on a usage error or if the database could not be opened.\n",
     prog);
 }
 
@@ -882,20 +1357,26 @@ int main(int argc,char **argv){
   const char *hostname_filter = "";
   const char *run_key = NULL;
   const char *nearest_key = NULL;
+  const char *kmeans_key = NULL;
   int k = NEAREST_DEFAULT_K;
+  unsigned int seed = KMEANS_DEFAULT_SEED;
+  int iterations = KMEANS_DEFAULT_ITERATIONS;
   int csvflag = 0;
   sqlite3 *db;
   int rc;
 
   static struct option long_options[] = {
-    { "db",        required_argument, 0, 'd' },
-    { "command",   required_argument, 0, 'c' },
-    { "hostname",  required_argument, 0, 'H' },
-    { "csv",       no_argument,       0, 'C' },
-    { "run",       required_argument, 0, 'r' },
-    { "nearest",   required_argument, 0, 'n' },
-    { "k",         required_argument, 0, 'k' },
-    { "help",      no_argument,       0, 'h' },
+    { "db",         required_argument, 0, 'd' },
+    { "command",    required_argument, 0, 'c' },
+    { "hostname",   required_argument, 0, 'H' },
+    { "csv",        no_argument,       0, 'C' },
+    { "run",        required_argument, 0, 'r' },
+    { "nearest",    required_argument, 0, 'n' },
+    { "k",          required_argument, 0, 'k' },
+    { "kmeans",     required_argument, 0, 'K' },
+    { "seed",       required_argument, 0, 'S' },
+    { "iterations", required_argument, 0, 'I' },
+    { "help",       no_argument,       0, 'h' },
     { 0,0,0,0 }
   };
 
@@ -908,6 +1389,9 @@ int main(int argc,char **argv){
     case 'r': run_key = optarg; break;
     case 'n': nearest_key = optarg; break;
     case 'k': k = atoi(optarg); break;
+    case 'K': kmeans_key = optarg; break;
+    case 'S': seed = (unsigned int)strtoul(optarg,NULL,10); break;
+    case 'I': iterations = atoi(optarg); break;
     case 'h': usage(argv[0]); return 0;
     default: usage(argv[0]); return 2;
     }
@@ -917,12 +1401,29 @@ int main(int argc,char **argv){
     usage(argv[0]);
     return 2;
   }
-  if (run_key && nearest_key){
-    fprintf(stderr,"wspy-archetype: --run and --nearest are mutually exclusive\n\n");
+  if ((run_key && nearest_key) || (run_key && kmeans_key) || (nearest_key && kmeans_key)){
+    fprintf(stderr,"wspy-archetype: --run, --nearest, and --kmeans are mutually exclusive\n\n");
     usage(argv[0]);
     return 2;
   }
   if (k < 1) k = 1;
+  if (iterations < 1) iterations = 1;
+
+  if (kmeans_key){
+    int kmeans_k = atoi(kmeans_key);
+
+    if (kmeans_k < 1){
+      fprintf(stderr,"wspy-archetype: --kmeans expects a cluster count >= 1, got '%s'\n\n",kmeans_key);
+      usage(argv[0]);
+      return 2;
+    }
+
+    db = open_archetype_db(db_path);
+    if (!db) return 2;
+    rc = kmeans_report(db,kmeans_k,seed,iterations,command_filter,hostname_filter,csvflag,stdout);
+    sqlite3_close(db);
+    return rc;
+  }
 
   if (nearest_key){
     const char *colon = strchr(nearest_key,':');
