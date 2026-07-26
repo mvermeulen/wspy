@@ -975,6 +975,16 @@ class MaterializePhoronixTestPointTest(unittest.TestCase):
             self.assertIsNone(root.find("Execute/Arguments"))
             self.assertIsNone(root.find("Execute/Description"))
 
+    def test_no_arguments_with_description_includes_description_element(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            point = {"test_id": "pts/build-python-1.0.0", "arguments": "",
+                     "description": "Build Configuration: Default"}
+            info = joblib.materialize_phoronix_test_point(point, tmpdir, "file", "/tmp/src.xml")
+            import xml.etree.ElementTree as ET
+            root = ET.parse(os.path.join(info["dir"], "suite-definition.xml")).getroot()
+            self.assertIsNone(root.find("Execute/Arguments"))
+            self.assertEqual(root.find("Execute/Description").text, "Build Configuration: Default")
+
     def test_real_description_is_preferred_over_arguments_fallback(self):
         # Regression: a real PTS install (pts_test_suite.php's suite
         # parser, confirmed live 2026-07-23) silently batch-runs *every*
