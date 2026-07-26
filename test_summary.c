@@ -40,7 +40,7 @@ static sqlite3 *open_memory_db(void){
     "counters_requested INTEGER, counters_measured INTEGER, "
     "manifest_path TEXT, output_path TEXT, tree_output_path TEXT);"
     "CREATE TABLE metric_values (id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, "
-    "metric_name TEXT NOT NULL, value REAL);"
+    "metric_name TEXT NOT NULL, value REAL, phase TEXT);"
     "CREATE TABLE run_environment (run_id INTEGER PRIMARY KEY, cpu_governor TEXT, virt_role TEXT, "
     "hypervisor_vendor TEXT, microcode_version TEXT, bios_vendor TEXT, bios_version TEXT, "
     "bios_date TEXT, memory_total_kb INTEGER);"
@@ -178,6 +178,23 @@ static void insert_metric(sqlite3 *db,int run_id,const char *metric_name,double 
   sqlite3_bind_int(stmt,1,run_id);
   sqlite3_bind_text(stmt,2,metric_name,-1,SQLITE_TRANSIENT);
   sqlite3_bind_double(stmt,3,value);
+  assert(sqlite3_step(stmt) == SQLITE_DONE);
+  sqlite3_finalize(stmt);
+}
+
+/* --phase-topdown fixture helper -- phase_topdown() reads metric_values.phase
+ * directly (store.c's ingest_csv_metrics() populates it from --interval's
+ * per-tick CSV "phase" column, see phase.c); the plain insert_metric() above
+ * always leaves it NULL, matching every aggregate/non-interval CSV shape. */
+static void insert_metric_phase(sqlite3 *db,int run_id,const char *phase,const char *metric_name,double value){
+  sqlite3_stmt *stmt;
+  assert(sqlite3_prepare_v2(db,
+    "INSERT INTO metric_values (run_id,phase,metric_name,value) VALUES (?,?,?,?);",
+    -1,&stmt,NULL) == SQLITE_OK);
+  sqlite3_bind_int(stmt,1,run_id);
+  sqlite3_bind_text(stmt,2,phase,-1,SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt,3,metric_name,-1,SQLITE_TRANSIENT);
+  sqlite3_bind_double(stmt,4,value);
   assert(sqlite3_step(stmt) == SQLITE_DONE);
   sqlite3_finalize(stmt);
 }
@@ -2015,6 +2032,164 @@ static void test_check_regression_env_score_differs_per_metric(void){
   printf("PASS: check_regression env_score differs per metric\n");
 }
 
+/* --- phase_topdown() (--phase-topdown mode) --- */
+
+static void test_phase_topdown_basic_drift(void){
+  sqlite3 *db = open_memory_db();
+  char *buf; size_t size; FILE *fp; int rc;
+  char line[512];
+  double warmup_mean,steady_mean,degraded_mean,drift;
+  int warmup_n,steady_n,degraded_n;
+
+  printf("Testing phase_topdown: per-phase means and drift_pct for a metric present in all 3 "
+         "phases...\n");
+  insert_run(db,1,"run1","host1","/bin/workload",NULL,"2026-01-01T00:00:00Z");
+  insert_metric_phase(db,1,"warmup","retire",40.0);
+  insert_metric_phase(db,1,"steady","retire",70.0);
+  insert_metric_phase(db,1,"steady","retire",72.0); /* averages to 71, n=2 */
+  insert_metric_phase(db,1,"degraded","retire",30.0);
+
+  fp = open_memstream(&buf,&size);
+  rc = phase_topdown(db,"host1","run1",1,fp);
+  fclose(fp);
+
+  assert(rc == 0);
+  assert(find_regression_line(buf,"retire",line,sizeof(line)));
+  assert(sscanf(line,"retire,%lf,%d,%lf,%d,%lf,%d,%lf",
+                &warmup_mean,&warmup_n,&steady_mean,&steady_n,&degraded_mean,&degraded_n,&drift) == 7);
+  assert(fabs(warmup_mean - 40.0) < 1e-9 && warmup_n == 1);
+  assert(fabs(steady_mean - 71.0) < 1e-9 && steady_n == 2);
+  assert(fabs(degraded_mean - 30.0) < 1e-9 && degraded_n == 1);
+  assert(fabs(drift - 41.0) < 1e-9); /* steady(71) - degraded(30) */
+
+  free(buf);
+  sqlite3_close(db);
+  printf("PASS: phase_topdown basic drift\n");
+}
+
+static void test_phase_topdown_reports_largest_drift_in_human_output(void){
+  sqlite3 *db = open_memory_db();
+  char *buf; size_t size; FILE *fp; int rc;
+
+  printf("Testing phase_topdown: human output names the single largest-drift metric and its phase "
+         "pair...\n");
+  insert_run(db,1,"run1","host1","/bin/workload",NULL,"2026-01-01T00:00:00Z");
+  insert_metric_phase(db,1,"warmup","retire",40.0);
+  insert_metric_phase(db,1,"steady","retire",70.0); /* drift 30 */
+  insert_metric_phase(db,1,"warmup","backend",20.0);
+  insert_metric_phase(db,1,"steady","backend",65.0); /* drift 45 -- the largest */
+
+  fp = open_memstream(&buf,&size);
+  rc = phase_topdown(db,"host1","run1",0,fp);
+  fclose(fp);
+
+  assert(rc == 0);
+  assert(strstr(buf,"largest phase drift: backend") != NULL);
+  assert(strstr(buf,"45.00 pts") != NULL);
+  assert(strstr(buf,"between warmup and steady") != NULL);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("PASS: phase_topdown reports largest drift in human output\n");
+}
+
+static void test_phase_topdown_no_phase_data_graceful(void){
+  sqlite3 *db = open_memory_db();
+  char *buf; size_t size; FILE *fp; int rc;
+
+  printf("Testing phase_topdown: a run with metric_values but no phase column populated (e.g. "
+         "aggregate, non-interval CSV) degrades gracefully rather than printing an empty table...\n");
+  insert_run(db,1,"run1","host1","/bin/workload",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"retire",50.0); /* phase left NULL */
+
+  fp = open_memstream(&buf,&size);
+  rc = phase_topdown(db,"host1","run1",0,fp);
+  fclose(fp);
+
+  assert(rc == 0);
+  assert(strstr(buf,"no phase-tagged topdown data") != NULL);
+  assert(strstr(buf,"retire") == NULL); /* no table was printed at all */
+
+  free(buf);
+  sqlite3_close(db);
+  printf("PASS: phase_topdown no phase data graceful\n");
+}
+
+static void test_phase_topdown_target_not_found(void){
+  sqlite3 *db = open_memory_db();
+  FILE *devnull;
+  int rc;
+
+  printf("Testing phase_topdown: unknown (hostname,run_id) returns 1, matching --trace's "
+         "convention...\n");
+  insert_run(db,1,"run1","host1","/bin/workload",NULL,"2026-01-01T00:00:00Z");
+
+  devnull = fopen("/dev/null","w");
+  assert(devnull != NULL);
+  rc = phase_topdown(db,"host1","no-such-run",0,devnull);
+  assert(rc == 1);
+
+  fclose(devnull);
+  sqlite3_close(db);
+  printf("PASS: phase_topdown target not found\n");
+}
+
+static void test_phase_topdown_single_phase_no_drift(void){
+  sqlite3 *db = open_memory_db();
+  char *buf; size_t size; FILE *fp; int rc;
+  char line[512];
+
+  printf("Testing phase_topdown: only one phase ever observed -> drift_pct blank everywhere, "
+         "trailing note names the single phase instead of a bogus drift...\n");
+  insert_run(db,1,"run1","host1","/bin/workload",NULL,"2026-01-01T00:00:00Z");
+  insert_metric_phase(db,1,"steady","retire",50.0);
+
+  fp = open_memstream(&buf,&size);
+  rc = phase_topdown(db,"host1","run1",1,fp);
+  fclose(fp);
+  assert(rc == 0);
+  assert(find_regression_line(buf,"retire",line,sizeof(line)));
+  assert(!strcmp(line,"retire,,,50,1,,,")); /* warmup/degraded blank, drift_pct blank */
+  free(buf);
+
+  fp = open_memstream(&buf,&size);
+  rc = phase_topdown(db,"host1","run1",0,fp);
+  fclose(fp);
+  assert(rc == 0);
+  assert(strstr(buf,"only 1 phase observed (steady)") != NULL);
+  free(buf);
+
+  sqlite3_close(db);
+  printf("PASS: phase_topdown single phase no drift\n");
+}
+
+static void test_phase_topdown_metric_present_in_only_one_of_two_seen_phases(void){
+  sqlite3 *db = open_memory_db();
+  char *buf; size_t size; FILE *fp; int rc;
+  char retire_line[512],frontend_line[512];
+
+  printf("Testing phase_topdown: a metric with data in only 1 of the run's 2+ observed phases gets "
+         "a blank drift_pct of its own, without blocking other metrics' drift...\n");
+  insert_run(db,1,"run1","host1","/bin/workload",NULL,"2026-01-01T00:00:00Z");
+  insert_metric_phase(db,1,"warmup","retire",40.0);
+  insert_metric_phase(db,1,"steady","retire",70.0);
+  insert_metric_phase(db,1,"warmup","frontend",35.0); /* never measured in steady */
+
+  fp = open_memstream(&buf,&size);
+  rc = phase_topdown(db,"host1","run1",1,fp);
+  fclose(fp);
+
+  assert(rc == 0);
+  assert(find_regression_line(buf,"retire",retire_line,sizeof(retire_line)));
+  assert(find_regression_line(buf,"frontend",frontend_line,sizeof(frontend_line)));
+  assert(!strcmp(retire_line,"retire,40,1,70,1,,,30"));
+  assert(!strcmp(frontend_line,"frontend,35,1,,,,,")); /* single-phase metric: drift blank */
+
+  free(buf);
+  sqlite3_close(db);
+  printf("PASS: phase_topdown metric present in only one of two seen phases\n");
+}
+
 int main(void){
   test_compute_stats_basic();
   test_compute_stats_single_sample();
@@ -2079,6 +2254,12 @@ int main(void){
   test_env_score_no_data_is_not_a_mismatch();
   test_env_score_hypervisor_vendor_self_excludes();
   test_check_regression_env_score_differs_per_metric();
+  test_phase_topdown_basic_drift();
+  test_phase_topdown_reports_largest_drift_in_human_output();
+  test_phase_topdown_no_phase_data_graceful();
+  test_phase_topdown_target_not_found();
+  test_phase_topdown_single_phase_no_drift();
+  test_phase_topdown_metric_present_in_only_one_of_two_seen_phases();
 
   printf("\nAll test_summary tests passed.\n");
   return 0;

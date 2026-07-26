@@ -364,6 +364,14 @@ direction is a regression vs. an improvement, so it reports the deviation and le
 it), alongside `within`/`no-baseline`/`thin` (fewer than `--min-runs` baseline runs). `--strict`
 fails if any metric was flagged `above`/`below`.
 
+`--phase-topdown <hostname>:<run_id>` is a standalone mode (mutually exclusive with `--trace`/
+`--check-regression`): for a run collected with `--interval` + IPC counters + phase detection
+(`phase.c`'s per-tick warmup/steady/degraded classification), breaks that run's own topdown output
+down by phase — each topdown column's mean/n per phase, plus a `drift_pct` (the largest phase-to-
+phase swing) and a trailing note naming the single largest drifter. A run collected without phase
+data (aggregate, `--per-core`, or no `--interval`) degrades to an explicit notice rather than an
+empty table.
+
 ```
 ./wspy-summary --db results/store.db                                # human table
 ./wspy-summary --db results/store.db --csv --metric ipc --metric retire
@@ -375,6 +383,8 @@ fails if any metric was flagged `above`/`below`.
                                                                        # manifest/CSV/tree/plots
 ./wspy-summary --db results/store.db --check-regression myhost:1731000000-1234  # compare against
                                                                        # every earlier matching run
+./wspy-summary --db results/store.db --phase-topdown myhost:1731000000-1234     # topdown broken
+                                                                       # down by warmup/steady/degraded
 ```
 
 See `./wspy-summary --help` for the full option list.
