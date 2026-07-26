@@ -37,7 +37,7 @@
  * (wspy.h) is versioned separately from MANIFEST_SCHEMA_VERSION. Recorded
  * on every run_features row so a later reader can tell which rule set
  * produced a given value. */
-#define FEATURE_SET_VERSION "1.2"
+#define FEATURE_SET_VERSION "1.3"
 
 /* Noise floor for active_core_count (below): a --per-core core averaging
  * at or under this IPC is treated as not meaningfully participating in the
@@ -936,6 +936,16 @@ static const struct simple_metric_feature SIMPLE_METRIC_FEATURES[] = {
   { "itlb_miss_per1k",       "itlb2" },
   { "dtlb_miss_per1k",       "dtlb2" },
   { "smt_contention_pct",    "contention_pct" },
+  { "ibs_dc_miss_pct",       "ibs_sample_dc_miss_rate" },
+  { "ibs_dram_pct",          "ibs_sample_dram_rate" },
+  /* Cross-vendor generic --tlb group (print_itlb()/print_dtlb(), shared
+   * print_cache() helper) -- a percentage, and available on any vendor,
+   * unlike itlb_miss_per1k/dtlb_miss_per1k above (a per-1000-inst rate,
+   * AMD-only, needs the much less commonly collected --topdown-optlb). Both
+   * pairs are kept as independent features (archetype.c's memory_attribution
+   * axis corroborates against whichever one(s) a run actually collected). */
+  { "itlb_generic_miss_pct", "iTLB miss" },
+  { "dtlb_generic_miss_pct", "dTLB miss" },
 };
 #define NUM_SIMPLE_METRIC_FEATURES \
   (int)(sizeof(SIMPLE_METRIC_FEATURES)/sizeof(SIMPLE_METRIC_FEATURES[0]))

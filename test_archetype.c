@@ -140,6 +140,85 @@ static void test_classify_resource_dominance_partial_availability(void){
   printf("PASS: classify_resource_dominance partial availability\n");
 }
 
+/* --- classify_memory_attribution --- */
+
+static void test_classify_memory_attribution_corroborated(void){
+  struct memory_attribution_result out;
+  struct memory_signal signals[3] = {
+    { "dcache_miss_pct", 3.0,  1, CACHE_MISS_ELEVATED_PCT }, /* below threshold */
+    { "l3_miss_pct",     42.0, 1, CACHE_MISS_ELEVATED_PCT }, /* above -- fires */
+    { "ibs_dram_pct",    38.0, 1, IBS_DRAM_ELEVATED_PCT },   /* above -- fires */
+  };
+
+  printf("Testing classify_memory_attribution: backend_pct significant + >=1 corroborating signal "
+         "elevated -> corroborated, reasons lists only the signals that fired...\n");
+  classify_memory_attribution(55.0,1,signals,3,&out);
+  assert(out.available);
+  assert(!strcmp(out.label,"corroborated"));
+  assert(strstr(out.reasons,"l3_miss_pct=42") != NULL);
+  assert(strstr(out.reasons,"ibs_dram_pct=38") != NULL);
+  assert(strstr(out.reasons,"dcache_miss_pct") == NULL); /* didn't fire, not listed */
+  printf("PASS: classify_memory_attribution corroborated\n");
+}
+
+static void test_classify_memory_attribution_uncorroborated(void){
+  struct memory_attribution_result out;
+  struct memory_signal signals[2] = {
+    { "dcache_miss_pct", 2.0, 1, CACHE_MISS_ELEVATED_PCT },
+    { "l2_miss_pct",     3.0, 1, CACHE_MISS_ELEVATED_PCT },
+  };
+
+  printf("Testing classify_memory_attribution: backend_pct significant but every measured "
+         "corroborating signal is unremarkable -> uncorroborated, reasons lists what was checked...\n");
+  classify_memory_attribution(55.0,1,signals,2,&out);
+  assert(out.available);
+  assert(!strcmp(out.label,"uncorroborated"));
+  assert(strstr(out.reasons,"checked:dcache_miss_pct") != NULL);
+  assert(strstr(out.reasons,"checked:l2_miss_pct") != NULL);
+  printf("PASS: classify_memory_attribution uncorroborated\n");
+}
+
+static void test_classify_memory_attribution_not_memory_bound(void){
+  struct memory_attribution_result out;
+  struct memory_signal signals[1] = { { "l3_miss_pct", 90.0, 1, CACHE_MISS_ELEVATED_PCT } };
+
+  printf("Testing classify_memory_attribution: backend_pct below the significance floor -> "
+         "not-memory-bound regardless of how elevated other signals are...\n");
+  classify_memory_attribution(5.0,1,signals,1,&out);
+  assert(out.available);
+  assert(!strcmp(out.label,"not-memory-bound"));
+  assert(out.reasons[0] == '\0');
+  printf("PASS: classify_memory_attribution not-memory-bound\n");
+}
+
+static void test_classify_memory_attribution_unknown_no_backend_data(void){
+  struct memory_attribution_result out;
+  struct memory_signal signals[1] = { { "l3_miss_pct", 90.0, 1, CACHE_MISS_ELEVATED_PCT } };
+
+  printf("Testing classify_memory_attribution: backend_pct itself never measured -> unknown, "
+         "available=0 (distinct from the 'measured but inconclusive' unknown case)...\n");
+  classify_memory_attribution(0.0,0,signals,1,&out);
+  assert(!out.available);
+  assert(!strcmp(out.label,"unknown"));
+  printf("PASS: classify_memory_attribution unknown (no backend data)\n");
+}
+
+static void test_classify_memory_attribution_unknown_no_corroborating_data(void){
+  struct memory_attribution_result out;
+  struct memory_signal signals[2] = {
+    { "dcache_miss_pct", 0.0, 0, CACHE_MISS_ELEVATED_PCT }, /* not measured this run */
+    { "l2_miss_pct",     0.0, 0, CACHE_MISS_ELEVATED_PCT },
+  };
+
+  printf("Testing classify_memory_attribution: backend_pct significant but zero corroborating "
+         "signals were even collected -> unknown, available=1 (we do know backend_pct)...\n");
+  classify_memory_attribution(55.0,1,signals,2,&out);
+  assert(out.available);
+  assert(!strcmp(out.label,"unknown"));
+  assert(out.reasons[0] == '\0');
+  printf("PASS: classify_memory_attribution unknown (no corroborating data collected)\n");
+}
+
 /* --- compute_overall_confidence --- */
 
 static void test_confidence_insufficient_data(void){
@@ -284,6 +363,48 @@ static void test_score_runs_skips_runs_with_no_features(void){
   remove(tmpfile);
   sqlite3_close(db);
   printf("PASS: score_runs skips runs with no run_features\n");
+}
+
+static void test_score_runs_memory_attribution_end_to_end(void){
+  sqlite3 *db;
+  char tmpfile[] = "/tmp/test_archetype_memattr_XXXXXX";
+  int fd;
+  FILE *out;
+  char line[4096];
+  sqlite3_int64 run1;
+  int rows;
+
+  printf("Testing score_runs: memory_attribution flows through the full run_features -> scorecard "
+         "-> CSV pipeline, corroborated by an IBS-derived feature...\n");
+  db = open_memory_db();
+  run1 = insert_run(db,"run1","host1","/bin/workload");
+  insert_feature_measured(db,run1,"retire_pct",20.0);
+  insert_feature_measured(db,run1,"frontend_pct",15.0);
+  insert_feature_measured(db,run1,"backend_pct",55.0);
+  insert_feature_measured(db,run1,"speculate_pct",10.0);
+  insert_feature_measured(db,run1,"l3_miss_pct",42.0);
+  insert_feature_measured(db,run1,"ibs_dram_pct",38.0);
+
+  fd = mkstemp(tmpfile);
+  assert(fd >= 0);
+  out = fdopen(fd,"w+");
+  assert(out != NULL);
+
+  rows = score_runs(db,"","",1,out);
+  assert(rows == 1);
+
+  rewind(out);
+  assert(fgets(line,sizeof(line),out) != NULL); /* header */
+  assert(strstr(line,"memory_attribution") != NULL);
+  assert(fgets(line,sizeof(line),out) != NULL);
+  assert(strstr(line,"corroborated") != NULL);
+  assert(strstr(line,"l3_miss_pct=42") != NULL);
+  assert(strstr(line,"ibs_dram_pct=38") != NULL);
+
+  fclose(out);
+  remove(tmpfile);
+  sqlite3_close(db);
+  printf("PASS: score_runs memory_attribution end-to-end\n");
 }
 
 /* --- end-to-end: trace_run_archetype() (--run mode) --- */
@@ -907,12 +1028,18 @@ int main(void){
   test_classify_resource_dominance_basic();
   test_classify_resource_dominance_all_unavailable();
   test_classify_resource_dominance_partial_availability();
+  test_classify_memory_attribution_corroborated();
+  test_classify_memory_attribution_uncorroborated();
+  test_classify_memory_attribution_not_memory_bound();
+  test_classify_memory_attribution_unknown_no_backend_data();
+  test_classify_memory_attribution_unknown_no_corroborating_data();
   test_confidence_insufficient_data();
   test_confidence_high();
   test_confidence_medium();
   test_confidence_low_narrow_margin();
   test_score_runs_end_to_end();
   test_score_runs_skips_runs_with_no_features();
+  test_score_runs_memory_attribution_end_to_end();
   test_trace_run_archetype_found();
   test_trace_run_archetype_not_found();
   test_nearest_basic_ranking();

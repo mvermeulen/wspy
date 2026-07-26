@@ -1050,6 +1050,86 @@ static void test_extract_run_features_basic(void){
   printf("PASS: extract_run_features basic\n");
 }
 
+static void test_extract_run_features_ibs_sample_promoted(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_int64 run_id;
+  double value;
+  char coverage[16];
+  const char *csv_path = "/tmp/test_store_features_ibs.csv";
+
+  printf("Testing extract_run_features: ibs_dc_miss_pct/ibs_dram_pct promoted from --ibs-sample's "
+         "ibs_sample_dc_miss_rate/ibs_sample_dram_rate columns (archetype.c's memory_attribution "
+         "axis input)...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  write_file(csv_path,
+    "elapsed,ibs_sample_dc_miss_rate,ibs_sample_dram_rate,counters_measured,counters_requested,\n"
+    "1.0,42.5,17.3,9,9,\n");
+  build_csv_record(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","/bin/true",csv_path);
+
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,1,1,&stats);
+  json_free(root);
+
+  run_id = lookup_run_id(db,"run1");
+  assert(run_id > 0);
+
+  assert(feature_row(db,run_id,"ibs_dc_miss_pct",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && value > 42.4 && value < 42.6);
+  assert(feature_row(db,run_id,"ibs_dram_pct",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && value > 17.2 && value < 17.4);
+
+  sqlite3_close(db);
+  remove(csv_path);
+  printf("PASS: extract_run_features ibs_sample features promoted\n");
+}
+
+static void test_extract_run_features_generic_tlb_promoted(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_int64 run_id;
+  double value;
+  char coverage[16];
+  const char *csv_path = "/tmp/test_store_features_tlb.csv";
+
+  printf("Testing extract_run_features: itlb_generic_miss_pct/dtlb_generic_miss_pct promoted from "
+         "--tlb's cross-vendor \"iTLB miss\"/\"dTLB miss\" columns, distinct from the AMD-only "
+         "--topdown-optlb itlb_miss_per1k/dtlb_miss_per1k pair...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  write_file(csv_path,
+    "elapsed,iTLB miss,dTLB miss,counters_measured,counters_requested,\n"
+    "1.0,3.25%,4.10%,9,9,\n");
+  build_csv_record(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","/bin/true",csv_path);
+
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,1,1,&stats);
+  json_free(root);
+
+  run_id = lookup_run_id(db,"run1");
+  assert(run_id > 0);
+
+  assert(feature_row(db,run_id,"itlb_generic_miss_pct",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && value > 3.24 && value < 3.26);
+  assert(feature_row(db,run_id,"dtlb_generic_miss_pct",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && value > 4.09 && value < 4.11);
+
+  sqlite3_close(db);
+  remove(csv_path);
+  printf("PASS: extract_run_features generic TLB features promoted\n");
+}
+
 static void test_extract_run_features_rates(void){
   sqlite3 *db;
   struct store_stats stats;
@@ -1765,6 +1845,8 @@ int main(void){
   test_ingest_csv_metrics_reingest_idempotent();
   test_ingest_csv_metrics_skipped_conditions();
   test_extract_run_features_basic();
+  test_extract_run_features_ibs_sample_promoted();
+  test_extract_run_features_generic_tlb_promoted();
   test_extract_run_features_rates();
   test_extract_run_features_phase_stability();
   test_extract_run_features_parallelism_proxy();
