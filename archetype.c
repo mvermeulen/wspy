@@ -53,6 +53,15 @@
  * *ranked* axis (like resource_dominance) needs its own small candidate
  * table/ranking function, following the same shape this file already
  * establishes.
+ *
+ * A fifth axis, memory_attribution, was added later (INVESTIGATION.md's 4.3
+ * "Composite attribution" item, see classify_memory_attribution() below):
+ * unlike the four original axes, it doesn't rank/threshold a single
+ * run_features value, it cross-references topdown's own backend_pct
+ * against independently-measured cache/TLB/IBS signals to say whether
+ * a "memory-bound" verdict is corroborated by other counters or not --
+ * genuinely new information a single-counter threshold can't produce,
+ * not a replacement for resource_dominance's own topdown-only read.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -74,6 +83,20 @@
  * (see file header). */
 #define DOMINANCE_HIGH_MARGIN   20.0
 #define DOMINANCE_MEDIUM_MARGIN 10.0
+
+/* memory_attribution thresholds (classify_memory_attribution(), below) --
+ * same "deliberately simple v1 starting point, not derived from a formal
+ * study" caveat as DOMINANCE_*_MARGIN above. backend_pct itself must clear
+ * MEMORY_ATTRIBUTION_FLOOR before an attribution is even attempted (below
+ * that, memory isn't the dominant story for this run, nothing to
+ * corroborate); the rest are "notably elevated" cutoffs for each
+ * independently-measured corroborating signal. */
+#define MEMORY_ATTRIBUTION_FLOOR_PCT 20.0
+#define CACHE_MISS_ELEVATED_PCT       10.0  /* dcache_miss_pct/l2_miss_pct/l3_miss_pct */
+#define TLB_MISS_ELEVATED_PER1K        5.0  /* itlb_miss_per1k/dtlb_miss_per1k */
+#define SMT_CONTENTION_ELEVATED_PCT    5.0
+#define IBS_DC_MISS_ELEVATED_PCT      10.0
+#define IBS_DRAM_ELEVATED_PCT         10.0
 
 struct threshold_rule { double max_value; const char *label; }; /* ascending; last entry is the catch-all */
 
@@ -209,6 +232,88 @@ static void compute_overall_confidence(const struct dominance_result *dom,
   }
 }
 
+struct memory_attribution_result {
+  int available;     /* 0 only when backend_pct itself was never measured -- see file header */
+  char label[24];     /* "unknown"/"not-memory-bound"/"corroborated"/"uncorroborated" */
+  char reasons[256];  /* corroborated: which signal(s) fired, "name=value" comma-joined;
+                        * uncorroborated: which signal(s) were checked and found unremarkable;
+                        * empty for "unknown"/"not-memory-bound" */
+};
+
+/* One corroborating raw signal this axis cross-references against
+ * backend_pct -- a small table (mirrors PARALLELISM_RULES/etc.'s own
+ * data-driven-loop style) rather than N copy-pasted if-blocks, so adding a
+ * future corroborating signal (e.g. a new IBS field) is one more row here,
+ * not a new code path. */
+struct memory_signal { const char *name; double value; int available; double elevated_threshold; };
+
+/* Cross-references topdown's own backend_pct (already used by
+ * resource_dominance above) against every independently-measured
+ * memory-hierarchy signal this run collected -- cache miss rates (generic
+ * PERF_TYPE_HW_CACHE group, a completely different counter path than
+ * topdown's own PMU events), TLB miss rates, SMT contention, and AMD IBS
+ * sampling's per-sample-derived dc-miss/DRAM rates when available. A
+ * "memory-bound" topdown read corroborated by at least one of these is much
+ * higher-confidence than topdown alone; a "memory-bound" read with *zero*
+ * corroboration from any signal that *was* actually collected is exactly
+ * the kind of disagreement a single-counter heuristic can't surface --
+ * flagged here as "uncorroborated" rather than silently trusted, since it
+ * suggests the real bottleneck may be something not measured yet
+ * (cross-NUMA latency, lock contention masquerading as a backend stall,
+ * etc.) rather than a straightforward capacity/miss-rate problem.
+ *
+ * Deliberately does NOT attempt to rank *which* cache level (L1/L2/L3) the
+ * stall concentrates in -- that's print_topdown_be()'s own dedicated
+ * --topdown-backend group (l1_bound_slots_pct/etc., doc/METRICS.md), a
+ * genuinely different measurement (stall-cycle attribution) than a miss
+ * *rate* (request-outcome attribution) can honestly claim to reproduce;
+ * conflating the two here would overclaim precision this signal set
+ * doesn't have. */
+static void classify_memory_attribution(double backend_pct,int have_backend,
+                                         const struct memory_signal *signals,int nsignals,
+                                         struct memory_attribution_result *out){
+  int i,any_measured = 0,any_elevated = 0;
+  size_t used;
+
+  memset(out,0,sizeof(*out));
+  snprintf(out->label,sizeof(out->label),"unknown");
+  if (!have_backend) return;
+
+  out->available = 1;
+  if (backend_pct < MEMORY_ATTRIBUTION_FLOOR_PCT){
+    snprintf(out->label,sizeof(out->label),"not-memory-bound");
+    return;
+  }
+
+  used = 0;
+  for (i = 0; i < nsignals; i++){
+    if (!signals[i].available) continue;
+    any_measured = 1;
+    if (signals[i].value < signals[i].elevated_threshold) continue;
+    any_elevated = 1;
+    used += (size_t)snprintf(out->reasons+used,sizeof(out->reasons)-used,"%s%s=%.4g",
+                              used ? "," : "",signals[i].name,signals[i].value);
+  }
+
+  if (any_elevated){
+    snprintf(out->label,sizeof(out->label),"corroborated");
+    return;
+  }
+
+  if (!any_measured){
+    snprintf(out->label,sizeof(out->label),"unknown");
+    return;
+  }
+
+  snprintf(out->label,sizeof(out->label),"uncorroborated");
+  used = 0;
+  for (i = 0; i < nsignals; i++){
+    if (!signals[i].available) continue;
+    used += (size_t)snprintf(out->reasons+used,sizeof(out->reasons)-used,"%schecked:%s",
+                              used ? "," : "",signals[i].name);
+  }
+}
+
 /* One run's worth of run_features values, assembled by streaming
  * contiguous (run_id-ordered) rows out of the store -- see score_runs()/
  * trace_run_archetype(). Only the features this tool's axes actually need
@@ -226,6 +331,18 @@ struct run_snapshot {
   double branch_mispredict_pct;  int have_branch;
   double phase_stability;        int have_phase;
   double smt_contention_pct;     int have_smt_contention;
+  /* memory_attribution's corroborating signals (classify_memory_attribution()) --
+   * independently-measured cache/TLB/IBS raw rates, cross-referenced against
+   * backend_pct above rather than folded into any existing axis. */
+  double dcache_miss_pct;        int have_dcache_miss;
+  double l2_miss_pct;            int have_l2_miss;
+  double l3_miss_pct;            int have_l3_miss;
+  double itlb_miss_per1k;        int have_itlb_miss;
+  double dtlb_miss_per1k;        int have_dtlb_miss;
+  double ibs_dc_miss_pct;        int have_ibs_dc_miss;
+  double ibs_dram_pct;           int have_ibs_dram;
+  double itlb_generic_miss_pct;  int have_itlb_generic_miss;
+  double dtlb_generic_miss_pct;  int have_dtlb_generic_miss;
 };
 
 static void run_snapshot_reset(struct run_snapshot *snap,sqlite3_int64 run_id,
@@ -254,6 +371,15 @@ static void run_snapshot_apply_feature(struct run_snapshot *snap,const char *fea
   else if (!strcmp(feature_name,"branch_mispredict_pct")){ snap->branch_mispredict_pct = value; snap->have_branch = measured; }
   else if (!strcmp(feature_name,"phase_stability")){ snap->phase_stability = value; snap->have_phase = measured; }
   else if (!strcmp(feature_name,"smt_contention_pct")){ snap->smt_contention_pct = value; snap->have_smt_contention = measured; }
+  else if (!strcmp(feature_name,"dcache_miss_pct")){ snap->dcache_miss_pct = value; snap->have_dcache_miss = measured; }
+  else if (!strcmp(feature_name,"l2_miss_pct")){ snap->l2_miss_pct = value; snap->have_l2_miss = measured; }
+  else if (!strcmp(feature_name,"l3_miss_pct")){ snap->l3_miss_pct = value; snap->have_l3_miss = measured; }
+  else if (!strcmp(feature_name,"itlb_miss_per1k")){ snap->itlb_miss_per1k = value; snap->have_itlb_miss = measured; }
+  else if (!strcmp(feature_name,"dtlb_miss_per1k")){ snap->dtlb_miss_per1k = value; snap->have_dtlb_miss = measured; }
+  else if (!strcmp(feature_name,"ibs_dc_miss_pct")){ snap->ibs_dc_miss_pct = value; snap->have_ibs_dc_miss = measured; }
+  else if (!strcmp(feature_name,"ibs_dram_pct")){ snap->ibs_dram_pct = value; snap->have_ibs_dram = measured; }
+  else if (!strcmp(feature_name,"itlb_generic_miss_pct")){ snap->itlb_generic_miss_pct = value; snap->have_itlb_generic_miss = measured; }
+  else if (!strcmp(feature_name,"dtlb_generic_miss_pct")){ snap->dtlb_generic_miss_pct = value; snap->have_dtlb_generic_miss = measured; }
 }
 
 /* The full scorecard for one already-assembled snapshot -- shared by both
@@ -263,9 +389,23 @@ struct scorecard {
   struct dominance_result dominance;
   struct classified_axis simple[NUM_SIMPLE_AXES];
   struct confidence_result confidence;
+  struct memory_attribution_result memory_attribution;
 };
 
 static void score_snapshot(const struct run_snapshot *snap,struct scorecard *out){
+  struct memory_signal mem_signals[10] = {
+    { "dcache_miss_pct",       snap->dcache_miss_pct,       snap->have_dcache_miss,       CACHE_MISS_ELEVATED_PCT },
+    { "l2_miss_pct",           snap->l2_miss_pct,           snap->have_l2_miss,           CACHE_MISS_ELEVATED_PCT },
+    { "l3_miss_pct",           snap->l3_miss_pct,           snap->have_l3_miss,           CACHE_MISS_ELEVATED_PCT },
+    { "itlb_miss_per1k",       snap->itlb_miss_per1k,       snap->have_itlb_miss,         TLB_MISS_ELEVATED_PER1K },
+    { "dtlb_miss_per1k",       snap->dtlb_miss_per1k,       snap->have_dtlb_miss,         TLB_MISS_ELEVATED_PER1K },
+    { "itlb_generic_miss_pct", snap->itlb_generic_miss_pct, snap->have_itlb_generic_miss, CACHE_MISS_ELEVATED_PCT },
+    { "dtlb_generic_miss_pct", snap->dtlb_generic_miss_pct, snap->have_dtlb_generic_miss, CACHE_MISS_ELEVATED_PCT },
+    { "ibs_dc_miss_pct",       snap->ibs_dc_miss_pct,       snap->have_ibs_dc_miss,       IBS_DC_MISS_ELEVATED_PCT },
+    { "ibs_dram_pct",          snap->ibs_dram_pct,          snap->have_ibs_dram,          IBS_DRAM_ELEVATED_PCT },
+    { "smt_contention_pct",    snap->smt_contention_pct,    snap->have_smt_contention,    SMT_CONTENTION_ELEVATED_PCT },
+  };
+
   classify_resource_dominance(snap->retire_pct,snap->have_retire,
                                snap->frontend_pct,snap->have_frontend,
                                snap->backend_pct,snap->have_backend,
@@ -277,6 +417,7 @@ static void score_snapshot(const struct run_snapshot *snap,struct scorecard *out
                         CONTROL_FLOW_RULES,2,&out->simple[AXIS_CONTROL_FLOW_STYLE]);
   classify_simple_axis(snap->phase_stability,snap->have_phase,
                         STABILITY_RULES,3,&out->simple[AXIS_RUNTIME_STABILITY]);
+  classify_memory_attribution(snap->backend_pct,snap->have_backend,mem_signals,10,&out->memory_attribution);
   compute_overall_confidence(&out->dominance,out->simple,NUM_SIMPLE_AXES,&out->confidence);
 }
 
@@ -336,16 +477,19 @@ static void print_scorecard_row(FILE *out,const struct run_snapshot *snap,
     print_csv_field(out,sc->simple[AXIS_CONTROL_FLOW_STYLE].label); fputc(',',out);
     print_csv_field(out,sc->simple[AXIS_RUNTIME_STABILITY].label); fputc(',',out);
     print_csv_field(out,sc->confidence.level); fputc(',',out);
-    print_csv_field(out,sc->confidence.reasons);
+    print_csv_field(out,sc->confidence.reasons); fputc(',',out);
+    print_csv_field(out,sc->memory_attribution.label); fputc(',',out);
+    print_csv_field(out,sc->memory_attribution.reasons);
     fputc('\n',out);
   } else {
-    fprintf(out,"%-24.24s %-20.20s %-28.28s %-18s %-18s %-16s %-14s %-9s %-8s  %s\n",
+    fprintf(out,"%-24.24s %-20.20s %-28.28s %-18s %-18s %-16s %-14s %-9s %-8s %-30.30s  %-16s  %s\n",
             snap->hostname,snap->run_id_text,snap->command,
             dom_label,alt_label,
             sc->simple[AXIS_PARALLELISM_SHAPE].label,
             sc->simple[AXIS_CONTROL_FLOW_STYLE].label,
             sc->simple[AXIS_RUNTIME_STABILITY].label,
-            sc->confidence.level,sc->confidence.reasons);
+            sc->confidence.level,sc->confidence.reasons,
+            sc->memory_attribution.label,sc->memory_attribution.reasons);
   }
 }
 
@@ -380,11 +524,13 @@ static int score_runs(sqlite3 *db,const char *command_filter,const char *hostnam
   if (csvflag)
     fprintf(out,"hostname,run_id,command,resource_dominance,resource_dominance_pct,"
                 "alternative,alternative_pct,parallelism_shape,control_flow_style,"
-                "runtime_stability,confidence,confidence_reasons\n");
+                "runtime_stability,confidence,confidence_reasons,"
+                "memory_attribution,memory_attribution_reasons\n");
   else
-    fprintf(out,"%-24.24s %-20.20s %-28.28s %-18s %-18s %-16s %-14s %-9s %-8s  %s\n",
+    fprintf(out,"%-24.24s %-20.20s %-28.28s %-18s %-18s %-16s %-14s %-9s %-8s %-30s  %-16s  %s\n",
             "hostname","run_id","command","resource_dominance","alternative",
-            "parallelism","control_flow","stability","conf.","reasons");
+            "parallelism","control_flow","stability","conf.","reasons",
+            "mem_attribution","mem_attr_reasons");
 
   while (sqlite3_step(stmt) == SQLITE_ROW){
     sqlite3_int64 run_id = sqlite3_column_int64(stmt,0);
@@ -487,6 +633,8 @@ static int trace_run_archetype(sqlite3 *db,const char *hostname,const char *run_
   print_trace_field(out,"runtime_stability",sc.simple[AXIS_RUNTIME_STABILITY].label);
   print_trace_field(out,"confidence",sc.confidence.level);
   print_trace_field(out,"confidence_reasons",sc.confidence.reasons);
+  print_trace_field(out,"memory_attribution",sc.memory_attribution.label);
+  print_trace_field(out,"memory_attribution_reasons",sc.memory_attribution.reasons);
   return 0;
 }
 

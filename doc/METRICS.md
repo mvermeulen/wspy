@@ -275,8 +275,11 @@ Source: `topdown.c:print_float()`. CSV column: `float`.
 
 Source: `topdown.c:print_cache()` helper again, via `print_itlb()`/`print_dtlb()`.
 
-- **iTLB miss** — `[raw]` `iTLB-load-misses / iTLB-loads * 100`.
-- **dTLB miss** — `[raw]` `dTLB-load-misses / dTLB-loads * 100`.
+- **iTLB miss** — `[feature]` (`itlb_generic_miss_pct`) `iTLB-load-misses / iTLB-loads * 100`. Distinct
+  from `itlb2`/`itlb_miss_per1k` above (AMD-only, `--topdown-optlb`, a per-1000-inst rate) — this is the
+  cross-vendor, percentage-based pair `--tlb` alone collects.
+- **dTLB miss** — `[feature]` (`dtlb_generic_miss_pct`) `dTLB-load-misses / dTLB-loads * 100`. Same
+  distinction from `dtlb2`/`dtlb_miss_per1k` as `iTLB miss` above.
 
 ## ARM-only raw dumps (no ratio columns)
 
@@ -378,7 +381,8 @@ them and only the final tail row is populated.
 - **ibs_sample_l1tlb_miss_rate** — `[raw]` `fetch_l1tlb_miss_count / fetch_count`.
 - **ibs_sample_l2tlb_miss_rate** — `[raw]` `fetch_l2tlb_miss_count / fetch_count`.
 - **ibs_sample_op_count** — `[raw]` count of decoded IBS-op samples actually drained (`os->op_count`).
-- **ibs_sample_dc_miss_rate** — `[raw]` `op_dc_miss_count / op_count` (data-cache miss rate among sampled ops).
+- **ibs_sample_dc_miss_rate** — `[feature]` (`ibs_dc_miss_pct`) `op_dc_miss_count / op_count` (data-cache
+  miss rate among sampled ops).
 - **ibs_sample_dc_l1tlb_miss_rate** — `[raw]` `op_dc_l1tlb_miss_count / op_count`.
 - **ibs_sample_dc_l2tlb_miss_rate** — `[raw]` `op_dc_l2tlb_miss_count / op_count`.
 - **ibs_sample_brn_misp_rate** — `[raw]` `op_brn_misp_count / op_brn_ret_count` — note the denominator is
@@ -389,8 +393,8 @@ them and only the final tail row is populated.
   streams. This is a *measurement-quality* signal, not a workload characteristic: human output
   explicitly warns that when nonzero, every rate above is "a lower bound" — treat a run with nonzero
   `ibs_sample_lost` as under-sampled, not as evidence the true miss rates are actually lower.
-- **ibs_sample_dram_rate** — `[raw]` `op_dram_count / op_count` — fraction of sampled ops whose data
-  source was DRAM (as opposed to some cache level).
+- **ibs_sample_dram_rate** — `[feature]` (`ibs_dram_pct`) `op_dram_count / op_count` — fraction of sampled
+  ops whose data source was DRAM (as opposed to some cache level).
 - **ibs_sample_remote_node_rate** — `[raw]` `op_remote_node_count / op_count` — fraction of sampled ops
   whose data source was a remote NUMA node.
 - **ibs_sample_data_src_breakdown** — `[human-only]` (`print_ibs_sample_data_src_breakdown()`) a full
@@ -461,10 +465,14 @@ this whole run," and are what `wspy-archetype`'s clustering/nearest-neighbor fea
   is written to be reusable for other metrics beyond `ipc` — currently only wired up for `ipc`.)
 - **retire_pct**, **frontend_pct**, **backend_pct**, **speculate_pct**, **dcache_miss_pct**,
   **icache_miss_pct**, **l2_miss_pct**, **l3_miss_pct**, **branch_mispredict_pct**, **itlb_miss_per1k**,
-  **dtlb_miss_per1k**, **smt_contention_pct** — `[feature]` straight `AVG()` of the correspondingly-named
-  `[raw]` metric across the whole run (see `SIMPLE_METRIC_FEATURES[]` in `store.c` for the exact
-  metric_name each maps to — several feature names differ from their source CSV column, e.g.
-  `icache_miss_pct` averages the AMD `icache` column, not the generic `L1-icache miss` column).
+  **dtlb_miss_per1k**, **smt_contention_pct**, **ibs_dc_miss_pct**, **ibs_dram_pct**,
+  **itlb_generic_miss_pct**, **dtlb_generic_miss_pct** — `[feature]` straight `AVG()` of the
+  correspondingly-named `[raw]` metric across the whole run (see `SIMPLE_METRIC_FEATURES[]` in `store.c`
+  for the exact metric_name each maps to — several feature names differ from their source CSV column,
+  e.g. `icache_miss_pct` averages the AMD `icache` column, not the generic `L1-icache miss` column;
+  `itlb_miss_per1k`/`dtlb_miss_per1k` and `itlb_generic_miss_pct`/`dtlb_generic_miss_pct` are two
+  genuinely different TLB signals, AMD-only-per-1000-inst vs. cross-vendor-percentage respectively, not
+  a naming variant of the same one).
 
 ## Per-core imbalance diagnostics (`wspy-core-report`)
 
@@ -513,8 +521,18 @@ above, for human/agent consumption.
 - **control_flow_style** (`wspy-archetype`) — `[categorical]` threshold on `branch_mispredict_pct` (see
   above).
 - **runtime_stability** (`wspy-archetype`) — `[categorical]` threshold on `phase_stability` (see above).
-
-## Environment (manifest, normalized `run_environment` table)
+- **memory_attribution** (`wspy-archetype`) — `[categorical]` cross-references `backend_pct` (topdown)
+  against every independently-measured cache/TLB/IBS signal the run collected (`dcache_miss_pct`,
+  `l2_miss_pct`, `l3_miss_pct`, `itlb_miss_per1k`/`dtlb_miss_per1k`, `itlb_generic_miss_pct`/
+  `dtlb_generic_miss_pct`, `ibs_dc_miss_pct`, `ibs_dram_pct`, `smt_contention_pct`) — `not-memory-bound`
+  (backend_pct below a 20% floor, nothing to explain), `corroborated` (backend significant and at least
+  one signal is also notably elevated — `memory_attribution_reasons` lists which), `uncorroborated`
+  (backend significant but every signal that *was* collected looks unremarkable — a genuine attribution
+  gap worth a closer look, not a measurement failure), or `unknown` (backend_pct itself wasn't measured,
+  or none of the corroborating signals were even collected this run). Deliberately doesn't attempt to
+  rank *which* cache level a stall concentrates in — that's a different, stall-cycle-attribution question
+  only `--topdown-backend`'s own dedicated group (`l1_bound_slots_pct`/etc. above) can honestly answer;
+  this axis cross-checks a *miss-rate* signal against topdown's *stall* signal instead.
 
 Source: `provenance.c`, one-shot per-run capture, JSON in the manifest, promoted into SQLite by
 `store.c:enrich_from_manifest()`. Every field degrades independently (`available=0` + a reason string)

@@ -573,6 +573,39 @@ drift, largest-drift trailing note, no-phase-data graceful degradation, target-n
 phase-observed, and a metric present in only one of two observed phases) plus the full `run_tests.sh`
 matrix.
 
+**Composite attribution (`wspy-archetype`'s new `memory_attribution` axis) — closes 4.3 Tier 2 item 3.**
+A fifth `wspy-archetype` axis, alongside `resource_dominance`/`parallelism_shape`/`control_flow_style`/
+`runtime_stability`: cross-references topdown's own `backend_pct` (the same L1 category
+`resource_dominance` already ranks) against every independently-measured cache/TLB/IBS signal a run
+collected — `dcache_miss_pct`/`l2_miss_pct`/`l3_miss_pct`, `itlb_miss_per1k`/`dtlb_miss_per1k` (AMD-only,
+`--topdown-optlb`) and the newly-promoted `itlb_generic_miss_pct`/`dtlb_generic_miss_pct` (cross-vendor,
+`--tlb` — added specifically for this item after real-hardware testing showed the AMD-only pair almost
+never fires in practice, since `--topdown-optlb` is far less commonly collected than plain `--tlb`),
+`smt_contention_pct`, and the newly-promoted `ibs_dc_miss_pct`/`ibs_dram_pct` (AMD IBS sampling-mode,
+shipped 4.3). A "memory-bound" topdown read (`backend_pct` at/above a 20% floor) corroborated by at
+least one of these independently-measured signals is materially higher-confidence than topdown alone;
+one with *zero* corroboration from any signal that *was* actually collected is flagged `uncorroborated`
+— genuinely new information a single-counter heuristic can't produce, since it suggests the true
+bottleneck may be something not measured yet (cross-NUMA latency, lock contention masquerading as a
+backend stall) rather than a straightforward capacity/miss-rate problem. `unknown` covers both
+`backend_pct` never having been measured and `backend_pct` being significant but zero corroborating
+signals having been collected at all (kept as two states via `.available`, even though both currently
+render the same label). Deliberately does *not* attempt to rank *which* cache level a stall concentrates
+in — that's a different, stall-cycle-attribution question only `--topdown-backend`'s own dedicated
+`l1_bound_slots_pct`/etc. group can honestly answer (a miss *rate* and a stall-cycle *attribution* are
+related but distinct measurements); conflating the two would overclaim precision this signal set doesn't
+have, so this axis stays a corroboration check, not a hierarchy-level diagnosis. `memory_attribution_reasons`
+lists exactly which signal(s) fired (`corroborated`) or were checked and found unremarkable
+(`uncorroborated`) as `name=value`/`checked:name` pairs. Thresholds (`MEMORY_ATTRIBUTION_FLOOR_PCT=20.0`,
+per-signal `*_ELEVATED_*` constants) are the same "deliberately simple v1 starting point, not derived
+from a formal study" caveat `DOMINANCE_*_MARGIN`/`phase.c`'s own thresholds already carry. Verified via
+11 new `test_archetype.c`/`test_store.c` cases (all four label outcomes directly, plus end-to-end through
+`score_runs()`'s CSV pipeline and the two newly-promoted feature-extraction paths) and against a real AMD
+Zen5 host run (`--topdown --dcache --cache2 --cache3 --tlb`, piped through `wspy-store`) — real IBS
+sampling itself needs root this session couldn't grant, so the IBS corroboration path is unit-tested
+only, not yet confirmed against a live IBS sample; the generic-vs-AMD-only TLB feature split above was
+itself a direct finding from that real-hardware run, not anticipated in the original design.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -798,8 +831,9 @@ Advancements worth adopting, in priority order for `wspy` specifically:
 5. ~~Phase-aware topdown (warmup/steady/degraded)~~ — shipped as `wspy-summary --phase-topdown`, see
    "Shipped since 4.2".
 6. Hybrid/heterogeneous core-class summaries — don't mix Atom+Core topdown into one headline number.
-7. Cross-signal attribution (topdown + cache/TLB/IBS) — composite bottleneck rules over single-
-   counter heuristics.
+7. ~~Cross-signal attribution (topdown + cache/TLB/IBS)~~ — shipped as `wspy-archetype`'s
+   `memory_attribution` axis, see "Shipped since 4.2"; the blocking-syscall-split modifier remains
+   open, see Tier 2's "Composite attribution" remaining scope.
 8. Platform formula registry — versioned event/formula mapping per CPU family/model, for
    auditability.
 
@@ -811,10 +845,11 @@ Advancements worth adopting, in priority order for `wspy` specifically:
   `wspy-summary --phase-topdown`, verified against a real AMD Zen5 host run (see "Shipped since 4.2").
 
 → Items 3-8 map to 4.2's "Hierarchical topdown schema" (shipped), 4.3's now-shipped "Phase-aware
-topdown," and 4.3's still-open "Composite attribution" and "Core-class-aware topdown" (moved to 4.3,
-no longer blocked at all — real Intel/AMD hybrid hardware became available this cycle, and the
-Gracemont E-core raw-event gap that briefly blocked it has since shipped too, see "Core-class-aware
-topdown" in Tier 2 above).
+topdown," 4.3's partially-shipped "Composite attribution" (topdown+cache/TLB/IBS cross-referencing
+shipped as `memory_attribution`; the blocking-syscall-split modifier remains, see Tier 2 above), and
+4.3's still-open "Core-class-aware topdown" (moved to 4.3, no longer blocked at all — real Intel/AMD
+hybrid hardware became available this cycle, and the Gracemont E-core raw-event gap that briefly
+blocked it has since shipped too, see "Core-class-aware topdown" in Tier 2 above).
 
 ### Preset / Configuration / Option hierarchy deep-dive
 A three-level vocabulary for describing what wspy can be asked to do, surfaced while iterating the
@@ -893,9 +928,16 @@ AMD IBS sampling-mode support (shipped, see "Shipped since 4.2" and the Zen5/IBS
 Item 2 (phase-aware topdown, warmup/steady/degraded segmentation, drift signal) shipped as
 `wspy-summary --phase-topdown` — see "Shipped since 4.2".
 
-3. Composite attribution (topdown + cache/TLB/IBS signals) — the "no blocking-syscall activity" vs.
-   "heavy blocking-syscall activity" split from the critical-path work (shipped, see "Shipped since
-   4.1") is a direct input here, alongside topdown/cache/TLB/IBS.
+3. Composite attribution — the topdown+cache/TLB/IBS cross-referencing half shipped as
+   `wspy-archetype`'s new `memory_attribution` axis (see "Shipped since 4.2"). **Remaining scope:**
+   folding in the "no blocking-syscall activity" vs. "heavy blocking-syscall activity" vs. "runnable but
+   not scheduled" three-way split from the critical-path work (shipped, see "Shipped since 4.1" for
+   4.1) as a modifier — a "memory-bound" read on a phase/run with heavy futex/io-wait or run_delay is
+   likely not a genuine hardware stall at all, regardless of what cache/TLB/IBS show. Real, separate
+   plumbing work: that signal lives only in `--tree`'s own per-process output today (`proctree.c`'s
+   aggregate stats), never ingested into the normalized store (`store.c` records `tree_output_path`
+   only, not the futex/io-wait/schedstat aggregates themselves) — this needs new store-side ingestion,
+   not just a new archetype.c rule, before it can join `memory_attribution`'s existing signal set.
 4. IBS-derived memory-path bottleneck decomposition (combine with topdown/cache) — AMD IBS
    sampling-mode support (shipped) now provides real per-sample tag data to decompose; previously
    counting-mode IBS had none.
