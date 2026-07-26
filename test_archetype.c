@@ -687,6 +687,220 @@ static void test_nearest_target_no_features_empty_result(void){
   printf("PASS: nearest_neighbors target with no features -> empty result\n");
 }
 
+/* --- end-to-end: kmeans_report() (--kmeans mode) --- */
+
+/* CSV row shape is "cluster,size,hostname,run_id,distance,top_features\n" --
+ * finds the row for run_id_text and returns its cluster id, or -1 if the
+ * run isn't present in the output at all. */
+static int csv_cluster_id_for(const char *buf,const char *run_id_text){
+  char needle[80];
+  const char *p,*line_start;
+  int cluster_id;
+
+  snprintf(needle,sizeof(needle),",%s,",run_id_text);
+  p = strstr(buf,needle);
+  if (!p) return -1;
+  line_start = p;
+  while (line_start > buf && line_start[-1] != '\n') line_start--;
+  if (sscanf(line_start,"%d,",&cluster_id) != 1) return -1;
+  return cluster_id;
+}
+
+/* Number of data rows (excludes the header line) -- counts '\n' after the
+ * first one. */
+static int csv_row_count(const char *buf){
+  const char *nl = strchr(buf,'\n');
+  int count = 0;
+  if (!nl) return 0;
+  for (nl++; *nl; nl++) if (*nl == '\n') count++;
+  return count;
+}
+
+static void test_kmeans_basic_separation(void){
+  sqlite3 *db;
+  char tmpfile[] = "/tmp/test_archetype_km_basic_XXXXXX";
+  FILE *out;
+  char buf[8192];
+  sqlite3_int64 a,b,c,d,e,f;
+  int rc,ca,cb,cc,cd,ce,cf;
+
+  printf("Testing kmeans_report: two well-separated groups land in two distinct clusters...\n");
+  db = open_memory_db();
+  a = insert_run(db,"runA","host1","cpu_bound_a");
+  b = insert_run(db,"runB","host1","cpu_bound_b");
+  c = insert_run(db,"runC","host1","cpu_bound_c");
+  d = insert_run(db,"runD","host1","mem_bound_a");
+  e = insert_run(db,"runE","host1","mem_bound_b");
+  f = insert_run(db,"runF","host1","mem_bound_c");
+
+  insert_feature_measured(db,a,"ipc_mean",2.0); insert_feature_measured(db,a,"dcache_miss_pct",1.0);
+  insert_feature_measured(db,b,"ipc_mean",2.1); insert_feature_measured(db,b,"dcache_miss_pct",1.2);
+  insert_feature_measured(db,c,"ipc_mean",1.9); insert_feature_measured(db,c,"dcache_miss_pct",0.9);
+  insert_feature_measured(db,d,"ipc_mean",0.3); insert_feature_measured(db,d,"dcache_miss_pct",25.0);
+  insert_feature_measured(db,e,"ipc_mean",0.35); insert_feature_measured(db,e,"dcache_miss_pct",26.0);
+  insert_feature_measured(db,f,"ipc_mean",0.25); insert_feature_measured(db,f,"dcache_miss_pct",24.0);
+
+  out = open_tmp_out(tmpfile);
+  rc = kmeans_report(db,2,KMEANS_DEFAULT_SEED,KMEANS_DEFAULT_ITERATIONS,"","",1,out);
+  assert(rc == 0);
+  slurp(out,buf,sizeof(buf));
+
+  ca = csv_cluster_id_for(buf,"runA"); cb = csv_cluster_id_for(buf,"runB"); cc = csv_cluster_id_for(buf,"runC");
+  cd = csv_cluster_id_for(buf,"runD"); ce = csv_cluster_id_for(buf,"runE"); cf = csv_cluster_id_for(buf,"runF");
+  assert(ca >= 0 && cb >= 0 && cc >= 0 && cd >= 0 && ce >= 0 && cf >= 0);
+  assert(ca == cb && cb == cc); /* cpu_bound group agrees */
+  assert(cd == ce && ce == cf); /* mem_bound group agrees */
+  assert(ca != cd); /* the two groups land in different clusters */
+  assert(csv_row_count(buf) == 6);
+
+  fclose(out);
+  remove(tmpfile);
+  sqlite3_close(db);
+  printf("PASS: kmeans_report basic separation\n");
+}
+
+static void test_kmeans_coverage_aware_centroid_no_crash(void){
+  sqlite3 *db;
+  char tmpfile[] = "/tmp/test_archetype_km_coverage_XXXXXX";
+  FILE *out;
+  char buf[8192];
+  sqlite3_int64 a,b,c,d;
+  int rc;
+
+  printf("Testing kmeans_report: heterogeneous feature coverage across members clusters without "
+         "crashing (partial-distance / available-case centroid)...\n");
+  db = open_memory_db();
+  a = insert_run(db,"runA","host1","a");
+  b = insert_run(db,"runB","host1","b");
+  c = insert_run(db,"runC","host1","c");
+  d = insert_run(db,"runD","host1","d");
+
+  /* runA/runB have both features (e.g. ran with --branch); runC/runD only
+   * have ipc_mean (no --branch that time). */
+  insert_feature_measured(db,a,"ipc_mean",2.0); insert_feature_measured(db,a,"branch_mpki",1.0);
+  insert_feature_measured(db,b,"ipc_mean",2.1); insert_feature_measured(db,b,"branch_mpki",1.1);
+  insert_feature_measured(db,c,"ipc_mean",0.3);
+  insert_feature_measured(db,d,"ipc_mean",0.35);
+
+  out = open_tmp_out(tmpfile);
+  rc = kmeans_report(db,2,KMEANS_DEFAULT_SEED,KMEANS_DEFAULT_ITERATIONS,"","",1,out);
+  assert(rc == 0);
+  slurp(out,buf,sizeof(buf));
+  assert(csv_row_count(buf) == 4);
+  assert(csv_cluster_id_for(buf,"runA") == csv_cluster_id_for(buf,"runB"));
+  assert(csv_cluster_id_for(buf,"runC") == csv_cluster_id_for(buf,"runD"));
+
+  fclose(out);
+  remove(tmpfile);
+  sqlite3_close(db);
+  printf("PASS: kmeans_report coverage-aware centroid no-crash\n");
+}
+
+static void test_kmeans_insufficient_candidates(void){
+  sqlite3 *db;
+  sqlite3_int64 a,b;
+  FILE *devnull;
+  int rc;
+
+  printf("Testing kmeans_report: fewer candidate runs than k returns 1, not a crash or a bogus "
+         "partition...\n");
+  db = open_memory_db();
+  a = insert_run(db,"runA","host1","a");
+  b = insert_run(db,"runB","host1","b");
+  insert_feature_measured(db,a,"ipc_mean",1.0);
+  insert_feature_measured(db,b,"ipc_mean",1.1);
+
+  devnull = fopen("/dev/null","w");
+  assert(devnull != NULL);
+  rc = kmeans_report(db,5,KMEANS_DEFAULT_SEED,KMEANS_DEFAULT_ITERATIONS,"","",1,devnull);
+  assert(rc == 1);
+
+  fclose(devnull);
+  sqlite3_close(db);
+  printf("PASS: kmeans_report insufficient candidates\n");
+}
+
+static void test_kmeans_seed_determinism(void){
+  sqlite3 *db;
+  char tmpfile1[] = "/tmp/test_archetype_km_seed1_XXXXXX";
+  char tmpfile2[] = "/tmp/test_archetype_km_seed2_XXXXXX";
+  FILE *out1,*out2;
+  char buf1[8192],buf2[8192];
+  sqlite3_int64 a,b,c,d,e,f;
+  int rc;
+
+  printf("Testing kmeans_report: same seed + same data yields identical clustering...\n");
+  db = open_memory_db();
+  a = insert_run(db,"runA","host1","a"); b = insert_run(db,"runB","host1","b");
+  c = insert_run(db,"runC","host1","c"); d = insert_run(db,"runD","host1","d");
+  e = insert_run(db,"runE","host1","e"); f = insert_run(db,"runF","host1","f");
+  insert_feature_measured(db,a,"ipc_mean",2.0);
+  insert_feature_measured(db,b,"ipc_mean",2.1);
+  insert_feature_measured(db,c,"ipc_mean",1.9);
+  insert_feature_measured(db,d,"ipc_mean",0.3);
+  insert_feature_measured(db,e,"ipc_mean",0.35);
+  insert_feature_measured(db,f,"ipc_mean",0.25);
+
+  out1 = open_tmp_out(tmpfile1);
+  rc = kmeans_report(db,2,7,KMEANS_DEFAULT_ITERATIONS,"","",1,out1);
+  assert(rc == 0);
+  slurp(out1,buf1,sizeof(buf1));
+  fclose(out1);
+  remove(tmpfile1);
+
+  out2 = open_tmp_out(tmpfile2);
+  rc = kmeans_report(db,2,7,KMEANS_DEFAULT_ITERATIONS,"","",1,out2);
+  assert(rc == 0);
+  slurp(out2,buf2,sizeof(buf2));
+  fclose(out2);
+  remove(tmpfile2);
+
+  assert(!strcmp(buf1,buf2));
+
+  sqlite3_close(db);
+  printf("PASS: kmeans_report seed determinism\n");
+}
+
+static void test_kmeans_no_empty_clusters(void){
+  sqlite3 *db;
+  char tmpfile[] = "/tmp/test_archetype_km_noempty_XXXXXX";
+  FILE *out;
+  char buf[8192];
+  sqlite3_int64 ids[6];
+  double values[6] = { 1.0,1.1,0.9,1.05,0.95,1.02 }; /* one tight cluster, k=3 forces reinit */
+  int rc,i,seen[3] = {0,0,0};
+  char run_id[16];
+
+  printf("Testing kmeans_report: k larger than the natural number of groups still yields k non-empty "
+         "clusters (empty-cluster reinit)...\n");
+  db = open_memory_db();
+  for (i = 0; i < 6; i++){
+    snprintf(run_id,sizeof(run_id),"run%d",i);
+    ids[i] = insert_run(db,run_id,"host1","same_workload");
+    insert_feature_measured(db,ids[i],"ipc_mean",values[i]);
+  }
+
+  out = open_tmp_out(tmpfile);
+  rc = kmeans_report(db,3,KMEANS_DEFAULT_SEED,KMEANS_DEFAULT_ITERATIONS,"","",1,out);
+  assert(rc == 0);
+  slurp(out,buf,sizeof(buf));
+  assert(csv_row_count(buf) == 6);
+
+  for (i = 0; i < 6; i++){
+    int cid;
+    snprintf(run_id,sizeof(run_id),"run%d",i);
+    cid = csv_cluster_id_for(buf,run_id);
+    assert(cid >= 0 && cid < 3);
+    seen[cid] = 1;
+  }
+  assert(seen[0] && seen[1] && seen[2]); /* every cluster got at least one member */
+
+  fclose(out);
+  remove(tmpfile);
+  sqlite3_close(db);
+  printf("PASS: kmeans_report no empty clusters\n");
+}
+
 int main(void){
   test_classify_simple_axis_thresholds();
   test_classify_simple_axis_unavailable();
@@ -709,6 +923,11 @@ int main(void){
   test_nearest_filters_restrict_pool();
   test_nearest_target_not_found();
   test_nearest_target_no_features_empty_result();
+  test_kmeans_basic_separation();
+  test_kmeans_coverage_aware_centroid_no_crash();
+  test_kmeans_insufficient_candidates();
+  test_kmeans_seed_determinism();
+  test_kmeans_no_empty_clusters();
 
   printf("\nAll test_archetype tests passed.\n");
   return 0;

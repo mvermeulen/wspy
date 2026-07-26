@@ -526,6 +526,31 @@ real, separate design work, not wasted effort building this distance function fi
 zero-variance no-crash, `--k` limiting, `--command`/`--hostname` filters, target-not-found,
 target-with-no-measured-features) plus the full `run_tests.sh` matrix.
 
+**K-means clustering + cluster profile cards (`wspy-archetype --kmeans`) — closes out Tier 1 item 1,
+the last item in Tier 1; Tier 1 is now fully shipped for 4.3.** New standalone `wspy-archetype --kmeans
+<n> [--seed <n>] [--iterations <n>]` mode partitions every candidate run into `n` clusters over the same
+coverage-aware z-standardized distance `--nearest` uses, then prints one row per member (grouped by
+cluster, closest-to-centroid first) carrying a "profile card" of the `KMEANS_TOP_FEATURES` dimensions
+where that cluster's centroid sits furthest from the population mean. Resolves the design question this
+item was deferred over: a centroid, per dimension, is the *available-case mean* — averaged only over
+whichever cluster members actually measured that dimension, so a dimension no member measured simply
+doesn't appear in the centroid rather than requiring a fabricated value. This is the standard "partial
+distance strategy" for clustering under missing data (Dixon 1979; also underlies Hathaway & Bezdek's
+fuzzy-c-means-with-missing-data extension), not a novel invention — just not previously wired up here,
+and it mirrors `nearest_neighbor_distance()`'s own "only shared dimensions count" idiom on the assignment
+side too (`centroid_distance()`, same RMS-over-shared-dimensions/zero-variance-exclusion shape).
+Initialization is k-means++ (Arthur & Vassilvitskii 2007), seeded from real data points rather than a
+fabricated average point (a real point is always well-defined on its own measured dimensions, sidestepping
+the missing-data question for the one spot it would otherwise bite hardest: a centroid with zero members
+yet to average over); `--seed` makes a given `(data,k)` pair reproducible via `rand_r()`-based sampling
+independent of any other code's RNG state. Empty clusters (a real Lloyd's-algorithm failure mode) are
+healed each iteration by stealing the single worst-fit point from a cluster with more than one member,
+rather than letting a cluster's centroid drift somewhere no point wants it. Verified via 5 new
+`test_archetype.c` cases (well-separated groups land in distinct clusters, heterogeneous-coverage
+centroid computation doesn't crash, `k` greater than candidate count returns the standard "insufficient
+data" exit code, same-seed determinism, and `k` larger than the natural group count still yields `k`
+non-empty clusters) plus the full `run_tests.sh` matrix.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -835,12 +860,10 @@ topdown/IBS attribution, static-site publishing, and a lower-overhead tracing ba
 
 **Tier 1 — needs 4.1's normalized store/history:**
 
-1. Clustering + cluster profile cards, coverage-aware distance (common-subspace only when data
-   coverage differs) — **nearest-neighbor search now shipped** (`wspy-archetype --nearest`, see
-   "Shipped since 4.2"), including the coverage-aware distance function this item's remaining scope
-   reuses. What's left is K-means clustering + cluster profile cards on top of that same distance —
-   deliberately deferred as its own design problem: no clean textbook answer for how a centroid should
-   be computed when cluster members don't all share the same available features.
+Fully shipped for 4.3: nearest-neighbor search and K-means clustering + cluster profile cards, both
+`wspy-archetype` modes (`--nearest`, `--kmeans`) — see "Shipped since 4.2" for both write-ups. Tier
+number kept stable rather than renumbering Tier 2-7 below, since several other entries in this document
+cross-reference them by tier number.
 
 **Tier 2 — topdown/attribution, needs 4.2's hierarchical schema + phase detection (both shipped) +
 AMD IBS sampling-mode support (shipped, see "Shipped since 4.2" and the Zen5/IBS deep-dive):**
@@ -926,10 +949,10 @@ AMD IBS sampling-mode support (shipped, see "Shipped since 4.2" and the Zen5/IBS
       collection target (new runs populate rows as they land) and a browsing surface (multiple views: by
       test, by machine, cross-machine comparison for one test) — likely a new tab alongside Run/Validate/
       Store & Summary/Discovery, not a retrofit of an existing one.
-    - **Analysis feed.** Once populated, this is a natural input table for Tier 1's clustering item and
-      for `wspy-analyze`-style AI narrative generation that references how a workload compares to others
-      in its cluster — but building the matrix itself doesn't require clustering to exist first; the two
-      are sequenced, not coupled.
+    - **Analysis feed.** Once populated, this is a natural input table for `wspy-archetype --kmeans`
+      (shipped, see "Shipped since 4.2") and for `wspy-analyze`-style AI narrative generation that
+      references how a workload compares to others in its cluster — but building the matrix itself never
+      depended on clustering existing first; the two were always sequenced, not coupled.
 
 **Tier 4 — report-layer additions on data already collected in 4.0:**
 
