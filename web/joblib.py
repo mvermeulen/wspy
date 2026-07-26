@@ -1808,18 +1808,32 @@ def list_installed_phoronix_test_versions(test_id, user_data_dir=None):
     nothing matches -- never raises. user_data_dir overrides
     phoronix_user_data_dir(), same testability escape hatch
     copy_phoronix_test_point_to_local_suite() already uses."""
-    namespace = test_id.split("/", 1)[0] if "/" in test_id else "pts"
     bare_name = phoronix_bare_test_name(test_id)
-    base = os.path.join(user_data_dir or phoronix_user_data_dir(), "installed-tests", namespace)
+    installed_root = os.path.join(user_data_dir or phoronix_user_data_dir(), "installed-tests")
     try:
-        entries = os.listdir(base)
+        namespaces = os.listdir(installed_root)
     except OSError:
         return []
+
+    primary_ns = test_id.split("/", 1)[0] if "/" in test_id else "pts"
+    if primary_ns in namespaces:
+        namespaces.remove(primary_ns)
+        namespaces.insert(0, primary_ns)
+
     prefix = bare_name + "-"
-    versions = [entry[len(prefix):] for entry in entries
-                if entry.startswith(prefix) and _phoronix_looks_like_version(entry[len(prefix):])]
-    versions.sort(key=_phoronix_version_key)
-    return versions
+    versions = set()
+    for ns in namespaces:
+        base = os.path.join(installed_root, ns)
+        try:
+            entries = os.listdir(base)
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.startswith(prefix) and _phoronix_looks_like_version(entry[len(prefix):]):
+                versions.add(entry[len(prefix):])
+
+    sorted_versions = sorted(list(versions), key=_phoronix_version_key)
+    return sorted_versions
 
 
 _PHORONIX_SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -1949,7 +1963,7 @@ def materialize_phoronix_test_point(point, dest_root, source_kind, source_ref, i
     return result
 
 
-def repin_phoronix_test_point(test_point_dir, new_version):
+def repin_phoronix_test_point(test_point_dir, new_version, user_data_dir=None):
     """Rewrites <test_point_dir>/suite-definition.xml's <Execute><Test> to
     point at new_version instead of whatever version it was originally
     materialized with, and updates source.json to match -- the explicit,
@@ -1963,13 +1977,16 @@ def repin_phoronix_test_point(test_point_dir, new_version):
     function is that fix, called only when a human clicks "re-pin."
 
     Keeps the namespace prefix ("pts/", "system/", ...) and bare test name
-    unchanged -- only the "-<version>" suffix moves -- so bare_name/
-    options_slug/identity/directory layout (all derived from the bare name,
-    never the version) are untouched; a re-pin never moves or renames a
-    test point. source.json's original "test_id"/"generated_at" are
-    preserved as "previous_test_id"/"generated_at" for provenance; a new
-    "repinned_at" timestamp and "installed": True are set, since a re-pin
-    is only ever offered for a version this host has confirmed installed.
+    unchanged when the new version is installed under that namespace; if
+    the new version is installed under a different namespace (e.g. pts/ vs
+    system/), updates the namespace prefix to match where the version is
+    actually installed. Bare_name/options_slug/identity/directory layout
+    (all derived from the bare name, never the version) are untouched; a
+    re-pin never moves or renames a test point. source.json's original
+    "test_id"/"generated_at" are preserved as "previous_test_id"/
+    "generated_at" for provenance; a new "repinned_at" timestamp and
+    "installed": True are set, since a re-pin is only ever offered for a
+    version this host has confirmed installed.
 
     Returns {"old_test_id", "new_test_id", "dir"}, or raises FileNotFoundError
     if suite-definition.xml/source.json are missing, or ValueError if the
@@ -1984,8 +2001,29 @@ def repin_phoronix_test_point(test_point_dir, new_version):
     if test_el is None or not (test_el.text or "").strip():
         raise ValueError(f"no <Execute><Test> found in {suite_path}")
     old_test_id = test_el.text.strip()
-    namespace = old_test_id.split("/", 1)[0] if "/" in old_test_id else ""
+    old_namespace = old_test_id.split("/", 1)[0] if "/" in old_test_id else ""
     bare_name = phoronix_bare_test_name(old_test_id)
+
+    installed_root = os.path.join(user_data_dir or phoronix_user_data_dir(), "installed-tests")
+    target_dirname = f"{bare_name}-{new_version}"
+    namespace = old_namespace
+    if old_namespace and not os.path.isdir(os.path.join(installed_root, old_namespace, target_dirname)):
+        try:
+            for ns in os.listdir(installed_root):
+                if os.path.isdir(os.path.join(installed_root, ns, target_dirname)):
+                    namespace = ns
+                    break
+        except OSError:
+            pass
+    elif not old_namespace and not os.path.isdir(os.path.join(installed_root, "pts", target_dirname)):
+        try:
+            for ns in os.listdir(installed_root):
+                if os.path.isdir(os.path.join(installed_root, ns, target_dirname)):
+                    namespace = ns
+                    break
+        except OSError:
+            pass
+
     new_test_id = f"{namespace}/{bare_name}-{new_version}" if namespace else f"{bare_name}-{new_version}"
 
     test_el.text = new_test_id
