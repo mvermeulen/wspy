@@ -1362,6 +1362,14 @@ class ListInstalledPhoronixTestVersionsTest(unittest.TestCase):
             self.assertEqual(
                 joblib.list_installed_phoronix_test_versions("pts/nope-1.0.0", user_data_dir=tmpdir), [])
 
+    def test_lists_matching_versions_across_namespaces(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pts_base = os.path.join(tmpdir, "installed-tests", "pts")
+            os.makedirs(os.path.join(pts_base, "compress-zstd-1.6.0"))
+            versions = joblib.list_installed_phoronix_test_versions(
+                "system/compress-zstd-1.5.0", user_data_dir=tmpdir)
+            self.assertEqual(versions, ["1.6.0"])
+
 
 class RepinPhoronixTestPointTest(unittest.TestCase):
     def test_rewrites_suite_xml_and_source_json(self):
@@ -1394,6 +1402,15 @@ class RepinPhoronixTestPointTest(unittest.TestCase):
             info = joblib.materialize_phoronix_test_point(point, tmpdir, "file", "/tmp/src.xml")
             result = joblib.repin_phoronix_test_point(info["dir"], "1.0.50")
             self.assertEqual(result["new_test_id"], "system/selenium-1.0.50")
+
+    def test_repins_across_namespaces_when_installed_in_different_namespace(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pts_base = os.path.join(tmpdir, "installed-tests", "pts")
+            os.makedirs(os.path.join(pts_base, "compress-zstd-1.6.0"))
+            point = {"test_id": "system/compress-zstd-1.5.0", "arguments": "-b3"}
+            info = joblib.materialize_phoronix_test_point(point, tmpdir, "file", "/tmp/src.xml")
+            result = joblib.repin_phoronix_test_point(info["dir"], "1.6.0", user_data_dir=tmpdir)
+            self.assertEqual(result["new_test_id"], "pts/compress-zstd-1.6.0")
 
     def test_missing_suite_definition_raises(self):
         with tempfile.TemporaryDirectory() as tmpdir:
