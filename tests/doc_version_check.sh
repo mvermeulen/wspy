@@ -145,6 +145,37 @@ for pair in "STORE_SCHEMA_VERSION:store.c" "TOPDOWN_FORMULA_VERSION:wspy.h" \
 done
 
 echo ""
+echo "=== METRICS.md coverage (metric-formatter functions vs. doc/METRICS.md) ==="
+# doc/METRICS.md is the project's index of every metric wspy/wspy-store/
+# wspy-core-report/etc. can produce, keyed by the actual print_*()/extract_*()
+# function that computes it (see that file's own header). Rather than parsing
+# CSV header string literals out of C (fragile: many span multiple
+# concatenated string-literal lines, per-vendor branches, etc. -- exactly the
+# kind of thing this script's own file comment says to avoid), this checks
+# the coarser but robust invariant that every top-level metric-formatter
+# function *definition* in the files below is at least named somewhere in
+# doc/METRICS.md. Catches "a whole new formatter shipped with zero docs
+# entry"; does NOT catch a column added to an *existing* formatter (no
+# generic way to grep that without a real C parser) -- see CLAUDE.md's
+# "Common edits" for the manual half of this contract.
+METRICS_DOC=doc/METRICS.md
+if [ ! -f "$METRICS_DOC" ]; then
+  fail "$METRICS_DOC does not exist"
+else
+  for src in topdown.c system.c store.c core_report.c ibs_sample.c; do
+    [ -f "$src" ] || continue
+    while IFS= read -r fn; do
+      [ -n "$fn" ] || continue
+      CHECKS=$((CHECKS + 1))
+      if ! grep -q "$fn(" "$METRICS_DOC"; then
+        echo "WARN: $src: $fn() isn't mentioned in $METRICS_DOC -- new metric formatter added without a docs entry?"
+      fi
+    done < <(grep -ohE '^(static )?void (print|extract)_[a-zA-Z0-9_]+\(' "$src" \
+              | sed -E 's/^(static )?void //; s/\($//')
+  done
+fi
+
+echo ""
 echo "=== Tool-list drift (Makefile binaries vs. README.md sections) ==="
 makefile_bins=$(grep -m1 '^all:' Makefile | sed 's/^all:[[:space:]]*//' | tr -d '\t')
 gpu_bins=$(grep -m1 '^GPU_BINS' Makefile | sed -E 's/^GPU_BINS[[:space:]]*[:+]?=[[:space:]]*//')

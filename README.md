@@ -541,6 +541,10 @@ See `./web/server.py --help` for the full option list.
   confidence verdict, `wspy-archetype`'s classification confidence, `phase.c`'s phase output, and
   comparability signals (`mixed-pmu`, environment grouping) — what each one means and what to do
   when it fires, with real captured examples
+* `doc/METRICS.md` - the index of every metric wspy/`wspy-store`/`wspy-core-report`/etc. can
+  produce: canonical name, exact derivation, source function, whether/how it reaches the SQLite
+  store, and (where it's genuinely meaningful) a high/low rule of thumb — read by both people and
+  AI agents summarizing wspy output, and the working list for deciding what belongs in the database
 * `scripts/setup_perf.sh` - checks/adjusts `nmi_watchdog` and `perf_event_paranoid` for running
   perf counters as a non-root user, and checks/grants `CAP_PERFMON` on the `wspy` binary for
   `--power` (re-run after rebuilding — the grant is a file capability, not a sysctl)

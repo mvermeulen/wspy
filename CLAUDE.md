@@ -4,8 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 For design history/rationale/validation narratives, see `INVESTIGATION.md` (active backlog),
 `doc/INVESTIGATION_ARCHIVE.md` (shipped write-ups), `doc/ARTIFACT_CONTRACT.md` (JSON schemas),
-`doc/PROFILE_COOKBOOK.md` (reading verdict/confidence/phase output), and `git log`/`git blame`. This file
-covers *current* mechanism/behavior only.
+`doc/PROFILE_COOKBOOK.md` (reading verdict/confidence/phase output), `doc/METRICS.md` (every metric's
+name/derivation/source-function/database status), and `git log`/`git blame`. This file covers *current*
+mechanism/behavior only.
 
 ## Project overview
 
@@ -86,7 +87,10 @@ lists.
   Merge through GitHub — don't merge feature branches into `master` locally and push `master` directly.
 - **Before opening the PR:** run `./run_tests.sh` (and `./test_amd_smi.sh`/`./test_nvidia_nvml.sh` for
   GPU-touching changes). Extend `tests/golden_output.sh`/`tests/capability_matrix.sh` when a change
-  adds/reorders/removes a CSV column, rather than relying on manual checking alone.
+  adds/reorders/removes a CSV column, rather than relying on manual checking alone. Update
+  `doc/METRICS.md` too, for the same change — see "New CSV column / derived metric" under Common edits
+  below; `tests/doc_version_check.sh` (part of `run_tests.sh`) only WARNs if a whole new metric-formatter
+  *function* has no `doc/METRICS.md` mention at all, it can't catch a column added to an existing one.
 - **Scope:** keep a feature branch to one inventory idea where practical; large phase-sized efforts
   should land as a series of small merged PRs, not one long-lived branch.
 
@@ -214,6 +218,13 @@ vendor/group applicability) means a permission-denied run silently drops columns
   `upsert_*`/`enrich_from_manifest()`/`ingest_csv_metrics()`, bump `STORE_SCHEMA_VERSION`. Also add a
   `MIGRATION_V<N-1>_TO_V<N>` DDL string + `ensure_schema()` dispatch branch — it runs *either* fresh
   `SCHEMA_DDL` *or* one migration step, never both, so `ADD COLUMN` never re-runs on an existing column.
+- **New CSV column / derived metric (any of the above, plus `run_features`/IBS-sample/`wspy-core-report`
+  additions):** add or update its entry in `doc/METRICS.md` — name (prefer the CSV/text name verbatim),
+  derivation formula, source function, and the `[raw]`/`[feature]`/`[environment]`/`[manifest-only]`/
+  `[human-only]`/`[categorical]` database-status tag. That file is the single index of every metric wspy
+  produces, read by both people and AI agents summarizing wspy output — it's also how we're tracking
+  which raw metrics deserve promotion into `run_features`. Guidance on what counts as high/low is only
+  worth adding where it's genuinely meaningful (see that file's own intro), not for every metric.
 - **New `wspy-summary --group-by` column:** a `runs` column needs a case in `group_by_column()` +
   `parse_group_by()` + a new `enum group_by` value (`e.<column>` for `run_environment`). Only for a small
   fixed set — an open-ended value belongs in `--group-by-option`'s `run_config_options` join instead,
