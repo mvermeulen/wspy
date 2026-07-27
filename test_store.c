@@ -71,6 +71,36 @@ static void build_csv_record(char *buf,size_t bufsize,const char *hostname,const
     RUN_INDEX_SCHEMA_VERSION,run_id,hostname,start_time,start_time,command0,output_json);
 }
 
+/* Like build_csv_record(), but with a configurable elapsed_seconds and
+ * tree_output_path instead of build_csv_record()'s fixed 1.0/null -- for
+ * the blocking_wait_pct/sched_rundelay_pct extraction tests, which need
+ * both under test control (a real on-disk --tree fixture file, and an
+ * elapsed_seconds that makes the resulting percentages easy to hand-check). */
+static void build_record_with_tree(char *buf,size_t bufsize,const char *hostname,const char *run_id,
+                                    const char *start_time,const char *command0,
+                                    double elapsed_seconds,const char *tree_output_path){
+  char tree_json[320];
+
+  if (tree_output_path) snprintf(tree_json,sizeof(tree_json),"\"%s\"",tree_output_path);
+  else snprintf(tree_json,sizeof(tree_json),"null");
+
+  snprintf(buf,bufsize,
+    "{\"schema_version\":\"%s\",\"run_id\":\"%s\",\"collector\":\"wspy\",\"wspy_version\":\"4.3\","
+    "\"hostname\":\"%s\",\"cpu_vendor\":\"AMD\",\"cpu_family\":25,\"cpu_model\":1,"
+    "\"environment\":{\"virt_role\":\"host\",\"hypervisor_vendor\":null,\"microcode_version\":null,"
+    "\"bios_vendor\":null,\"bios_version\":null,\"bios_date\":null,\"cpu_governor\":null,"
+    "\"cpu_scaling_driver\":null,\"cpu_governor_uniform\":false,\"memory_total_kb\":null,"
+    "\"compiler_version\":null,\"libc_version\":null},"
+    "\"environment_coverage\":{\"captured\":0,\"probed\":9},"
+    "\"start_time\":\"%s\",\"finish_time\":\"%s\",\"elapsed_seconds\":%g,"
+    "\"command\":[\"%s\"],"
+    "\"exit_status\":{\"known\":true,\"exited\":true,\"exit_code\":0,\"signaled\":false,\"term_signal\":null},"
+    "\"options\":{\"counter_mask\":\"0x1\",\"per_core\":false,\"system\":false,\"csv\":false,\"tree\":true,\"interval_seconds\":0},"
+    "\"counter_coverage\":{\"requested\":0,\"measured\":0},"
+    "\"output_files\":{\"output_path\":null,\"tree_output_path\":%s,\"manifest_path\":null}}\n",
+    RUN_INDEX_SCHEMA_VERSION,run_id,hostname,start_time,start_time,elapsed_seconds,command0,tree_json);
+}
+
 /* Like build_record(), but with options.affinity and configuration_provenance
  * populated (INVESTIGATION.md's "Comparison matrix mode deep-dive") --
  * build_record() itself deliberately omits both, which already exercises
@@ -1130,6 +1160,142 @@ static void test_extract_run_features_generic_tlb_promoted(void){
   printf("PASS: extract_run_features generic TLB features promoted\n");
 }
 
+/* --- scan_tree_blocking_stats --- */
+
+static void test_scan_tree_blocking_stats_sums_across_processes(void){
+  double futex_s,io_s,rundelay_s;
+  int have_any;
+  const char *path = "/tmp/test_store_tree_blocking.txt";
+
+  printf("Testing scan_tree_blocking_stats: sums futex/io_wait/schedstat across every pid in the "
+         "file, ignoring every other --tree line type...\n");
+  write_file(path,
+    "0.010 100 exec /bin/sh\n"
+    "1.500 100 futex 3 0.250000\n"
+    "2.100 100 io_wait 5 0.100000 2 0.050000\n"
+    "3.000 100 schedstat 2.500000 0.750000 42\n"
+    "3.100 200 fork 100\n"
+    "3.500 200 futex 1 0.400000\n"
+    "4.000 200 exit 0\n"
+    "4.500 100 exit 0\n");
+
+  scan_tree_blocking_stats(path,&futex_s,&io_s,&rundelay_s,&have_any);
+  assert(have_any);
+  assert(fabs(futex_s - 0.65) < 1e-9);   /* 0.25 (pid 100) + 0.40 (pid 200) */
+  assert(fabs(io_s - 0.15) < 1e-9);      /* 0.10 + 0.05, pid 100 only */
+  assert(fabs(rundelay_s - 0.75) < 1e-9); /* pid 100 only */
+
+  remove(path);
+  printf("PASS: scan_tree_blocking_stats sums across processes\n");
+}
+
+static void test_scan_tree_blocking_stats_no_matching_lines(void){
+  double futex_s,io_s,rundelay_s;
+  int have_any;
+  const char *path = "/tmp/test_store_tree_no_blocking.txt";
+
+  printf("Testing scan_tree_blocking_stats: a --tree file with none of the three tags leaves "
+         "have_any false, not a bogus zero read as real data...\n");
+  write_file(path,"0.010 100 exec /bin/sh\n0.500 100 exit 0\n");
+
+  scan_tree_blocking_stats(path,&futex_s,&io_s,&rundelay_s,&have_any);
+  assert(!have_any);
+  assert(futex_s == 0.0 && io_s == 0.0 && rundelay_s == 0.0);
+
+  remove(path);
+  printf("PASS: scan_tree_blocking_stats no matching lines\n");
+}
+
+static void test_scan_tree_blocking_stats_missing_file(void){
+  double futex_s,io_s,rundelay_s;
+  int have_any;
+
+  printf("Testing scan_tree_blocking_stats: a missing/unreadable file degrades to have_any=0, not "
+         "a crash...\n");
+  scan_tree_blocking_stats("/tmp/does-not-exist-tree-blocking-test.txt",&futex_s,&io_s,&rundelay_s,&have_any);
+  assert(!have_any);
+
+  printf("PASS: scan_tree_blocking_stats missing file\n");
+}
+
+static void test_extract_run_features_tree_blocking_promoted(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_int64 run_id;
+  double value;
+  char coverage[16];
+  const char *tree_path = "/tmp/test_store_features_tree.txt";
+
+  printf("Testing extract_run_features: blocking_wait_pct/sched_rundelay_pct promoted from a real "
+         "--tree fixture file, normalized by elapsed_seconds...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  write_file(tree_path,
+    "1.500 100 futex 3 0.250000\n"
+    "2.100 100 io_wait 5 0.100000 2 0.050000\n"
+    "3.000 100 schedstat 2.500000 0.750000 42\n");
+  build_record_with_tree(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","/bin/true",
+                          10.0,tree_path);
+
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,1,1,&stats);
+  json_free(root);
+
+  run_id = lookup_run_id(db,"run1");
+  assert(run_id > 0);
+
+  /* (0.25 futex + 0.10 + 0.05 io_wait) / 10.0 * 100 = 4.0 */
+  assert(feature_row(db,run_id,"blocking_wait_pct",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && fabs(value - 4.0) < 1e-9);
+  /* 0.75 rundelay / 10.0 * 100 = 7.5 */
+  assert(feature_row(db,run_id,"sched_rundelay_pct",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && fabs(value - 7.5) < 1e-9);
+
+  sqlite3_close(db);
+  remove(tree_path);
+  printf("PASS: extract_run_features tree blocking features promoted\n");
+}
+
+static void test_extract_run_features_tree_blocking_unavailable_without_tree(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_int64 run_id;
+  double value;
+  char coverage[16];
+
+  printf("Testing extract_run_features: a run with no tree_output_path at all (the common case, no "
+         "--tree) leaves blocking_wait_pct/sched_rundelay_pct unavailable, not zero...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  build_record_with_tree(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","/bin/true",
+                          10.0,NULL);
+
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,1,1,&stats);
+  json_free(root);
+
+  run_id = lookup_run_id(db,"run1");
+  assert(run_id > 0);
+
+  assert(feature_row(db,run_id,"blocking_wait_pct",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"unavailable"));
+  assert(feature_row(db,run_id,"sched_rundelay_pct",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"unavailable"));
+
+  sqlite3_close(db);
+  printf("PASS: extract_run_features tree blocking features unavailable without --tree\n");
+}
+
 static void test_extract_run_features_rates(void){
   sqlite3 *db;
   struct store_stats stats;
@@ -1847,6 +2013,11 @@ int main(void){
   test_extract_run_features_basic();
   test_extract_run_features_ibs_sample_promoted();
   test_extract_run_features_generic_tlb_promoted();
+  test_scan_tree_blocking_stats_sums_across_processes();
+  test_scan_tree_blocking_stats_no_matching_lines();
+  test_scan_tree_blocking_stats_missing_file();
+  test_extract_run_features_tree_blocking_promoted();
+  test_extract_run_features_tree_blocking_unavailable_without_tree();
   test_extract_run_features_rates();
   test_extract_run_features_phase_stability();
   test_extract_run_features_parallelism_proxy();

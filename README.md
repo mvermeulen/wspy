@@ -436,7 +436,11 @@ with a top-2 alternative and a confidence level), `parallelism_shape`/`control_f
 collected), and `memory_attribution` — cross-references topdown's own `backend_pct` against every
 independently-measured cache/TLB/IBS signal the run collected, reporting `corroborated`/
 `uncorroborated`/`not-memory-bound`/`unknown` (with `memory_attribution_reasons` naming which
-signal(s) fired or were checked) rather than trusting a "memory-bound" topdown read on its own.
+signal(s) fired or were checked) rather than trusting a "memory-bound" topdown read on its own. On a
+run collected with `--tree --tree-io-wait --tree-schedstat` (or `--tree-futex`), two more outcomes take
+priority over cache/TLB/IBS corroboration: `blocked` (heavy futex/io-wait — the CPU was waiting on the
+kernel, not stalled) and `oversubscribed` (heavy scheduler run-delay — runnable but not given the CPU),
+since a "memory-bound" topdown read on either of those isn't a genuine hardware stall to begin with.
 `--nearest` ranks other runs by similarity to one target run, using a coverage-aware
 distance over whichever `run_features` both runs actually have `measured` (z-score-standardized,
 root-*mean*-square over the shared feature set, so a pair sharing fewer features isn't penalized

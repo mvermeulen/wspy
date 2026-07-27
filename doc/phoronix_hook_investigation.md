@@ -242,7 +242,8 @@ path) and, separately, the registration helper's write logic against a sandboxed
 (preserves unrelated existing `module-settings.ini` keys, idempotent re-run, correct `AutoLoadModules`
 XML surgery) — no real host's `~/.phoronix-test-suite` was modified during this validation.
 
-**What's still open** (the actual remainder of 4.3 Tier 6 item 20): nothing yet consumes
+**What's still open** (the actual remainder of 4.3 Tier 6's "Phoronix-specific telemetry segmentation"
+item): nothing yet consumes
 `pts_hooks.log` — `scripts/wspy-phoronix-segment.py` still only implements the composite.xml/test-log
 timestamp-correlation approach from Sections 1-3. Teaching it to prefer `pts_hooks.log` when present
 (higher precision, no composite.xml hash-mapping indirection needed since the log already carries the

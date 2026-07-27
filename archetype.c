@@ -97,6 +97,14 @@
 #define SMT_CONTENTION_ELEVATED_PCT    5.0
 #define IBS_DC_MISS_ELEVATED_PCT      10.0
 #define IBS_DRAM_ELEVATED_PCT         10.0
+/* blocking-syscall-split modifier thresholds (fraction of run elapsed time,
+ * store.c's blocking_wait_pct/sched_rundelay_pct) -- checked ahead of the
+ * cache/TLB/IBS corroboration signals above: if the CPU wasn't actually
+ * stalled (it was blocked in the kernel, or runnable but not scheduled),
+ * asking whether cache/TLB/IBS "corroborate" a hardware stall is moot
+ * regardless of what they show. */
+#define BLOCKING_WAIT_ELEVATED_PCT    20.0
+#define SCHED_RUNDELAY_ELEVATED_PCT   20.0
 
 struct threshold_rule { double max_value; const char *label; }; /* ascending; last entry is the catch-all */
 
@@ -262,6 +270,23 @@ struct memory_signal { const char *name; double value; int available; double ele
  * (cross-NUMA latency, lock contention masquerading as a backend stall,
  * etc.) rather than a straightforward capacity/miss-rate problem.
  *
+ * blocking_wait_pct/sched_rundelay_pct (store.c, scanned from --tree's raw
+ * futex/io_wait/schedstat lines) are checked FIRST, ahead of every cache/
+ * TLB/IBS signal above -- INVESTIGATION.md's "Composite attribution"
+ * remaining-scope item: a "memory-bound" topdown read on a phase/run
+ * dominated by kernel-blocking (futex/io-wait) or scheduler run-delay isn't
+ * a genuine hardware stall at all, so asking whether cache/TLB/IBS
+ * "corroborate" it is moot regardless of what they show -- checking
+ * corroboration first would risk a technically-true but misleading
+ * "corroborated" verdict on a run that was mostly blocked or
+ * oversubscribed, not actually executing memory-bound code on a core.
+ * "blocked" (heavy futex/io-wait) is checked ahead of "oversubscribed"
+ * (heavy run_delay), matching the critical-path work's own three-way
+ * priority ("heavy run_delay *with low futex/io-wait*") -- a process can't
+ * be both meaningfully blocked-in-kernel and meaningfully not-yet-scheduled
+ * for the same slice of time, so kernel-blocking (the more directly
+ * explanatory signal) wins when both happen to be elevated.
+ *
  * Deliberately does NOT attempt to rank *which* cache level (L1/L2/L3) the
  * stall concentrates in -- that's print_topdown_be()'s own dedicated
  * --topdown-backend group (l1_bound_slots_pct/etc., doc/METRICS.md), a
@@ -270,6 +295,8 @@ struct memory_signal { const char *name; double value; int available; double ele
  * conflating the two here would overclaim precision this signal set
  * doesn't have. */
 static void classify_memory_attribution(double backend_pct,int have_backend,
+                                         double blocking_wait_pct,int have_blocking_wait,
+                                         double sched_rundelay_pct,int have_sched_rundelay,
                                          const struct memory_signal *signals,int nsignals,
                                          struct memory_attribution_result *out){
   int i,any_measured = 0,any_elevated = 0;
@@ -282,6 +309,17 @@ static void classify_memory_attribution(double backend_pct,int have_backend,
   out->available = 1;
   if (backend_pct < MEMORY_ATTRIBUTION_FLOOR_PCT){
     snprintf(out->label,sizeof(out->label),"not-memory-bound");
+    return;
+  }
+
+  if (have_blocking_wait && blocking_wait_pct >= BLOCKING_WAIT_ELEVATED_PCT){
+    snprintf(out->label,sizeof(out->label),"blocked");
+    snprintf(out->reasons,sizeof(out->reasons),"blocking_wait_pct=%.4g",blocking_wait_pct);
+    return;
+  }
+  if (have_sched_rundelay && sched_rundelay_pct >= SCHED_RUNDELAY_ELEVATED_PCT){
+    snprintf(out->label,sizeof(out->label),"oversubscribed");
+    snprintf(out->reasons,sizeof(out->reasons),"sched_rundelay_pct=%.4g",sched_rundelay_pct);
     return;
   }
 
@@ -343,6 +381,11 @@ struct run_snapshot {
   double ibs_dram_pct;           int have_ibs_dram;
   double itlb_generic_miss_pct;  int have_itlb_generic_miss;
   double dtlb_generic_miss_pct;  int have_dtlb_generic_miss;
+  /* blocking-syscall-split modifier inputs (store.c, from --tree) --
+   * checked ahead of the corroborating signals above, see
+   * classify_memory_attribution()'s own comment. */
+  double blocking_wait_pct;      int have_blocking_wait;
+  double sched_rundelay_pct;     int have_sched_rundelay;
 };
 
 static void run_snapshot_reset(struct run_snapshot *snap,sqlite3_int64 run_id,
@@ -380,6 +423,8 @@ static void run_snapshot_apply_feature(struct run_snapshot *snap,const char *fea
   else if (!strcmp(feature_name,"ibs_dram_pct")){ snap->ibs_dram_pct = value; snap->have_ibs_dram = measured; }
   else if (!strcmp(feature_name,"itlb_generic_miss_pct")){ snap->itlb_generic_miss_pct = value; snap->have_itlb_generic_miss = measured; }
   else if (!strcmp(feature_name,"dtlb_generic_miss_pct")){ snap->dtlb_generic_miss_pct = value; snap->have_dtlb_generic_miss = measured; }
+  else if (!strcmp(feature_name,"blocking_wait_pct")){ snap->blocking_wait_pct = value; snap->have_blocking_wait = measured; }
+  else if (!strcmp(feature_name,"sched_rundelay_pct")){ snap->sched_rundelay_pct = value; snap->have_sched_rundelay = measured; }
 }
 
 /* The full scorecard for one already-assembled snapshot -- shared by both
@@ -417,7 +462,10 @@ static void score_snapshot(const struct run_snapshot *snap,struct scorecard *out
                         CONTROL_FLOW_RULES,2,&out->simple[AXIS_CONTROL_FLOW_STYLE]);
   classify_simple_axis(snap->phase_stability,snap->have_phase,
                         STABILITY_RULES,3,&out->simple[AXIS_RUNTIME_STABILITY]);
-  classify_memory_attribution(snap->backend_pct,snap->have_backend,mem_signals,10,&out->memory_attribution);
+  classify_memory_attribution(snap->backend_pct,snap->have_backend,
+                               snap->blocking_wait_pct,snap->have_blocking_wait,
+                               snap->sched_rundelay_pct,snap->have_sched_rundelay,
+                               mem_signals,10,&out->memory_attribution);
   compute_overall_confidence(&out->dominance,out->simple,NUM_SIMPLE_AXES,&out->confidence);
 }
 
