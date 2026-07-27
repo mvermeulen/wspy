@@ -412,10 +412,16 @@ column it reports cross-core min/max/mean/stddev/coefficient-of-variation, namin
 and "cold" (min) core. On a heterogeneous host (ARM big.LITTLE, Intel Atom+Core, AMD Zen5/Zen5c) it
 also breaks the same stats down by core class. Must be run on the same host that collected the CSV
 (or one with identical topology) — core classes are re-detected fresh, not read from the CSV.
+`--weight-by <metric>` weights each core's contribution to mean/stddev/cv by that same core's own
+value of another metric column (e.g. `ipc`) instead of counting every core equally regardless of how
+much work it did — on a hybrid host (or any run with wildly imbalanced core activity), a barely-active
+core otherwise pulls the combined number just as hard as a fully-active one; min/max/hot/cold stay the
+raw per-core values either way.
 
 ```
 ./wspy-core-report results/percore.csv
 ./wspy-core-report --csv results/percore.csv --metric ipc
+./wspy-core-report results/percore.csv --weight-by ipc   # activity-weighted aggregate
 ```
 
 See `./wspy-core-report --help` for the full option list.

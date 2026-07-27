@@ -133,6 +133,15 @@ static struct metric_accum *find_or_add_metric(const char *name){
   return &metrics[nmetrics++];
 }
 
+/* Lookup-only sibling of find_or_add_metric() for --weight-by: an unknown
+ * weight-metric name is a usage error (main() reports it and exits), not
+ * something to silently register as a new empty column. */
+static struct metric_accum *find_metric(const char *name){
+  int i;
+  for (i = 0; i < nmetrics; i++) if (!strcmp(metrics[i].name,name)) return &metrics[i];
+  return NULL;
+}
+
 static int metric_wanted(const char *name,char **filters,int nfilters){
   int i;
   if (nfilters == 0) return 1;
@@ -174,6 +183,49 @@ static void compute_core_stats(const double *values,int n,struct core_stats *out
   out->cv_percent = (mean != 0.0) ? (out->stddev / fabs(mean)) * 100.0 : 0.0;
 }
 
+/* --weight-by variant: min/max/hot_idx/cold_idx are still defined over the
+ * raw per-core values exactly as compute_core_stats() above (weighting
+ * doesn't change which core had the highest/lowest raw reading); mean/
+ * stddev/cv instead combine per-core values via each core's own weight
+ * (e.g. that core's own cpu-cycles or ipc for the same rows) rather than
+ * counting every core equally regardless of how much work it actually did
+ * -- INVESTIGATION.md's "Core-class-aware topdown... weighted aggregate"
+ * item: on a hybrid host, a barely-active E-core shouldn't pull a combined
+ * headline number as hard as a fully-active P-core. Population-style
+ * weighted variance (divides by sum(weights), not a bias-corrected
+ * denominator) -- deliberately simple, same "not a formal derivation"
+ * spirit as this codebase's other ad-hoc statistics (summary.c/archetype.c
+ * carry the same caveat for their own simple formulas). Falls back to
+ * plain compute_core_stats() if every weight is <= 0 (degenerate -- would
+ * divide by zero, and a weight of exactly 0 everywhere carries no
+ * information to weight by anyway). */
+static void compute_weighted_core_stats(const double *values,const double *weights,int n,
+                                         struct core_stats *out){
+  double wsum = 0,wmean = 0,wvar = 0;
+  int i;
+
+  out->n = n;
+  out->hot_idx = 0;
+  out->cold_idx = 0;
+  out->min = values[0];
+  out->max = values[0];
+  for (i = 0; i < n; i++){
+    if (values[i] > out->max){ out->max = values[i]; out->hot_idx = i; }
+    if (values[i] < out->min){ out->min = values[i]; out->cold_idx = i; }
+    wsum += weights[i];
+  }
+  if (wsum <= 0.0){ compute_core_stats(values,n,out); return; }
+
+  for (i = 0; i < n; i++) wmean += values[i] * weights[i];
+  wmean /= wsum;
+  for (i = 0; i < n; i++) wvar += weights[i] * (values[i] - wmean) * (values[i] - wmean);
+  wvar /= wsum;
+
+  out->mean = wmean;
+  out->stddev = (n >= 2) ? sqrt(wvar) : 0.0;
+  out->cv_percent = (wmean != 0.0) ? (out->stddev / fabs(wmean)) * 100.0 : 0.0;
+}
+
 /* Collects one metric's per-core mean values into values[]/core_ids[],
  * optionally restricted to cores of one class. Pure over its arguments (no
  * cpu_info/hardware dependency) except for the file-scope core_seen[]/
@@ -181,11 +233,20 @@ static void compute_core_stats(const double *values,int n,struct core_stats *out
  * are passed in rather than read from cpu_info directly so this (and the
  * class-membership logic it implements) can be driven by a synthetic class
  * assignment in test_core_report.c, without needing real or fake hardware
- * topology. Returns the count filled into values[]/core_ids[]. */
+ * topology. Returns the count filled into values[]/core_ids[].
+ *
+ * weight_metric (NULL = no weighting, weights[] then untouched/unused):
+ * a core lacking data for the weight metric itself is excluded from the
+ * result entirely, same as a core lacking data for m itself -- weighting
+ * by an absent signal isn't "unweighted", it's "we don't know how to
+ * weight this core", so it's dropped rather than silently defaulting to
+ * a weight of 0 (which would zero out its contribution invisibly) or 1
+ * (which would silently equal-weight it, defeating the point). */
 static int gather_core_values(const struct metric_accum *m,
                                const enum cpu_core_type *core_class,const int *class_known,
                                int filter_by_class,enum cpu_core_type want_class,
-                               double *values,int *core_ids){
+                               const struct metric_accum *weight_metric,
+                               double *values,int *core_ids,double *weights){
   int n = 0,c;
 
   for (c = 0; c <= max_core_seen; c++){
@@ -193,8 +254,10 @@ static int gather_core_values(const struct metric_accum *m,
     if (filter_by_class){
       if (!class_known[c] || core_class[c] != want_class) continue;
     }
+    if (weight_metric && weight_metric->count[c] == 0) continue;
     core_ids[n] = c;
     values[n] = m->sum[c] / m->count[c];
+    if (weight_metric) weights[n] = weight_metric->sum[c] / weight_metric->count[c];
     n++;
   }
   return n;
@@ -382,10 +445,22 @@ static void usage(const char *prog){
     "                      min_core,max,max_core,mean,stddev,cv_percent)\n"
     "                      instead of the default human-readable report\n"
     "  --metric <name>     only report this metric column (repeatable)\n"
+    "  --weight-by <name>  weight each core's contribution to mean/stddev/cv\n"
+    "                      by that same core's own value of this metric column\n"
+    "                      (e.g. cpu-cycles or ipc), instead of counting every\n"
+    "                      core equally regardless of how much work it did --\n"
+    "                      the \"weighted aggregate\" a hybrid host needs so a\n"
+    "                      barely-active E-core doesn't pull the combined\n"
+    "                      number as hard as a fully-active P-core. min/max/\n"
+    "                      hot/cold are unaffected (still the raw per-core\n"
+    "                      values); a core missing this metric's data is\n"
+    "                      excluded from every weighted result, not silently\n"
+    "                      zero-weighted. Must name a column present in the\n"
+    "                      CSV; unknown names are a usage error.\n"
     "  -h, --help          show this help\n"
     "\n"
     "Exit status: 0 on success; 2 on a usage error (missing/unreadable\n"
-    "file, or a CSV with no \"core\" column).\n",
+    "file, a CSV with no \"core\" column, or an unknown --weight-by metric).\n",
     prog);
 }
 
@@ -398,11 +473,14 @@ int main(int argc,char **argv){
   int opt,i,j;
   int nclasses_seen;
   enum cpu_core_type classes_seen[32];
+  const char *weight_by = NULL;
+  struct metric_accum *weight_metric = NULL;
 
   static struct option long_options[] = {
-    { "csv",    no_argument,       0, 'c' },
-    { "metric", required_argument, 0, 'm' },
-    { "help",   no_argument,       0, 'h' },
+    { "csv",       no_argument,       0, 'c' },
+    { "metric",    required_argument, 0, 'm' },
+    { "weight-by", required_argument, 0, 'w' },
+    { "help",      no_argument,       0, 'h' },
     { 0,0,0,0 }
   };
 
@@ -416,6 +494,7 @@ int main(int argc,char **argv){
       }
       filters[nfilters++] = optarg;
       break;
+    case 'w': weight_by = optarg; break;
     case 'h':
       usage(argv[0]);
       return 0;
@@ -440,6 +519,15 @@ int main(int argc,char **argv){
   if (max_core_seen < 0){
     error("%s: no usable per-core data rows found\n",csv_path);
     return 2;
+  }
+
+  if (weight_by){
+    weight_metric = find_metric(weight_by);
+    if (!weight_metric){
+      fprintf(stderr,"wspy-core-report: --weight-by '%s' is not a metric column in %s\n",
+              weight_by,csv_path);
+      return 2;
+    }
   }
 
   inventory_cpu();
@@ -471,22 +559,25 @@ int main(int argc,char **argv){
       printf("metric,scope,scope_value,n,min,min_core,max,max_core,mean,stddev,cv_percent\n");
     } else {
       printf("core report: %s (%d core(s))\n\n",csv_path,max_core_seen + 1);
-      printf("Cross-core stats:\n");
+      if (weight_by) printf("Cross-core stats (mean/stddev/cv weighted by '%s'):\n",weight_by);
+      else printf("Cross-core stats:\n");
     }
 
     for (i = 0; i < nmetrics; i++){
       struct metric_accum *m = &metrics[i];
       double values[MAX_CORES];
       int core_ids[MAX_CORES];
+      double weights[MAX_CORES];
       int n;
       struct core_stats st;
 
       if (!metric_wanted(m->name,filters,nfilters)) continue;
 
-      n = gather_core_values(m,core_class,class_known,0,CORE_UNKNOWN,values,core_ids);
+      n = gather_core_values(m,core_class,class_known,0,CORE_UNKNOWN,weight_metric,values,core_ids,weights);
       if (n == 0) continue;
 
-      compute_core_stats(values,n,&st);
+      if (weight_metric) compute_weighted_core_stats(values,weights,n,&st);
+      else compute_core_stats(values,n,&st);
       if (csv_output) print_stats_csv(m->name,"all","",&st,core_ids);
       else print_stats_human(m->name,&st,core_ids);
     }
@@ -502,14 +593,17 @@ int main(int argc,char **argv){
         for (j = 0; j < nclasses_seen; j++){
           double values[MAX_CORES];
           int core_ids[MAX_CORES];
+          double weights[MAX_CORES];
           int n;
           struct core_stats st;
           const char *class_name = core_class_name(classes_seen[j]);
 
-          n = gather_core_values(m,core_class,class_known,1,classes_seen[j],values,core_ids);
+          n = gather_core_values(m,core_class,class_known,1,classes_seen[j],weight_metric,
+                                  values,core_ids,weights);
           if (n == 0) continue;
 
-          compute_core_stats(values,n,&st);
+          if (weight_metric) compute_weighted_core_stats(values,weights,n,&st);
+          else compute_core_stats(values,n,&st);
           if (csv_output){
             print_stats_csv(m->name,"core_type",class_name,&st,core_ids);
           } else {
