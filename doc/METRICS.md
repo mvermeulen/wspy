@@ -524,15 +524,27 @@ above, for human/agent consumption.
 - **memory_attribution** (`wspy-archetype`) — `[categorical]` cross-references `backend_pct` (topdown)
   against every independently-measured cache/TLB/IBS signal the run collected (`dcache_miss_pct`,
   `l2_miss_pct`, `l3_miss_pct`, `itlb_miss_per1k`/`dtlb_miss_per1k`, `itlb_generic_miss_pct`/
-  `dtlb_generic_miss_pct`, `ibs_dc_miss_pct`, `ibs_dram_pct`, `smt_contention_pct`) — `not-memory-bound`
-  (backend_pct below a 20% floor, nothing to explain), `corroborated` (backend significant and at least
-  one signal is also notably elevated — `memory_attribution_reasons` lists which), `uncorroborated`
-  (backend significant but every signal that *was* collected looks unremarkable — a genuine attribution
-  gap worth a closer look, not a measurement failure), or `unknown` (backend_pct itself wasn't measured,
-  or none of the corroborating signals were even collected this run). Deliberately doesn't attempt to
-  rank *which* cache level a stall concentrates in — that's a different, stall-cycle-attribution question
-  only `--topdown-backend`'s own dedicated group (`l1_bound_slots_pct`/etc. above) can honestly answer;
-  this axis cross-checks a *miss-rate* signal against topdown's *stall* signal instead.
+  `dtlb_generic_miss_pct`, `ibs_dc_miss_pct`, `ibs_dram_pct`, `smt_contention_pct`), further modified by
+  `blocking_wait_pct`/`sched_rundelay_pct` when the run used `--tree` with the relevant sub-flags.
+  Checked in priority order: `blocked` (`blocking_wait_pct` at/above 20% — heavy futex/io-wait, the CPU
+  was waiting on the kernel, not stalled) beats `oversubscribed` (`sched_rundelay_pct` at/above 20% with
+  low blocking-wait — runnable but not given the CPU, an affinity/placement problem) beats
+  `not-memory-bound` (backend_pct below a 20% floor, nothing to explain) beats `corroborated` (backend
+  significant and at least one cache/TLB/IBS signal is also notably elevated — `memory_attribution_reasons`
+  lists which) beats `uncorroborated` (backend significant but every signal that *was* collected looks
+  unremarkable — a genuine attribution gap worth a closer look, not a measurement failure), or `unknown`
+  (backend_pct itself wasn't measured, or none of the corroborating signals were even collected this
+  run). `blocked`/`oversubscribed` are checked *before* cache/TLB/IBS corroboration specifically because
+  a "memory-bound" topdown read on a run that wasn't actually stalled makes asking whether other
+  counters "corroborate" it moot regardless of what they show. Deliberately doesn't attempt to rank
+  *which* cache level a stall concentrates in — that's a different, stall-cycle-attribution question only
+  `--topdown-backend`'s own dedicated group (`l1_bound_slots_pct`/etc. above) can honestly answer; this
+  axis cross-checks a *miss-rate* signal against topdown's *stall* signal instead.
+- **blocking_wait_pct** (`wspy-archetype` input, `store.c`) — `[feature]` `(futex_wait_seconds +
+  io_wait_seconds) / elapsed_seconds * 100`, scanned directly from `--tree`'s raw `futex`/`io_wait` lines
+  (needs `--tree-futex`/`--tree-io-wait`; `unavailable` without `--tree` at all, the common case).
+- **sched_rundelay_pct** (`wspy-archetype` input, `store.c`) — `[feature]` `rundelay_seconds /
+  elapsed_seconds * 100`, scanned from `--tree`'s raw `schedstat` lines (needs `--tree-schedstat`).
 
 Source: `provenance.c`, one-shot per-run capture, JSON in the manifest, promoted into SQLite by
 `store.c:enrich_from_manifest()`. Every field degrades independently (`available=0` + a reason string)

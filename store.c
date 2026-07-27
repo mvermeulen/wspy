@@ -37,7 +37,7 @@
  * (wspy.h) is versioned separately from MANIFEST_SCHEMA_VERSION. Recorded
  * on every run_features row so a later reader can tell which rule set
  * produced a given value. */
-#define FEATURE_SET_VERSION "1.3"
+#define FEATURE_SET_VERSION "1.4"
 
 /* Noise floor for active_core_count (below): a --per-core core averaging
  * at or under this IPC is treated as not meaningfully participating in the
@@ -971,16 +971,82 @@ static int sum_metric_value(sqlite3 *db,sqlite3_int64 run_row_id,const char *met
   return have;
 }
 
+/* Whole-run blocking-syscall/scheduler totals, scanned directly from the
+ * raw --tree text output -- INVESTIGATION.md's "Composite attribution"
+ * remaining-scope item: `wspy-archetype`'s `memory_attribution` axis
+ * (shipped) needs this as a modifier ("a 'memory-bound' topdown read on a
+ * phase/run with heavy futex/io-wait or run_delay likely isn't a genuine
+ * hardware stall at all"), but nothing ingested this signal into the store
+ * before now.
+ *
+ * Deliberately NOT proctree.c's own parser -- this needs only a run-wide
+ * SUM across every process, not per-pid/tree-shape reconstruction, so a
+ * minimal dedicated line scanner is simpler than reusing (or shelling out
+ * to) a tool built to reconstruct the full process hierarchy. Matches
+ * topdown.c's own fprintf format strings for these three line types
+ * exactly (see ptrace_loop()'s futex/io_wait/schedstat emission sites,
+ * each written once per pid right before that pid's own "exit" line):
+ *   "<time> <pid> futex <count> <seconds>"
+ *   "<time> <pid> io_wait <read_count> <read_seconds> <write_count> <write_seconds>"
+ *   "<time> <pid> schedstat <cpu_seconds> <rundelay_seconds> <nr_timeslices>"
+ * Any line not matching one of these three literal tags is ignored --
+ * naturally skips every other --tree line type (exec/fork/exit/open/
+ * connect/wait/poll/nanosleep/vmsize/...) without needing to enumerate them.
+ * Best-effort: a missing/unreadable file leaves *have_any false rather than
+ * failing the whole ingestion, same convention as manifest enrichment. */
+static void scan_tree_blocking_stats(const char *path,double *futex_wait_seconds,
+                                      double *io_wait_seconds,double *sched_rundelay_seconds,
+                                      int *have_any){
+  FILE *fp;
+  char line[512];
+
+  *futex_wait_seconds = 0;
+  *io_wait_seconds = 0;
+  *sched_rundelay_seconds = 0;
+  *have_any = 0;
+
+  fp = fopen(path,"r");
+  if (!fp) return;
+
+  while (fgets(line,sizeof(line),fp)){
+    double t,seconds,read_seconds,write_seconds,cpu_seconds,rundelay_seconds;
+    int pid;
+    unsigned long long count,read_count,write_count,nr_timeslices;
+
+    if (sscanf(line,"%lf %d futex %llu %lf",&t,&pid,&count,&seconds) == 4){
+      *futex_wait_seconds += seconds;
+      *have_any = 1;
+    } else if (sscanf(line,"%lf %d io_wait %llu %lf %llu %lf",
+                       &t,&pid,&read_count,&read_seconds,&write_count,&write_seconds) == 6){
+      *io_wait_seconds += read_seconds + write_seconds;
+      *have_any = 1;
+    } else if (sscanf(line,"%lf %d schedstat %lf %lf %llu",
+                       &t,&pid,&cpu_seconds,&rundelay_seconds,&nr_timeslices) == 5){
+      *sched_rundelay_seconds += rundelay_seconds;
+      *have_any = 1;
+    }
+  }
+  fclose(fp);
+}
+
 static void extract_run_features(sqlite3 *db,sqlite3_int64 run_row_id,struct store_stats *stats){
   sqlite3_stmt *stmt;
   double elapsed_seconds = 0;
   int have_elapsed;
+  char tree_output_path[4096] = "";
   int i;
 
-  if (sqlite3_prepare_v2(db,"SELECT elapsed_seconds FROM runs WHERE id=?;",-1,&stmt,NULL) == SQLITE_OK){
+  if (sqlite3_prepare_v2(db,"SELECT elapsed_seconds,tree_output_path FROM runs WHERE id=?;",
+                         -1,&stmt,NULL) == SQLITE_OK){
     sqlite3_bind_int64(stmt,1,run_row_id);
-    if (sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_type(stmt,0) != SQLITE_NULL)
-      elapsed_seconds = sqlite3_column_double(stmt,0);
+    if (sqlite3_step(stmt) == SQLITE_ROW){
+      if (sqlite3_column_type(stmt,0) != SQLITE_NULL)
+        elapsed_seconds = sqlite3_column_double(stmt,0);
+      if (sqlite3_column_type(stmt,1) != SQLITE_NULL){
+        const unsigned char *p = sqlite3_column_text(stmt,1);
+        if (p) snprintf(tree_output_path,sizeof(tree_output_path),"%s",(const char *)p);
+      }
+    }
     sqlite3_finalize(stmt);
   }
   have_elapsed = elapsed_seconds > 0;
@@ -1105,6 +1171,35 @@ static void extract_run_features(sqlite3 *db,sqlite3_int64 run_row_id,struct sto
       upsert_feature(db,run_row_id,"active_core_count",1,(double)active);
     else
       upsert_feature(db,run_row_id,"active_core_count",0,0);
+  }
+
+  /* blocking_wait_pct / sched_rundelay_pct: see scan_tree_blocking_stats()'s
+   * own comment. Needs --tree plus at least one of --tree-futex/
+   * --tree-io-wait/--tree-schedstat to have collected anything; most runs
+   * don't use --tree at all, so "unavailable" is the common case, not a
+   * failure. Normalized by elapsed_seconds (a fraction of total wall time,
+   * not a raw seconds count) so it's comparable across differently-length
+   * runs the same way every other *_pct feature already is. */
+  {
+    double futex_seconds = 0,io_seconds = 0,rundelay_seconds = 0;
+    int have_tree_data = 0;
+
+    if (*tree_output_path){
+      struct stat st;
+      if (stat(tree_output_path,&st) == 0)
+        scan_tree_blocking_stats(tree_output_path,&futex_seconds,&io_seconds,
+                                  &rundelay_seconds,&have_tree_data);
+    }
+
+    if (have_tree_data && have_elapsed){
+      upsert_feature(db,run_row_id,"blocking_wait_pct",1,
+                      (futex_seconds + io_seconds) / elapsed_seconds * 100.0);
+      upsert_feature(db,run_row_id,"sched_rundelay_pct",1,
+                      rundelay_seconds / elapsed_seconds * 100.0);
+    } else {
+      upsert_feature(db,run_row_id,"blocking_wait_pct",0,0);
+      upsert_feature(db,run_row_id,"sched_rundelay_pct",0,0);
+    }
   }
 
   stats->features_extracted++;

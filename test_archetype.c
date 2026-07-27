@@ -152,7 +152,7 @@ static void test_classify_memory_attribution_corroborated(void){
 
   printf("Testing classify_memory_attribution: backend_pct significant + >=1 corroborating signal "
          "elevated -> corroborated, reasons lists only the signals that fired...\n");
-  classify_memory_attribution(55.0,1,signals,3,&out);
+  classify_memory_attribution(55.0,1,0.0,0,0.0,0,signals,3,&out);
   assert(out.available);
   assert(!strcmp(out.label,"corroborated"));
   assert(strstr(out.reasons,"l3_miss_pct=42") != NULL);
@@ -170,7 +170,7 @@ static void test_classify_memory_attribution_uncorroborated(void){
 
   printf("Testing classify_memory_attribution: backend_pct significant but every measured "
          "corroborating signal is unremarkable -> uncorroborated, reasons lists what was checked...\n");
-  classify_memory_attribution(55.0,1,signals,2,&out);
+  classify_memory_attribution(55.0,1,0.0,0,0.0,0,signals,2,&out);
   assert(out.available);
   assert(!strcmp(out.label,"uncorroborated"));
   assert(strstr(out.reasons,"checked:dcache_miss_pct") != NULL);
@@ -184,7 +184,7 @@ static void test_classify_memory_attribution_not_memory_bound(void){
 
   printf("Testing classify_memory_attribution: backend_pct below the significance floor -> "
          "not-memory-bound regardless of how elevated other signals are...\n");
-  classify_memory_attribution(5.0,1,signals,1,&out);
+  classify_memory_attribution(5.0,1,0.0,0,0.0,0,signals,1,&out);
   assert(out.available);
   assert(!strcmp(out.label,"not-memory-bound"));
   assert(out.reasons[0] == '\0');
@@ -197,7 +197,7 @@ static void test_classify_memory_attribution_unknown_no_backend_data(void){
 
   printf("Testing classify_memory_attribution: backend_pct itself never measured -> unknown, "
          "available=0 (distinct from the 'measured but inconclusive' unknown case)...\n");
-  classify_memory_attribution(0.0,0,signals,1,&out);
+  classify_memory_attribution(0.0,0,0.0,0,0.0,0,signals,1,&out);
   assert(!out.available);
   assert(!strcmp(out.label,"unknown"));
   printf("PASS: classify_memory_attribution unknown (no backend data)\n");
@@ -212,11 +212,58 @@ static void test_classify_memory_attribution_unknown_no_corroborating_data(void)
 
   printf("Testing classify_memory_attribution: backend_pct significant but zero corroborating "
          "signals were even collected -> unknown, available=1 (we do know backend_pct)...\n");
-  classify_memory_attribution(55.0,1,signals,2,&out);
+  classify_memory_attribution(55.0,1,0.0,0,0.0,0,signals,2,&out);
   assert(out.available);
   assert(!strcmp(out.label,"unknown"));
   assert(out.reasons[0] == '\0');
   printf("PASS: classify_memory_attribution unknown (no corroborating data collected)\n");
+}
+
+static void test_classify_memory_attribution_blocked_takes_priority(void){
+  struct memory_attribution_result out;
+  struct memory_signal signals[1] = { { "l3_miss_pct", 90.0, 1, CACHE_MISS_ELEVATED_PCT } }; /* would corroborate */
+
+  printf("Testing classify_memory_attribution: heavy blocking-syscall activity -> 'blocked', "
+         "checked ahead of (and overriding) cache/TLB/IBS corroboration...\n");
+  classify_memory_attribution(55.0,1, 45.0,1, 0.0,0, signals,1,&out);
+  assert(out.available);
+  assert(!strcmp(out.label,"blocked"));
+  assert(strstr(out.reasons,"blocking_wait_pct=45") != NULL);
+  printf("PASS: classify_memory_attribution blocked takes priority\n");
+}
+
+static void test_classify_memory_attribution_oversubscribed(void){
+  struct memory_attribution_result out;
+  struct memory_signal signals[1] = { { "l3_miss_pct", 90.0, 1, CACHE_MISS_ELEVATED_PCT } };
+
+  printf("Testing classify_memory_attribution: heavy scheduler run-delay with low blocking-wait -> "
+         "'oversubscribed', also overriding cache/TLB/IBS corroboration...\n");
+  classify_memory_attribution(55.0,1, 2.0,1, 60.0,1, signals,1,&out);
+  assert(out.available);
+  assert(!strcmp(out.label,"oversubscribed"));
+  assert(strstr(out.reasons,"sched_rundelay_pct=60") != NULL);
+  printf("PASS: classify_memory_attribution oversubscribed\n");
+}
+
+static void test_classify_memory_attribution_blocked_beats_oversubscribed(void){
+  struct memory_attribution_result out;
+
+  printf("Testing classify_memory_attribution: when both blocking-wait and run-delay are elevated, "
+         "'blocked' wins (checked first, matching the critical-path work's own priority)...\n");
+  classify_memory_attribution(55.0,1, 30.0,1, 30.0,1, NULL,0,&out);
+  assert(!strcmp(out.label,"blocked"));
+  printf("PASS: classify_memory_attribution blocked beats oversubscribed\n");
+}
+
+static void test_classify_memory_attribution_unavailable_tree_data_falls_through(void){
+  struct memory_attribution_result out;
+  struct memory_signal signals[1] = { { "l3_miss_pct", 90.0, 1, CACHE_MISS_ELEVATED_PCT } };
+
+  printf("Testing classify_memory_attribution: no --tree data collected (the common case) falls "
+         "through unchanged to the existing cache/TLB/IBS corroboration logic...\n");
+  classify_memory_attribution(55.0,1, 0.0,0, 0.0,0, signals,1,&out);
+  assert(!strcmp(out.label,"corroborated"));
+  printf("PASS: classify_memory_attribution unavailable tree data falls through\n");
 }
 
 /* --- compute_overall_confidence --- */
@@ -1033,6 +1080,10 @@ int main(void){
   test_classify_memory_attribution_not_memory_bound();
   test_classify_memory_attribution_unknown_no_backend_data();
   test_classify_memory_attribution_unknown_no_corroborating_data();
+  test_classify_memory_attribution_blocked_takes_priority();
+  test_classify_memory_attribution_oversubscribed();
+  test_classify_memory_attribution_blocked_beats_oversubscribed();
+  test_classify_memory_attribution_unavailable_tree_data_falls_through();
   test_confidence_insufficient_data();
   test_confidence_high();
   test_confidence_medium();
