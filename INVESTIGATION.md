@@ -949,7 +949,49 @@ reasoning as Tier 1 above.
    from 4.1's per-run curation studio, not a replacement for it: the studio is where one report gets
    curated by a person; this is what turns *many* already-curated (or un-curated, template-driven)
    reports into a browsable site. Likely consumes the same export formats (WordPress/HTML/Markdown,
-   4.1) rather than inventing a fourth.
+   4.1) rather than inventing a fourth. **Real publish target identified (2026-07-27):** the author
+   plans a new WordPress site at `mvermeulen.org/workload`, parallel to (not replacing) the existing
+   hand-curated `mvermeulen.org/perf/workloads/` site, specifically to host this pipeline's output — so
+   this item now has a concrete target rather than a generic "some static site" placeholder. Reviewing
+   `/perf/workloads/` as prior art surfaced several findings, confirmed by the author as a reasonable
+   approximation of the intended direction:
+   - **The existing site already validates most of `doc/REPORT_HIERARCHY.md`'s levels 1-3 by hand.**
+     `/perf/workloads/<suite>/` (e.g. `cpu2017`) is a suite-level page whose entire content is one wide
+     reference-matrix table (~30 columns: elapsed/on_cpu/IPC/GHz/stalls/cache/branch/...) with each row
+     linking to `/perf/workloads/<suite>/<benchmark-slug>/` — effectively today's Tier 3 item 6
+     (benchmark reference-matrix) already exists, hand-maintained, one machine at a time. Each benchmark
+     page mixes a short machine-independent description (REPORT_HIERARCHY's `<test>/README.md` content)
+     with machine-specific metrics tables, topdown/AMD-metrics charts, and a process-tree diagram — i.e.
+     today's single page already blends what the convention splits across `<test>/README.md` and
+     `<test-point>/<machine>/README.md`.
+   - **REPORT_HIERARCHY.md's 4th level (`<test-point>/<machine>/`) has no precedent yet.** The existing
+     site's URLs are two-level (`<suite>/<benchmark-slug>/`) because only one machine (a 7840) has ever
+     been published there — it's never had to represent "the same benchmark, a different machine or
+     option combination" as a distinct page. Since `mvermeulen.org/workload` is a *new* site rather than
+     a retrofit, this is a clean opportunity to build the 4-level hierarchy as real WordPress structure
+     from day one (e.g. child pages/posts per test-point/machine under a benchmark parent) instead of
+     inheriting `/perf`'s flattened, single-machine assumption — but the URL/slug scheme for that
+     (parent/child pages? tags/categories? one post per machine with a shared parent?) is undesigned and
+     should be settled before any automated publishing starts, not discovered via a schema migration
+     later.
+   - **Automated publishing, not just export, is the actual remaining gap.** 4.1 already ships a
+     Gutenberg-block WordPress renderer (`render_export_wordpress()`, `web/server.py`) but only as a
+     copy-paste-into-the-block-editor textarea/download — there's no WP REST API call anywhere in this
+     codebase. A real pipeline (vs. today's per-run manual export) needs authenticated create/update-post
+     calls against `mvermeulen.org/workload`'s WP REST API, idempotent on some stable key (test-point +
+     machine, matching REPORT_HIERARCHY's directory key) so re-running the pipeline updates the existing
+     post instead of duplicating it — mirroring the "living document, not write-once" concern item 5
+     above already raised for the README this would be generated from.
+   - **Image hosting is a known, explicitly-flagged gap that blocks full automation.** The export page's
+     own UI copy (`web/server.py`, ~line 1798) already tells a human to manually re-upload images to the
+     target CMS's media library and swap the URL — fine for one-off copy-paste export, a hard blocker for
+     an unattended pipeline. Needs the WP REST API's media-upload endpoint wired in before charts/tree
+     diagrams (both present on every existing `/perf` benchmark page) can publish unattended.
+   - **Suite/root-level rollup content, `doc/REPORT_HIERARCHY.md`'s own open question, now has a
+     concrete model to follow.** The existing `/perf` suite pages' single wide comparison table is
+     exactly the shape Tier 3 item 6 already described in the abstract — the new site doesn't need to
+     invent suite-level content from scratch, just decide whether to generate that same table shape from
+     `wspy-store` instead of hand-maintaining it.
 3. Characterization badges + similarity panels in reports — a new block type in 4.1's curation studio
    drawing a badge from 4.2's (shipped) archetype scorecard (`wspy-archetype`), not a separate report
    surface.
