@@ -680,6 +680,51 @@ and oversubscribed signals fire") and against a real 32-process oversubscription
 (`--tree --tree-io-wait --tree-schedstat` against 32 busy-spin children on a 32-core host, correctly
 producing `sched_rundelay_pct≈32%`) piped through `wspy-store`.
 
+**IBS-derived memory-path bottleneck decomposition (`wspy-archetype`'s new `memory_attribution_locus`
+field) — closes 4.3 Tier 2's last remaining item.** `memory_attribution` (shipped, above) explicitly
+declined to rank *which* cache level a memory-bound stall concentrates in, pointing at
+`--topdown-backend`'s L1/L2/L3/DRAM stall-cycle chain (`print_topdown_be()`) as the right tool for that —
+but that chain is Intel/ARM-only (`print_topdown_be()` returns immediately on `VENDOR_AMD`), and IBS is
+also AMD-only, so this builds the AMD equivalent from a fundamentally different kind of data: IBS's
+per-sample tags are request-outcome hits (did *this* sample miss L1D / cross to DRAM / cross a NUMA hop),
+not stall-cycle attribution.
+
+New `locus`/`locus_reasons` fields on `struct memory_attribution_result`, populated only when the axis's
+existing classification already landed on `"corroborated"` *and* the newly-promoted `backend_memory_pct`
+feature (the L2 memory-portion-of-backend split, a more precise anchor than the coarser `backend_pct` the
+rest of the axis gates on) clears the same 20% floor `memory_attribution` itself uses. Two precision
+tiers, `locus_reasons` always prefixed `tier=ibs-sample`/`tier=cache-counter` so one is never mistaken for
+the other:
+1. IBS tier (needs `ibs_dc_miss_pct`): `ibs_remote_node_pct` at/above 10% wins first (a cross-socket hop
+   dominates regardless of where else the access resolved) → `"remote-numa"`; else `ibs_dram_pct` at/above
+   10% → `"dram"`; else, only when `ibs_dram_pct` was itself measured, the residual
+   `ibs_dc_miss_pct − ibs_dram_pct` at/above 10% → `"l2-l3"` (missed L1D, resolved before DRAM); else a
+   plain `ibs_dc_miss_pct` at/above 10% → `"l1"`. `ibs_dc_l1tlb_miss_pct`/`ibs_dc_l2tlb_miss_pct` elevated
+   appends a `tlb-cofire` tag rather than competing for the label — address translation is an independent
+   hop from the data-miss chain. Falls through to tier 2 if IBS data exists but nothing in it clears its
+   threshold, since `memory_attribution`'s own corroboration may have come from a signal (e.g.
+   `smt_contention_pct`) with no hierarchy-position information at all.
+2. Cache-counter tier (no IBS data this run): same shape over `l3_miss_pct`/`l2_miss_pct`/`dcache_miss_pct`
+   at the same `CACHE_MISS_ELEVATED_PCT` cutoff `memory_attribution`'s own signal table already uses for
+   these features (not a new threshold), `dtlb_generic_miss_pct` as the TLB co-firing tag.
+
+`store.c`'s `SIMPLE_METRIC_FEATURES` table gained four new one-line rows (`ibs_dc_l1tlb_miss_pct`,
+`ibs_dc_l2tlb_miss_pct`, `ibs_remote_node_pct`, `backend_memory_pct`); `FEATURE_SET_VERSION` bumped to
+1.5. Deliberately out of scope for v1: fetch-side/icache decomposition (a different topdown category,
+`frontend_bandwidth_pct`, with different semantics — conflating it here would repeat the exact
+overclaiming-precision mistake `memory_attribution`'s own header warns against) and the raw
+`op_data_src_count[13]` histogram / `IbsBrTarget`/`IbsDcLinAd`/`IbsDcPhysAd` (same scheme-ambiguity/
+no-stable-bitfield reasons `ibs_sample.h` already excludes them from CSV for).
+
+Verified via 11 new `test_archetype.c` cases (both precision tiers, the `tlb-cofire` tag, tier-2
+fallthrough, the `"corroborated"`-only gate, the `backend_memory_pct` availability/floor gates) plus an
+end-to-end `run_features` → CSV pipeline test, and 1 new `test_store.c` feature-promotion case, plus the
+full `run_tests.sh` matrix (93 golden-output checks, 62 capability-matrix bundles including the NVIDIA
+build rerun). Caught one real bug during testing: an unmeasured `ibs_dram_pct` was initially treated as
+`0` when computing the L2/L3 residual, which silently misclassified a run as `"l2-l3"` when DRAM
+residency was actually unmeasured rather than genuinely zero — fixed by only computing the residual when
+`ibs_dram_pct` was itself actually collected, falling back to a plain `"l1"` read otherwise.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -893,9 +938,10 @@ cross-reference them by tier number.
 **Tier 2 — topdown/attribution, needs 4.2's hierarchical schema + phase detection (both shipped) +
 AMD IBS sampling-mode support (shipped, see "Shipped since 4.2" and the Zen5/IBS deep-dive):**
 
-1. IBS-derived memory-path bottleneck decomposition (combine with topdown/cache) — AMD IBS
-   sampling-mode support (shipped) now provides real per-sample tag data to decompose; previously
-   counting-mode IBS had none.
+Fully shipped for 4.3: phase-aware topdown, composite attribution (including its blocking-syscall-split
+modifier), core-class-aware topdown, and IBS-derived memory-path bottleneck decomposition — see "Shipped
+since 4.2" for all four write-ups. Tier number kept stable rather than renumbering Tier 3-7 below, same
+reasoning as Tier 1 above.
 
 **Tier 3 — publishing/reporting expansion, needs 4.1's report studio:**
 

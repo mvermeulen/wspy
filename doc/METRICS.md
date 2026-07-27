@@ -141,7 +141,9 @@ is scaled up by `enabled_delta/running_delta` before any print function ever see
   waiting on the memory subsystem (Intel `core.topdown-mem-bound`; AMD ratio-scaled from
   `ex_no_retire.load_not_complete/not_complete`), `backend_cpu` = the rest (execution port/resource
   contention). A workload dominated by `backend_memory_pct` is memory-latency/bandwidth-bound; dominated
-  by `backend_cpu_pct` is core-execution-resource-bound.
+  by `backend_cpu_pct` is core-execution-resource-bound. `backend_memory_pct` alone is `[feature]`
+  (same name) — the anchor `wspy-archetype`'s `memory_attribution_locus` axis gates on, since it isolates
+  the memory-specific portion of a backend stall rather than `backend_pct`'s coarser whole-backend read.
 - **spec_branch_pct**, **spec_pipeline_pct** — L2 split of `speculate`: mispredicted-branch-driven vs.
   other pipeline-clear-driven speculation waste.
 
@@ -383,8 +385,8 @@ them and only the final tail row is populated.
 - **ibs_sample_op_count** — `[raw]` count of decoded IBS-op samples actually drained (`os->op_count`).
 - **ibs_sample_dc_miss_rate** — `[feature]` (`ibs_dc_miss_pct`) `op_dc_miss_count / op_count` (data-cache
   miss rate among sampled ops).
-- **ibs_sample_dc_l1tlb_miss_rate** — `[raw]` `op_dc_l1tlb_miss_count / op_count`.
-- **ibs_sample_dc_l2tlb_miss_rate** — `[raw]` `op_dc_l2tlb_miss_count / op_count`.
+- **ibs_sample_dc_l1tlb_miss_rate** — `[feature]` (`ibs_dc_l1tlb_miss_pct`) `op_dc_l1tlb_miss_count / op_count`.
+- **ibs_sample_dc_l2tlb_miss_rate** — `[feature]` (`ibs_dc_l2tlb_miss_pct`) `op_dc_l2tlb_miss_count / op_count`.
 - **ibs_sample_brn_misp_rate** — `[raw]` `op_brn_misp_count / op_brn_ret_count` — note the denominator is
   *branch-retiring ops only*, not `op_count` like every other rate here; don't divide by the wrong base
   when recomputing this from raw fields.
@@ -395,8 +397,8 @@ them and only the final tail row is populated.
   `ibs_sample_lost` as under-sampled, not as evidence the true miss rates are actually lower.
 - **ibs_sample_dram_rate** — `[feature]` (`ibs_dram_pct`) `op_dram_count / op_count` — fraction of sampled
   ops whose data source was DRAM (as opposed to some cache level).
-- **ibs_sample_remote_node_rate** — `[raw]` `op_remote_node_count / op_count` — fraction of sampled ops
-  whose data source was a remote NUMA node.
+- **ibs_sample_remote_node_rate** — `[feature]` (`ibs_remote_node_pct`) `op_remote_node_count / op_count` —
+  fraction of sampled ops whose data source was a remote NUMA node.
 - **ibs_sample_data_src_breakdown** — `[human-only]` (`print_ibs_sample_data_src_breakdown()`) a full
   named percentage histogram of every sampled op's sourcing location (`op_data_src_count[]`), keyed by
   one of two AMD-documented category-name tables
@@ -536,10 +538,42 @@ above, for human/agent consumption.
   (backend_pct itself wasn't measured, or none of the corroborating signals were even collected this
   run). `blocked`/`oversubscribed` are checked *before* cache/TLB/IBS corroboration specifically because
   a "memory-bound" topdown read on a run that wasn't actually stalled makes asking whether other
-  counters "corroborate" it moot regardless of what they show. Deliberately doesn't attempt to rank
-  *which* cache level a stall concentrates in — that's a different, stall-cycle-attribution question only
-  `--topdown-backend`'s own dedicated group (`l1_bound_slots_pct`/etc. above) can honestly answer; this
-  axis cross-checks a *miss-rate* signal against topdown's *stall* signal instead.
+  counters "corroborate" it moot regardless of what they show. Deliberately doesn't itself rank *which*
+  cache level a stall concentrates in — that's a different, stall-cycle-attribution question only
+  `--topdown-backend`'s own dedicated group (`l1_bound_slots_pct`/etc. above) can honestly answer, and
+  that group is Intel/ARM-only besides; `memory_attribution_locus` below is the request-outcome-based
+  answer for the AMD/IBS side of that same question instead.
+- **memory_attribution_locus** (`wspy-archetype`) — `[categorical]` which hop in the memory hierarchy a
+  `corroborated` `memory_attribution` read concentrates in: `l1` / `l2-l3` / `dram` / `remote-numa`, plus
+  a `tlb-cofire` tag in `memory_attribution_locus_reasons` when `ibs_dc_l1tlb_miss_pct`/
+  `ibs_dc_l2tlb_miss_pct` (or, in the cache-counter fallback tier, `dtlb_generic_miss_pct`) are also
+  elevated — address translation is an independent hop from the data-miss chain, so it's a co-firing tag,
+  not a competing label. `unknown` (with no reasons) unless `memory_attribution` is exactly
+  `"corroborated"` and `backend_memory_pct` (not the coarser `backend_pct`) clears the same 20% floor
+  `memory_attribution` itself uses — ranking hops on an uncorroborated/blocked/oversubscribed/
+  not-memory-bound read, or on a run whose backend stall wasn't actually memory-specific, would claim
+  precision this signal set doesn't have. Two precision tiers, always recorded first in
+  `memory_attribution_locus_reasons` (`tier=ibs-sample` / `tier=cache-counter`) so cache-counter-derived
+  precision is never mistaken for IBS-grade:
+  1. **IBS tier** (preferred, needs `ibs_dc_miss_pct`): `ibs_remote_node_pct` at/above 10% wins first (a
+     cross-socket hop dominates regardless of where else the access resolved) → `remote-numa`; else
+     `ibs_dram_pct` at/above 10% → `dram`; else, if `ibs_dram_pct` was itself measured, the residual
+     `ibs_dc_miss_pct − ibs_dram_pct` at/above 10% → `l2-l3` (missed L1D, resolved before DRAM); else a
+     plain `ibs_dc_miss_pct` at/above 10% → `l1`. Falls through to tier 2 if IBS data exists but nothing
+     in it clears its threshold — `memory_attribution`'s own corroboration may have come from a signal
+     (e.g. `smt_contention_pct`) with no hierarchy-position information at all.
+  2. **Cache-counter tier** (any vendor, no IBS needed): same shape over `l3_miss_pct` (→ `dram`) /
+     `l2_miss_pct` (→ `l2-l3`) / `dcache_miss_pct` (→ `l1`), each at/above the same 10% cutoff
+     (`CACHE_MISS_ELEVATED_PCT`) `memory_attribution`'s own signal table already uses for these features —
+     not a new threshold. Coarser than the IBS tier: a miss *rate* per cache level, not per-sample
+     hierarchy-position tag data.
+
+  See `INVESTIGATION.md`'s "Shipped since 4.2" write-up ("IBS-derived memory-path bottleneck
+  decomposition") for the full design rationale.
+- **memory_attribution_locus_reasons** (`wspy-archetype`) — `[human-only]`/`[categorical]` (not a
+  `run_features` row, only ever printed alongside `memory_attribution_locus` in `wspy-archetype`'s own
+  CSV/human/`--run` output) — comma-joined trace of which precision tier and signal(s) produced the
+  `memory_attribution_locus` label, in the same `name=value` style as `memory_attribution_reasons`.
 - **blocking_wait_pct** (`wspy-archetype` input, `store.c`) — `[feature]` `(futex_wait_seconds +
   io_wait_seconds) / elapsed_seconds * 100`, scanned directly from `--tree`'s raw `futex`/`io_wait` lines
   (needs `--tree-futex`/`--tree-io-wait`; `unavailable` without `--tree` at all, the common case).

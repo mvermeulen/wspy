@@ -266,6 +266,200 @@ static void test_classify_memory_attribution_unavailable_tree_data_falls_through
   printf("PASS: classify_memory_attribution unavailable tree data falls through\n");
 }
 
+/* --- classify_memory_locus --- */
+
+/* Helper: a corroborated memory_attribution_result, as classify_memory_locus()
+ * always requires -- avoids re-deriving corroboration in every test below,
+ * which is classify_memory_attribution()'s own already-tested scope. */
+static void make_corroborated(struct memory_attribution_result *attr){
+  memset(attr,0,sizeof(*attr));
+  attr->available = 1;
+  snprintf(attr->label,sizeof(attr->label),"corroborated");
+}
+
+static void test_classify_memory_locus_ibs_remote_numa_wins(void){
+  struct run_snapshot snap;
+  struct memory_attribution_result attr;
+
+  printf("Testing classify_memory_locus: elevated ibs_remote_node_pct wins over dram/l2-l3, "
+         "checked first regardless of magnitude...\n");
+  memset(&snap,0,sizeof(snap));
+  snap.backend_memory_pct = 40.0; snap.have_backend_memory = 1;
+  snap.ibs_dc_miss_pct = 50.0;    snap.have_ibs_dc_miss = 1;
+  snap.ibs_dram_pct = 45.0;       snap.have_ibs_dram = 1;
+  snap.ibs_remote_node_pct = 15.0; snap.have_ibs_remote_node = 1;
+  make_corroborated(&attr);
+
+  classify_memory_locus(&snap,&attr);
+  assert(!strcmp(attr.locus,"remote-numa"));
+  assert(strstr(attr.locus_reasons,"tier=ibs-sample") != NULL);
+  assert(strstr(attr.locus_reasons,"ibs_remote_node_pct=15") != NULL);
+  printf("PASS: classify_memory_locus IBS remote-numa wins\n");
+}
+
+static void test_classify_memory_locus_ibs_dram(void){
+  struct run_snapshot snap;
+  struct memory_attribution_result attr;
+
+  printf("Testing classify_memory_locus: elevated ibs_dram_pct with remote-node unremarkable -> "
+         "dram...\n");
+  memset(&snap,0,sizeof(snap));
+  snap.backend_memory_pct = 40.0; snap.have_backend_memory = 1;
+  snap.ibs_dc_miss_pct = 50.0;    snap.have_ibs_dc_miss = 1;
+  snap.ibs_dram_pct = 45.0;       snap.have_ibs_dram = 1;
+  snap.ibs_remote_node_pct = 1.0; snap.have_ibs_remote_node = 1;
+  make_corroborated(&attr);
+
+  classify_memory_locus(&snap,&attr);
+  assert(!strcmp(attr.locus,"dram"));
+  assert(strstr(attr.locus_reasons,"ibs_dram_pct=45") != NULL);
+  printf("PASS: classify_memory_locus IBS dram\n");
+}
+
+static void test_classify_memory_locus_ibs_l2_l3_residual(void){
+  struct run_snapshot snap;
+  struct memory_attribution_result attr;
+
+  printf("Testing classify_memory_locus: dc_miss elevated but dram isn't -> l2-l3, the residual "
+         "that missed L1D and resolved before reaching DRAM...\n");
+  memset(&snap,0,sizeof(snap));
+  snap.backend_memory_pct = 40.0; snap.have_backend_memory = 1;
+  snap.ibs_dc_miss_pct = 30.0;    snap.have_ibs_dc_miss = 1;
+  snap.ibs_dram_pct = 2.0;        snap.have_ibs_dram = 1;
+  make_corroborated(&attr);
+
+  classify_memory_locus(&snap,&attr);
+  assert(!strcmp(attr.locus,"l2-l3"));
+  printf("PASS: classify_memory_locus IBS l2-l3 residual\n");
+}
+
+static void test_classify_memory_locus_ibs_l1_only(void){
+  struct run_snapshot snap;
+  struct memory_attribution_result attr;
+
+  printf("Testing classify_memory_locus: dc_miss barely elevated, no dram data at all -> l1...\n");
+  memset(&snap,0,sizeof(snap));
+  snap.backend_memory_pct = 40.0; snap.have_backend_memory = 1;
+  snap.ibs_dc_miss_pct = 12.0;    snap.have_ibs_dc_miss = 1;
+  make_corroborated(&attr);
+
+  classify_memory_locus(&snap,&attr);
+  assert(!strcmp(attr.locus,"l1"));
+  printf("PASS: classify_memory_locus IBS l1-only\n");
+}
+
+static void test_classify_memory_locus_ibs_tlb_cofire_tag(void){
+  struct run_snapshot snap;
+  struct memory_attribution_result attr;
+
+  printf("Testing classify_memory_locus: elevated ibs_dc_l2tlb_miss_pct appends a tlb-cofire tag "
+         "without changing the label (an independent hop, not competing for it)...\n");
+  memset(&snap,0,sizeof(snap));
+  snap.backend_memory_pct = 40.0; snap.have_backend_memory = 1;
+  snap.ibs_dc_miss_pct = 50.0;    snap.have_ibs_dc_miss = 1;
+  snap.ibs_dram_pct = 45.0;       snap.have_ibs_dram = 1;
+  snap.ibs_dc_l2tlb_miss_pct = 20.0; snap.have_ibs_dc_l2tlb_miss = 1;
+  make_corroborated(&attr);
+
+  classify_memory_locus(&snap,&attr);
+  assert(!strcmp(attr.locus,"dram"));
+  assert(strstr(attr.locus_reasons,"tlb-cofire") != NULL);
+  printf("PASS: classify_memory_locus IBS tlb co-fire tag\n");
+}
+
+static void test_classify_memory_locus_falls_through_to_cache_tier(void){
+  struct run_snapshot snap;
+  struct memory_attribution_result attr;
+
+  printf("Testing classify_memory_locus: IBS data present but nothing in it elevated (corroboration "
+         "came from a different signal, e.g. smt_contention_pct) -> falls through to the cache-"
+         "counter tier rather than guessing 'l1'...\n");
+  memset(&snap,0,sizeof(snap));
+  snap.backend_memory_pct = 40.0; snap.have_backend_memory = 1;
+  snap.ibs_dc_miss_pct = 3.0;     snap.have_ibs_dc_miss = 1; /* below threshold */
+  snap.l3_miss_pct = 55.0;        snap.have_l3_miss = 1;     /* cache tier fires instead */
+  make_corroborated(&attr);
+
+  classify_memory_locus(&snap,&attr);
+  assert(!strcmp(attr.locus,"dram"));
+  assert(strstr(attr.locus_reasons,"tier=cache-counter") != NULL);
+  printf("PASS: classify_memory_locus falls through to cache-counter tier\n");
+}
+
+static void test_classify_memory_locus_cache_tier_l2_l3(void){
+  struct run_snapshot snap;
+  struct memory_attribution_result attr;
+
+  printf("Testing classify_memory_locus: no IBS data at all, elevated l2_miss_pct with l3 "
+         "unremarkable -> l2-l3, cache-counter tier...\n");
+  memset(&snap,0,sizeof(snap));
+  snap.backend_memory_pct = 40.0; snap.have_backend_memory = 1;
+  snap.l2_miss_pct = 25.0; snap.have_l2_miss = 1;
+  snap.l3_miss_pct = 1.0;  snap.have_l3_miss = 1;
+  snap.dtlb_generic_miss_pct = 15.0; snap.have_dtlb_generic_miss = 1;
+  make_corroborated(&attr);
+
+  classify_memory_locus(&snap,&attr);
+  assert(!strcmp(attr.locus,"l2-l3"));
+  assert(strstr(attr.locus_reasons,"tier=cache-counter") != NULL);
+  assert(strstr(attr.locus_reasons,"tlb-cofire") != NULL);
+  printf("PASS: classify_memory_locus cache tier l2-l3 with tlb co-fire\n");
+}
+
+static void test_classify_memory_locus_not_corroborated_stays_unknown(void){
+  struct run_snapshot snap;
+  struct memory_attribution_result attr;
+
+  printf("Testing classify_memory_locus: label isn't 'corroborated' (e.g. 'uncorroborated') -> "
+         "locus stays 'unknown' regardless of how elevated the underlying signals are...\n");
+  memset(&snap,0,sizeof(snap));
+  snap.backend_memory_pct = 40.0; snap.have_backend_memory = 1;
+  snap.ibs_dc_miss_pct = 90.0;    snap.have_ibs_dc_miss = 1;
+  snap.ibs_dram_pct = 80.0;       snap.have_ibs_dram = 1;
+  memset(&attr,0,sizeof(attr));
+  attr.available = 1;
+  snprintf(attr.label,sizeof(attr.label),"uncorroborated");
+
+  classify_memory_locus(&snap,&attr);
+  assert(!strcmp(attr.locus,"unknown"));
+  assert(attr.locus_reasons[0] == '\0');
+  printf("PASS: classify_memory_locus not-corroborated stays unknown\n");
+}
+
+static void test_classify_memory_locus_missing_backend_memory(void){
+  struct run_snapshot snap;
+  struct memory_attribution_result attr;
+
+  printf("Testing classify_memory_locus: backend_memory_pct never measured -> unknown, "
+         "missing-backend_memory_pct reason...\n");
+  memset(&snap,0,sizeof(snap));
+  snap.ibs_dc_miss_pct = 90.0; snap.have_ibs_dc_miss = 1;
+  snap.ibs_dram_pct = 80.0;    snap.have_ibs_dram = 1;
+  make_corroborated(&attr);
+
+  classify_memory_locus(&snap,&attr);
+  assert(!strcmp(attr.locus,"unknown"));
+  assert(!strcmp(attr.locus_reasons,"missing-backend_memory_pct"));
+  printf("PASS: classify_memory_locus missing backend_memory_pct\n");
+}
+
+static void test_classify_memory_locus_below_floor(void){
+  struct run_snapshot snap;
+  struct memory_attribution_result attr;
+
+  printf("Testing classify_memory_locus: backend_memory_pct itself below the significance floor -> "
+         "unknown, even though the overall run was corroborated via backend_pct...\n");
+  memset(&snap,0,sizeof(snap));
+  snap.backend_memory_pct = 8.0; snap.have_backend_memory = 1;
+  snap.ibs_dc_miss_pct = 90.0;   snap.have_ibs_dc_miss = 1;
+  snap.ibs_dram_pct = 80.0;      snap.have_ibs_dram = 1;
+  make_corroborated(&attr);
+
+  classify_memory_locus(&snap,&attr);
+  assert(!strcmp(attr.locus,"unknown"));
+  printf("PASS: classify_memory_locus below backend_memory_pct floor\n");
+}
+
 /* --- compute_overall_confidence --- */
 
 static void test_confidence_insufficient_data(void){
@@ -452,6 +646,50 @@ static void test_score_runs_memory_attribution_end_to_end(void){
   remove(tmpfile);
   sqlite3_close(db);
   printf("PASS: score_runs memory_attribution end-to-end\n");
+}
+
+static void test_score_runs_memory_attribution_locus_end_to_end(void){
+  sqlite3 *db;
+  char tmpfile[] = "/tmp/test_archetype_memlocus_XXXXXX";
+  int fd;
+  FILE *out;
+  char line[4096];
+  sqlite3_int64 run1;
+  int rows;
+
+  printf("Testing score_runs: memory_attribution_locus flows through the full run_features -> "
+         "scorecard -> CSV pipeline, IBS tier picking 'dram'...\n");
+  db = open_memory_db();
+  run1 = insert_run(db,"run1","host1","/bin/workload");
+  insert_feature_measured(db,run1,"retire_pct",20.0);
+  insert_feature_measured(db,run1,"frontend_pct",15.0);
+  insert_feature_measured(db,run1,"backend_pct",55.0);
+  insert_feature_measured(db,run1,"speculate_pct",10.0);
+  insert_feature_measured(db,run1,"backend_memory_pct",48.0);
+  insert_feature_measured(db,run1,"ibs_dc_miss_pct",50.0);
+  insert_feature_measured(db,run1,"ibs_dram_pct",45.0);
+
+  fd = mkstemp(tmpfile);
+  assert(fd >= 0);
+  out = fdopen(fd,"w+");
+  assert(out != NULL);
+
+  rows = score_runs(db,"","",1,out);
+  assert(rows == 1);
+
+  rewind(out);
+  assert(fgets(line,sizeof(line),out) != NULL); /* header */
+  assert(strstr(line,"memory_attribution_locus") != NULL);
+  assert(fgets(line,sizeof(line),out) != NULL);
+  assert(strstr(line,"corroborated") != NULL);
+  assert(strstr(line,",dram,") != NULL);
+  assert(strstr(line,"tier=ibs-sample") != NULL);
+  assert(strstr(line,"ibs_dram_pct=45") != NULL);
+
+  fclose(out);
+  remove(tmpfile);
+  sqlite3_close(db);
+  printf("PASS: score_runs memory_attribution_locus end-to-end\n");
 }
 
 /* --- end-to-end: trace_run_archetype() (--run mode) --- */
@@ -1084,6 +1322,16 @@ int main(void){
   test_classify_memory_attribution_oversubscribed();
   test_classify_memory_attribution_blocked_beats_oversubscribed();
   test_classify_memory_attribution_unavailable_tree_data_falls_through();
+  test_classify_memory_locus_ibs_remote_numa_wins();
+  test_classify_memory_locus_ibs_dram();
+  test_classify_memory_locus_ibs_l2_l3_residual();
+  test_classify_memory_locus_ibs_l1_only();
+  test_classify_memory_locus_ibs_tlb_cofire_tag();
+  test_classify_memory_locus_falls_through_to_cache_tier();
+  test_classify_memory_locus_cache_tier_l2_l3();
+  test_classify_memory_locus_not_corroborated_stays_unknown();
+  test_classify_memory_locus_missing_backend_memory();
+  test_classify_memory_locus_below_floor();
   test_confidence_insufficient_data();
   test_confidence_high();
   test_confidence_medium();
@@ -1091,6 +1339,7 @@ int main(void){
   test_score_runs_end_to_end();
   test_score_runs_skips_runs_with_no_features();
   test_score_runs_memory_attribution_end_to_end();
+  test_score_runs_memory_attribution_locus_end_to_end();
   test_trace_run_archetype_found();
   test_trace_run_archetype_not_found();
   test_nearest_basic_ranking();
