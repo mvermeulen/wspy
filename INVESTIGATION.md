@@ -992,6 +992,43 @@ reasoning as Tier 1 above.
      exactly the shape Tier 3 item 6 already described in the abstract — the new site doesn't need to
      invent suite-level content from scratch, just decide whether to generate that same table shape from
      `wspy-store` instead of hand-maintaining it.
+   - **Next sub-steps toward automated publishing (2026-07-27, from external research into WP REST API
+     practice, not yet started):** ordered so each step is independently useful/testable before the next:
+     1. **Get `mvermeulen.org/workload` itself stood up first** — the WP site has to exist (hosting,
+        install, theme, page/child-page structure for the 4-level hierarchy per the open URL/slug
+        question above) before any of the below has a target to talk to. Blocks everything else in this
+        list.
+     2. **Dedicated service-account WP user, not the author's own admin login** — create a low-privilege
+        user (Editor role, or Author if posts only need to be self-owned) scoped to this pipeline, e.g.
+        `wspy-publisher`; never authenticate the pipeline as an Administrator. Generate a WordPress
+        **Application Password** (native since WP 5.6, under that user's Users → Profile screen) rather
+        than the account's real login password — it's independently revocable if the publishing host is
+        ever compromised, without touching human logins. HTTPS is mandatory: WP disables Basic Auth over
+        plain HTTP by default, so `mvermeulen.org/workload` needs TLS before this step is testable.
+     3. **Minimal REST client wired into this codebase** — likely a small new script (Python, matching
+        `wspy-analyze`/`wspy-bundle`/`wspy-queue`'s existing Python-tool pattern rather than adding to the
+        C build) doing authenticated `POST`/`PUT` against `/wp-json/wp/v2/pages` with HTTP Basic Auth
+        (`Authorization: Basic base64(user:app_password)`). Start with a single hardcoded test page to
+        prove auth + connectivity before wiring in real content.
+     4. **Idempotent create-or-update keyed on test-point+machine** — the create-vs-update decision
+        already flagged above (mirroring the README "living document" concern) needs the WP page ID
+        looked up first (by slug or stored custom `meta`, e.g. a `_wspy_report_key` field set on first
+        publish) so re-running the pipeline `PUT`s the existing post instead of creating a duplicate.
+     5. **Draft-first, not direct-publish** — mirrors the mobile-app REST client pattern: `POST` with
+        `status: "draft"`, verify the response (id/link, 201 vs error), optionally populate meta, only
+        then flip to `status: "publish"` in a follow-up `POST`. Avoids a half-formed public page if the
+        pipeline dies mid-run (network drop, wspy-store query failure, etc.) — matters more here than for
+        one-off human copy-paste export since this runs unattended.
+     6. **Media upload endpoint before charts/tree diagrams can go in** — the known gap flagged above.
+        `POST /wp-json/wp/v2/media` (multipart) per image, capture the returned attachment ID, reference
+        it as `featured_media` or inline in block markup — needed before any benchmark page can include
+        the topdown/AMD-metrics charts or process-tree diagram that today's hand-curated `/perf/workloads`
+        pages already have.
+     7. **Reuse `render_export_wordpress()`'s Gutenberg block markup as the `content` payload** — the 4.1
+        exporter already emits valid `<!-- wp:... -->` block-comment HTML for copy-paste; the REST
+        pipeline's `page_data["content"]` can likely consume that same generator's output directly rather
+        than building block markup a second way, so the export path and the automated-publish path share
+        one source of truth for "what a rendered report looks like as WP blocks."
 3. Characterization badges + similarity panels in reports — a new block type in 4.1's curation studio
    drawing a badge from 4.2's (shipped) archetype scorecard (`wspy-archetype`), not a separate report
    surface.
