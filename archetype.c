@@ -260,8 +260,9 @@ struct memory_attribution_result {
    * in the memory hierarchy a corroborated read concentrates in. Populated
    * only when label=="corroborated"; "unknown" otherwise, including when
    * corroboration came from a signal (e.g. smt_contention_pct) that carries
-   * no hierarchy-position information at all. See INVESTIGATION.md's 4.3
-   * Tier 2 "IBS-derived memory-path bottleneck decomposition" scoping note. */
+   * no hierarchy-position information at all. See INVESTIGATION.md's
+   * "Shipped since 4.2" write-up ("IBS-derived memory-path bottleneck
+   * decomposition") for the full design rationale. */
   char locus[24];         /* "l1"/"l2-l3"/"dram"/"remote-numa"/"unknown" --
                             * "tlb" is a co-firing tag in locus_reasons, not
                             * a distinct label, since address-translation
