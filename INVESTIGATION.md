@@ -960,11 +960,16 @@ reasoning as Tier 1 above.
 5. Test-point-level curated performance-summary README, building on this cycle's Phoronix
    single-test-point suite hierarchy (`workload/phoronix/<test>/<options>/`, its per-test README.md,
    and its `runs/<run-id>/` symlinks back to real run directories) — walk every run linked at one test
-   point, not just the latest, and curate a `README.md` inside that test point's own directory
-   (`workload/phoronix/<test>/<options>/README.md`, one level *below* the per-test README.md that
-   `write_phoronix_test_readme()` already writes and describing something different: measured
-   performance characteristics of this specific option combination, not `phoronix-test-suite info`'s
-   static test description). Several real design questions bundled into scoping this, not yet resolved:
+   point, not just the latest, and curate a `README.md` inside that test point's own directory,
+   describing something different from the per-test README.md that `write_phoronix_test_readme()`
+   already writes: measured performance characteristics of this specific option combination, not
+   `phoronix-test-suite info`'s static test description. **Location update:** `doc/REPORT_HIERARCHY.md`
+   (established this cycle, ahead of this item actually being built) now defines where this README
+   lives — `<report-root>/phoronix/<test>/<test-point>/<machine>/README.md` under the new sibling
+   `WSPY_REPORT_ROOT` tree, not inside `workload/phoronix/` in this checkout as originally sketched
+   below; that also changes the "Git-tracked artifact" question below (the report root is a separate
+   tree by convention, so its own version-control story is that tree's business, not this repo's
+   `.gitignore`). Several real design questions bundled into scoping this, not yet resolved:
    - **Aggregation across N runs, not one.** Different from 4.1's curation studio (one report page, one
      run) and `wspy-analyze --compare-rundir` (exactly two runs) — this needs the same "many runs of the
      same command" aggregation `wspy-summary` already does (min/max/mean/median/stddev/outlier/CI95),
@@ -975,10 +980,11 @@ reasoning as Tier 1 above.
      template, then let a human curate/reorder/annotate on top of the generated draft — the same
      reorderable-block-plus-commentary idiom 4.1's curation studio already established, just operating
      over aggregated cross-run data instead of one run's blocks.
-   - **Git-tracked artifact, unlike the runs it summarizes.** `workload/phoronix/` is entirely gitignored
-     today (only the `runs/` symlinks and generated suite files live there); this README would need to
-     become the first thing actually checked in from that tree, while the runs it draws from stay
-     outside version control under `--output-root`, same as today.
+   - **Version-control story for `<report-root>/`, now a question for that tree, not this repo.** Now
+     that the report root is understood to live outside the wspy checkout (`doc/REPORT_HIERARCHY.md`),
+     whether/how it's version-controlled is that tree's own decision — the author's stated intent is a
+     separate GitHub repository for it (not yet created), so this README is expected to be committed
+     there, not to wspy. Doesn't block scoping the README content itself.
    - **A living document, not a write-once artifact.** Contrasts with `write_phoronix_test_readme()`'s
      "never overwrite, write once" convention for the per-test README — new runs landing later (someone
      investigated something and gathered more data) needs a re-curate path that doesn't silently clobber
@@ -995,7 +1001,9 @@ reasoning as Tier 1 above.
    IBS-derived fields shipped in 4.2/4.3). Distinct from `store.c`'s per-run long/tall `metric_values`
    table and from this tier's item 5 above (a per-test-point narrative README): this is a queryable,
    pivoted-wide table meant for side-by-side comparison across tests and machines, not one run's or one
-   test point's own story. Real design work needed before scoping further:
+   test point's own story. `doc/REPORT_HIERARCHY.md` (established this cycle) already earmarks
+   `<report-root>/` (the hierarchy's own top level) as this database's natural home, alongside the
+   rendered reports it would feed/be fed by. Real design work needed before scoping further:
    - **Column vocabulary.** Audit what the reference page's 60+ columns actually measure against what
      wspy already captures/`extract_run_features()` already derives, to find the real gap (expected to
      be mostly-covered plus new IBS columns, but unverified until audited).
@@ -1010,6 +1018,15 @@ reasoning as Tier 1 above.
      (shipped, see "Shipped since 4.2") and for `wspy-analyze`-style AI narrative generation that
      references how a workload compares to others in its cluster — but building the matrix itself never
      depended on clustering existing first; the two were always sequenced, not coupled.
+
+7. Web UI creates/updates reports at the appropriate levels of `doc/REPORT_HIERARCHY.md`'s hierarchy
+   (established this cycle, ahead of any of this tier landing) — wire the web UI's existing
+   publish-ready export (`web/server.py`'s markdown/HTML/WordPress render, "What shipped in 4.1"), or a
+   new aggregate-report renderer once this tier's item 5 exists, to *write into*
+   `<report-root>/<suite>/<test>/<test-point>/<machine>/` instead of only ever producing a manual
+   download. Depends on items 5/6 above for the actual aggregation logic (this item is about the write
+   path/trigger, not a third way to compute the numbers) — scope further as it comes up, per the
+   author's own framing when this hierarchy was established.
 
 **Tier 4 — report-layer additions on data already collected in 4.0:**
 

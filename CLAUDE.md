@@ -6,7 +6,9 @@ For design history/rationale/validation narratives, see `INVESTIGATION.md` (acti
 `doc/INVESTIGATION_ARCHIVE.md` (shipped write-ups), `doc/ARTIFACT_CONTRACT.md` (JSON schemas),
 `doc/PROFILE_COOKBOOK.md` (reading verdict/confidence/phase output), `doc/NEW_WORKLOAD_COOKBOOK.md` (a
 step-by-step tutorial for onboarding a new benchmark suite, end to end through the whole toolchain),
-`doc/METRICS.md` (every metric's name/derivation/source-function/database status), and
+`doc/METRICS.md` (every metric's name/derivation/source-function/database status),
+`doc/REPORT_HIERARCHY.md` (directory convention for curated `*.md` workload reports — root/suite/test/
+test-point/machine levels; convention only as of 4.3, not yet wired to any tool), and
 `git log`/`git blame`. This file covers *current*
 mechanism/behavior only.
 
