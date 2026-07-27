@@ -606,6 +606,47 @@ sampling itself needs root this session couldn't grant, so the IBS corroboration
 only, not yet confirmed against a live IBS sample; the generic-vs-AMD-only TLB feature split above was
 itself a direct finding from that real-hardware run, not anticipated in the original design.
 
+**Core-class-aware topdown — closes 4.3 Tier 2 item 5.** Two pieces, both surfaced by re-examining what
+"core-class-aware" actually requires rather than assuming the existing per-core-type raw event tables
+(shipped 4.2) already covered it end to end:
+1. **A real correctness gap in default (non-`--per-core`) mode on Intel hybrid hosts, now warned
+   about.** Research into this item's own "weighted aggregate" framing turned up something more
+   fundamental than a missing summary feature: `setup_counters()`'s default (non-`--per-core`) path
+   opens raw events with `device_type` left at the literal `PERF_TYPE_RAW` constant, never patched to
+   the real per-host dynamic `cpu_core`/`cpu_atom` PMU type the way `bind_core_counter_groups()`
+   (`wspy.c`) already does inside the `--per-core` loop. On current hardware this happens to still bind
+   correctly to the P-core PMU only because `cpu_core`'s real sysfs type coincidentally equals
+   `PERF_TYPE_RAW`'s own enum value (4) — not by design. Any execution the scheduler places on an
+   E-core simply can't be counted by that mismatched-PMU-type event: no error, no dropped-sample
+   marker, just a silently under-counted total, with zero indication anything was missed. `topdown.c`'s
+   `setup_raw_events()` now warns on `cpu_info->is_hybrid && !aflag`, mirroring the existing ARM
+   `mixed_pmu_types` warning exactly (that warning turns out to guard the identical underlying
+   mechanism — raw events bound to one PMU type silently not counting on a task migrated to a
+   different-PMU-type core — just phrased more softly). AMD Zen5/Zen5c doesn't need the same warning:
+   confirmed there's no per-core-class raw table split on that vendor yet (`raw_counter_group()`'s own
+   comment), so there's no PMU-type mismatch to warn about.
+2. **The weighted-aggregate/summary-presentation work itself: `wspy-core-report --weight-by <metric>`.**
+   New optional flag weights each core's contribution to the existing "Cross-core stats" and "Core-class
+   summary" mean/stddev/cv by that same core's own value of a chosen metric column (e.g. `ipc` or
+   `cpu-cycles`) — an "activity-weighted" combination rather than counting every core equally regardless
+   of how much work it actually did. min/max/hot/cold stay exactly the raw per-core values either way
+   (weighting only changes how per-core values combine into one number, not which core was highest/
+   lowest). A core lacking data for the weight metric is excluded from every weighted result entirely,
+   never silently zero- or unity-weighted (`gather_core_values()`'s new `weight_metric` parameter).
+   Population-style weighted variance (divides by `sum(weights)`, not a bias-corrected denominator) —
+   same "deliberately simple, not a formal derivation" spirit `DOMINANCE_*_MARGIN`/`phase.c`'s own
+   thresholds already carry. Opt-in and fully backward-compatible: default output (no `--weight-by`) is
+   byte-identical to before. Verified against a real per-core `--topdown` capture on this AMD host: a
+   single-busy-process workload's unweighted cross-core `ipc` mean (0.69, diluted by 31 idle cores) vs.
+   `--weight-by ipc`'s activity-weighted mean (1.94, correctly dominated by the one core actually doing
+   the work) — a concrete demonstration of exactly the problem this item asked to fix. 8 new
+   `test_core_report.c` cases (weighted-mean correctness, raw-value min/max/hot/cold unaffected by
+   weighting, zero-weights fallback, missing-weight-data exclusion) plus the full `run_tests.sh` matrix;
+   the Intel hybrid warning itself has no dedicated unit test (no existing precedent for asserting on
+   `warning()` text anywhere in this codebase, including the ARM warning it mirrors) but is a 3-line
+   conditional gated behind a flag (`is_hybrid`) that's false on every test host today, so zero behavior
+   change for any existing test.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -830,7 +871,8 @@ Advancements worth adopting, in priority order for `wspy` specifically:
    documented as a fraction of `slots_no_contention`).
 5. ~~Phase-aware topdown (warmup/steady/degraded)~~ — shipped as `wspy-summary --phase-topdown`, see
    "Shipped since 4.2".
-6. Hybrid/heterogeneous core-class summaries — don't mix Atom+Core topdown into one headline number.
+6. ~~Hybrid/heterogeneous core-class summaries — don't mix Atom+Core topdown into one headline
+   number~~ — shipped as `wspy-core-report --weight-by`, see "Shipped since 4.2".
 7. ~~Cross-signal attribution (topdown + cache/TLB/IBS)~~ — shipped as `wspy-archetype`'s
    `memory_attribution` axis, see "Shipped since 4.2"; the blocking-syscall-split modifier remains
    open, see Tier 2's "Composite attribution" remaining scope.
@@ -847,9 +889,8 @@ Advancements worth adopting, in priority order for `wspy` specifically:
 → Items 3-8 map to 4.2's "Hierarchical topdown schema" (shipped), 4.3's now-shipped "Phase-aware
 topdown," 4.3's partially-shipped "Composite attribution" (topdown+cache/TLB/IBS cross-referencing
 shipped as `memory_attribution`; the blocking-syscall-split modifier remains, see Tier 2 above), and
-4.3's still-open "Core-class-aware topdown" (moved to 4.3, no longer blocked at all — real Intel/AMD
-hybrid hardware became available this cycle, and the Gracemont E-core raw-event gap that briefly
-blocked it has since shipped too, see "Core-class-aware topdown" in Tier 2 above).
+4.3's now-shipped "Core-class-aware topdown" (`wspy-core-report --weight-by` plus the Intel-hybrid
+default-mode warning, see "Shipped since 4.2").
 
 ### Preset / Configuration / Option hierarchy deep-dive
 A three-level vocabulary for describing what wspy can be asked to do, surfaced while iterating the
@@ -941,16 +982,10 @@ Item 2 (phase-aware topdown, warmup/steady/degraded segmentation, drift signal) 
 4. IBS-derived memory-path bottleneck decomposition (combine with topdown/cache) — AMD IBS
    sampling-mode support (shipped) now provides real per-sample tag data to decompose; previously
    counting-mode IBS had none.
-5. Core-class-aware topdown (hybrid Intel Atom+Core; weighted aggregate) — **no longer blocked at
-   all.** AMD Zen5/Zen5c hardware was already available (per-core classification shipped in 4.2); Intel
-   hybrid hardware became available this cycle ("carlsbad") and its first real-hardware pass turned up
-   correctness bugs more fundamental than the E-core-exclusion gap this item was originally scoped
-   around — all now resolved, including Gracemont's own raw event tables (`intel_atom_raw_events[]`,
-   `topdown.c` — see "Shipped since 4.2"), which is what this item was waiting on: E-core topdown data
-   now exists (`--per-core --topdown` measures Gracemont cores directly) for the first time.
-   `--affinity=coretype=<id>` (`affinity.c`) resolves x86 P-core/E-core and Zen5/Zen5c groups too
-   (shipped, see "Shipped since 4.2"). This item is now just the weighted-aggregate/summary-presentation
-   work itself.
+5. ~~Core-class-aware topdown (hybrid Intel Atom+Core; weighted aggregate)~~ — shipped:
+   `wspy-core-report --weight-by <metric>` (the weighted-aggregate/summary-presentation work), plus an
+   Intel-hybrid default-mode warning for a real correctness gap the research for this item turned up
+   (silent E-core under-counting outside `--per-core`) — see "Shipped since 4.2" for both.
 
 **Tier 3 — publishing/reporting expansion, needs 4.1's report studio:**
 

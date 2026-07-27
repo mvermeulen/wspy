@@ -412,6 +412,24 @@ int setup_raw_events(void){
     }
     break;
   case VENDOR_INTEL:
+    // Same "process-wide raw counters may miscount on a heterogeneous host"
+    // concern as ARM's mixed_pmu_types warning above, but a stronger claim:
+    // on Intel hybrid, the events built below are opened with device_type
+    // left at the literal PERF_TYPE_RAW constant (see cpu_info.c's comment
+    // on bind_core_counter_groups() only patching device_type inside the
+    // --per-core loop) -- this happens to bind to the cpu_core (P-core) PMU
+    // only because cpu_core's real dynamic sysfs type coincidentally equals
+    // PERF_TYPE_RAW's own enum value on current hardware, not by design.
+    // Any time the workload is scheduled onto an E-core, these events simply
+    // can't be counted there (PMU type mismatch) -- no error, no dropped
+    // sample marker, just a quietly under-counted total. --per-core or
+    // --affinity=coretype=<id> are the only ways to get a number that's
+    // honestly scoped to one core type on this class of hardware today.
+    if (cpu_info->is_hybrid && !aflag){
+      warning("Intel hybrid host (P-core/E-core): process-wide raw counters only bind to the "
+              "P-core PMU type -- any execution scheduled onto an E-core is silently uncounted. "
+              "Use --per-core or --affinity=coretype=<id> for an accurate hybrid measurement.\n");
+    }
     events = intel_raw_events;
     num_events = sizeof(intel_raw_events)/sizeof(intel_raw_events[0]);
     for (i=0;i<num_events;i++){

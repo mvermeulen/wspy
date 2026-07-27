@@ -105,6 +105,60 @@ static void test_compute_core_stats_zero_mean(void){
   printf("PASS: compute_core_stats zero mean\n");
 }
 
+static void test_compute_weighted_core_stats_basic(void){
+  double values[] = {10.0, 20.0};
+  double weights[] = {1.0, 3.0};
+  struct core_stats st;
+
+  printf("Testing compute_weighted_core_stats: mean is weight-proportional, not a plain average...\n");
+  compute_weighted_core_stats(values,weights,2,&st);
+  assert(st.n == 2);
+  assert(fabs(st.mean - 17.5) < 1e-9); /* (10*1 + 20*3) / 4, not the plain average of 15.0 */
+  assert(st.min == 10.0 && st.max == 20.0); /* raw values, unaffected by weighting */
+  assert(st.hot_idx == 1 && st.cold_idx == 0); /* still indexes the raw max/min */
+  printf("PASS: compute_weighted_core_stats basic\n");
+}
+
+static void test_compute_weighted_core_stats_zero_weights_falls_back(void){
+  double values[] = {10.0, 20.0, 30.0};
+  double weights[] = {0.0, 0.0, 0.0};
+  struct core_stats weighted,unweighted;
+
+  printf("Testing compute_weighted_core_stats: every weight <= 0 falls back to the plain unweighted "
+         "computation rather than dividing by zero...\n");
+  compute_weighted_core_stats(values,weights,3,&weighted);
+  compute_core_stats(values,3,&unweighted);
+  assert(fabs(weighted.mean - unweighted.mean) < 1e-9);
+  assert(fabs(weighted.stddev - unweighted.stddev) < 1e-9);
+  printf("PASS: compute_weighted_core_stats zero weights falls back\n");
+}
+
+static void test_compute_weighted_core_stats_single_sample(void){
+  double values[] = {7.5};
+  double weights[] = {2.0};
+  struct core_stats st;
+
+  printf("Testing compute_weighted_core_stats: single sample -> stddev/cv are 0, not NaN...\n");
+  compute_weighted_core_stats(values,weights,1,&st);
+  assert(fabs(st.mean - 7.5) < 1e-9);
+  assert(st.stddev == 0.0);
+  assert(st.cv_percent == 0.0);
+  printf("PASS: compute_weighted_core_stats single sample\n");
+}
+
+static void test_compute_weighted_core_stats_zero_mean_guarded(void){
+  double values[] = {-10.0, 10.0};
+  double weights[] = {1.0, 1.0};
+  struct core_stats st;
+
+  printf("Testing compute_weighted_core_stats: weighted mean of exactly 0 doesn't divide by zero "
+         "computing cv_percent...\n");
+  compute_weighted_core_stats(values,weights,2,&st);
+  assert(st.mean == 0.0);
+  assert(st.cv_percent == 0.0);
+  printf("PASS: compute_weighted_core_stats zero mean guarded\n");
+}
+
 static void test_metric_wanted(void){
   char *filters[] = {"ipc","retire"};
 
@@ -220,6 +274,7 @@ static void test_gather_core_values_no_filter(void){
   struct metric_accum m;
   double values[MAX_CORES];
   int core_ids[MAX_CORES];
+  double weights[MAX_CORES];
   int n;
 
   printf("Testing gather_core_values without a class filter...\n");
@@ -229,7 +284,7 @@ static void test_gather_core_values_no_filter(void){
   core_seen[1] = 1; m.sum[1] = 3.0;  m.count[1] = 1; /* mean 3.0 */
   max_core_seen = 1;
 
-  n = gather_core_values(&m,NULL,NULL,0,CORE_UNKNOWN,values,core_ids);
+  n = gather_core_values(&m,NULL,NULL,0,CORE_UNKNOWN,NULL,values,core_ids,weights);
   assert(n == 2);
   assert(core_ids[0] == 0 && values[0] == 5.0);
   assert(core_ids[1] == 1 && values[1] == 3.0);
@@ -242,6 +297,7 @@ static void test_gather_core_values_class_filter(void){
   int class_known[MAX_CORES];
   double values[MAX_CORES];
   int core_ids[MAX_CORES];
+  double weights[MAX_CORES];
   int n;
 
   printf("Testing gather_core_values with a class filter (synthetic hybrid host)...\n");
@@ -255,14 +311,36 @@ static void test_gather_core_values_class_filter(void){
   core_seen[3] = 1; m.sum[3] = 99.0; m.count[3] = 1; class_known[3] = 0;
   max_core_seen = 3;
 
-  n = gather_core_values(&m,core_class,class_known,1,CORE_INTEL_CORE,values,core_ids);
+  n = gather_core_values(&m,core_class,class_known,1,CORE_INTEL_CORE,NULL,values,core_ids,weights);
   assert(n == 2);
   assert(core_ids[0] == 0 && core_ids[1] == 1);
 
-  n = gather_core_values(&m,core_class,class_known,1,CORE_INTEL_ATOM,values,core_ids);
+  n = gather_core_values(&m,core_class,class_known,1,CORE_INTEL_ATOM,NULL,values,core_ids,weights);
   assert(n == 1);
   assert(core_ids[0] == 2 && values[0] == 5.0);
   printf("PASS: gather_core_values class filter\n");
+}
+
+static void test_gather_core_values_weight_metric_excludes_missing_weight(void){
+  struct metric_accum m,weight_m;
+  double values[MAX_CORES];
+  int core_ids[MAX_CORES];
+  double weights[MAX_CORES];
+  int n;
+
+  printf("Testing gather_core_values with a weight_metric: a core with data for m but not for the "
+         "weight metric is excluded entirely, not zero- or unity-weighted...\n");
+  reset_state();
+  memset(&m,0,sizeof(m));
+  memset(&weight_m,0,sizeof(weight_m));
+  core_seen[0] = 1; m.sum[0] = 10.0; m.count[0] = 1; weight_m.sum[0] = 100.0; weight_m.count[0] = 1;
+  core_seen[1] = 1; m.sum[1] = 20.0; m.count[1] = 1; /* no weight data for core 1 */
+  max_core_seen = 1;
+
+  n = gather_core_values(&m,NULL,NULL,0,CORE_UNKNOWN,&weight_m,values,core_ids,weights);
+  assert(n == 1);
+  assert(core_ids[0] == 0 && values[0] == 10.0 && weights[0] == 100.0);
+  printf("PASS: gather_core_values weight_metric excludes cores missing weight data\n");
 }
 
 static void test_distinct_classes_present(void){
@@ -312,6 +390,10 @@ int main(void){
   test_compute_core_stats_basic();
   test_compute_core_stats_single_sample();
   test_compute_core_stats_zero_mean();
+  test_compute_weighted_core_stats_basic();
+  test_compute_weighted_core_stats_zero_weights_falls_back();
+  test_compute_weighted_core_stats_single_sample();
+  test_compute_weighted_core_stats_zero_mean_guarded();
   test_metric_wanted();
   test_core_class_name();
   test_read_percore_csv_basic();
@@ -321,6 +403,7 @@ int main(void){
   test_read_percore_csv_header_reuse_bug_regression();
   test_gather_core_values_no_filter();
   test_gather_core_values_class_filter();
+  test_gather_core_values_weight_metric_excludes_missing_weight();
   test_distinct_classes_present();
   test_distinct_classes_present_homogeneous();
 
