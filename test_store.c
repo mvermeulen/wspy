@@ -1160,6 +1160,51 @@ static void test_extract_run_features_generic_tlb_promoted(void){
   printf("PASS: extract_run_features generic TLB features promoted\n");
 }
 
+static void test_extract_run_features_ibs_locus_promoted(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_int64 run_id;
+  double value;
+  char coverage[16];
+  const char *csv_path = "/tmp/test_store_features_ibs_locus.csv";
+
+  printf("Testing extract_run_features: ibs_dc_l1tlb_miss_pct/ibs_dc_l2tlb_miss_pct/"
+         "ibs_remote_node_pct/backend_memory_pct promoted (archetype.c's memory_attribution_locus "
+         "decomposition inputs)...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  write_file(csv_path,
+    "elapsed,ibs_sample_dc_l1tlb_miss_rate,ibs_sample_dc_l2tlb_miss_rate,"
+    "ibs_sample_remote_node_rate,backend_memory_pct,counters_measured,counters_requested,\n"
+    "1.0,2.5,1.1,6.7,33.3,9,9,\n");
+  build_csv_record(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","/bin/true",csv_path);
+
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",0,1,1,&stats);
+  json_free(root);
+
+  run_id = lookup_run_id(db,"run1");
+  assert(run_id > 0);
+
+  assert(feature_row(db,run_id,"ibs_dc_l1tlb_miss_pct",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && value > 2.4 && value < 2.6);
+  assert(feature_row(db,run_id,"ibs_dc_l2tlb_miss_pct",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && value > 1.0 && value < 1.2);
+  assert(feature_row(db,run_id,"ibs_remote_node_pct",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && value > 6.6 && value < 6.8);
+  assert(feature_row(db,run_id,"backend_memory_pct",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"measured") && value > 33.2 && value < 33.4);
+
+  sqlite3_close(db);
+  remove(csv_path);
+  printf("PASS: extract_run_features IBS-locus features promoted\n");
+}
+
 /* --- scan_tree_blocking_stats --- */
 
 static void test_scan_tree_blocking_stats_sums_across_processes(void){
@@ -2013,6 +2058,7 @@ int main(void){
   test_extract_run_features_basic();
   test_extract_run_features_ibs_sample_promoted();
   test_extract_run_features_generic_tlb_promoted();
+  test_extract_run_features_ibs_locus_promoted();
   test_scan_tree_blocking_stats_sums_across_processes();
   test_scan_tree_blocking_stats_no_matching_lines();
   test_scan_tree_blocking_stats_missing_file();

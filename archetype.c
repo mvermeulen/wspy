@@ -97,6 +97,16 @@
 #define SMT_CONTENTION_ELEVATED_PCT    5.0
 #define IBS_DC_MISS_ELEVATED_PCT      10.0
 #define IBS_DRAM_ELEVATED_PCT         10.0
+/* memory_attribution_locus thresholds (classify_memory_locus(), below) --
+ * same "deliberately simple v1 starting point" caveat. CACHE_MISS_ELEVATED_PCT
+ * above doubles as this function's cache-counter-fallback-tier cutoff for
+ * dcache_miss_pct/l2_miss_pct/l3_miss_pct/dtlb_generic_miss_pct (mem_signals[]'s
+ * own threshold for those same features, not a new cutoff), and
+ * IBS_DC_MISS_ELEVATED_PCT/IBS_DRAM_ELEVATED_PCT above double as its IBS-tier
+ * dc_miss/dram cutoffs -- only the two signals with no existing threshold
+ * anywhere else in this file get a new #define here. */
+#define IBS_REMOTE_NODE_ELEVATED_PCT  10.0
+#define IBS_TLB_MISS_ELEVATED_PCT     10.0
 /* blocking-syscall-split modifier thresholds (fraction of run elapsed time,
  * store.c's blocking_wait_pct/sched_rundelay_pct) -- checked ahead of the
  * cache/TLB/IBS corroboration signals above: if the CPU wasn't actually
@@ -246,6 +256,19 @@ struct memory_attribution_result {
   char reasons[256];  /* corroborated: which signal(s) fired, "name=value" comma-joined;
                         * uncorroborated: which signal(s) were checked and found unremarkable;
                         * empty for "unknown"/"not-memory-bound" */
+  /* memory_attribution_locus (classify_memory_locus(), below) -- which hop
+   * in the memory hierarchy a corroborated read concentrates in. Populated
+   * only when label=="corroborated"; "unknown" otherwise, including when
+   * corroboration came from a signal (e.g. smt_contention_pct) that carries
+   * no hierarchy-position information at all. See INVESTIGATION.md's 4.3
+   * Tier 2 "IBS-derived memory-path bottleneck decomposition" scoping note. */
+  char locus[24];         /* "l1"/"l2-l3"/"dram"/"remote-numa"/"unknown" --
+                            * "tlb" is a co-firing tag in locus_reasons, not
+                            * a distinct label, since address-translation
+                            * misses are an independent hop from the data
+                            * miss chain above. */
+  char locus_reasons[160]; /* "tier=ibs-sample"/"tier=cache-counter" first,
+                             * then which signal(s) drove the label. */
 };
 
 /* One corroborating raw signal this axis cross-references against
@@ -287,13 +310,15 @@ struct memory_signal { const char *name; double value; int available; double ele
  * for the same slice of time, so kernel-blocking (the more directly
  * explanatory signal) wins when both happen to be elevated.
  *
- * Deliberately does NOT attempt to rank *which* cache level (L1/L2/L3) the
- * stall concentrates in -- that's print_topdown_be()'s own dedicated
- * --topdown-backend group (l1_bound_slots_pct/etc., doc/METRICS.md), a
- * genuinely different measurement (stall-cycle attribution) than a miss
- * *rate* (request-outcome attribution) can honestly claim to reproduce;
- * conflating the two here would overclaim precision this signal set
- * doesn't have. */
+ * Deliberately does NOT itself rank *which* cache level (L1/L2/L3) the
+ * stall concentrates in -- print_topdown_be()'s own dedicated --topdown-backend
+ * group (l1_bound_slots_pct/etc., doc/METRICS.md) is a genuinely different
+ * measurement (stall-cycle attribution) than a miss *rate* (request-outcome
+ * attribution) can honestly claim to reproduce, and that group is Intel/
+ * ARM-only besides (print_topdown_be() returns immediately on VENDOR_AMD).
+ * classify_memory_locus(), below, is the request-outcome-based answer for
+ * the AMD/IBS side of that same question -- a different *kind* of
+ * decomposition than print_topdown_be()'s, not a duplicate of it. */
 static void classify_memory_attribution(double backend_pct,int have_backend,
                                          double blocking_wait_pct,int have_blocking_wait,
                                          double sched_rundelay_pct,int have_sched_rundelay,
@@ -381,6 +406,12 @@ struct run_snapshot {
   double ibs_dram_pct;           int have_ibs_dram;
   double itlb_generic_miss_pct;  int have_itlb_generic_miss;
   double dtlb_generic_miss_pct;  int have_dtlb_generic_miss;
+  /* memory_attribution_locus's own decomposition inputs, on top of the
+   * corroborating signals above -- see classify_memory_locus(). */
+  double ibs_dc_l1tlb_miss_pct;  int have_ibs_dc_l1tlb_miss;
+  double ibs_dc_l2tlb_miss_pct;  int have_ibs_dc_l2tlb_miss;
+  double ibs_remote_node_pct;    int have_ibs_remote_node;
+  double backend_memory_pct;     int have_backend_memory;
   /* blocking-syscall-split modifier inputs (store.c, from --tree) --
    * checked ahead of the corroborating signals above, see
    * classify_memory_attribution()'s own comment. */
@@ -423,8 +454,138 @@ static void run_snapshot_apply_feature(struct run_snapshot *snap,const char *fea
   else if (!strcmp(feature_name,"ibs_dram_pct")){ snap->ibs_dram_pct = value; snap->have_ibs_dram = measured; }
   else if (!strcmp(feature_name,"itlb_generic_miss_pct")){ snap->itlb_generic_miss_pct = value; snap->have_itlb_generic_miss = measured; }
   else if (!strcmp(feature_name,"dtlb_generic_miss_pct")){ snap->dtlb_generic_miss_pct = value; snap->have_dtlb_generic_miss = measured; }
+  else if (!strcmp(feature_name,"ibs_dc_l1tlb_miss_pct")){ snap->ibs_dc_l1tlb_miss_pct = value; snap->have_ibs_dc_l1tlb_miss = measured; }
+  else if (!strcmp(feature_name,"ibs_dc_l2tlb_miss_pct")){ snap->ibs_dc_l2tlb_miss_pct = value; snap->have_ibs_dc_l2tlb_miss = measured; }
+  else if (!strcmp(feature_name,"ibs_remote_node_pct")){ snap->ibs_remote_node_pct = value; snap->have_ibs_remote_node = measured; }
+  else if (!strcmp(feature_name,"backend_memory_pct")){ snap->backend_memory_pct = value; snap->have_backend_memory = measured; }
   else if (!strcmp(feature_name,"blocking_wait_pct")){ snap->blocking_wait_pct = value; snap->have_blocking_wait = measured; }
   else if (!strcmp(feature_name,"sched_rundelay_pct")){ snap->sched_rundelay_pct = value; snap->have_sched_rundelay = measured; }
+}
+
+/* Ranks *where* in the memory hierarchy a corroborated memory-bound read
+ * concentrates -- the scope classify_memory_attribution()'s own header
+ * comment explicitly deferred (see "Deliberately does NOT itself rank...",
+ * above). Only called when attr->label is already "corroborated": ranking
+ * hops on an uncorroborated/blocked/oversubscribed/not-memory-bound read
+ * would claim precision this signal set doesn't have. Gated on
+ * backend_memory_pct rather than backend_pct (the coarser L1 category
+ * classify_memory_attribution() itself gates on) -- the L2 sub-split
+ * specifically attributing memory *within* backend is the more precise
+ * anchor for "is this run's memory-bound-ness actually concentrated in the
+ * data path," as opposed to a backend stall that's more core/execution-
+ * bound than memory-specific.
+ *
+ * Two precision tiers, tried in order (takes the whole snapshot rather than
+ * classify_memory_attribution()'s explicit-parameter style, since this
+ * function's decision tree genuinely needs this many run_snapshot fields at
+ * once):
+ *
+ * 1. IBS tier (AMD --ibs-sample): the only source with real per-sample
+ *    hierarchy-position data (see ibs_sample.h) -- ibs_remote_node_pct
+ *    checked first (a cross-socket hop dominates regardless of where else
+ *    the access resolved), then ibs_dram_pct, then the L1-miss residual
+ *    that didn't reach DRAM ("l2-l3"), then a plain dc_miss with nothing
+ *    else elevated ("l1"). ibs_dc_l1tlb_miss_pct/ibs_dc_l2tlb_miss_pct are
+ *    an independent hop (address translation, not data) so they're a
+ *    co-firing tag in locus_reasons rather than competing for the label.
+ *    Falls through to tier 2 if IBS data exists but nothing in it is
+ *    elevated -- classify_memory_attribution()'s own corroboration may have
+ *    come from a signal (e.g. smt_contention_pct) with no hierarchy-
+ *    position information at all, so an unelevated IBS tier isn't itself
+ *    "l1".
+ * 2. Cache-counter tier (generic PERF_TYPE_HW_CACHE, any vendor): coarser
+ *    same-shape fallback over dcache_miss_pct/l2_miss_pct/l3_miss_pct,
+ *    reusing CACHE_MISS_ELEVATED_PCT (mem_signals[]'s own threshold for
+ *    these same features, not a new cutoff). dtlb_generic_miss_pct is this
+ *    tier's TLB co-firing tag.
+ *
+ * locus_reasons always starts with "tier=ibs-sample" or "tier=cache-counter"
+ * so a reader never mistakes cache-counter-derived precision for IBS-grade. */
+static void classify_memory_locus(const struct run_snapshot *snap,
+                                   struct memory_attribution_result *attr){
+  size_t used;
+
+  snprintf(attr->locus,sizeof(attr->locus),"unknown");
+  attr->locus_reasons[0] = '\0';
+  if (strcmp(attr->label,"corroborated") != 0) return;
+
+  if (!snap->have_backend_memory){
+    snprintf(attr->locus_reasons,sizeof(attr->locus_reasons),"missing-backend_memory_pct");
+    return;
+  }
+  if (snap->backend_memory_pct < MEMORY_ATTRIBUTION_FLOOR_PCT) return;
+
+  if (snap->have_ibs_dc_miss){
+    const char *label = NULL;
+
+    used = (size_t)snprintf(attr->locus_reasons,sizeof(attr->locus_reasons),"tier=ibs-sample");
+    if (snap->have_ibs_remote_node && snap->ibs_remote_node_pct >= IBS_REMOTE_NODE_ELEVATED_PCT){
+      label = "remote-numa";
+      used += (size_t)snprintf(attr->locus_reasons+used,sizeof(attr->locus_reasons)-used,
+                                ",ibs_remote_node_pct=%.4g",snap->ibs_remote_node_pct);
+    } else if (snap->have_ibs_dram && snap->ibs_dram_pct >= IBS_DRAM_ELEVATED_PCT){
+      label = "dram";
+      used += (size_t)snprintf(attr->locus_reasons+used,sizeof(attr->locus_reasons)-used,
+                                ",ibs_dram_pct=%.4g",snap->ibs_dram_pct);
+    } else if (snap->have_ibs_dram){
+      /* dram_pct is a real measured 0-ish value here (not just missing) --
+       * safe to treat the gap between it and dc_miss_pct as "resolved
+       * before reaching DRAM". */
+      double resolved_before_dram = snap->ibs_dc_miss_pct - snap->ibs_dram_pct;
+      if (resolved_before_dram >= IBS_DC_MISS_ELEVATED_PCT){
+        label = "l2-l3";
+        used += (size_t)snprintf(attr->locus_reasons+used,sizeof(attr->locus_reasons)-used,
+                                  ",ibs_dc_miss_pct=%.4g,ibs_dram_pct=%.4g",
+                                  snap->ibs_dc_miss_pct,snap->ibs_dram_pct);
+      } else if (snap->ibs_dc_miss_pct >= IBS_DC_MISS_ELEVATED_PCT){
+        label = "l1";
+        used += (size_t)snprintf(attr->locus_reasons+used,sizeof(attr->locus_reasons)-used,
+                                  ",ibs_dc_miss_pct=%.4g",snap->ibs_dc_miss_pct);
+      }
+    } else if (snap->ibs_dc_miss_pct >= IBS_DC_MISS_ELEVATED_PCT){
+      /* dram_pct itself unmeasured -- no basis to localize past "missed
+       * L1D, unknown how far it traveled", so this is honestly "l1", not a
+       * fabricated l2-l3 guess from treating missing data as zero. */
+      label = "l1";
+      used += (size_t)snprintf(attr->locus_reasons+used,sizeof(attr->locus_reasons)-used,
+                                ",ibs_dc_miss_pct=%.4g",snap->ibs_dc_miss_pct);
+    }
+
+    if (label){
+      snprintf(attr->locus,sizeof(attr->locus),"%s",label);
+      if ((snap->have_ibs_dc_l1tlb_miss && snap->ibs_dc_l1tlb_miss_pct >= IBS_TLB_MISS_ELEVATED_PCT) ||
+          (snap->have_ibs_dc_l2tlb_miss && snap->ibs_dc_l2tlb_miss_pct >= IBS_TLB_MISS_ELEVATED_PCT))
+        snprintf(attr->locus_reasons+used,sizeof(attr->locus_reasons)-used,",tlb-cofire");
+      return;
+    }
+  }
+
+  {
+    const char *label = NULL;
+
+    used = (size_t)snprintf(attr->locus_reasons,sizeof(attr->locus_reasons),"tier=cache-counter");
+    if (snap->have_l3_miss && snap->l3_miss_pct >= CACHE_MISS_ELEVATED_PCT){
+      label = "dram";
+      used += (size_t)snprintf(attr->locus_reasons+used,sizeof(attr->locus_reasons)-used,
+                                ",l3_miss_pct=%.4g",snap->l3_miss_pct);
+    } else if (snap->have_l2_miss && snap->l2_miss_pct >= CACHE_MISS_ELEVATED_PCT){
+      label = "l2-l3";
+      used += (size_t)snprintf(attr->locus_reasons+used,sizeof(attr->locus_reasons)-used,
+                                ",l2_miss_pct=%.4g",snap->l2_miss_pct);
+    } else if (snap->have_dcache_miss && snap->dcache_miss_pct >= CACHE_MISS_ELEVATED_PCT){
+      label = "l1";
+      used += (size_t)snprintf(attr->locus_reasons+used,sizeof(attr->locus_reasons)-used,
+                                ",dcache_miss_pct=%.4g",snap->dcache_miss_pct);
+    }
+
+    if (!label){
+      attr->locus_reasons[0] = '\0';
+      return; /* stays "unknown" -- corroboration came from a signal with no hierarchy-position information */
+    }
+    snprintf(attr->locus,sizeof(attr->locus),"%s",label);
+    if (snap->have_dtlb_generic_miss && snap->dtlb_generic_miss_pct >= CACHE_MISS_ELEVATED_PCT)
+      snprintf(attr->locus_reasons+used,sizeof(attr->locus_reasons)-used,",tlb-cofire");
+  }
 }
 
 /* The full scorecard for one already-assembled snapshot -- shared by both
@@ -466,6 +627,7 @@ static void score_snapshot(const struct run_snapshot *snap,struct scorecard *out
                                snap->blocking_wait_pct,snap->have_blocking_wait,
                                snap->sched_rundelay_pct,snap->have_sched_rundelay,
                                mem_signals,10,&out->memory_attribution);
+  classify_memory_locus(snap,&out->memory_attribution);
   compute_overall_confidence(&out->dominance,out->simple,NUM_SIMPLE_AXES,&out->confidence);
 }
 
@@ -527,17 +689,22 @@ static void print_scorecard_row(FILE *out,const struct run_snapshot *snap,
     print_csv_field(out,sc->confidence.level); fputc(',',out);
     print_csv_field(out,sc->confidence.reasons); fputc(',',out);
     print_csv_field(out,sc->memory_attribution.label); fputc(',',out);
-    print_csv_field(out,sc->memory_attribution.reasons);
+    print_csv_field(out,sc->memory_attribution.reasons); fputc(',',out);
+    print_csv_field(out,sc->memory_attribution.locus); fputc(',',out);
+    print_csv_field(out,sc->memory_attribution.locus_reasons);
     fputc('\n',out);
   } else {
-    fprintf(out,"%-24.24s %-20.20s %-28.28s %-18s %-18s %-16s %-14s %-9s %-8s %-30.30s  %-16s  %s\n",
+    fprintf(out,"%-24.24s %-20.20s %-28.28s %-18s %-18s %-16s %-14s %-9s %-8s %-30.30s  %-16s  %-16s  %s",
             snap->hostname,snap->run_id_text,snap->command,
             dom_label,alt_label,
             sc->simple[AXIS_PARALLELISM_SHAPE].label,
             sc->simple[AXIS_CONTROL_FLOW_STYLE].label,
             sc->simple[AXIS_RUNTIME_STABILITY].label,
             sc->confidence.level,sc->confidence.reasons,
-            sc->memory_attribution.label,sc->memory_attribution.reasons);
+            sc->memory_attribution.label,sc->memory_attribution.reasons,
+            sc->memory_attribution.locus);
+    if (sc->memory_attribution.locus_reasons[0]) fprintf(out,"  %s",sc->memory_attribution.locus_reasons);
+    fputc('\n',out);
   }
 }
 
@@ -573,12 +740,13 @@ static int score_runs(sqlite3 *db,const char *command_filter,const char *hostnam
     fprintf(out,"hostname,run_id,command,resource_dominance,resource_dominance_pct,"
                 "alternative,alternative_pct,parallelism_shape,control_flow_style,"
                 "runtime_stability,confidence,confidence_reasons,"
-                "memory_attribution,memory_attribution_reasons\n");
+                "memory_attribution,memory_attribution_reasons,"
+                "memory_attribution_locus,memory_attribution_locus_reasons\n");
   else
-    fprintf(out,"%-24.24s %-20.20s %-28.28s %-18s %-18s %-16s %-14s %-9s %-8s %-30s  %-16s  %s\n",
+    fprintf(out,"%-24.24s %-20.20s %-28.28s %-18s %-18s %-16s %-14s %-9s %-8s %-30s  %-16s  %-16s  %s  mem_locus_reasons\n",
             "hostname","run_id","command","resource_dominance","alternative",
             "parallelism","control_flow","stability","conf.","reasons",
-            "mem_attribution","mem_attr_reasons");
+            "mem_attribution","mem_attr_reasons","mem_locus");
 
   while (sqlite3_step(stmt) == SQLITE_ROW){
     sqlite3_int64 run_id = sqlite3_column_int64(stmt,0);
@@ -683,6 +851,8 @@ static int trace_run_archetype(sqlite3 *db,const char *hostname,const char *run_
   print_trace_field(out,"confidence_reasons",sc.confidence.reasons);
   print_trace_field(out,"memory_attribution",sc.memory_attribution.label);
   print_trace_field(out,"memory_attribution_reasons",sc.memory_attribution.reasons);
+  print_trace_field(out,"memory_attribution_locus",sc.memory_attribution.locus);
+  print_trace_field(out,"memory_attribution_locus_reasons",sc.memory_attribution.locus_reasons);
   return 0;
 }
 

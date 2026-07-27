@@ -895,7 +895,60 @@ AMD IBS sampling-mode support (shipped, see "Shipped since 4.2" and the Zen5/IBS
 
 1. IBS-derived memory-path bottleneck decomposition (combine with topdown/cache) — AMD IBS
    sampling-mode support (shipped) now provides real per-sample tag data to decompose; previously
-   counting-mode IBS had none.
+   counting-mode IBS had none. Scoped design below, not yet implemented.
+
+   **The gap this closes.** `memory_attribution` (shipped, see "Shipped since 4.2") explicitly declined
+   to rank *which* cache level a memory-bound stall concentrates in, pointing at `--topdown-backend`'s
+   L1/L2/L3/DRAM stall-cycle chain (`print_topdown_be()`) as the right tool for that instead. But that
+   chain is Intel/ARM-only — `print_topdown_be()` returns immediately on `VENDOR_AMD` with no breakdown
+   at all. AMD's own topdown stops at one flat L2 number, `backend_memory_pct` (not yet promoted to
+   `run_features`). Since IBS is also AMD-only, this item isn't "add a rank to the existing Intel/ARM
+   breakdown" — it's building the AMD equivalent from a fundamentally different kind of data: IBS's
+   per-sample tags are request-outcome hits (did *this* sample miss L1D / cross to DRAM / cross a NUMA
+   hop), not stall-cycle attribution, so the result is honestly a different *kind* of decomposition, not
+   a port of Intel's.
+
+   **Signal inventory.** Already decoded and in CSV, all scheme-independent (survive the pre-Zen4 vs.
+   Zen4+ `data_src` table difference `ibs_sample.h` documents): `ibs_sample_dc_miss_rate` (L1D data
+   miss, op-side), `ibs_sample_dc_l1tlb_miss_rate`/`ibs_sample_dc_l2tlb_miss_rate` (address-translation
+   hop, independent of the data hop), `ibs_sample_dram_rate` (reached DRAM), `ibs_sample_remote_node_rate`
+   (crossed a NUMA hop, orthogonal to DRAM — a DRAM access can be local or remote). Deliberately NOT
+   using the fuller `op_data_src_count[13]` histogram (per-index meaning differs pre-Zen4 vs. Zen4+,
+   same reason it's excluded from CSV today) or `IbsBrTarget`/`IbsDcLinAd`/`IbsDcPhysAd` (no stable
+   bitfield layout / needs a symbol-resolution feature that doesn't exist) — both stay permanently out of
+   scope, matching `ibs_sample.h`'s own existing exclusions rather than reopening them.
+
+   **Output shape.** Extends `archetype.c`'s `memory_attribution` axis rather than adding a new
+   standalone `wspy-summary` mode: a new `char locus[24]`/`char locus_reasons[160]` pair on
+   `struct memory_attribution_result`, populated only when the existing classification already landed on
+   `"corroborated"` (no point ranking hops on an uncorroborated, blocked, or oversubscribed run).
+
+   **Decomposition logic**, gated on the new `backend_memory_pct` feature (not the coarser `backend_pct`
+   the rest of the axis uses — the more precise anchor for "how much of execution is a memory stall
+   specifically"), same threshold-table style `classify_memory_attribution()` already uses:
+   1. IBS tier (preferred, when `ibs_dc_miss_pct` available): `ibs_remote_node_pct` elevated →
+      `"remote-numa"` (checked first — a cross-socket hop dominates regardless of where else the access
+      resolved); else `ibs_dram_pct` elevated → `"dram"`; else `(ibs_dc_miss_pct − ibs_dram_pct)` elevated
+      → `"l2-l3"` (missed L1D, resolved before DRAM); `ibs_dc_l1tlb_miss_pct`/`ibs_dc_l2tlb_miss_pct`
+      elevated → `"tlb"` reported as an additional co-firing tag, not exclusive with the above; none
+      elevated despite `dc_miss_pct` itself being elevated → `"l1"`.
+   2. Cache-counter fallback tier (no IBS data this run): same shape over
+      `dcache_miss_pct`/`l2_miss_pct`/`l3_miss_pct`, coarser granularity; `locus_reasons` tags which
+      precision tier produced the answer (`tier=ibs-sample` vs. `tier=cache-counter`) so a reader never
+      mistakes cache-counter-derived precision for IBS-grade.
+   3. Neither available → `locus` stays `"unknown"`, matching the rest of this file's convention.
+
+   **Plumbing** — `store.c`'s `SIMPLE_METRIC_FEATURES` table, four new one-line rows:
+   `ibs_dc_l1tlb_miss_pct`←`ibs_sample_dc_l1tlb_miss_rate`, `ibs_dc_l2tlb_miss_pct`←
+   `ibs_sample_dc_l2tlb_miss_rate`, `ibs_remote_node_pct`←`ibs_sample_remote_node_rate`,
+   `backend_memory_pct`←`backend_memory`; plus the matching `run_snapshot` fields/`run_snapshot_apply_
+   feature()` cases in `archetype.c`, same mechanical pattern as the existing IBS features.
+
+   **Explicitly out of scope for v1:** fetch-side/icache decomposition (a different topdown category,
+   `frontend_bandwidth_pct`, with different semantics — conflating it here would repeat the exact
+   overclaiming-precision mistake `memory_attribution`'s header already warned against; deferred to a
+   future second, parallel decomposition if IBS fetch-sampling data proves commonly available in
+   practice).
 
 **Tier 3 — publishing/reporting expansion, needs 4.1's report studio:**
 

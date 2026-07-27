@@ -37,7 +37,7 @@
  * (wspy.h) is versioned separately from MANIFEST_SCHEMA_VERSION. Recorded
  * on every run_features row so a later reader can tell which rule set
  * produced a given value. */
-#define FEATURE_SET_VERSION "1.4"
+#define FEATURE_SET_VERSION "1.5"
 
 /* Noise floor for active_core_count (below): a --per-core core averaging
  * at or under this IPC is treated as not meaningfully participating in the
@@ -938,6 +938,15 @@ static const struct simple_metric_feature SIMPLE_METRIC_FEATURES[] = {
   { "smt_contention_pct",    "contention_pct" },
   { "ibs_dc_miss_pct",       "ibs_sample_dc_miss_rate" },
   { "ibs_dram_pct",          "ibs_sample_dram_rate" },
+  /* memory_attribution_locus's decomposition inputs (archetype.c) -- the
+   * remaining scheme-independent IBS sampling rates plus the L2 topdown
+   * memory-portion-of-backend number, none previously promoted. See
+   * INVESTIGATION.md's 4.3 Tier 2 "IBS-derived memory-path bottleneck
+   * decomposition" scoping note. */
+  { "ibs_dc_l1tlb_miss_pct", "ibs_sample_dc_l1tlb_miss_rate" },
+  { "ibs_dc_l2tlb_miss_pct", "ibs_sample_dc_l2tlb_miss_rate" },
+  { "ibs_remote_node_pct",   "ibs_sample_remote_node_rate" },
+  { "backend_memory_pct",    "backend_memory_pct" },
   /* Cross-vendor generic --tlb group (print_itlb()/print_dtlb(), shared
    * print_cache() helper) -- a percentage, and available on any vendor,
    * unlike itlb_miss_per1k/dtlb_miss_per1k above (a per-1000-inst rate,
