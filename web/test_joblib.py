@@ -1449,6 +1449,271 @@ class LinkPhoronixTestPointRunTest(unittest.TestCase):
         self.assertFalse(ok)
 
 
+class Cpu2026SuiteInstalledTest(unittest.TestCase):
+    def test_true_when_shrc_present(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, "shrc"), "w") as f:
+                f.write("")
+            self.assertTrue(joblib.cpu2026_suite_installed(tmpdir))
+
+    def test_false_when_shrc_absent(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertFalse(joblib.cpu2026_suite_installed(tmpdir))
+
+
+class DiscoverInstalledCpu2026BenchmarksTest(unittest.TestCase):
+    def test_lists_numbered_benchmark_dirs_sorted(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = os.path.join(tmpdir, "benchspec", "CPU2026")
+            for name in ["721.gcc_r", "706.stockfish_r", "Docs"]:
+                os.makedirs(os.path.join(root, name))
+            # a stray file (not a directory) alongside the benchmark dirs
+            # must not be mistaken for one
+            with open(os.path.join(root, "710.omnetpp_r"), "w") as f:
+                f.write("not a directory")
+            self.assertEqual(joblib.discover_installed_cpu2026_benchmarks(tmpdir),
+                              ["706.stockfish_r", "721.gcc_r"])
+
+    def test_missing_benchspec_returns_empty_list(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertEqual(joblib.discover_installed_cpu2026_benchmarks(tmpdir), [])
+
+
+class DiscoverCpu2026ConfigsTest(unittest.TestCase):
+    def test_lists_cfg_tags_sorted(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = os.path.join(tmpdir, "config")
+            os.makedirs(root)
+            for name in ["gcc_O2.cfg", "aocc_O3.cfg", "notes.txt"]:
+                with open(os.path.join(root, name), "w") as f:
+                    f.write("")
+            self.assertEqual(joblib.discover_cpu2026_configs(tmpdir), ["aocc_O3", "gcc_O2"])
+
+    def test_missing_config_dir_returns_empty_list(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertEqual(joblib.discover_cpu2026_configs(tmpdir), [])
+
+
+class Cpu2026BenchmarkBuiltTest(unittest.TestCase):
+    def test_true_when_exe_names_contain_tag(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            exe_dir = os.path.join(tmpdir, "benchspec", "CPU2026", "706.stockfish_r", "exe")
+            os.makedirs(exe_dir)
+            with open(os.path.join(exe_dir, "stockfish_r_base.gcc_O2-m64"), "w") as f:
+                f.write("")
+            self.assertTrue(joblib.cpu2026_benchmark_built(tmpdir, "706.stockfish_r", "gcc_O2"))
+            self.assertFalse(joblib.cpu2026_benchmark_built(tmpdir, "706.stockfish_r", "aocc_O3"))
+
+    def test_false_when_exe_dir_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertFalse(joblib.cpu2026_benchmark_built(tmpdir, "706.stockfish_r", "gcc_O2"))
+
+
+class RegisterCpu2026PointTest(unittest.TestCase):
+    def test_creates_source_json_and_readme(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            result = joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O2")
+            self.assertEqual(result["status"], "created")
+            self.assertEqual(result["identity"], "706.stockfish_r-gcc_O2")
+            source_path = os.path.join(dest, "706.stockfish_r", "gcc_O2", "source.json")
+            with open(source_path) as f:
+                source = json.load(f)
+            self.assertEqual(source["config_file"], "gcc_O2.cfg")
+            self.assertEqual(source["specdir"], "/opt/cpu2026")
+            self.assertEqual(source["tune"], "base")
+            readme_path = os.path.join(dest, "706.stockfish_r", "README.md")
+            self.assertTrue(os.path.isfile(readme_path))
+            with open(readme_path) as f:
+                readme = f.read()
+            self.assertIn("intrate", readme)
+
+    def test_unknown_benchmark_readme_falls_back_gracefully(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            joblib.register_cpu2026_point(dest, "/opt/cpu2026", "999.unknown_r", "gcc_O2")
+            with open(os.path.join(dest, "999.unknown_r", "README.md")) as f:
+                readme = f.read()
+            self.assertIn("not in the built-in catalog", readme)
+
+    def test_idempotent_does_not_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O2")
+            second = joblib.register_cpu2026_point(dest, "/other/specdir", "706.stockfish_r", "gcc_O2")
+            self.assertEqual(second["status"], "exists")
+            source_path = os.path.join(dest, "706.stockfish_r", "gcc_O2", "source.json")
+            with open(source_path) as f:
+                source = json.load(f)
+            self.assertEqual(source["specdir"], "/opt/cpu2026")  # untouched by the second call
+
+
+class ResolveCpu2026PointDirTest(unittest.TestCase):
+    def test_accepts_real_registered_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            info = joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O2")
+            self.assertEqual(joblib.resolve_cpu2026_point_dir(dest, info["dir"]), info["dir"])
+
+    def test_rejects_path_outside_dest_root(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            os.makedirs(dest)
+            outside = os.path.join(tmpdir, "elsewhere")
+            os.makedirs(outside)
+            self.assertIsNone(joblib.resolve_cpu2026_point_dir(dest, outside))
+
+    def test_rejects_dir_without_source_json(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            empty_dir = os.path.join(dest, "706.stockfish_r", "gcc_O2")
+            os.makedirs(empty_dir)
+            self.assertIsNone(joblib.resolve_cpu2026_point_dir(dest, empty_dir))
+
+    def test_rejects_empty_input(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertIsNone(joblib.resolve_cpu2026_point_dir(tmpdir, ""))
+            self.assertIsNone(joblib.resolve_cpu2026_point_dir(tmpdir, None))
+
+
+class ListMaterializedCpu2026PointsTest(unittest.TestCase):
+    def test_lists_registered_points_with_built_status_and_runs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            specdir = os.path.join(tmpdir, "cpu2026")
+            exe_dir = os.path.join(specdir, "benchspec", "CPU2026", "706.stockfish_r", "exe")
+            os.makedirs(exe_dir)
+            with open(os.path.join(exe_dir, "stockfish_r_base.gcc_O2-m64"), "w") as f:
+                f.write("")
+            dest = os.path.join(tmpdir, "dest")
+            info = joblib.register_cpu2026_point(dest, specdir, "706.stockfish_r", "gcc_O2")
+            rundir = os.path.join(tmpdir, "runs", "cpu2026", info["identity"], "run1")
+            os.makedirs(rundir)
+            joblib.link_cpu2026_point_run(info["dir"], "run1", rundir)
+
+            points = joblib.list_materialized_cpu2026_points(dest)
+            self.assertEqual(len(points), 1)
+            self.assertEqual(points[0]["identity"], info["identity"])
+            self.assertTrue(points[0]["built"])
+            self.assertEqual(points[0]["runs"], [
+                {"run_id": "run1", "suite": "cpu2026", "benchmark": info["identity"]},
+            ])
+
+    def test_not_built_when_no_matching_exe(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            specdir = os.path.join(tmpdir, "cpu2026")
+            dest = os.path.join(tmpdir, "dest")
+            joblib.register_cpu2026_point(dest, specdir, "706.stockfish_r", "gcc_O2")
+            points = joblib.list_materialized_cpu2026_points(dest)
+            self.assertFalse(points[0]["built"])
+
+    def test_empty_dest_returns_empty_list(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertEqual(joblib.list_materialized_cpu2026_points(os.path.join(tmpdir, "nope")), [])
+
+    def test_dir_without_source_json_is_skipped(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            os.makedirs(os.path.join(dest, "706.stockfish_r", "gcc_O2"))
+            self.assertEqual(joblib.list_materialized_cpu2026_points(dest), [])
+
+    def test_dangling_run_symlink_is_skipped(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            info = joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O2")
+            os.makedirs(os.path.join(info["dir"], "runs"))
+            os.symlink(os.path.join(tmpdir, "does-not-exist"),
+                       os.path.join(info["dir"], "runs", "run1"))
+            points = joblib.list_materialized_cpu2026_points(dest)
+            self.assertEqual(points[0]["runs"], [])
+
+
+class GroupMaterializedCpu2026PointsByBenchTest(unittest.TestCase):
+    def test_groups_and_sorts_by_bench(self):
+        points = [
+            {"bench": "721.gcc_r", "tag": "gcc_O2", "built": True, "runs": []},
+            {"bench": "706.stockfish_r", "tag": "aocc_O3", "built": False, "runs": []},
+            {"bench": "706.stockfish_r", "tag": "gcc_O2", "built": True, "runs": []},
+        ]
+        groups = joblib.group_materialized_cpu2026_points_by_bench(points)
+        self.assertEqual([g["bench"] for g in groups], ["706.stockfish_r", "721.gcc_r"])
+        stockfish = groups[0]
+        self.assertEqual(stockfish["total_count"], 2)
+        self.assertEqual(stockfish["built_count"], 1)
+        self.assertEqual([p["tag"] for p in stockfish["points"]], ["aocc_O3", "gcc_O2"])
+        self.assertEqual(stockfish["run_status"], "none")
+
+    def test_empty_list_yields_empty_groups(self):
+        self.assertEqual(joblib.group_materialized_cpu2026_points_by_bench([]), [])
+
+    def test_run_status_all_when_every_point_has_runs(self):
+        points = [{"bench": "706.stockfish_r", "tag": "a", "built": True, "runs": [{"run_id": "r1"}]},
+                  {"bench": "706.stockfish_r", "tag": "b", "built": True, "runs": [{"run_id": "r2"}]}]
+        self.assertEqual(joblib.group_materialized_cpu2026_points_by_bench(points)[0]["run_status"], "all")
+
+    def test_run_status_some_when_only_some_points_have_runs(self):
+        points = [{"bench": "706.stockfish_r", "tag": "a", "built": True, "runs": [{"run_id": "r1"}]},
+                  {"bench": "706.stockfish_r", "tag": "b", "built": False, "runs": []}]
+        self.assertEqual(joblib.group_materialized_cpu2026_points_by_bench(points)[0]["run_status"], "some")
+
+
+class LinkCpu2026PointRunTest(unittest.TestCase):
+    def test_creates_symlink_to_rundir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            point_dir = os.path.join(tmpdir, "point")
+            os.makedirs(point_dir)
+            rundir = os.path.join(tmpdir, "output", "cpu2026", "x", "run1")
+            os.makedirs(rundir)
+            ok = joblib.link_cpu2026_point_run(point_dir, "run1", rundir)
+            self.assertTrue(ok)
+            link_path = os.path.join(point_dir, "runs", "run1")
+            self.assertTrue(os.path.islink(link_path))
+            self.assertEqual(os.path.realpath(link_path), os.path.realpath(rundir))
+
+    def test_replaces_existing_link(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            point_dir = os.path.join(tmpdir, "point")
+            os.makedirs(point_dir)
+            rundir1 = os.path.join(tmpdir, "run1")
+            rundir2 = os.path.join(tmpdir, "run2")
+            os.makedirs(rundir1)
+            os.makedirs(rundir2)
+            joblib.link_cpu2026_point_run(point_dir, "runid", rundir1)
+            joblib.link_cpu2026_point_run(point_dir, "runid", rundir2)
+            link_path = os.path.join(point_dir, "runs", "runid")
+            self.assertEqual(os.path.realpath(link_path), os.path.realpath(rundir2))
+
+    def test_degrades_to_false_on_unwritable_path(self):
+        ok = joblib.link_cpu2026_point_run("/proc/1/this-should-not-be-writable", "run1", "/tmp")
+        self.assertFalse(ok)
+
+
+class BuildCpu2026ArgvTest(unittest.TestCase):
+    def test_shell_argv_sources_shrc_and_cds_into_specdir(self):
+        argv = joblib.build_cpu2026_shell_argv("/opt/cpu2026", "echo hi")
+        self.assertEqual(argv[0], "bash")
+        self.assertEqual(argv[1], "-c")
+        self.assertIn("source /opt/cpu2026/shrc", argv[2])
+        self.assertIn("cd /opt/cpu2026", argv[2])
+        self.assertIn("ulimit -s unlimited", argv[2])
+        self.assertIn("echo hi", argv[2])
+
+    def test_build_argv_uses_build_action(self):
+        argv = joblib.build_cpu2026_build_argv("/opt/cpu2026", "gcc_O2.cfg", "706.stockfish_r")
+        self.assertIn("runcpu --config gcc_O2.cfg --action=build --tune base 706.stockfish_r", argv[2])
+
+    def test_run_workload_uses_validate_action_and_nobuild(self):
+        workload = joblib.build_cpu2026_run_workload("/opt/cpu2026", "gcc_O2.cfg", "706.stockfish_r")
+        self.assertIn("--action=validate", workload)
+        self.assertIn("--nobuild", workload)
+        self.assertIn("--iterations 1", workload)
+        # round-trips through shlex.split() back to the 3-token bash -c argv
+        import shlex
+        reparsed = shlex.split(workload)
+        self.assertEqual(reparsed[0], "bash")
+        self.assertEqual(reparsed[1], "-c")
+        self.assertIn("runcpu --config gcc_O2.cfg --action=validate", reparsed[2])
+
+
 class CollectRunFilesTest(unittest.TestCase):
     """collect_run_files() is shared between the curation studio's "+ add"
     buttons and build_reproducibility_bundle()'s archive contents -- exercise

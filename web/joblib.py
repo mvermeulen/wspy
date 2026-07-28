@@ -2414,6 +2414,377 @@ def link_phoronix_test_point_run(test_point_dir, run_id, rundir):
 
 
 # ---------------------------------------------------------------------------
+# CPU2026 workload-suite tab (INVESTIGATION.md 4.3 Tier 6 "CPU2026
+# workload-suite web tab") -- a SPEC CPU2026 counterpart to the Phoronix
+# tab above, but structurally simpler: a CPU2026 benchmark and its config
+# file both already exist on disk the moment a suite is installed, so
+# there's nothing to fetch/materialize from a remote result the way a
+# Phoronix test point is. This section's job is discovery (what benchmarks/
+# configs exist), registration (pairing a benchmark with a config under
+# workload/cpu2026/<bench>/<tag>/, mirroring workload/phoronix/<test>/
+# <options>/), and building the runcpu/wspy invocations the tab's Build/
+# Use-in-Run-tab buttons trigger.
+# ---------------------------------------------------------------------------
+
+# Static catalog for display/grouping only (name, suite component, source
+# language) -- from https://spec.org/cpu2026/docs/overview.html#benchmarks.
+# What's actually runnable on this host is discovered live from
+# $SPECDIR/benchspec/CPU2026/ (discover_installed_cpu2026_benchmarks()
+# below), not this table -- same "static table for labels, filesystem for
+# truth" split the Phoronix tab uses between phoronix.tests.txt and live
+# `phoronix-test-suite info` calls.
+CPU2026_BENCHMARKS = {
+    # SPECrate 2026 Integer
+    "706.stockfish_r": {"suite": "intrate", "lang": "C++"},
+    "707.ntest_r": {"suite": "intrate", "lang": "C++"},
+    "708.sqlite_r": {"suite": "intrate", "lang": "C"},
+    "710.omnetpp_r": {"suite": "intrate", "lang": "C++, C"},
+    "714.cpython_r": {"suite": "intrate", "lang": "C"},
+    "721.gcc_r": {"suite": "intrate", "lang": "C++, C"},
+    "723.llvm_r": {"suite": "intrate", "lang": "C++, C"},
+    "727.cppcheck_r": {"suite": "intrate", "lang": "C++"},
+    "729.abc_r": {"suite": "intrate", "lang": "C++, C"},
+    "734.vpr_r": {"suite": "intrate", "lang": "C++, C"},
+    "735.gem5_r": {"suite": "intrate", "lang": "C++, C"},
+    "750.sealcrypto_r": {"suite": "intrate", "lang": "C++, C"},
+    "753.ns3_r": {"suite": "intrate", "lang": "C++"},
+    "777.zstd_r": {"suite": "intrate", "lang": "C"},
+    # SPECspeed 2026 Integer
+    "801.xz_s": {"suite": "intspeed", "lang": "C++, C"},
+    "807.ntest_s": {"suite": "intspeed", "lang": "C++"},
+    "817.flac_s": {"suite": "intspeed", "lang": "C++, C"},
+    "821.gcc_s": {"suite": "intspeed", "lang": "C++, C"},
+    "823.llvm_s": {"suite": "intspeed", "lang": "C++, C"},
+    "827.cppcheck_s": {"suite": "intspeed", "lang": "C++"},
+    "829.abc_s": {"suite": "intspeed", "lang": "C++, C"},
+    "834.vpr_s": {"suite": "intspeed", "lang": "C++, C"},
+    "835.gem5_s": {"suite": "intspeed", "lang": "C++, C"},
+    "838.diamond_s": {"suite": "intspeed", "lang": "C++, C"},
+    "846.minizinc_s": {"suite": "intspeed", "lang": "C++, C"},
+    "853.ns3_s": {"suite": "intspeed", "lang": "C++"},
+    "854.graph500_s": {"suite": "intspeed", "lang": "C"},
+    # SPECrate 2026 Floating Point
+    "709.cactus_r": {"suite": "fprate", "lang": "C++, C"},
+    "722.palm_r": {"suite": "fprate", "lang": "Fortran"},
+    "731.astcenc_r": {"suite": "fprate", "lang": "C++"},
+    "736.ocio_r": {"suite": "fprate", "lang": "C++"},
+    "737.gmsh_r": {"suite": "fprate", "lang": "C++, C"},
+    "748.flightdm_r": {"suite": "fprate", "lang": "C++"},
+    "765.roms_r": {"suite": "fprate", "lang": "Fortran"},
+    "766.femflow_r": {"suite": "fprate", "lang": "C++"},
+    "767.nest_r": {"suite": "fprate", "lang": "C++"},
+    "772.marian_r": {"suite": "fprate", "lang": "C++"},
+    "782.lbm_r": {"suite": "fprate", "lang": "C"},
+    # SPECspeed 2026 Floating Point
+    "800.pot3d_s": {"suite": "fpspeed", "lang": "Fortran"},
+    "803.sph_exa_s": {"suite": "fpspeed", "lang": "C++"},
+    "809.cactus_s": {"suite": "fpspeed", "lang": "C++, C"},
+    "811.tealeaf_s": {"suite": "fpspeed", "lang": "C"},
+    "816.nab_s": {"suite": "fpspeed", "lang": "C"},
+    "820.cloverleaf_s": {"suite": "fpspeed", "lang": "Fortran"},
+    "822.palm_s": {"suite": "fpspeed", "lang": "Fortran"},
+    "849.fotonik3d_s": {"suite": "fpspeed", "lang": "Fortran"},
+    "857.namd_s": {"suite": "fpspeed", "lang": "C++"},
+    "865.roms_s": {"suite": "fpspeed", "lang": "Fortran"},
+    "867.nest_s": {"suite": "fpspeed", "lang": "C++"},
+    "872.marian_s": {"suite": "fpspeed", "lang": "C++"},
+    "881.neutron_s": {"suite": "fpspeed", "lang": "C"},
+}
+
+
+def cpu2026_shrc_path(specdir):
+    return os.path.join(specdir, "shrc")
+
+
+def cpu2026_suite_installed(specdir):
+    """True if specdir looks like a real SPEC CPU2026 install (has a shrc
+    to source) -- the tab's install-sanity check, same role
+    check_phoronix_batch_config() plays for Phoronix."""
+    return os.path.isfile(cpu2026_shrc_path(specdir))
+
+
+def discover_installed_cpu2026_benchmarks(specdir):
+    """Benchmark directory names actually present under
+    $SPECDIR/benchspec/CPU2026/, sorted -- the live truth backing the tab's
+    inventory, independent of CPU2026_BENCHMARKS above (a benchmark
+    installed under a name this static table doesn't know about still
+    shows up, just without suite/language labels)."""
+    root = os.path.join(specdir, "benchspec", "CPU2026")
+    if not os.path.isdir(root):
+        return []
+    return sorted(
+        name for name in os.listdir(root)
+        if os.path.isdir(os.path.join(root, name)) and re.match(r"^\d{3}\.", name)
+    )
+
+
+def discover_cpu2026_configs(specdir):
+    """Config tags (filename minus ".cfg") under $SPECDIR/config/*.cfg,
+    sorted -- one config can build any benchmark, so this is discovered
+    independently of any particular benchmark, unlike Phoronix's per-test
+    option combinations."""
+    root = os.path.join(specdir, "config")
+    if not os.path.isdir(root):
+        return []
+    return sorted(
+        name[:-4] for name in os.listdir(root)
+        if name.endswith(".cfg") and os.path.isfile(os.path.join(root, name))
+    )
+
+
+def cpu2026_benchmark_built(specdir, bench, tag):
+    """Best-effort "already built" check: does
+    $SPECDIR/benchspec/CPU2026/<bench>/exe/ contain any file naming this
+    config tag? SPEC's exe naming carries machine/OS-specific suffixes
+    (e.g. "<bench>_base.<tag>-m64"), so this is a substring match against
+    the tag rather than an exact reconstructed filename -- cheap disk check
+    now, correctness re-verified for real when Build/Use-in-Run-tab
+    actually runs, same posture list_installed_phoronix_test_versions()
+    documents for its own installed-tests scan."""
+    exe_dir = os.path.join(specdir, "benchspec", "CPU2026", bench, "exe")
+    if not os.path.isdir(exe_dir):
+        return False
+    needle = f".{tag}"
+    return any(needle in name for name in os.listdir(exe_dir))
+
+
+def register_cpu2026_point(dest_root, specdir, bench, tag, tune="base"):
+    """Pairs an already-installed benchmark with an already-discovered
+    config tag under dest_root/<bench>/<tag>/ (mirroring
+    materialize_phoronix_test_point()'s dest_root/<test>/<options>/), by
+    writing a source.json provenance sidecar plus a README.md built from
+    the static CPU2026_BENCHMARKS labels (no subprocess/network call
+    needed -- unlike Phoronix's `phoronix-test-suite info`, there's no
+    live lookup for a SPEC benchmark's description). Idempotent/additive:
+    an existing source.json is left untouched, same "additive across
+    sessions" convention materialize_phoronix_test_point() documents.
+    Returns {"bench", "tag", "identity", "dir", "status"} where status is
+    "created" or "exists"."""
+    identity = f"{bench}-{tag}"
+    out_dir = os.path.join(dest_root, bench, tag)
+    source_path = os.path.join(out_dir, "source.json")
+    result = {"bench": bench, "tag": tag, "identity": identity, "dir": out_dir}
+    if os.path.isfile(source_path):
+        result["status"] = "exists"
+        return result
+
+    os.makedirs(out_dir, exist_ok=True)
+    with open(source_path, "w") as f:
+        json.dump({
+            "schema_version": 1,
+            "bench": bench,
+            "config_file": f"{tag}.cfg",
+            "tune": tune,
+            "specdir": specdir,
+            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }, f, indent=2)
+        f.write("\n")
+
+    readme_path = os.path.join(dest_root, bench, "README.md")
+    if not os.path.isfile(readme_path):
+        info = CPU2026_BENCHMARKS.get(bench, {})
+        lines = [f"# {bench}", ""]
+        if info:
+            lines.append(f"SPEC CPU2026 {info['suite']} benchmark, {info['lang']}.")
+        else:
+            lines.append("SPEC CPU2026 benchmark (not in the built-in catalog table).")
+        lines.append("")
+        with open(readme_path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+
+    result["status"] = "created"
+    return result
+
+
+def resolve_cpu2026_point_dir(dest_root, raw_dir):
+    """Same "don't trust client-supplied identity strings" validation as
+    resolve_phoronix_test_point_dir(): resolves under dest_root and
+    requires a real source.json, or returns None."""
+    if not raw_dir:
+        return None
+    real_dest = os.path.realpath(dest_root)
+    real_dir = os.path.realpath(raw_dir)
+    if os.path.commonpath([real_dest, real_dir]) != real_dest:
+        return None
+    if not os.path.isfile(os.path.join(real_dir, "source.json")):
+        return None
+    return real_dir
+
+
+def list_materialized_cpu2026_points(dest_root):
+    """Inventory of registered (bench, tag) pairs under dest_root/<bench>/
+    <tag>/ -- same shape/role as list_materialized_phoronix_test_points().
+    "built" is recomputed live via cpu2026_benchmark_built() against each
+    point's own recorded specdir (not cached at registration time the way
+    Phoronix's "installed" is) since a Build action changes that state
+    after registration, and staleness here would just be wrong rather than
+    merely a re-check-later warning. Returns a list of {bench, tag,
+    identity, dir, config_file, tune, specdir, generated_at, built, runs}."""
+    entries = []
+    if not os.path.isdir(dest_root):
+        return entries
+    for bench in sorted(os.listdir(dest_root)):
+        bench_dir = os.path.join(dest_root, bench)
+        if not os.path.isdir(bench_dir):
+            continue
+        for tag in sorted(os.listdir(bench_dir)):
+            point_dir = os.path.join(bench_dir, tag)
+            source_path = os.path.join(point_dir, "source.json")
+            if not os.path.isfile(source_path):
+                continue
+            try:
+                with open(source_path) as f:
+                    source = json.load(f)
+            except (OSError, ValueError):
+                continue
+
+            runs = []
+            runs_dir = os.path.join(point_dir, "runs")
+            if os.path.isdir(runs_dir):
+                for run_id in sorted(os.listdir(runs_dir)):
+                    link_path = os.path.join(runs_dir, run_id)
+                    target = os.path.realpath(link_path)
+                    if not os.path.isdir(target):
+                        continue
+                    parts = os.path.normpath(target).split(os.sep)
+                    if len(parts) < 3:
+                        continue
+                    real_run_id, run_benchmark, run_suite = parts[-1], parts[-2], parts[-3]
+                    runs.append({"run_id": real_run_id, "suite": run_suite, "benchmark": run_benchmark})
+
+            point_specdir = source.get("specdir", "")
+            entries.append({
+                "bench": bench,
+                "tag": tag,
+                "identity": f"{bench}-{tag}",
+                "dir": point_dir,
+                "config_file": source.get("config_file", f"{tag}.cfg"),
+                "tune": source.get("tune", "base"),
+                "specdir": point_specdir,
+                "generated_at": source.get("generated_at", ""),
+                "built": cpu2026_benchmark_built(point_specdir, bench, tag) if point_specdir else False,
+                "runs": runs,
+            })
+    return entries
+
+
+def group_materialized_cpu2026_points_by_bench(points):
+    """Re-buckets list_materialized_cpu2026_points()'s flat list into one
+    entry per benchmark, alphabetically -- the <bench> -> <tag> hierarchy
+    the CPU2026 tab's inventory renders. Same shape as
+    group_materialized_phoronix_points_by_test(): {"bench", "points",
+    "total_count", "built_count", "run_status"}."""
+    groups = {}
+    for p in points:
+        groups.setdefault(p["bench"], []).append(p)
+    result = []
+    for bench in sorted(groups):
+        pts = sorted(groups[bench], key=lambda p: p["tag"])
+        points_with_runs = sum(1 for p in pts if p.get("runs"))
+        if points_with_runs == 0:
+            run_status = "none"
+        elif points_with_runs == len(pts):
+            run_status = "all"
+        else:
+            run_status = "some"
+        result.append({
+            "bench": bench,
+            "points": pts,
+            "total_count": len(pts),
+            "built_count": sum(1 for p in pts if p.get("built")),
+            "run_status": run_status,
+        })
+    return result
+
+
+def link_cpu2026_point_run(point_dir, run_id, rundir):
+    """Symlinks <point_dir>/runs/<run_id> -> rundir, identical idiom to
+    link_phoronix_test_point_run() -- best-effort, never raises."""
+    try:
+        runs_dir = os.path.join(point_dir, "runs")
+        os.makedirs(runs_dir, exist_ok=True)
+        link_path = os.path.join(runs_dir, run_id)
+        if os.path.islink(link_path) or os.path.exists(link_path):
+            os.remove(link_path)
+        os.symlink(os.path.abspath(rundir), link_path)
+        return True
+    except OSError:
+        return False
+
+
+def build_cpu2026_shell_argv(specdir, inner_cmd):
+    """Wraps inner_cmd (a shell command string, e.g. a `runcpu ...`
+    invocation) in `bash -c "source $SPECDIR/shrc && cd $SPECDIR &&
+    ulimit -s unlimited && <inner_cmd>"` -- runcpu needs SPEC's shrc
+    sourced for its environment (SPEC_ROOT/PATH/LD_LIBRARY_PATH etc, see
+    workload/cpu2017/run_test.sh's identical preamble), but neither the
+    Build action's Popen() nor the Run tab's `workload` field (parsed by
+    shlex.split() with no shell, see server.py's _parse_workload_and_ids())
+    invoke a shell on their own -- so the sourcing has to be baked into a
+    single bash -c argv rather than assumed from ambient environment."""
+    shrc = cpu2026_shrc_path(specdir)
+    full = f"source {shlex.quote(shrc)} && cd {shlex.quote(specdir)} && ulimit -s unlimited && {inner_cmd}"
+    return ["bash", "-c", full]
+
+
+def build_cpu2026_build_argv(specdir, config_file, bench, tune="base"):
+    """The `runcpu --action=build` invocation behind the tab's Build
+    button -- compiles without running, same split cpu2017/run_test.sh's
+    own build-then-validate two-step already makes."""
+    inner = f"runcpu --config {shlex.quote(config_file)} --action=build --tune {shlex.quote(tune)} {shlex.quote(bench)}"
+    return build_cpu2026_shell_argv(specdir, inner)
+
+
+def build_cpu2026_run_workload(specdir, config_file, bench, tune="base", iterations=1):
+    """The Run tab's prefilled `workload` command for "Use in Run tab" --
+    `runcpu --action=validate --nobuild` (build already happened via the
+    Build button), same action choice workload/cpu2017/run_test.sh makes
+    for its own counter-collected pass. Returns a single shell-quoted
+    string (shlex.join(), matching shell_preview()'s own quoting) so
+    re-parsing it with shlex.split() on submit reconstructs exactly the
+    3-token ["bash", "-c", "..."] argv build_cpu2026_shell_argv() built."""
+    inner = (f"runcpu --config {shlex.quote(config_file)} --action=validate "
+              f"--tune {shlex.quote(tune)} --iterations {iterations} --nobuild {shlex.quote(bench)}")
+    return shlex.join(build_cpu2026_shell_argv(specdir, inner))
+
+
+def execute_cpu2026_build(state, specdir, config_file, bench, tag, point_dir, tune="base"):
+    """Runs the Build action as a background subprocess, relaying output
+    through the same RunState/SSE machinery execute_analyze() uses --
+    builds can run minutes, so this needs a live tail, not run_sync()'s
+    bounded synchronous call. Writes a durable build.<tag>.log into the
+    registry directory (point_dir) as well as the live relay, since a
+    build's own compile output is worth keeping around after the tab is
+    closed, same reasoning execute_run() writes a log file for a real
+    wspy run."""
+    log_path = os.path.join(point_dir, f"build.{tag}.log")
+    logf = open(log_path, "w")
+
+    def emit(line):
+        logf.write(line + "\n")
+        logf.flush()
+        state.append(line)
+
+    argv = build_cpu2026_build_argv(specdir, config_file, bench, tune=tune)
+    emit("$ " + shell_preview(argv))
+    try:
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 text=True, bufsize=1)
+    except OSError as e:
+        emit(f"[error] failed to launch bash: {e}")
+        logf.close()
+        state.finish("error", None)
+        return
+
+    for line in proc.stdout:
+        emit(line.rstrip("\n"))
+    rc = proc.wait()
+    emit(f"[runcpu build exited {rc}]")
+    logf.close()
+    state.finish("done" if rc == 0 else "error", None)
+
+
+# ---------------------------------------------------------------------------
 # Run execution -- shared by web/server.py's background-thread executors and
 # wspy-queue's synchronous, one-job-at-a-time processing. `state` needs only
 # an .append(line) method (log a line) and a .finish(status, report_url)
