@@ -1183,13 +1183,48 @@ reasoning as Tier 1 above.
     what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
     across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
     point, launched by a human clicking Run) exists today.
+19. CPU2026 workload-suite web tab (new `web/server.py`/`web/joblib.py` tab, alongside Run/Validate/
+    Store & Summary/Discovery/Phoronix) — a SPEC CPU2026 counterpart to the Phoronix tab, but simpler:
+    unlike a Phoronix test point, a CPU2026 benchmark and its config file both already exist locally
+    the moment a suite is installed, so there's nothing to fetch/materialize from a remote result —
+    the tab's job is discovery, registration, and action-triggering, not import. Benchmark catalog
+    (52 benchmarks: 706.stockfish_r etc., from https://spec.org/cpu2026/docs/overview.html#benchmarks,
+    grouped intrate/intspeed/fprate/fpspeed) is a static table in `joblib.py` for display/grouping only
+    — what's actually runnable is discovered live from `$SPECDIR/benchspec/CPU2026/*/` on disk, same
+    "static table for labels, filesystem for truth" split the Phoronix tab uses between
+    `phoronix.tests.txt` and live `phoronix-test-suite info` calls. Two-level inventory hierarchy
+    (benchmark → config-tag, mirroring `workload/phoronix/<test>/<options>/`): config files
+    (`$SPECDIR/config/*.cfg`, tag = filename minus `.cfg`, e.g. `gcc_O2`) are discovered independently
+    of any benchmark since one SPEC config can build any benchmark, then a benchmark×config *pairing*
+    gets registered (not "materialized" — no ledger, no XML) under
+    `workload/cpu2026/<bench>/<config-tag>/` (`source.json` + optional `README.md` + `runs/<run_id>`
+    symlinks back to real run dirs, same idiom as `link_phoronix_test_point_run()`). `$SPECDIR`
+    (default `/home/mev/cpu2026`, a new `--cpu2026-dir` flag) is changeable from the tab itself, same
+    as the Phoronix tab's destination-root field; `$SPECDIR/shrc` existing is the install-sanity check.
+    Inventory table's "Built" column is a filesystem check
+    (`$SPECDIR/benchspec/CPU2026/<bench>/exe/<bench>_base.<tag>` presence), not a subprocess call per
+    row, same cheap-check-now/re-verify-at-run-time posture `list_installed_phoronix_test_versions()`
+    uses. Two actions per row: **Build** (`runcpu --config <cfg> --action=build --tune base <bench>`,
+    queued through the existing job queue since builds run minutes, not `run_sync()` — closer in shape
+    to a Run-tab job than to `_phoronix_materialize`'s blocking XML fetch) and **Use in Run tab**
+    (prefills `workload`/`suite`/`benchmark`, mirroring `_phoronix_use_in_run`). The one real wrinkle
+    vs. Phoronix: `runcpu` needs SPEC's `shrc` sourced for its environment, but the Run tab's
+    `workload` field is `shlex.split()` and exec'd with no shell (`_parse_workload_and_ids`), so the
+    prefilled command has to be a `bash -c "source $SPECDIR/shrc && cd $SPECDIR && runcpu --config <cfg>
+    --action=validate --tune base --iterations 1 --nobuild <bench>"` wrapper rather than a bare argv —
+    same `--action=validate`/`ulimit -s unlimited` choices `workload/cpu2017/run_test.sh` already makes.
+    A new `cpu2026_test_point` hidden Run-tab field (alongside the existing `phoronix_test_point` one)
+    carries the registry dir through to a post-run symlink-back, same as
+    `_link_phoronix_test_point()`. No `wspy-ledger` integration needed — 52 benchmarks don't need a
+    "what's left" backlog ledger the way Phoronix's huge test catalog does; the inventory table itself
+    is the coverage view.
 
 **Tier 7 — testing:**
 
-19. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
+20. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
     guardrails — needs deterministic micro-workloads and 4.1's normalized store plus 4.2's
     stats/confidence infrastructure.
-20. Contributor guide for adding a collector/metric/schema bump safely.
+21. Contributor guide for adding a collector/metric/schema bump safely.
 
 ## 4.4 priorities
 Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
