@@ -158,6 +158,14 @@ RUNS_LOCK = threading.Lock()
 ANALYZE_RUNS = {}
 ANALYZE_RUNS_LOCK = threading.Lock()
 
+# Third registry, same idiom, for the CPU2026 tab's Build action
+# (joblib.execute_cpu2026_build()): a build isn't a wspy run at all (no
+# report directory, no manifest), so it gets its own keying rather than
+# reusing RUNS -- see _stream_events()'s make_report_url parameter, which
+# this registry always passes False for.
+CPU2026_BUILDS = {}
+CPU2026_BUILDS_LOCK = threading.Lock()
+
 
 def run_key(suite, benchmark, run_id):
     return (suite, benchmark, run_id)
@@ -1896,6 +1904,8 @@ def render_run_tab(prefill, cfg):
   <form id="run-form">
     <input type="hidden" id="phoronix_test_point" name="phoronix_test_point"
            value="{html.escape(prefill.get('phoronix_test_point', ''))}">
+    <input type="hidden" id="cpu2026_test_point" name="cpu2026_test_point"
+           value="{html.escape(prefill.get('cpu2026_test_point', ''))}">
     <label>Workload command
       <input type="text" id="workload" name="workload" value="{w_workload}"
              placeholder="e.g. sleep 5" required>
@@ -2430,6 +2440,139 @@ def render_phoronix_tab(cfg):
 """
 
 
+def render_cpu2026_inventory_groups(dest_root):
+    points = joblib.list_materialized_cpu2026_points(dest_root)
+    groups = joblib.group_materialized_cpu2026_points_by_bench(points)
+    blocks = []
+    for g in groups:
+        info = joblib.CPU2026_BENCHMARKS.get(g["bench"])
+        summary_bits = [f'{g["total_count"]} config{"s" if g["total_count"] != 1 else ""}']
+        if g["built_count"]:
+            summary_bits.append(f'{g["built_count"]} built')
+        summary_extra = f" &mdash; {html.escape(info['suite'])}, {html.escape(info['lang'])}" if info else ""
+        search_attr = html.escape(f'{g["bench"]} {info["suite"] if info else ""}'.lower())
+        run_status = g["run_status"]
+        run_dot_title = {
+            "all": "every config has at least one run",
+            "some": "some configs have at least one run",
+            "none": "no configs have any runs yet",
+        }[run_status]
+        run_dot_html = (f'<span class="cpu2026-run-dot cpu2026-run-{run_status}" '
+                         f'title="{html.escape(run_dot_title)}"></span>')
+
+        rows = []
+        for p in g["points"]:
+            if p["runs"]:
+                runs_html = ", ".join(
+                    f'<a href="/report/{html.escape(r["suite"])}/{html.escape(r["benchmark"])}/'
+                    f'{html.escape(r["run_id"])}">{html.escape(r["run_id"])}</a>'
+                    for r in p["runs"])
+            else:
+                runs_html = '<span class="muted">none yet</span>'
+            built_text = "yes" if p["built"] else "no"
+            rows.append(
+                f'<tr data-cpu2026-config="{html.escape(p["tag"].lower())}">'
+                f'<td>{html.escape(p["tag"])}</td>'
+                f'<td>{built_text}</td><td>{runs_html}</td>'
+                f'<td><button type="button" class="cpu2026-build" '
+                f'data-dir="{html.escape(p["dir"])}" data-bench="{html.escape(p["bench"])}" '
+                f'data-tag="{html.escape(p["tag"])}">Build</button> '
+                f'<button type="button" class="cpu2026-use-in-run" '
+                f'data-dir="{html.escape(p["dir"])}">Use in Run tab</button></td></tr>'
+            )
+
+        blocks.append(
+            f'<details class="cpu2026-test-group" data-cpu2026-search="{search_attr}">'
+            f'<summary>{run_dot_html}<strong>{html.escape(g["bench"])}</strong> '
+            f'<span class="muted">({", ".join(summary_bits)}){summary_extra}</span></summary>'
+            f'<table class="reports"><thead><tr><th>Config</th><th>Built</th>'
+            f'<th>Runs</th><th></th></tr></thead><tbody>{"".join(rows)}</tbody></table>'
+            f'</details>'
+        )
+    return "".join(blocks), len(points), len(groups)
+
+
+def render_cpu2026_tab(cfg, specdir_override=None):
+    specdir = specdir_override or cfg["cpu2026_dir"]
+    dest_root = os.path.join(REPO_ROOT, "workload", "cpu2026")
+    installed_ok = joblib.cpu2026_suite_installed(specdir)
+    inventory_groups_html, point_count, bench_count = render_cpu2026_inventory_groups(dest_root)
+    if inventory_groups_html:
+        inventory_html = f"""
+    <div class="row">
+      <label>Filter <input type="text" id="cpu2026-filter"
+             placeholder="benchmark or config substring"></label>
+      <button type="button" id="cpu2026-expand-all">Expand all</button>
+      <button type="button" id="cpu2026-collapse-all">Collapse all</button>
+    </div>
+    <p class="muted" id="cpu2026-inventory-count">{point_count} registered config(s) across {bench_count} benchmark(s)</p>
+    <div id="cpu2026-inventory-groups">{inventory_groups_html}</div>
+    <p class="muted" id="cpu2026-filter-empty" hidden>No benchmarks match this filter.</p>
+"""
+    else:
+        inventory_html = '<p class="muted">No benchmark/config pairs registered yet.</p>'
+
+    if installed_ok:
+        install_warning = ""
+        bench_options = "".join(
+            f'<option value="{html.escape(b)}">{html.escape(b)}</option>'
+            for b in joblib.discover_installed_cpu2026_benchmarks(specdir)
+        ) or '<option value="" disabled selected>(none found under benchspec/CPU2026/)</option>'
+        config_options = "".join(
+            f'<option value="{html.escape(c)}">{html.escape(c)}</option>'
+            for c in joblib.discover_cpu2026_configs(specdir)
+        ) or '<option value="" disabled selected>(none found under config/)</option>'
+    else:
+        install_warning = (f'<p class="muted">No <code>shrc</code> found under '
+                            f'{html.escape(specdir)} &mdash; this doesn\'t look like an installed '
+                            f'SPEC CPU2026 tree. Point Suite directory at a real install to '
+                            f'register benchmark/config pairs.</p>')
+        bench_options = '<option value="" disabled selected>(suite not found)</option>'
+        config_options = '<option value="" disabled selected>(suite not found)</option>'
+
+    return f"""
+<section class="panel">
+  <h1>CPU2026</h1>
+  <p class="config-label">SPEC CPU2026 counterpart to the Phoronix tab, but simpler: a benchmark and
+     its config file both already exist locally once the suite is installed, so there's nothing to
+     fetch here &mdash; this tab discovers what's installed, registers benchmark&times;config pairs
+     under <code>workload/cpu2026/&lt;benchmark&gt;/&lt;config-tag&gt;/</code>, and offers Build /
+     Use in Run tab actions per pair.</p>
+
+  <h2>Suite directory</h2>
+  <label>Suite directory (SPECDIR)
+    <input type="text" id="cpu2026-specdir" value="{html.escape(specdir)}">
+  </label>
+  <button type="button" id="cpu2026-refresh">Refresh</button>
+  {install_warning}
+
+  <h2>Inventory</h2>
+  {inventory_html}
+  <p id="cpu2026-build-status" class="muted" hidden></p>
+  <pre id="cpu2026-build-output" class="muted" hidden></pre>
+  <p id="cpu2026-build-error" class="muted" hidden></p>
+  <p id="cpu2026-use-in-run-error" class="muted" hidden></p>
+
+  <h2>Register a benchmark &times; config pair</h2>
+  <label>Benchmark
+    <select id="cpu2026-bench">{bench_options}</select>
+  </label>
+  <label>Config
+    <select id="cpu2026-config">{config_options}</select>
+  </label>
+  <label>Tune
+    <select id="cpu2026-tune">
+      <option value="base" selected>base</option>
+      <option value="peak">peak</option>
+    </select>
+  </label>
+  <button type="button" id="cpu2026-register">Register</button>
+  <p id="cpu2026-register-error" class="muted" hidden></p>
+  <p id="cpu2026-register-result" class="muted" hidden></p>
+</section>
+"""
+
+
 def render_index(cfg, prefill):
     output_root = cfg["output_root"]
     reports = discover_reports(output_root)
@@ -2475,12 +2618,14 @@ def render_index(cfg, prefill):
   {tab_btn("store", "Store &amp; Summary")}
   {tab_btn("discovery", "Discovery")}
   {tab_btn("phoronix", "Phoronix")}
+  {tab_btn("cpu2026", "CPU2026")}
 </nav>
 <div class="tab-panel" id="tab-run"{tab_hidden("run")}>{render_run_tab(prefill, cfg)}</div>
 <div class="tab-panel" id="tab-validate"{tab_hidden("validate")}>{render_validate_tab(cfg, prefill)}</div>
 <div class="tab-panel" id="tab-store"{tab_hidden("store")}>{render_store_tab(cfg)}</div>
 <div class="tab-panel" id="tab-discovery"{tab_hidden("discovery")}>{render_discovery_tab()}</div>
 <div class="tab-panel" id="tab-phoronix"{tab_hidden("phoronix")}>{render_phoronix_tab(cfg)}</div>
+<div class="tab-panel" id="tab-cpu2026"{tab_hidden("cpu2026")}>{render_cpu2026_tab(cfg, prefill.get("cpu2026_specdir"))}</div>
 <section class="panel">
   <h2>Recent reports</h2>
   {reports_html}
@@ -3470,6 +3615,15 @@ class Handler(BaseHTTPRequestHandler):
             if "core_report_csv" in qs:
                 prefill["active_tab"] = "validate"
                 prefill["core_report_path"] = qs["core_report_csv"][0]
+            # CPU2026 tab's "Refresh" button (Suite directory field): a
+            # plain GET with the new path re-renders the tab's inventory/
+            # dropdowns against it, landing back on that tab -- no server
+            # restart needed, matching design point 3's "changeable"
+            # requirement. Not persisted past this one page load; cfg's
+            # own --cpu2026-dir stays the default for the next fresh visit.
+            if "cpu2026_specdir" in qs:
+                prefill["active_tab"] = "cpu2026"
+                prefill["cpu2026_specdir"] = qs["cpu2026_specdir"][0]
             self._send(200, render_index(cfg, prefill))
             return
 
@@ -3619,6 +3773,12 @@ class Handler(BaseHTTPRequestHandler):
             self._stream_events(*m.groups(), registry=ANALYZE_RUNS, lock=ANALYZE_RUNS_LOCK)
             return
 
+        m = re.match(r"^/api/cpu2026/build/([^/]+)/([^/]+)/([^/]+)/events$", path)
+        if m:
+            self._stream_events(*m.groups(), registry=CPU2026_BUILDS, lock=CPU2026_BUILDS_LOCK,
+                                 make_report_url=False)
+            return
+
         self._send(404, "not found")
 
     def do_POST(self):
@@ -3692,6 +3852,9 @@ class Handler(BaseHTTPRequestHandler):
             "/api/phoronix/materialize": self._phoronix_materialize,
             "/api/phoronix/use-in-run": self._phoronix_use_in_run,
             "/api/phoronix/repin": self._phoronix_repin,
+            "/api/cpu2026/register": self._cpu2026_register,
+            "/api/cpu2026/build": self._cpu2026_build,
+            "/api/cpu2026/use-in-run": self._cpu2026_use_in_run,
         }
         handler = POST_HANDLERS.get(parsed.path)
         if handler is None:
@@ -3963,6 +4126,23 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return os.path.relpath(test_point_dir, dest)
 
+    @staticmethod
+    def _link_cpu2026_test_point(body, rundir, run_id):
+        """CPU2026-tab counterpart to _link_phoronix_test_point() -- same
+        "re-validate server-side, best-effort symlink" behavior, keyed off
+        body["cpu2026_test_point"] and workload/cpu2026/ instead. Not wired
+        into _enqueue_job() (no _cpu2026_test_point_identity() analog to
+        _phoronix_test_point_identity() yet) -- queued-job support would
+        need build_job()'s schema extended the same way phoronix_test_point
+        was, left for a follow-up rather than this first pass."""
+        raw = (body.get("cpu2026_test_point") or "").strip()
+        if not raw:
+            return
+        dest = os.path.join(REPO_ROOT, "workload", "cpu2026")
+        test_point_dir = joblib.resolve_cpu2026_point_dir(dest, raw)
+        if test_point_dir:
+            joblib.link_cpu2026_point_run(test_point_dir, run_id, rundir)
+
     def _start_run(self, cfg, body):
         workload_argv, suite, benchmark, run_id, err = self._parse_workload_and_ids(body)
         if err:
@@ -3975,6 +4155,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         os.makedirs(rundir)
         self._link_phoronix_test_point(body, rundir, run_id)
+        self._link_cpu2026_test_point(body, rundir, run_id)
 
         key = run_key(suite, benchmark, run_id)
         state = RunState(rundir)
@@ -4025,6 +4206,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         os.makedirs(rundir)
         self._link_phoronix_test_point(body, rundir, run_id)
+        self._link_cpu2026_test_point(body, rundir, run_id)
 
         key = run_key(suite, benchmark, run_id)
         state = RunState(rundir)
@@ -4086,6 +4268,7 @@ class Handler(BaseHTTPRequestHandler):
 
         os.makedirs(rundir)
         self._link_phoronix_test_point(body, rundir, run_id)
+        self._link_cpu2026_test_point(body, rundir, run_id)
         key = run_key(suite, benchmark, run_id)
         state = RunState(rundir)
         with RUNS_LOCK:
@@ -4610,6 +4793,109 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send_json(200, result)
 
+    def _cpu2026_register(self, cfg, body):
+        """Backs the CPU2026 tab's "Register" button: pairs a benchmark
+        (discovered under $SPECDIR/benchspec/CPU2026/) with a config file
+        (discovered under $SPECDIR/config/) via joblib.register_cpu2026_point()
+        -- unlike Phoronix's Materialize, there's no remote fetch, so this is
+        a simple, fast, synchronous call. Re-validates bench/config against a
+        fresh discovery scan server-side rather than trusting the dropdown
+        values the client posted, same "never trust client-supplied
+        identity strings blindly" posture as the rest of this file."""
+        specdir = (body.get("specdir") or "").strip() or cfg["cpu2026_dir"]
+        bench = (body.get("bench") or "").strip()
+        tag = (body.get("config") or "").strip()
+        tune = (body.get("tune") or "base").strip()
+        if tune not in ("base", "peak"):
+            self._send_json(400, {"error": "tune must be base or peak"})
+            return
+        if not bench or bench not in joblib.discover_installed_cpu2026_benchmarks(specdir):
+            self._send_json(400, {"error": f"{bench!r} is not an installed benchmark under "
+                                            f"{specdir}/benchspec/CPU2026/"})
+            return
+        if not tag or tag not in joblib.discover_cpu2026_configs(specdir):
+            self._send_json(400, {"error": f"{tag!r} is not a config found under {specdir}/config/"})
+            return
+        dest = os.path.join(REPO_ROOT, "workload", "cpu2026")
+        result = joblib.register_cpu2026_point(dest, specdir, bench, tag, tune=tune)
+        self._send_json(200, result)
+
+    def _cpu2026_build(self, cfg, body):
+        """Backs the CPU2026 tab inventory's per-row "Build" button: runs
+        `runcpu --action=build` as a background subprocess
+        (joblib.execute_cpu2026_build()), relayed live via the CPU2026_BUILDS
+        SSE registry -- same RunState/background-thread shape execute_analyze()
+        uses, since a real SPEC build can run for minutes and needs a live
+        tail rather than run_sync()'s bounded synchronous call."""
+        dest = os.path.join(REPO_ROOT, "workload", "cpu2026")
+        point_dir = joblib.resolve_cpu2026_point_dir(dest, (body.get("dir") or "").strip())
+        if not point_dir:
+            self._send_json(400, {"error": "not a registered benchmark/config directory"})
+            return
+        try:
+            with open(os.path.join(point_dir, "source.json")) as f:
+                source = json.load(f)
+        except (OSError, ValueError):
+            self._send_json(400, {"error": "could not read source.json for this pair"})
+            return
+        bench = source.get("bench", "")
+        tag = os.path.basename(point_dir)
+        config_file = source.get("config_file", f"{tag}.cfg")
+        tune = source.get("tune", "base")
+        specdir = source.get("specdir", "")
+        if not joblib.cpu2026_suite_installed(specdir):
+            self._send_json(400, {"error": f"no shrc found under {specdir} -- not a real SPEC install"})
+            return
+
+        key = run_key("cpu2026-build", bench, f'{tag}-{make_run_id()}')
+        state = RunState(point_dir)
+        with CPU2026_BUILDS_LOCK:
+            CPU2026_BUILDS[key] = state
+
+        t = threading.Thread(target=joblib.execute_cpu2026_build, args=(
+            state, specdir, config_file, bench, tag, point_dir,
+        ), kwargs={"tune": tune}, daemon=True)
+        t.start()
+
+        self._send_json(202, {
+            "bench": bench, "tag": tag,
+            "events_url": f"/api/cpu2026/build/{key[0]}/{key[1]}/{key[2]}/events",
+            "command": shell_preview(joblib.build_cpu2026_build_argv(specdir, config_file, bench, tune=tune)),
+        })
+
+    def _cpu2026_use_in_run(self, cfg, body):
+        """Backs the CPU2026 tab inventory's "Use in Run tab" button:
+        returns the workload/suite/benchmark the Run tab should prefill,
+        plus cpu2026_test_point (echoed back into the Run tab's hidden
+        field) so a subsequent /api/run-* can symlink its run directory
+        back under this registered pair via _link_cpu2026_test_point()
+        above. Unlike Phoronix's version, there's no local-suite copy step
+        needed -- the workload command already carries everything runcpu
+        needs (see joblib.build_cpu2026_run_workload())."""
+        dest = os.path.join(REPO_ROOT, "workload", "cpu2026")
+        point_dir = joblib.resolve_cpu2026_point_dir(dest, (body.get("dir") or "").strip())
+        if not point_dir:
+            self._send_json(400, {"error": "not a registered benchmark/config directory"})
+            return
+        try:
+            with open(os.path.join(point_dir, "source.json")) as f:
+                source = json.load(f)
+        except (OSError, ValueError):
+            self._send_json(400, {"error": "could not read source.json for this pair"})
+            return
+        bench = source.get("bench", "")
+        tag = os.path.basename(point_dir)
+        config_file = source.get("config_file", f"{tag}.cfg")
+        tune = source.get("tune", "base")
+        specdir = source.get("specdir", "")
+        identity = f"{bench}-{tag}"
+        workload = joblib.build_cpu2026_run_workload(specdir, config_file, bench, tune=tune)
+        self._send_json(200, {
+            "workload": workload,
+            "suite": "cpu2026", "benchmark": identity,
+            "cpu2026_test_point": point_dir,
+        })
+
     def _discovery_ollama_models(self, cfg, body):
         """Backs the report page's "Discover installed models" button
         (render_analyze_card()): runs `wspy-analyze --list-models`, which
@@ -4697,7 +4983,8 @@ class Handler(BaseHTTPRequestHandler):
             result["links"] = _resolve_trace_links(cfg["output_root"], fields)
         self._send_json(200, result)
 
-    def _stream_events(self, suite, benchmark, run_id, registry=RUNS, lock=RUNS_LOCK):
+    def _stream_events(self, suite, benchmark, run_id, registry=RUNS, lock=RUNS_LOCK,
+                        make_report_url=True):
         key = run_key(suite, benchmark, run_id)
         with lock:
             state = registry.get(key)
@@ -4729,9 +5016,11 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(b": keep-alive\n\n")
                 self.wfile.flush()
                 if status != "running" and sent >= len(state.lines):
-                    report_url = f"/report/{suite}/{benchmark}/{run_id}"
+                    payload = {"status": status}
+                    if make_report_url:
+                        payload["report_url"] = f"/report/{suite}/{benchmark}/{run_id}"
                     self.wfile.write(
-                        f"event: done\ndata: {json.dumps({'status': status, 'report_url': report_url})}\n\n".encode()
+                        f"event: done\ndata: {json.dumps(payload)}\n\n".encode()
                     )
                     self.wfile.flush()
                     break
@@ -4796,6 +5085,11 @@ def main():
                           "'phoronix-test-suite' launcher script hardcodes this as PTS_DIR) -- used "
                           "by the Check button's result_notifier.php bug check to find "
                           "pts-core/modules/result_notifier.php (default: %(default)s)")
+    ap.add_argument("--cpu2026-dir", default="/home/mev/cpu2026", dest="cpu2026_dir",
+                     help="root of an installed SPEC CPU2026 tree (the directory containing shrc, "
+                          "benchspec/, config/) -- pre-fills the CPU2026 tab's Suite directory field; "
+                          "changeable per-session from the tab itself without a server restart "
+                          "(default: %(default)s)")
     args = ap.parse_args()
 
     output_root = os.path.abspath(args.output_root)
@@ -4848,6 +5142,7 @@ def main():
         "jobs_dir": os.path.abspath(args.jobs_dir),
         "phoronix_bin": args.phoronix_test_suite,
         "phoronix_pts_dir": args.phoronix_pts_dir,
+        "cpu2026_dir": args.cpu2026_dir,
     }
     print(f"wspy web launcher listening on http://{args.host}:{args.port}  "
           f"(output root: {output_root})")

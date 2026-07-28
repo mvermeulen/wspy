@@ -1274,6 +1274,226 @@
     }
   }
 
+  // ---------------------------------------------------------------------
+  // CPU2026 tab -- discovery/registration/Build/Use-in-Run-tab for a SPEC
+  // CPU2026 install. Structurally simpler than the Phoronix tab above (no
+  // remote fetch, no source-radio group), but shares its filter/expand-
+  // collapse behavior and its "Use in Run tab" field-fill-plus-tab-switch
+  // idiom.
+  // ---------------------------------------------------------------------
+  function wireCpu2026Tab() {
+    var registerBtn = byId("cpu2026-register");
+    if (!registerBtn) return;
+
+    // "Refresh" (and the Suite directory field's Enter key): reloads "/"
+    // with ?cpu2026_specdir=<value>, which do_GET("/") turns into a fresh
+    // server-side render of this tab against that path -- see server.py's
+    // do_GET() comment on why this isn't done as background fetch + DOM
+    // patch (dropdowns/inventory both need a full re-derive from the new
+    // SPECDIR, which is exactly what a page render already does).
+    var refreshBtn = byId("cpu2026-refresh");
+    var specdirEl = byId("cpu2026-specdir");
+    function reloadWithSpecdir() {
+      var v = getValue("cpu2026-specdir");
+      window.location.href = "/?cpu2026_specdir=" + encodeURIComponent(v);
+    }
+    if (refreshBtn) refreshBtn.addEventListener("click", reloadWithSpecdir);
+    if (specdirEl) {
+      specdirEl.addEventListener("keydown", function (ev) {
+        if (ev.key === "Enter") { ev.preventDefault(); reloadWithSpecdir(); }
+      });
+    }
+
+    // Register a benchmark x config pair.
+    var registerErrorEl = byId("cpu2026-register-error");
+    var registerResultEl = byId("cpu2026-register-result");
+    registerBtn.addEventListener("click", function () {
+      registerBtn.disabled = true;
+      if (registerErrorEl) registerErrorEl.hidden = true;
+      if (registerResultEl) registerResultEl.hidden = true;
+      fetch("/api/cpu2026/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          specdir: getValue("cpu2026-specdir"),
+          bench: byId("cpu2026-bench") ? byId("cpu2026-bench").value : "",
+          config: byId("cpu2026-config") ? byId("cpu2026-config").value : "",
+          tune: byId("cpu2026-tune") ? byId("cpu2026-tune").value : "base",
+        }),
+      })
+        .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+        .then(function (res) {
+          registerBtn.disabled = false;
+          if (!res.ok || res.data.error) {
+            if (registerErrorEl) {
+              registerErrorEl.hidden = false;
+              registerErrorEl.textContent = "Error: " + (res.data.error || "unknown error");
+            }
+            return;
+          }
+          if (registerResultEl) {
+            registerResultEl.hidden = false;
+            registerResultEl.textContent = (res.data.status === "exists" ? "Already registered: " : "Registered: ") +
+              res.data.identity + " -- reload the page to see it in the inventory below.";
+          }
+        })
+        .catch(function (err) {
+          registerBtn.disabled = false;
+          if (registerErrorEl) {
+            registerErrorEl.hidden = false;
+            registerErrorEl.textContent = "Error: " + err.message;
+          }
+        });
+    });
+
+    // Inventory's per-row "Build" buttons: runs `runcpu --action=build` in
+    // the background, tailing its output into the shared live-output pane
+    // below the inventory table -- same EventSource/SSE idiom the Run
+    // tab's own live output uses (see wireRunTab() above), just against a
+    // registry that isn't a real wspy run (CPU2026_BUILDS, server.py).
+    var buildStatusEl = byId("cpu2026-build-status");
+    var buildOutputEl = byId("cpu2026-build-output");
+    var buildErrorEl = byId("cpu2026-build-error");
+    document.querySelectorAll(".cpu2026-build").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        btn.disabled = true;
+        if (buildErrorEl) buildErrorEl.hidden = true;
+        if (buildOutputEl) { buildOutputEl.hidden = false; buildOutputEl.textContent = ""; }
+        if (buildStatusEl) {
+          buildStatusEl.hidden = false;
+          buildStatusEl.textContent = "Building " + btn.dataset.bench + " (" + btn.dataset.tag + ")...";
+        }
+        fetch("/api/cpu2026/build", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ dir: btn.dataset.dir }),
+        })
+          .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+          .then(function (res) {
+            if (!res.ok || res.data.error) {
+              btn.disabled = false;
+              if (buildErrorEl) {
+                buildErrorEl.hidden = false;
+                buildErrorEl.textContent = "Error: " + (res.data.error || "unknown error");
+              }
+              if (buildStatusEl) buildStatusEl.hidden = true;
+              return;
+            }
+            var es = new EventSource(res.data.events_url);
+            es.addEventListener("log", function (ev) {
+              var line = JSON.parse(ev.data);
+              if (buildOutputEl) {
+                buildOutputEl.textContent += line + "\n";
+                buildOutputEl.scrollTop = buildOutputEl.scrollHeight;
+              }
+            });
+            es.addEventListener("done", function (ev) {
+              var payload = JSON.parse(ev.data);
+              es.close();
+              btn.disabled = false;
+              if (buildStatusEl) {
+                buildStatusEl.textContent = payload.status === "done" ?
+                  "Build finished -- reload the page to refresh the Built column." :
+                  "Build finished with errors -- see output above.";
+              }
+            });
+            es.onerror = function () {
+              btn.disabled = false;
+              if (buildStatusEl) buildStatusEl.textContent = "Build stream disconnected.";
+            };
+          })
+          .catch(function (err) {
+            btn.disabled = false;
+            if (buildErrorEl) {
+              buildErrorEl.hidden = false;
+              buildErrorEl.textContent = "Error: " + err.message;
+            }
+            if (buildStatusEl) buildStatusEl.hidden = true;
+          });
+      });
+    });
+
+    // Inventory's "Use in Run tab" buttons -- identical field-fill-plus-
+    // tab-switch idiom to the Phoronix tab's own handler above, just
+    // against /api/cpu2026/use-in-run and the cpu2026_test_point field.
+    var useInRunErrorEl = byId("cpu2026-use-in-run-error");
+    document.querySelectorAll(".cpu2026-use-in-run").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        btn.disabled = true;
+        if (useInRunErrorEl) useInRunErrorEl.hidden = true;
+        fetch("/api/cpu2026/use-in-run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ dir: btn.dataset.dir }),
+        })
+          .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+          .then(function (res) {
+            btn.disabled = false;
+            if (!res.ok || res.data.error) {
+              if (useInRunErrorEl) {
+                useInRunErrorEl.hidden = false;
+                useInRunErrorEl.textContent = "Error: " + (res.data.error || "unknown error");
+              }
+              return;
+            }
+            var data = res.data;
+            if (byId("workload")) byId("workload").value = data.workload;
+            if (byId("suite")) byId("suite").value = data.suite;
+            if (byId("benchmark")) byId("benchmark").value = data.benchmark;
+            if (byId("cpu2026_test_point")) byId("cpu2026_test_point").value = data.cpu2026_test_point;
+            var runTabBtn = document.querySelector('.tab-btn[data-tab="run"]');
+            if (runTabBtn) runTabBtn.click();
+            schedulePreview();
+          })
+          .catch(function (err) {
+            btn.disabled = false;
+            if (useInRunErrorEl) {
+              useInRunErrorEl.hidden = false;
+              useInRunErrorEl.textContent = "Error: " + err.message;
+            }
+          });
+      });
+    });
+
+    // Inventory filter/expand-collapse -- identical to the Phoronix tab's
+    // own (data-cpu2026-search/data-cpu2026-config attributes instead of
+    // the Phoronix-prefixed ones, see render_cpu2026_inventory_groups()).
+    var filterEl = byId("cpu2026-filter");
+    var groupEls = Array.prototype.slice.call(document.querySelectorAll(".cpu2026-test-group"));
+    var filterEmptyEl = byId("cpu2026-filter-empty");
+    if (filterEl && groupEls.length) {
+      filterEl.addEventListener("input", function () {
+        var q = filterEl.value.trim().toLowerCase();
+        var anyGroupVisible = false;
+        groupEls.forEach(function (group) {
+          var groupMatches = !q || (group.dataset.cpu2026Search || "").indexOf(q) !== -1;
+          var anyRowVisible = false;
+          group.querySelectorAll("tbody tr").forEach(function (row) {
+            var rowMatches = groupMatches || (row.dataset.cpu2026Config || "").indexOf(q) !== -1;
+            row.hidden = !rowMatches;
+            if (rowMatches) anyRowVisible = true;
+          });
+          group.hidden = !anyRowVisible;
+          group.open = q.length > 0 && anyRowVisible;
+          if (anyRowVisible) anyGroupVisible = true;
+        });
+        if (filterEmptyEl) filterEmptyEl.hidden = anyGroupVisible || !q;
+      });
+    }
+    var expandAllBtn = byId("cpu2026-expand-all");
+    if (expandAllBtn) {
+      expandAllBtn.addEventListener("click", function () {
+        groupEls.forEach(function (group) { group.open = true; });
+      });
+    }
+    var collapseAllBtn = byId("cpu2026-collapse-all");
+    if (collapseAllBtn) {
+      collapseAllBtn.addEventListener("click", function () {
+        groupEls.forEach(function (group) { group.open = false; });
+      });
+    }
+  }
+
   wireTabs();
   wireRunTab();
   wireCheckButton();
@@ -1282,4 +1502,5 @@
   wireDiscoveryTab();
   wireAnalyzeForm();
   wirePhoronixTab();
+  wireCpu2026Tab();
 })();
