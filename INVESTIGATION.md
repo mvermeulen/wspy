@@ -725,6 +725,66 @@ build rerun). Caught one real bug during testing: an unmeasured `ibs_dram_pct` w
 residency was actually unmeasured rather than genuinely zero — fixed by only computing the residual when
 `ibs_dram_pct` was itself actually collected, falling back to a plain `"l1"` read otherwise.
 
+**CPU2026 workload-suite web tab (new `web/server.py`/`web/joblib.py` tab, alongside Run/Validate/
+Store & Summary/Discovery/Phoronix) — closes 4.3 Tier 6's CPU2026 backlog item.** A SPEC CPU2026
+counterpart to the Phoronix tab, structurally simpler: unlike a Phoronix test point, a CPU2026
+benchmark and its config file both already exist locally the moment a suite is installed, so there's
+nothing to fetch/materialize from a remote result — the tab's job is discovery, registration, and
+action-triggering, not import. `CPU2026_BENCHMARKS` (`joblib.py`) is a static 52-benchmark catalog
+(`706.stockfish_r` etc., from https://spec.org/cpu2026/docs/overview.html#benchmarks, grouped
+intrate/intspeed/fprate/fpspeed) for display/grouping only — what's actually runnable is discovered live
+via `discover_installed_cpu2026_benchmarks()`/`discover_cpu2026_configs()` scanning
+`$SPECDIR/benchspec/CPU2026/*/` and `$SPECDIR/config/*.cfg` on disk, same "static table for labels,
+filesystem for truth" split the Phoronix tab uses between `phoronix.tests.txt` and live
+`phoronix-test-suite info` calls — a benchmark installed under a name the static table doesn't know
+still shows up, just without suite/language labels.
+
+Two-level inventory hierarchy (benchmark → config-tag, mirroring `workload/phoronix/<test>/<options>/`):
+config tags (filename minus `.cfg`) are discovered independently of any benchmark since one SPEC config
+can build any benchmark, then a benchmark×config *pairing* gets registered (not "materialized" — no
+ledger, no XML) via `register_cpu2026_point()` under `workload/cpu2026/<bench>/<tag>/` (a `source.json`
+provenance sidecar + one `README.md` per bench built from the static catalog's suite/language labels,
+no subprocess/network round-trip needed the way Phoronix's `phoronix-test-suite info` does — idempotent,
+an existing `source.json` is left untouched on re-register). `runs/<run_id>` symlinks back to real run
+dirs via `link_cpu2026_point_run()`, same idiom as `link_phoronix_test_point_run()`.
+`resolve_cpu2026_point_dir()` mirrors `resolve_phoronix_test_point_dir()`'s "resolve under dest_root,
+require a real `source.json`" validation rather than trusting a client-supplied path. `$SPECDIR`
+(default `/home/mev/cpu2026`, new `--cpu2026-dir` flag) is changeable from the tab's "Suite directory"
+field via a plain GET re-render, no server restart — `cpu2026_suite_installed()` checking for
+`$SPECDIR/shrc` is the install-sanity check, same role `check_phoronix_batch_config()` plays for
+Phoronix. Inventory table's "Built" column (`cpu2026_benchmark_built()`) is a substring match against
+`$SPECDIR/benchspec/CPU2026/<bench>/exe/*<tag>*` (SPEC's exe naming carries machine/OS suffixes like
+`_base.<tag>-m64`, so it's not an exact reconstructed filename), recomputed live per inventory render
+rather than cached at registration time, since a Build action changes that state afterward and
+staleness here would be actively wrong rather than merely a re-check-later warning — same
+cheap-check-now/re-verify-at-run-time posture `list_installed_phoronix_test_versions()` documents, but
+live instead of cached given that difference.
+
+Two actions per row: **Build** (`runcpu --config <cfg> --action=build --tune <tune> <bench>`, run as a
+backgrounded subprocess via `execute_cpu2026_build()` and relayed live through a new `CPU2026_BUILDS`
+SSE registry — a build isn't a wspy run at all, no report directory or manifest, so it gets its own
+registry rather than reusing `RUNS`; `_stream_events()` gained a `make_report_url` parameter, always
+`False` here, so this reuses the same SSE relay `execute_analyze()` uses without fabricating a bogus
+report link) and **Use in Run tab** (`build_cpu2026_run_workload()` prefills the Run tab's `workload`
+field, mirroring `_phoronix_use_in_run`). The one real wrinkle vs. Phoronix: `runcpu` needs SPEC's
+`shrc` sourced for its environment, but neither `execute_cpu2026_build()`'s `Popen()` nor the Run tab's
+`workload` field (`shlex.split()`, no shell) invoke a shell on their own, so
+`build_cpu2026_shell_argv()` wraps the real command in `bash -c "source $SPECDIR/shrc && cd $SPECDIR &&
+ulimit -s unlimited && runcpu ..."` — same `--action=validate --nobuild`/`ulimit -s unlimited` choices
+`workload/cpu2017/run_test.sh` already makes for its own build-then-validate split. A new
+`cpu2026_test_point` hidden Run-tab field (alongside the existing `phoronix_test_point` one) carries the
+registry dir through `_link_cpu2026_test_point()` to a post-run symlink-back, same as
+`_link_phoronix_test_point()` — deliberately *not* wired into `_enqueue_job()` yet (no
+`_cpu2026_test_point_identity()` analog exists), left for a follow-up. No `wspy-ledger` integration
+needed — 52 benchmarks don't need a "what's left" backlog ledger the way Phoronix's huge test catalog
+does; the inventory table itself is the coverage view.
+
+Verified via 30 new `test_joblib.py` cases across 10 new test classes (212/212 joblib tests passing:
+install-sanity check, discovery, build-check substring matching, registration idempotency, path-
+resolution rejection, inventory listing/grouping, run-symlinking, and argv-building for both the Build
+and Use-in-Run-tab commands) plus a live smoke test against a fake SPEC install exercising discovery,
+registration, inventory rendering, Use-in-Run-tab prefill, and the Build SSE stream's error handling.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -1183,48 +1243,12 @@ reasoning as Tier 1 above.
     what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
     across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
     point, launched by a human clicking Run) exists today.
-19. CPU2026 workload-suite web tab (new `web/server.py`/`web/joblib.py` tab, alongside Run/Validate/
-    Store & Summary/Discovery/Phoronix) — a SPEC CPU2026 counterpart to the Phoronix tab, but simpler:
-    unlike a Phoronix test point, a CPU2026 benchmark and its config file both already exist locally
-    the moment a suite is installed, so there's nothing to fetch/materialize from a remote result —
-    the tab's job is discovery, registration, and action-triggering, not import. Benchmark catalog
-    (52 benchmarks: 706.stockfish_r etc., from https://spec.org/cpu2026/docs/overview.html#benchmarks,
-    grouped intrate/intspeed/fprate/fpspeed) is a static table in `joblib.py` for display/grouping only
-    — what's actually runnable is discovered live from `$SPECDIR/benchspec/CPU2026/*/` on disk, same
-    "static table for labels, filesystem for truth" split the Phoronix tab uses between
-    `phoronix.tests.txt` and live `phoronix-test-suite info` calls. Two-level inventory hierarchy
-    (benchmark → config-tag, mirroring `workload/phoronix/<test>/<options>/`): config files
-    (`$SPECDIR/config/*.cfg`, tag = filename minus `.cfg`, e.g. `gcc_O2`) are discovered independently
-    of any benchmark since one SPEC config can build any benchmark, then a benchmark×config *pairing*
-    gets registered (not "materialized" — no ledger, no XML) under
-    `workload/cpu2026/<bench>/<config-tag>/` (`source.json` + optional `README.md` + `runs/<run_id>`
-    symlinks back to real run dirs, same idiom as `link_phoronix_test_point_run()`). `$SPECDIR`
-    (default `/home/mev/cpu2026`, a new `--cpu2026-dir` flag) is changeable from the tab itself, same
-    as the Phoronix tab's destination-root field; `$SPECDIR/shrc` existing is the install-sanity check.
-    Inventory table's "Built" column is a filesystem check
-    (`$SPECDIR/benchspec/CPU2026/<bench>/exe/<bench>_base.<tag>` presence), not a subprocess call per
-    row, same cheap-check-now/re-verify-at-run-time posture `list_installed_phoronix_test_versions()`
-    uses. Two actions per row: **Build** (`runcpu --config <cfg> --action=build --tune base <bench>`,
-    queued through the existing job queue since builds run minutes, not `run_sync()` — closer in shape
-    to a Run-tab job than to `_phoronix_materialize`'s blocking XML fetch) and **Use in Run tab**
-    (prefills `workload`/`suite`/`benchmark`, mirroring `_phoronix_use_in_run`). The one real wrinkle
-    vs. Phoronix: `runcpu` needs SPEC's `shrc` sourced for its environment, but the Run tab's
-    `workload` field is `shlex.split()` and exec'd with no shell (`_parse_workload_and_ids`), so the
-    prefilled command has to be a `bash -c "source $SPECDIR/shrc && cd $SPECDIR && runcpu --config <cfg>
-    --action=validate --tune base --iterations 1 --nobuild <bench>"` wrapper rather than a bare argv —
-    same `--action=validate`/`ulimit -s unlimited` choices `workload/cpu2017/run_test.sh` already makes.
-    A new `cpu2026_test_point` hidden Run-tab field (alongside the existing `phoronix_test_point` one)
-    carries the registry dir through to a post-run symlink-back, same as
-    `_link_phoronix_test_point()`. No `wspy-ledger` integration needed — 52 benchmarks don't need a
-    "what's left" backlog ledger the way Phoronix's huge test catalog does; the inventory table itself
-    is the coverage view.
-
 **Tier 7 — testing:**
 
-20. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
+19. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
     guardrails — needs deterministic micro-workloads and 4.1's normalized store plus 4.2's
     stats/confidence infrastructure.
-21. Contributor guide for adding a collector/metric/schema bump safely.
+20. Contributor guide for adding a collector/metric/schema bump safely.
 
 ## 4.4 priorities
 Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
