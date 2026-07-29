@@ -797,8 +797,8 @@ filter complements the existing text search. Child rendering order intentionally
 JSON already carried the required per-node/per-comm fields. Verified live via headless-Chromium
 DevTools-Protocol automation against a real 403-process run.
 
-**PID-targeted counter attachment (`--target=comm=<name>[,cmdline=<substr>]`, PR #164) — closes 4.4's
-"PID-targeted counter attachment for known-hot processes" item.** Once a `--tree` run's hot-process
+**PID-targeted counter attachment (`--target=comm=<name>[,cmdline=<substr>]`, PRs #164–167) — closes
+4.4's "PID-targeted counter attachment for known-hot processes" item.** Once a `--tree` run's hot-process
 table shows which comm dominates a run's time, `--target` attaches a second, dedicated counter group
 (the same counters the run's other flags requested) to just the matching process(es), rather than only
 ever reading the whole-subtree aggregate. `setup_counters()` (`topdown.c`) gained a `pid_t attach_pid`
@@ -808,28 +808,44 @@ parameter (`-1` preserves every existing call site's behavior unchanged); a `>=0
 grammar (comma-separated key=value, AND semantics when both given), mirroring `affinity.c`'s spec-parsing
 style. Attachment happens live inside `ptrace_loop()`'s `PTRACE_EVENT_EXEC` handling (comm/cmdline are
 already readable there, same timing `--tree-cmdline` relies on) — matched processes each get their own
-`software`-plus-whatever-`counter_mask`-requested group; readings are read back and emitted as
-`targetcounter <group> <label> <value>` tree-file lines at that pid's own exit, then the fds are closed
-immediately rather than held until end-of-run (a long matching-heavy run could otherwise exhaust PMU
-slots). `proctree.c` parses these into an open-ended `target_counters` array — present on both the
-per-process node and the per-comm rollup (`PROCTREE_JSON_SCHEMA_VERSION` bumped 1.0.0 → 1.1.0) — since
-the counter set depends on whichever flags the producing run had active, not a fixed field list the way
-futex/io/schedstat's extras are. The web tree-viewer's hot-process table (previous entry) now renders one
-extra column per distinct counter whenever a run's JSON carries this data; the Run tab's Process-tree
-card gained a matching free-text field. Wiring the Run tab up surfaced a real, unrelated latent bug in
-the process-tree pass's own argv builder (`web/joblib.py`): the "software counters too" checkbox had
-*never* actually turned software counters on — wspy's own default `counter_mask` is `COUNTER_IPC` only
-(`wspy.c`), not IPC-plus-software as the old code assumed, so the checked case emitted no flag at all
-while only the unchecked case emitted a no-op `--no-software`; a plain `--tree` run through the web UI
-had been collecting zero performance counters regardless of that checkbox. Fixed alongside `--target`
-(now emits `--counters=software` when checked) since `--target` had nothing to attach without it. This
-item was originally planned as two backlog entries — PID-targeting (item 10) and a later uprobe-based
-argument-capture item (item 11) meant to reuse its comm/PID-match plumbing — but the argument-capture
-half hadn't landed yet at the time this doc entry was written; see 4.4 priorities below, which now picks
-up numbering at 10 again for that remaining piece. Verified via `run_tests.sh`'s full matrix (incl. two
-new `capability_matrix.sh` bundles: graceful attach, and the `--target`-without-`--tree` fatal rejection)
-plus a live web-launcher smoke test (`/api/run-custom` → real `--target` run → `/api/tree-json` →
-confirmed per-process and comm-summed counters).
+counter group built from whatever `counter_mask` this specific wspy invocation has active; readings are
+read back and emitted as `targetcounter <group> <label> <value>` tree-file lines at that pid's own exit,
+then the fds are closed immediately rather than held until end-of-run (a long matching-heavy run could
+otherwise exhaust PMU slots) (PR #164). `proctree.c` parses these into an open-ended `target_counters`
+array — present on both the per-process node and the per-comm rollup (`PROCTREE_JSON_SCHEMA_VERSION`
+bumped 1.0.0 → 1.1.0) — since the counter set depends on whichever flags the producing run had active,
+not a fixed field list the way futex/io/schedstat's extras are.
+
+Three follow-on web changes, each surfaced by actually using the feature end-to-end: (1) the Run tab's
+Process-tree card gained a matching free-text `--target` field (PR #165), which in turn surfaced a real,
+unrelated latent bug in the process-tree pass's own argv builder (`web/joblib.py`): the "software
+counters too" checkbox had *never* actually turned software counters on — wspy's own default
+`counter_mask` is `COUNTER_IPC` only (`wspy.c`), not IPC-plus-software as the old code assumed, so the
+checked case emitted no flag at all while only the unchecked case emitted a no-op `--no-software`; a
+plain `--tree` run through the web UI had been collecting zero performance counters regardless of that
+checkbox. (2) That single checkbox was then replaced with the same full counter-group selector the
+"Performance counters" card already uses (`render_group_checkboxes()`/`counter_group_flags()`), so
+`--target`'s attachment isn't limited to software-or-nothing — which also fixed `ALL_GROUPS`' `"software"`
+entry (wrongly marked `default_on=True`), a bug that had silently affected the *main* "Performance
+counters" card's own software checkbox too, predating `--target` entirely (PR #166). (3) The web tree
+viewer's per-comm hot-process table (previous entry) renders one column per distinct counter when
+`target_counters` is present; per-process detail (already in the JSON per node) now also renders in the
+per-node tree view itself, toggled the same way futex/io_wait/etc. already are, and a shared
+`computeDisplayCounters()` helper collapses any group's `instructions`+`cpu-cycles` pair into a single
+derived `IPC` ratio (dropping the raw counters, including AMD's `ex_ret_ops`, for that group) since
+those numbers are only meaningful as the ratio — no other counter-pair gets this treatment (PR #167).
+
+This item was originally planned as two backlog entries — PID-targeting (item 10) and a later
+uprobe-based argument-capture item (item 11) meant to reuse its comm/PID-match plumbing — but the
+argument-capture half hadn't landed yet at the time this doc entry was written; see 4.4 priorities below,
+which now picks up numbering at 10 again for that remaining piece. PR #164 verified via `run_tests.sh`'s
+full matrix (incl. two new `capability_matrix.sh` bundles: graceful attach, and the
+`--target`-without-`--tree` fatal rejection); PRs #165/#166 verified via `web/test_joblib.py` (228/228,
+6 new cases incl. a regression test for the `ALL_GROUPS` fix) plus a live web-launcher smoke test
+(`/api/run-custom` → real `--target` run → `/api/tree-json` → confirmed both `ipc` and `software`
+counters attach); PR #167 verified by mirroring the JS collapse logic in Python against a real run's
+JSON (no JS runtime available in this environment to execute it directly), confirming both the
+comm-summed and per-process cases collapse correctly while leaving other groups' raw counters intact.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
