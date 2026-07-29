@@ -522,6 +522,22 @@ p.compare-overview {
   color: var(--muted);
   white-space: nowrap;
 }
+.ptv-minshare {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.ptv-minshare-input {
+  width: 3.5rem;
+  padding: 0.2rem 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
 #ptv-root {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.85rem;
@@ -559,18 +575,22 @@ p.compare-overview {
 .ptv-status-changed { background: #9a6700; color: #fff; }
 .ptv-status-same { background: var(--panel); color: var(--muted); }
 
-table.ptv-summary-diff {
+table.ptv-summary-diff, table.ptv-summary-table {
   border-collapse: collapse;
   font-size: 0.85rem;
   width: 100%;
   margin-top: 0.25rem;
 }
-table.ptv-summary-diff th, table.ptv-summary-diff td {
+table.ptv-summary-diff th, table.ptv-summary-diff td,
+table.ptv-summary-table th, table.ptv-summary-table td {
   border: 1px solid var(--border);
   padding: 0.35rem 0.6rem;
   text-align: left;
 }
-table.ptv-summary-diff thead, table.ptv-summary-diff tr:first-child { background: var(--panel); }
+table.ptv-summary-diff thead, table.ptv-summary-diff tr:first-child,
+table.ptv-summary-table thead, table.ptv-summary-table tr:first-child { background: var(--panel); }
 tr.ptv-badge-added td { background: rgba(26, 127, 55, 0.12); }
 tr.ptv-badge-removed td { background: rgba(207, 34, 46, 0.12); }
 tr.ptv-badge-matched td { background: transparent; }
+tr.ptv-summary-row { cursor: pointer; }
+tr.ptv-summary-row:hover td { background: var(--panel); }
