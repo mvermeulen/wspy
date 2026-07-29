@@ -414,16 +414,22 @@ def _capture_pts_hooks_log(emit, rundir, name):
 # play -- never a fuzzy "close enough" match.
 # ---------------------------------------------------------------------------
 
-# (group name, default_on) -- default_on groups (ipc/software) need an
-# explicit --no-<name> when left unchecked; the rest are named in one
-# --counters=<list> flag when checked (wspy's --counters=<list>, the
-# recommended replacement for the individual --<name> boolean flags this
-# module used to emit one at a time -- see counter_group_flags() below).
-# Mirrors wspy.h's COUNTER_* set and is also the exact token vocabulary
-# multipass.c's multipass_group_names[] uses for --passes=<list> (which
-# --counters=<list> itself reuses), so the same list drives the plain-flags,
-# --counters=-based, and --passes-bin-packed branches below without a second
-# table to keep in sync.
+# (group name, default_on) -- the one default_on group (ipc; wspy.c's own
+# `counter_mask = COUNTER_IPC` default) needs an explicit --no-<name> when
+# left unchecked; the rest are named in one --counters=<list> flag when
+# checked (wspy's --counters=<list>, the recommended replacement for the
+# individual --<name> boolean flags this module used to emit one at a time
+# -- see counter_group_flags() below). "software" used to be marked
+# default_on here too, which was simply wrong -- COUNTER_SOFTWARE is never on
+# by default in wspy -- so checking it here silently emitted nothing (only
+# the unchecked case emitted a no-op --no-software); fixed once real testing
+# of item 10's --target (which attaches to whatever counter_mask this pass's
+# wspy invocation has active) surfaced it via a --target run with nothing to
+# attach. Mirrors wspy.h's COUNTER_* set and is also the exact token
+# vocabulary multipass.c's multipass_group_names[] uses for --passes=<list>
+# (which --counters=<list> itself reuses), so the same list drives the
+# plain-flags, --counters=-based, and --passes-bin-packed branches below
+# without a second table to keep in sync.
 ALL_GROUPS = [
     ("ipc", True),
     ("topdown", False),
@@ -440,7 +446,7 @@ ALL_GROUPS = [
     ("tlb", False),
     ("memory", False),
     ("opcache", False),
-    ("software", True),
+    ("software", False),
     ("float", False),
 ]
 GROUP_NAMES = [name for name, _ in ALL_GROUPS]
@@ -809,7 +815,7 @@ CATEGORY_TO_CHECKLIST_KEY = {
 # a scalar.
 _BOOL_OPTION_KEYS = {
     "tree": {"cmdline", "open", "futex", "io", "io_wait", "schedstat", "vmsize",
-             "connect", "wait", "poll", "nanosleep", "software"},
+             "connect", "wait", "poll", "nanosleep"},
     "counters": {"per_core", "per_core_freq", "rusage", "csv", "power"},
     "system": {"csv", "power"},
     "gpu": {"busy", "metrics", "smi", "csv"},
@@ -834,7 +840,7 @@ def checklist_section_from_options(checklist_key, options):
     for name, value in options:
         if not name:
             continue
-        if checklist_key == "counters" and name == "groups":
+        if name == "groups" and checklist_key in ("counters", "tree"):
             section[name] = [g for g in (value or "").split(",") if g]
         elif name in bool_keys:
             section[name] = (value == "true")
@@ -924,17 +930,20 @@ def build_configuration_passes(rundir, checklist):
             flags.append("--tree-poll")
         if tree.get("nanosleep"):
             flags.append("--tree-nanosleep")
-        # Unlike counter_group_flags() below, wspy's own default counter_mask
-        # (wspy.c) is COUNTER_IPC *only* -- COUNTER_SOFTWARE is never on by
-        # default, so (unlike that function's default-on groups) the
-        # checked case needs an explicit --software, not the unchecked one.
-        # Previously inverted (only ever emitted --no-software, a no-op
-        # against a mask that never had the bit set in the first place), so
-        # a --tree pass's "software counters too" checkbox silently did
-        # nothing -- caught while wiring up --target above, since --target
-        # with a --no-ipc'd, software-less mask has nothing to attach.
-        if tree.get("software", True):
-            flags.append("--counters=software")
+        # Performance counters for this pass -- reuses "counters"' own
+        # counter_group_flags() helper rather than a second table, so this
+        # card's selector behaves identically (same --counters=<list>/
+        # --no-<default-on-group> logic, same ALL_GROUPS vocabulary). This is
+        # also what --target (below) attaches to for its pid-scoped matches:
+        # one wspy process, one counter_mask, shared by the whole-subtree
+        # aggregate this pass reports and any --target match. Previously
+        # hardcoded to always --no-ipc plus a single ad hoc "software"
+        # checkbox that (via a since-fixed ALL_GROUPS bug -- see the item-10
+        # Run-tab entry under "Shipped since 4.2") silently never actually
+        # enabled software counters; default empty, a quiet tree-structure-
+        # only pass unless the user opts into counter groups here.
+        group_flags, _selected = counter_group_flags(tree.get("groups"))
+        flags += group_flags
         # --target=comm=<name>[,cmdline=<substr>] (INVESTIGATION.md 4.4
         # priorities item 10): a free-form spec string, not a checkbox --
         # wspy's own target_parse_spec() does the real validation (warns and
@@ -946,7 +955,6 @@ def build_configuration_passes(rundir, checklist):
         target_spec = (tree.get("target") or "").strip()
         if target_spec:
             flags.append(f"--target={target_spec}")
-        flags.append("--no-ipc")
         timeout = parse_optional_int(tree.get("timeout_secs"), 1, 86400)
         passes.append({"name": "tree", "category": "process-tree",
                         "options": _config_options(tree),
