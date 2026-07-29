@@ -1283,6 +1283,16 @@ Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
    `--ibs-sample` combined with `--interval` zeroes every periodic row and populates only the final tail
    row. A real per-tick rate needs an actual poll-loop architectural change — genuinely a different
    scale of work than the fixed-offset decode work that shipped, not a small follow-on.
+9. Symbol-level profiling (map sampled events — instructions, cache misses, branch misses — to
+   routine/symbol names, not just aggregate counts). Two pieces: (a) sampling-mode capture generalized
+   from `ibs_sample.c`'s mmap ring-buffer plumbing (4.3, AMD-IBS-specific, `PERF_SAMPLE_RAW`) to ordinary
+   `perf_event_open` sampling events with `PERF_SAMPLE_IP`/`PERF_SAMPLE_CALLCHAIN` on any counter, AMD or
+   Intel; (b) address-to-symbol resolution via `/proc/<pid>/maps` plus ELF/DWARF symbol tables, handling
+   PIE/shared-library load bias and degrading gracefully on stripped/JIT'd code. For a first cut, prefer
+   shelling out to `addr2line`/`nm` over linking `libbfd`/`libdw` into wspy — the bigger cost is
+   architectural: this produces a per-symbol hit-count table, a genuinely different output shape than
+   wspy's one-aggregate-CSV-row-per-run model, so `store.c`/`summary.c`/`plot.c` would all need a new
+   shape to consume it, not just a new column.
 
 ## Open questions for prioritization
 Each carries a recommendation; treat these as the current default, not a closed decision. (Several
