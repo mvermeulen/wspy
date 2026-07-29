@@ -924,12 +924,28 @@ def build_configuration_passes(rundir, checklist):
             flags.append("--tree-poll")
         if tree.get("nanosleep"):
             flags.append("--tree-nanosleep")
-        # software is on by default, so enabling it needs no flag at all;
-        # only the off case needs an explicit --no-software (--counters=
-        # is purely additive -- there's no way to turn a default-on group
-        # off through it, same reasoning as counter_group_flags() below).
-        if not tree.get("software", True):
-            flags.append("--no-software")
+        # Unlike counter_group_flags() below, wspy's own default counter_mask
+        # (wspy.c) is COUNTER_IPC *only* -- COUNTER_SOFTWARE is never on by
+        # default, so (unlike that function's default-on groups) the
+        # checked case needs an explicit --software, not the unchecked one.
+        # Previously inverted (only ever emitted --no-software, a no-op
+        # against a mask that never had the bit set in the first place), so
+        # a --tree pass's "software counters too" checkbox silently did
+        # nothing -- caught while wiring up --target above, since --target
+        # with a --no-ipc'd, software-less mask has nothing to attach.
+        if tree.get("software", True):
+            flags.append("--counters=software")
+        # --target=comm=<name>[,cmdline=<substr>] (INVESTIGATION.md 4.4
+        # priorities item 10): a free-form spec string, not a checkbox --
+        # wspy's own target_parse_spec() does the real validation (warns and
+        # ignores a malformed spec rather than failing the run), so this
+        # just passes a non-empty value through. Only ever emitted alongside
+        # --tree above, since this whole block is gated on tree["enabled"],
+        # so --target's "requires --tree" fatal check can never fire from
+        # this UI path.
+        target_spec = (tree.get("target") or "").strip()
+        if target_spec:
+            flags.append(f"--target={target_spec}")
         flags.append("--no-ipc")
         timeout = parse_optional_int(tree.get("timeout_secs"), 1, 86400)
         passes.append({"name": "tree", "category": "process-tree",

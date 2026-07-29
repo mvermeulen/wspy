@@ -1957,6 +1957,13 @@ def render_run_tab(prefill, cfg):
             <label class="group-check"><input type="checkbox" id="tree_vmsize"{chk(chk_default('tree', 'vmsize', False))}> record peak RSS + anon/file/shmem RSS + swap <code>--tree-vmsize</code></label>
           </div>
           <label>Timeout seconds <input type="text" id="tree_timeout" value="{val('tree', 'timeout_secs')}" placeholder="(none)"></label>
+          <label>PID-targeted counter attachment
+            <input type="text" id="tree_target" value="{val('tree', 'target')}" placeholder="(none, e.g. comm=python3,cmdline=train.py)">
+          </label>
+          <p class="muted">Once a run's hot-process table shows which comm dominates, attach a
+             dedicated counter group to just the matching process(es) instead of only the
+             whole-subtree aggregate (<code>--target=comm=&lt;name&gt;[,cmdline=&lt;substr&gt;]</code>,
+             discovered live as each match execs). Leave blank for the normal whole-subtree behavior.</p>
         </div>
       </div>
 
