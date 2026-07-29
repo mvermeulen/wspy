@@ -1455,6 +1455,50 @@
       });
     });
 
+    // Inventory's "Unregister" buttons -- confirm() first since this is a
+    // delete (registration only: source.json/README.md/runs symlinks, the
+    // real run data a symlink points at is untouched -- see
+    // joblib.unregister_cpu2026_point()), then drop the row from the DOM
+    // directly rather than reloading the whole page, matching the "gone"
+    // feedback of the action itself.
+    var unregisterErrorEl = byId("cpu2026-unregister-error");
+    document.querySelectorAll(".cpu2026-unregister").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var runs = parseInt(btn.dataset.runs, 10) || 0;
+        var msg = "Unregister " + btn.dataset.bench + " / " + btn.dataset.tag + " / " + btn.dataset.tune + "?" +
+          (runs ? " (" + runs + " recorded run" + (runs === 1 ? "" : "s") + " will keep their data, " +
+            "just lose this registration's link to it.)" : "");
+        if (!window.confirm(msg)) return;
+        btn.disabled = true;
+        if (unregisterErrorEl) unregisterErrorEl.hidden = true;
+        fetch("/api/cpu2026/unregister", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ dir: btn.dataset.dir }),
+        })
+          .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+          .then(function (res) {
+            if (!res.ok || res.data.error) {
+              btn.disabled = false;
+              if (unregisterErrorEl) {
+                unregisterErrorEl.hidden = false;
+                unregisterErrorEl.textContent = "Error: " + (res.data.error || "unknown error");
+              }
+              return;
+            }
+            var row = btn.closest("tr");
+            if (row) row.remove();
+          })
+          .catch(function (err) {
+            btn.disabled = false;
+            if (unregisterErrorEl) {
+              unregisterErrorEl.hidden = false;
+              unregisterErrorEl.textContent = "Error: " + err.message;
+            }
+          });
+      });
+    });
+
     // Inventory filter/expand-collapse -- identical to the Phoronix tab's
     // own (data-cpu2026-search/data-cpu2026-config attributes instead of
     // the Phoronix-prefixed ones, see render_cpu2026_inventory_groups()).

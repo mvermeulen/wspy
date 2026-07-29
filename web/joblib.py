@@ -2621,6 +2621,46 @@ def resolve_cpu2026_point_dir(dest_root, raw_dir):
     return real_dir
 
 
+def unregister_cpu2026_point(dest_root, point_dir):
+    """Removes a registered dest_root/<bench>/<tag>/<tune>/ point --
+    counterpart to register_cpu2026_point(). Only removes the
+    registration (source.json, README.md, and the runs/ symlinks that
+    point at real run directories elsewhere under output_root/cpu2026/)
+    -- the actual run data a symlink targets is never touched, so this is
+    safe even for a point with recorded runs. Re-validates point_dir the
+    same "don't trust client-supplied paths" way resolve_cpu2026_point_dir()
+    does (this is a delete, so the check is load-bearing here, not just
+    defensive) rather than assuming the caller already resolved it.
+    Additionally cleans up now-empty <tag>/ and <bench>/ directories
+    (including a bench-level README.md with no config left to document)
+    so an unregister doesn't leave an empty shell behind. Returns True if
+    something was removed, False if point_dir didn't resolve to a real
+    registered point."""
+    real_dest = os.path.realpath(dest_root)
+    real_dir = os.path.realpath(point_dir)
+    if os.path.commonpath([real_dest, real_dir]) != real_dest:
+        return False
+    if not os.path.isfile(os.path.join(real_dir, "source.json")):
+        return False
+
+    shutil.rmtree(real_dir)
+
+    tag_dir = os.path.dirname(real_dir)
+    if os.path.isdir(tag_dir) and not os.listdir(tag_dir):
+        os.rmdir(tag_dir)
+
+    bench_dir = os.path.dirname(tag_dir)
+    if os.path.isdir(bench_dir):
+        remaining = os.listdir(bench_dir)
+        if remaining in ([], ["README.md"]):
+            readme_path = os.path.join(bench_dir, "README.md")
+            if os.path.isfile(readme_path):
+                os.remove(readme_path)
+            os.rmdir(bench_dir)
+
+    return True
+
+
 def list_materialized_cpu2026_points(dest_root):
     """Inventory of registered (bench, tag, tune) triples under
     dest_root/<bench>/<tag>/<tune>/ -- same shape/role as

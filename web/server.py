@@ -2478,7 +2478,11 @@ def render_cpu2026_inventory_groups(dest_root):
                 f'data-dir="{html.escape(p["dir"])}" data-bench="{html.escape(p["bench"])}" '
                 f'data-tag="{html.escape(p["tag"])}">Build</button> '
                 f'<button type="button" class="cpu2026-use-in-run" '
-                f'data-dir="{html.escape(p["dir"])}">Use in Run tab</button></td></tr>'
+                f'data-dir="{html.escape(p["dir"])}">Use in Run tab</button> '
+                f'<button type="button" class="cpu2026-unregister" '
+                f'data-dir="{html.escape(p["dir"])}" data-bench="{html.escape(p["bench"])}" '
+                f'data-tag="{html.escape(p["tag"])}" data-tune="{html.escape(p["tune"])}" '
+                f'data-runs="{len(p["runs"])}">Unregister</button></td></tr>'
             )
 
         blocks.append(
@@ -2552,6 +2556,7 @@ def render_cpu2026_tab(cfg, specdir_override=None):
   <pre id="cpu2026-build-output" class="muted" hidden></pre>
   <p id="cpu2026-build-error" class="muted" hidden></p>
   <p id="cpu2026-use-in-run-error" class="muted" hidden></p>
+  <p id="cpu2026-unregister-error" class="muted" hidden></p>
 
   <h2>Register a benchmark &times; config pair</h2>
   <label>Benchmark
@@ -3853,6 +3858,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/phoronix/use-in-run": self._phoronix_use_in_run,
             "/api/phoronix/repin": self._phoronix_repin,
             "/api/cpu2026/register": self._cpu2026_register,
+            "/api/cpu2026/unregister": self._cpu2026_unregister,
             "/api/cpu2026/build": self._cpu2026_build,
             "/api/cpu2026/use-in-run": self._cpu2026_use_in_run,
         }
@@ -4819,6 +4825,24 @@ class Handler(BaseHTTPRequestHandler):
         dest = os.path.join(REPO_ROOT, "workload", "cpu2026")
         result = joblib.register_cpu2026_point(dest, specdir, bench, tag, tune=tune)
         self._send_json(200, result)
+
+    def _cpu2026_unregister(self, cfg, body):
+        """Backs the CPU2026 tab inventory's per-row "Unregister" button:
+        removes a registered benchmark/config/tune point via
+        joblib.unregister_cpu2026_point() -- only the registration
+        (source.json/README.md/runs symlinks) is deleted, never the real
+        run data a runs/ symlink points at, so this is safe to use even
+        on a point with recorded runs. Re-validates dir server-side via
+        resolve_cpu2026_point_dir() first, same posture as Build/
+        Use-in-Run-tab, before unregister_cpu2026_point() re-checks it
+        again itself (delete path, so belt-and-suspenders here)."""
+        dest = os.path.join(REPO_ROOT, "workload", "cpu2026")
+        point_dir = joblib.resolve_cpu2026_point_dir(dest, (body.get("dir") or "").strip())
+        if not point_dir:
+            self._send_json(400, {"error": "not a registered benchmark/config directory"})
+            return
+        joblib.unregister_cpu2026_point(dest, point_dir)
+        self._send_json(200, {"status": "removed"})
 
     def _cpu2026_build(self, cfg, body):
         """Backs the CPU2026 tab inventory's per-row "Build" button: runs
