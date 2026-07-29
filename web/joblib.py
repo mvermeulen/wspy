@@ -2429,7 +2429,7 @@ def link_phoronix_test_point_run(test_point_dir, run_id, rundir):
 # Static catalog for display/grouping only (name, suite component, source
 # language) -- from https://spec.org/cpu2026/docs/overview.html#benchmarks.
 # What's actually runnable on this host is discovered live from
-# $SPECDIR/benchspec/CPU2026/ (discover_installed_cpu2026_benchmarks()
+# $SPECDIR/benchspec/CPU/ (discover_installed_cpu2026_benchmarks()
 # below), not this table -- same "static table for labels, filesystem for
 # truth" split the Phoronix tab uses between phoronix.tests.txt and live
 # `phoronix-test-suite info` calls.
@@ -2505,11 +2505,13 @@ def cpu2026_suite_installed(specdir):
 
 def discover_installed_cpu2026_benchmarks(specdir):
     """Benchmark directory names actually present under
-    $SPECDIR/benchspec/CPU2026/, sorted -- the live truth backing the tab's
+    $SPECDIR/benchspec/CPU/, sorted -- the live truth backing the tab's
     inventory, independent of CPU2026_BENCHMARKS above (a benchmark
     installed under a name this static table doesn't know about still
-    shows up, just without suite/language labels)."""
-    root = os.path.join(specdir, "benchspec", "CPU2026")
+    shows up, just without suite/language labels). Note: despite the
+    "CPU2026" suite name, the installed subdirectory is literally named
+    "CPU" (unlike CPU2017, which uses "benchspec/CPU2017/")."""
+    root = os.path.join(specdir, "benchspec", "CPU")
     if not os.path.isdir(root):
         return []
     return sorted(
@@ -2534,14 +2536,14 @@ def discover_cpu2026_configs(specdir):
 
 def cpu2026_benchmark_built(specdir, bench, tag):
     """Best-effort "already built" check: does
-    $SPECDIR/benchspec/CPU2026/<bench>/exe/ contain any file naming this
+    $SPECDIR/benchspec/CPU/<bench>/exe/ contain any file naming this
     config tag? SPEC's exe naming carries machine/OS-specific suffixes
     (e.g. "<bench>_base.<tag>-m64"), so this is a substring match against
     the tag rather than an exact reconstructed filename -- cheap disk check
     now, correctness re-verified for real when Build/Use-in-Run-tab
     actually runs, same posture list_installed_phoronix_test_versions()
     documents for its own installed-tests scan."""
-    exe_dir = os.path.join(specdir, "benchspec", "CPU2026", bench, "exe")
+    exe_dir = os.path.join(specdir, "benchspec", "CPU", bench, "exe")
     if not os.path.isdir(exe_dir):
         return False
     needle = f".{tag}"

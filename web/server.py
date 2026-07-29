@@ -2517,7 +2517,7 @@ def render_cpu2026_tab(cfg, specdir_override=None):
         bench_options = "".join(
             f'<option value="{html.escape(b)}">{html.escape(b)}</option>'
             for b in joblib.discover_installed_cpu2026_benchmarks(specdir)
-        ) or '<option value="" disabled selected>(none found under benchspec/CPU2026/)</option>'
+        ) or '<option value="" disabled selected>(none found under benchspec/CPU/)</option>'
         config_options = "".join(
             f'<option value="{html.escape(c)}">{html.escape(c)}</option>'
             for c in joblib.discover_cpu2026_configs(specdir)
@@ -4795,7 +4795,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _cpu2026_register(self, cfg, body):
         """Backs the CPU2026 tab's "Register" button: pairs a benchmark
-        (discovered under $SPECDIR/benchspec/CPU2026/) with a config file
+        (discovered under $SPECDIR/benchspec/CPU/) with a config file
         (discovered under $SPECDIR/config/) via joblib.register_cpu2026_point()
         -- unlike Phoronix's Materialize, there's no remote fetch, so this is
         a simple, fast, synchronous call. Re-validates bench/config against a
@@ -4811,7 +4811,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not bench or bench not in joblib.discover_installed_cpu2026_benchmarks(specdir):
             self._send_json(400, {"error": f"{bench!r} is not an installed benchmark under "
-                                            f"{specdir}/benchspec/CPU2026/"})
+                                            f"{specdir}/benchspec/CPU/"})
             return
         if not tag or tag not in joblib.discover_cpu2026_configs(specdir):
             self._send_json(400, {"error": f"{tag!r} is not a config found under {specdir}/config/"})

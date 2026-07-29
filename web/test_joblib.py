@@ -1464,7 +1464,7 @@ class Cpu2026SuiteInstalledTest(unittest.TestCase):
 class DiscoverInstalledCpu2026BenchmarksTest(unittest.TestCase):
     def test_lists_numbered_benchmark_dirs_sorted(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            root = os.path.join(tmpdir, "benchspec", "CPU2026")
+            root = os.path.join(tmpdir, "benchspec", "CPU")
             for name in ["721.gcc_r", "706.stockfish_r", "Docs"]:
                 os.makedirs(os.path.join(root, name))
             # a stray file (not a directory) alongside the benchmark dirs
@@ -1497,7 +1497,7 @@ class DiscoverCpu2026ConfigsTest(unittest.TestCase):
 class Cpu2026BenchmarkBuiltTest(unittest.TestCase):
     def test_true_when_exe_names_contain_tag(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            exe_dir = os.path.join(tmpdir, "benchspec", "CPU2026", "706.stockfish_r", "exe")
+            exe_dir = os.path.join(tmpdir, "benchspec", "CPU", "706.stockfish_r", "exe")
             os.makedirs(exe_dir)
             with open(os.path.join(exe_dir, "stockfish_r_base.gcc_O2-m64"), "w") as f:
                 f.write("")
@@ -1580,7 +1580,7 @@ class ListMaterializedCpu2026PointsTest(unittest.TestCase):
     def test_lists_registered_points_with_built_status_and_runs(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             specdir = os.path.join(tmpdir, "cpu2026")
-            exe_dir = os.path.join(specdir, "benchspec", "CPU2026", "706.stockfish_r", "exe")
+            exe_dir = os.path.join(specdir, "benchspec", "CPU", "706.stockfish_r", "exe")
             os.makedirs(exe_dir)
             with open(os.path.join(exe_dir, "stockfish_r_base.gcc_O2-m64"), "w") as f:
                 f.write("")
