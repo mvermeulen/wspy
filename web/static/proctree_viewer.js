@@ -238,11 +238,42 @@
   // expanding the tree at all. Clicking a row filters the tree to that comm
   // via the same search box/state used for text search, so "narrow to this
   // process and its descendants" is one click.
+  // --target=comm=<name>[,cmdline=<substr>] (item 10, INVESTIGATION.md):
+  // collects every distinct (group,label) key across all rows' open-ended
+  // target_counters arrays -- there's no fixed column set to hardcode, it
+  // depends on whatever counter_mask the producing wspy run had active.
+  // Returns [] (no extra columns) for older JSON / runs that never used
+  // --target, same "absent means not collected" convention as the rest of
+  // this viewer.
+  function collectTargetCounterKeys(summary) {
+    var seen = {};
+    var keys = [];
+    summary.forEach(function (row) {
+      (row.target_counters || []).forEach(function (tc) {
+        var key = tc.group + "." + tc.label;
+        if (!seen[key]) {
+          seen[key] = true;
+          keys.push(key);
+        }
+      });
+    });
+    return keys;
+  }
+
+  function findTargetCounterValue(row, key) {
+    var tcs = row.target_counters || [];
+    for (var i = 0; i < tcs.length; i++) {
+      if (tcs[i].group + "." + tcs[i].label === key) return tcs[i].value;
+    }
+    return 0;
+  }
+
   function renderSummaryTable(summary) {
     var table = document.createElement("table");
     table.className = "ptv-summary-table";
+    var targetKeys = collectTargetCounterKeys(summary);
     var thead = document.createElement("tr");
-    ["comm", "count", "utime", "stime", "total", "% of total"].forEach(function (h) {
+    ["comm", "count", "utime", "stime", "total", "% of total"].concat(targetKeys).forEach(function (h) {
       var th = document.createElement("th");
       th.textContent = h;
       thead.appendChild(th);
@@ -260,7 +291,9 @@
         row.total_stime_seconds.toFixed(3),
         total.toFixed(3),
         pct.toFixed(1) + "%"
-      ].forEach(function (val) {
+      ].concat(targetKeys.map(function (key) {
+        return String(findTargetCounterValue(row, key));
+      })).forEach(function (val) {
         var td = document.createElement("td");
         td.textContent = val;
         tr.appendChild(td);

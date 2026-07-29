@@ -116,6 +116,12 @@ Some of the more commonly used options:
     `proctree --diff [--json] <a.json> <b.json>` diffs two runs' trees structurally
     (added/removed/changed/same per node) — both also drive the web launcher's interactive tree
     viewer and tree-diff pages
+  * `--target=comm=<name>[,cmdline=<substr>]` (requires `--tree`) - once a `--tree` run's hot-process
+    table shows which comm dominates the run's time, attach a dedicated counter group (the same
+    counters this run's other flags requested) to just the matching process(es) instead of only
+    ever reading the whole-subtree aggregate — every process whose comm/cmdline matches gets its
+    own attach, discovered live as it execs. Surfaces as a `target_counters` array on both the
+    per-process and per-comm-rollup entries in `proctree --json`'s output
 * System-wide metrics
   * `--system` / `-s` - report load average, CPU time (`/proc/stat`), network (`/proc/net/dev`),
     per-block-device disk I/O (`/sys/block/<dev>/stat`), and memory pressure (`/proc/meminfo`)

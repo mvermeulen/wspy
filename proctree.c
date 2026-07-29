@@ -20,6 +20,7 @@
  * <time> <pid> nanosleep <count> <seconds>
  * <time> <pid> wait <count> <seconds>
  * <time> <pid> poll <count> <seconds>
+ * <time> <pid> targetcounter <group> <label> <value>
  *
  * The "futex"/"io_wait"/"io"/"schedstat"/"vmsize"/"connect"/"nanosleep"/
  * "wait"/"poll" lines (--tree-futex/--tree-io-wait/--tree-io/
@@ -29,7 +30,11 @@
  * handle_exit()'s comment on why that ordering matters to this parser
  * specifically. "io_wait" is checked before "io" in the dispatch loop below
  * since "io" is a prefix of "io_wait" (same reason "exited" is checked
- * before "exit").
+ * before "exit"). "targetcounter" (--target=comm=<name>[,cmdline=<substr>],
+ * item 10 in INVESTIGATION.md) is the one exception to "at most one line per
+ * pid/thread per flag" -- it appears once per counter in that pid's matched
+ * pid-scoped counter group, an open-ended set driven by the producing wspy
+ * run's own counter_mask, not a fixed field.
  *
  * Lines this parser reads but deliberately ignores (see the main parse loop
  * below): "<time> <pid> exited", "<time> <pid> signal <n>", "<time> <pid>
@@ -54,7 +59,7 @@
  * wspy manifest/run-index schema version) -- bump when fields are added/
  * removed/renamed in print_json()/run_diff()'s JSON output, matching
  * MANIFEST_SCHEMA_VERSION's (manifest.h) versioning convention. */
-#define PROCTREE_JSON_SCHEMA_VERSION "1.0.0"
+#define PROCTREE_JSON_SCHEMA_VERSION "1.1.0"
 
 /* getopt_long() values for --json/--diff/--diff-threshold: deliberately
  * >=256 rather than reusing a short-option letter (the short optstring
@@ -92,6 +97,18 @@ int output_width = 80;
 int print_cmdline = 0;
 int clocks_per_second;
 long page_size = 4096; // sysconf(_SC_PAGESIZE) at startup; rss (/proc/<pid>/stat) is in pages, not bytes
+
+/* --target=comm=<name>[,cmdline=<substr>] (item 10, INVESTIGATION.md): one
+ * pid-scoped counter reading from a "targetcounter" tree-file line. The
+ * counter set is open-ended (whatever counter_mask the wspy run that
+ * produced this file had active), so unlike futex_wait_count/io_rchar/etc.
+ * above there's no fixed struct field per counter -- an (group,label,value)
+ * linked list instead. */
+struct target_counter_reading {
+  char *group,*label;
+  unsigned long value;
+  struct target_counter_reading *next;
+};
 
 /* process_info - maintained for each process */
 struct process_info {
@@ -156,6 +173,11 @@ struct process_info {
   double wait_seconds;
   unsigned long long poll_count;
   double poll_seconds;
+  // --target=comm=<name>[,cmdline=<substr>] (topdown.c): this pid's own
+  // pid-scoped counter readings, present only if wspy was run with --target
+  // and this pid matched -- NULL otherwise, same "absent means not
+  // collected" convention as the fixed-field extras above.
+  struct target_counter_reading *target_counters;
   struct process_info *parent;
   struct process_info *children; // linked using the "sibling" relationship
   struct process_info *older_sibling; // elder sibling
@@ -417,6 +439,32 @@ void handle_poll(double elapsed,unsigned int pid,char *rest){
   }
 }
 
+// format: elapsed pid targetcounter <group> <label> <value>
+// Same lookup/ordering rules as handle_futex() above -- may appear multiple
+// times per pid (once per counter in the matched pid-scoped group), each
+// prepended onto pinfo->target_counters; list order doesn't matter, only the
+// later comm-rollup summation (collect_process_totals()) does.
+void handle_targetcounter(double elapsed,unsigned int pid,char *rest){
+  char group[64],label[64];
+  unsigned long value;
+  struct proc_table_entry *pentry;
+  struct target_counter_reading *tc;
+
+  debug("handle_targetcounter(%d,%s)\n",elapsed,pid,rest);
+
+  if (sscanf(rest,"%63s %63s %lu",group,label,&value) != 3) return;
+
+  pentry = lookup_pid(pid,0);
+  if (!pentry) return;
+
+  tc = calloc(1,sizeof(struct target_counter_reading));
+  tc->group = strdup(group);
+  tc->label = strdup(label);
+  tc->value = value;
+  tc->next = pentry->pinfo->target_counters;
+  pentry->pinfo->target_counters = tc;
+}
+
 // format: elapsed pid exit </proc/pid/stat>
 void handle_exit(double elapsed,unsigned int pid,char *stat){
   debug("handle_exit(%d,%s)\n",elapsed,pid,stat);
@@ -468,10 +516,19 @@ void handle_exec(double elapsed,unsigned int pid,char *path){
   }
 }
 
+// Comm-rollup counterpart of target_counter_reading -- same open-ended
+// (group,label,value) shape, summed across every matched pid sharing a comm.
+struct comm_total_counter {
+  char *group,*label;
+  unsigned long long total_value;
+  struct comm_total_counter *next;
+};
+
 // add totals for processes with the same name
 struct comm_info {
   char *comm;
   unsigned int count;
+  struct comm_total_counter *target_counters;
   unsigned int total_utime;
   unsigned int total_stime;
   unsigned long long total_futex_wait_count;
@@ -496,6 +553,28 @@ struct comm_info {
 };
 struct comm_info *comm_totals = NULL;
 int num_comm_info;
+
+// find-or-create (group,label) on ci->target_counters and add value -- shared
+// by both the "found existing comm" and "new comm" branches of
+// collect_process_totals() below.
+static void accumulate_target_counters(struct comm_info *ci,struct target_counter_reading *readings){
+  struct target_counter_reading *tc;
+  struct comm_total_counter *ctc;
+
+  for (tc=readings;tc;tc=tc->next){
+    for (ctc=ci->target_counters;ctc;ctc=ctc->next){
+      if (!strcmp(ctc->group,tc->group) && !strcmp(ctc->label,tc->label)) break;
+    }
+    if (!ctc){
+      ctc = calloc(1,sizeof(struct comm_total_counter));
+      ctc->group = strdup(tc->group);
+      ctc->label = strdup(tc->label);
+      ctc->next = ci->target_counters;
+      ci->target_counters = ctc;
+    }
+    ctc->total_value += tc->value;
+  }
+}
 
 // walk the tree accumulating totals in comm_totals structure
 static void collect_process_totals(struct process_info *pinfo){
@@ -531,6 +610,7 @@ static void collect_process_totals(struct process_info *pinfo){
       ci->total_wait_seconds += pinfo->wait_seconds;
       ci->total_poll_count += pinfo->poll_count;
       ci->total_poll_seconds += pinfo->poll_seconds;
+      accumulate_target_counters(ci,pinfo->target_counters);
       ci->count++;
       found = 1;
       break;
@@ -566,6 +646,7 @@ static void collect_process_totals(struct process_info *pinfo){
     ci->total_wait_seconds = pinfo->wait_seconds;
     ci->total_poll_count = pinfo->poll_count;
     ci->total_poll_seconds = pinfo->poll_seconds;
+    accumulate_target_counters(ci,pinfo->target_counters);
     ci->count = 1;
     comm_totals = ci;
     num_comm_info++;
@@ -707,6 +788,17 @@ static void print_statistics(){
 	     comm_table[i].total_poll_seconds,comm_table[i].total_poll_count);
       total_poll_seconds += comm_table[i].total_poll_seconds;
       total_poll_count += comm_table[i].total_poll_count;
+    }
+    // --target=comm=<name>[,cmdline=<substr>]: pid-scoped counter totals for
+    // this comm, summed across every matched process sharing it. Always
+    // printed when present (no gating flag -- the counter set is open-ended,
+    // driven by whatever counter_mask the producing wspy run had active, not
+    // a fixed field this tool has its own flag for).
+    if (comm_table[i].target_counters){
+      struct comm_total_counter *ctc;
+      for (ctc=comm_table[i].target_counters;ctc;ctc=ctc->next){
+	printf(" %s.%s=%llu",ctc->group,ctc->label,ctc->total_value);
+      }
     }
     printf("\n");
   }
@@ -861,6 +953,23 @@ static void json_write_string_or_null(FILE *out,const char *s){
   else fprintf(out,"null");
 }
 
+// --target=comm=<name>[,cmdline=<substr>]: the counter set is open-ended
+// (whatever counter_mask the producing wspy run had active), so unlike the
+// fixed-name fields above this is an array of {group,label,value} objects
+// rather than one JSON field per counter.
+static void print_target_counter_readings_json(FILE *out,struct target_counter_reading *tc){
+  int first = 1;
+  fprintf(out,"[");
+  for (;tc;tc=tc->next){
+    if (!first) fprintf(out,",");
+    fprintf(out,"{\"group\":"); json_write_string(out,tc->group);
+    fprintf(out,",\"label\":"); json_write_string(out,tc->label);
+    fprintf(out,",\"value\":%lu}",tc->value);
+    first = 0;
+  }
+  fprintf(out,"]");
+}
+
 static void print_process_json(FILE *out,struct process_info *pinfo){
   struct process_info *eldest;
   int first;
@@ -907,6 +1016,7 @@ static void print_process_json(FILE *out,struct process_info *pinfo){
   fprintf(out,"\"wait_seconds\":%.6f,",pinfo->wait_seconds);
   fprintf(out,"\"poll_count\":%llu,",pinfo->poll_count);
   fprintf(out,"\"poll_seconds\":%.6f,",pinfo->poll_seconds);
+  fprintf(out,"\"target_counters\":"); print_target_counter_readings_json(out,pinfo->target_counters); fprintf(out,",");
 
   fprintf(out,"\"children\":[");
   first = 1;
@@ -921,6 +1031,19 @@ static void print_process_json(FILE *out,struct process_info *pinfo){
   }
   fprintf(out,"]");
   fprintf(out,"}");
+}
+
+static void print_comm_total_counters_json(FILE *out,struct comm_total_counter *ctc){
+  int first = 1;
+  fprintf(out,"[");
+  for (;ctc;ctc=ctc->next){
+    if (!first) fprintf(out,",");
+    fprintf(out,"{\"group\":"); json_write_string(out,ctc->group);
+    fprintf(out,",\"label\":"); json_write_string(out,ctc->label);
+    fprintf(out,",\"value\":%llu}",ctc->total_value);
+    first = 0;
+  }
+  fprintf(out,"]");
 }
 
 static void print_comm_info_json(FILE *out,struct comm_info *ci){
@@ -951,7 +1074,8 @@ static void print_comm_info_json(FILE *out,struct comm_info *ci){
   fprintf(out,"\"total_wait_count\":%llu,",ci->total_wait_count);
   fprintf(out,"\"total_wait_seconds\":%.6f,",ci->total_wait_seconds);
   fprintf(out,"\"total_poll_count\":%llu,",ci->total_poll_count);
-  fprintf(out,"\"total_poll_seconds\":%.6f",ci->total_poll_seconds);
+  fprintf(out,"\"total_poll_seconds\":%.6f,",ci->total_poll_seconds);
+  fprintf(out,"\"target_counters\":"); print_comm_total_counters_json(out,ci->target_counters);
   fprintf(out,"}");
 }
 
@@ -1717,6 +1841,8 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       handle_wait(elapsed,event_pid,p+5);
     } else if (!strncmp(p,"poll",4)){
       handle_poll(elapsed,event_pid,p+5);
+    } else if (!strncmp(p,"targetcounter",13)){
+      handle_targetcounter(elapsed,event_pid,p+14);
     } else if (!strncmp(p,"exit",4)){
       handle_exit(elapsed,event_pid,p+5);
     } else {

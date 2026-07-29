@@ -39,6 +39,30 @@ extern int tree_connect;
 extern int tree_nanosleep;
 extern int tree_wait;
 extern int tree_poll;
+
+/* --target=comm=<name>[,cmdline=<substr>] (item 10, INVESTIGATION.md): scopes
+ * a second, later perf_event_open() to processes matching this spec,
+ * discovered live from ptrace_loop()'s PTRACE_EVENT_EXEC handling -- see
+ * target_parse_spec()/target_match() (topdown.c). NULL fields mean "this key
+ * wasn't given"; at least one of comm/cmdline_substr is non-NULL whenever
+ * target_active is set. */
+struct target_spec {
+  char *comm;
+  char *cmdline_substr;
+};
+extern struct target_spec requested_target;
+extern int target_active;
+
+/* Parses one --target=<spec> argument into *spec. Returns 0 on success; -1 on
+ * a malformed spec (empty arg, unrecognized key, or neither comm= nor
+ * cmdline= present) -- *spec is left unmodified on failure. */
+int target_parse_spec(const char *arg,struct target_spec *spec);
+
+/* True if comm/cmdline (either may be NULL if not read) satisfy every
+ * condition spec actually specifies (AND semantics -- cmdline= narrows an
+ * otherwise-too-common comm=, it doesn't broaden the match). */
+int target_match(struct target_spec *spec,const char *comm,const char *cmdline);
+
 extern int trace_syscall;
 extern int versionflag;
 extern FILE *treefile;
@@ -158,7 +182,7 @@ extern struct raw_event amd_raw_events[];
 int amd_raw_events_count(void);
 void setup_counter_groups(struct counter_group **counter_group_list,enum cpu_core_type core_class);
 struct counter_group *software_counter_group(char *name);
-void setup_counters(struct counter_group *counter_group_list);
+void setup_counters(struct counter_group *counter_group_list,pid_t attach_pid);
 void start_counters(struct counter_group *counter_group_list);
 void read_counters(struct counter_group *counter_group_list,int stop_counters);
 void close_counters(struct counter_group *counter_group_list);

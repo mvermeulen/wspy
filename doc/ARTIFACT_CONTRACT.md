@@ -645,6 +645,13 @@ the reference reader):
   malformed file.
 - `--tree-cmdline` adds full command-line capture and `--tree-vmsize` adds virtual memory size to
   the fields collected — both are additive to the base grammar above, not a different line format.
+- `--target=comm=<name>[,cmdline=<substr>]` (`INVESTIGATION.md`'s 4.4 priorities item 10) adds
+  `<time> <pid> targetcounter <group> <label> <value>` lines — one per counter in a pid-scoped
+  counter group attached only to processes matching the spec (discovered live at that pid's
+  `PTRACE_EVENT_EXEC` stop), read and emitted at that pid's own exit. Unlike every other optional
+  line kind above, this one can appear any number of times *per pid* (once per counter in the
+  matched group), since the counter set is open-ended — whatever `counter_mask` the run had active
+  — not a fixed field list.
 - No schema version exists for this format today (unlike the JSON artifacts) because the grammar is
   small, additive-only so far, and consumed by exactly one first-party reader (`proctree`). If a
   breaking change to the line grammar is ever needed, that would be the point to add one.
@@ -665,7 +672,7 @@ Top level:
 
 ```json
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "source_file": "<path given on the command line>",
   "process_count": 155000,
   "max_concurrent_processes": 42,
@@ -683,6 +690,14 @@ nanosleep/wait/poll field — see `proctree.c`'s `print_process_json()` for the 
 list. `PROCTREE_JSON_SCHEMA_VERSION` (`proctree.c`) versions this shape independently of
 `MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION` — bump it when a field is added/removed/renamed.
 
+Both `summary` rows and `tree` nodes also carry `target_counters`: `[]` unless the run used
+`--target=comm=<name>[,cmdline=<substr>]`, otherwise an array of `{"group": ..., "label": ...,
+"value": ...}` objects — one per counter the matching process(es) had attached, summed across every
+matched pid sharing a `comm` in the `summary` rollup, per-process (unsummed) in `tree`. An array
+rather than fixed fields because the counter set is open-ended (item 10, `INVESTIGATION.md`), not a
+constant list this schema can name in advance — this is what bumped `PROCTREE_JSON_SCHEMA_VERSION`
+to `1.1.0`.
+
 ### Tree diff JSON (`proctree --diff --json`)
 
 `proctree --diff [--json] <a.json> <b.json>` (same item) takes two **already-exported** `--json`
@@ -692,7 +707,7 @@ order, rather than by pid. Default output is a human-readable report; `--json` e
 
 ```json
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "run_a": {"source_file": "...", "process_count": 1, "max_concurrent_processes": 1},
   "run_b": {"source_file": "...", "process_count": 2, "max_concurrent_processes": 2},
   "diff_metrics": ["utime_seconds", "stime_seconds", ...],
