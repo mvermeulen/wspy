@@ -785,6 +785,18 @@ resolution rejection, inventory listing/grouping, run-symlinking, and argv-build
 and Use-in-Run-tab commands) plus a live smoke test against a fake SPEC install exercising discovery,
 registration, inventory rendering, Use-in-Run-tab prefill, and the Build SSE stream's error handling.
 
+**Tree viewer: cumulative time + hot-process table (`web/static/proctree_viewer.js`, PR #163) — makes
+it easier to narrow to the processes where a run's user/system time actually went.** The single-tree
+viewer's per-comm summary rollup (`proctree.c`'s `build_comm_table()`, already exposed as `data.summary`
+in the JSON but previously only ever rendered by the diff view) is now shown as a clickable "hot
+processes" table above the tree. Each node also displays cumulative (self + descendant) utime/stime and
+its share of total run time, computed client-side; auto-expand now opens subtrees at/above a 5%
+cumulative-time-share threshold instead of a flat depth<3 cutoff, and a new "hide branches under N%"
+filter complements the existing text search. Child rendering order intentionally stays chronological
+(fork order), not resorted by time. Entirely client-side — no `proctree.c`/wspy changes needed, since the
+JSON already carried the required per-node/per-comm fields. Verified live via headless-Chromium
+DevTools-Protocol automation against a real 403-process run.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:

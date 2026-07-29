@@ -63,7 +63,18 @@
     { key: "poll_seconds", label: "poll", pairKey: "poll_count" }
   ];
 
-  var state = { search: "", columns: {}, showDeltas: false };
+  // Auto-expand threshold for renderNode(): a subtree whose cumulative
+  // utime+stime is at least this fraction of the whole run's total is
+  // expanded by default (see EXPAND_TIME_SHARE's use in renderNode()).
+  var EXPAND_TIME_SHARE = 0.05;
+
+  var state = { search: "", columns: {}, showDeltas: false, minSharePercent: 0 };
+
+  // Single-tree mode only: sum of every node's utime+stime in the fetched
+  // tree, set once by computeCumulative() before first render. Used as the
+  // 100% baseline for each node's cumulative-time share (row display, the
+  // auto-expand threshold, and the "hide branches under N%" filter).
+  var totalCumSeconds = 0;
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, function (ch) {
@@ -84,6 +95,35 @@
       if (detectColumn(children[i], key)) return true;
     }
     return false;
+  }
+
+  // Sums self utime/stime plus every descendant's, storing the result on
+  // each node as _cumUtime/_cumStime/_cumTotal. Deliberately does NOT
+  // reorder node.children -- callers keep the tree's original chronological
+  // (fork-order) child ordering; only the displayed/filtered *time* figures
+  // come from this pass, not sort order.
+  function computeCumulative(node) {
+    var cumUtime = node.utime_seconds || 0;
+    var cumStime = node.stime_seconds || 0;
+    var children = node.children || [];
+    for (var i = 0; i < children.length; i++) {
+      computeCumulative(children[i]);
+      cumUtime += children[i]._cumUtime;
+      cumStime += children[i]._cumStime;
+    }
+    node._cumUtime = cumUtime;
+    node._cumStime = cumStime;
+    node._cumTotal = cumUtime + cumStime;
+    return node._cumTotal;
+  }
+
+  // Cumulative time is monotonically non-increasing down the tree (a child's
+  // cumulative total can never exceed its parent's), so a node failing this
+  // check means every descendant would too -- no need to search subtrees the
+  // way search-text filtering does.
+  function nodePassesTimeFilter(node) {
+    if (!state.minSharePercent || totalCumSeconds <= 0) return true;
+    return (node._cumTotal / totalCumSeconds) * 100 >= state.minSharePercent;
   }
 
   function formatColumnValue(node, def) {
@@ -116,6 +156,8 @@
   // ---- single-tree mode ----
 
   function renderSingle(data) {
+    totalCumSeconds = computeCumulative(data.tree);
+
     var available = COLUMN_DEFS.filter(function (c) {
       return c.always || detectColumn(data.tree, c.key);
     });
@@ -134,7 +176,12 @@
         data.max_concurrent_processes + ")";
     controlsEl.appendChild(info);
 
+    if (data.summary && data.summary.length) {
+      controlsEl.appendChild(renderSummaryTable(data.summary));
+    }
+
     controlsEl.appendChild(makeSearchInput());
+    controlsEl.appendChild(makeMinShareInput());
 
     available.forEach(function (c) {
       var label = document.createElement("label");
@@ -156,11 +203,77 @@
     input.type = "text";
     input.className = "ptv-search";
     input.placeholder = "Search comm or pid...";
+    input.value = state.search;
     input.addEventListener("input", function () {
       state.search = input.value.trim().toLowerCase();
       rerender();
     });
     return input;
+  }
+
+  function makeMinShareInput() {
+    var label = document.createElement("label");
+    label.className = "ptv-minshare";
+    label.appendChild(document.createTextNode("Hide branches under "));
+    var input = document.createElement("input");
+    input.type = "number";
+    input.className = "ptv-minshare-input";
+    input.min = "0";
+    input.max = "100";
+    input.step = "1";
+    input.value = String(state.minSharePercent);
+    input.addEventListener("input", function () {
+      var v = parseFloat(input.value);
+      state.minSharePercent = isNaN(v) ? 0 : Math.max(0, Math.min(100, v));
+      rerender();
+    });
+    label.appendChild(input);
+    label.appendChild(document.createTextNode("% of total CPU time"));
+    return label;
+  }
+
+  // Item 1: the run's already-computed per-comm rollup (proctree.c's
+  // build_comm_table(), sorted descending by CPU time server-side), shown
+  // as a "hot processes" list so the biggest consumers are visible without
+  // expanding the tree at all. Clicking a row filters the tree to that comm
+  // via the same search box/state used for text search, so "narrow to this
+  // process and its descendants" is one click.
+  function renderSummaryTable(summary) {
+    var table = document.createElement("table");
+    table.className = "ptv-summary-table";
+    var thead = document.createElement("tr");
+    ["comm", "count", "utime", "stime", "total", "% of total"].forEach(function (h) {
+      var th = document.createElement("th");
+      th.textContent = h;
+      thead.appendChild(th);
+    });
+    table.appendChild(thead);
+    summary.forEach(function (row) {
+      var total = row.total_utime_seconds + row.total_stime_seconds;
+      var pct = totalCumSeconds > 0 ? (total / totalCumSeconds * 100) : 0;
+      var tr = document.createElement("tr");
+      tr.className = "ptv-summary-row";
+      [
+        row.comm,
+        String(row.count),
+        row.total_utime_seconds.toFixed(3),
+        row.total_stime_seconds.toFixed(3),
+        total.toFixed(3),
+        pct.toFixed(1) + "%"
+      ].forEach(function (val) {
+        var td = document.createElement("td");
+        td.textContent = val;
+        tr.appendChild(td);
+      });
+      tr.addEventListener("click", function () {
+        state.search = String(row.comm).toLowerCase();
+        var searchInput = controlsEl.querySelector(".ptv-search");
+        if (searchInput) searchInput.value = row.comm;
+        rerender();
+      });
+      table.appendChild(tr);
+    });
+    return table;
   }
 
   var lastRenderArgs = null;
@@ -207,14 +320,21 @@
     var search = state.search;
     var container = document.createElement("div");
     container.className = "ptv-node";
-    if (search && !subtreeMatches(node, search)) {
+    if ((search && !subtreeMatches(node, search)) || !nodePassesTimeFilter(node)) {
       container.style.display = "none";
       return container;
     }
 
     var children = node.children || [];
     var hasChildren = children.length > 0;
-    var expanded = depth < 3 || (search && subtreeMatches(node, search));
+    // Auto-expand hot subtrees (cumulative time share at/above the
+    // threshold) instead of a fixed depth cutoff, so a deep hot chain opens
+    // by default and a shallow idle one doesn't. Falls back to the old
+    // depth<3 rule when there's no meaningful cumulative time to rank by
+    // (e.g. a near-instant workload where every node's time rounds to 0).
+    var cumShare = totalCumSeconds > 0 ? (node._cumTotal / totalCumSeconds) : 0;
+    var expanded = (totalCumSeconds > 0 ? cumShare >= EXPAND_TIME_SHARE : depth < 3) ||
+        (search && subtreeMatches(node, search));
 
     var row = document.createElement("div");
     row.className = "ptv-row";
@@ -231,6 +351,11 @@
     row.appendChild(label);
 
     row.appendChild(makeMetric("cpu", fmtSeconds(node.utime_seconds) + "u/" + fmtSeconds(node.stime_seconds) + "s"));
+    if (hasChildren) {
+      var cumPct = totalCumSeconds > 0 ? (node._cumTotal / totalCumSeconds * 100) : 0;
+      row.appendChild(makeMetric("Σcpu", fmtSeconds(node._cumUtime) + "u/" + fmtSeconds(node._cumStime) +
+          "s (" + cumPct.toFixed(1) + "%)"));
+    }
 
     COLUMN_DEFS.forEach(function (c) {
       if (state.columns[c.key]) {
