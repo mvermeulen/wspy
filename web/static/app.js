@@ -60,7 +60,7 @@
         wait: getChecked("tree_wait"),
         poll: getChecked("tree_poll"),
         nanosleep: getChecked("tree_nanosleep"),
-        software: getChecked("tree_software"),
+        groups: selectedGroups("tree_group"),
         timeout_secs: getValue("tree_timeout"),
         target: getValue("tree_target"),
       },

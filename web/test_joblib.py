@@ -199,6 +199,58 @@ class BuildConfigurationPassesTest(unittest.TestCase):
         self.assertIn("--power", flags)
         self.assertFalse(any(f.startswith("--passes=") for f in flags))
 
+    def test_counters_software_group_actually_enables_it(self):
+        # Regression test for ALL_GROUPS' "software" entry, which used to be
+        # (wrongly) marked default_on -- checking it here used to silently
+        # emit nothing at all (wspy's own counter_mask default is COUNTER_IPC
+        # only, never software), surfaced via item 10's --target having
+        # nothing to attach. Fixed by marking it not-default_on like every
+        # other non-ipc group.
+        checklist = {"counters": {"enabled": True, "groups": ["software"]}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        self.assertIn("--counters=software", passes[0]["flags"])
+
+    def test_tree_default_has_no_counter_groups(self):
+        # A bare "tree" pass (no groups selected) is tree-structure-only --
+        # --no-ipc for wspy's own default-on ipc group, no --counters=<list>
+        # at all, matching "counters"' own empty-selection behavior.
+        checklist = {"tree": {"enabled": True}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        flags = passes[0]["flags"]
+        self.assertIn("--no-ipc", flags)
+        self.assertFalse(any(f.startswith("--counters=") for f in flags))
+
+    def test_tree_groups_selects_counters_and_keeps_ipc_when_checked(self):
+        # Same counter_group_flags() helper "counters" uses -- selecting ipc
+        # suppresses --no-ipc, selecting software emits --counters=software.
+        # This is also what --target (below) attaches to for its pid-scoped
+        # matches, since it's the same wspy process/counter_mask.
+        checklist = {"tree": {"enabled": True, "groups": ["ipc", "software"]}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        flags = passes[0]["flags"]
+        self.assertNotIn("--no-ipc", flags)
+        self.assertIn("--counters=software", flags)
+
+    def test_tree_target_flag_passthrough(self):
+        checklist = {"tree": {"enabled": True, "target": "comm=coremark.exe,cmdline=iter"}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        self.assertIn("--target=comm=coremark.exe,cmdline=iter", passes[0]["flags"])
+
+    def test_tree_target_omitted_when_blank(self):
+        checklist = {"tree": {"enabled": True, "target": "   "}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertFalse(any(f.startswith("--target=") for f in passes[0]["flags"]))
+
+    def test_tree_groups_round_trip_through_config_options(self):
+        checklist = {"tree": {"enabled": True, "groups": ["ipc", "software"]}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        restored = joblib.checklist_section_from_options("tree", passes[0]["options"])
+        self.assertEqual(sorted(restored["groups"]), ["ipc", "software"])
+
     def test_counters_per_core_checkbox_adds_per_core_flag_with_no_interval(self):
         # Regression test: per_core used to be gated on "interval is not
         # None", so leaving the interval field blank (aggregate mode --
@@ -506,8 +558,8 @@ class ChecklistFromProvenanceTest(unittest.TestCase):
 
     def test_bool_options_round_trip_both_ways(self):
         section = joblib.checklist_section_from_options(
-            "tree", [("cmdline", "true"), ("open", "false"), ("software", "true")])
-        self.assertEqual(section, {"enabled": True, "cmdline": True, "open": False, "software": True})
+            "tree", [("cmdline", "true"), ("open", "false"), ("futex", "true")])
+        self.assertEqual(section, {"enabled": True, "cmdline": True, "open": False, "futex": True})
 
     def test_unknown_option_name_ignored(self):
         section = joblib.checklist_section_from_options("system", [("bogus", "x"), ("csv", "true")])

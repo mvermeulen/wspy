@@ -1891,6 +1891,8 @@ def render_run_tab(prefill, cfg):
     default_groups = set(sec("counters").get("groups") or []) if "counters" in prefill_checklist \
         else {"topdown"}
     counters_groups_html = render_group_checkboxes("counters", checked_by_default=default_groups)
+    tree_default_groups = set(sec("tree").get("groups") or []) if "tree" in prefill_checklist else set()
+    tree_groups_html = render_group_checkboxes("tree_group", checked_by_default=tree_default_groups)
 
     return f"""
 <section class="panel">
@@ -1938,8 +1940,10 @@ def render_run_tab(prefill, cfg):
           <div class="option-group-label">General</div>
           <div class="option-grid">
             <label class="group-check"><input type="checkbox" id="tree_cmdline"{chk(chk_default('tree', 'cmdline', False))}> full command lines <code>--tree-cmdline</code></label>
-            <label class="group-check"><input type="checkbox" id="tree_software"{chk(chk_default('tree', 'software', True))}> software counters too (on by default; unchecking adds <code>--no-software</code>)</label>
           </div>
+          <div class="option-group-label">Performance counters (whole-subtree aggregate, and attached
+             to any <code>--target</code>-matched process below)</div>
+          <div class="group-grid">{tree_groups_html}</div>
           <div class="option-group-label">Latency (blocking-time measurements)</div>
           <div class="option-grid">
             <label class="group-check"><input type="checkbox" id="tree_futex"{chk(chk_default('tree', 'futex', False))}> record blocking futex waits <code>--tree-futex</code></label>
