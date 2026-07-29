@@ -797,6 +797,40 @@ filter complements the existing text search. Child rendering order intentionally
 JSON already carried the required per-node/per-comm fields. Verified live via headless-Chromium
 DevTools-Protocol automation against a real 403-process run.
 
+**PID-targeted counter attachment (`--target=comm=<name>[,cmdline=<substr>]`, PR #164) — closes 4.4's
+"PID-targeted counter attachment for known-hot processes" item.** Once a `--tree` run's hot-process
+table shows which comm dominates a run's time, `--target` attaches a second, dedicated counter group
+(the same counters the run's other flags requested) to just the matching process(es), rather than only
+ever reading the whole-subtree aggregate. `setup_counters()` (`topdown.c`) gained a `pid_t attach_pid`
+parameter (`-1` preserves every existing call site's behavior unchanged); a `>=0` caller skips any
+`requires_system_wide` counter (RAPL/AMD L3/IBS — not meaningful process-scoped) and opens the rest with
+`inherit=0` against that exact pid. `target_parse_spec()`/`target_match()` implement the comm=/cmdline=
+grammar (comma-separated key=value, AND semantics when both given), mirroring `affinity.c`'s spec-parsing
+style. Attachment happens live inside `ptrace_loop()`'s `PTRACE_EVENT_EXEC` handling (comm/cmdline are
+already readable there, same timing `--tree-cmdline` relies on) — matched processes each get their own
+`software`-plus-whatever-`counter_mask`-requested group; readings are read back and emitted as
+`targetcounter <group> <label> <value>` tree-file lines at that pid's own exit, then the fds are closed
+immediately rather than held until end-of-run (a long matching-heavy run could otherwise exhaust PMU
+slots). `proctree.c` parses these into an open-ended `target_counters` array — present on both the
+per-process node and the per-comm rollup (`PROCTREE_JSON_SCHEMA_VERSION` bumped 1.0.0 → 1.1.0) — since
+the counter set depends on whichever flags the producing run had active, not a fixed field list the way
+futex/io/schedstat's extras are. The web tree-viewer's hot-process table (previous entry) now renders one
+extra column per distinct counter whenever a run's JSON carries this data; the Run tab's Process-tree
+card gained a matching free-text field. Wiring the Run tab up surfaced a real, unrelated latent bug in
+the process-tree pass's own argv builder (`web/joblib.py`): the "software counters too" checkbox had
+*never* actually turned software counters on — wspy's own default `counter_mask` is `COUNTER_IPC` only
+(`wspy.c`), not IPC-plus-software as the old code assumed, so the checked case emitted no flag at all
+while only the unchecked case emitted a no-op `--no-software`; a plain `--tree` run through the web UI
+had been collecting zero performance counters regardless of that checkbox. Fixed alongside `--target`
+(now emits `--counters=software` when checked) since `--target` had nothing to attach without it. This
+item was originally planned as two backlog entries — PID-targeting (item 10) and a later uprobe-based
+argument-capture item (item 11) meant to reuse its comm/PID-match plumbing — but the argument-capture
+half hadn't landed yet at the time this doc entry was written; see 4.4 priorities below, which now picks
+up numbering at 10 again for that remaining piece. Verified via `run_tests.sh`'s full matrix (incl. two
+new `capability_matrix.sh` bundles: graceful attach, and the `--target`-without-`--tree` fatal rejection)
+plus a live web-launcher smoke test (`/api/run-custom` → real `--target` run → `/api/tree-json` →
+confirmed per-process and comm-summed counters).
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -1305,6 +1339,25 @@ Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
    architectural: this produces a per-symbol hit-count table, a genuinely different output shape than
    wspy's one-aggregate-CSV-row-per-run model, so `store.c`/`summary.c`/`plot.c` would all need a new
    shape to consume it, not just a new column.
+10. Uprobe-based function-argument capture ("ltrace-style" hooks) for hot functions identified by
+    symbol-level profiling (previous item) — e.g. recovering GEMM dimensions (M/N/K) from a BLAS
+    library's hottest routine once profiling shows it's the actual bottleneck, or any other case where a
+    Pareto list of hot symbols isn't enough and the actual call arguments matter. Mechanically: manage
+    `/sys/kernel/tracing/uprobe_events` to attach at a resolved `symbol+offset` in a target binary/shared
+    library (the offset comes from the symbol-resolution item above), declare an arg-capture spec
+    against the calling-convention register at function entry (e.g. `%di:s32 %si:s32 %dx:s32` for the
+    first three integer args under the x86_64 System V ABI), and drain events via the same
+    `perf_event_open()` + mmap ring-buffer pattern `ibs_sample.c` already established — mechanically
+    similar to code already in the tree rather than a new paradigm. Reuses the shipped
+    `--target=comm=<name>[,cmdline=<substr>]` comm/PID-match plumbing ("Shipped since 4.2" above) to
+    decide which process(es) get the uprobe attached, same as it reuses the symbol-resolution item above
+    to find where to attach it. Deliberately not `PTRACE_POKETEXT`/manual INT3 injection — fragile,
+    forces singlestepping, and has no precedent in this codebase; the kernel's uprobe infrastructure is
+    the existing, supported mechanism for this. Explicit, real limitations to document up front rather
+    than discover per-target: works cleanly only for register-passed scalar args under a stable calling
+    convention; degrades or fails outright on inlined callees (no call site to hook), stack/struct-passed
+    args, stripped symbols with no resolvable offset, and JIT'd code. Needs root (writing
+    `uprobe_events` is root-only, same privilege class wspy already assumes for its ptrace/perf paths).
 
 ## Open questions for prioritization
 Each carries a recommendation; treat these as the current default, not a closed decision. (Several
