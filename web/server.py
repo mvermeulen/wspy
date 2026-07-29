@@ -2472,7 +2472,7 @@ def render_cpu2026_inventory_groups(dest_root):
             built_text = "yes" if p["built"] else "no"
             rows.append(
                 f'<tr data-cpu2026-config="{html.escape(p["tag"].lower())}">'
-                f'<td>{html.escape(p["tag"])}</td>'
+                f'<td>{html.escape(p["tag"])}</td><td>{html.escape(p["tune"])}</td>'
                 f'<td>{built_text}</td><td>{runs_html}</td>'
                 f'<td><button type="button" class="cpu2026-build" '
                 f'data-dir="{html.escape(p["dir"])}" data-bench="{html.escape(p["bench"])}" '
@@ -2485,7 +2485,7 @@ def render_cpu2026_inventory_groups(dest_root):
             f'<details class="cpu2026-test-group" data-cpu2026-search="{search_attr}">'
             f'<summary>{run_dot_html}<strong>{html.escape(g["bench"])}</strong> '
             f'<span class="muted">({", ".join(summary_bits)}){summary_extra}</span></summary>'
-            f'<table class="reports"><thead><tr><th>Config</th><th>Built</th>'
+            f'<table class="reports"><thead><tr><th>Config</th><th>Tune</th><th>Built</th>'
             f'<th>Runs</th><th></th></tr></thead><tbody>{"".join(rows)}</tbody></table>'
             f'</details>'
         )
@@ -2535,9 +2535,9 @@ def render_cpu2026_tab(cfg, specdir_override=None):
   <h1>CPU2026</h1>
   <p class="config-label">SPEC CPU2026 counterpart to the Phoronix tab, but simpler: a benchmark and
      its config file both already exist locally once the suite is installed, so there's nothing to
-     fetch here &mdash; this tab discovers what's installed, registers benchmark&times;config pairs
-     under <code>workload/cpu2026/&lt;benchmark&gt;/&lt;config-tag&gt;/</code>, and offers Build /
-     Use in Run tab actions per pair.</p>
+     fetch here &mdash; this tab discovers what's installed, registers benchmark&times;config&times;tune
+     triples under <code>workload/cpu2026/&lt;benchmark&gt;/&lt;config-tag&gt;/&lt;tune&gt;/</code>,
+     and offers Build / Use in Run tab actions per pair.</p>
 
   <h2>Suite directory</h2>
   <label>Suite directory (SPECDIR)
@@ -4839,7 +4839,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "could not read source.json for this pair"})
             return
         bench = source.get("bench", "")
-        tag = os.path.basename(point_dir)
+        tag = os.path.basename(os.path.dirname(point_dir))
         config_file = source.get("config_file", f"{tag}.cfg")
         tune = source.get("tune", "base")
         specdir = source.get("specdir", "")
@@ -4884,11 +4884,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "could not read source.json for this pair"})
             return
         bench = source.get("bench", "")
-        tag = os.path.basename(point_dir)
+        tag = os.path.basename(os.path.dirname(point_dir))
         config_file = source.get("config_file", f"{tag}.cfg")
         tune = source.get("tune", "base")
         specdir = source.get("specdir", "")
-        identity = f"{bench}-{tag}"
+        identity = f"{bench}-{tag}-{tune}"
         workload = joblib.build_cpu2026_run_workload(specdir, config_file, bench, tune=tune)
         self._send_json(200, {
             "workload": workload,
