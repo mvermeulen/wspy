@@ -1464,7 +1464,7 @@ class Cpu2026SuiteInstalledTest(unittest.TestCase):
 class DiscoverInstalledCpu2026BenchmarksTest(unittest.TestCase):
     def test_lists_numbered_benchmark_dirs_sorted(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            root = os.path.join(tmpdir, "benchspec", "CPU2026")
+            root = os.path.join(tmpdir, "benchspec", "CPU")
             for name in ["721.gcc_r", "706.stockfish_r", "Docs"]:
                 os.makedirs(os.path.join(root, name))
             # a stray file (not a directory) alongside the benchmark dirs
@@ -1495,9 +1495,9 @@ class DiscoverCpu2026ConfigsTest(unittest.TestCase):
 
 
 class Cpu2026BenchmarkBuiltTest(unittest.TestCase):
-    def test_true_when_exe_names_contain_tag(self):
+    def test_true_when_exe_names_contain_tag_and_tune(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            exe_dir = os.path.join(tmpdir, "benchspec", "CPU2026", "706.stockfish_r", "exe")
+            exe_dir = os.path.join(tmpdir, "benchspec", "CPU", "706.stockfish_r", "exe")
             os.makedirs(exe_dir)
             with open(os.path.join(exe_dir, "stockfish_r_base.gcc_O2-m64"), "w") as f:
                 f.write("")
@@ -1508,6 +1508,15 @@ class Cpu2026BenchmarkBuiltTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             self.assertFalse(joblib.cpu2026_benchmark_built(tmpdir, "706.stockfish_r", "gcc_O2"))
 
+    def test_base_build_does_not_count_as_peak_built(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            exe_dir = os.path.join(tmpdir, "benchspec", "CPU", "706.stockfish_r", "exe")
+            os.makedirs(exe_dir)
+            with open(os.path.join(exe_dir, "stockfish_r_base.gcc_O2-m64"), "w") as f:
+                f.write("")
+            self.assertTrue(joblib.cpu2026_benchmark_built(tmpdir, "706.stockfish_r", "gcc_O2", tune="base"))
+            self.assertFalse(joblib.cpu2026_benchmark_built(tmpdir, "706.stockfish_r", "gcc_O2", tune="peak"))
+
 
 class RegisterCpu2026PointTest(unittest.TestCase):
     def test_creates_source_json_and_readme(self):
@@ -1515,8 +1524,8 @@ class RegisterCpu2026PointTest(unittest.TestCase):
             dest = os.path.join(tmpdir, "dest")
             result = joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O2")
             self.assertEqual(result["status"], "created")
-            self.assertEqual(result["identity"], "706.stockfish_r-gcc_O2")
-            source_path = os.path.join(dest, "706.stockfish_r", "gcc_O2", "source.json")
+            self.assertEqual(result["identity"], "706.stockfish_r-gcc_O2-base")
+            source_path = os.path.join(dest, "706.stockfish_r", "gcc_O2", "base", "source.json")
             with open(source_path) as f:
                 source = json.load(f)
             self.assertEqual(source["config_file"], "gcc_O2.cfg")
@@ -1542,10 +1551,20 @@ class RegisterCpu2026PointTest(unittest.TestCase):
             joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O2")
             second = joblib.register_cpu2026_point(dest, "/other/specdir", "706.stockfish_r", "gcc_O2")
             self.assertEqual(second["status"], "exists")
-            source_path = os.path.join(dest, "706.stockfish_r", "gcc_O2", "source.json")
+            source_path = os.path.join(dest, "706.stockfish_r", "gcc_O2", "base", "source.json")
             with open(source_path) as f:
                 source = json.load(f)
             self.assertEqual(source["specdir"], "/opt/cpu2026")  # untouched by the second call
+
+    def test_base_and_peak_of_same_tag_do_not_collide(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            base = joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O2", tune="base")
+            peak = joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O2", tune="peak")
+            self.assertEqual(base["status"], "created")
+            self.assertEqual(peak["status"], "created")
+            self.assertNotEqual(base["dir"], peak["dir"])
+            self.assertNotEqual(base["identity"], peak["identity"])
 
 
 class ResolveCpu2026PointDirTest(unittest.TestCase):
@@ -1576,11 +1595,77 @@ class ResolveCpu2026PointDirTest(unittest.TestCase):
             self.assertIsNone(joblib.resolve_cpu2026_point_dir(tmpdir, None))
 
 
+class UnregisterCpu2026PointTest(unittest.TestCase):
+    def test_removes_point_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            info = joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O2")
+            self.assertTrue(joblib.unregister_cpu2026_point(dest, info["dir"]))
+            self.assertFalse(os.path.exists(info["dir"]))
+
+    def test_cleans_up_empty_tag_and_bench_dirs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            info = joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O2")
+            joblib.unregister_cpu2026_point(dest, info["dir"])
+            self.assertFalse(os.path.exists(os.path.join(dest, "706.stockfish_r", "gcc_O2")))
+            self.assertFalse(os.path.exists(os.path.join(dest, "706.stockfish_r")))
+
+    def test_keeps_bench_dir_when_other_tags_remain(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            gcc = joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O2")
+            aocc = joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "aocc_O3")
+            joblib.unregister_cpu2026_point(dest, gcc["dir"])
+            self.assertFalse(os.path.exists(gcc["dir"]))
+            self.assertTrue(os.path.isfile(os.path.join(aocc["dir"], "source.json")))
+            self.assertTrue(os.path.isfile(os.path.join(dest, "706.stockfish_r", "README.md")))
+
+    def test_keeps_tag_dir_when_other_tune_remains(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            base = joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O2", tune="base")
+            peak = joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O2", tune="peak")
+            joblib.unregister_cpu2026_point(dest, peak["dir"])
+            self.assertFalse(os.path.exists(peak["dir"]))
+            self.assertTrue(os.path.isfile(os.path.join(base["dir"], "source.json")))
+
+    def test_does_not_touch_run_data_only_the_symlink(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            info = joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O2")
+            rundir = os.path.join(tmpdir, "runs", "cpu2026", info["identity"], "run1")
+            os.makedirs(rundir)
+            joblib.link_cpu2026_point_run(info["dir"], "run1", rundir)
+            joblib.unregister_cpu2026_point(dest, info["dir"])
+            self.assertFalse(os.path.exists(info["dir"]))
+            self.assertTrue(os.path.isdir(rundir))
+
+    def test_rejects_path_outside_dest_root(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            os.makedirs(dest)
+            outside = os.path.join(tmpdir, "elsewhere")
+            os.makedirs(outside)
+            with open(os.path.join(outside, "source.json"), "w") as f:
+                f.write("{}")
+            self.assertFalse(joblib.unregister_cpu2026_point(dest, outside))
+            self.assertTrue(os.path.exists(outside))
+
+    def test_rejects_dir_without_source_json(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            empty_dir = os.path.join(dest, "706.stockfish_r", "gcc_O2", "base")
+            os.makedirs(empty_dir)
+            self.assertFalse(joblib.unregister_cpu2026_point(dest, empty_dir))
+            self.assertTrue(os.path.exists(empty_dir))
+
+
 class ListMaterializedCpu2026PointsTest(unittest.TestCase):
     def test_lists_registered_points_with_built_status_and_runs(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             specdir = os.path.join(tmpdir, "cpu2026")
-            exe_dir = os.path.join(specdir, "benchspec", "CPU2026", "706.stockfish_r", "exe")
+            exe_dir = os.path.join(specdir, "benchspec", "CPU", "706.stockfish_r", "exe")
             os.makedirs(exe_dir)
             with open(os.path.join(exe_dir, "stockfish_r_base.gcc_O2-m64"), "w") as f:
                 f.write("")
@@ -1613,7 +1698,7 @@ class ListMaterializedCpu2026PointsTest(unittest.TestCase):
     def test_dir_without_source_json_is_skipped(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             dest = os.path.join(tmpdir, "dest")
-            os.makedirs(os.path.join(dest, "706.stockfish_r", "gcc_O2"))
+            os.makedirs(os.path.join(dest, "706.stockfish_r", "gcc_O2", "base"))
             self.assertEqual(joblib.list_materialized_cpu2026_points(dest), [])
 
     def test_dangling_run_symlink_is_skipped(self):
@@ -1630,9 +1715,9 @@ class ListMaterializedCpu2026PointsTest(unittest.TestCase):
 class GroupMaterializedCpu2026PointsByBenchTest(unittest.TestCase):
     def test_groups_and_sorts_by_bench(self):
         points = [
-            {"bench": "721.gcc_r", "tag": "gcc_O2", "built": True, "runs": []},
-            {"bench": "706.stockfish_r", "tag": "aocc_O3", "built": False, "runs": []},
-            {"bench": "706.stockfish_r", "tag": "gcc_O2", "built": True, "runs": []},
+            {"bench": "721.gcc_r", "tag": "gcc_O2", "tune": "base", "built": True, "runs": []},
+            {"bench": "706.stockfish_r", "tag": "aocc_O3", "tune": "base", "built": False, "runs": []},
+            {"bench": "706.stockfish_r", "tag": "gcc_O2", "tune": "base", "built": True, "runs": []},
         ]
         groups = joblib.group_materialized_cpu2026_points_by_bench(points)
         self.assertEqual([g["bench"] for g in groups], ["706.stockfish_r", "721.gcc_r"])
@@ -1646,14 +1731,22 @@ class GroupMaterializedCpu2026PointsByBenchTest(unittest.TestCase):
         self.assertEqual(joblib.group_materialized_cpu2026_points_by_bench([]), [])
 
     def test_run_status_all_when_every_point_has_runs(self):
-        points = [{"bench": "706.stockfish_r", "tag": "a", "built": True, "runs": [{"run_id": "r1"}]},
-                  {"bench": "706.stockfish_r", "tag": "b", "built": True, "runs": [{"run_id": "r2"}]}]
+        points = [{"bench": "706.stockfish_r", "tag": "a", "tune": "base", "built": True, "runs": [{"run_id": "r1"}]},
+                  {"bench": "706.stockfish_r", "tag": "b", "tune": "base", "built": True, "runs": [{"run_id": "r2"}]}]
         self.assertEqual(joblib.group_materialized_cpu2026_points_by_bench(points)[0]["run_status"], "all")
 
     def test_run_status_some_when_only_some_points_have_runs(self):
-        points = [{"bench": "706.stockfish_r", "tag": "a", "built": True, "runs": [{"run_id": "r1"}]},
-                  {"bench": "706.stockfish_r", "tag": "b", "built": False, "runs": []}]
+        points = [{"bench": "706.stockfish_r", "tag": "a", "tune": "base", "built": True, "runs": [{"run_id": "r1"}]},
+                  {"bench": "706.stockfish_r", "tag": "b", "tune": "base", "built": False, "runs": []}]
         self.assertEqual(joblib.group_materialized_cpu2026_points_by_bench(points)[0]["run_status"], "some")
+
+    def test_base_and_peak_of_same_tag_sort_together(self):
+        points = [
+            {"bench": "706.stockfish_r", "tag": "gcc_O2", "tune": "peak", "built": True, "runs": []},
+            {"bench": "706.stockfish_r", "tag": "gcc_O2", "tune": "base", "built": True, "runs": []},
+        ]
+        groups = joblib.group_materialized_cpu2026_points_by_bench(points)
+        self.assertEqual([p["tune"] for p in groups[0]["points"]], ["base", "peak"])
 
 
 class LinkCpu2026PointRunTest(unittest.TestCase):

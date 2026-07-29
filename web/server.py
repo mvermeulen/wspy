@@ -2472,20 +2472,24 @@ def render_cpu2026_inventory_groups(dest_root):
             built_text = "yes" if p["built"] else "no"
             rows.append(
                 f'<tr data-cpu2026-config="{html.escape(p["tag"].lower())}">'
-                f'<td>{html.escape(p["tag"])}</td>'
+                f'<td>{html.escape(p["tag"])}</td><td>{html.escape(p["tune"])}</td>'
                 f'<td>{built_text}</td><td>{runs_html}</td>'
                 f'<td><button type="button" class="cpu2026-build" '
                 f'data-dir="{html.escape(p["dir"])}" data-bench="{html.escape(p["bench"])}" '
                 f'data-tag="{html.escape(p["tag"])}">Build</button> '
                 f'<button type="button" class="cpu2026-use-in-run" '
-                f'data-dir="{html.escape(p["dir"])}">Use in Run tab</button></td></tr>'
+                f'data-dir="{html.escape(p["dir"])}">Use in Run tab</button> '
+                f'<button type="button" class="cpu2026-unregister" '
+                f'data-dir="{html.escape(p["dir"])}" data-bench="{html.escape(p["bench"])}" '
+                f'data-tag="{html.escape(p["tag"])}" data-tune="{html.escape(p["tune"])}" '
+                f'data-runs="{len(p["runs"])}">Unregister</button></td></tr>'
             )
 
         blocks.append(
             f'<details class="cpu2026-test-group" data-cpu2026-search="{search_attr}">'
             f'<summary>{run_dot_html}<strong>{html.escape(g["bench"])}</strong> '
             f'<span class="muted">({", ".join(summary_bits)}){summary_extra}</span></summary>'
-            f'<table class="reports"><thead><tr><th>Config</th><th>Built</th>'
+            f'<table class="reports"><thead><tr><th>Config</th><th>Tune</th><th>Built</th>'
             f'<th>Runs</th><th></th></tr></thead><tbody>{"".join(rows)}</tbody></table>'
             f'</details>'
         )
@@ -2517,7 +2521,7 @@ def render_cpu2026_tab(cfg, specdir_override=None):
         bench_options = "".join(
             f'<option value="{html.escape(b)}">{html.escape(b)}</option>'
             for b in joblib.discover_installed_cpu2026_benchmarks(specdir)
-        ) or '<option value="" disabled selected>(none found under benchspec/CPU2026/)</option>'
+        ) or '<option value="" disabled selected>(none found under benchspec/CPU/)</option>'
         config_options = "".join(
             f'<option value="{html.escape(c)}">{html.escape(c)}</option>'
             for c in joblib.discover_cpu2026_configs(specdir)
@@ -2535,9 +2539,9 @@ def render_cpu2026_tab(cfg, specdir_override=None):
   <h1>CPU2026</h1>
   <p class="config-label">SPEC CPU2026 counterpart to the Phoronix tab, but simpler: a benchmark and
      its config file both already exist locally once the suite is installed, so there's nothing to
-     fetch here &mdash; this tab discovers what's installed, registers benchmark&times;config pairs
-     under <code>workload/cpu2026/&lt;benchmark&gt;/&lt;config-tag&gt;/</code>, and offers Build /
-     Use in Run tab actions per pair.</p>
+     fetch here &mdash; this tab discovers what's installed, registers benchmark&times;config&times;tune
+     triples under <code>workload/cpu2026/&lt;benchmark&gt;/&lt;config-tag&gt;/&lt;tune&gt;/</code>,
+     and offers Build / Use in Run tab actions per pair.</p>
 
   <h2>Suite directory</h2>
   <label>Suite directory (SPECDIR)
@@ -2552,6 +2556,7 @@ def render_cpu2026_tab(cfg, specdir_override=None):
   <pre id="cpu2026-build-output" class="muted" hidden></pre>
   <p id="cpu2026-build-error" class="muted" hidden></p>
   <p id="cpu2026-use-in-run-error" class="muted" hidden></p>
+  <p id="cpu2026-unregister-error" class="muted" hidden></p>
 
   <h2>Register a benchmark &times; config pair</h2>
   <label>Benchmark
@@ -3853,6 +3858,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/phoronix/use-in-run": self._phoronix_use_in_run,
             "/api/phoronix/repin": self._phoronix_repin,
             "/api/cpu2026/register": self._cpu2026_register,
+            "/api/cpu2026/unregister": self._cpu2026_unregister,
             "/api/cpu2026/build": self._cpu2026_build,
             "/api/cpu2026/use-in-run": self._cpu2026_use_in_run,
         }
@@ -4795,7 +4801,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _cpu2026_register(self, cfg, body):
         """Backs the CPU2026 tab's "Register" button: pairs a benchmark
-        (discovered under $SPECDIR/benchspec/CPU2026/) with a config file
+        (discovered under $SPECDIR/benchspec/CPU/) with a config file
         (discovered under $SPECDIR/config/) via joblib.register_cpu2026_point()
         -- unlike Phoronix's Materialize, there's no remote fetch, so this is
         a simple, fast, synchronous call. Re-validates bench/config against a
@@ -4811,7 +4817,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not bench or bench not in joblib.discover_installed_cpu2026_benchmarks(specdir):
             self._send_json(400, {"error": f"{bench!r} is not an installed benchmark under "
-                                            f"{specdir}/benchspec/CPU2026/"})
+                                            f"{specdir}/benchspec/CPU/"})
             return
         if not tag or tag not in joblib.discover_cpu2026_configs(specdir):
             self._send_json(400, {"error": f"{tag!r} is not a config found under {specdir}/config/"})
@@ -4819,6 +4825,24 @@ class Handler(BaseHTTPRequestHandler):
         dest = os.path.join(REPO_ROOT, "workload", "cpu2026")
         result = joblib.register_cpu2026_point(dest, specdir, bench, tag, tune=tune)
         self._send_json(200, result)
+
+    def _cpu2026_unregister(self, cfg, body):
+        """Backs the CPU2026 tab inventory's per-row "Unregister" button:
+        removes a registered benchmark/config/tune point via
+        joblib.unregister_cpu2026_point() -- only the registration
+        (source.json/README.md/runs symlinks) is deleted, never the real
+        run data a runs/ symlink points at, so this is safe to use even
+        on a point with recorded runs. Re-validates dir server-side via
+        resolve_cpu2026_point_dir() first, same posture as Build/
+        Use-in-Run-tab, before unregister_cpu2026_point() re-checks it
+        again itself (delete path, so belt-and-suspenders here)."""
+        dest = os.path.join(REPO_ROOT, "workload", "cpu2026")
+        point_dir = joblib.resolve_cpu2026_point_dir(dest, (body.get("dir") or "").strip())
+        if not point_dir:
+            self._send_json(400, {"error": "not a registered benchmark/config directory"})
+            return
+        joblib.unregister_cpu2026_point(dest, point_dir)
+        self._send_json(200, {"status": "removed"})
 
     def _cpu2026_build(self, cfg, body):
         """Backs the CPU2026 tab inventory's per-row "Build" button: runs
@@ -4839,7 +4863,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "could not read source.json for this pair"})
             return
         bench = source.get("bench", "")
-        tag = os.path.basename(point_dir)
+        tag = os.path.basename(os.path.dirname(point_dir))
         config_file = source.get("config_file", f"{tag}.cfg")
         tune = source.get("tune", "base")
         specdir = source.get("specdir", "")
@@ -4884,11 +4908,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "could not read source.json for this pair"})
             return
         bench = source.get("bench", "")
-        tag = os.path.basename(point_dir)
+        tag = os.path.basename(os.path.dirname(point_dir))
         config_file = source.get("config_file", f"{tag}.cfg")
         tune = source.get("tune", "base")
         specdir = source.get("specdir", "")
-        identity = f"{bench}-{tag}"
+        identity = f"{bench}-{tag}-{tune}"
         workload = joblib.build_cpu2026_run_workload(specdir, config_file, bench, tune=tune)
         self._send_json(200, {
             "workload": workload,

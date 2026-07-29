@@ -2429,7 +2429,7 @@ def link_phoronix_test_point_run(test_point_dir, run_id, rundir):
 # Static catalog for display/grouping only (name, suite component, source
 # language) -- from https://spec.org/cpu2026/docs/overview.html#benchmarks.
 # What's actually runnable on this host is discovered live from
-# $SPECDIR/benchspec/CPU2026/ (discover_installed_cpu2026_benchmarks()
+# $SPECDIR/benchspec/CPU/ (discover_installed_cpu2026_benchmarks()
 # below), not this table -- same "static table for labels, filesystem for
 # truth" split the Phoronix tab uses between phoronix.tests.txt and live
 # `phoronix-test-suite info` calls.
@@ -2505,11 +2505,14 @@ def cpu2026_suite_installed(specdir):
 
 def discover_installed_cpu2026_benchmarks(specdir):
     """Benchmark directory names actually present under
-    $SPECDIR/benchspec/CPU2026/, sorted -- the live truth backing the tab's
+    $SPECDIR/benchspec/CPU/, sorted -- the live truth backing the tab's
     inventory, independent of CPU2026_BENCHMARKS above (a benchmark
     installed under a name this static table doesn't know about still
-    shows up, just without suite/language labels)."""
-    root = os.path.join(specdir, "benchspec", "CPU2026")
+    shows up, just without suite/language labels). Note: despite the
+    "CPU2026" suite name, the installed subdirectory is literally named
+    "CPU" (confirmed against a real install; CPU2017 uses the same
+    "benchspec/CPU/" convention, not "benchspec/CPU2017/")."""
+    root = os.path.join(specdir, "benchspec", "CPU")
     if not os.path.isdir(root):
         return []
     return sorted(
@@ -2532,38 +2535,45 @@ def discover_cpu2026_configs(specdir):
     )
 
 
-def cpu2026_benchmark_built(specdir, bench, tag):
+def cpu2026_benchmark_built(specdir, bench, tag, tune="base"):
     """Best-effort "already built" check: does
-    $SPECDIR/benchspec/CPU2026/<bench>/exe/ contain any file naming this
-    config tag? SPEC's exe naming carries machine/OS-specific suffixes
-    (e.g. "<bench>_base.<tag>-m64"), so this is a substring match against
-    the tag rather than an exact reconstructed filename -- cheap disk check
-    now, correctness re-verified for real when Build/Use-in-Run-tab
-    actually runs, same posture list_installed_phoronix_test_versions()
-    documents for its own installed-tests scan."""
-    exe_dir = os.path.join(specdir, "benchspec", "CPU2026", bench, "exe")
+    $SPECDIR/benchspec/CPU/<bench>/exe/ contain any file naming this
+    config tag and tune? SPEC's exe naming carries machine/OS-specific
+    suffixes (confirmed against a real install, e.g.
+    "leela_s_base.mev-aocc-7800x3d" / "leela_s_peak.mev-aocc-7800x3d"), so
+    this is a substring match against "_<tune>.<tag>" rather than an exact
+    reconstructed filename -- cheap disk check now, correctness
+    re-verified for real when Build/Use-in-Run-tab actually runs, same
+    posture list_installed_phoronix_test_versions() documents for its own
+    installed-tests scan. tune-aware so a base-only build doesn't get
+    reported as "built" for a peak registration of the same tag, or vice
+    versa."""
+    exe_dir = os.path.join(specdir, "benchspec", "CPU", bench, "exe")
     if not os.path.isdir(exe_dir):
         return False
-    needle = f".{tag}"
+    needle = f"_{tune}.{tag}"
     return any(needle in name for name in os.listdir(exe_dir))
 
 
 def register_cpu2026_point(dest_root, specdir, bench, tag, tune="base"):
     """Pairs an already-installed benchmark with an already-discovered
-    config tag under dest_root/<bench>/<tag>/ (mirroring
+    config tag under dest_root/<bench>/<tag>/<tune>/ (mirroring
     materialize_phoronix_test_point()'s dest_root/<test>/<options>/), by
     writing a source.json provenance sidecar plus a README.md built from
     the static CPU2026_BENCHMARKS labels (no subprocess/network call
     needed -- unlike Phoronix's `phoronix-test-suite info`, there's no
-    live lookup for a SPEC benchmark's description). Idempotent/additive:
-    an existing source.json is left untouched, same "additive across
-    sessions" convention materialize_phoronix_test_point() documents.
-    Returns {"bench", "tag", "identity", "dir", "status"} where status is
-    "created" or "exists"."""
-    identity = f"{bench}-{tag}"
-    out_dir = os.path.join(dest_root, bench, tag)
+    live lookup for a SPEC benchmark's description). The <tune> level
+    exists because base and peak are separate runcpu builds of the same
+    bench+config -- nesting under <tag>/ rather than folding tune into the
+    tag name keeps a single config's base/peak pair visually grouped.
+    Idempotent/additive: an existing source.json is left untouched, same
+    "additive across sessions" convention materialize_phoronix_test_point()
+    documents. Returns {"bench", "tag", "tune", "identity", "dir",
+    "status"} where status is "created" or "exists"."""
+    identity = f"{bench}-{tag}-{tune}"
+    out_dir = os.path.join(dest_root, bench, tag, tune)
     source_path = os.path.join(out_dir, "source.json")
-    result = {"bench": bench, "tag": tag, "identity": identity, "dir": out_dir}
+    result = {"bench": bench, "tag": tag, "tune": tune, "identity": identity, "dir": out_dir}
     if os.path.isfile(source_path):
         result["status"] = "exists"
         return result
@@ -2611,15 +2621,56 @@ def resolve_cpu2026_point_dir(dest_root, raw_dir):
     return real_dir
 
 
+def unregister_cpu2026_point(dest_root, point_dir):
+    """Removes a registered dest_root/<bench>/<tag>/<tune>/ point --
+    counterpart to register_cpu2026_point(). Only removes the
+    registration (source.json, README.md, and the runs/ symlinks that
+    point at real run directories elsewhere under output_root/cpu2026/)
+    -- the actual run data a symlink targets is never touched, so this is
+    safe even for a point with recorded runs. Re-validates point_dir the
+    same "don't trust client-supplied paths" way resolve_cpu2026_point_dir()
+    does (this is a delete, so the check is load-bearing here, not just
+    defensive) rather than assuming the caller already resolved it.
+    Additionally cleans up now-empty <tag>/ and <bench>/ directories
+    (including a bench-level README.md with no config left to document)
+    so an unregister doesn't leave an empty shell behind. Returns True if
+    something was removed, False if point_dir didn't resolve to a real
+    registered point."""
+    real_dest = os.path.realpath(dest_root)
+    real_dir = os.path.realpath(point_dir)
+    if os.path.commonpath([real_dest, real_dir]) != real_dest:
+        return False
+    if not os.path.isfile(os.path.join(real_dir, "source.json")):
+        return False
+
+    shutil.rmtree(real_dir)
+
+    tag_dir = os.path.dirname(real_dir)
+    if os.path.isdir(tag_dir) and not os.listdir(tag_dir):
+        os.rmdir(tag_dir)
+
+    bench_dir = os.path.dirname(tag_dir)
+    if os.path.isdir(bench_dir):
+        remaining = os.listdir(bench_dir)
+        if remaining in ([], ["README.md"]):
+            readme_path = os.path.join(bench_dir, "README.md")
+            if os.path.isfile(readme_path):
+                os.remove(readme_path)
+            os.rmdir(bench_dir)
+
+    return True
+
+
 def list_materialized_cpu2026_points(dest_root):
-    """Inventory of registered (bench, tag) pairs under dest_root/<bench>/
-    <tag>/ -- same shape/role as list_materialized_phoronix_test_points().
-    "built" is recomputed live via cpu2026_benchmark_built() against each
-    point's own recorded specdir (not cached at registration time the way
-    Phoronix's "installed" is) since a Build action changes that state
-    after registration, and staleness here would just be wrong rather than
-    merely a re-check-later warning. Returns a list of {bench, tag,
-    identity, dir, config_file, tune, specdir, generated_at, built, runs}."""
+    """Inventory of registered (bench, tag, tune) triples under
+    dest_root/<bench>/<tag>/<tune>/ -- same shape/role as
+    list_materialized_phoronix_test_points(). "built" is recomputed live
+    via cpu2026_benchmark_built() against each point's own recorded
+    specdir (not cached at registration time the way Phoronix's
+    "installed" is) since a Build action changes that state after
+    registration, and staleness here would just be wrong rather than
+    merely a re-check-later warning. Returns a list of {bench, tag, tune,
+    identity, dir, config_file, specdir, generated_at, built, runs}."""
     entries = []
     if not os.path.isdir(dest_root):
         return entries
@@ -2628,43 +2679,47 @@ def list_materialized_cpu2026_points(dest_root):
         if not os.path.isdir(bench_dir):
             continue
         for tag in sorted(os.listdir(bench_dir)):
-            point_dir = os.path.join(bench_dir, tag)
-            source_path = os.path.join(point_dir, "source.json")
-            if not os.path.isfile(source_path):
+            tag_dir = os.path.join(bench_dir, tag)
+            if not os.path.isdir(tag_dir):
                 continue
-            try:
-                with open(source_path) as f:
-                    source = json.load(f)
-            except (OSError, ValueError):
-                continue
+            for tune in sorted(os.listdir(tag_dir)):
+                point_dir = os.path.join(tag_dir, tune)
+                source_path = os.path.join(point_dir, "source.json")
+                if not os.path.isfile(source_path):
+                    continue
+                try:
+                    with open(source_path) as f:
+                        source = json.load(f)
+                except (OSError, ValueError):
+                    continue
 
-            runs = []
-            runs_dir = os.path.join(point_dir, "runs")
-            if os.path.isdir(runs_dir):
-                for run_id in sorted(os.listdir(runs_dir)):
-                    link_path = os.path.join(runs_dir, run_id)
-                    target = os.path.realpath(link_path)
-                    if not os.path.isdir(target):
-                        continue
-                    parts = os.path.normpath(target).split(os.sep)
-                    if len(parts) < 3:
-                        continue
-                    real_run_id, run_benchmark, run_suite = parts[-1], parts[-2], parts[-3]
-                    runs.append({"run_id": real_run_id, "suite": run_suite, "benchmark": run_benchmark})
+                runs = []
+                runs_dir = os.path.join(point_dir, "runs")
+                if os.path.isdir(runs_dir):
+                    for run_id in sorted(os.listdir(runs_dir)):
+                        link_path = os.path.join(runs_dir, run_id)
+                        target = os.path.realpath(link_path)
+                        if not os.path.isdir(target):
+                            continue
+                        parts = os.path.normpath(target).split(os.sep)
+                        if len(parts) < 3:
+                            continue
+                        real_run_id, run_benchmark, run_suite = parts[-1], parts[-2], parts[-3]
+                        runs.append({"run_id": real_run_id, "suite": run_suite, "benchmark": run_benchmark})
 
-            point_specdir = source.get("specdir", "")
-            entries.append({
-                "bench": bench,
-                "tag": tag,
-                "identity": f"{bench}-{tag}",
-                "dir": point_dir,
-                "config_file": source.get("config_file", f"{tag}.cfg"),
-                "tune": source.get("tune", "base"),
-                "specdir": point_specdir,
-                "generated_at": source.get("generated_at", ""),
-                "built": cpu2026_benchmark_built(point_specdir, bench, tag) if point_specdir else False,
-                "runs": runs,
-            })
+                point_specdir = source.get("specdir", "")
+                entries.append({
+                    "bench": bench,
+                    "tag": tag,
+                    "tune": tune,
+                    "identity": f"{bench}-{tag}-{tune}",
+                    "dir": point_dir,
+                    "config_file": source.get("config_file", f"{tag}.cfg"),
+                    "specdir": point_specdir,
+                    "generated_at": source.get("generated_at", ""),
+                    "built": cpu2026_benchmark_built(point_specdir, bench, tag, tune) if point_specdir else False,
+                    "runs": runs,
+                })
     return entries
 
 
@@ -2679,7 +2734,7 @@ def group_materialized_cpu2026_points_by_bench(points):
         groups.setdefault(p["bench"], []).append(p)
     result = []
     for bench in sorted(groups):
-        pts = sorted(groups[bench], key=lambda p: p["tag"])
+        pts = sorted(groups[bench], key=lambda p: (p["tag"], p["tune"]))
         points_with_runs = sum(1 for p in pts if p.get("runs"))
         if points_with_runs == 0:
             run_status = "none"
