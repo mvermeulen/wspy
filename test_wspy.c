@@ -231,7 +231,7 @@ void test_power_core_skip_not_attempted(void) {
     cgroup.cinfo = cinfo;
 
     coverage_reset();
-    setup_counters(&cgroup);
+    setup_counters(&cgroup,-1);
 
     assert(coverage_requested == 0);
     assert(coverage_measured == 0);

@@ -600,10 +600,64 @@ char *ptrace_read_null_terminated_string(pid_t pid,long addr){
  * ptrace stop the kernel happened to deliver first. */
 #define PTRACE_PID_TABLE_BUCKETS 4093
 
+struct target_spec requested_target;
+int target_active = 0;
+
+int target_parse_spec(const char *arg,struct target_spec *spec){
+  struct target_spec tmp;
+  char *copy,*saveptr,*tok;
+
+  memset(&tmp,0,sizeof(tmp));
+
+  if (!arg || !*arg) return -1;
+
+  copy = strdup(arg);
+  for (tok = strtok_r(copy,",",&saveptr);tok;tok = strtok_r(NULL,",",&saveptr)){
+    if (!strncmp(tok,"comm=",5) && tok[5]){
+      free(tmp.comm);
+      tmp.comm = strdup(tok+5);
+    } else if (!strncmp(tok,"cmdline=",8) && tok[8]){
+      free(tmp.cmdline_substr);
+      tmp.cmdline_substr = strdup(tok+8);
+    } else {
+      free(copy);
+      free(tmp.comm);
+      free(tmp.cmdline_substr);
+      return -1;
+    }
+  }
+  free(copy);
+
+  if (!tmp.comm && !tmp.cmdline_substr) return -1;
+
+  *spec = tmp;
+  return 0;
+}
+
+int target_match(struct target_spec *spec,const char *comm,const char *cmdline){
+  if (spec->comm && (!comm || strcmp(spec->comm,comm))) return 0;
+  if (spec->cmdline_substr && (!cmdline || !strstr(cmdline,spec->cmdline_substr))) return 0;
+  return 1;
+}
+
+// Tree-file "targetcounter" lines are whitespace-tokenized, but some counter
+// labels contain embedded spaces (e.g. "page faults", "context switches") --
+// copies src into dst with spaces replaced by underscores, truncating safely.
+static void target_counter_safe_label(const char *src,char *dst,size_t dstsize){
+  size_t i;
+  for (i=0;i+1<dstsize && src[i];i++) dst[i] = (src[i]==' ')?'_':src[i];
+  dst[i] = 0;
+}
+
 struct ptrace_pid_entry {
   pid_t pid;
   int known;
   char *pending_exit;   // buffered "comm"/"cmdline"/"exit" block text, or NULL
+  // --target=comm=<name>[,cmdline=<substr>] (item 10): non-NULL once this pid
+  // matched at PTRACE_EVENT_EXEC and got its own pid-scoped counter group
+  // attached; read + emitted as "targetcounter" lines and closed at this
+  // pid's PTRACE_EVENT_EXIT, same lifetime as the pid_entry itself.
+  struct counter_group *target_counters;
   // Per-pid syscall entry/exit tracking -- replaces what used to be a pair of
   // loop-global variables in ptrace_loop() (last_syscall/syscall_entry),
   // which compared each stop against the *previous stop across the whole
@@ -1094,6 +1148,34 @@ void ptrace_loop(void){
 		      vm_hwm_kb,rss_anon_kb,rss_file_kb,rss_shmem_kb,vm_swap_kb);
 	    }
 	  }
+	  // --target=comm=<name>[,cmdline=<substr>]: this pid's dedicated
+	  // pid-scoped counter group, if it matched at PTRACE_EVENT_EXEC (struct
+	  // ptrace_pid_entry's target_counters, attached in that case above).
+	  // Read and emitted here, then closed immediately -- don't hold PMU
+	  // slots open until end-of-run, since a long matching-heavy run could
+	  // otherwise exhaust hardware counters. Same "before exit" placement as
+	  // the blocks above.
+	  if (target_active){
+	    pid_entry = ptrace_pid_lookup(pid,0);
+	    if (pid_entry && pid_entry->target_counters){
+	      struct counter_group *tcgroup;
+	      int ti;
+	      char safe_group[64],safe_label[64];
+
+	      read_counters(pid_entry->target_counters,1);
+	      for (tcgroup = pid_entry->target_counters;tcgroup;tcgroup = tcgroup->next){
+		for (ti=0;ti<tcgroup->ncounters;ti++){
+		  if (tcgroup->cinfo[ti].fd == -1) continue;
+		  target_counter_safe_label(tcgroup->label,safe_group,sizeof(safe_group));
+		  target_counter_safe_label(tcgroup->cinfo[ti].label,safe_label,sizeof(safe_label));
+		  fprintf(exit_out,"%5.3f %d targetcounter %s %s %lu\n",elapsed,pid,
+			  safe_group,safe_label,tcgroup->cinfo[ti].value);
+		}
+	      }
+	      close_counters(pid_entry->target_counters);
+	      pid_entry->target_counters = NULL;
+	    }
+	  }
 	  // dump contents of proc/<pid>/stat
 	  snprintf(stat_name,sizeof(stat_name),"/proc/%d/stat",pid);
 	  if ((stat_file = fopen(stat_name,"r")) != NULL){
@@ -1130,6 +1212,58 @@ void ptrace_loop(void){
 	    fprintf(treefile,"%5.3f %d exec ?\n",elapsed,pid);
 	  }
 	  fflush(treefile);
+	  // --target=comm=<name>[,cmdline=<substr>] (item 10): comm/cmdline are
+	  // just as readable here as /proc/<pid>/exe above -- the new image is
+	  // already mapped in by the time this stop is delivered. On a match,
+	  // attach a fresh pid-scoped counter group (same counter_mask as the
+	  // main run) right away; it's read back and closed at this pid's own
+	  // PTRACE_EVENT_EXIT (see that case's "targetcounter" block below).
+	  if (target_active){
+	    char comm_buf[256] = "";
+	    char cmdline_buf[4096] = "";
+	    FILE *proc_file;
+	    size_t nread;
+
+	    snprintf(stat_name,sizeof(stat_name),"/proc/%d/comm",pid);
+	    if ((proc_file = fopen(stat_name,"r")) != NULL){
+	      if (fgets(comm_buf,sizeof(comm_buf),proc_file) != NULL){
+		comm_buf[strcspn(comm_buf,"\n")] = 0;
+	      }
+	      fclose(proc_file);
+	    }
+	    if (requested_target.cmdline_substr){
+	      snprintf(stat_name,sizeof(stat_name),"/proc/%d/cmdline",pid);
+	      if ((proc_file = fopen(stat_name,"rb")) != NULL){
+		nread = fread(cmdline_buf,1,sizeof(cmdline_buf)-1,proc_file);
+		// /proc/<pid>/cmdline is NUL-separated argv -- turn embedded NULs
+		// into spaces so one cmdline= substring can span argv[0]+args.
+		for (size_t ci=0;ci<nread;ci++) if (cmdline_buf[ci]=='\0') cmdline_buf[ci]=' ';
+		cmdline_buf[nread] = 0;
+		fclose(proc_file);
+	      }
+	    }
+	    if (target_match(&requested_target,comm_buf[0]?comm_buf:NULL,
+			      requested_target.cmdline_substr?cmdline_buf:NULL)){
+	      struct counter_group *swgroup;
+
+	      pid_entry = ptrace_pid_lookup(pid,1);
+	      setup_counter_groups(&pid_entry->target_counters,CORE_UNKNOWN);
+	      // setup_counter_groups() never handles COUNTER_SOFTWARE itself
+	      // (same reason wspy.c's main systemwide-counter setup builds it
+	      // separately) -- software counters are process-scoped-eligible
+	      // (no requires_system_wide), so include them here too, unlike
+	      // IBS/IBS_SAMPLE/power which are inherently system-wide-only and
+	      // deliberately left out of this pid-scoped list entirely.
+	      if (counter_mask & COUNTER_SOFTWARE){
+		if ((swgroup = software_counter_group("software"))){
+		  swgroup->next = pid_entry->target_counters;
+		  pid_entry->target_counters = swgroup;
+		}
+	      }
+	      setup_counters(pid_entry->target_counters,pid);
+	      start_counters(pid_entry->target_counters);
+	    }
+	  }
 	  debug2("   exec - pid=%d\n",pid);
 	  break;
 	default:
@@ -1614,7 +1748,7 @@ void setup_counter_groups(struct counter_group **counter_group_list,enum cpu_cor
 
 }
 
-void setup_counters(struct counter_group *counter_group_list){
+void setup_counters(struct counter_group *counter_group_list,pid_t attach_pid){
   unsigned int mask = 0;
   int i;
   (void)i; // quiet - used below
@@ -1686,6 +1820,14 @@ void setup_counters(struct counter_group *counter_group_list){
 	}
 	continue;
       }
+      if (attach_pid >= 0 && cgroup->cinfo[i].requires_system_wide){
+	// PID-targeted attach (item 10, INVESTIGATION.md): RAPL/AMD L3/AMD IBS
+	// PMUs reject a process-scoped perf_event_open() outright, so there's
+	// nothing to open here -- same "not applicable to this target" degrade-
+	// gracefully idiom as the power_core skip above, not a real failure.
+	cgroup->cinfo[i].fd = -1;
+	continue;
+      }
       // Vendor-agnostic: cache_counter_group()/raw_counter_group() already
       // decided, at construction time, which counters start a fresh group
       // (hardware-PMC-budget chunking for AMD/ARM/most Intel groups; a
@@ -1733,7 +1875,14 @@ void setup_counters(struct counter_group *counter_group_list){
       pe.inherit = 1;
       pe.disabled = 1;
 
-      if (aflag && cgroup->target_cpu >= 0){
+      if (attach_pid >= 0){
+	// PID-targeted attach (item 10): task-scoped, no cpu-wide reading. No
+	// inherit -- each matching process gets its own attach via its own
+	// TRACEEXEC event, so there's no need (or want) to chain through
+	// further descendants from here.
+	pe.inherit = 0;
+	status = perf_event_open(&pe,attach_pid,-1,group_id,PERF_FLAG_FD_CLOEXEC);
+      } else if (aflag && cgroup->target_cpu >= 0){
   // --per-core path: bind each core's counter group to that logical CPU.
   status = perf_event_open(&pe,-1,cgroup->target_cpu,group_id,0);
       } else if (cgroup->cinfo[i].requires_system_wide){

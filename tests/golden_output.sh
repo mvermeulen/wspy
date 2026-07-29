@@ -614,6 +614,24 @@ else
   fail "tree telemetry [compilation]: failed to compile test workload"
 fi
 
+echo "Testing --target=comm=<name> PID-targeted counter attachment..."
+TREE_TARGET="$TMPDIR/target"
+"$WSPY" --no-ipc --software --tree "$TREE_TARGET" --target=comm=sleep -- /bin/sh -c '/bin/sleep 0.2 & wait' >/dev/null 2>&1
+check_tree_grammar "$TREE_TARGET" "target-attach-grammar"
+CHECKS=$((CHECKS + 1))
+if ! grep -q " targetcounter software " "$TREE_TARGET"; then
+  fail "tree target [targetcounter]: no 'targetcounter software ...' line found for matched comm"
+else
+  echo "  tree target [targetcounter]: OK"
+fi
+
+CHECKS=$((CHECKS + 1))
+if "$WSPY" --target=comm=sleep -- /bin/true >/dev/null 2>&1; then
+  fail "tree target [--target-without---tree]: expected fatal rejection, exit was 0"
+else
+  echo "  tree target [--target-without---tree]: OK (rejected as expected)"
+fi
+
 echo ""
 echo "=== $CHECKS checks run, $FAILURES failed ==="
 if [ "$FAILURES" -gt 0 ]; then

@@ -305,6 +305,12 @@ run_bundle "tree-schedstat"            0 --no-ipc --tree "$TREE_OUT" --tree-sche
 # doc/INVESTIGATION_ARCHIVE.md's "Concrete design: --tree-connect/--tree-wait/
 # --tree-poll/--tree-nanosleep".
 run_bundle "tree-syscall-latency-expansion" 0 --no-ipc --tree "$TREE_OUT" --tree-connect --tree-wait --tree-poll --tree-nanosleep -- /bin/true
+# --target=comm=<name> (INVESTIGATION.md 4.4 priorities item 10): attaches a
+# second, pid-scoped counter group to processes matching comm/cmdline,
+# discovered live via PTRACE_EVENT_EXEC -- graceful-degradation bundle here;
+# --target-without---tree's own fatal incompatibility is covered alongside
+# --passes' below.
+run_bundle "tree-target"               0 --software --tree "$TREE_OUT" --target=comm=true -- /bin/true
 
 echo ""
 echo "=== Run-artifact bundles (manifest, run-index, capabilities) ==="
@@ -378,6 +384,9 @@ run_expected_fatal_bundle "passes-power-incompatible"    1 --no-ipc --passes=ipc
 # rejected the same way the other --passes-only modifiers would be if they
 # had no other meaning (mirrors the checks just above).
 run_expected_fatal_bundle "multiplex-without-passes-incompatible" 1 --no-ipc --multiplex -- /bin/true
+# --target attaches at a PTRACE_EVENT_EXEC stop discovered by --tree's own
+# ptrace loop -- meaningless (and rejected) without --tree (item 10).
+run_expected_fatal_bundle "target-without-tree-incompatible" 1 --no-ipc --target=comm=true -- /bin/true
 
 echo ""
 echo "=== --exit-with-child: the one bundle where a nonzero exit is correct ==="

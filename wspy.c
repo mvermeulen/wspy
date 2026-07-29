@@ -323,6 +323,7 @@ int parse_options(int argc,char *const argv[]){
     { "tree-poll",no_argument,0, 86 },
     { "tree-open",no_argument,0, 38 },
     { "tree-vmsize",no_argument,0,41 },
+    { "target", required_argument, 0, 100 },
     { "verbose", no_argument, 0, 32 },
     { "arm-dcache-mem", no_argument, 0, 73 },
     { "no-arm-dcache-mem", no_argument, 0, 74 },
@@ -775,6 +776,16 @@ int parse_options(int argc,char *const argv[]){
       // detail via /proc/<pid>/status".
       tree_vmsize = 1;
       break;
+    case 100: { // --target
+      struct target_spec parsed;
+      if (target_parse_spec(optarg,&parsed) != 0){
+	warning("invalid argument to --target: %s, ignored (see --help)\n",optarg);
+      } else {
+	requested_target = parsed;
+	target_active = 1;
+      }
+      break;
+    }
     default:
       return 1;
     }
@@ -839,7 +850,7 @@ static int run_capabilities_probe(void){
       cpu_info->systemwide_counters = cgroup;
     }
   }
-  setup_counters(cpu_info->systemwide_counters);
+  setup_counters(cpu_info->systemwide_counters,-1);
 
   print_capability_report();
   print_cpu_pmu_report(outfile);
@@ -879,7 +890,7 @@ static int run_capabilities_probe(void){
     if (pgroup){
       struct coverage_entry *ce;
 
-      setup_counters(pgroup);
+      setup_counters(pgroup,-1);
       for (ce = coverage_entries; ce; ce = ce->next){
         if (!strcmp(ce->group_label,"power")){
           access = ce->available;
@@ -1212,7 +1223,7 @@ static int run_multipass(char *const envp[]){
   for (p = 0; p < plan.npasses; p++){
     int req0 = coverage_requested,meas0 = coverage_measured;
 
-    setup_counters(pass_lists[p]);
+    setup_counters(pass_lists[p],-1);
     start_counters(pass_lists[p]);
 
     // let the counters run for two seconds before the measurement window
@@ -1379,6 +1390,10 @@ static void print_full_usage(FILE *out,const char *prog){
 	  "\t--tree-open               - record each traced openat() call's path as an \"open\" line\n"
 	  "\t                            (not yet parsed by proctree -- see INVESTIGATION.md's\n"
 	  "\t                            \"--tree-open\" backlog item for the planned summary view)\n"
+	  "\t--target=comm=<name>[,cmdline=<substr>]\n"
+	  "\t                          - attach a dedicated counter group (same counters as this run's\n"
+	  "\t                            other flags) to just the process(es) matching comm/cmdline,\n"
+	  "\t                            discovered live as they exec; requires --tree\n"
 	  "\n"
 	  "Run artifact metadata:\n"
 	  "\t--manifest <file>         - write a JSON run manifest to <file>\n"
@@ -1551,6 +1566,15 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   // --passes above, rather than a silent no-op.
   if (per_core_freq && !aflag){
     fatal("--per-core-freq is only meaningful together with --per-core/-a\n");
+  }
+
+  // --target attaches at a PTRACE_EVENT_EXEC stop discovered by --tree's own
+  // ptrace_loop() -- meaningless without a --tree to discover matches from.
+  if (target_active && !treeflag){
+    fatal("--target requires --tree (PID-targeted counter attachment discovers matches via --tree's ptrace loop)\n");
+  }
+  if (target_active && counter_mask == 0){
+    notice("--target given with no counter flags requested -- nothing will be attached to matched processes\n");
   }
 
   if (inventory_cpu() != 0){
@@ -1743,9 +1767,9 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   // set up core-specific and system-wide counters
   for (i=0;i<cpu_info->num_cores;i++){
     if (cpu_info->coreinfo[i].core_specific_counters)
-      setup_counters(cpu_info->coreinfo[i].core_specific_counters);
+      setup_counters(cpu_info->coreinfo[i].core_specific_counters,-1);
   }
-  setup_counters(cpu_info->systemwide_counters);
+  setup_counters(cpu_info->systemwide_counters,-1);
 
   // start core-specific and system-wide counters
   for (i=0;i<cpu_info->num_cores;i++){
