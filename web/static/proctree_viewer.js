@@ -76,6 +76,15 @@
   // auto-expand threshold, and the "hide branches under N%" filter).
   var totalCumSeconds = 0;
 
+  // --target=comm=<name>[,cmdline=<substr>] per-node columns (item 10,
+  // INVESTIGATION.md): the distinct "group.label" keys found anywhere in the
+  // fetched tree's own per-node target_counters arrays (as opposed to
+  // collectTargetCounterKeys() below, which scans the top-level comm-rollup
+  // rows) -- set once by renderSingle() before first render, toggled the
+  // same way COLUMN_DEFS entries are (state.columns[key], a checkbox per
+  // entry). Empty for older JSON / a run that never used --target.
+  var targetColumnKeys = [];
+
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, function (ch) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
@@ -163,6 +172,10 @@
     });
     available.forEach(function (c) { state.columns[c.key] = false; });
 
+    targetColumnKeys = [];
+    collectTargetCounterKeysFromTree(data.tree, {}, targetColumnKeys);
+    targetColumnKeys.forEach(function (key) { state.columns[key] = false; });
+
     renderControlsSingle(available, data);
     renderTree(data.tree, null, []);
   }
@@ -184,18 +197,28 @@
     controlsEl.appendChild(makeMinShareInput());
 
     available.forEach(function (c) {
-      var label = document.createElement("label");
-      label.className = "ptv-col-toggle";
-      var cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.addEventListener("change", function () {
-        state.columns[c.key] = cb.checked;
-        rerender();
-      });
-      label.appendChild(cb);
-      label.appendChild(document.createTextNode(" " + c.label));
-      controlsEl.appendChild(label);
+      controlsEl.appendChild(makeColumnToggle(c.key, c.label));
     });
+    // --target's per-node columns (targetColumnKeys, set by renderSingle()):
+    // same toggle-checkbox mechanism as the fixed COLUMN_DEFS entries above,
+    // just driven by a dynamic key list instead of a static one.
+    targetColumnKeys.forEach(function (key) {
+      controlsEl.appendChild(makeColumnToggle(key, key));
+    });
+  }
+
+  function makeColumnToggle(key, label) {
+    var wrapper = document.createElement("label");
+    wrapper.className = "ptv-col-toggle";
+    var cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.addEventListener("change", function () {
+      state.columns[key] = cb.checked;
+      rerender();
+    });
+    wrapper.appendChild(cb);
+    wrapper.appendChild(document.createTextNode(" " + label));
+    return wrapper;
   }
 
   function makeSearchInput() {
@@ -239,18 +262,65 @@
   // via the same search box/state used for text search, so "narrow to this
   // process and its descendants" is one click.
   // --target=comm=<name>[,cmdline=<substr>] (item 10, INVESTIGATION.md):
-  // collects every distinct (group,label) key across all rows' open-ended
-  // target_counters arrays -- there's no fixed column set to hardcode, it
-  // depends on whatever counter_mask the producing wspy run had active.
-  // Returns [] (no extra columns) for older JSON / runs that never used
-  // --target, same "absent means not collected" convention as the rest of
-  // this viewer.
+  // turns one node/row's raw target_counters array into the entries actually
+  // displayed. Special case: the "ipc" group's raw counters (instructions/
+  // cpu-cycles/ex_ret_ops on AMD -- whatever wspy attached to compute IPC
+  // from) are never individually useful on their own, only as the ratio, so
+  // if both "instructions" and "cpu-cycles" are present they're collapsed
+  // into a single derived "IPC" entry instead of shown separately; every
+  // other group's counters (software's page_faults etc.) pass through
+  // unchanged. No other group/counter-pair gets this treatment (yet) -- see
+  // INVESTIGATION.md if that changes.
+  function computeDisplayCounters(rawList) {
+    var byGroup = {};
+    (rawList || []).forEach(function (tc) {
+      (byGroup[tc.group] = byGroup[tc.group] || []).push(tc);
+    });
+    var out = [];
+    Object.keys(byGroup).forEach(function (group) {
+      var entries = byGroup[group];
+      var instructions = entries.filter(function (e) { return e.label === "instructions"; })[0];
+      var cycles = entries.filter(function (e) { return e.label === "cpu-cycles"; })[0];
+      if (group === "ipc" && instructions && cycles) {
+        out.push({
+          group: group, label: "IPC", isRatio: true,
+          value: cycles.value > 0 ? instructions.value / cycles.value : 0
+        });
+      } else {
+        entries.forEach(function (e) {
+          out.push({ group: e.group, label: e.label, isRatio: false, value: e.value });
+        });
+      }
+    });
+    return out;
+  }
+
+  function targetCounterKey(entry) { return entry.group + "." + entry.label; }
+
+  function formatTargetCounterValue(entry) {
+    return entry.isRatio ? entry.value.toFixed(3) : String(entry.value);
+  }
+
+  function findTargetCounterEntry(row, key) {
+    var entries = computeDisplayCounters(row.target_counters);
+    for (var i = 0; i < entries.length; i++) {
+      if (targetCounterKey(entries[i]) === key) return entries[i];
+    }
+    return null;
+  }
+
+  // Collects every distinct (group,label) key across all summary rows'
+  // computeDisplayCounters() results -- there's no fixed column set to
+  // hardcode, it depends on whatever counter_mask the producing wspy run
+  // had active. Returns [] (no extra columns) for older JSON / runs that
+  // never used --target, same "absent means not collected" convention as
+  // the rest of this viewer.
   function collectTargetCounterKeys(summary) {
     var seen = {};
     var keys = [];
     summary.forEach(function (row) {
-      (row.target_counters || []).forEach(function (tc) {
-        var key = tc.group + "." + tc.label;
+      computeDisplayCounters(row.target_counters).forEach(function (e) {
+        var key = targetCounterKey(e);
         if (!seen[key]) {
           seen[key] = true;
           keys.push(key);
@@ -260,12 +330,27 @@
     return keys;
   }
 
+  // Same idea as collectTargetCounterKeys() above, but walking the whole
+  // tree's own per-node target_counters (not just the top-level comm-rollup
+  // rows) -- feeds the per-node column toggles, same auto-detect pattern
+  // detectColumn() uses for the fixed COLUMN_DEFS entries.
+  function collectTargetCounterKeysFromTree(node, seen, keys) {
+    if (!node) return;
+    computeDisplayCounters(node.target_counters).forEach(function (e) {
+      var key = targetCounterKey(e);
+      if (!seen[key]) {
+        seen[key] = true;
+        keys.push(key);
+      }
+    });
+    (node.children || []).forEach(function (child) {
+      collectTargetCounterKeysFromTree(child, seen, keys);
+    });
+  }
+
   function findTargetCounterValue(row, key) {
-    var tcs = row.target_counters || [];
-    for (var i = 0; i < tcs.length; i++) {
-      if (tcs[i].group + "." + tcs[i].label === key) return tcs[i].value;
-    }
-    return 0;
+    var entry = findTargetCounterEntry(row, key);
+    return entry ? formatTargetCounterValue(entry) : "0";
   }
 
   function renderSummaryTable(summary) {
@@ -393,6 +478,15 @@
     COLUMN_DEFS.forEach(function (c) {
       if (state.columns[c.key]) {
         row.appendChild(makeMetric(c.label, formatColumnValue(node, c)));
+      }
+    });
+    // --target's per-node counters (item 10, INVESTIGATION.md): this node's
+    // own target_counters, not the comm-summed rollup the summary table
+    // shows -- toggled the same way as the columns above.
+    targetColumnKeys.forEach(function (key) {
+      if (state.columns[key]) {
+        var entry = findTargetCounterEntry(node, key);
+        if (entry) row.appendChild(makeMetric(entry.label, formatTargetCounterValue(entry)));
       }
     });
 
