@@ -1838,12 +1838,25 @@ def page(title, body):
 </body></html>"""
 
 
-def render_group_checkboxes(id_prefix, checked_by_default=()):
+def render_group_checkboxes(id_prefix, checked_by_default=(), names=GROUP_NAMES):
     return "".join(
         f'<label class="group-check"><input type="checkbox" id="{id_prefix}_{name}" value="{name}"'
         f'{" checked" if name in checked_by_default else ""}> <code>{name}</code></label>'
-        for name in GROUP_NAMES
+        for name in names
     )
+
+
+# Process tree card's "Performance counters" section (Run tab): the
+# whole-subtree-aggregate/--target group picker there uses this trimmed list
+# instead of the full ALL_GROUPS/GROUP_NAMES vocabulary render_group_checkboxes()
+# defaults to -- ipc/topdown/software cover the common cases (throughput,
+# pipeline-bottleneck breakdown, page faults/context switches) without
+# overwhelming a tree-focused workflow with the full ~16-entry counter-group
+# list the top-level "Performance counters" card still offers. The backend
+# (counter_group_flags(), the tree pass builder in joblib.py) is unchanged --
+# this only narrows what the UI offers, not what --tree-target/--counters can
+# express.
+TREE_GROUP_NAMES = ["ipc", "topdown", "software"]
 
 
 def render_run_tab(prefill, cfg):
@@ -1892,7 +1905,8 @@ def render_run_tab(prefill, cfg):
         else {"topdown"}
     counters_groups_html = render_group_checkboxes("counters", checked_by_default=default_groups)
     tree_default_groups = set(sec("tree").get("groups") or []) if "tree" in prefill_checklist else set()
-    tree_groups_html = render_group_checkboxes("tree_group", checked_by_default=tree_default_groups)
+    tree_groups_html = render_group_checkboxes("tree_group", checked_by_default=tree_default_groups,
+                                                names=TREE_GROUP_NAMES)
 
     return f"""
 <section class="panel">

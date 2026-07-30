@@ -261,15 +261,69 @@
   // expanding the tree at all. Clicking a row filters the tree to that comm
   // via the same search box/state used for text search, so "narrow to this
   // process and its descendants" is one click.
+  // topdown's raw per-vendor label set (topdown.c's raw_counter_group("topdown", ...)):
+  // Intel P-core has "core.topdown-{retiring,fe-bound,be-bound,bad-spec}" plus a "slots"
+  // denominator; Gracemont has the same 4 names but no "slots" (falls back to cpu-cycles,
+  // unused here since this collapse skips the slots-denominator entirely -- see below);
+  // AMD has no equivalent friendly names at all ("ex_ret_ops"/"de_no_dispatch_per_slot.*"/
+  // "de_src_op_disp.all"). Detected by presence, same convention topdown.c's own
+  // find_ci_label() calls use to tell these apart server-side.
+  function findLabel(entries, label) {
+    return entries.filter(function (e) { return e.label === label; })[0];
+  }
+
+  function safeSub(a, b) { return a > b ? a - b : 0; }
+
+  // Raw (unnormalized) {retiring, frontend, backend, speculation} for one
+  // topdown group's entries, or null if this isn't a recognized topdown raw
+  // counter set (an unsupported vendor, or partial data) -- same "zero
+  // coverage rather than wrong coverage" convention as the rest of wspy
+  // rather than guessing at a formula.
+  function topdownRawCategories(entries) {
+    var retiring = findLabel(entries, "core.topdown-retiring");
+    if (retiring) {
+      var frontend = findLabel(entries, "core.topdown-fe-bound");
+      var backend = findLabel(entries, "core.topdown-be-bound");
+      var speculation = findLabel(entries, "core.topdown-bad-spec");
+      if (frontend && backend && speculation) {
+        return { retiring: retiring.value, frontend: frontend.value,
+                 backend: backend.value, speculation: speculation.value };
+      }
+      return null;
+    }
+    var exRetOps = findLabel(entries, "ex_ret_ops");
+    if (exRetOps) {
+      var feStall = findLabel(entries, "de_no_dispatch_per_slot.no_ops_from_frontend");
+      var beStall = findLabel(entries, "de_no_dispatch_per_slot.backend_stalls");
+      var dispatched = findLabel(entries, "de_src_op_disp.all");
+      if (feStall && beStall && dispatched) {
+        return { retiring: exRetOps.value, frontend: feStall.value, backend: beStall.value,
+                 speculation: safeSub(dispatched.value, exRetOps.value) };
+      }
+    }
+    return null;
+  }
+
   // --target=comm=<name>[,cmdline=<substr>] (item 10, INVESTIGATION.md):
   // turns one node/row's raw target_counters array into the entries actually
-  // displayed. Special case: the "ipc" group's raw counters (instructions/
-  // cpu-cycles/ex_ret_ops on AMD -- whatever wspy attached to compute IPC
-  // from) are never individually useful on their own, only as the ratio, so
-  // if both "instructions" and "cpu-cycles" are present they're collapsed
-  // into a single derived "IPC" entry instead of shown separately; every
-  // other group's counters (software's page_faults etc.) pass through
-  // unchanged. No other group/counter-pair gets this treatment (yet) -- see
+  // displayed. Two special cases, neither of which shows the underlying raw
+  // counters on their own since they're not individually meaningful:
+  // - the "ipc" group's raw counters (instructions/cpu-cycles/ex_ret_ops on
+  //   AMD -- whatever wspy attached to compute IPC from) collapse into a
+  //   single derived "IPC" ratio when both "instructions" and "cpu-cycles"
+  //   are present.
+  // - the "topdown" group's raw counters (topdownRawCategories() above)
+  //   collapse into the 4 major topdown categories (Retiring/Frontend
+  //   Bound/Backend Bound/Bad Speculation), each shown as a percentage of
+  //   the sum of all 4 -- deliberately *not* wspy's own %-of-pipeline-slots
+  //   denominator (topdown.c's print_topdown()), which needs a per-core-type
+  //   width multiplier (AMD Zen4 vs Zen5/5c is 6 vs 8 slots/cycle) this
+  //   viewer has no way to know from the tree JSON alone; self-normalizing
+  //   to the 4 categories' own sum sidesteps that guess entirely and always
+  //   sums to 100%, at the cost of dropping wspy's contention/sanity-check
+  //   nuance.
+  // Every other group's counters (software's page_faults etc.) pass through
+  // unchanged. No other group/counter-set gets this treatment (yet) -- see
   // INVESTIGATION.md if that changes.
   function computeDisplayCounters(rawList) {
     var byGroup = {};
@@ -279,12 +333,24 @@
     var out = [];
     Object.keys(byGroup).forEach(function (group) {
       var entries = byGroup[group];
-      var instructions = entries.filter(function (e) { return e.label === "instructions"; })[0];
-      var cycles = entries.filter(function (e) { return e.label === "cpu-cycles"; })[0];
+      var instructions = findLabel(entries, "instructions");
+      var cycles = findLabel(entries, "cpu-cycles");
+      var topdownCats = group === "topdown" ? topdownRawCategories(entries) : null;
       if (group === "ipc" && instructions && cycles) {
         out.push({
           group: group, label: "IPC", isRatio: true,
           value: cycles.value > 0 ? instructions.value / cycles.value : 0
+        });
+      } else if (topdownCats) {
+        var total = topdownCats.retiring + topdownCats.frontend +
+                    topdownCats.backend + topdownCats.speculation;
+        [["Retiring", topdownCats.retiring], ["Frontend Bound", topdownCats.frontend],
+         ["Backend Bound", topdownCats.backend], ["Bad Speculation", topdownCats.speculation]
+        ].forEach(function (pair) {
+          out.push({
+            group: group, label: pair[0], isPercent: true,
+            value: total > 0 ? pair[1] / total * 100 : 0
+          });
         });
       } else {
         entries.forEach(function (e) {
@@ -298,7 +364,9 @@
   function targetCounterKey(entry) { return entry.group + "." + entry.label; }
 
   function formatTargetCounterValue(entry) {
-    return entry.isRatio ? entry.value.toFixed(3) : String(entry.value);
+    if (entry.isRatio) return entry.value.toFixed(3);
+    if (entry.isPercent) return entry.value.toFixed(1) + "%";
+    return String(entry.value);
   }
 
   function findTargetCounterEntry(row, key) {
