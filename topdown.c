@@ -30,6 +30,7 @@
 #include "ptrace_arch.h"
 #include "ibs.h"
 #include "ibs_sample.h"
+#include "symbol_sample.h"
 #include "power.h"
 #include "phase.h"
 #include "affinity.h"
@@ -640,6 +641,43 @@ int target_match(struct target_spec *spec,const char *comm,const char *cmdline){
   return 1;
 }
 
+int symbol_sample_active = 0;
+enum symbol_sample_event symbol_sample_event = SYMBOL_SAMPLE_EVENT_CYCLES;
+
+// Symbol-level profiling (item 9, INVESTIGATION.md): snapshot /proc/<pid>/
+// maps for later address-to-symbol resolution against this pid's collected
+// samples (the not-yet-built wspy-symbolize tool, see the "Symbol-level
+// profiling deep-dive"). Called at this pid's own PTRACE_EVENT_EXIT, while
+// it's still a live ptrace-stop -- the process hasn't actually exited yet,
+// so /proc/<pid>/maps is still readable. File-backed, executable regions
+// only: data-only/anon/stack/heap mappings never contain code to resolve
+// against, and JIT'd anonymous-exec regions are a documented gap (no
+// backing file at all), not something this snapshot can help with.
+static void write_target_maps(FILE *out,double elapsed,pid_t pid){
+  char maps_path[64];
+  FILE *maps_file;
+  char line[512];
+
+  snprintf(maps_path,sizeof(maps_path),"/proc/%d/maps",pid);
+  maps_file = fopen(maps_path,"r");
+  if (!maps_file) return;
+
+  while (fgets(line,sizeof(line),maps_file)){
+    unsigned long start,end,file_offset;
+    char perms[8] = "";
+    char path[400] = "";
+    int nfields;
+
+    nfields = sscanf(line,"%lx-%lx %7s %lx %*x:%*x %*d %399[^\n]",&start,&end,perms,&file_offset,path);
+    if (nfields < 4) continue;
+    if (strlen(perms) < 3 || perms[2] != 'x') continue; // not executable
+    if (path[0] != '/') continue; // file-backed only -- skip [heap]/[stack]/anon/etc.
+
+    fprintf(out,"%5.3f %d targetmap %lx %lx %lx %s\n",elapsed,pid,start,end,file_offset,path);
+  }
+  fclose(maps_file);
+}
+
 // Tree-file "targetcounter" lines are whitespace-tokenized, but some counter
 // labels contain embedded spaces (e.g. "page faults", "context switches") --
 // copies src into dst with spaces replaced by underscores, truncating safely.
@@ -1162,15 +1200,45 @@ void ptrace_loop(void){
 	      int ti;
 	      char safe_group[64],safe_label[64];
 
-	      read_counters(pid_entry->target_counters,1);
+	      read_counters(pid_entry->target_counters,1); // also drains any is_symbol_sample ring (symbol_sample_drain())
 	      for (tcgroup = pid_entry->target_counters;tcgroup;tcgroup = tcgroup->next){
 		for (ti=0;ti<tcgroup->ncounters;ti++){
 		  if (tcgroup->cinfo[ti].fd == -1) continue;
+		  if (tcgroup->cinfo[ti].is_symbol_sample) continue; // emitted separately below -- a whole address histogram, not one value
 		  target_counter_safe_label(tcgroup->label,safe_group,sizeof(safe_group));
 		  target_counter_safe_label(tcgroup->cinfo[ti].label,safe_label,sizeof(safe_label));
 		  fprintf(exit_out,"%5.3f %d targetcounter %s %s %lu\n",elapsed,pid,
 			  safe_group,safe_label,tcgroup->cinfo[ti].value);
 		}
+	      }
+	      // Symbol-level profiling (item 9): emit the drained address
+	      // histogram plus a /proc/<pid>/maps snapshot for later
+	      // address-to-symbol resolution (wspy-symbolize, not built yet).
+	      // Snapshot maps here, while this pid is still a live ptrace-stop,
+	      // not after it actually exits.
+	      if (symbol_sample_active){
+		int have_symbol_sample = 0;
+
+		for (tcgroup = pid_entry->target_counters;tcgroup;tcgroup = tcgroup->next){
+		  for (ti=0;ti<tcgroup->ncounters;ti++){
+		    struct symbol_sample_state *ss;
+		    int ai;
+
+		    if (!tcgroup->cinfo[ti].is_symbol_sample || tcgroup->cinfo[ti].fd == -1) continue;
+		    have_symbol_sample = 1;
+		    ss = tcgroup->cinfo[ti].symbol_sample_state;
+		    if (!ss) continue; // mmap() failed earlier -- no ring data to emit
+		    for (ai=0;ai<ss->naddrs;ai++){
+		      fprintf(exit_out,"%5.3f %d targetsample %s %lx %lu\n",elapsed,pid,
+			      symbol_sample_event_name(symbol_sample_event),
+			      (unsigned long)ss->addrs[ai].addr,(unsigned long)ss->addrs[ai].count);
+		    }
+		    if (ss->samples_lost)
+		      fprintf(exit_out,"%5.3f %d targetsamplelost %s %lu\n",elapsed,pid,
+			      symbol_sample_event_name(symbol_sample_event),(unsigned long)ss->samples_lost);
+		  }
+		}
+		if (have_symbol_sample) write_target_maps(exit_out,elapsed,pid);
 	      }
 	      close_counters(pid_entry->target_counters);
 	      pid_entry->target_counters = NULL;
@@ -1258,6 +1326,20 @@ void ptrace_loop(void){
 		if ((swgroup = software_counter_group("software"))){
 		  swgroup->next = pid_entry->target_counters;
 		  pid_entry->target_counters = swgroup;
+		}
+	      }
+	      // Symbol-level profiling (item 9, INVESTIGATION.md): a single
+	      // dedicated PERF_SAMPLE_IP sampling counter, prepended the same
+	      // way the software group above is -- flows through the same
+	      // setup_counters()/start_counters()/read_counters() pid-scoped
+	      // pipeline as every other --target counter (is_symbol_sample
+	      // mirrors is_ibs_sample's special-casing there), so no separate
+	      // open/drain/close path is needed for it.
+	      if (symbol_sample_active){
+		struct counter_group *ssgroup = symbol_sample_counter_group("symbol_sample",symbol_sample_event);
+		if (ssgroup){
+		  ssgroup->next = pid_entry->target_counters;
+		  pid_entry->target_counters = ssgroup;
 		}
 	      }
 	      setup_counters(pid_entry->target_counters,pid);
@@ -1869,6 +1951,10 @@ void setup_counters(struct counter_group *counter_group_list,pid_t attach_pid){
       // perf_event_open() below, since sample_type is part of the syscall's
       // own attr argument.
       if (cgroup->cinfo[i].is_ibs_sample) ibs_sample_attr_init(&pe);
+      // Symbol-level profiling (symbol_sample.h): overrides sample_type to
+      // PERF_SAMPLE_IP the same way is_ibs_sample overrides it to
+      // PERF_SAMPLE_RAW above -- must happen before perf_event_open() below.
+      if (cgroup->cinfo[i].is_symbol_sample) symbol_sample_attr_init(&pe);
       pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED|PERF_FORMAT_TOTAL_TIME_RUNNING;
       pe.size = sizeof(struct perf_event_attr);
       //      pe.exclude_guest = 1; // is this needed
@@ -1915,6 +2001,11 @@ void setup_counters(struct counter_group *counter_group_list,pid_t attach_pid){
 	if (cgroup->cinfo[i].is_ibs_sample)
 	  cgroup->cinfo[i].ibs_sample_state = ibs_sample_mmap(cgroup->cinfo[i].fd,
 							       !strcmp(cgroup->cinfo[i].label,"ibs_sample_op"));
+	// Symbol-level profiling: mmap the ring buffer now that the fd
+	// exists, same "failed mmap degrades to no sampling data, not a
+	// counter failure" convention as is_ibs_sample above.
+	if (cgroup->cinfo[i].is_symbol_sample)
+	  cgroup->cinfo[i].symbol_sample_state = symbol_sample_mmap(cgroup->cinfo[i].fd);
       }
     }
   }
@@ -1979,6 +2070,18 @@ void read_counters(struct counter_group *counter_group_list,int stop_counters){
         // result.
         if (cgroup->cinfo[i].is_ibs_sample){
           if (stop_counters) ibs_sample_drain(cgroup->cinfo[i].ibs_sample_state);
+          continue;
+        }
+        // Symbol-level profiling: same "never read()/ioctl() a sampling
+        // ring, only drain it, and only at the final non-signal-handler
+        // call" logic as is_ibs_sample above -- the pid-scoped case always
+        // calls read_counters(...,1) at PTRACE_EVENT_EXIT (never a periodic
+        // --interval tick), so stop_counters is always true here in
+        // practice, but the check stays for the same reason is_ibs_sample's
+        // does: correctness shouldn't depend on which caller happens to be
+        // the only one today.
+        if (cgroup->cinfo[i].is_symbol_sample){
+          if (stop_counters) symbol_sample_drain(cgroup->cinfo[i].symbol_sample_state);
           continue;
         }
         if (cgroup->mask & COUNTER_POWER && cgroup->cinfo[i].device_type == 9999) {
@@ -2099,6 +2202,17 @@ void close_counters(struct counter_group *counter_group_list){
   for (cgroup = counter_group_list; cgroup; cgroup = cgroup->next){
     for (i = 0; i < cgroup->ncounters; i++){
       if (cgroup->cinfo[i].fd != -1){
+	// Symbol-level profiling: unlike is_ibs_sample's ibs_sample_state
+	// (one system-wide instance for the whole run, left to the OS to
+	// reclaim at process exit), is_symbol_sample's ring buffer is
+	// opened fresh per --target match -- a long matching-heavy run
+	// needs it actually unmapped here, same "don't exhaust resources
+	// over a long run" reasoning this function's own fd close already
+	// exists for. NULL-safe if mmap() failed earlier.
+	if (cgroup->cinfo[i].is_symbol_sample){
+	  symbol_sample_free(cgroup->cinfo[i].symbol_sample_state);
+	  cgroup->cinfo[i].symbol_sample_state = NULL;
+	}
 	close(cgroup->cinfo[i].fd);
 	cgroup->cinfo[i].fd = -1;
       }

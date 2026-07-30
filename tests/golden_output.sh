@@ -632,6 +632,23 @@ else
   echo "  tree target [--target-without---tree]: OK (rejected as expected)"
 fi
 
+echo "Testing --symbol-sample PID-scoped instruction-pointer profiling..."
+TREE_SYMBOL_SAMPLE="$TMPDIR/symbol_sample"
+"$WSPY" --no-ipc --tree "$TREE_SYMBOL_SAMPLE" --target=comm=sleep --symbol-sample --symbol-sample-event=cycles -- /bin/sh -c '/bin/sleep 0.2 & wait' >/dev/null 2>&1
+check_tree_grammar "$TREE_SYMBOL_SAMPLE" "symbol-sample-grammar"
+# targetsample itself isn't guaranteed -- a 0.2s mostly-blocked sleep may
+# genuinely accrue zero full sample_period increments -- but targetmap is:
+# any successfully-opened is_symbol_sample counter snapshots /proc/<pid>/maps
+# unconditionally at PTRACE_EVENT_EXIT (write_target_maps()), and a real
+# dynamically-linked binary always has at least one file-backed executable
+# region (itself, plus ld.so/libc).
+CHECKS=$((CHECKS + 1))
+if ! grep -q " targetmap " "$TREE_SYMBOL_SAMPLE"; then
+  fail "tree target [targetmap]: no 'targetmap ...' line found for matched comm"
+else
+  echo "  tree target [targetmap]: OK"
+fi
+
 echo ""
 echo "=== $CHECKS checks run, $FAILURES failed ==="
 if [ "$FAILURES" -gt 0 ]; then

@@ -59,6 +59,13 @@
  * it tolerates not being drained until the run ends; PERF_RECORD_LOST
  * events are counted and surfaced (ibs_sample_state.samples_lost) rather
  * than silently producing an artificially low rate.
+ *
+ * The mmap/munmap and the actual ring-walk (header-page/data-region layout,
+ * data_head/data_tail barrier ordering, wraparound-safe byte copy) live in
+ * perf_ring.c/perf_ring.h, shared with symbol_sample.c's PERF_SAMPLE_IP
+ * capture (4.4 priorities item 9) -- this file supplies only the
+ * IBS-specific per-record decode (ibs_sample_record_cb() in ibs_sample.c)
+ * via that file's callback.
  */
 #ifndef _WSPY_IBS_SAMPLE_H
 #define _WSPY_IBS_SAMPLE_H 1

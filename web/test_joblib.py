@@ -629,6 +629,32 @@ class BuildProctreeJsonDiffArgvTest(unittest.TestCase):
             ["./proctree", "--diff", "--json", "/tmp/a.json", "/tmp/b.json"])
 
 
+class BuildSymbolizeArgvTest(unittest.TestCase):
+    # item 9's web UI drill-down (INVESTIGATION.md's "Symbol-level profiling
+    # deep-dive") -- /api/symbolize builds this argv via build_symbolize_argv().
+    def test_pid_selector(self):
+        self.assertEqual(
+            joblib.build_symbolize_argv("./wspy-symbolize", "./proctree", "/r/process.tree.txt", pid=123),
+            ["./wspy-symbolize", "--tree-file", "/r/process.tree.txt", "--proctree", "./proctree",
+             "--json", "--pid", "123"])
+
+    def test_comm_selector(self):
+        self.assertEqual(
+            joblib.build_symbolize_argv("./wspy-symbolize", "./proctree", "/r/process.tree.txt", comm="myworker"),
+            ["./wspy-symbolize", "--tree-file", "/r/process.tree.txt", "--proctree", "./proctree",
+             "--json", "--comm", "myworker"])
+
+    def test_pid_takes_precedence_when_both_given(self):
+        # Caller's responsibility to give exactly one (see the function's own
+        # docstring) -- pid wins if both are passed, rather than emitting an
+        # argv with both --pid and --comm.
+        self.assertEqual(
+            joblib.build_symbolize_argv("./wspy-symbolize", "./proctree", "/r/process.tree.txt",
+                                         pid=123, comm="myworker"),
+            ["./wspy-symbolize", "--tree-file", "/r/process.tree.txt", "--proctree", "./proctree",
+             "--json", "--pid", "123"])
+
+
 # Phoronix runtime-estimation logic (moved here from server.py's "Estimated
 # runtime display" Check button -- INVESTIGATION.md's 4.2 "Size wspy-run's
 # --tree pass timeout" item -- so scripts/estimate_tree_timeout.py could

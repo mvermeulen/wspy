@@ -63,6 +63,36 @@ int target_parse_spec(const char *arg,struct target_spec *spec);
  * otherwise-too-common comm=, it doesn't broaden the match). */
 int target_match(struct target_spec *spec,const char *comm,const char *cmdline);
 
+/* --symbol-sample[/--symbol-sample-event=<event>] (4.4 priorities item 9):
+ * pid-scoped PERF_SAMPLE_IP profiling of --target-matched processes, built
+ * on symbol_sample.h's ring-buffer capture -- see INVESTIGATION.md's
+ * "Symbol-level profiling deep-dive". event picks which counter is sampled;
+ * a small curated set (not arbitrary raw events) for this first cut. The
+ * enum/globals live here (CLI-facing, same reasoning as struct target_spec
+ * above) but symbol_sample_parse_event()/symbol_sample_event_name() are
+ * implemented in symbol_sample.c, not topdown.c -- they share their
+ * event-name/config/default-period table with
+ * symbol_sample_counter_group()'s own event lookup, and duplicating that
+ * table across two files isn't worth avoiding one small CLI-shaped
+ * function living in a capture-focused file. */
+enum symbol_sample_event {
+  SYMBOL_SAMPLE_EVENT_CYCLES = 0, // default -- matches `perf record`'s own default
+  SYMBOL_SAMPLE_EVENT_INSTRUCTIONS,
+  SYMBOL_SAMPLE_EVENT_CACHE_MISSES,
+  SYMBOL_SAMPLE_EVENT_BRANCH_MISSES,
+};
+extern int symbol_sample_active;
+extern enum symbol_sample_event symbol_sample_event;
+
+/* Parses --symbol-sample-event's argument. Returns 0 on success (writing
+ * *out), -1 on an unrecognized event name -- *out is left unmodified on
+ * failure. */
+int symbol_sample_parse_event(const char *arg,enum symbol_sample_event *out);
+
+/* Human-readable event name (e.g. "cycles"), for targetsample tree-file
+ * lines. */
+const char *symbol_sample_event_name(enum symbol_sample_event event);
+
 extern int trace_syscall;
 extern int versionflag;
 extern FILE *treefile;

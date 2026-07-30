@@ -4,15 +4,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <errno.h>
 #include <stdint.h>
-#include <sys/mman.h>
 #include <linux/perf_event.h>
 #include "wspy.h"
 #include "error.h"
 #include "ibs.h"
 #include "ibs_sample.h"
+#include "perf_ring.h"
 
 void ibs_sample_attr_init(struct perf_event_attr *pe){
   pe->sample_type = PERF_SAMPLE_RAW;
@@ -24,20 +22,11 @@ void ibs_sample_attr_init(struct perf_event_attr *pe){
 
 struct ibs_sample_state *ibs_sample_mmap(int fd,int is_op){
   struct ibs_sample_state *state;
-  long page_size;
-  size_t ring_len;
   void *base;
+  size_t ring_len;
 
-  page_size = sysconf(_SC_PAGESIZE);
-  if (page_size <= 0) page_size = 4096;
-  ring_len = (size_t)page_size * (1 + IBS_SAMPLE_MMAP_DATA_PAGES);
-
-  base = mmap(NULL,ring_len,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);
-  if (base == MAP_FAILED){
-    warning("unable to mmap IBS sampling ring buffer (%s), errno=%d - %s\n",
-	    is_op ? "ibs_op" : "ibs_fetch",errno,strerror(errno));
-    return NULL;
-  }
+  base = perf_ring_mmap(fd,IBS_SAMPLE_MMAP_DATA_PAGES,is_op ? "ibs_op" : "ibs_fetch",&ring_len);
+  if (!base) return NULL;
 
   state = calloc(1,sizeof(*state));
   state->ring_base = base;
@@ -48,25 +37,8 @@ struct ibs_sample_state *ibs_sample_mmap(int fd,int is_op){
 
 void ibs_sample_free(struct ibs_sample_state *state){
   if (!state) return;
-  if (state->ring_base) munmap(state->ring_base,state->ring_len);
+  perf_ring_unmap(state->ring_base,state->ring_len);
   free(state);
-}
-
-// Copies len bytes starting at the ring-relative byte offset "offset"
-// (a monotonically increasing stream position, per the perf mmap ABI --
-// not yet reduced mod data_size) out of the ring's data region into dest,
-// handling the wraparound case where the read straddles the end of the
-// physical buffer.
-static void ring_read(const uint8_t *data_base,uint64_t data_size,uint64_t offset,void *dest,uint64_t len){
-  uint64_t pos = offset % data_size;
-  uint64_t first = data_size - pos;
-
-  if (first >= len){
-    memcpy(dest,data_base+pos,len);
-  } else {
-    memcpy(dest,data_base+pos,first);
-    memcpy((uint8_t *)dest+first,data_base,len-first);
-  }
 }
 
 // Fixed-size scratch buffer for one record's regs[] words. 16 words (128
@@ -75,82 +47,45 @@ static void ring_read(const uint8_t *data_base,uint64_t data_size,uint64_t offse
 // though this PR's decode functions only read the first few -- see
 // ibs_sample.h's "minimal decode scope" comment. A record with more words
 // than this (a future, wider IBS generation) just gets truncated to the
-// fields this code already knows how to read; the ring's own consumer
-// pointer still advances by the record's real, unclamped size.
+// fields this code already knows how to read; perf_ring_drain()'s own
+// consumer pointer still advances by the record's real, unclamped size.
 #define IBS_SAMPLE_MAX_WORDS 16
 
-void ibs_sample_drain(struct ibs_sample_state *state){
-  struct perf_event_mmap_page *meta;
-  uint8_t *data_base;
-  uint64_t data_size;
-  uint64_t head,tail;
-  long page_size;
+// perf_ring_drain() callback: ctx is the struct ibs_sample_state being
+// drained. payload is [raw_size:4][caps:4][regs[]...] per the wire format
+// documented in ibs_sample.h -- raw_size covers caps+regs (not itself), so
+// regs[] starts 8 bytes into payload, not 4.
+static void ibs_sample_record_cb(const uint8_t *payload,uint32_t payload_len,void *ctx){
+  struct ibs_sample_state *state = (struct ibs_sample_state *)ctx;
+  uint32_t raw_size = 0;
+  uint32_t regs_offset = 2*sizeof(uint32_t); // skip the raw_size field itself + the 4-byte caps snapshot
 
+  if (payload_len >= sizeof(raw_size))
+    memcpy(&raw_size,payload,sizeof(raw_size));
+
+  if (raw_size > sizeof(uint32_t) && payload_len > regs_offset){
+    uint32_t regs_bytes = raw_size - sizeof(uint32_t); // raw_size covers caps(4 bytes)+regs[]; strip caps
+    int nwords = (int)(regs_bytes / sizeof(uint64_t));
+    int avail_words = (int)((payload_len - regs_offset) / sizeof(uint64_t));
+
+    if (nwords > avail_words) nwords = avail_words; // truncated by PERF_RING_MAX_PAYLOAD, or a short record
+    if (nwords > 0){
+      uint64_t words[IBS_SAMPLE_MAX_WORDS];
+      int copy_words = nwords > IBS_SAMPLE_MAX_WORDS ? IBS_SAMPLE_MAX_WORDS : nwords;
+      memcpy(words,payload+regs_offset,(size_t)copy_words*sizeof(uint64_t));
+      if (state->is_op) ibs_sample_decode_op(words,copy_words,state);
+      else ibs_sample_decode_fetch(words,copy_words,state);
+      return;
+    }
+  }
+  state->decode_skipped++;
+}
+
+void ibs_sample_drain(struct ibs_sample_state *state){
   if (!state || !state->ring_base || state->drained) return;
   state->drained = 1;
-
-  meta = (struct perf_event_mmap_page *)state->ring_base;
-  if (meta->data_size){
-    data_base = (uint8_t *)state->ring_base + meta->data_offset;
-    data_size = meta->data_size;
-  } else {
-    // Pre-4.1 kernel fallback: data region is exactly the pages after the
-    // one mandatory header page, in the same single mmap() call.
-    page_size = sysconf(_SC_PAGESIZE);
-    if (page_size <= 0) page_size = 4096;
-    data_base = (uint8_t *)state->ring_base + page_size;
-    data_size = (uint64_t)state->ring_len - (uint64_t)page_size;
-  }
-
-  head = meta->data_head;
-  __sync_synchronize(); // perf mmap ABI: must read data_head before the data it bounds
-  tail = meta->data_tail;
-
-  while (tail < head){
-    struct perf_event_header hdr;
-
-    if (head - tail < sizeof(hdr)) break; // partial header at the end -- nothing more to read
-    ring_read(data_base,data_size,tail,&hdr,sizeof(hdr));
-    if (hdr.size < sizeof(hdr)) break; // malformed record -- stop rather than loop forever
-
-    if (hdr.type == PERF_RECORD_SAMPLE){
-      uint32_t raw_size = 0;
-      state->samples_seen++;
-      if (hdr.size >= sizeof(hdr)+sizeof(raw_size))
-	ring_read(data_base,data_size,tail+sizeof(hdr),&raw_size,sizeof(raw_size));
-      // raw_size covers a leading 4-byte "caps" snapshot (struct
-      // perf_ibs_data, arch/x86/include/asm/amd/ibs.h) followed by the
-      // regs[] words themselves -- strip it to get to regs[0].
-      if (raw_size > sizeof(uint32_t)){
-	uint32_t regs_bytes = raw_size - sizeof(uint32_t);
-	int nwords = (int)(regs_bytes / sizeof(uint64_t));
-	if (nwords > 0){
-	  uint64_t words[IBS_SAMPLE_MAX_WORDS];
-	  int copy_words = nwords > IBS_SAMPLE_MAX_WORDS ? IBS_SAMPLE_MAX_WORDS : nwords;
-	  ring_read(data_base,data_size,
-		    tail+sizeof(hdr)+sizeof(raw_size)+sizeof(uint32_t),
-		    words,(uint64_t)copy_words*sizeof(uint64_t));
-	  if (state->is_op) ibs_sample_decode_op(words,copy_words,state);
-	  else ibs_sample_decode_fetch(words,copy_words,state);
-	} else {
-	  state->decode_skipped++;
-	}
-      } else {
-	state->decode_skipped++;
-      }
-    } else if (hdr.type == PERF_RECORD_LOST){
-      // struct { perf_event_header; u64 id; u64 lost; } -- see perf_event.h
-      uint64_t lost_fields[2] = {0,0};
-      if (hdr.size >= sizeof(hdr)+sizeof(lost_fields))
-	ring_read(data_base,data_size,tail+sizeof(hdr),lost_fields,sizeof(lost_fields));
-      state->samples_lost += lost_fields[1];
-    }
-
-    tail += hdr.size;
-  }
-
-  meta->data_tail = tail;
-  __sync_synchronize(); // perf mmap ABI: must publish data_tail after we're done reading
+  state->samples_seen = perf_ring_drain(state->ring_base,state->ring_len,
+					 ibs_sample_record_cb,state,&state->samples_lost);
 }
 
 void ibs_sample_decode_op(const uint64_t *words,int nwords,struct ibs_sample_state *state){

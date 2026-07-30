@@ -1289,6 +1289,26 @@ def build_proctree_diff_argv(proctree_bin, json_a_path, json_b_path):
     return [proctree_bin, "--diff", "--json", json_a_path, json_b_path]
 
 
+def build_symbolize_argv(symbolize_bin, proctree_bin, tree_txt_path, pid=None, comm=None):
+    """wspy-symbolize --json (INVESTIGATION.md 4.4 priorities item 9's (b)
+    half, "Symbol-level profiling" -- address-to-symbol resolution for
+    --symbol-sample profiling data): mirrors build_proctree_json_argv()'s
+    role for the web viewer's on-demand /api/symbolize endpoint, but for the
+    separate wspy-symbolize tool. --proctree passes through this server's
+    own configured proctree binary (wspy-symbolize shells `proctree --json`
+    itself internally, same as this server's own tree-viewer endpoints do)
+    rather than letting it fall back to searching PATH. Exactly one of
+    pid/comm must be given -- caller's responsibility, matching
+    wspy-symbolize's own --pid/--comm mutually-exclusive-required CLI
+    contract."""
+    argv = [symbolize_bin, "--tree-file", tree_txt_path, "--proctree", proctree_bin, "--json"]
+    if pid is not None:
+        argv += ["--pid", str(pid)]
+    else:
+        argv += ["--comm", comm]
+    return argv
+
+
 def run_proctree_besteffort(emit, cfg, rundir, cmdline=False, futex=False, io=False, io_wait=False,
                              schedstat=False, vmsize=False, connect=False, wait=False, poll=False, nanosleep=False):
     """Best-effort trailing step mirroring the wspy-plot step (build_plot_argv()

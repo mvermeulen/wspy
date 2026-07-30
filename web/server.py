@@ -70,7 +70,7 @@ from joblib import (  # noqa: E402,F401
     execute_profile_run, execute_custom_run, write_custom_run_manifest,
     write_custom_run_summary, LOG_NAME, PLOTS_DIR_NAME, RUN_MANIFEST_NAME, SUMMARY_NAME,
     NAME_RE, resolve_toggles, checklist_from_pass_provenance, valid_affinity_spec,
-    parse_run_key, build_proctree_json_argv, build_proctree_diff_argv,
+    parse_run_key, build_proctree_json_argv, build_proctree_diff_argv, build_symbolize_argv,
     run_sync, parse_phoronix_test_names, estimate_phoronix_workload_seconds,
     CSV_NAME, MANIFEST_NAME, PNG_NAME, CURATION_NAME, guess_kind, read_run_manifest,
     ai_artifact_label, list_plot_pngs, collect_run_files,
@@ -3510,6 +3510,7 @@ def render_tree_viewer(suite, benchmark, run_id):
     other page doesn't pay for this page-specific JS (see CLAUDE.md's web/
     entry)."""
     json_url = f"/api/tree-json/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    symbolize_url = f"/api/symbolize/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
     report_url = f"/report/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
     body = f"""
 <section class="panel">
@@ -3518,7 +3519,7 @@ def render_tree_viewer(suite, benchmark, run_id):
   <div id="ptv-controls"></div>
   <div id="ptv-root"><p class="muted">Loading tree...</p></div>
 </section>
-<script>window.PTV_CONFIG = {json.dumps({"mode": "single", "jsonUrl": json_url})};</script>
+<script>window.PTV_CONFIG = {json.dumps({"mode": "single", "jsonUrl": json_url, "symbolizeUrl": symbolize_url})};</script>
 <script src="/static/proctree_viewer.js"></script>
 """
     return page(f"process tree: {benchmark}/{run_id}", body)
@@ -3793,6 +3794,11 @@ class Handler(BaseHTTPRequestHandler):
             self._api_tree_diff_json(cfg, qs)
             return
 
+        m = re.match(r"^/api/symbolize/([^/]+)/([^/]+)/([^/]+)$", path)
+        if m:
+            self._api_symbolize(cfg, *m.groups(), qs)
+            return
+
         m = re.match(r"^/api/run/([^/]+)/([^/]+)/([^/]+)/events$", path)
         if m:
             self._stream_events(*m.groups())
@@ -3961,6 +3967,54 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(output)
         except ValueError as e:
             self._send_json(500, {"error": f"proctree --json produced invalid JSON: {e}",
+                                   "command": shell_preview(argv)})
+            return
+        self._send_json(200, {"command": shell_preview(argv), "data": data})
+
+    def _api_symbolize(self, cfg, suite, benchmark, run_id, qs):
+        """Item 9's web UI drill-down: symbol-level profile for one
+        --symbol-sample-captured process (?pid=<n>) or every process sharing
+        a comm (?comm=<name>, merged post-resolution -- see wspy-symbolize's
+        own file comment on why), shelling wspy-symbolize --json against
+        this run's process.tree.txt. Same on-demand, nothing-written-to-disk
+        shape as _api_tree_json above -- always reflects the current
+        process.tree.txt, computed fresh on each request."""
+        if not all(valid_segment(x) for x in (suite, benchmark, run_id)):
+            self._send_json(400, {"error": "invalid path"})
+            return
+        pid_str = qs.get("pid", [None])[0]
+        comm = qs.get("comm", [None])[0]
+        if (pid_str is None) == (comm is None):
+            self._send_json(400, {"error": "exactly one of pid or comm query parameters is required"})
+            return
+        pid = None
+        if pid_str is not None:
+            try:
+                pid = int(pid_str)
+            except ValueError:
+                self._send_json(400, {"error": "pid must be an integer"})
+                return
+
+        rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+        tree_txt = os.path.join(rundir, TREE_TXT_NAME)
+        if not (os.path.isfile(tree_txt) and os.path.getsize(tree_txt) > 0):
+            self._send_json(404, {"error": f"no {TREE_TXT_NAME} in this run directory"})
+            return
+
+        argv = build_symbolize_argv(cfg["wspy_symbolize_bin"], cfg["proctree_bin"], tree_txt,
+                                     pid=pid, comm=comm)
+        rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=60)
+        if timed_out:
+            self._send_json(504, {"error": "wspy-symbolize timed out", "command": shell_preview(argv)})
+            return
+        if rc != 0:
+            self._send_json(500, {"error": f"wspy-symbolize exited {rc}", "command": shell_preview(argv),
+                                   "output": output})
+            return
+        try:
+            data = json.loads(output)
+        except ValueError as e:
+            self._send_json(500, {"error": f"wspy-symbolize --json produced invalid JSON: {e}",
                                    "command": shell_preview(argv)})
             return
         self._send_json(200, {"command": shell_preview(argv), "data": data})
@@ -5110,6 +5164,11 @@ def main():
                      help="path to the wspy-analyze script (report page's 'AI narrative "
                           "analysis' button; requires a locally running Ollama daemon; "
                           "default: repo root's ./wspy-analyze)")
+    ap.add_argument("--wspy-symbolize", default=os.path.join(REPO_ROOT, "wspy-symbolize"),
+                     help="path to the wspy-symbolize script (tree viewer's --symbol-sample "
+                          "'Profile' drill-down; also needs `addr2line` on PATH at use time to "
+                          "resolve anything, though it degrades gracefully without it; "
+                          "default: repo root's ./wspy-symbolize)")
     ap.add_argument("--wspy-ledger", default=os.path.join(REPO_ROOT, "wspy-ledger"),
                      help="path to the wspy-ledger binary (Phoronix tab's 'materialize' action "
                           "registers each new test point with this via --add; default: repo "
@@ -5172,6 +5231,9 @@ def main():
     if not os.path.isfile(args.wspy_analyze):
         print(f"warning: wspy-analyze not found at {args.wspy_analyze} (the report page's "
               f"'AI narrative analysis' button will fail until it's present)", file=sys.stderr)
+    if not os.path.isfile(args.wspy_symbolize):
+        print(f"warning: wspy-symbolize not found at {args.wspy_symbolize} (the tree viewer's "
+              f"'Profile' drill-down will fail until it's present)", file=sys.stderr)
 
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.wspy_cfg = {
@@ -5185,6 +5247,7 @@ def main():
         "wspy_summary_bin": os.path.abspath(args.wspy_summary),
         "wspy_core_report_bin": os.path.abspath(args.wspy_core_report),
         "wspy_analyze_bin": os.path.abspath(args.wspy_analyze),
+        "wspy_symbolize_bin": os.path.abspath(args.wspy_symbolize),
         "wspy_ledger_bin": os.path.abspath(args.wspy_ledger),
         "run_index_file": run_index_file,
         "store_db": store_db,
