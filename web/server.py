@@ -1982,6 +1982,13 @@ def render_run_tab(prefill, cfg):
              dedicated counter group to just the matching process(es) instead of only the
              whole-subtree aggregate (<code>--target=comm=&lt;name&gt;[,cmdline=&lt;substr&gt;]</code>,
              discovered live as each match execs). Leave blank for the normal whole-subtree behavior.</p>
+          <label class="group-check"><input type="checkbox" id="tree_symbol_sample"{chk(chk_default('tree', 'symbol_sample', False))}> symbol-level profiling of the matched process(es) <code>--symbol-sample</code>
+            event <select id="tree_symbol_sample_event">{"".join(f'<option value="{ev}"{" selected" if val("tree", "symbol_sample_event") == ev else (" selected" if not val("tree", "symbol_sample_event") and ev == "cycles" else "")}>{ev}</option>' for ev in ("cycles", "instructions", "cache-misses", "branch-misses"))}</select>
+          </label>
+          <p class="muted">Samples each matched process's instruction pointer (event above; <code>cycles</code> by
+             default) and snapshots its <code>/proc/&lt;pid&gt;/maps</code> for later symbol resolution --
+             view the result via the tree viewer's "profile" toggle, or run <code>wspy-symbolize</code>
+             directly. Requires the PID-targeted counter attachment field above to be filled in.</p>
         </div>
       </div>
 

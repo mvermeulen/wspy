@@ -63,6 +63,8 @@
         groups: selectedGroups("tree_group"),
         timeout_secs: getValue("tree_timeout"),
         target: getValue("tree_target"),
+        symbol_sample: getChecked("tree_symbol_sample"),
+        symbol_sample_event: getValue("tree_symbol_sample_event"),
       },
       counters: {
         enabled: getChecked("counters_enabled"),

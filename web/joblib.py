@@ -815,7 +815,7 @@ CATEGORY_TO_CHECKLIST_KEY = {
 # a scalar.
 _BOOL_OPTION_KEYS = {
     "tree": {"cmdline", "open", "futex", "io", "io_wait", "schedstat", "vmsize",
-             "connect", "wait", "poll", "nanosleep"},
+             "connect", "wait", "poll", "nanosleep", "symbol_sample"},
     "counters": {"per_core", "per_core_freq", "rusage", "csv", "power"},
     "system": {"csv", "power"},
     "gpu": {"busy", "metrics", "smi", "csv"},
@@ -955,6 +955,18 @@ def build_configuration_passes(rundir, checklist):
         target_spec = (tree.get("target") or "").strip()
         if target_spec:
             flags.append(f"--target={target_spec}")
+        # --symbol-sample/--symbol-sample-event=<event> (INVESTIGATION.md 4.4
+        # priorities item 9, "Symbol-level profiling"): only meaningful
+        # alongside --target above (wspy itself fatals otherwise) -- this UI
+        # doesn't enforce that client-side, same "wspy's own validation is
+        # the source of truth" posture --target's own spec string already
+        # has above; a --symbol-sample checked without a target spec just
+        # surfaces as a real, clear wspy fatal error via the run's own log.
+        if tree.get("symbol_sample"):
+            flags.append("--symbol-sample")
+            event = (tree.get("symbol_sample_event") or "").strip()
+            if event:
+                flags.append(f"--symbol-sample-event={event}")
         timeout = parse_optional_int(tree.get("timeout_secs"), 1, 86400)
         passes.append({"name": "tree", "category": "process-tree",
                         "options": _config_options(tree),
