@@ -87,8 +87,12 @@ TREE_TXT_NAME = "process.tree.txt"  # fixed filename every --tree pass writes (j
 # proctree --json output above this size (bytes) is rejected rather than shipped to the browser --
 # a -j-parallel kernel build can fork tens of thousands of short-lived processes, and a resulting
 # JSON blob in the hundreds-of-MB range gets silently truncated by the browser's fetch, surfacing as
-# a confusing client-side "Unexpected end of JSON input" instead of an actionable error.
-TREE_VIEWER_MAX_BYTES = 20 * 1024 * 1024
+# a confusing client-side "Unexpected end of JSON input" instead of an actionable error. 500MB gives
+# headroom over a real ~99.5k-process kernel-defconfig-build tree (219MB with --tree-cmdline only, no
+# other per-tick flags) -- note this guard is about the fetch/parse surviving, not about render time:
+# proctree_viewer.js's renderNode() still builds one DOM element per process up front regardless of
+# byte size, so a tree with tens of thousands of processes can be slow to render even once it loads.
+TREE_VIEWER_MAX_BYTES = 500 * 1024 * 1024
 ARTIFACT_FILES = (CSV_NAME, MANIFEST_NAME, PNG_NAME, LOG_NAME)
 
 # RUN_MANIFEST_NAME's presence in a run directory is what distinguishes an
