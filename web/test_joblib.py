@@ -892,6 +892,61 @@ class EstimatePhoronixWorkloadSecondsTest(unittest.TestCase):
             self.assertEqual(len(result["tests"]), 5)
             self.assertTrue(result["truncated"])
 
+    def test_resolves_local_suite_to_real_test_id(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            joblib.materialize_phoronix_test_point(
+                {"test_id": "pts/build-linux-kernel-1.18.0", "arguments": "defconfig"},
+                dest, "file", "/tmp/src.xml")
+            fake_bin = self._make_fake_phoronix(tmpdir, {
+                "pts/build-linux-kernel-1.18.0":
+                    "Test Installed: Yes\nTimes Run: 3\nAverage Run-Time: 90 Seconds\n",
+            })
+            workload = "phoronix-test-suite batch-run local/build-linux-kernel-defconfig"
+            result = joblib.estimate_phoronix_workload_seconds(
+                workload, phoronix_bin=fake_bin, dest_root=dest)
+            self.assertEqual(len(result["tests"]), 1)
+            entry = result["tests"][0]
+            self.assertNotIn("error", entry)
+            self.assertEqual(entry["installed"], "Yes")
+            self.assertEqual(entry["queried_name"], "pts/build-linux-kernel-1.18.0")
+            self.assertEqual(entry["queried_name_reason"], "local-suite")
+            self.assertEqual(result["total_seconds"], 90.0)
+
+    def test_unmatched_local_suite_falls_back_to_querying_as_is(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")  # empty -- no materialized points
+            fake_bin = self._make_fake_phoronix(tmpdir, {
+                "local/some-hand-installed-suite": "Test Installed: Yes\nEstimated Run-Time: 5 Seconds\n",
+            })
+            workload = "phoronix-test-suite batch-run local/some-hand-installed-suite"
+            result = joblib.estimate_phoronix_workload_seconds(
+                workload, phoronix_bin=fake_bin, dest_root=dest)
+            entry = result["tests"][0]
+            self.assertNotIn("error", entry)
+            self.assertNotIn("queried_name", entry)
+
+
+class ResolvePhoronixLocalSuiteTestIdsTest(unittest.TestCase):
+    def test_maps_local_identity_to_test_id(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            info = joblib.materialize_phoronix_test_point(
+                {"test_id": "pts/blender-1.2.1", "arguments": "quad-mesh"}, dest, "file", "/tmp/src.xml")
+            mapping = joblib.resolve_phoronix_local_suite_test_ids(
+                [f"local/{info['identity']}", "pts/coremark-1.0.1"], dest)
+            self.assertEqual(mapping, {f"local/{info['identity']}": "pts/blender-1.2.1"})
+
+    def test_no_local_names_skips_scan(self):
+        # dest_root doesn't even need to exist when nothing looks like local/<identity>
+        self.assertEqual(
+            joblib.resolve_phoronix_local_suite_test_ids(["pts/coremark-1.0.1"], "/nonexistent/dest"), {})
+
+    def test_unmatched_local_identity_is_omitted(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertEqual(
+                joblib.resolve_phoronix_local_suite_test_ids(["local/no-such-point"], tmpdir), {})
+
 
 class ParseOpenbenchmarkingIdTest(unittest.TestCase):
     def test_extracts_id_from_result_url(self):

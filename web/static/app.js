@@ -548,7 +548,10 @@
     if (t.error) {
       html += '<div class="status-warn">' + escapeHtml(t.error) + "</div>";
     } else {
-      if (t.queried_name) {
+      if (t.queried_name && t.queried_name_reason === "local-suite") {
+        html += '<div class="muted">"' + escapeHtml(t.name) + '" is a wspy-materialized local suite -- '
+          + "querying its underlying test \"" + escapeHtml(t.queried_name) + "\" for its estimate</div>";
+      } else if (t.queried_name) {
         html += '<div class="muted">"' + escapeHtml(t.name) + '" is a build-suite subset -- '
           + "querying full test \"" + escapeHtml(t.queried_name) + "\" for its estimate</div>";
       }

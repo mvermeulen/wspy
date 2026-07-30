@@ -1520,8 +1520,37 @@ def estimate_phoronix_runtime(fields):
     }
 
 
+def resolve_phoronix_local_suite_test_ids(names, dest_root):
+    """Maps each of `names` that looks like `local/<identity>` (the
+    "Use in Run tab" workload string copy_phoronix_test_point_to_local_suite()
+    builds, e.g. `local/build-linux-kernel-defconfig`) to the real pinned
+    test_id (e.g. `pts/build-linux-kernel-1.18.0`) of the materialized test
+    point under dest_root whose identity matches -- or leaves it unmapped if
+    no match is found (a hand-installed `local/` suite unrelated to
+    wspy-phoronix-import, or a stale/deleted materialized point).
+
+    `local/<identity>` is only ever a wspy-generated wrapper *suite* around
+    one real test -- `phoronix-test-suite info local/<identity>` doesn't
+    carry a "Test Installed"/"Times Run" field the way `info
+    pts/<test>-<version>` does (a suite isn't itself "installed"), so
+    without this resolution estimate_phoronix_workload_seconds() reported
+    "no such test, or unrecognized output" for every test point run this
+    way, even when the real underlying test was installed and had run
+    history on this host. Mirrors resolve_phoronix_subset_name()'s own
+    "resolve a wrapper name back to the real profile it estimates for"
+    idiom, just for our own local/ wrapper instead of PTS's own -subset
+    suffix. Returns a dict {name: test_id} covering only the names that
+    resolved; never raises (list_materialized_phoronix_test_points()
+    already degrades to [] for a missing/unreadable dest_root)."""
+    local_names = {n for n in names if n.startswith("local/")}
+    if not local_names:
+        return {}
+    by_identity = {e["identity"]: e["test_id"] for e in list_materialized_phoronix_test_points(dest_root)}
+    return {n: by_identity[n[len("local/"):]] for n in local_names if n[len("local/"):] in by_identity}
+
+
 def estimate_phoronix_workload_seconds(workload, phoronix_bin="phoronix-test-suite",
-                                        max_tests=PHORONIX_MAX_TESTS_CHECKED, cwd=None):
+                                        max_tests=PHORONIX_MAX_TESTS_CHECKED, cwd=None, dest_root=None):
     """Given a full workload command string, detects a `phoronix-test-suite
     <run-subcommand> <test...>` invocation and returns
     {"tests": [...], "total_seconds": float_or_None, "truncated": bool} --
@@ -1533,22 +1562,38 @@ def estimate_phoronix_workload_seconds(workload, phoronix_bin="phoronix-test-sui
     each per-test dict mirrors what the Check button already surfaces
     (name/command/estimate/error), so server.py's own JSON response shape
     doesn't need to change when it switches to calling this instead of its
-    former inline copy of the same loop."""
+    former inline copy of the same loop.
+
+    dest_root (default REPO_ROOT/workload/phoronix) is only used to resolve
+    `local/<identity>` names -- see resolve_phoronix_local_suite_test_ids()
+    -- against our own materialized test points; it's irrelevant for a
+    workload naming real PTS test/suite ids directly."""
     test_names = parse_phoronix_test_names(workload)
     if not test_names:
         return {"tests": [], "total_seconds": None, "truncated": False}
 
     checked_names = test_names[:max_tests]
+    local_test_ids = resolve_phoronix_local_suite_test_ids(
+        checked_names, dest_root or os.path.join(REPO_ROOT, "workload", "phoronix"))
     tests = []
     total_seconds = 0.0
     total_known = True
     for name in checked_names:
-        query_name, is_subset = resolve_phoronix_subset_name(name)
+        local_test_id = local_test_ids.get(name)
+        if local_test_id is not None:
+            query_name, is_subset, is_local = local_test_id, False, True
+        else:
+            query_name, is_subset = resolve_phoronix_subset_name(name)
+            is_local = False
         argv = [phoronix_bin, "info", query_name]
         rc, output, timed_out = run_sync(argv, cwd=cwd, timeout=30)
         entry = {"name": name, "command": shell_preview(argv)}
         if is_subset:
             entry["queried_name"] = query_name
+            entry["queried_name_reason"] = "subset"
+        elif is_local:
+            entry["queried_name"] = query_name
+            entry["queried_name_reason"] = "local-suite"
         if timed_out:
             entry["error"] = "phoronix-test-suite info timed out"
             total_known = False
@@ -1567,6 +1612,11 @@ def estimate_phoronix_workload_seconds(workload, phoronix_bin="phoronix-test-sui
                         f"estimate is for the full '{query_name}' test -- '{name}' is a "
                         "build-suite subset of it, so this run should take no longer, "
                         "likely less. " + estimate["detail"])
+                elif is_local:
+                    estimate["detail"] = (
+                        f"'{name}' is a wspy-materialized single-test-point local suite wrapping "
+                        f"the real test '{query_name}' -- installed/run-history reflects that "
+                        "underlying test. " + estimate["detail"])
                 if estimate["seconds"] is None:
                     total_known = False
                 else:
