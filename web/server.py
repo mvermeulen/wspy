@@ -84,6 +84,11 @@ WSPY_FIXED_ARGS = ["--csv", "--interval", "1", "--counters=topdown",
 # CSV_NAME/MANIFEST_NAME/PNG_NAME/LOG_NAME/RUN_MANIFEST_NAME/SUMMARY_NAME/
 # CURATION_NAME/NAME_RE/PROFILE_TOKEN_RE come from joblib.py (import block above).
 TREE_TXT_NAME = "process.tree.txt"  # fixed filename every --tree pass writes (joblib.py)
+# proctree --json output above this size (bytes) is rejected rather than shipped to the browser --
+# a -j-parallel kernel build can fork tens of thousands of short-lived processes, and a resulting
+# JSON blob in the hundreds-of-MB range gets silently truncated by the browser's fetch, surfacing as
+# a confusing client-side "Unexpected end of JSON input" instead of an actionable error.
+TREE_VIEWER_MAX_BYTES = 20 * 1024 * 1024
 ARTIFACT_FILES = (CSV_NAME, MANIFEST_NAME, PNG_NAME, LOG_NAME)
 
 # RUN_MANIFEST_NAME's presence in a run directory is what distinguishes an
@@ -3970,6 +3975,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(500, {"error": f"proctree exited {rc}", "command": shell_preview(argv),
                                    "output": output})
             return
+        if len(output) > TREE_VIEWER_MAX_BYTES:
+            self._send_json(413, {
+                "error": f"tree too large for the browser viewer ({len(output)} bytes of "
+                         f"proctree --json output, over the {TREE_VIEWER_MAX_BYTES}-byte limit) "
+                         f"-- this usually means the workload forked a very large number of "
+                         f"processes; try wspy-summary or wspy-core-report instead",
+                "command": shell_preview(argv)})
+            return
         try:
             data = json.loads(output)
         except ValueError as e:
@@ -4060,6 +4073,15 @@ class Handler(BaseHTTPRequestHandler):
                 if timed_out or rc != 0:
                     self._send_json(500, {"error": f"proctree --json (run {label}) failed",
                                            "command": shell_preview(argv), "output": output})
+                    return
+                if len(output) > TREE_VIEWER_MAX_BYTES:
+                    self._send_json(413, {
+                        "error": f"tree too large for the browser viewer (run {label}: "
+                                 f"{len(output)} bytes of proctree --json output, over the "
+                                 f"{TREE_VIEWER_MAX_BYTES}-byte limit) -- this usually means the "
+                                 f"workload forked a very large number of processes; try "
+                                 f"wspy-summary or wspy-core-report instead",
+                        "command": shell_preview(argv)})
                     return
                 jsons[label] = output
 
