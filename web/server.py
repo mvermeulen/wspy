@@ -4685,8 +4685,9 @@ class Handler(BaseHTTPRequestHandler):
         # `run`/`benchmark` already prompt interactively by design, so
         # there's nothing check_phoronix_batch_config() would add for those.
         is_batch_run = shlex.split(workload)[1] == "batch-run"
-        estimate = estimate_phoronix_workload_seconds(workload, phoronix_bin=cfg["phoronix_bin"],
-                                                       cwd=REPO_ROOT)
+        estimate = estimate_phoronix_workload_seconds(
+            workload, phoronix_bin=cfg["phoronix_bin"], cwd=REPO_ROOT,
+            dest_root=os.path.join(REPO_ROOT, "workload", "phoronix"))
         result["phoronix"] = {
             "detected": True,
             **estimate,
