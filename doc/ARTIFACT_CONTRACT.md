@@ -21,6 +21,7 @@ type below.
 | Run-directory manifest | `wspy-run --suite/--benchmark` | one JSON object, one per run directory | `layout_version` (`wspy-run`'s own generator, not a C header) |
 | Normalized store | `wspy-store --db <path>` | SQLite database (derived, not written by `wspy` itself) | `PRAGMA user_version` (`store.c`'s `STORE_SCHEMA_VERSION`) |
 | Reproducibility bundle | `wspy-bundle` (or the report page's "Download reproducibility bundle" link) | `.tar.gz`, one `bundle_manifest.json` index at the root | `BUNDLE_SCHEMA_VERSION` (`web/joblib.py`) |
+| Symbol table | `wspy-symbolize` | one JSON object (`--json`) or human-readable text (default) | `SCHEMA_VERSION` (`wspy-symbolize`) |
 
 A single `wspy` run can produce any subset of these: `--manifest` and `--run-index` are independent
 (a run can use either, neither, or both), and the main output always exists (stdout if `-o` isn't
@@ -672,7 +673,7 @@ Top level:
 
 ```json
 {
-  "schema_version": "1.1.0",
+  "schema_version": "1.2.0",
   "source_file": "<path given on the command line>",
   "process_count": 155000,
   "max_concurrent_processes": 42,
@@ -698,6 +699,26 @@ rather than fixed fields because the counter set is open-ended (item 10, `INVEST
 constant list this schema can name in advance — this is what bumped `PROCTREE_JSON_SCHEMA_VERSION`
 to `1.1.0`.
 
+`tree` nodes (only — **not** `summary` rows) also carry three `--symbol-sample` fields (item 9,
+`INVESTIGATION.md`'s "Symbol-level profiling deep-dive"), `[]`/`0` unless the run used
+`--symbol-sample`/`--symbol-sample-event=<event>` together with `--target` and this process matched:
+`target_samples`, an array of `{"event": ..., "addr": ..., "count": ...}` objects — one per unique
+sampled instruction pointer, `addr` a plain JSON number (decimal, not a `0x`-prefixed string);
+`target_samples_lost`, a single integer, summed `PERF_RECORD_LOST` count across whatever samples the
+ring buffer dropped before this process's drain (0 in the overwhelmingly common case); and
+`target_maps`, an array of `{"start": ..., "end": ..., "file_offset": ..., "path": ...}` objects — a
+`/proc/<pid>/maps` snapshot, file-backed executable regions only, needed to resolve `target_samples`'
+raw addresses to symbols later (file-relative offset = `addr - start + file_offset`, the standard
+PIE/`.so` load-bias convention). Deliberately **no comm-level rollup** for these two, unlike
+`target_counters` — a raw address is only meaningful together with the specific process's own
+`target_maps` (ASLR generally gives two instances of the same comm different load addresses), so
+summing addresses across pids the way `target_counters`' plain scalar values are summed would be
+actively wrong, not just imprecise; any cross-process aggregation has to happen after symbol
+resolution. Address-to-symbol resolution itself is not part of this schema at all — a separate,
+not-yet-built `wspy-symbolize` tool consumes `target_samples`/`target_maps` and produces its own
+output shape (a per-symbol hit-count table), out of scope for `proctree`'s JSON entirely. This is what
+bumped `PROCTREE_JSON_SCHEMA_VERSION` to `1.2.0`.
+
 ### Tree diff JSON (`proctree --diff --json`)
 
 `proctree --diff [--json] <a.json> <b.json>` (same item) takes two **already-exported** `--json`
@@ -707,7 +728,7 @@ order, rather than by pid. Default output is a human-readable report; `--json` e
 
 ```json
 {
-  "schema_version": "1.1.0",
+  "schema_version": "1.2.0",
   "run_a": {"source_file": "...", "process_count": 1, "max_concurrent_processes": 1},
   "run_b": {"source_file": "...", "process_count": 2, "max_concurrent_processes": 2},
   "diff_metrics": ["utime_seconds", "stime_seconds", ...],
@@ -735,6 +756,51 @@ convention, since "no differences" is itself a meaningful, testable answer (see 
 (the interactive viewer) fetch these two shapes on demand via `/api/tree-json/...` and
 `/api/tree-diff-json?a=...&b=...` — both just shell out to `proctree --json`/`proctree --diff --json`
 synchronously, writing no new artifact to disk (a deliberate design choice: always fresh, never stale).
+
+## Symbol table (`wspy-symbolize`)
+
+Item 9's (b) half (`INVESTIGATION.md`'s "Symbol-level profiling deep-dive"): `wspy-symbolize` reads a
+raw `--tree` output file (via `proctree --json`, not a pre-exported JSON — same "always fresh, never
+stale" convention as the tree viewer above), resolves one process's (`--pid`) or every same-`comm`
+process's (`--comm`, merged post-resolution) `target_samples`/`target_maps` to symbol names via
+`addr2line`, and emits either a human-readable table (default) or `--json`:
+
+```json
+{
+  "schema_version": "1.0.0",
+  "source_tree_file": "process.tree.txt",
+  "selector": {"comm": "myworker"},
+  "matched_pids": [12345, 12401],
+  "events": ["cycles"],
+  "total_samples": 1826,
+  "resolved_samples": 742,
+  "unresolved_samples": 1084,
+  "samples_lost": 0,
+  "addr2line_unavailable": false,
+  "symbols": [
+    {"symbol": "__internal_syscall_cancel", "file": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+     "source": "./nptl/./nptl/cancellation.c:40", "count": 483, "pct_of_resolved": 65.1}
+  ],
+  "unresolved": [
+    {"reason": "no backing map", "file": null, "count": 1021},
+    {"reason": "?? (unresolved symbol)", "file": "/path/to/stripped-binary", "count": 63}
+  ]
+}
+```
+
+`SCHEMA_VERSION` (`wspy-symbolize`, a Python constant, not a C header) versions this shape
+independently of `PROCTREE_JSON_SCHEMA_VERSION` — this is a wholly separate document, not an
+extension of the tree JSON export. `symbols` is sorted descending by `count`; `pct_of_resolved` is
+relative to `resolved_samples`, not `total_samples`, so it always sums to ~100% across `symbols`
+alone. `unresolved` reasons: `"no backing map"` (kernel-space or JIT'd/anonymous-mapped addresses —
+no `target_map` region contained them at all), `"binary deleted during run"` (the backing file's
+`target_map` path carried a kernel-appended `(deleted)` suffix — deliberately never attempted, since
+whatever now exists at that path, if anything, may not be the code that actually ran),
+`"binary unavailable"` (the path doesn't exist / isn't readable from this machine), `"addr2line
+failed"` (the binary exists but `addr2line` itself couldn't process it, or isn't installed at all —
+see `addr2line_unavailable`), and `"?? (unresolved symbol)"` (the binary and offset resolved fine,
+but `addr2line` had no name for it — typically a stripped binary). No call-graph — this is a flat
+self-hit table, `symbol`/`file`/`source` naming one address's *own* location, not a call stack.
 
 ## Unified output layout (`wspy-run --suite <name> --benchmark <name>`)
 

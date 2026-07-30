@@ -76,6 +76,12 @@ struct counter_info {
   // so read_counters()/setup_counters() must special-case it -- see
   // ibs_sample.h's own comment for why draining only happens at end-of-run.
   unsigned int is_ibs_sample : 1;
+  // Symbol-level profiling marker (symbol_sample.h, 4.4 priorities item 9):
+  // same "mmap'd ring buffer, not a plain running count" special-casing as
+  // is_ibs_sample, but for an ordinary PERF_SAMPLE_IP event opened pid-
+  // scoped against a --target-matched process, drained at that pid's own
+  // PTRACE_EVENT_EXIT rather than end-of-run.
+  unsigned int is_symbol_sample : 1;
   unsigned int device_type;
   unsigned long int config;
   unsigned long int config1; // extended config word (e.g. AMD IBS ldlat threshold); 0 for counters that don't use it
@@ -100,6 +106,11 @@ struct counter_info {
   // here (struct defined in ibs_sample.h) since cpu_info.h is included by
   // code that has no reason to know AMD IBS's internal sample layout.
   struct ibs_sample_state *ibs_sample_state;
+  // NULL for every counter except symbol-sampling ones (is_symbol_sample==1),
+  // where it holds the mmap'd ring buffer + address histogram. Opaque here
+  // (struct defined in symbol_sample.h) for the same reason as
+  // ibs_sample_state above.
+  struct symbol_sample_state *symbol_sample_state;
 };
 
 // CPU counter tables

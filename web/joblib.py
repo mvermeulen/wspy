@@ -815,7 +815,7 @@ CATEGORY_TO_CHECKLIST_KEY = {
 # a scalar.
 _BOOL_OPTION_KEYS = {
     "tree": {"cmdline", "open", "futex", "io", "io_wait", "schedstat", "vmsize",
-             "connect", "wait", "poll", "nanosleep"},
+             "connect", "wait", "poll", "nanosleep", "symbol_sample"},
     "counters": {"per_core", "per_core_freq", "rusage", "csv", "power"},
     "system": {"csv", "power"},
     "gpu": {"busy", "metrics", "smi", "csv"},
@@ -955,6 +955,18 @@ def build_configuration_passes(rundir, checklist):
         target_spec = (tree.get("target") or "").strip()
         if target_spec:
             flags.append(f"--target={target_spec}")
+        # --symbol-sample/--symbol-sample-event=<event> (INVESTIGATION.md 4.4
+        # priorities item 9, "Symbol-level profiling"): only meaningful
+        # alongside --target above (wspy itself fatals otherwise) -- this UI
+        # doesn't enforce that client-side, same "wspy's own validation is
+        # the source of truth" posture --target's own spec string already
+        # has above; a --symbol-sample checked without a target spec just
+        # surfaces as a real, clear wspy fatal error via the run's own log.
+        if tree.get("symbol_sample"):
+            flags.append("--symbol-sample")
+            event = (tree.get("symbol_sample_event") or "").strip()
+            if event:
+                flags.append(f"--symbol-sample-event={event}")
         timeout = parse_optional_int(tree.get("timeout_secs"), 1, 86400)
         passes.append({"name": "tree", "category": "process-tree",
                         "options": _config_options(tree),
@@ -1287,6 +1299,26 @@ def build_proctree_diff_argv(proctree_bin, json_a_path, json_b_path):
     build_proctree_json_argv() above), not raw process.tree.txt -- JSON is
     the one interchange format both the diff and the viewer consume."""
     return [proctree_bin, "--diff", "--json", json_a_path, json_b_path]
+
+
+def build_symbolize_argv(symbolize_bin, proctree_bin, tree_txt_path, pid=None, comm=None):
+    """wspy-symbolize --json (INVESTIGATION.md 4.4 priorities item 9's (b)
+    half, "Symbol-level profiling" -- address-to-symbol resolution for
+    --symbol-sample profiling data): mirrors build_proctree_json_argv()'s
+    role for the web viewer's on-demand /api/symbolize endpoint, but for the
+    separate wspy-symbolize tool. --proctree passes through this server's
+    own configured proctree binary (wspy-symbolize shells `proctree --json`
+    itself internally, same as this server's own tree-viewer endpoints do)
+    rather than letting it fall back to searching PATH. Exactly one of
+    pid/comm must be given -- caller's responsibility, matching
+    wspy-symbolize's own --pid/--comm mutually-exclusive-required CLI
+    contract."""
+    argv = [symbolize_bin, "--tree-file", tree_txt_path, "--proctree", proctree_bin, "--json"]
+    if pid is not None:
+        argv += ["--pid", str(pid)]
+    else:
+        argv += ["--comm", comm]
+    return argv
 
 
 def run_proctree_besteffort(emit, cfg, rundir, cmdline=False, futex=False, io=False, io_wait=False,

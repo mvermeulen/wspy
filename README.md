@@ -31,10 +31,13 @@ make clobber                  # also remove built binaries
 `wspy-store`/`wspy-summary`/`wspy-archetype` link against the system SQLite library — install
 `libsqlite3-dev` (or your distro's equivalent) before building. `wspy-plot` shells out to a `gnuplot`
 binary at run time, not a build-time dependency. `wspy-run` is a bash script; `wspy-sweep`,
-`wspy-queue`, `wspy-bundle`, `wspy-analyze`, `wspy-phoronix-import`, and the web launcher
-(`web/server.py`) are plain Python 3 scripts — stdlib only, nothing to build or install
+`wspy-queue`, `wspy-bundle`, `wspy-analyze`, `wspy-symbolize`, `wspy-phoronix-import`, and the web
+launcher (`web/server.py`) are plain Python 3 scripts — stdlib only, nothing to build or install
 (`wspy-analyze` additionally needs a running Ollama daemon at use time, not build time, to do
-anything; `wspy-phoronix-import`'s `--result` source needs `phoronix-test-suite` installed).
+anything; `wspy-symbolize` needs `addr2line` on `PATH` (binutils, near-universally already installed)
+at use time to resolve anything, though it degrades to an "unresolved" report rather than failing
+outright if it's missing; `wspy-phoronix-import`'s `--result` source needs `phoronix-test-suite`
+installed).
 
 Performance counters and `--tree` (which uses `ptrace`) generally need root, or
 `CAP_SYS_PTRACE` plus `perf_event_paranoid <= 1`. `scripts/setup_perf.sh` checks and, if you
@@ -495,6 +498,31 @@ report page has a "Download reproducibility bundle" link that produces the ident
 ```
 
 See `./wspy-bundle --help` for the full option list.
+
+## wspy-symbolize: address-to-symbol resolution for --symbol-sample profiling
+
+`wspy-symbolize` resolves the raw (instruction-pointer, hit-count) samples a `--target
+... --symbol-sample` run captures into a sorted per-symbol hit-count table — the address-to-symbol
+resolution half of symbol-level profiling (`topdown.c`'s `--symbol-sample`/`--symbol-sample-event`
+flags capture the raw data; this tool is a separate post-hoc step, not linked into `wspy` itself, so
+resolving addresses via `addr2line` never blocks the traced workload). Reads a raw `--tree` output
+file (via `proctree --json`, same as the web launcher's own tree viewer), symbolizes one process
+(`--pid`) or every process sharing a command name (`--comm`, merged by symbol name *after*
+per-process resolution — raw addresses are never merged across processes, since ASLR generally gives
+each its own load addresses):
+
+```
+./wspy --tree process.tree.txt --target=comm=myworker --symbol-sample --symbol-sample-event=cycles -- ./myworkload
+./wspy-symbolize --tree-file process.tree.txt --comm myworker
+./wspy-symbolize --tree-file process.tree.txt --pid 12345 --json > symbols.json
+```
+
+No call-graph (a flat self-hit table, like `perf report --no-children`); an address with no
+containing `/proc/<pid>/maps` region (kernel-space samples, or JIT'd/anonymous-mapped code) reports
+as `<unresolved: no backing map>` rather than being guessed at, and a resolved binary/library that
+`addr2line` can't name (stripped, or a genuinely unknown offset) reports as `<unresolved: ?? symbol>`
+grouped by file. See `INVESTIGATION.md`'s "Symbol-level profiling deep-dive" for the full design.
+See `./wspy-symbolize --help` for the full option list.
 
 ## wspy-phoronix-import: openbenchmarking.org-seeded single-test-point suites
 

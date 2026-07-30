@@ -594,3 +594,38 @@ tr.ptv-badge-removed td { background: rgba(207, 34, 46, 0.12); }
 tr.ptv-badge-matched td { background: transparent; }
 tr.ptv-summary-row { cursor: pointer; }
 tr.ptv-summary-row:hover td { background: var(--panel); }
+
+/* --symbol-sample "Profile" drill-down (item 9, INVESTIGATION.md's
+ * "Symbol-level profiling deep-dive") -- web/static/proctree_viewer.js. */
+.ptv-profile-btn {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 0.8rem;
+  user-select: none;
+}
+.ptv-profile-panel-wrap { margin-left: 1.8em; }
+.ptv-profile-panel {
+  font-size: 0.8rem;
+  white-space: normal;
+  margin: 0.2rem 0 0.5rem 0;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  max-width: 60rem;
+  overflow-x: auto;
+}
+table.ptv-profile-table {
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  width: 100%;
+  margin-top: 0.25rem;
+}
+table.ptv-profile-table th, table.ptv-profile-table td {
+  border: 1px solid var(--border);
+  padding: 0.25rem 0.5rem;
+  text-align: left;
+  white-space: nowrap;
+}
+table.ptv-profile-table thead, table.ptv-profile-table tr:first-child { background: var(--bg); }
+tr.ptv-profile-unresolved td { color: var(--muted); font-style: italic; }

@@ -251,6 +251,44 @@ class BuildConfigurationPassesTest(unittest.TestCase):
         restored = joblib.checklist_section_from_options("tree", passes[0]["options"])
         self.assertEqual(sorted(restored["groups"]), ["ipc", "software"])
 
+    # --symbol-sample/--symbol-sample-event (item 9's Run-tab drill-down,
+    # INVESTIGATION.md's "Symbol-level profiling deep-dive") -- mirrors the
+    # --target tests above.
+    def test_symbol_sample_flags_passthrough(self):
+        checklist = {"tree": {"enabled": True, "target": "comm=coremark.exe",
+                               "symbol_sample": True, "symbol_sample_event": "cache-misses"}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        flags = passes[0]["flags"]
+        self.assertIn("--symbol-sample", flags)
+        self.assertIn("--symbol-sample-event=cache-misses", flags)
+
+    def test_symbol_sample_omitted_when_unchecked(self):
+        checklist = {"tree": {"enabled": True, "target": "comm=coremark.exe",
+                               "symbol_sample": False, "symbol_sample_event": "cycles"}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        flags = passes[0]["flags"]
+        self.assertNotIn("--symbol-sample", flags)
+        self.assertFalse(any(f.startswith("--symbol-sample-event") for f in flags))
+
+    def test_symbol_sample_event_omitted_when_blank(self):
+        # A checked box with no event selected still emits the boolean flag
+        # (defaults to cycles server-side, see wspy.c) but no bogus
+        # --symbol-sample-event= with an empty value.
+        checklist = {"tree": {"enabled": True, "target": "comm=coremark.exe",
+                               "symbol_sample": True, "symbol_sample_event": ""}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        flags = passes[0]["flags"]
+        self.assertIn("--symbol-sample", flags)
+        self.assertFalse(any(f.startswith("--symbol-sample-event") for f in flags))
+
+    def test_symbol_sample_round_trips_through_config_options(self):
+        checklist = {"tree": {"enabled": True, "target": "comm=coremark.exe",
+                               "symbol_sample": True, "symbol_sample_event": "instructions"}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        restored = joblib.checklist_section_from_options("tree", passes[0]["options"])
+        self.assertTrue(restored["symbol_sample"])
+        self.assertEqual(restored["symbol_sample_event"], "instructions")
+
     def test_counters_per_core_checkbox_adds_per_core_flag_with_no_interval(self):
         # Regression test: per_core used to be gated on "interval is not
         # None", so leaving the interval field blank (aggregate mode --
@@ -627,6 +665,32 @@ class BuildProctreeJsonDiffArgvTest(unittest.TestCase):
         self.assertEqual(
             joblib.build_proctree_diff_argv("./proctree", "/tmp/a.json", "/tmp/b.json"),
             ["./proctree", "--diff", "--json", "/tmp/a.json", "/tmp/b.json"])
+
+
+class BuildSymbolizeArgvTest(unittest.TestCase):
+    # item 9's web UI drill-down (INVESTIGATION.md's "Symbol-level profiling
+    # deep-dive") -- /api/symbolize builds this argv via build_symbolize_argv().
+    def test_pid_selector(self):
+        self.assertEqual(
+            joblib.build_symbolize_argv("./wspy-symbolize", "./proctree", "/r/process.tree.txt", pid=123),
+            ["./wspy-symbolize", "--tree-file", "/r/process.tree.txt", "--proctree", "./proctree",
+             "--json", "--pid", "123"])
+
+    def test_comm_selector(self):
+        self.assertEqual(
+            joblib.build_symbolize_argv("./wspy-symbolize", "./proctree", "/r/process.tree.txt", comm="myworker"),
+            ["./wspy-symbolize", "--tree-file", "/r/process.tree.txt", "--proctree", "./proctree",
+             "--json", "--comm", "myworker"])
+
+    def test_pid_takes_precedence_when_both_given(self):
+        # Caller's responsibility to give exactly one (see the function's own
+        # docstring) -- pid wins if both are passed, rather than emitting an
+        # argv with both --pid and --comm.
+        self.assertEqual(
+            joblib.build_symbolize_argv("./wspy-symbolize", "./proctree", "/r/process.tree.txt",
+                                         pid=123, comm="myworker"),
+            ["./wspy-symbolize", "--tree-file", "/r/process.tree.txt", "--proctree", "./proctree",
+             "--json", "--pid", "123"])
 
 
 # Phoronix runtime-estimation logic (moved here from server.py's "Estimated

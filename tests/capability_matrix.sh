@@ -311,6 +311,13 @@ run_bundle "tree-syscall-latency-expansion" 0 --no-ipc --tree "$TREE_OUT" --tree
 # --target-without---tree's own fatal incompatibility is covered alongside
 # --passes' below.
 run_bundle "tree-target"               0 --software --tree "$TREE_OUT" --target=comm=true -- /bin/true
+# --symbol-sample (INVESTIGATION.md 4.4 priorities item 9): pid-scoped
+# PERF_SAMPLE_IP profiling of --target-matched processes -- graceful-
+# degradation bundle here (this sandbox's ptrace can't guarantee a real
+# PTRACE_EVENT_EXEC match fires, so this mainly exercises that the flag
+# combination itself doesn't fatal/crash); --symbol-sample-without---target's
+# own fatal incompatibility is covered alongside --passes' below.
+run_bundle "tree-target-symbol-sample" 0 --software --tree "$TREE_OUT" --target=comm=true --symbol-sample --symbol-sample-event=instructions -- /bin/true
 
 echo ""
 echo "=== Run-artifact bundles (manifest, run-index, capabilities) ==="
@@ -387,6 +394,7 @@ run_expected_fatal_bundle "multiplex-without-passes-incompatible" 1 --no-ipc --m
 # --target attaches at a PTRACE_EVENT_EXEC stop discovered by --tree's own
 # ptrace loop -- meaningless (and rejected) without --tree (item 10).
 run_expected_fatal_bundle "target-without-tree-incompatible" 1 --no-ipc --target=comm=true -- /bin/true
+run_expected_fatal_bundle "symbol-sample-without-target-incompatible" 1 --no-ipc --tree "$TREE_OUT" --symbol-sample -- /bin/true
 
 echo ""
 echo "=== --exit-with-child: the one bundle where a nonzero exit is correct ==="

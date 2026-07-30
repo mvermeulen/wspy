@@ -1,0 +1,338 @@
+#!/usr/bin/env python3
+"""
+wspy-symbolize -- address-to-symbol resolution for --symbol-sample profiling
+data (INVESTIGATION.md 4.4 priorities item 9, "Symbol-level profiling"; see
+that doc's "Symbol-level profiling deep-dive" for the full design).
+
+The (b) half of item 9: wspy/topdown.c's capture side (--target +
+--symbol-sample) writes raw (event, instruction-pointer, hit-count) samples
+plus a /proc/<pid>/maps snapshot into the tree file as targetsample/
+targetmap lines; proctree.c parses those into a tree JSON's per-process
+target_samples/target_maps arrays. This tool is the other half: given that
+JSON, resolve each raw address to a symbol name and produce a sorted
+per-symbol hit-count table -- deliberately a separate post-hoc tool, not
+linked into wspy itself, since shelling addr2line from inside the ptrace
+loop would block the traced children (see the deep-dive).
+
+Stdlib-only (matches wspy-queue/wspy-bundle/web/joblib.py's "thin client, no
+dependency" convention) -- shells out to `proctree --json` to parse the raw
+tree file (same "always fresh, never stale" convention web/server.py's own
+tree-viewer endpoints already use, per doc/ARTIFACT_CONTRACT.md) and to
+`addr2line` to resolve addresses; no Python ELF/DWARF library required.
+
+Selection: exactly one of --pid or --comm. --pid resolves one process's own
+samples. --comm resolves and symbolizes every matching process independently
+(each against its own target_maps -- PIE/ASLR load addresses generally
+differ per process instance) and only THEN merges by (symbol, file) --
+merging by symbol name post-resolution is safe where merging raw addresses
+pre-resolution (which proctree.c deliberately never does, see its own
+accumulate_target_counters() comment) is not.
+
+Known, deliberate v1 limitations (see the deep-dive for why each is scoped
+out rather than a bug):
+  - No call-graph -- a flat self-hit table only, like `perf report
+    --no-children`.
+  - An address with no containing target_map (kernel-space samples --
+    wspy's sampling counter doesn't set exclude_kernel, same as every other
+    wspy counter -- or JIT'd/anonymous-mapped code) is reported in the
+    "unresolved" section, reason "no backing map", never guessed at.
+  - A target_map whose backing file no longer exists, or was replaced
+    during the run (kernel-appended " (deleted)" suffix -- the path may now
+    refer to a different file than the one that was actually running, so
+    resolving against it could silently produce a *wrong* symbol name, not
+    just a missing one), is reported unresolved with reason "binary
+    unavailable" / "binary deleted during run" and never attempted.
+  - A resolved (file, offset) that addr2line can't name (stripped binary,
+    or a genuinely unknown offset) shows up as a "?? (unresolved symbol)"
+    row grouped by file -- distinct from "no backing map", since the
+    binary identity is still known even though the specific symbol isn't.
+"""
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+SCHEMA_VERSION = "1.0.0"  # bump on any added/removed/renamed output field
+
+DELETED_SUFFIX = " (deleted)"
+
+
+def iter_nodes(node):
+    """Depth-first walk of a proctree --json "tree" node, yielding node then
+    every descendant -- matches print_tree()/print_process_json()'s own
+    eldest-to-youngest child order, though order doesn't matter here."""
+    yield node
+    for child in node.get("children", []):
+        yield from iter_nodes(child)
+
+
+def run_proctree_json(proctree_bin, tree_file):
+    argv = [proctree_bin, "--json", tree_file]
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    except FileNotFoundError:
+        sys.exit(f"wspy-symbolize: proctree binary not found: {proctree_bin}")
+    except subprocess.TimeoutExpired:
+        sys.exit(f"wspy-symbolize: proctree --json timed out on {tree_file}")
+    if proc.returncode != 0:
+        sys.exit(f"wspy-symbolize: proctree --json {tree_file} exited {proc.returncode}: "
+                  f"{proc.stderr.strip()}")
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError as e:
+        sys.exit(f"wspy-symbolize: proctree --json produced invalid JSON: {e}")
+
+
+def select_nodes(doc, pid, comm):
+    nodes = list(iter_nodes(doc["tree"]))
+    if pid is not None:
+        return [n for n in nodes if n.get("pid") == pid]
+    return [n for n in nodes if n.get("comm") == comm]
+
+
+def resolve_map(maps, addr):
+    """Linear scan (maps are typically a handful of regions per process --
+    not worth a bisect/sorted-list precomputation for this scale) for the
+    target_map region containing addr. Returns the map dict, or None."""
+    for m in maps:
+        if m["start"] <= addr < m["end"]:
+            return m
+    return None
+
+
+def addr2line_batch(addr2line_bin, path, offsets):
+    """Resolves offsets (a list of ints, file-relative) against path in one
+    batched addr2line invocation. Returns a list of (symbol_or_None,
+    source_or_None) pairs, same length/order as offsets, or None for the
+    whole batch if addr2line itself couldn't be run against this file."""
+    argv = [addr2line_bin, "-e", path, "-f", "-C", "-a"] + ["0x%x" % o for o in offsets]
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+
+    lines = proc.stdout.splitlines()
+    if len(lines) != 3 * len(offsets):
+        # Malformed/unexpected output shape -- degrade the whole batch to
+        # unresolved rather than risk misaligning symbol names to the wrong
+        # addresses.
+        return None
+
+    results = []
+    for i in range(len(offsets)):
+        # lines[3*i] is the echoed "0x..." address (per -a), used only for
+        # batch alignment above, not re-parsed here -- addr2line preserves
+        # input order.
+        function = lines[3*i + 1].strip()
+        source = lines[3*i + 2].strip()
+        symbol = None if function in ("", "??") else function
+        src = None if source in ("", "??:0", "??:?", "??") else source
+        results.append((symbol, src))
+    return results
+
+
+def symbolize_node(node, addr2line_bin, symbol_counts, unresolved_counts, missing_addr2line):
+    """Resolves one process node's target_samples against its own
+    target_maps, accumulating into the shared symbol_counts/
+    unresolved_counts dicts (keyed for later cross-process merge -- see
+    main()). Returns (resolved_total, unresolved_total) for this node."""
+    maps = node.get("target_maps", [])
+    samples = node.get("target_samples", [])
+
+    # Group addresses by containing file first, so each file's offsets are
+    # resolved in one addr2line call -- same "batch per file, not per
+    # address" reasoning INVESTIGATION.md's deep-dive calls for.
+    by_file = {}       # path -> list of (offset, sample)
+    no_map = 0
+    deleted = {}        # path -> count, for reporting
+    for s in samples:
+        m = resolve_map(maps, s["addr"])
+        if m is None:
+            no_map += s["count"]
+            continue
+        path = m["path"]
+        if path.endswith(DELETED_SUFFIX):
+            deleted[path] = deleted.get(path, 0) + s["count"]
+            continue
+        offset = s["addr"] - m["start"] + m["file_offset"]
+        by_file.setdefault(path, []).append((offset, s))
+
+    resolved_total = 0
+    unresolved_total = 0
+
+    if no_map:
+        unresolved_counts[("no backing map", None)] = (
+            unresolved_counts.get(("no backing map", None), 0) + no_map)
+        unresolved_total += no_map
+
+    for path, count in deleted.items():
+        key = ("binary deleted during run", path)
+        unresolved_counts[key] = unresolved_counts.get(key, 0) + count
+        unresolved_total += count
+
+    for path, entries in by_file.items():
+        if not os.access(path, os.R_OK):
+            key = ("binary unavailable", path)
+            total = sum(s["count"] for _, s in entries)
+            unresolved_counts[key] = unresolved_counts.get(key, 0) + total
+            unresolved_total += total
+            continue
+
+        offsets = [off for off, _ in entries]
+        resolved = addr2line_batch(addr2line_bin, path, offsets)
+        if resolved is None:
+            missing_addr2line[0] = True
+            key = ("addr2line failed", path)
+            total = sum(s["count"] for _, s in entries)
+            unresolved_counts[key] = unresolved_counts.get(key, 0) + total
+            unresolved_total += total
+            continue
+
+        for (symbol, source), (_, s) in zip(resolved, entries):
+            if symbol is None:
+                key = ("?? (unresolved symbol)", path)
+                unresolved_counts[key] = unresolved_counts.get(key, 0) + s["count"]
+                unresolved_total += s["count"]
+                continue
+            key = (symbol, path, source)
+            symbol_counts[key] = symbol_counts.get(key, 0) + s["count"]
+            resolved_total += s["count"]
+
+    return resolved_total, unresolved_total
+
+
+def build_result(source_tree_file, selector, nodes, addr2line_bin):
+    symbol_counts = {}       # (symbol, file, source) -> count
+    unresolved_counts = {}   # (reason, file_or_None) -> count
+    missing_addr2line = [False]
+    resolved_total = 0
+    unresolved_total = 0
+    samples_lost = 0
+    events = set()
+
+    for node in nodes:
+        samples_lost += node.get("target_samples_lost", 0)
+        for s in node.get("target_samples", []):
+            events.add(s["event"])
+        r, u = symbolize_node(node, addr2line_bin, symbol_counts, unresolved_counts, missing_addr2line)
+        resolved_total += r
+        unresolved_total += u
+
+    total = resolved_total + unresolved_total
+
+    symbols = []
+    for (symbol, file_path, source), count in symbol_counts.items():
+        symbols.append({
+            "symbol": symbol,
+            "file": file_path,
+            "source": source,
+            "count": count,
+            "pct_of_resolved": round(100.0 * count / resolved_total, 2) if resolved_total else 0.0,
+        })
+    symbols.sort(key=lambda row: row["count"], reverse=True)
+
+    unresolved = []
+    for (reason, file_path), count in unresolved_counts.items():
+        unresolved.append({"reason": reason, "file": file_path, "count": count})
+    unresolved.sort(key=lambda row: row["count"], reverse=True)
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "source_tree_file": source_tree_file,
+        "selector": selector,
+        "matched_pids": [n["pid"] for n in nodes],
+        "events": sorted(events),
+        "total_samples": total,
+        "resolved_samples": resolved_total,
+        "unresolved_samples": unresolved_total,
+        "samples_lost": samples_lost,
+        "addr2line_unavailable": missing_addr2line[0] and shutil.which(addr2line_bin) is None,
+        "symbols": symbols,
+        "unresolved": unresolved,
+    }
+
+
+def print_text_report(result):
+    sel = result["selector"]
+    sel_desc = f"pid={sel['pid']}" if "pid" in sel else f"comm={sel['comm']}"
+    print(f"wspy-symbolize: {sel_desc}  matched_pids={result['matched_pids']}  "
+          f"events={','.join(result['events']) or '(none)'}")
+    print(f"  total_samples={result['total_samples']}  resolved={result['resolved_samples']}  "
+          f"unresolved={result['unresolved_samples']}  samples_lost={result['samples_lost']}")
+    if result["addr2line_unavailable"]:
+        print("  warning: addr2line not found -- every address that fell in a real "
+              "backing file is reported unresolved (reason: addr2line failed)", file=sys.stderr)
+    print()
+    if not result["symbols"] and not result["unresolved"]:
+        print("  (no samples collected -- see INVESTIGATION.md's \"Symbol-level profiling "
+              "deep-dive\": a short/idle target can genuinely accrue zero samples)")
+        return
+    print(f"  {'count':>10}  {'%res':>6}  symbol  (file)")
+    for row in result["symbols"]:
+        src = f"  [{row['source']}]" if row["source"] else ""
+        print(f"  {row['count']:>10}  {row['pct_of_resolved']:>5.1f}%  {row['symbol']}  "
+              f"({row['file']}){src}")
+    for row in result["unresolved"]:
+        where = f" ({row['file']})" if row["file"] else ""
+        print(f"  {row['count']:>10}  {'':>6}  <unresolved: {row['reason']}>{where}")
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Resolve --symbol-sample raw addresses (captured via --target) to symbol "
+                    "names, producing a sorted per-symbol hit-count table.")
+    ap.add_argument("--tree-file", required=True,
+                     help="raw --tree output file (the same file `proctree`/`proctree --json` "
+                          "itself takes -- not a pre-exported JSON)")
+    sel = ap.add_mutually_exclusive_group(required=True)
+    sel.add_argument("--pid", type=int, help="resolve this single pid's own samples")
+    sel.add_argument("--comm", help="resolve and merge every matching process's samples "
+                                     "(merged by symbol name after resolution, never by raw "
+                                     "address -- see file comment)")
+    ap.add_argument("--proctree", default=os.path.join(SCRIPT_DIR, "proctree"),
+                     help="proctree binary (default: %(default)s)")
+    ap.add_argument("--addr2line", default="addr2line",
+                     help="addr2line binary (default: %(default)s, resolved via PATH)")
+    ap.add_argument("--json", action="store_true",
+                     help="emit the JSON result instead of a human-readable table")
+    ap.add_argument("--out", default=None,
+                     help="write output to this path instead of stdout")
+    args = ap.parse_args()
+
+    doc = run_proctree_json(args.proctree, args.tree_file)
+    selector = {"pid": args.pid} if args.pid is not None else {"comm": args.comm}
+    nodes = select_nodes(doc, args.pid, args.comm)
+
+    if not nodes:
+        what = f"pid {args.pid}" if args.pid is not None else f"comm {args.comm!r}"
+        sys.exit(f"wspy-symbolize: no process matching {what} found in {args.tree_file}")
+
+    result = build_result(args.tree_file, selector, nodes, args.addr2line)
+
+    out = open(args.out, "w") if args.out else sys.stdout
+    try:
+        if args.json:
+            json.dump(result, out, indent=2)
+            out.write("\n")
+        else:
+            saved_stdout = sys.stdout
+            sys.stdout = out
+            try:
+                print_text_report(result)
+            finally:
+                sys.stdout = saved_stdout
+    finally:
+        if args.out:
+            out.close()
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

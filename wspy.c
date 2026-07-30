@@ -324,6 +324,8 @@ int parse_options(int argc,char *const argv[]){
     { "tree-open",no_argument,0, 38 },
     { "tree-vmsize",no_argument,0,41 },
     { "target", required_argument, 0, 100 },
+    { "symbol-sample", no_argument, 0, 101 },
+    { "symbol-sample-event", required_argument, 0, 102 },
     { "verbose", no_argument, 0, 32 },
     { "arm-dcache-mem", no_argument, 0, 73 },
     { "no-arm-dcache-mem", no_argument, 0, 74 },
@@ -783,6 +785,19 @@ int parse_options(int argc,char *const argv[]){
       } else {
 	requested_target = parsed;
 	target_active = 1;
+      }
+      break;
+    }
+    case 101: // --symbol-sample
+      symbol_sample_active = 1;
+      break;
+    case 102: { // --symbol-sample-event=<event>
+      enum symbol_sample_event parsed_event;
+      if (symbol_sample_parse_event(optarg,&parsed_event) != 0){
+	warning("invalid argument to --symbol-sample-event: %s, ignored (see --help)\n",optarg);
+      } else {
+	symbol_sample_event = parsed_event;
+	symbol_sample_active = 1; // --symbol-sample-event implies --symbol-sample, same as picking an event means wanting one
       }
       break;
     }
@@ -1394,6 +1409,13 @@ static void print_full_usage(FILE *out,const char *prog){
 	  "\t                          - attach a dedicated counter group (same counters as this run's\n"
 	  "\t                            other flags) to just the process(es) matching comm/cmdline,\n"
 	  "\t                            discovered live as they exec; requires --tree\n"
+	  "\t--symbol-sample           - pid-scoped instruction-pointer sampling of --target-matched\n"
+	  "\t                            process(es) (default event: cycles); requires --target.\n"
+	  "\t                            Raw address+hit-count data only -- symbol resolution is a\n"
+	  "\t                            separate, not-yet-built tool (wspy-symbolize)\n"
+	  "\t--symbol-sample-event=<event>\n"
+	  "\t                          - event to sample: cycles (default), instructions,\n"
+	  "\t                            cache-misses, branch-misses; implies --symbol-sample\n"
 	  "\n"
 	  "Run artifact metadata:\n"
 	  "\t--manifest <file>         - write a JSON run manifest to <file>\n"
@@ -1575,6 +1597,14 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   }
   if (target_active && counter_mask == 0){
     notice("--target given with no counter flags requested -- nothing will be attached to matched processes\n");
+  }
+
+  // --symbol-sample rides --target's own PTRACE_EVENT_EXEC discovery to
+  // decide which processes get a sampling counter attached -- meaningless
+  // without a --target to discover matches from, same dependency chain
+  // --target itself has on --tree just above.
+  if (symbol_sample_active && !target_active){
+    fatal("--symbol-sample/--symbol-sample-event requires --target (symbol-level profiling is scoped to --target-matched processes)\n");
   }
 
   if (inventory_cpu() != 0){

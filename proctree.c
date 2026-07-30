@@ -21,6 +21,9 @@
  * <time> <pid> wait <count> <seconds>
  * <time> <pid> poll <count> <seconds>
  * <time> <pid> targetcounter <group> <label> <value>
+ * <time> <pid> targetsample <event> <hexaddr> <count>
+ * <time> <pid> targetsamplelost <event> <count>
+ * <time> <pid> targetmap <hexstart> <hexend> <hexfileoffset> <path>
  *
  * The "futex"/"io_wait"/"io"/"schedstat"/"vmsize"/"connect"/"nanosleep"/
  * "wait"/"poll" lines (--tree-futex/--tree-io-wait/--tree-io/
@@ -34,7 +37,14 @@
  * item 10 in INVESTIGATION.md) is the one exception to "at most one line per
  * pid/thread per flag" -- it appears once per counter in that pid's matched
  * pid-scoped counter group, an open-ended set driven by the producing wspy
- * run's own counter_mask, not a fixed field.
+ * run's own counter_mask, not a fixed field. "targetsample"/"targetmap"
+ * (--symbol-sample, item 9) are the same kind of open-ended exception:
+ * "targetsample" once per unique sampled address, "targetmap" once per
+ * file-backed executable /proc/<pid>/maps region; "targetsamplelost" is a
+ * single optional line, only present if the sampling ring buffer overran.
+ * "targetsamplelost" is checked before "targetsample" in the dispatch loop
+ * below since "targetsample" is a prefix of "targetsamplelost" (same
+ * prefix-collision reasoning as "io"/"io_wait" above).
  *
  * Lines this parser reads but deliberately ignores (see the main parse loop
  * below): "<time> <pid> exited", "<time> <pid> signal <n>", "<time> <pid>
@@ -59,7 +69,7 @@
  * wspy manifest/run-index schema version) -- bump when fields are added/
  * removed/renamed in print_json()/run_diff()'s JSON output, matching
  * MANIFEST_SCHEMA_VERSION's (manifest.h) versioning convention. */
-#define PROCTREE_JSON_SCHEMA_VERSION "1.1.0"
+#define PROCTREE_JSON_SCHEMA_VERSION "1.2.0"
 
 /* getopt_long() values for --json/--diff/--diff-threshold: deliberately
  * >=256 rather than reusing a short-option letter (the short optstring
@@ -108,6 +118,33 @@ struct target_counter_reading {
   char *group,*label;
   unsigned long value;
   struct target_counter_reading *next;
+};
+
+/* --symbol-sample (item 9, INVESTIGATION.md): one (event,addr,count) bucket
+ * from a "targetsample" tree-file line -- same open-ended-per-pid shape as
+ * target_counter_reading above. addr/count are already deduplicated on the
+ * wspy side (symbol_sample_record_addr()'s find-or-insert histogram), so
+ * each address appears at most once per pid here too. */
+struct target_sample_reading {
+  char *event;
+  unsigned long addr;
+  unsigned long count;
+  struct target_sample_reading *next;
+};
+
+/* --symbol-sample: one file-backed executable /proc/<pid>/maps region from a
+ * "targetmap" tree-file line -- needed by the not-yet-built wspy-symbolize
+ * tool to resolve target_sample_reading's raw addresses to symbols (an
+ * address is only meaningful together with the map region it falls in:
+ * file-relative offset = addr - start + file_offset, the standard PIE/.so
+ * load-bias convention -- see INVESTIGATION.md's "Symbol-level profiling
+ * deep-dive"). path may contain spaces (e.g. a kernel-appended
+ * "(deleted)" suffix) -- parsed as everything after the three hex fields,
+ * not a plain whitespace-delimited token; see handle_targetmap(). */
+struct target_map_region {
+  unsigned long start,end,file_offset;
+  char *path;
+  struct target_map_region *next;
 };
 
 /* process_info - maintained for each process */
@@ -178,6 +215,16 @@ struct process_info {
   // and this pid matched -- NULL otherwise, same "absent means not
   // collected" convention as the fixed-field extras above.
   struct target_counter_reading *target_counters;
+  // --symbol-sample (topdown.c, item 9): this pid's own raw address
+  // histogram + backing /proc/<pid>/maps snapshot, present only if wspy was
+  // run with --symbol-sample and this pid matched --target -- NULL/0
+  // otherwise, same "absent means not collected" convention as
+  // target_counters above. Deliberately NOT summed into comm_info's rollup
+  // the way target_counters is -- see accumulate_target_counters()'s
+  // comment for why.
+  struct target_sample_reading *target_samples;
+  unsigned long target_samples_lost; // summed across targetsamplelost line(s); usually 0
+  struct target_map_region *target_maps;
   struct process_info *parent;
   struct process_info *children; // linked using the "sibling" relationship
   struct process_info *older_sibling; // elder sibling
@@ -465,6 +512,82 @@ void handle_targetcounter(double elapsed,unsigned int pid,char *rest){
   pentry->pinfo->target_counters = tc;
 }
 
+// format: elapsed pid targetsample <event> <hexaddr> <count>
+// Same lookup/multiple-per-pid pattern as handle_targetcounter() above --
+// once per unique sampled address (already deduplicated on the wspy side),
+// list order doesn't matter.
+void handle_targetsample(double elapsed,unsigned int pid,char *rest){
+  char event[64];
+  unsigned long addr,count;
+  struct proc_table_entry *pentry;
+  struct target_sample_reading *ts;
+
+  debug("handle_targetsample(%d,%s)\n",elapsed,pid,rest);
+
+  if (sscanf(rest,"%63s %lx %lu",event,&addr,&count) != 3) return;
+
+  pentry = lookup_pid(pid,0);
+  if (!pentry) return;
+
+  ts = calloc(1,sizeof(struct target_sample_reading));
+  ts->event = strdup(event);
+  ts->addr = addr;
+  ts->count = count;
+  ts->next = pentry->pinfo->target_samples;
+  pentry->pinfo->target_samples = ts;
+}
+
+// format: elapsed pid targetsamplelost <event> <count>
+// Only ever appears when the sampling ring buffer overran before this pid's
+// drain -- summed rather than kept per-event, since today's curated event
+// list (wspy.h's enum symbol_sample_event) only ever samples one event per
+// run; a future multi-event run would still get a meaningful, if slightly
+// coarser, total.
+void handle_targetsamplelost(double elapsed,unsigned int pid,char *rest){
+  char event[64];
+  unsigned long lost;
+  struct proc_table_entry *pentry;
+
+  debug("handle_targetsamplelost(%d,%s)\n",elapsed,pid,rest);
+
+  if (sscanf(rest,"%63s %lu",event,&lost) != 2) return;
+
+  pentry = lookup_pid(pid,0);
+  if (!pentry) return;
+
+  pentry->pinfo->target_samples_lost += lost;
+}
+
+// format: elapsed pid targetmap <hexstart> <hexend> <hexfileoffset> <path>
+// path is parsed as everything after the three hex fields (via %n), not a
+// plain %s token -- a backing file's path can contain spaces (most commonly
+// a kernel-appended "(deleted)" suffix on a binary replaced/updated during
+// a long run).
+void handle_targetmap(double elapsed,unsigned int pid,char *rest){
+  unsigned long start,end,file_offset;
+  int consumed = 0;
+  struct proc_table_entry *pentry;
+  struct target_map_region *tm;
+  char *path;
+
+  debug("handle_targetmap(%d,%s)\n",elapsed,pid,rest);
+
+  if (sscanf(rest,"%lx %lx %lx %n",&start,&end,&file_offset,&consumed) != 3 || consumed == 0) return;
+  path = rest+consumed;
+  if (!*path) return;
+
+  pentry = lookup_pid(pid,0);
+  if (!pentry) return;
+
+  tm = calloc(1,sizeof(struct target_map_region));
+  tm->start = start;
+  tm->end = end;
+  tm->file_offset = file_offset;
+  tm->path = strdup(path);
+  tm->next = pentry->pinfo->target_maps;
+  pentry->pinfo->target_maps = tm;
+}
+
 // format: elapsed pid exit </proc/pid/stat>
 void handle_exit(double elapsed,unsigned int pid,char *stat){
   debug("handle_exit(%d,%s)\n",elapsed,pid,stat);
@@ -553,6 +676,17 @@ struct comm_info {
 };
 struct comm_info *comm_totals = NULL;
 int num_comm_info;
+
+// No comm-level rollup for target_samples/target_maps, unlike
+// target_counters above -- a target_sample_reading's addr is only
+// meaningful together with the specific process's own target_maps (PIE/
+// shared-library load bias, generally different per process instance due
+// to ASLR), so the same numeric address in two different pids of the same
+// comm is not necessarily the same instruction. Summing raw addresses
+// across pids the way target_counters' plain scalar values are summed
+// would be actively wrong, not just imprecise -- any cross-process
+// aggregation has to happen after symbol resolution (the not-yet-built
+// wspy-symbolize tool), not here.
 
 // find-or-create (group,label) on ci->target_counters and add value -- shared
 // by both the "found existing comm" and "new comm" branches of
@@ -970,6 +1104,43 @@ static void print_target_counter_readings_json(FILE *out,struct target_counter_r
   fprintf(out,"]");
 }
 
+// --symbol-sample (item 9): open-ended array of {event,addr,count} objects,
+// same "open-ended set, one JSON array rather than a fixed field per entry"
+// shape as target_counters above. addr is emitted as a plain JSON number
+// (decimal) -- real user-space addresses on this platform fit well within
+// a JSON number's 53-bit safe-integer range, same precedent every other
+// large integer field in this file already follows (rss_kb, io_rchar, ...).
+static void print_target_sample_readings_json(FILE *out,struct target_sample_reading *ts){
+  int first = 1;
+  fprintf(out,"[");
+  for (;ts;ts=ts->next){
+    if (!first) fprintf(out,",");
+    fprintf(out,"{\"event\":"); json_write_string(out,ts->event);
+    fprintf(out,",\"addr\":%lu",ts->addr);
+    fprintf(out,",\"count\":%lu}",ts->count);
+    first = 0;
+  }
+  fprintf(out,"]");
+}
+
+// --symbol-sample: open-ended array of {start,end,file_offset,path}
+// objects -- this pid's /proc/<pid>/maps snapshot, needed alongside
+// target_samples above to resolve addresses to symbols later.
+static void print_target_map_regions_json(FILE *out,struct target_map_region *tm){
+  int first = 1;
+  fprintf(out,"[");
+  for (;tm;tm=tm->next){
+    if (!first) fprintf(out,",");
+    fprintf(out,"{\"start\":%lu",tm->start);
+    fprintf(out,",\"end\":%lu",tm->end);
+    fprintf(out,",\"file_offset\":%lu",tm->file_offset);
+    fprintf(out,",\"path\":"); json_write_string(out,tm->path);
+    fprintf(out,"}");
+    first = 0;
+  }
+  fprintf(out,"]");
+}
+
 static void print_process_json(FILE *out,struct process_info *pinfo){
   struct process_info *eldest;
   int first;
@@ -1017,6 +1188,9 @@ static void print_process_json(FILE *out,struct process_info *pinfo){
   fprintf(out,"\"poll_count\":%llu,",pinfo->poll_count);
   fprintf(out,"\"poll_seconds\":%.6f,",pinfo->poll_seconds);
   fprintf(out,"\"target_counters\":"); print_target_counter_readings_json(out,pinfo->target_counters); fprintf(out,",");
+  fprintf(out,"\"target_samples\":"); print_target_sample_readings_json(out,pinfo->target_samples); fprintf(out,",");
+  fprintf(out,"\"target_samples_lost\":%lu,",pinfo->target_samples_lost);
+  fprintf(out,"\"target_maps\":"); print_target_map_regions_json(out,pinfo->target_maps); fprintf(out,",");
 
   fprintf(out,"\"children\":[");
   first = 1;
@@ -1843,6 +2017,12 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
       handle_poll(elapsed,event_pid,p+5);
     } else if (!strncmp(p,"targetcounter",13)){
       handle_targetcounter(elapsed,event_pid,p+14);
+    } else if (!strncmp(p,"targetsamplelost",16)){ // must precede "targetsample" -- it's a prefix of this
+      handle_targetsamplelost(elapsed,event_pid,p+17);
+    } else if (!strncmp(p,"targetsample",12)){
+      handle_targetsample(elapsed,event_pid,p+13);
+    } else if (!strncmp(p,"targetmap",9)){
+      handle_targetmap(elapsed,event_pid,p+10);
     } else if (!strncmp(p,"exit",4)){
       handle_exit(elapsed,event_pid,p+5);
     } else {

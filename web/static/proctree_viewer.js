@@ -502,6 +502,118 @@
     return span;
   }
 
+  // --symbol-sample "Profile" drill-down (item 9, INVESTIGATION.md's
+  // "Symbol-level profiling deep-dive"): a node carries target_maps only if
+  // wspy's is_symbol_sample counter actually opened for it (topdown.c's
+  // write_target_maps() is gated on that, same as the have_symbol_sample
+  // check there) -- target_samples itself may still be empty (a short/idle
+  // process can genuinely accrue zero samples), so the button's presence is
+  // keyed on target_maps, not target_samples. Fetched result/expanded state
+  // is cached directly on the node object (node._profile*) rather than in
+  // component-local state, so it survives a rerender() triggered by
+  // toggling an unrelated column checkbox -- unlike this file's plain
+  // expand/collapse toggle, which currently does reset on rerender (an
+  // existing, unrelated limitation, not something this feature needs to fix).
+  function hasSymbolSampleData(node) {
+    return !!(cfg.symbolizeUrl && node.target_maps && node.target_maps.length);
+  }
+
+  function fetchProfile(node, onDone) {
+    if (node._profileResult || node._profileError || node._profileLoading) {
+      onDone();
+      return;
+    }
+    node._profileLoading = true;
+    onDone();
+    fetch(cfg.symbolizeUrl + "?pid=" + encodeURIComponent(node.pid))
+      .then(function (r) { return r.json(); })
+      .then(function (resp) {
+        node._profileLoading = false;
+        if (resp.error) {
+          node._profileError = resp.error;
+        } else {
+          node._profileResult = resp.data;
+        }
+        onDone();
+      })
+      .catch(function (e) {
+        node._profileLoading = false;
+        node._profileError = String(e);
+        onDone();
+      });
+  }
+
+  function renderProfilePanel(node) {
+    var panel = document.createElement("div");
+    panel.className = "ptv-profile-panel";
+
+    if (node._profileLoading) {
+      panel.textContent = "Loading profile...";
+      return panel;
+    }
+    if (node._profileError) {
+      panel.textContent = "Profile error: " + node._profileError;
+      return panel;
+    }
+    var data = node._profileResult;
+    if (!data) {
+      panel.textContent = "Profile not loaded.";
+      return panel;
+    }
+
+    var info = document.createElement("p");
+    info.className = "muted";
+    info.textContent = "events=" + (data.events.join(",") || "(none)") +
+        "  total=" + data.total_samples + "  resolved=" + data.resolved_samples +
+        "  unresolved=" + data.unresolved_samples +
+        (data.samples_lost ? "  lost=" + data.samples_lost : "") +
+        (data.addr2line_unavailable ? "  (addr2line not found -- nothing could be resolved)" : "");
+    panel.appendChild(info);
+
+    if (!data.symbols.length && !data.unresolved.length) {
+      var none = document.createElement("p");
+      none.className = "muted";
+      none.textContent = "No samples collected (a short/idle process can genuinely accrue zero).";
+      panel.appendChild(none);
+      return panel;
+    }
+
+    var table = document.createElement("table");
+    table.className = "ptv-profile-table";
+    var thead = document.createElement("tr");
+    ["count", "% resolved", "symbol", "file", "source"].forEach(function (h) {
+      var th = document.createElement("th");
+      th.textContent = h;
+      thead.appendChild(th);
+    });
+    table.appendChild(thead);
+    data.symbols.forEach(function (row) {
+      var tr = document.createElement("tr");
+      [
+        String(row.count), row.pct_of_resolved.toFixed(1) + "%",
+        row.symbol, row.file, row.source || "—"
+      ].forEach(function (val) {
+        var td = document.createElement("td");
+        td.textContent = val;
+        tr.appendChild(td);
+      });
+      table.appendChild(tr);
+    });
+    data.unresolved.forEach(function (row) {
+      var tr = document.createElement("tr");
+      tr.className = "ptv-profile-unresolved";
+      [String(row.count), "—", "<unresolved: " + row.reason + ">", row.file || "—", "—"]
+        .forEach(function (val) {
+          var td = document.createElement("td");
+          td.textContent = val;
+          tr.appendChild(td);
+        });
+      table.appendChild(tr);
+    });
+    panel.appendChild(table);
+    return panel;
+  }
+
   function renderNode(node, depth) {
     var search = state.search;
     var container = document.createElement("div");
@@ -558,7 +670,30 @@
       }
     });
 
+    var profilePanelDiv = null;
+    if (hasSymbolSampleData(node)) {
+      var profileBtn = document.createElement("span");
+      profileBtn.className = "ptv-profile-btn";
+      profilePanelDiv = document.createElement("div");
+      profilePanelDiv.className = "ptv-profile-panel-wrap";
+
+      var updatePanel = function () {
+        profileBtn.textContent = node._profileExpanded ? "▼ profile" : "▶ profile";
+        profilePanelDiv.innerHTML = "";
+        profilePanelDiv.style.display = node._profileExpanded ? "" : "none";
+        if (node._profileExpanded) profilePanelDiv.appendChild(renderProfilePanel(node));
+      };
+      profileBtn.addEventListener("click", function () {
+        node._profileExpanded = !node._profileExpanded;
+        if (node._profileExpanded) fetchProfile(node, updatePanel);
+        else updatePanel();
+      });
+      updatePanel();
+      row.appendChild(profileBtn);
+    }
+
     container.appendChild(row);
+    if (profilePanelDiv) container.appendChild(profilePanelDiv);
 
     if (hasChildren) {
       var childrenDiv = document.createElement("div");
