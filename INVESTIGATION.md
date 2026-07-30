@@ -881,6 +881,35 @@ resolution work itself (item 9) and a later uprobe-based argument-capture item (
 reuse its resolution output — but the argument-capture half hasn't landed yet; see 4.4 priorities
 below, which now picks up numbering at 9 again for that remaining piece.
 
+**Tree viewer oversized-JSON handling (`web/server.py`/`proctree_viewer.js`, 2026-07-30, PR #170) —
+bugfix, found via real use rather than backlog.** A `build-linux-kernel-defconfig` run forking ~99,570
+processes (a `-j`-parallel kernel build) made `_api_tree_json`'s on-demand `proctree --json` shell-out
+produce a 541MB JSON blob; the browser's `fetch`/`JSON.parse` couldn't reliably complete on a response
+that large, surfacing as a confusing client-side `Unexpected end of JSON input` instead of anything
+actionable. Fix landed in three increments on the same branch: (1) a `TREE_VIEWER_MAX_BYTES` guard,
+initially 20MB, that rejects an oversized response with a clear `413` instead of attempting to ship it;
+(2) raised to 500MB once a real, smaller kernel-build run (219MB, `--tree-cmdline` only, no other
+per-tick flags — same ~99.5k process count, just fewer bytes/process) needed the headroom; (3) instead
+of just rejecting, `_api_tree_json` now keeps `process_count`/`summary` (comm-grouped, small regardless
+of process count) and only drops the `"tree"` key, flagging `tree_omitted`/`tree_omitted_bytes` so
+`proctree_viewer.js` still renders the process-count line and summary table but skips the interactive
+tree, replacing it with a message pointing at `process.tree.summary.txt` (linked via the existing
+`/files/` route when present) — same degrade-gracefully idiom other parts of this codebase already use
+rather than hard-failing. Increment (3) also fixed a bug in the guard itself: it compared `proctree`'s
+raw stdout length against the threshold, but the actual response is that data re-serialized through
+`json.dumps()` afterward (which re-escapes `cmdline` strings and can inflate size several percent) —
+enough that the 541MB run's 502.8MB-raw output slipped under the newly-raised 500MB limit undetected
+until the check was moved to measure the real serialized size. Note this only addresses the fetch/parse
+failure, not a separate, still-open render-cost concern: `proctree_viewer.js`'s `renderNode()` builds one
+DOM element per process up front regardless of payload size, so a tree just under the byte limit but
+still tens of thousands of processes could be slow to render even once it loads (see that file's own
+header comment on deferring child-DOM construction until expand, not done here). Verified live: confirmed
+the failure mode by curling `/api/tree-json` directly against the real 541MB run (valid-but-oversized
+JSON, matching the reported truncation symptom); re-verified after each increment against that run plus
+a smaller in-limit kernel-build run and a normal small run (`coremark-default`) to confirm non-oversized
+trees stay unaffected; user confirmed the tree viewer renders correctly end-to-end in a real browser
+post-fix.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
