@@ -165,6 +165,12 @@
   // ---- single-tree mode ----
 
   function renderSingle(data) {
+    if (data.tree_omitted) {
+      renderControlsSingle([], data);
+      renderTreeOmittedMessage(data);
+      return;
+    }
+
     totalCumSeconds = computeCumulative(data.tree);
 
     var available = COLUMN_DEFS.filter(function (c) {
@@ -180,6 +186,32 @@
     renderTree(data.tree, null, []);
   }
 
+  // Server (web/server.py's _api_tree_json) drops the "tree" key and sets
+  // tree_omitted when the full JSON is too large to hand the browser --
+  // shows the process-count line and the per-command summary table (both
+  // small, comm-grouped, present regardless of tree size) but skips the
+  // search/min-share/column controls, which only make sense once a tree is
+  // actually rendered below.
+  function renderTreeOmittedMessage(data) {
+    rootEl.innerHTML = "";
+    var p = document.createElement("p");
+    var mb = data.tree_omitted_bytes ? (data.tree_omitted_bytes / (1024 * 1024)).toFixed(0) + " MB" : "too many bytes";
+    p.appendChild(document.createTextNode(
+        "Interactive tree view skipped: this run's proctree --json output is " + mb +
+        ", too large to render as a tree in the browser. The summary table above covers " +
+        "per-command totals; for the full per-process text view, "));
+    if (data.summary_file_url) {
+      var a = document.createElement("a");
+      a.href = data.summary_file_url;
+      a.textContent = "open " + data.summary_file_url.split("/").pop();
+      p.appendChild(a);
+      p.appendChild(document.createTextNode("."));
+    } else {
+      p.appendChild(document.createTextNode("see process.tree.summary.txt in the run directory."));
+    }
+    rootEl.appendChild(p);
+  }
+
   function renderControlsSingle(available, data) {
     controlsEl.innerHTML = "";
 
@@ -192,6 +224,8 @@
     if (data.summary && data.summary.length) {
       controlsEl.appendChild(renderSummaryTable(data.summary));
     }
+
+    if (data.tree_omitted) return;
 
     controlsEl.appendChild(makeSearchInput());
     controlsEl.appendChild(makeMinShareInput());
