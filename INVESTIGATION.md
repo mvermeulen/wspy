@@ -1397,7 +1397,12 @@ reasoning as Tier 1 above.
         `~/.config/wspy/publish.json` (mode 600, written interactively via `getpass` so the Application
         Password never touches shell
         history or an AI assistant's conversation transcript) — resolves this item's credential-handling
-        question, which hadn't been decided before now.
+        question, which hadn't been decided before now. **Report-root git connectivity proven too
+        (2026-07-31), same tool:** `wspy-publish test-connection` also clone-or-verifies a local
+        checkout of the report-root repo (`doc/REPORT_HIERARCHY.md`'s `WSPY_REPORT_ROOT` convention,
+        now `github.com/mvermeulen/workload`, created 2026-07-30) and writes/commits a root
+        `README.md` if none exists yet — local commit only, `wspy-publish` never pushes on its own,
+        since a push is a shared/visible action left to an explicit human decision every time.
      4. **Idempotent create-or-update keyed on test-point+machine** — the create-vs-update decision
         already flagged above (mirroring the README "living document" concern) needs the WP page ID
         looked up first (by slug or stored custom `meta`, e.g. a `_wspy_report_key` field set on first
@@ -1460,9 +1465,11 @@ reasoning as Tier 1 above.
      over aggregated cross-run data instead of one run's blocks.
    - **Version-control story for `<report-root>/`, now a question for that tree, not this repo.** Now
      that the report root is understood to live outside the wspy checkout (`doc/REPORT_HIERARCHY.md`),
-     whether/how it's version-controlled is that tree's own decision — the author's stated intent is a
-     separate GitHub repository for it (not yet created), so this README is expected to be committed
-     there, not to wspy. Doesn't block scoping the README content itself.
+     whether/how it's version-controlled is that tree's own decision. **Done (2026-07-30):**
+     `github.com/mvermeulen/workload` — distinct from wspy's own repo, so this README is expected to be
+     committed there, not to wspy. `wspy-publish test-connection` (item 2 above) already clones it
+     locally and can commit a root README; it never pushes on its own. Doesn't block scoping the README
+     content itself.
    - **A living document, not a write-once artifact.** Contrasts with `write_phoronix_test_readme()`'s
      "never overwrite, write once" convention for the per-test README — new runs landing later (someone
      investigated something and gathered more data) needs a re-curate path that doesn't silently clobber
