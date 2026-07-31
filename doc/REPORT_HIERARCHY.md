@@ -30,9 +30,10 @@ This hierarchy is distinct from two other things that already exist and keep the
   checkout at `/home/mev/wspy` defaults to `/home/mev/workload`. Sibling, not nested, so it survives
   independently of the wspy checkout (a fresh `git clone` of wspy elsewhere doesn't orphan it) and
   isn't subject to this repo's own `.gitignore`.
-- Version control: the author's stated intent is a separate GitHub repository for this tree (not yet
-  created) — distinct from wspy's own repo, so a report/README committed under `<report-root>/` is
-  never a wspy commit.
+- Version control: a separate GitHub repository for this tree, `github.com/mvermeulen/workload`
+  (created 2026-07-30, currently empty) — distinct from wspy's own repo, so a report/README committed
+  under `<report-root>/` is never a wspy commit. `wspy-publish` (see CLAUDE.md's Architecture table)
+  clones it to the default root path above and commits locally; it never pushes on its own.
 - This root is also the natural future home for the Tier 3 item 6 benchmark reference-matrix
   database (a queryable, pivoted-wide table for side-by-side comparison across tests/machines) once
   that lands — one root, one place to look for both the rendered reports and the database behind

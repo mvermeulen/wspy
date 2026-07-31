@@ -1,0 +1,258 @@
+#!/usr/bin/env python3
+"""
+wspy-publish -- WordPress + report-root publishing (INVESTIGATION.md's 4.3
+Tier 3, "Static-site publishing pipeline" item, sub-steps 2-3: dedicated
+service-account auth and a minimal REST client to prove connectivity).
+
+Two publish targets, matching doc/REPORT_HIERARCHY.md's own framing of the
+report root as a rendered/exported view fed by wspy-store, not a second
+data copy:
+
+  - A WordPress site (web/wp_client.py, stdlib urllib, Application
+    Password auth) -- doc/REPORT_HIERARCHY.md's 4 levels map onto nested
+    WP Pages, one per level, identified by (slug, parent).
+  - A local clone of the report-root git repo (doc/REPORT_HIERARCHY.md's
+    WSPY_REPORT_ROOT convention) -- plain `git`, shelled out via
+    subprocess. Commits are always local only; this tool never pushes on
+    its own, since a push is a shared/visible action that deserves an
+    explicit human decision every time, not automation.
+
+This script currently has two subcommands:
+
+  configure        interactive credential setup (getpass -- the
+                    Application Password never touches argv/shell
+                    history/scrollback)
+  test-connection   proves both connections end to end without building
+                    the real rendering pipeline: WP whoami() + capability
+                    report, a lookup-only pass over the two hand-created
+                    suite stub pages, one throwaway draft test page, and
+                    a clone-or-verify + one local commit against the
+                    report-root repo
+
+Rendering/syncing real report content (the rest of Tier 3's sub-steps) is
+future work, not built here yet -- see INVESTIGATION.md.
+"""
+import argparse
+import getpass
+import json
+import os
+import stat
+import subprocess
+import sys
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(SCRIPT_DIR, "web"))
+import wp_client  # noqa: E402
+
+CONFIG_PATH = os.path.expanduser("~/.config/wspy/publish.json")
+DEFAULT_REPORT_ROOT = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "workload"))
+DEFAULT_REPORT_ROOT_REMOTE = "https://github.com/mvermeulen/workload.git"
+TEST_PAGE_SLUG = "wspy-publish-connectivity-test"
+
+
+def load_config():
+    if not os.path.isfile(CONFIG_PATH):
+        return None
+    with open(CONFIG_PATH) as f:
+        return json.load(f)
+
+
+def save_config(cfg):
+    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+    fd = os.open(CONFIG_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+    os.chmod(CONFIG_PATH, stat.S_IRUSR | stat.S_IWUSR)
+
+
+def cmd_configure(args):
+    print("wspy-publish configure -- writes %s (mode 600)." % CONFIG_PATH, file=sys.stderr)
+    existing = load_config() or {}
+    wp_existing = existing.get("wordpress", {})
+
+    site_url = input("WordPress site URL [%s]: " % (
+        wp_existing.get("site_url") or "https://www.mvermeulen.org/workload")).strip()
+    site_url = site_url or wp_existing.get("site_url") or "https://www.mvermeulen.org/workload"
+
+    username = input("WordPress username [%s]: " % (wp_existing.get("username") or "wspy")).strip()
+    username = username or wp_existing.get("username") or "wspy"
+
+    app_password = getpass.getpass("WordPress Application Password (input hidden): ").strip()
+    if not app_password:
+        if wp_existing.get("app_password"):
+            app_password = wp_existing["app_password"]
+            print("  (keeping existing stored Application Password)", file=sys.stderr)
+        else:
+            print("wspy-publish: no Application Password entered, aborting", file=sys.stderr)
+            return 1
+
+    report_root = input("Report-root git clone path [%s]: " % (
+        existing.get("report_root") or DEFAULT_REPORT_ROOT)).strip()
+    report_root = report_root or existing.get("report_root") or DEFAULT_REPORT_ROOT
+
+    cfg = {
+        "wordpress": {"site_url": site_url, "username": username, "app_password": app_password},
+        "report_root": report_root,
+    }
+    save_config(cfg)
+    print("wspy-publish: wrote %s" % CONFIG_PATH, file=sys.stderr)
+    return 0
+
+
+def _run_git(args, cwd):
+    result = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
+    return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+
+def ensure_report_root(report_root, remote):
+    """Clone `remote` into `report_root` if it doesn't exist yet; if it
+    does, just verify it's a git repo. Returns (ok, message)."""
+    if os.path.isdir(os.path.join(report_root, ".git")):
+        rc, out, err = _run_git(["remote", "get-url", "origin"], cwd=report_root)
+        if rc != 0:
+            return False, "%s exists but `git remote get-url origin` failed: %s" % (report_root, err)
+        if out.rstrip("/").removesuffix(".git") != remote.rstrip("/").removesuffix(".git"):
+            return False, ("%s exists but its origin (%s) does not match the expected report-root "
+                            "remote (%s) -- refusing to touch it" % (report_root, out, remote))
+        return True, "%s already cloned (origin: %s)" % (report_root, out)
+    if os.path.exists(report_root):
+        return False, "%s exists but is not a git repo -- refusing to touch it" % report_root
+    rc, out, err = _run_git(["clone", remote, report_root], cwd=os.path.dirname(report_root) or ".")
+    if rc != 0:
+        return False, "git clone %s %s failed: %s" % (remote, report_root, err)
+    return True, "cloned %s -> %s" % (remote, report_root)
+
+
+ROOT_README_CONTENT = """# workload
+
+Curated wspy performance reports, one directory per
+`<suite>/<test>/<test-point>/<machine>/`. See wspy's own
+`doc/REPORT_HIERARCHY.md` (https://github.com/mvermeulen/wspy) for the full
+directory convention this tree follows.
+
+This root README was created by `wspy-publish test-connection` to prove
+write access to this repository; real per-level content is written by
+later wspy-publish pipeline work.
+"""
+
+
+def commit_root_readme(report_root):
+    """Writes a root README.md if one doesn't already exist, and commits
+    it locally (never pushes). Returns (made_commit, message)."""
+    readme_path = os.path.join(report_root, "README.md")
+    if os.path.isfile(readme_path):
+        return False, "%s already has a README.md -- leaving it alone" % report_root
+
+    rc, out, err = _run_git(["status", "--porcelain"], cwd=report_root)
+    if rc != 0:
+        return False, "git status failed in %s: %s" % (report_root, err)
+    if out:
+        return False, ("%s has uncommitted changes already -- refusing to add a commit on top "
+                        "of unknown state:\n%s" % (report_root, out))
+
+    with open(readme_path, "w") as f:
+        f.write(ROOT_README_CONTENT)
+    _run_git(["add", "README.md"], cwd=report_root)
+    rc, out, err = _run_git(
+        ["commit", "-m", "Add report-root README (wspy-publish test-connection)"],
+        cwd=report_root)
+    if rc != 0:
+        return False, "git commit failed in %s: %s" % (report_root, err)
+    rc, sha, err = _run_git(["rev-parse", "--short", "HEAD"], cwd=report_root)
+    return True, "committed README.md as %s (local only -- not pushed)" % sha
+
+
+def cmd_test_connection(args):
+    cfg = load_config()
+    if not cfg:
+        print("wspy-publish: no config at %s -- run `wspy-publish configure` first" % CONFIG_PATH,
+              file=sys.stderr)
+        return 1
+    wp = cfg["wordpress"]
+    site_url, username, app_password = wp["site_url"], wp["username"], wp["app_password"]
+    report_root = cfg.get("report_root") or DEFAULT_REPORT_ROOT
+
+    ok = True
+
+    print("== WordPress: %s ==" % site_url)
+    try:
+        user = wp_client.whoami(site_url, username, app_password)
+    except wp_client.WPError as e:
+        print("  auth FAILED (status=%s code=%s): %s" % (e.status, e.code, e), file=sys.stderr)
+        ok = False
+    else:
+        print("  auth OK as %r (id=%s)" % (user.get("name"), user.get("id")))
+        missing = wp_client.missing_capabilities(user)
+        if missing:
+            print("  MISSING capabilities: %s -- page create/publish below may fail" % ", ".join(missing))
+            ok = False
+        else:
+            print("  capabilities OK: %s" % ", ".join(wp_client.REQUIRED_PAGE_CAPABILITIES))
+
+        for slug in ("cpu2026", "phoronix"):
+            try:
+                page = wp_client.find_page(site_url, username, app_password, slug, 0)
+            except wp_client.WPError as e:
+                print("  lookup %r FAILED: %s" % (slug, e), file=sys.stderr)
+                ok = False
+                continue
+            if page:
+                print("  found existing page %r (id=%s, %s)" % (slug, page["id"], page.get("link")))
+            else:
+                print("  no existing page %r found at top level (unexpected)" % slug)
+
+        try:
+            existing_test_page = wp_client.find_page(site_url, username, app_password,
+                                                       TEST_PAGE_SLUG, 0)
+            if existing_test_page:
+                page = existing_test_page
+                print("  reusing existing draft test page (id=%s)" % page["id"])
+            else:
+                page = wp_client.create_page(
+                    site_url, username, app_password, TEST_PAGE_SLUG,
+                    "wspy-publish connectivity test -- safe to delete",
+                    parent=0,
+                    content="<p>Created by wspy-publish test-connection. Safe to delete.</p>",
+                    status="draft")
+                print("  created draft test page (id=%s) -- edit: %s/wp-admin/post.php?post=%s&action=edit"
+                      % (page["id"], site_url.rstrip("/"), page["id"]))
+        except wp_client.WPError as e:
+            print("  draft test page create FAILED (status=%s code=%s): %s" % (e.status, e.code, e),
+                  file=sys.stderr)
+            ok = False
+
+    print("== Report root: %s ==" % report_root)
+    root_ok, msg = ensure_report_root(report_root, DEFAULT_REPORT_ROOT_REMOTE)
+    print("  %s" % msg)
+    if not root_ok:
+        ok = False
+    else:
+        made_commit, msg = commit_root_readme(report_root)
+        print("  %s" % msg)
+
+    print()
+    print("wspy-publish test-connection: %s" % ("OK" if ok else "FAILED (see above)"))
+    return 0 if ok else 1
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Publish wspy reports to WordPress and/or the report-root git repo "
+                    "(INVESTIGATION.md 4.3 Tier 3).")
+    sub = ap.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("configure", help="interactively write %s" % CONFIG_PATH)
+    sub.add_parser("test-connection",
+                    help="prove WP auth + report-root git access without building real content")
+
+    args = ap.parse_args()
+    if args.command == "configure":
+        return cmd_configure(args)
+    if args.command == "test-connection":
+        return cmd_test_connection(args)
+    ap.error("unknown command")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

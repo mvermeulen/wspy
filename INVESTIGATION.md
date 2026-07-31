@@ -1358,7 +1358,11 @@ reasoning as Tier 1 above.
      1. **Get `mvermeulen.org/workload` itself stood up first** — the WP site has to exist (hosting,
         install, theme, page/child-page structure for the 4-level hierarchy per the open URL/slug
         question above) before any of the below has a target to talk to. Blocks everything else in this
-        list.
+        list. **Done (2026-07-30):** the site is live at `https://www.mvermeulen.org/workload`,
+        `wp-json/` responds and advertises `authentication.application-passwords` (HTTPS + Application
+        Password auth confirmed working, see step 2/3 below). A static front page exists (`id=12`, slug
+        `home`) plus two hand-created top-level suite stub pages, `cpu2026` (`id=17`) and `phoronix`
+        (`id=15`), both still childless.
      2. **Dedicated service-account WP user, not the author's own admin login** — create a low-privilege
         user (Editor role, or Author if posts only need to be self-owned) scoped to this pipeline, e.g.
         `wspy-publisher`; never authenticate the pipeline as an Administrator. Generate a WordPress
@@ -1366,15 +1370,49 @@ reasoning as Tier 1 above.
         than the account's real login password — it's independently revocable if the publishing host is
         ever compromised, without touching human logins. HTTPS is mandatory: WP disables Basic Auth over
         plain HTTP by default, so `mvermeulen.org/workload` needs TLS before this step is testable.
+        **Done (2026-07-30):** a dedicated `wspy` account (Contributor role + custom capabilities, not
+        Administrator) with an Application Password. Required capabilities for the page create/publish
+        flow below: `edit_pages`, `edit_published_pages`, `publish_pages`, `upload_files` — a stock
+        Contributor has none of these, so the "custom capabilities" grant on this account needs to cover
+        them; `wspy-publish test-connection` (below) checks and reports exactly which are present/missing
+        rather than assuming.
      3. **Minimal REST client wired into this codebase** — likely a small new script (Python, matching
         `wspy-analyze`/`wspy-bundle`/`wspy-queue`'s existing Python-tool pattern rather than adding to the
         C build) doing authenticated `POST`/`PUT` against `/wp-json/wp/v2/pages` with HTTP Basic Auth
         (`Authorization: Basic base64(user:app_password)`). Start with a single hardcoded test page to
-        prove auth + connectivity before wiring in real content.
+        prove auth + connectivity before wiring in real content. **Done, connectivity proven live
+        (2026-07-31):** `web/wp_client.py` (stdlib `urllib` only, no new dependency — matches
+        `wspy-analyze`'s Ollama client and `web/joblib.py`'s OpenBenchmarking fetch) plus the new
+        top-level `wspy-publish` tool (`configure`/`test-connection` subcommands; see README's
+        "wspy-publish" section and this file's Architecture table). `test-connection` authenticates,
+        reports capabilities, looks up the two existing suite stub pages above (proving find-by-slug works
+        against real data without duplicating them), and creates one throwaway draft page — all confirmed
+        working end to end against the real site. Getting there needed one more fix than expected: IONOS
+        (the site's host) drops the `Authorization` header entirely before PHP ever sees it, defeating
+        every standard server-side recovery trick; `web/wp_client.py` works around it by also sending the
+        credential under a custom `X-WSPY-Authorization` header, recovered server-side by a small installed
+        plugin (`scripts/wp-auth-bridge.php`) — see `doc/INVESTIGATION_ARCHIVE.md`'s "Non-obvious
+        implementation traps" for the full diagnosis (worth reading before debugging any *other* REST/auth
+        integration that shows a generic "not logged in" against a real host). Credentials live in
+        `~/.config/wspy/publish.json` (mode 600, written interactively via `getpass` so the Application
+        Password never touches shell
+        history or an AI assistant's conversation transcript) — resolves this item's credential-handling
+        question, which hadn't been decided before now.
      4. **Idempotent create-or-update keyed on test-point+machine** — the create-vs-update decision
         already flagged above (mirroring the README "living document" concern) needs the WP page ID
         looked up first (by slug or stored custom `meta`, e.g. a `_wspy_report_key` field set on first
         publish) so re-running the pipeline `PUT`s the existing post instead of creating a duplicate.
+        **URL/slug scheme and lookup key resolved (2026-07-30):** WordPress's native page parent/child
+        nesting maps one page per `doc/REPORT_HIERARCHY.md` level, exactly matching the two hand-created
+        suite pages above (top-level, `parent=0`) rather than inventing a different scheme. The lookup key
+        is `(slug, parent)` — WordPress's own uniqueness rule for hierarchical post types — walked
+        top-down one level at a time (`wp_client.find_or_create_page_path()`), **not** a custom `meta`
+        field: exposing custom page meta over the REST API needs `register_post_meta(...,
+        show_in_rest=>true)`, an Administrator-only WP-side plugin/mu-plugin install, which is more moving
+        parts than a stock-REST-API slug+parent lookup needs. Still open: this resolves *lookup*, not the
+        full create-or-update *content* flow (comparing/merging generated content against a page a human
+        may have since hand-edited) — that's real remaining scope once actual report content is being
+        written, not just located.
      5. **Draft-first, not direct-publish** — mirrors the mobile-app REST client pattern: `POST` with
         `status: "draft"`, verify the response (id/link, 201 vs error), optionally populate meta, only
         then flip to `status: "publish"` in a follow-up `POST`. Avoids a half-formed public page if the

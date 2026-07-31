@@ -31,13 +31,13 @@ make clobber                  # also remove built binaries
 `wspy-store`/`wspy-summary`/`wspy-archetype` link against the system SQLite library — install
 `libsqlite3-dev` (or your distro's equivalent) before building. `wspy-plot` shells out to a `gnuplot`
 binary at run time, not a build-time dependency. `wspy-run` is a bash script; `wspy-sweep`,
-`wspy-queue`, `wspy-bundle`, `wspy-analyze`, `wspy-symbolize`, `wspy-phoronix-import`, and the web
-launcher (`web/server.py`) are plain Python 3 scripts — stdlib only, nothing to build or install
-(`wspy-analyze` additionally needs a running Ollama daemon at use time, not build time, to do
+`wspy-queue`, `wspy-bundle`, `wspy-analyze`, `wspy-symbolize`, `wspy-publish`, `wspy-phoronix-import`,
+and the web launcher (`web/server.py`) are plain Python 3 scripts — stdlib only, nothing to build or
+install (`wspy-analyze` additionally needs a running Ollama daemon at use time, not build time, to do
 anything; `wspy-symbolize` needs `addr2line` on `PATH` (binutils, near-universally already installed)
 at use time to resolve anything, though it degrades to an "unresolved" report rather than failing
 outright if it's missing; `wspy-phoronix-import`'s `--result` source needs `phoronix-test-suite`
-installed).
+installed; `wspy-publish` needs network access to the configured WordPress site and git remote).
 
 Performance counters and `--tree` (which uses `ptrace`) generally need root, or
 `CAP_SYS_PTRACE` plus `perf_event_paranoid <= 1`. `scripts/setup_perf.sh` checks and, if you
@@ -498,6 +498,25 @@ report page has a "Download reproducibility bundle" link that produces the ident
 ```
 
 See `./wspy-bundle --help` for the full option list.
+
+## wspy-publish: WordPress + report-root publishing
+
+`wspy-publish` is the connectivity layer for `INVESTIGATION.md`'s 4.3 "static-site publishing
+pipeline" item: authenticates to a WordPress site via an Application Password (`web/wp_client.py`,
+stdlib `urllib` only) and to a local clone of the `doc/REPORT_HIERARCHY.md` report-root git repo.
+`configure` interactively writes credentials to `~/.config/wspy/publish.json` (mode 600, via
+`getpass` so the Application Password never touches shell history); `test-connection` proves both
+connections — WordPress auth + required-capability check, a lookup pass over the hierarchy's
+existing top-level pages, one throwaway draft page, and a clone-or-verify plus one local (never
+auto-pushed) commit against the report-root repo:
+
+```
+./wspy-publish configure
+./wspy-publish test-connection
+```
+
+Rendering and syncing real report content onto this connectivity layer is future work — see
+`INVESTIGATION.md`'s Tier 3 item 2.
 
 ## wspy-symbolize: address-to-symbol resolution for --symbol-sample profiling
 

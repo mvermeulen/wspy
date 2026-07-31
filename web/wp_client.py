@@ -1,0 +1,183 @@
+"""
+web/wp_client.py -- minimal WordPress REST API client (stdlib urllib only,
+matching this codebase's existing no-`requests`-dependency convention: see
+wspy-analyze's Ollama client, joblib.py's fetch_openbenchmarking_xml()).
+
+Scoped to what INVESTIGATION.md's 4.3 Tier 3 "static-site publishing
+pipeline" item needs so far: authenticate via a WordPress Application
+Password (HTTP Basic Auth over HTTPS, native since WP 5.6), look up or
+create Pages, and walk doc/REPORT_HIERARCHY.md's suite/test/test-point/
+machine levels as nested WP pages (parent/child), identifying an existing
+page by (slug, parent) -- WordPress's own uniqueness rule for hierarchical
+post types -- rather than a custom REST `meta` field, which would need a
+WP-side plugin/mu-plugin to expose over the REST API and is more moving
+parts than this needs.
+
+Shared here (not inside wspy-publish itself) so web/server.py can reuse it
+later for the web-UI-writes-reports item in the same tier -- the same
+"shared module, thin CLI wrapper" convention web/joblib.py already
+established for wspy-bundle/wspy-queue/wspy-analyze.
+
+Host-specific auth quirk (found live on mvermeulen.org's IONOS shared
+hosting, 2026-07-31): some hosts' edge proxies drop the `Authorization`
+header entirely before PHP ever sees it (confirmed via a temporary debug
+plugin dumping $_SERVER -- no HTTP_AUTHORIZATION/PHP_AUTH_USER/
+REDIRECT_HTTP_AUTHORIZATION under any name), which defeats every
+server-side recovery trick (`.htaccess` CGIPassAuth/RewriteRule, a
+wp-config.php REDIRECT_HTTP_AUTHORIZATION fallback) since there is nothing
+left in $_SERVER to recover. request() below works around this by also
+sending the identical Basic-Auth value under a second, custom
+`X-WSPY-Authorization` header, which such proxies have no reason to strip.
+A small site-side plugin needs to copy that back into
+HTTP_AUTHORIZATION/PHP_AUTH_USER/PHP_AUTH_PW early in the request so
+WordPress's own Application Passwords code picks it up normally -- see
+`scripts/wp-auth-bridge.php` (installed as a WordPress plugin on the
+target site, not part of this codebase's own build/test). A harmless
+no-op duplicate on hosts where the standard header already works.
+"""
+import base64
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+
+REQUIRED_PAGE_CAPABILITIES = ("edit_pages", "edit_published_pages", "publish_pages", "upload_files")
+
+
+class WPError(Exception):
+    """A WordPress REST API call failed. Carries the HTTP status (None for
+    a connection-level failure) and the site's own error code/message when
+    it sent one, so callers can report something more useful than a raw
+    traceback (e.g. "rest_cannot_edit_pages" -> "account is missing
+    edit_pages")."""
+    def __init__(self, message, status=None, code=None):
+        super().__init__(message)
+        self.status = status
+        self.code = code
+
+
+def auth_header(username, app_password):
+    """Basic-auth header value for a WordPress Application Password.
+    WordPress displays the password in space-separated groups of 4 for
+    readability but ignores the spaces when checking it -- stripping them
+    here is harmless either way and avoids surprises if a config file was
+    hand-edited with the display spacing intact."""
+    token = f"{username}:{app_password.replace(' ', '')}"
+    return "Basic " + base64.b64encode(token.encode("utf-8")).decode("ascii")
+
+
+def request(site_url, path, username, app_password, method="GET", params=None,
+            json_body=None, timeout=20):
+    """One authenticated call to <site_url>/wp-json/<path>. Returns the
+    parsed JSON response (or None for an empty body). Raises WPError on
+    any non-2xx response or connection failure -- callers decide what
+    "not found" vs. "denied" vs. "unreachable" means for their own
+    operation rather than this function guessing.
+
+    Sends the Basic-Auth value under both the standard `Authorization`
+    header and a second `X-WSPY-Authorization` header carrying the
+    identical value. Some hosts (confirmed live on IONOS shared hosting,
+    2026-07-31: `$_SERVER` has no HTTP_AUTHORIZATION/PHP_AUTH_USER/
+    REDIRECT_HTTP_AUTHORIZATION under any name -- their edge proxy drops
+    Authorization outright, not just renames it) strip the standard header
+    before PHP ever sees it, defeating every server-side recovery trick
+    (`.htaccess` CGIPassAuth/RewriteRule, a `wp-config.php`
+    REDIRECT_HTTP_AUTHORIZATION fallback). The custom header survives on
+    such hosts; a small site-side plugin (see wspy-publish's docstring)
+    copies it back into HTTP_AUTHORIZATION/PHP_AUTH_USER/PHP_AUTH_PW so
+    WordPress's own Application Passwords code picks it up normally. A
+    no-op, harmless duplicate on hosts where Authorization already works."""
+    url = site_url.rstrip("/") + "/wp-json/" + path.lstrip("/")
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    data = None
+    auth = auth_header(username, app_password)
+    headers = {"Authorization": auth, "X-WSPY-Authorization": auth,
+               "User-Agent": "wspy-publish"}
+    if json_body is not None:
+        data = json.dumps(json_body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read()
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        message, code = str(e), None
+        try:
+            parsed = json.loads(raw)
+            message = parsed.get("message", message)
+            code = parsed.get("code")
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        raise WPError(message, status=e.code, code=code) from e
+    except urllib.error.URLError as e:
+        raise WPError(f"could not reach {site_url}: {e.reason}") from e
+    if not body:
+        return None
+    return json.loads(body)
+
+
+def whoami(site_url, username, app_password):
+    """GET /wp/v2/users/me?context=edit -- the authenticated user's record
+    including `capabilities`, so a caller can check for
+    edit_pages/edit_published_pages/publish_pages/upload_files up front
+    instead of discovering a missing one via a failed create call."""
+    return request(site_url, "wp/v2/users/me", username, app_password,
+                    params={"context": "edit"})
+
+
+def missing_capabilities(user):
+    """Subset of REQUIRED_PAGE_CAPABILITIES not present (or not truthy) in
+    a whoami() result's `capabilities` map."""
+    caps = (user or {}).get("capabilities", {})
+    return [c for c in REQUIRED_PAGE_CAPABILITIES if not caps.get(c)]
+
+
+def find_page(site_url, username, app_password, slug, parent):
+    """Look up a Page by (slug, parent) -- returns the page dict, or None
+    if no such page exists. parent=0 means top-level. status="any" so an
+    existing draft is found too, not just published pages (avoids
+    creating a duplicate of a page that's merely unpublished)."""
+    results = request(site_url, "wp/v2/pages", username, app_password,
+                       params={"slug": slug, "parent": parent, "status": "any"})
+    return results[0] if results else None
+
+
+def create_page(site_url, username, app_password, slug, title, parent,
+                 content="", status="draft"):
+    """POST a new Page. Requires edit_pages (status="draft") /
+    publish_pages (status="publish") on the authenticated account."""
+    return request(site_url, "wp/v2/pages", username, app_password, method="POST",
+                    json_body={"slug": slug, "title": title, "parent": parent,
+                               "content": content, "status": status})
+
+
+def update_page(site_url, username, app_password, page_id, **fields):
+    """POST changed fields (content/title/status/...) onto an existing
+    Page by id."""
+    return request(site_url, f"wp/v2/pages/{page_id}", username, app_password,
+                    method="POST", json_body=fields)
+
+
+def find_or_create_page_path(site_url, username, app_password, levels, status="draft"):
+    """Walk doc/REPORT_HIERARCHY.md's hierarchy top-down as nested WP
+    pages. `levels` is an ordered list of (slug, title) pairs, one per
+    level (e.g. [("cpu2017", "cpu2017"), ("500.perlbench_r", "500.perlbench_r"), ...]).
+    Each level is looked up under the previous level's page id as
+    `parent` (0 for the first level) and created only if missing. Returns
+    a list of (page_dict, created_bool) pairs, same order as `levels`, so
+    a caller can tell which levels already existed (e.g. hand-created
+    suite stub pages) from which this call just created."""
+    parent = 0
+    out = []
+    for slug, title in levels:
+        page = find_page(site_url, username, app_password, slug, parent)
+        created = False
+        if page is None:
+            page = create_page(site_url, username, app_password, slug, title, parent,
+                                status=status)
+            created = True
+        out.append((page, created))
+        parent = page["id"]
+    return out

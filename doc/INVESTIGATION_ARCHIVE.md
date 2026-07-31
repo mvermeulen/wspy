@@ -1366,6 +1366,29 @@ future "probe without a full run" feature should reuse the real setup path rathe
 second `perf_event_open()`, since this codebase's per-vendor/per-PMU dynamic-type dispatch has sharp
 edges a naive duplicate won't know about.
 
+**A hosting provider's edge proxy silently drops the `Authorization` HTTP header before PHP ever sees
+it, breaking WordPress Application Password REST auth with a generic "not logged in" (`web/wp_client.py`,
+4.3 Tier 3 static-site publishing, found live on `mvermeulen.org`'s IONOS shared hosting, 2026-07-31).**
+Every documented server-side fix for a missing `Authorization` header assumes it's merely *renamed* by
+Apache's rewrite engine (`REDIRECT_HTTP_AUTHORIZATION`, recoverable via a `wp-config.php` snippet) or
+dropped only between Apache and PHP-CGI/FastCGI (recoverable via `.htaccess`'s `CGIPassAuth On` or a
+`RewriteRule`/`RewriteCond %{HTTP:Authorization}` pair) — both were tried here and neither had any effect.
+A temporary debug plugin dumping every `$_SERVER` key containing `AUTH` on a real request (with and
+without the header set) proved the true cause: on this host the header is dropped upstream of Apache
+entirely, at the edge proxy layer, so there is nothing left in `$_SERVER` for any Apache- or PHP-level
+trick to recover — confirmed by the identical (empty) result whether the client sent a correct
+Application Password, a wrong one, or nothing at all. Fixed by working around the proxy instead of fighting
+it: the client (`wspy-publish`) sends the identical Basic-Auth value under a second, custom
+`X-WSPY-Authorization` header (which the proxy has no reason to strip), and a small WordPress plugin
+(`scripts/wp-auth-bridge.php`, installed active on the target site, not part of this codebase's own
+build/test) copies it back into `HTTP_AUTHORIZATION`/`PHP_AUTH_USER`/`PHP_AUTH_PW` early in the request —
+the exact variables WordPress's own Application Passwords code already knows how to check, so no auth
+logic needed reimplementing. Lesson: when an `Authorization` header goes missing, dump `$_SERVER` directly
+(a one-file, no-dependency diagnostic) before reaching for a fix — "renamed" vs. "dropped upstream of the
+webserver" look identical from the client side (same generic 401) but need entirely different fixes, and
+guessing through the renamed-header fixes first cost two full round-trips here before the debug plugin
+settled it in one.
+
 ### Intel hybrid / counter-grouping real-hardware findings and fixes (4.3, "carlsbad", 2026-07-22)
 Real Intel hybrid hardware became available for the first time this cycle (a Raptor Lake HX host,
 codenamed "carlsbad") and immediately surfaced a cluster of confirmed, hardware-verified counter-
