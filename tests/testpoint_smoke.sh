@@ -1,7 +1,8 @@
 #!/bin/bash
 # tests/testpoint_smoke.sh - smoke tests for wspy-testpoint (INVESTIGATION.md's
-# "Test-point-level curated performance-summary README deep-dive", Tier 3 item 5, pieces 1-4: run
-# selection / role-assignment, aggregation, and README rendering).
+# "Test-point-level curated performance-summary README deep-dive", Tier 3 item 5, pieces 1-4 plus the
+# archetype cross-run stability fast-follow: run selection / role-assignment, aggregation, README
+# rendering, and workload-characterization agreement across the stats-pool).
 #
 # Piece 1 (select-runs): exercises the default role-assignment heuristic (stats-pool/excluded/
 # supplementary from status+pass-set), human --set/--primary override persistence across a re-run (the
@@ -20,19 +21,25 @@
 # rather than string-matching git commit's own output, which varies with unrelated repo state), and
 # --dry-run.
 #
+# Archetype stability fast-follow: real topdown (retire/frontend/backend/speculate) CSV fixtures drive
+# real wspy-archetype --run resource_dominance classifications (compute-bound/memory-bound), exercising
+# both the "Consistent" verdict (two runs agreeing) and the "Diverges" verdict (one run's classification
+# changed via a second wspy-store ingestion of the same run_id with different CSV data).
+#
 # All against a local bare git repo standing in for the report-root remote, so this needs no network
 # access and no real hardware counters. Run once here (no build/GPU axis), same idiom as
 # tests/wspy_queue_smoke.sh.
 #
 # Usage: ./tests/testpoint_smoke.sh (run from repo root; expects ./wspy-testpoint to be present --
-# a plain Python script, no build step -- and builds ./wspy-summary/./wspy-store for the
-# aggregate/render sections below).
+# a plain Python script, no build step -- and builds ./wspy-summary/./wspy-store/./wspy-archetype for
+# the aggregate/render sections below).
 
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
-echo "=== Building wspy-summary/wspy-store ==="
-make wspy-summary wspy-store >/dev/null || { echo "FAIL: could not build wspy-summary/wspy-store"; exit 1; }
+echo "=== Building wspy-summary/wspy-store/wspy-archetype ==="
+make wspy-summary wspy-store wspy-archetype >/dev/null || {
+    echo "FAIL: could not build wspy-summary/wspy-store/wspy-archetype"; exit 1; }
 
 FAIL=0
 fail() { echo "FAIL: $*"; FAIL=1; }
@@ -311,6 +318,66 @@ $REN --dry-run >/dev/null 2>&1
 AFTER_HASH="$(md5sum "$REN_TP_DIR/README.md" | cut -d' ' -f1)"
 [ "$BEFORE_HASH" = "$AFTER_HASH" ] || fail "render --dry-run modified README.md on disk"
 [ "$FAIL" -eq 0 ] && echo "render --dry-run OK"
+
+echo ""
+echo "=== Testing render: archetype workload-characterization section (consistent case) ==="
+ARCHDATA="$WORKDIR/archdata"
+mkdir -p "$ARCHDATA"
+echo "retire,frontend,backend,speculate" > "$ARCHDATA/computeish1.csv"; echo "70,10,15,5" >> "$ARCHDATA/computeish1.csv"
+echo "retire,frontend,backend,speculate" > "$ARCHDATA/computeish2.csv"; echo "68,12,15,5" >> "$ARCHDATA/computeish2.csv"
+echo "retire,frontend,backend,speculate" > "$ARCHDATA/memoryish.csv"; echo "15,10,70,5" >> "$ARCHDATA/memoryish.csv"
+
+build_topdown_record() {
+    local run_id="$1" csvfile="$2"
+    cat <<EOF
+{"schema_version":"1.9.0","run_id":"$run_id","collector":"wspy","wspy_version":"4.0","hostname":"archhost","cpu_vendor":"AMD","cpu_family":25,"cpu_model":1,"environment":{"virt_role":"host","hypervisor_vendor":null,"microcode_version":null,"bios_vendor":null,"bios_version":null,"bios_date":null,"cpu_governor":null,"cpu_scaling_driver":null,"cpu_governor_uniform":false,"memory_total_kb":null,"compiler_version":null,"libc_version":null},"environment_coverage":{"captured":0,"probed":9},"start_time":"2026-08-01T00:00:00Z","finish_time":"2026-08-01T00:00:00Z","elapsed_seconds":1.0,"command":["true"],"exit_status":{"known":true,"exited":true,"exit_code":0,"signaled":false,"term_signal":null},"options":{"counter_mask":"0x1","per_core":false,"system":true,"csv":true,"tree":false,"interval_seconds":0},"counter_coverage":{"requested":4,"measured":4},"output_files":{"output_path":"$csvfile","tree_output_path":null,"manifest_path":null}}
+EOF
+}
+{
+    build_topdown_record archrun1 "$ARCHDATA/computeish1.csv"
+    build_topdown_record archrun2 "$ARCHDATA/computeish2.csv"
+} > "$ARCHDATA/run_index.jsonl"
+./wspy-store --db "$STOREDB" --run-index "$ARCHDATA/run_index.jsonl" >/dev/null || \
+    fail "wspy-store ingestion (archetype fixture) failed"
+
+ARCH_TP_DIR="$REPORTROOT/manual/archbench/default/arch-machine"
+mkdir -p "$ARCH_TP_DIR"
+cat > "$ARCH_TP_DIR/runs.json" <<'EOF'
+{
+  "schema_version": "1.0",
+  "suite": "manual", "test": "archbench", "test_point": "default", "machine": "arch-machine",
+  "primary_run_id": "archrun1", "primary_human_set": false,
+  "runs": [
+    {"run_id": "archrun1", "benchmark": "archbench", "hostname": "archhost", "status": "ok", "command": "true", "start_time": "2026-08-01T00:00:00Z", "role": "stats-pool", "human_set": false, "reason": "test"},
+    {"run_id": "archrun2", "benchmark": "archbench", "hostname": "archhost", "status": "ok", "command": "true", "start_time": "2026-08-02T00:00:00Z", "role": "stats-pool", "human_set": false, "reason": "test"}
+  ]
+}
+EOF
+
+ARCH_REN="./wspy-testpoint render --suite manual --benchmark archbench --machine arch-machine \
+    --report-root $REPORTROOT --report-root-remote $WORKDIR/remote.git --db $STOREDB"
+
+$ARCH_REN >/dev/null 2>&1
+grep -q "## Workload characterization" "$ARCH_TP_DIR/README.md" || \
+    fail "expected a Workload characterization section"
+grep -q "compute-bound" "$ARCH_TP_DIR/README.md" || fail "expected compute-bound in the characterization table"
+grep -q "\*\*Consistent\*\*" "$ARCH_TP_DIR/README.md" || \
+    fail "expected a Consistent verdict when both runs agree"
+[ "$FAIL" -eq 0 ] && echo "archetype consistent-case OK"
+
+echo ""
+echo "=== Testing render: archetype workload-characterization section (diverging case) ==="
+{
+    build_topdown_record archrun1 "$ARCHDATA/computeish1.csv"
+    build_topdown_record archrun2 "$ARCHDATA/memoryish.csv"
+} > "$ARCHDATA/run_index2.jsonl"
+./wspy-store --db "$STOREDB" --run-index "$ARCHDATA/run_index2.jsonl" >/dev/null || \
+    fail "wspy-store re-ingestion (archetype diverge fixture) failed"
+$ARCH_REN >/dev/null 2>&1
+grep -q "\*\*Diverges\*\*" "$ARCH_TP_DIR/README.md" || \
+    fail "expected a Diverges verdict once the two runs disagree on resource_dominance"
+grep -q "memory-bound" "$ARCH_TP_DIR/README.md" || fail "expected memory-bound in the characterization table"
+[ "$FAIL" -eq 0 ] && echo "archetype diverging-case OK"
 
 echo ""
 if [ "$FAIL" -eq 0 ]; then
