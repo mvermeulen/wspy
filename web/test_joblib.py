@@ -2024,6 +2024,11 @@ class BuildCpu2026ArgvTest(unittest.TestCase):
         self.assertIn("cd /opt/cpu2026", argv[2])
         self.assertIn("ulimit -s unlimited", argv[2])
         self.assertIn("echo hi", argv[2])
+        # cd MUST precede source: shrc discovers its own SPEC root by
+        # walking up from $PWD (not from its own script path), so sourcing
+        # it before cd-ing into specdir makes it search upward from
+        # whatever directory the caller's subprocess happened to start in.
+        self.assertLess(argv[2].index("cd /opt/cpu2026"), argv[2].index("source /opt/cpu2026/shrc"))
 
     def test_build_argv_uses_build_action(self):
         argv = joblib.build_cpu2026_build_argv("/opt/cpu2026", "gcc_O2.cfg", "706.stockfish_r")

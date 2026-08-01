@@ -3026,16 +3026,22 @@ def link_cpu2026_point_run(point_dir, run_id, rundir):
 
 def build_cpu2026_shell_argv(specdir, inner_cmd):
     """Wraps inner_cmd (a shell command string, e.g. a `runcpu ...`
-    invocation) in `bash -c "source $SPECDIR/shrc && cd $SPECDIR &&
-    ulimit -s unlimited && <inner_cmd>"` -- runcpu needs SPEC's shrc
-    sourced for its environment (SPEC_ROOT/PATH/LD_LIBRARY_PATH etc, see
+    invocation) in `bash -c "cd $SPECDIR && source shrc && ulimit -s
+    unlimited && <inner_cmd>"` -- runcpu needs SPEC's shrc sourced for its
+    environment (SPEC_ROOT/PATH/LD_LIBRARY_PATH etc, see
     workload/cpu2017/run_test.sh's identical preamble), but neither the
     Build action's Popen() nor the Run tab's `workload` field (parsed by
     shlex.split() with no shell, see server.py's _parse_workload_and_ids())
     invoke a shell on their own -- so the sourcing has to be baked into a
-    single bash -c argv rather than assumed from ambient environment."""
+    single bash -c argv rather than assumed from ambient environment. `cd`
+    MUST happen before `source shrc`, not after: shrc finds its own SPEC
+    root by walking up from `$PWD` looking for `bin/harness/runcpu` (see
+    its `TEMPSPEC=$(pwd)` loop), not from its own script path -- sourcing
+    it while still in the caller's cwd (e.g. the wspy repo, since Popen()
+    here sets no `cwd=`) makes it search upward from the wrong directory
+    and fail with "Can't find the top of your SPEC tree"."""
     shrc = cpu2026_shrc_path(specdir)
-    full = f"source {shlex.quote(shrc)} && cd {shlex.quote(specdir)} && ulimit -s unlimited && {inner_cmd}"
+    full = f"cd {shlex.quote(specdir)} && source {shlex.quote(shrc)} && ulimit -s unlimited && {inner_cmd}"
     return ["bash", "-c", full]
 
 
