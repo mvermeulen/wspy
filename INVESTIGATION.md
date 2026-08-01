@@ -1431,6 +1431,97 @@ motivation and per-syscall design rationale. What remains open from this track:
   absolute numbers are skewed, but this is an inherent limitation of the mechanism — 4.3's "Low-overhead
   tracing alternative to ptrace" entry is the eventual fix, not a documentation note.
 
+### Test-point-level curated performance-summary README deep-dive
+Full scoping (2026-08-01) for Tier 3 item 5 above, not yet implemented — worked out because the item's
+four bundled sub-questions turned out to unblock each other once looked at together, and because the
+original framing (many runs at one test point = repeated trials, statistically aggregate them) was
+incomplete: the author's own observation, prompting this deep-dive, is that a test point's linked runs
+are frequently *not* interchangeable repeats.
+
+**0. Run enumeration.** No new tracking mechanism needed — two things that already exist cover it.
+Suites with no meaningful option axis (cpu2017, cpu2026, pbbsbench — `doc/REPORT_HIERARCHY.md`'s
+"suites with no option axis just use `default`") already land every run at `wspy-run`'s unified
+`<outdir>/<suite>/<benchmark>/<run-id>/` layout, so the run set is just that directory's children.
+Phoronix option-combination test points use the `runs/<run-id>/` symlinks this item's own description
+already references, needed because one Phoronix "test" can fan out into many test points and the flat
+suite/benchmark layout alone can't disambiguate which run belongs to which option combo. Machine-level
+scoping (the hierarchy's `<test-point>/<machine>/` leaf) is then a `hostname` filter over that run set.
+
+**1. Run selection / role assignment — the real gap the original framing missed.** Why a test point
+accumulates multiple runs is not one story, it's (at least) three, and they demand different treatment:
+1. **A redo after a problem** — an earlier run had an issue (crashed, a `wspy-validate` WARN/FAIL, an
+   environmental fluke) and got rerun. The bad run should not be silently averaged in with the good
+   one via blind statistical aggregation; it needs to be excluded or explicitly superseded.
+2. **Diving into more detail** — a later run collects something the earlier one(s) didn't: expanded
+   process-tree profiling, a deeper IBS/symbol-sample pass, additional charts. This run is not a
+   repeated trial of the same measurement at all — it's a *different collection scope* meant to
+   *supplement* the primary numbers with detail the primary run(s) never gathered, not to be pooled
+   into the same statistical bucket as if it were another sample of the same metric.
+3. **More data for more statistical power** — genuinely repeated runs of the identical configuration,
+   the one case the original framing correctly assumed and the one case `wspy-summary`'s existing
+   aggregation (see below) directly handles.
+
+Because these three cases need different treatment, generation needs an explicit **role-assignment
+step** between run enumeration and aggregation, not an implicit "use every linked run" default. Four
+roles per run: **stats-pool member** (case 3 — included in the statistical aggregation), **supplementary
+source** (case 2 — contributes specific named artifacts, e.g. "this run's `process.tree.top1pct.txt`"
+or "this run's deep-IBS chart," without being pooled into the numeric stats), **excluded/superseded**
+(case 1 — kept in the run's history for traceability, never used), and **primary** (which run's identity/
+command/timestamp is authoritative for the page's own header narrative when that needs to be singular —
+defaults to the most recent stats-pool member). A sensible default for first-time generation, always
+human-overridable: a run whose command text matches the test point's canonical command and whose
+`wspy-validate` verdict has no FAIL defaults to stats-pool member; a FAIL run defaults to
+excluded/superseded; a run whose collected pass/profile set differs from the majority (extra `--tree`/
+IBS/symbol-sample passes the others lack) defaults to supplementary rather than either being silently
+dropped or wrongly pooled into the same stats bucket as a differently-scoped run. This mirrors 4.1's
+curation studio's own "generate a sensible default, human edits it, never silently regenerate over an
+edit" idiom (`build_default_curation_blocks()`, `server.py:3037`) — role assignment is exactly that
+idiom applied one level up, to *which runs* feed a report instead of *which artifacts within one run* do.
+
+**2. Aggregation across N runs — turns out to need almost no new code.** `wspy-summary` already accepts
+`--command <exact-text>` and `--hostname <name>` filters (`summary.c:1522-1523`) on top of the min/max/
+mean/median/stddev/CV/CI95/outlier/verdict computation `doc/REPORT_HIERARCHY.md`'s own table already
+points at. So "aggregate every stats-pool-member run of this exact test point on this machine" is
+already directly expressible: `wspy-summary --db <store.db> --command "<test point's command>"
+--hostname <machine>`, run only over the stats-pool subset role assignment (above) produced — the
+aggregation math is not new work, the run-set resolution feeding it is. Real edge case worth a warning,
+not a blocker: `--command` matches exact text, so a test point's invocation drifting slightly between
+runs (an iteration-count flag differing) silently splits into two buckets instead of erroring; surface
+a warning if the resolved stats-pool run set's command text isn't identical across its members. The one
+genuinely new piece: `wspy-archetype`'s four classification axes are computed per run with no cross-run
+comparison today. Cheap to add on top, from data already extracted (`run_features`, no new collection):
+run the existing per-run classification across the stats-pool run set and report whether e.g.
+`resource_dominance`'s top category agrees across all of them or diverges — a real "this workload's
+characterization looks unstable across its history" finding, not decoration, and a direct input to
+Tier 3 item 3's characterization badges (see point 5 below).
+
+**3. Template + customization.** A fixed initial section list mirroring `wspy-summary`'s own group
+structure (one section per counter group, a top-line archetype/stability badge, an outlier-runs
+callout, a supplementary-artifacts section for role-2 runs) is the right starting template. Storage
+should be the *same* block-list-plus-commentary JSON the curation studio already uses (`new_block()`,
+`server.py:1385`) — not a second format — so the tooling that already knows how to render/reorder/
+export that shape (all three export renderers, "What shipped in 4.1") keeps working unmodified.
+
+**4. Living document, not write-once.** `write_phoronix_test_readme()` (`web/joblib.py:2341`) is the
+anti-pattern to avoid here, not the model to copy: "if the file exists, never touch it again" is right
+for a static test description, wrong for a report meant to reflect new data (and re-curated role
+assignments) as they accumulate. The curation studio already solved the general shape of this problem
+correctly: a block stores a *pointer* to regenerable content (`source_file`) plus a separate
+`commentary` field regeneration never touches (`server.py:1385-1424`) — re-running analysis updates
+what a block renders while a human's prose survives, because it lives in a field nothing else writes
+to. This item reuses that same separation for two things, not one: per-section human commentary (as
+before), *and* the role-assignment decisions from point 1 above — both need to survive a later
+re-curate (a new run landing, a stats-pool run turning out to have been bad after all) without being
+silently overwritten by a fresh default-heuristic pass.
+
+**5. Overlap with static-site/badges/drill-down (Tier 3 items 2-4).** "Open questions for
+prioritization" deferred this pending a real design for this item; with one now sketched, a
+preliminary read: characterization badges (item 3) become a direct input (the archetype-stability
+signal from point 2 above *is* a badge), and a browsable static site indexing these per-test-point
+READMEs plausibly *is* most of item 2's remaining value (a browsable, multi-benchmark site) rather than
+a separate deliverable — matching that open question's own guess. Interactive drill-down (item 4) stays
+genuinely separate, a viewing-layer concern orthogonal to what content exists on the page.
+
 ## 4.3 priorities
 Goal: use the normalized store built in 4.1 for regression detection, clustering, phase-aware
 topdown/IBS attribution, static-site publishing, and a lower-overhead tracing backend.
@@ -1663,37 +1754,20 @@ reasoning as Tier 1 above.
    point, not just the latest, and curate a `README.md` inside that test point's own directory,
    describing something different from the per-test README.md that `write_phoronix_test_readme()`
    already writes: measured performance characteristics of this specific option combination, not
-   `phoronix-test-suite info`'s static test description. **Location update:** `doc/REPORT_HIERARCHY.md`
-   (established this cycle, ahead of this item actually being built) now defines where this README
-   lives — `<report-root>/phoronix/<test>/<test-point>/<machine>/README.md` under the new sibling
-   `WSPY_REPORT_ROOT` tree, not inside `workload/phoronix/` in this checkout as originally sketched
-   below; that also changes the "Git-tracked artifact" question below (the report root is a separate
-   tree by convention, so its own version-control story is that tree's business, not this repo's
-   `.gitignore`). Several real design questions bundled into scoping this, not yet resolved:
-   - **Aggregation across N runs, not one.** Different from 4.1's curation studio (one report page, one
-     run) and `wspy-analyze --compare-rundir` (exactly two runs) — this needs the same "many runs of the
-     same command" aggregation `wspy-summary` already does (min/max/mean/median/stddev/outlier/CI95),
-     plus `wspy-archetype`'s per-run classification as a signal for whether a workload's characterization
-     is stable across its linked runs or drifting.
-   - **A template, then customizable.** Start from a fixed set of sections mirroring the report page's
-     own existing block categories (system/power overview, counter groups, tree) as a generation
-     template, then let a human curate/reorder/annotate on top of the generated draft — the same
-     reorderable-block-plus-commentary idiom 4.1's curation studio already established, just operating
-     over aggregated cross-run data instead of one run's blocks.
-   - **Version-control story for `<report-root>/`, now a question for that tree, not this repo.** Now
-     that the report root is understood to live outside the wspy checkout (`doc/REPORT_HIERARCHY.md`),
-     whether/how it's version-controlled is that tree's own decision. **Done (2026-07-30):**
-     `github.com/mvermeulen/workload` — distinct from wspy's own repo, so this README is expected to be
-     committed there, not to wspy. `wspy-publish test-connection` (item 2 above) already clones it
-     locally and can commit a root README; it never pushes on its own. Doesn't block scoping the README
-     content itself.
-   - **A living document, not a write-once artifact.** Contrasts with `write_phoronix_test_readme()`'s
-     "never overwrite, write once" convention for the per-test README — new runs landing later (someone
-     investigated something and gathered more data) needs a re-curate path that doesn't silently clobber
-     a human's prior edits, closer to how 4.1's curation studio already treats saved commentary as
-     authoritative over freshly-regenerated content.
-   - Real potential overlap with this tier's own static-site/badge/drill-down items above — see "Open
-     questions for prioritization" below.
+   `phoronix-test-suite info`'s static test description. **Location:** `doc/REPORT_HIERARCHY.md`
+   (established this cycle, ahead of this item actually being built) defines where this README lives —
+   `<report-root>/phoronix/<test>/<test-point>/<machine>/README.md` under the sibling
+   `WSPY_REPORT_ROOT` tree, not inside `workload/phoronix/` in this checkout as originally sketched.
+   **Version control done (2026-07-30):** `github.com/mvermeulen/workload`, distinct from wspy's own
+   repo — `wspy-publish test-connection` (item 2 above) already clones it locally and can commit a root
+   README; it never pushes on its own. **Full design scoped (2026-08-01), see "Test-point-level curated
+   performance-summary README deep-dive" (Track deep-dives) for the complete reasoning** — run
+   selection/role-assignment (a test-point's linked runs are rarely interchangeable repeats),
+   aggregation (turns out to need almost no new statistics code), the template/customization model, and
+   the living-document/re-curate question are all resolved there; none of it is implemented yet. Real
+   potential overlap with this tier's own static-site/badge/drill-down items above remains genuinely
+   open — see "Open questions for prioritization" below, worth revisiting now that this item has a real
+   design.
 
 6. Benchmark reference-matrix database keyed by (test name, test version, test point) × (machine,
    bucketed to a coarse architecture class: AMD/Intel/ARM/SoC) — a wide, curated comparison table in
