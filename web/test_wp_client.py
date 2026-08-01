@@ -157,5 +157,78 @@ class FindOrCreatePagePathTest(unittest.TestCase):
         self.assertEqual(created_calls, [("phoronix", 0), ("coremark", 201), ("default", 202)])
 
 
+class GetPageTest(unittest.TestCase):
+    def test_gets_page_by_id_with_no_side_effects(self):
+        captured = {}
+
+        def fake_request(site_url, path, username, app_password, method="GET", params=None,
+                          json_body=None, timeout=20):
+            captured["path"] = path
+            captured["method"] = method
+            captured["json_body"] = json_body
+            return {"id": 42, "status": "draft", "link": "https://example.org/workload/foo/"}
+
+        with patch("wp_client.request", side_effect=fake_request):
+            page = wp_client.get_page("https://example.org/workload", "wspy", "secret", 42)
+
+        self.assertEqual(captured["path"], "wp/v2/pages/42")
+        self.assertEqual(captured["method"], "GET")
+        self.assertIsNone(captured["json_body"])
+        self.assertEqual(page["id"], 42)
+
+
+class PublishPageTest(unittest.TestCase):
+    def test_flips_status_to_publish(self):
+        captured = {}
+
+        def fake_request(site_url, path, username, app_password, method="GET", params=None,
+                          json_body=None, timeout=20):
+            captured["path"] = path
+            captured["method"] = method
+            captured["json_body"] = json_body
+            return {"id": 42, "status": "publish", "link": "https://example.org/workload/foo/"}
+
+        with patch("wp_client.request", side_effect=fake_request):
+            page = wp_client.publish_page("https://example.org/workload", "wspy", "secret", 42)
+
+        self.assertEqual(captured["path"], "wp/v2/pages/42")
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(captured["json_body"], {"status": "publish"})
+        self.assertEqual(page["status"], "publish")
+
+
+class DeletePageTest(unittest.TestCase):
+    def test_trashes_by_default(self):
+        captured = {}
+
+        def fake_request(site_url, path, username, app_password, method="GET", params=None,
+                          json_body=None, timeout=20):
+            captured["path"] = path
+            captured["method"] = method
+            captured["params"] = params
+            return {"id": 42, "status": "trash"}
+
+        with patch("wp_client.request", side_effect=fake_request):
+            page = wp_client.delete_page("https://example.org/workload", "wspy", "secret", 42)
+
+        self.assertEqual(captured["path"], "wp/v2/pages/42")
+        self.assertEqual(captured["method"], "DELETE")
+        self.assertIsNone(captured["params"])
+        self.assertEqual(page["status"], "trash")
+
+    def test_force_deletes_permanently(self):
+        captured = {}
+
+        def fake_request(site_url, path, username, app_password, method="GET", params=None,
+                          json_body=None, timeout=20):
+            captured["params"] = params
+            return {"deleted": True}
+
+        with patch("wp_client.request", side_effect=fake_request):
+            wp_client.delete_page("https://example.org/workload", "wspy", "secret", 42, force=True)
+
+        self.assertEqual(captured["params"], {"force": "true"})
+
+
 if __name__ == "__main__":
     unittest.main()
