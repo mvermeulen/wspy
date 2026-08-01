@@ -509,6 +509,69 @@ def render_supplementary_section(data):
     return "\n".join(lines) + "\n"
 
 
+def collect_archetype_scorecards(wspy_archetype_bin, db_path, present):
+    """Runs `wspy-archetype --run <hostname>:<run_id>` once per present run (no bulk --command/
+    --hostname filter needed here, unlike aggregate's own wspy-summary call -- --run already names an
+    exact run, so the redo-vs-repeat ambiguity that motivated --run-id in summary.c doesn't apply) and
+    parses its key=value output (archetype.c's print_trace_field(): one `key=value` per line, no
+    quoting) into a dict per run. A run wspy-archetype can't find -- shouldn't happen, since
+    split_by_store_presence() already confirmed it's in the store, but degrade rather than crash if it
+    somehow is -- is skipped with a warning, same as a missing/failing binary (an empty result list),
+    rather than aborting the whole render over an optional section."""
+    scorecards = []
+    for r in present:
+        argv = [wspy_archetype_bin, "--db", db_path, "--run", "%s:%s" % (r["hostname"], r["run_id"])]
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True)
+        except OSError as e:
+            print("wspy-testpoint: warning: failed to launch %s: %s -- skipping archetype "
+                  "characterization" % (wspy_archetype_bin, e), file=sys.stderr)
+            return scorecards
+        if proc.returncode != 0:
+            print("wspy-testpoint: warning: %s --run %s:%s failed: %s" % (
+                wspy_archetype_bin, r["hostname"], r["run_id"], proc.stderr.strip()), file=sys.stderr)
+            continue
+        fields = {"run_id": r["run_id"]}
+        for line in proc.stdout.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                fields[k] = v
+        scorecards.append(fields)
+    return scorecards
+
+
+def render_archetype_section(scorecards):
+    """None if no scorecards were collected (wspy-archetype missing/failed for every run) or if every
+    run's resource_dominance came back "unknown" (nothing measured worth reporting). Otherwise a
+    per-run table plus a consistent/diverges verdict across whichever runs *did* report a known
+    dominance -- resource_dominance is wspy-archetype's own "headline axis" (its --help's own words),
+    so this is the one worth calling out explicitly; a run with insufficient data to classify doesn't
+    count against agreement, it's simply not evidence either way, not a vote for "diverges"."""
+    if not scorecards:
+        return None
+    known = [s for s in scorecards if s.get("resource_dominance", "unknown") != "unknown"]
+    if not known:
+        return None
+    lines = ["| run_id | resource_dominance | confidence |", "|---|---|---|"]
+    for s in scorecards:
+        dom = s.get("resource_dominance", "unknown")
+        pct = s.get("resource_dominance_pct")
+        dom_display = "%s (%s%%)" % (dom, pct) if pct else dom
+        lines.append("| %s | %s | %s |" % (s["run_id"], dom_display, s.get("confidence", "unknown")))
+    lines.append("")
+    labels = {s["resource_dominance"] for s in known}
+    if len(labels) == 1:
+        lines.append("**Consistent** -- `resource_dominance` agrees (`%s`) across all %d run(s) with "
+                      "archetype data." % (next(iter(labels)), len(known)))
+    else:
+        counts = Counter(s["resource_dominance"] for s in known)
+        breakdown = ", ".join("%d run(s) `%s`" % (n, label) for label, n in counts.most_common())
+        lines.append("**Diverges** -- `resource_dominance` does not agree across stats-pool runs: "
+                      "%s. This may indicate a genuinely unstable workload characterization, not just "
+                      "measurement noise -- worth a closer look." % breakdown)
+    return "\n".join(lines) + "\n"
+
+
 def sync_sections(test_point_dir, sections):
     """Writes each (key, title, content_markdown) in `sections` to
     <test_point_dir>/sections/<key>.md. Returns [(key, title, rel_path), ...] in the same order, for
@@ -597,6 +660,10 @@ def cmd_render(args):
     warn_md = render_warn_callout(rows)
     if warn_md:
         sections.append(("_warnings", "Reliability warnings", warn_md))
+    scorecards = collect_archetype_scorecards(args.wspy_archetype_bin, args.db, present)
+    archetype_md = render_archetype_section(scorecards)
+    if archetype_md:
+        sections.append(("_archetype", "Workload characterization", archetype_md))
     for group in sorted(grouped):
         sections.append((group, GROUP_TITLES.get(group, "Other metrics"),
                           render_section_markdown(grouped[group])))
@@ -706,6 +773,9 @@ def main():
                      help="normalized wspy-store database (default: %(default)s)")
     rn.add_argument("--wspy-summary-bin", default=os.path.join(SCRIPT_DIR, "wspy-summary"),
                      help="wspy-summary binary (default: %(default)s)")
+    rn.add_argument("--wspy-archetype-bin", default=os.path.join(SCRIPT_DIR, "wspy-archetype"),
+                     help="wspy-archetype binary, for the cross-run workload-characterization section "
+                          "(default: %(default)s) -- a missing/failing binary just skips that section")
     rn.add_argument("--report-root-remote", default=report_root.DEFAULT_REPORT_ROOT_REMOTE,
                      help="report-root git remote to clone from if --report-root doesn't exist yet "
                           "(default: %(default)s) -- override for testing against a local/fork remote")

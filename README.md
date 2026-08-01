@@ -589,7 +589,12 @@ section (topdown, cache, branch, ...) is written to a small generated file under
 by an ordinary artifact block in a `curation.json` right alongside `runs.json` — a block whose section
 file already existed from a prior render keeps its title/depth/commentary/position exactly as a human
 left them, only the underlying file's content refreshes. A non-`PASS` verdict gets its own callout
-section; `supplementary`-role runs are listed by name/reason (not their specific artifacts yet):
+section; `supplementary`-role runs are listed by name/reason (not their specific artifacts yet). A
+"Workload characterization" section runs `wspy-archetype --run <hostname>:<run_id>` once per stats-pool
+run and reports whether its "headline axis," `resource_dominance` (compute-bound/frontend-bound/
+memory-bound/speculation-bound), agrees across the whole pool or diverges — real signal a workload's
+characterization may be unstable across its own history, not just measurement noise, and not something
+a single run's own scorecard could ever show:
 
 ```
 ./wspy-testpoint render --suite phoronix --benchmark compress-7zip-default --machine amd-395
@@ -597,9 +602,10 @@ section; `supplementary`-role runs are listed by name/reason (not their specific
 ```
 
 This is the full run-selection/aggregation/rendering pipeline of `INVESTIGATION.md`'s test-point README
-deep-dive (Tier 3 item 5, pieces 1-4) — the archetype cross-run stability signal and pulling specific
-artifacts from `supplementary` runs remain open follow-ups. See `./wspy-testpoint select-runs --help`/
-`./wspy-testpoint aggregate --help`/`./wspy-testpoint render --help` for the full option lists.
+deep-dive (Tier 3 item 5, pieces 1-4, plus the archetype stability fast-follow) — pulling specific
+artifacts from `supplementary` runs (today only listed by name/reason) remains the one open follow-up.
+See `./wspy-testpoint select-runs --help`/`./wspy-testpoint aggregate --help`/
+`./wspy-testpoint render --help` for the full option lists.
 
 ## wspy-symbolize: address-to-symbol resolution for --symbol-sample profiling
 
