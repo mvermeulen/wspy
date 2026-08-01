@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-wspy-testpoint -- run selection / role-assignment and aggregation for a test point + machine
-(INVESTIGATION.md's "Test-point-level curated performance-summary README deep-dive",
-Tier 3 item 5, pieces 1-2).
+wspy-testpoint -- run selection / role-assignment, aggregation, and README rendering for a test point +
+machine (INVESTIGATION.md's "Test-point-level curated performance-summary README deep-dive",
+Tier 3 item 5, pieces 1-4).
 
 A test point's linked runs are rarely interchangeable repeats: some are genuine repeated trials, some
 are redos superseding an earlier bad run, and some dive into more detail with a different collection
@@ -26,10 +26,24 @@ ingested into the target `wspy-store` database (never auto-ingests -- a run only
 if it was launched with `--run-index` in the first place, so there's no reliable way to synthesize one
 retroactively); missing runs are warned about, not silently dropped.
 
+`render` turns the same aggregated statistics into an actual curated `README.md`, reusing
+`web/server.py`'s existing curation-studio block model rather than inventing a second one: each
+counter-group section (topdown, cache, branch, ...) is written to a small generated markdown file
+under `sections/`, referenced by an ordinary `"artifact"` block in a `curation.json` right alongside
+`runs.json` -- the exact same `source_file`-points-at-regenerable-content-plus-separate-`commentary`
+split `select-runs` already uses for run roles, just one level further down. A block for a section that
+already existed from a prior render keeps its title/depth/commentary/position exactly as a human left
+them; only the section file's own content refreshes. `load_curation()`/`save_curation()`/
+`export_block_content()`/`render_export_markdown()` (all `web/server.py`, imported the same way as
+`aggregate`'s `load_run_history_entry()`) work completely unmodified here -- they only ever take a
+plain directory path, never assume `--output-root`'s own layout.
+
 Stdlib-only (matches wspy-analyze/wspy-bundle/wspy-queue/wspy-publish's existing "thin client, no
 dependency" convention).
 """
 import argparse
+import csv
+import io
 import json
 import os
 import socket
@@ -53,6 +67,22 @@ ROLES = ("stats-pool", "supplementary", "excluded")
 DEFAULT_PHORONIX_DEST_ROOT = os.path.join(joblib.REPO_ROOT, "workload", "phoronix")
 DEFAULT_OUTPUT_ROOT = os.path.join(SCRIPT_DIR, "web", "runs")  # matches web/server.py's own default
 DEFAULT_STORE_DB = os.path.join(DEFAULT_OUTPUT_ROOT, "store.db")  # matches web/server.py's own default
+SECTIONS_DIR_NAME = "sections"
+
+# Human-readable section titles for web/joblib.py's resolve_column_group() names -- same vocabulary
+# wspy-analyze's own GROUP_NOTES dict (a separate, prose-heavier set) is keyed by, kept as a small local
+# map here rather than importing wspy-analyze itself (a hyphenated filename, not cleanly importable the
+# way web/ modules are). A group with no entry here (or none at all -- resolve_column_group() returning
+# None) falls back to "Other metrics" rather than being dropped.
+GROUP_TITLES = {
+    "ipc": "IPC", "topdown": "Top-down (L1)", "topdown-frontend": "Top-down: frontend detail",
+    "topdown-backend": "Top-down: backend detail", "topdown-optlb": "Top-down: op-cache/TLB detail",
+    "branch": "Branch prediction", "cache2": "L2 cache", "cache3": "L3 cache",
+    "dcache": "L1 data cache", "icache": "L1 instruction cache", "tlb": "TLB",
+    "memory": "Memory bandwidth", "opcache": "Op-cache", "float": "Floating point",
+    "software": "Software counters", "system": "System metrics", "power": "Power",
+    "other": "Other metrics",
+}
 
 
 def resolve_report_root(args):
@@ -213,17 +243,35 @@ def apply_overrides(runs_by_id, set_overrides, primary_override):
     return primary_override is not None
 
 
-def commit_runs_json(report_root_path, rel_path, message):
-    rc, _, err = report_root.run_git(["add", rel_path], cwd=report_root_path)
+def commit_paths(report_root_path, rel_paths, message):
+    """git add's each of rel_paths then commits, scoped to exactly those paths (a bare `git commit`
+    with nothing restricting it would sweep up any *other* staged changes a human happens to have
+    pending in the same report-root clone -- not just wrong scope, a real risk of committing someone
+    else's in-progress work). "Nothing changed" (rel_paths already match what's committed) is a soft
+    success, not an error -- the common re-run-with-no-real-changes case every subcommand's commit step
+    needs to handle the same way. Detected by checking the index directly (`git diff --cached
+    --name-only`, restricted to rel_paths) rather than string-matching git commit's own output: its
+    "nothing to commit" message text varies depending on *unrelated* repo state (e.g. some other
+    untracked file elsewhere produces "nothing added to commit but untracked files present" instead of
+    "nothing to commit, working tree clean" -- confirmed live, a real bug this fixes, not a
+    hypothetical), so parsing that text is fragile in a way checking the index isn't."""
+    for rel_path in rel_paths:
+        rc, _, err = report_root.run_git(["add", rel_path], cwd=report_root_path)
+        if rc != 0:
+            return False, "git add %s failed in %s: %s" % (rel_path, report_root_path, err)
+    rc, out, err = report_root.run_git(["diff", "--cached", "--name-only", "--"] + rel_paths,
+                                        cwd=report_root_path)
+    if rc == 0 and not out.strip():
+        return True, "no change to commit (already matches)"
+    rc, out, err = report_root.run_git(["commit", "-m", message, "--"] + rel_paths, cwd=report_root_path)
     if rc != 0:
-        return False, "git add %s failed in %s: %s" % (rel_path, report_root_path, err)
-    rc, out, err = report_root.run_git(["commit", "-m", message], cwd=report_root_path)
-    if rc != 0:
-        if "nothing to commit" in (out + err):
-            return True, "no change to commit (runs.json already matches)"
         return False, "git commit failed in %s: %s" % (report_root_path, err)
     rc, sha, _ = report_root.run_git(["rev-parse", "--short", "HEAD"], cwd=report_root_path)
-    return True, "committed %s as %s (local only -- not pushed)" % (rel_path, sha)
+    return True, "committed %d file(s) as %s (local only -- not pushed)" % (len(rel_paths), sha)
+
+
+def commit_runs_json(report_root_path, rel_path, message):
+    return commit_paths(report_root_path, [rel_path], message)
 
 
 def print_summary(data):
@@ -343,23 +391,25 @@ def split_by_store_presence(db_path, stats_pool):
         conn.close()
 
 
-def cmd_aggregate(args):
-    _, test, test_point, runs_json_path = resolve_test_point_paths(args)
-
+def load_stats_pool_present(args, runs_json_path):
+    """Returns (data, present) -- runs.json load + stats-pool role filter + store-presence split,
+    shared by aggregate and render so they can't drift into different resolution logic for "which
+    runs actually feed the numbers." Returns (None, None) with an explanatory error/warning already
+    printed on any failure (missing runs.json, no stats-pool runs, none of them in the store)."""
     if not os.path.isfile(runs_json_path):
         print("wspy-testpoint: error: %s not found -- run `wspy-testpoint select-runs --suite %s "
               "--benchmark %s --machine %s` first" % (
                   runs_json_path, args.suite, args.benchmark, args.machine), file=sys.stderr)
-        return 1
+        return None, None
     data = load_existing(runs_json_path)
     if data is None:
-        return 1  # load_existing() already printed why (missing/unparseable/schema mismatch)
+        return None, None  # load_existing() already printed why (missing/unparseable/schema mismatch)
 
     stats_pool = [r for r in data["runs"] if r["role"] == "stats-pool"]
     if not stats_pool:
         print("wspy-testpoint: no stats-pool runs in %s -- nothing to aggregate" % runs_json_path,
               file=sys.stderr)
-        return 1
+        return None, None
 
     present, missing = split_by_store_presence(args.db, stats_pool)
     if missing:
@@ -370,6 +420,14 @@ def cmd_aggregate(args):
     if not present:
         print("wspy-testpoint: none of this test point's stats-pool runs are in %s -- nothing to "
               "aggregate" % args.db, file=sys.stderr)
+        return None, None
+    return data, present
+
+
+def cmd_aggregate(args):
+    _, test, test_point, runs_json_path = resolve_test_point_paths(args)
+    data, present = load_stats_pool_present(args, runs_json_path)
+    if data is None:
         return 1
 
     argv = [args.wspy_summary_bin, "--db", args.db]
@@ -395,6 +453,190 @@ def cmd_aggregate(args):
     return proc.returncode
 
 
+def parse_summary_csv(text):
+    """Parses wspy-summary --csv --quiet output (header row + one row per (group,metric) bucket -- for
+    a run set already narrowed to one test point via --run-id, "group" is constant, the useful
+    dimension is "metric") into a list of {column_name: value} dicts using its own header row, rather
+    than hardcoding the column order -- stays correct if wspy-summary's own CSV columns are ever
+    reordered/extended. --quiet suppresses the trailing summary line so every remaining line is a real
+    data row; the row-width check below is a second guard against any other stray non-CSV line."""
+    rows = list(csv.reader(io.StringIO(text)))
+    if not rows:
+        return []
+    header = rows[0]
+    return [dict(zip(header, row)) for row in rows[1:] if len(row) == len(header)]
+
+
+def render_section_markdown(rows):
+    lines = ["| metric | n | min | max | mean | stddev | cv% | verdict |",
+             "|---|---|---|---|---|---|---|---|"]
+    for r in rows:
+        lines.append("| %s | %s | %s | %s | %s | %s | %s | %s |" % (
+            r["metric"], r["n"], r["min"], r["max"], r["mean"], r["stddev"], r["cv_percent"],
+            r["verdict"]))
+    return "\n".join(lines) + "\n"
+
+
+def render_warn_callout(rows):
+    """None if every reported metric verdict is PASS -- callers skip the whole section rather than
+    rendering an empty "no warnings" table. wspy-summary's own verdict strings (PASS, or WARN: plus
+    thin/noisy/mixed-pmu/mixed-env) are surfaced verbatim, not re-interpreted -- this tool narrates
+    what was already computed, same "classification-by-code" rule wspy-analyze's own prompts follow."""
+    warns = [r for r in rows if r.get("verdict") != "PASS"]
+    if not warns:
+        return None
+    lines = ["The following metrics carry a non-`PASS` verdict -- see `wspy-summary --help` for what "
+             "each `WARN:` reason means (`thin`/`noisy`/`mixed-pmu`/`mixed-env`):", "",
+             "| metric | verdict |", "|---|---|"]
+    for r in warns:
+        lines.append("| %s | %s |" % (r["metric"], r["verdict"]))
+    return "\n".join(lines) + "\n"
+
+
+def render_supplementary_section(data):
+    """None if this test point has no supplementary-role runs. Lists them by run_id/reason only --
+    which specific artifact from a supplementary run (an extra chart, a process-tree view) is worth
+    pulling in isn't decided by anything in runs.json today, so that stays a human's own follow-up for
+    now rather than a guess this tool makes; see the deep-dive's own incremental scoping."""
+    supp = [r for r in data["runs"] if r["role"] == "supplementary"]
+    if not supp:
+        return None
+    lines = ["Runs with a different collection scope than the stats-pool majority -- not included in "
+             "the statistics above, kept here for traceability:", "",
+             "| run_id | hostname | reason |", "|---|---|---|"]
+    for r in supp:
+        lines.append("| %s | %s | %s |" % (r["run_id"], r["hostname"], r["reason"]))
+    return "\n".join(lines) + "\n"
+
+
+def sync_sections(test_point_dir, sections):
+    """Writes each (key, title, content_markdown) in `sections` to
+    <test_point_dir>/sections/<key>.md. Returns [(key, title, rel_path), ...] in the same order, for
+    sync_curation_blocks() to reconcile against the persisted block list."""
+    sections_dir = os.path.join(test_point_dir, SECTIONS_DIR_NAME)
+    os.makedirs(sections_dir, exist_ok=True)
+    written = []
+    for key, title, content in sections:
+        rel = os.path.join(SECTIONS_DIR_NAME, "%s.md" % key)
+        with open(os.path.join(test_point_dir, rel), "w") as f:
+            f.write(content)
+        written.append((key, title, rel))
+    return written
+
+
+def sync_curation_blocks(curation, written_sections):
+    """Merges written_sections into curation["blocks"] in place. A block whose source_file already
+    exists (from a prior render) keeps its title/depth/commentary/position exactly as a human may have
+    left them -- sync_sections() already refreshed the file's own content, this only adds a block for a
+    section that's newly appearing. A block for a section that no longer has data this run is left in
+    place too, not removed -- same "don't delete history" precedent select-runs' own merge_roles()
+    already established for runs no longer present in --output-root."""
+    blocks = curation.setdefault("blocks", [])
+    existing_files = {b.get("source_file") for b in blocks if b.get("kind") == "artifact"}
+    for _, title, rel in written_sections:
+        if rel not in existing_files:
+            blocks.append(web_export.new_block("artifact", source_file=rel, source_kind="markdown",
+                                                 title=title))
+    return curation
+
+
+def save_curation_no_timestamp(test_point_dir, curation):
+    """Like web/server.py's own save_curation(), minus the "updated" timestamp it always stamps on
+    every save -- appropriate for a human clicking Save in the studio (a real edit just happened), but
+    wrong here: it would make curation.json "look" different on every automated re-render regardless of
+    whether the actual sections/blocks changed at all, defeating commit_paths()'s idempotent no-op path
+    the same way an earlier "generated_at" field defeated it for runs.json (see cmd_select_runs's own
+    data dict comment) -- git history already tracks when this file last meaningfully changed."""
+    curation["schema_version"] = web_export.CURATION_SCHEMA_VERSION
+    path = os.path.join(test_point_dir, joblib.CURATION_NAME)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(curation, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def cmd_render(args):
+    report_root_path, test, test_point, runs_json_path = resolve_test_point_paths(args)
+    test_point_dir = os.path.dirname(runs_json_path)
+
+    if not args.dry_run:
+        ok, msg = report_root.ensure_report_root(report_root_path, args.report_root_remote)
+        print("wspy-testpoint: %s" % msg, file=sys.stderr)
+        if not ok:
+            return 1
+
+    data, present = load_stats_pool_present(args, runs_json_path)
+    if data is None:
+        return 1
+
+    argv = [args.wspy_summary_bin, "--db", args.db, "--csv", "--quiet"]
+    for r in present:
+        argv += ["--run-id", "%s:%s" % (r["hostname"], r["run_id"])]
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True)
+    except OSError as e:
+        print("wspy-testpoint: error: failed to launch %s: %s" % (args.wspy_summary_bin, e),
+              file=sys.stderr)
+        return 1
+    if proc.returncode != 0:
+        print("wspy-testpoint: error: %s failed:\n%s" % (args.wspy_summary_bin, proc.stderr.strip()),
+              file=sys.stderr)
+        return 1
+    rows = parse_summary_csv(proc.stdout)
+    if not rows:
+        print("wspy-testpoint: warning: %s produced no rows for this test point's stats-pool runs" %
+              args.wspy_summary_bin, file=sys.stderr)
+
+    grouped = {}
+    for r in rows:
+        group = joblib.resolve_column_group(r["metric"]) or "other"
+        grouped.setdefault(group, []).append(r)
+
+    sections = []
+    warn_md = render_warn_callout(rows)
+    if warn_md:
+        sections.append(("_warnings", "Reliability warnings", warn_md))
+    for group in sorted(grouped):
+        sections.append((group, GROUP_TITLES.get(group, "Other metrics"),
+                          render_section_markdown(grouped[group])))
+    supp_md = render_supplementary_section(data)
+    if supp_md:
+        sections.append(("_supplementary", "Supplementary runs", supp_md))
+
+    if args.dry_run:
+        print("wspy-testpoint: --dry-run -- would write %d section(s) under %s and render README.md" % (
+            len(sections), test_point_dir), file=sys.stderr)
+        for _, title, _ in sections:
+            print("  - %s" % title, file=sys.stderr)
+        return 0
+
+    os.makedirs(test_point_dir, exist_ok=True)
+    written_sections = sync_sections(test_point_dir, sections)
+
+    curation = web_export.load_curation(test_point_dir) or {"blocks": [], "overview_note": ""}
+    sync_curation_blocks(curation, written_sections)
+    save_curation_no_timestamp(test_point_dir, curation)
+
+    included = [b for b in curation["blocks"] if b.get("depth", "none") != "none"]
+    title = "%s / %s on %s" % (test, test_point, args.machine)
+    readme_md = web_export.render_export_markdown(
+        test_point_dir, "", title, curation.get("overview_note", ""), included)
+    readme_path = os.path.join(test_point_dir, "README.md")
+    with open(readme_path, "w") as f:
+        f.write(readme_md)
+
+    rel_paths = [os.path.relpath(readme_path, report_root_path),
+                 os.path.relpath(os.path.join(test_point_dir, joblib.CURATION_NAME), report_root_path)]
+    rel_paths += [os.path.relpath(os.path.join(test_point_dir, rel), report_root_path)
+                  for _, _, rel in written_sections]
+    ok, msg = commit_paths(
+        report_root_path, rel_paths,
+        "Render README for %s/%s/%s/%s" % (args.suite, test, test_point, args.machine))
+    print("wspy-testpoint: wrote %s -- %s" % (readme_path, msg), file=sys.stderr)
+    return 0 if ok else 1
+
+
 def add_test_point_args(parser):
     """--suite/--benchmark/--machine/--report-root/--phoronix-dest-root -- shared by every subcommand
     that needs to resolve a test point's report-root path (resolve_test_point_paths()), factored out
@@ -416,8 +658,9 @@ def add_test_point_args(parser):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Run selection / role-assignment and aggregation for a wspy test point + machine "
-                    "(INVESTIGATION.md's test-point README deep-dive, Tier 3 item 5).")
+        description="Run selection / role-assignment, aggregation, and README rendering for a wspy "
+                    "test point + machine (INVESTIGATION.md's test-point README deep-dive, "
+                    "Tier 3 item 5).")
     sub = ap.add_subparsers(dest="command", required=True)
 
     sr = sub.add_parser("select-runs", help="resolve and persist run roles for one test point + machine")
@@ -455,6 +698,20 @@ def main():
     ag.add_argument("--quiet", action="store_true",
                      help="suppress wspy-summary's trailing summary line (passed through)")
     ag.set_defaults(func=cmd_aggregate)
+
+    rn = sub.add_parser("render",
+                         help="render a test point's stats-pool aggregate into a curated README.md")
+    add_test_point_args(rn)
+    rn.add_argument("--db", default=DEFAULT_STORE_DB,
+                     help="normalized wspy-store database (default: %(default)s)")
+    rn.add_argument("--wspy-summary-bin", default=os.path.join(SCRIPT_DIR, "wspy-summary"),
+                     help="wspy-summary binary (default: %(default)s)")
+    rn.add_argument("--report-root-remote", default=report_root.DEFAULT_REPORT_ROOT_REMOTE,
+                     help="report-root git remote to clone from if --report-root doesn't exist yet "
+                          "(default: %(default)s) -- override for testing against a local/fork remote")
+    rn.add_argument("--dry-run", action="store_true",
+                     help="compute and print which sections would be written, but touch nothing on disk")
+    rn.set_defaults(func=cmd_render)
 
     args = ap.parse_args()
     return args.func(args)

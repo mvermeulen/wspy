@@ -544,7 +544,7 @@ The create-or-update merge logic for a page a human has since hand-edited, and w
 `doc/REPORT_HIERARCHY.md`'s actual hierarchy levels, are future work — see `INVESTIGATION.md`'s
 Tier 3 item 2.
 
-## wspy-testpoint: run selection / role-assignment and aggregation for a test point
+## wspy-testpoint: run selection, aggregation, and README rendering for a test point
 
 `wspy-testpoint select-runs` resolves, for one `(suite, benchmark, machine)` combination, which role
 each linked run plays — a test point's run history is rarely interchangeable repeats: some are
@@ -583,9 +583,23 @@ by name (with the `wspy-store` command to fix it) but doesn't block aggregating 
     --db web/runs/store.db --csv --metric ipc
 ```
 
-This is the run-selection and aggregation pieces of `INVESTIGATION.md`'s test-point README deep-dive
-(Tier 3 item 5, pieces 1-2); template rendering and README writing are future work. See
-`./wspy-testpoint select-runs --help`/`./wspy-testpoint aggregate --help` for the full option lists.
+`wspy-testpoint render` turns that same aggregate into an actual curated `README.md`, reusing the 4.1
+curation studio's block model (`web/server.py`) rather than inventing a second one: each counter-group
+section (topdown, cache, branch, ...) is written to a small generated file under `sections/`, referenced
+by an ordinary artifact block in a `curation.json` right alongside `runs.json` — a block whose section
+file already existed from a prior render keeps its title/depth/commentary/position exactly as a human
+left them, only the underlying file's content refreshes. A non-`PASS` verdict gets its own callout
+section; `supplementary`-role runs are listed by name/reason (not their specific artifacts yet):
+
+```
+./wspy-testpoint render --suite phoronix --benchmark compress-7zip-default --machine amd-395
+./wspy-testpoint render --suite phoronix --benchmark compress-7zip-default --machine amd-395 --dry-run
+```
+
+This is the full run-selection/aggregation/rendering pipeline of `INVESTIGATION.md`'s test-point README
+deep-dive (Tier 3 item 5, pieces 1-4) — the archetype cross-run stability signal and pulling specific
+artifacts from `supplementary` runs remain open follow-ups. See `./wspy-testpoint select-runs --help`/
+`./wspy-testpoint aggregate --help`/`./wspy-testpoint render --help` for the full option lists.
 
 ## wspy-symbolize: address-to-symbol resolution for --symbol-sample profiling
 
