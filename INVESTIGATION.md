@@ -1108,7 +1108,37 @@ to core aggregation — the `wspy-archetype` cross-run stability signal from the
 still open, a fast-follow. New `test_summary.c` cases (the redo scenario, empty-filter-is-a-no-op,
 malformed-spec error) and a `tests/testpoint_smoke.sh` extension (real `wspy-store`/`wspy-summary`
 binaries, the same redo-exclusion proof end to end, missing-run warn-but-proceed, missing-`runs.json`
-error). Template rendering and README writing remain open.
+error). Template rendering and README writing have since shipped too, see the next entry.
+
+**`wspy-testpoint render` (PR #185) — pieces 3-4 of Tier 3 item 5's test-point README work, done for
+this cycle.** Turns the aggregated statistics into an actual curated `README.md`, the artifact the
+whole item exists to produce. Researching this surfaced that "template rendering" and "README writing"
+are naturally one piece, not two: `web/server.py`'s curation-studio block model (`new_block()`,
+`load_curation()`/`save_curation()`, `export_block_content()`, `render_export_markdown()`) already has
+exactly the source-pointer-vs-commentary separation the deep-dive's living-document requirement needs,
+and none of those functions assume `--output-root`'s own layout — they only ever take a plain directory
+path. Reused **unmodified**: each counter-group section (topdown, cache, branch, ...) is written to a
+generated markdown file under `sections/`, referenced by an ordinary `"artifact"` block in a
+`curation.json` right alongside `runs.json`. A block whose section file already existed from a prior
+render keeps its human-edited title/depth/commentary/position; only the file's own content refreshes.
+Zero `web/server.py` changes needed. A `"freeform"` block (commentary-only, no backing file — the
+obvious-looking alternative) was considered and rejected: it has exactly one text field, so using it
+for generated content would conflate "the data" and "the human's notes," breaking the very
+regenerate-without-clobbering guarantee this item exists to provide. Two real bugs found and fixed
+during manual end-to-end testing, before the formal tests existed: `render` never called
+`ensure_report_root()` before writing/committing (unlike `select-runs`) — a fresh report-root clone
+would fail with a raw git error instead of a managed clone-or-verify step; and the idempotent-commit
+check string-matched `git commit`'s own "nothing to commit" output, but that message's exact wording
+depends on *unrelated* repo state (an untracked file anywhere else in the clone produces a different
+phrasing that doesn't contain the matched substring) — `commit_paths()` (now shared by every
+subcommand's commit step, `select-runs` included) checks the git index directly instead, and scopes
+each commit to exactly its own paths rather than a bare `git commit` that could sweep up unrelated
+staged changes a human happens to have pending in the same clone. New `tests/testpoint_smoke.sh`
+sections: the same redo-exclusion correctness proof carried through to the rendered README, a
+WARN-verdict callout, a supplementary-runs listing, living-document preservation across a re-render
+(the test that specifically catches the idempotency bug above), idempotent no-op commits, and
+`--dry-run`. Still open: the `wspy-archetype` cross-run stability signal, and pulling specific artifacts
+from `supplementary`-role runs (today only listed by run_id/reason).
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
@@ -1551,24 +1581,27 @@ characterization looks unstable across its history" finding, not decoration, and
 Tier 3 item 3's characterization badges (see point 5 below). Deliberately deferred out of the PR 184
 slice to keep it reviewable, per plan-mode discussion with the user before implementation.
 
-**3. Template + customization.** A fixed initial section list mirroring `wspy-summary`'s own group
-structure (one section per counter group, a top-line archetype/stability badge, an outlier-runs
-callout, a supplementary-artifacts section for role-2 runs) is the right starting template. Storage
-should be the *same* block-list-plus-commentary JSON the curation studio already uses (`new_block()`,
-`server.py:1385`) — not a second format — so the tooling that already knows how to render/reorder/
-export that shape (all three export renderers, "What shipped in 4.1") keeps working unmodified.
+**3. Template + customization. Shipped 2026-08-01, `wspy-testpoint render`, PR #185 — see "Shipped
+since 4.2" above for the implementation write-up.** A fixed initial section list mirroring
+`wspy-summary`'s own group structure (one section per counter group, an outlier/WARN callout, a
+supplementary-runs listing) was the right starting template, as scoped. Storage is the *same*
+block-list-plus-commentary JSON the curation studio already uses (`new_block()`, `server.py:1385`) —
+not a second format — reused directly rather than reimplemented, so the tooling that already knows how
+to render/export that shape keeps working unmodified. Not yet shipped from this point's original
+scoping: an archetype/stability badge (still deferred, same as `aggregate`'s own point 2) and pulling
+specific artifacts from supplementary runs (still just a name/reason listing).
 
-**4. Living document, not write-once.** `write_phoronix_test_readme()` (`web/joblib.py:2341`) is the
-anti-pattern to avoid here, not the model to copy: "if the file exists, never touch it again" is right
-for a static test description, wrong for a report meant to reflect new data (and re-curated role
-assignments) as they accumulate. The curation studio already solved the general shape of this problem
-correctly: a block stores a *pointer* to regenerable content (`source_file`) plus a separate
-`commentary` field regeneration never touches (`server.py:1385-1424`) — re-running analysis updates
-what a block renders while a human's prose survives, because it lives in a field nothing else writes
-to. This item reuses that same separation for two things, not one: per-section human commentary (as
-before), *and* the role-assignment decisions from point 1 above — both need to survive a later
-re-curate (a new run landing, a stats-pool run turning out to have been bad after all) without being
-silently overwritten by a fresh default-heuristic pass.
+**4. Living document, not write-once. Shipped alongside point 3 above.** `write_phoronix_test_readme()`
+(`web/joblib.py:2341`) is the anti-pattern to avoid here, not the model to copy: "if the file exists,
+never touch it again" is right for a static test description, wrong for a report meant to reflect new
+data (and re-curated role assignments) as they accumulate. The curation studio already solved the
+general shape of this problem correctly: a block stores a *pointer* to regenerable content
+(`source_file`) plus a separate `commentary` field regeneration never touches (`server.py:1385-1424`) —
+re-running analysis updates what a block renders while a human's prose survives, because it lives in a
+field nothing else writes to. This item reuses that same separation for two things, not one: per-section
+human commentary (as before), *and* the role-assignment decisions from point 1 above — both need to
+survive a later re-curate (a new run landing, a stats-pool run turning out to have been bad after all)
+without being silently overwritten by a fresh default-heuristic pass.
 
 **5. Overlap with static-site/badges/drill-down (Tier 3 items 2-4).** "Open questions for
 prioritization" deferred this pending a real design for this item; with one now sketched, a
@@ -1817,14 +1850,16 @@ reasoning as Tier 1 above.
    **Version control done (2026-07-30):** `github.com/mvermeulen/workload`, distinct from wspy's own
    repo — `wspy-publish test-connection` (item 2 above) already clones it locally and can commit a root
    README; it never pushes on its own. **Full design scoped (2026-08-01), see "Test-point-level curated
-   performance-summary README deep-dive" (Track deep-dives) for the complete reasoning** — run
-   selection/role-assignment (a test-point's linked runs are rarely interchangeable repeats),
-   aggregation (turns out to need almost no new statistics code), the template/customization model, and
-   the living-document/re-curate question are all resolved there. **Run selection/role-assignment shipped
-   (2026-08-01, PR #183) and aggregation shipped (2026-08-01, PR #184) — see "Shipped since 4.2" above
-   for both.** Template rendering and README writing remain open. Real potential overlap with this
-   tier's own static-site/badge/drill-down items above remains genuinely open — see "Open questions for
-   prioritization" below, worth revisiting now that this item has a real design.
+   performance-summary README deep-dive" (Track deep-dives) for the complete reasoning.** **All four
+   scoped pieces now shipped (2026-08-01): run selection/role-assignment (PR #183), aggregation
+   (PR #184), template rendering + README writing (PR #185) — see "Shipped since 4.2" above for all
+   three.** `wspy-testpoint select-runs`/`aggregate`/`render` together form the working end-to-end
+   pipeline this item set out to build. Still open, both small/fast-follow in nature: the
+   `wspy-archetype` cross-run stability signal, and pulling specific artifacts (not just a name/reason
+   listing) from `supplementary`-role runs. Real potential overlap with this tier's own
+   static-site/badge/drill-down items above remains genuinely open — see "Open questions for
+   prioritization" below, worth revisiting now that a real, shipped pipeline exists to look at instead
+   of just a design.
 
 6. Benchmark reference-matrix database keyed by (test name, test version, test point) × (machine,
    bucketed to a coarse architecture class: AMD/Intel/ARM/SoC) — a wide, curated comparison table in
