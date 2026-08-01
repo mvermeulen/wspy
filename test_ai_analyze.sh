@@ -106,7 +106,7 @@ echo "$OUT" | grep -q "PERF_ANALYSIS_TEMPLATE_VERSION" || { echo "FAIL: template
 echo "$OUT" | grep -q "command: sleep 1" || { echo "FAIL: workload command missing from rendered prompt"; exit 1; }
 echo "$OUT" | grep -q "top-down pipeline-slot breakdown" || { echo "FAIL: topdown group note missing"; exit 1; }
 echo "$OUT" | grep -q "retire: 60.2%" || { echo "FAIL: raw counter text not inlined verbatim"; exit 1; }
-[ -f "$RUNDIR/aiprompt.txt" ] || { echo "FAIL: aiprompt.txt not written"; exit 1; }
+[ -f "$RUNDIR/aiprompt.md" ] || { echo "FAIL: aiprompt.md not written"; exit 1; }
 echo "dry-run prompt rendering OK"
 
 echo ""
@@ -133,8 +133,8 @@ echo "$OUT" | grep -q "run_id=test-run-1" || { echo "FAIL: run A identity missin
 echo "$OUT" | grep -q "run_id=test-run-2" || { echo "FAIL: run B identity missing from compare prompt"; exit 1; }
 echo "$OUT" | grep -q "retire: 60.2%" || { echo "FAIL: run A raw counter text missing from compare prompt"; exit 1; }
 echo "$OUT" | grep -q "retire: 39.3%" || { echo "FAIL: run B raw counter text missing from compare prompt"; exit 1; }
-[ -f "$RUNDIR/aiprompt.compare.manual-sleep-test-run-2.txt" ] || {
-    echo "FAIL: aiprompt.compare.manual-sleep-test-run-2.txt not written into run A's directory"; exit 1; }
+[ -f "$RUNDIR/aiprompt.compare.manual-sleep-test-run-2.md" ] || {
+    echo "FAIL: aiprompt.compare.manual-sleep-test-run-2.md not written into run A's directory"; exit 1; }
 echo "--compare-rundir dry-run OK"
 
 echo ""
@@ -189,7 +189,7 @@ echo ""
 echo "=== Testing a real Ollama call against $MODEL ==="
 ./wspy-analyze --rundir "$RUNDIR" --model "$MODEL" --timeout 120
 SLUG="$(printf '%s' "$MODEL" | tr -c 'A-Za-z0-9._-' '_')"
-ANALYSIS="$RUNDIR/aianalysis.$SLUG.txt"
+ANALYSIS="$RUNDIR/aianalysis.$SLUG.md"
 [ -s "$ANALYSIS" ] || { echo "FAIL: $ANALYSIS missing or empty"; exit 1; }
 echo "live call OK ($(wc -c < "$ANALYSIS") bytes from $MODEL)"
 
@@ -204,7 +204,7 @@ echo "--default-model installed fallback OK"
 echo ""
 echo "=== Testing a real Ollama call against $MODEL (comparative mode) ==="
 ./wspy-analyze --rundir "$RUNDIR" --compare-rundir "$RUNDIR_B" --model "$MODEL" --timeout 120
-COMPARE_ANALYSIS="$RUNDIR/aianalysis.compare.manual-sleep-test-run-2.$SLUG.txt"
+COMPARE_ANALYSIS="$RUNDIR/aianalysis.compare.manual-sleep-test-run-2.$SLUG.md"
 [ -s "$COMPARE_ANALYSIS" ] || { echo "FAIL: $COMPARE_ANALYSIS missing or empty"; exit 1; }
 echo "comparative live call OK ($(wc -c < "$COMPARE_ANALYSIS") bytes from $MODEL)"
 

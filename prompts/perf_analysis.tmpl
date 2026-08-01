@@ -1,4 +1,4 @@
-PERF_ANALYSIS_TEMPLATE_VERSION = 1.1
+PERF_ANALYSIS_TEMPLATE_VERSION = 1.2
 # The line above is parsed by wspy-analyze and copied into every rendered
 # aiprompt.txt so a reader can tell which template version produced a given
 # analysis after this file changes. Bump it whenever the instructional text
@@ -19,6 +19,12 @@ means and what it implies. When you refer to a specific number, quote it
 exactly as it appears in the data below; do not round, estimate, or invent a
 value that is not present verbatim in this prompt. If the data doesn't
 support a confident conclusion, say so explicitly rather than guessing.
+
+Format your entire response as Markdown: use **bold**/`code spans` for
+emphasis and quoted values, and a Markdown table (real `|`-delimited rows,
+not an ASCII-art table) if you're presenting more than a couple of
+comparable numbers side by side. Plain prose otherwise -- don't force a
+table or list where a sentence reads better.
 
 ## Run identity
 {{WORKLOAD}}

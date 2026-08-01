@@ -982,6 +982,53 @@ an error). New tests: `web/test_studio_curation.py`'s `LoadDefaultCurationConfig
 three new `BuildDefaultCurationBlocksTest` cases (config ordering/exclusion, exclusion not
 reintroduced by the fallback loop, unlisted artifacts still auto-appended).
 
+**Composite-preset process-tree auto-generation bug + manual retrigger button** — found while chasing
+why a real `zen4plus-deep` run's process-tree views (above) never showed up:
+`execute_profile_run()` (`web/joblib.py`) only auto-ran `run_proctree_besteffort()` when the *raw*
+profile string was literally `"tree-heavy"`/`"gpu-compute"`, but the web launcher only ever submits a
+composite preset's own name (`"zen4plus-deep"`), never its expanded `"deep-cpu,ibs-sample,tree-heavy"`
+pass list — `server.py` already had `COMPOSITE_PRESET_PROFILES`/`_expand_preset_names()` for exactly
+this (its own IBS/power probe tables needed it), `joblib.py`'s post-processing step just wasn't using
+it. Both moved into `joblib.py` (renamed `expand_preset_names()`, still imported back into `server.py`)
+and `execute_profile_run()` now expands before checking. Also added a "Generate process-tree views"
+button on the report page (`render_proctree_card()`, wherever `process.tree.txt` exists) — synchronous
+`POST /api/proctree-views/<suite>/<benchmark>/<run_id>` (`_proctree_views()`), not SSE, since this is
+local proctree/Python rendering, not an LLM call — so a run from before this fix (or before the button
+existed at all) can get its views generated retroactively without re-running the benchmark. Requests
+every proctree annotation flag unconditionally; proctree treats an unrequested-at-collection-time flag
+as "absent", not an error, so the maximal request is safe without knowing which `--tree-*` flags the
+original run used. Verified end-to-end against a real `process.tree.txt` (root-less `wspy --tree`)
+through the live HTTP server, both the button and the 400/404 guard paths. New test:
+`web/test_joblib.py`'s `ExpandPresetNamesTest`.
+
+**wspy-analyze output rendered as real Markdown, not dumped verbatim** — the report page, HTML export,
+and WordPress export all just `html.escape()`'d wspy-analyze's `.txt` output into a `<pre>` block, so a
+model's `**bold**`/table syntax showed up as literal asterisks and pipes (surfaced publishing a real
+report: gpt-oss:20b's narrative is markdown-flavored by default, primed by the prompt templates' own
+markdown headers). Fix, in three parts:
+- wspy-analyze now writes `.md` (`aianalysis.<model>.md`, `aiprompt.md`, and their `.critique`/
+  `.compare.` variants) instead of `.txt` — content was always markdown, the extension now says so.
+  `joblib.py`'s `AIANALYSIS_RE`/`AIPROMPT_CRITIQUE_RE`/`ai_artifact_label()` match either extension
+  (no regression for an existing run's `.txt` narrative — it keeps being recognized/labeled/curated
+  exactly as before, just rendered as plain text rather than parsed markdown, same as any other `.txt`
+  block); `guess_kind()` maps `.md` to a new `"markdown"` kind. `default_curation.conf` lists both
+  extensions for the AI-narrative slot.
+- New `web/markdown_lite.py`: a small stdlib-only Markdown → HTML/WordPress-block converter (this repo
+  has no non-stdlib Python dependency to reach for). Deliberately not full CommonMark — ATX headings,
+  paragraphs, bold/italic/inline-code spans, single-level lists, GFM pipe tables, fenced code, hr; no
+  nested lists/blockquotes/links, since none of those show up in this tool's actual prompt/response
+  shape. `to_html()` for the report page/HTML export; `to_wp_blocks()` decomposes into native Gutenberg
+  blocks (`wp:heading`/`wp:paragraph`/`wp:list`/`wp:table`/`wp:code`) rather than one opaque raw-HTML
+  blob, matching how every other content type in `render_export_wordpress()` already works — stays
+  editable in the WP block editor afterward. 26 new tests (`web/test_markdown_lite.py`).
+- `prompts/perf_analysis.tmpl`/`perf_analysis2.tmpl` (versions bumped to 1.2/2.1) now explicitly ask
+  for a Markdown response, including real `|`-delimited tables over ASCII-art ones. `perf_analysis2.tmpl`
+  (the structured, numbered-section template) is now wspy-analyze's default (`DEFAULT_TEMPLATE`) instead
+  of the short-prose `perf_analysis.tmpl` — the web UI's template `<select>` reordered to match. Verified
+  against a real live Ollama call (`test_ai_analyze.sh`, `qwen2.5-coder:3b`): real `.md` output, template
+  v2.1 by default. Not done: a one-time rename/backfill tool for pre-existing `.txt` narrative files —
+  they keep working, just without the new rendering, per the author's own call when scoping this.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:

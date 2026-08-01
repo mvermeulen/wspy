@@ -55,6 +55,7 @@ from urllib.parse import urlsplit, parse_qs
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import joblib  # noqa: E402 -- see joblib.py's own docstring; shared with wspy-queue
+import markdown_lite  # noqa: E402 -- see markdown_lite.py's own docstring
 import wp_client  # noqa: E402 -- WordPress REST client, for the "Publish to WordPress" button
                    # (INVESTIGATION.md 4.3 Tier 3 item 2) -- see wp_client.py's own docstring for
                    # why it lives in its own module rather than here
@@ -79,6 +80,7 @@ from joblib import (  # noqa: E402,F401
     CSV_NAME, MANIFEST_NAME, PNG_NAME, CURATION_NAME, COMMAND_TXT_NAME, guess_kind, read_run_manifest,
     ai_artifact_label, list_plot_pngs, collect_run_files,
     build_reproducibility_bundle, BUNDLE_MANIFEST_NAME,
+    COMPOSITE_PRESET_PROFILES, expand_preset_names, run_proctree_besteffort,
 )
 
 # The one fixed configuration item 6 knows about -- matches wspy-run's
@@ -116,33 +118,13 @@ BUILTIN_PROFILES = ("quick", "zen4plus-deep", "deep-cpu", "deep-gpu",
                      "deep-cpu-intel", "gpu-compute", "ibs-basic",
                      "ibs-memory-deep", "ibs-sample", "tree-heavy", "zen-portable")
 
-# wspy-run's zen-portable/zen4plus-deep are themselves composed from other
-# builtin profiles via wspy-run's own load_profiles() (hand-derived here,
-# same "not otherwise discoverable from Python without parsing wspy-run's
-# bash" reasoning as POWER_PRESET_NAMES/PROFILE_PLOTTABLE_COLUMNS below) --
-# the web launcher only ever submits the single top-level preset name
-# ("zen4plus-deep"), never wspy-run's own expanded "deep-cpu,ibs-sample,
-# tree-heavy" comma list, so ibs_probes_for_request()/power_probes_for_
-# request() below need this table to know what a composite preset actually
-# runs. Without it, a composite preset's IBS/power passes silently never got
-# probed by the Check button -- not a regression from any specific change,
-# just unreachable until zen-portable/zen4plus-deep became selectable here.
-COMPOSITE_PRESET_PROFILES = {
-    "zen-portable": ("quick", "ibs-basic"),
-    "zen4plus-deep": ("deep-cpu", "ibs-sample", "tree-heavy"),
-}
-
-
-def _expand_preset_names(preset):
-    """preset.split(',') with each composite name (see COMPOSITE_PRESET_
-    PROFILES) expanded to its constituent builtin profiles -- so probe/plot
-    logic keyed on wspy-run's own profile names (e.g. "ibs-sample",
-    "deep-cpu") sees them even when the request only named the composite."""
-    names = []
-    for name in (n.strip() for n in preset.split(",")):
-        names.extend(COMPOSITE_PRESET_PROFILES.get(name, (name,)))
-    return names
-
+# COMPOSITE_PRESET_PROFILES/expand_preset_names() (wspy-run's zen-portable/
+# zen4plus-deep composite profiles, hand-derived since they're not otherwise
+# discoverable from Python without parsing wspy-run's bash) now live in
+# joblib.py, imported above -- execute_profile_run() there needs them too
+# (its own tree-heavy/gpu-compute post-processing detection), not just this
+# file's own ibs_probes_for_request()/power_probes_for_request() below.
+#
 # ALL_GROUPS/counter_group_flags/COLUMN_TO_GROUP/resolve_column_group/
 # autofit_checklist_for_custom_plots/PROFILE_PLOTTABLE_COLUMNS/
 # build_supplementary_plot_passes/parse_optional_int/build_configuration_passes/
@@ -794,7 +776,7 @@ def ibs_probes_for_request(cfg, preset, checklist):
     preset = (preset or "").strip()
     probes = []
     if preset:
-        for name in _expand_preset_names(preset):
+        for name in expand_preset_names(preset):
             if name == "ibs-basic":
                 probes.append(("ibs-basic", ["--ibs-basic", "--no-ipc", "--csv"]))
             elif name == "ibs-memory-deep":
@@ -947,7 +929,7 @@ def power_probes_for_request(cfg, preset, checklist):
     at all."""
     preset = (preset or "").strip()
     if preset:
-        names = set(_expand_preset_names(preset))
+        names = set(expand_preset_names(preset))
         if names & POWER_PRESET_NAMES:
             return [("power", ["--power", "--no-ipc", "--csv"])]
         return []
@@ -1387,6 +1369,7 @@ DEPTH_OPTIONS_BY_KIND = {
     "image": ("none", "full"),
     "csv": ("none", "summary", "excerpt", "full"),
     "text": ("none", "summary", "excerpt", "full"),
+    "markdown": ("none", "summary", "excerpt", "full"),
     "json": ("none", "summary", "excerpt", "full"),
     "binary": ("none", "full"),
     "freeform": ("none", "full"),
@@ -1576,6 +1559,8 @@ def render_block_content(rundir, base_url, block):
     if size > MAX_INLINE_BYTES:
         return (f'<p class="muted">{size} bytes, too large to embed inline &mdash; '
                 f'<a href="{url}">full file</a></p>')
+    if kind == "markdown":
+        return f'<div class="markdown-body">{markdown_lite.to_html(text)}</div>'
     return f'<pre>{html.escape(text)}</pre>'
 
 
@@ -1661,9 +1646,11 @@ def export_block_content(rundir, base_url, block, image_url=None):
     one image falls back to this local URL for just that image rather
     than failing the whole render.
 
-      content_kind: "none" | "image" | "pre"
-      payload: absolute image URL (content_kind == "image"), or preformatted
-        text (content_kind == "pre"), else None
+      content_kind: "none" | "image" | "pre" | "markdown"
+      payload: absolute image URL (content_kind == "image"), or raw text
+        (content_kind == "pre"/"markdown" -- markdown's payload is still the
+        raw, unrendered markdown source; each export renderer converts it in
+        its own target format via markdown_lite), else None
       note: an optional plain-text annotation (line/byte counts, "too large
         to embed", ...) for the renderer to show alongside the content --
         always plain text, never HTML, so each format escapes it itself.
@@ -1709,6 +1696,8 @@ def export_block_content(rundir, base_url, block, image_url=None):
     # depth == "full"
     if size > MAX_INLINE_BYTES:
         return "none", None, f"{size} bytes, too large to embed -- full file: {url}"
+    if kind == "markdown":
+        return "markdown", text, None
     return "pre", text, None
 
 
@@ -1738,6 +1727,10 @@ def render_export_markdown(rundir, base_url, title, overview_note, blocks):
         content_kind, payload, note = export_block_content(rundir, base_url, b)
         if content_kind == "image":
             parts.append(f"![{b.get('title') or ''}]({payload})\n")
+        elif content_kind == "markdown":
+            # Already valid markdown source for this exact target format --
+            # embed verbatim rather than fencing it as an opaque code block.
+            parts.append(f"{payload}\n")
         elif content_kind == "pre":
             fence = "````" if "```" in payload else "```"
             parts.append(f"{fence}\n{payload}\n{fence}\n")
@@ -1762,6 +1755,8 @@ def render_export_html(rundir, base_url, title, overview_note, blocks):
         if content_kind == "image":
             body_parts.append(f'<img src="{payload}" alt="{html.escape(b.get("title") or "")}" '
                                f'style="max-width:100%;height:auto;">')
+        elif content_kind == "markdown":
+            body_parts.append(f'<div style="font-family:sans-serif;">{markdown_lite.to_html(payload)}</div>')
         elif content_kind == "pre":
             body_parts.append(
                 f'<pre style="background:#f5f5f5;padding:12px;overflow-x:auto;'
@@ -1797,6 +1792,13 @@ def render_export_wordpress(rundir, base_url, title, overview_note, blocks, imag
             parts.append(_wp_block(
                 "image", f'<figure class="wp-block-image"><img src="{payload}" '
                          f'alt="{html.escape(b.get("title") or "")}"/></figure>'))
+        elif content_kind == "markdown":
+            # A model's markdown response decomposed into native Gutenberg
+            # blocks (heading/paragraph/list/table/code) -- stays editable
+            # in the WP block editor, not one opaque raw-HTML blob.
+            wp_blocks = markdown_lite.to_wp_blocks(payload)
+            if wp_blocks:
+                parts.append(wp_blocks)
         elif content_kind == "pre":
             parts.append(_wp_block(
                 "preformatted", f'<pre class="wp-block-preformatted">{html.escape(payload)}</pre>'))
@@ -3176,6 +3178,34 @@ def apply_studio_post(rundir, form):
     save_curation(rundir, {"blocks": blocks, "overview_note": overview_note})
 
 
+def render_proctree_card(suite, benchmark, run_id):
+    """Report-page "Generate process-tree views" button: re-derives
+    process.tree.summary.txt/simple.txt/top.txt/top1pct.txt from this run's
+    raw process.tree.txt via joblib.run_proctree_besteffort() -- the same
+    function a tree-heavy/gpu-compute/custom-tree run already calls
+    automatically once its own wspy-run/wspy invocation finishes (see
+    execute_profile_run()/execute_custom_run() in joblib.py). Offered here
+    too since it's also useful retroactively: a run from before this button
+    existed, or (until fixed) a composite preset like zen4plus-deep whose
+    embedded tree-heavy pass execute_profile_run() failed to recognize.
+    Requests every proctree annotation flag regardless of what the original
+    wspy invocation actually collected -- proctree treats "absent" as "not
+    collected" per-field rather than erroring (proctree.c), so asking for
+    the maximal set is harmless even without knowing which --tree-* flags
+    the original run used. Synchronous (see _proctree_views()), not SSE:
+    unlike wspy-analyze this is local parsing/rendering, not an LLM call."""
+    url = f"/api/proctree-views/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    return f"""
+<h2>Process-tree views</h2>
+<p class="muted">Re-derives the readable process-tree views (summary/simple/top/top-1%) from this
+   run's raw <code>{TREE_TXT_NAME}</code> record -- safe to click even if they already exist, it
+   just overwrites them in place. New/updated views show up as "+ add" candidates in the curation
+   studio once this finishes (reload the page).</p>
+<button type="button" id="proctree-views-run" data-proctree-url="{html.escape(url)}">Generate process-tree views</button>
+<pre id="proctree-views-output" class="live-output" hidden></pre>
+"""
+
+
 def render_analyze_card(suite, benchmark, run_id):
     """Report-page "AI narrative analysis" card: triggers wspy-analyze
     against this run directory (see CLAUDE.md's wspy-analyze entry) without
@@ -3212,8 +3242,8 @@ def render_analyze_card(suite, benchmark, run_id):
   <div class="row" style="margin-top: 0.5rem;">
     <label>Prompt Template
       <select id="analyze-template">
-        <option value="perf_analysis.tmpl">Default (perf_analysis.tmpl)</option>
-        <option value="perf_analysis2.tmpl">Structured (perf_analysis2.tmpl)</option>
+        <option value="perf_analysis2.tmpl">Default: structured (perf_analysis2.tmpl)</option>
+        <option value="perf_analysis.tmpl">Short prose (perf_analysis.tmpl)</option>
       </select>
     </label>
   </div>
@@ -3405,6 +3435,7 @@ def render_fixed_report(rundir, suite, benchmark, run_id):
     if os.path.isfile(os.path.join(rundir, TREE_TXT_NAME)):
         tree_url = f"/tree-viewer/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
         parts.append(f'<p><a href="{tree_url}">Interactive tree viewer</a></p>')
+        parts.append(render_proctree_card(suite, benchmark, run_id))
 
     parts.append(render_analyze_card(suite, benchmark, run_id))
 
@@ -3482,6 +3513,7 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
     if os.path.isfile(os.path.join(rundir, TREE_TXT_NAME)):
         tree_url = f"/tree-viewer/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
         parts.append(f'<p><a href="{tree_url}">Interactive tree viewer</a></p>')
+        parts.append(render_proctree_card(suite, benchmark, run_id))
 
     parts.append(render_analyze_card(suite, benchmark, run_id))
 
@@ -4199,6 +4231,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "invalid JSON body"})
                 return
             self._start_analyze(cfg, suite, benchmark, run_id, body)
+            return
+
+        m = re.match(r"^/api/proctree-views/([^/]+)/([^/]+)/([^/]+)$", parsed.path)
+        if m:
+            suite, benchmark, run_id = m.groups()
+            if not all(valid_segment(x) for x in (suite, benchmark, run_id)):
+                self._send(400, "invalid path")
+                return
+            self._proctree_views(cfg, suite, benchmark, run_id)
             return
 
         POST_HANDLERS = {
@@ -5048,6 +5089,29 @@ class Handler(BaseHTTPRequestHandler):
         rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=30)
         self._send_json(200, {"command": shell_preview(argv), "exit_code": rc,
                                "output": output, "timed_out": timed_out})
+
+    def _proctree_views(self, cfg, suite, benchmark, run_id):
+        """Report page's "Generate process-tree views" button
+        (render_proctree_card()): re-runs joblib.run_proctree_besteffort()
+        against an existing run directory's raw process.tree.txt. Synchronous
+        response, not SSE -- proctree/rendering is local and fast (no LLM
+        call involved), matching the Validate/Store/Discovery tabs'
+        run_sync() idiom above even though this isn't literally a single argv
+        (run_proctree_besteffort() drives several small proctree/Python
+        rendering steps itself, collected here into one output blob)."""
+        rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+        if not os.path.isdir(rundir):
+            self._send_json(404, {"error": "no such report"})
+            return
+        if not os.path.isfile(os.path.join(rundir, TREE_TXT_NAME)):
+            self._send_json(400, {"error": f"no {TREE_TXT_NAME} in this run directory -- "
+                                            f"this run didn't include a --tree pass"})
+            return
+        lines = []
+        run_proctree_besteffort(lines.append, cfg, rundir, cmdline=True, futex=True, io=True,
+                                 io_wait=True, schedstat=True, vmsize=True, connect=True,
+                                 wait=True, poll=True, nanosleep=True)
+        self._send_json(200, {"output": "\n".join(lines), "exit_code": 0, "timed_out": False})
 
     def _discovery_validate(self, cfg, body):
         paths = [p.strip() for p in (body.get("paths") or []) if isinstance(p, str) and p.strip()]

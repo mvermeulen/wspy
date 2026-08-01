@@ -120,6 +120,8 @@ def guess_kind(filename):
         return "csv"
     if ext == ".json":
         return "json"
+    if ext == ".md":
+        return "markdown"
     # Unknown extensions are tentatively "text"; server.py's
     # read_text_safely() downgrades to a link-only render if the file
     # doesn't actually decode as UTF-8, rather than requiring every
@@ -142,8 +144,19 @@ def read_run_manifest(run_manifest_path):
         return None
 
 
-AIANALYSIS_RE = re.compile(r"^aianalysis\.(.+)\.txt$")
-AIPROMPT_CRITIQUE_RE = re.compile(r"^aiprompt\.critique\.(.+)\.txt$")
+AIANALYSIS_RE = re.compile(r"^aianalysis\.(.+)\.(?:txt|md)$")
+AIPROMPT_CRITIQUE_RE = re.compile(r"^aiprompt\.critique\.(.+)\.(?:txt|md)$")
+
+# wspy-analyze wrote these as .txt through 4.3; it writes .md now (the
+# content was always markdown-flavored prose -- gpt-oss:20b et al. write
+# markdown by default, primed by the prompt template's own markdown
+# headers -- .md just makes that honest, and lets the report/export
+# renderers convert it to real HTML instead of dumping it verbatim into a
+# <pre>). Both regexes above match either extension so an old run's .txt
+# narrative keeps being recognized/labeled/curated exactly as before --
+# guess_kind() is what decides the actual rendering treatment (only ".md"
+# gets kind="markdown"; old ".txt" files stay kind="text", still readable,
+# just not reformatted).
 
 
 def ai_artifact_label(filename):
@@ -151,10 +164,10 @@ def ai_artifact_label(filename):
     files, or None if filename isn't one -- so collect_run_files() below can
     offer something more useful than the bare filename, and so a block built
     from actual model output (aianalysis.*/aiprompt.critique.*, not the
-    deterministically-rendered aiprompt.txt itself) carries an AI-generated
-    marker from the moment it's added. See INVESTIGATION.md's Ollama
-    deep-dive, design decision #7."""
-    if filename == "aiprompt.txt":
+    deterministically-rendered aiprompt.txt/.md itself) carries an
+    AI-generated marker from the moment it's added. See INVESTIGATION.md's
+    Ollama deep-dive, design decision #7."""
+    if filename in ("aiprompt.txt", "aiprompt.md"):
         return "AI analysis: rendered prompt", False
     m = AIPROMPT_CRITIQUE_RE.match(filename)
     if m:
@@ -3155,6 +3168,33 @@ def run_store_ingest_besteffort(emit, cfg, run_index_path):
         emit(f"[error] failed to launch wspy-store ({cfg['wspy_store_bin']}): {e}")
 
 
+# wspy-run's zen-portable/zen4plus-deep are themselves composed from other
+# builtin profiles via wspy-run's own load_profiles() (hand-derived here,
+# not otherwise discoverable from Python without parsing wspy-run's bash) --
+# the web launcher only ever submits the single top-level preset name
+# ("zen4plus-deep"), never wspy-run's own expanded "deep-cpu,ibs-sample,
+# tree-heavy" comma list. Lives here (not just server.py, which also uses
+# it for its own IBS/power probe tables) because execute_profile_run() below
+# needs it too: its own tree-heavy/gpu-compute detection was checking the
+# raw, unexpanded profile string, so a composite preset's embedded tree pass
+# never triggered the process-tree-views post-processing step below.
+COMPOSITE_PRESET_PROFILES = {
+    "zen-portable": ("quick", "ibs-basic"),
+    "zen4plus-deep": ("deep-cpu", "ibs-sample", "tree-heavy"),
+}
+
+
+def expand_preset_names(preset):
+    """preset.split(',') with each composite name (see COMPOSITE_PRESET_
+    PROFILES) expanded to its constituent builtin profiles -- so logic keyed
+    on wspy-run's own profile names (e.g. "ibs-sample", "deep-cpu", "tree-
+    heavy") sees them even when the request only named the composite."""
+    names = []
+    for name in (n.strip() for n in preset.split(",")):
+        names.extend(COMPOSITE_PRESET_PROFILES.get(name, (name,)))
+    return names
+
+
 def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
                          workload_argv, run_index_path=None, store_ingest=False,
                          custom_plots=None, only_custom=False, preset_notes=None,
@@ -3264,8 +3304,11 @@ def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
     # those fixed choices directly (tree-heavy: --tree-cmdline only;
     # gpu-compute: the syscall-latency set, no cmdline). Update alongside
     # load_builtin_profile() if either ever changes, or a future profile adds
-    # its own --tree pass.
-    profile_names = profile.split(",")
+    # its own --tree pass. expand_preset_names() (not a bare .split(",")) so
+    # a composite preset composed of tree-heavy/gpu-compute (zen4plus-deep,
+    # future composites) is recognized too -- the web launcher only ever
+    # submits the composite's own name, never its expanded pass list.
+    profile_names = expand_preset_names(profile)
     if "tree-heavy" in profile_names:
         run_proctree_besteffort(emit, cfg, rundir, cmdline=True)
     elif "gpu-compute" in profile_names:
