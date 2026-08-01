@@ -964,6 +964,24 @@ once these land, no point publishing twice), and the page's sidebar/full-width l
 WordPress theme/Customizer setting outside what this codebase's publishing code controls, left for the
 author to check in wp-admin directly).
 
+**Default curation moved into an editable config file** — the "default we'll want to change over
+time" gap flagged above got hit for real on a `zen4plus-deep` run: reviewing the button's output
+against a real 20-artifact run surfaced that only ~10 of them were actually wanted, in a different
+order than the kind-based policy produced. `build_default_curation_blocks()` now reads
+`web/default_curation.conf` (`load_default_curation_config()`) — an ordered, plain-text list of
+filenames/glob patterns, one per line, `#`-prefixed for a documented exclusion (kept in the file
+rather than deleted, so re-enabling something is a one-character edit) and `##`-prefixed for section
+headers/prose. Config-listed artifacts are added in file order; everything the config doesn't mention
+(a pass output from a profile it hasn't been tuned for, a plot template it doesn't list, additional AI
+narrative variants) still falls through to the pre-config kind-based logic, appended after — nothing
+disappears just because the config is incomplete for a given run. The shipped config also folds in two
+artifact kinds the studio could already produce but the original policy never offered:
+`process.tree.top1pct.txt`/`process.tree.top.txt` (the tree-heavy pass's derived process-list views)
+and `aianalysis.*.txt` (any model's narrative, via glob — silently skipped if not generated yet, not
+an error). New tests: `web/test_studio_curation.py`'s `LoadDefaultCurationConfigTest` (parser) plus
+three new `BuildDefaultCurationBlocksTest` cases (config ordering/exclusion, exclusion not
+reintroduced by the fallback loop, unlisted artifacts still auto-appended).
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:

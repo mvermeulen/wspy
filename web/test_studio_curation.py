@@ -24,6 +24,37 @@ def _touch(path):
         f.write("x")
 
 
+class LoadDefaultCurationConfigTest(unittest.TestCase):
+    def _write_config(self, text):
+        fd, path = tempfile.mkstemp()
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        self.addCleanup(os.remove, path)
+        return path
+
+    def test_parses_included_and_excluded_entries_in_order(self):
+        path = self._write_config(
+            "## section header, not an entry\n"
+            "\n"
+            "command.txt\n"
+            "# systemtime.csv  # trailing note, ignored\n"
+            "plots/*.png\n"
+        )
+        self.assertEqual(server.load_default_curation_config(path), [
+            ("command.txt", True),
+            ("systemtime.csv", False),
+            ("plots/*.png", True),
+        ])
+
+    def test_missing_config_file_returns_empty(self):
+        self.assertEqual(server.load_default_curation_config("/no/such/file.conf"), [])
+
+    def test_real_shipped_config_parses_and_orders_command_txt_first(self):
+        entries = server.load_default_curation_config()
+        self.assertTrue(entries)
+        self.assertEqual(entries[0], ("command.txt", True))
+
+
 class BuildDefaultCurationBlocksTest(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -93,6 +124,61 @@ class BuildDefaultCurationBlocksTest(unittest.TestCase):
         blocks = server.build_default_curation_blocks(self.tmpdir)
         self.assertTrue(blocks)
         self.assertTrue(all(b["depth"] == "full" for b in blocks))
+
+    def test_config_orders_and_excludes_known_artifacts(self):
+        # Regression coverage for default_curation.conf's actual shipped
+        # policy: command.txt first, systemtime.system-cpu.png right after
+        # it, and known-noisy artifacts (raw per-tick CSVs, the fallback/
+        # detail plots) left out even though they exist on disk.
+        self._write_manifest([
+            {"name": "systemtime", "output": "systemtime.csv", "manifest": None, "status": "ok"},
+            {"name": "counters", "output": "counters.txt", "manifest": None, "status": "ok"},
+            {"name": "amdtopdown", "output": "amdtopdown.csv", "manifest": None, "status": "ok"},
+        ])
+        for name in ("systemtime.csv", "counters.txt", "amdtopdown.csv", "command.txt"):
+            _touch(os.path.join(self.tmpdir, name))
+        os.mkdir(os.path.join(self.tmpdir, "plots"))
+        for name in ("amdtopdown.metrics.png", "amdtopdown.topdown.png", "systemtime.system-cpu.png"):
+            _touch(os.path.join(self.tmpdir, "plots", name))
+
+        blocks = server.build_default_curation_blocks(self.tmpdir)
+        source_files = [b["source_file"] for b in blocks]
+
+        self.assertEqual(source_files[0], "command.txt")
+        self.assertEqual(source_files[1], "plots/systemtime.system-cpu.png")
+        self.assertIn("counters.txt", source_files)
+        self.assertIn("plots/amdtopdown.topdown.png", source_files)
+        # Excluded by default_curation.conf even though present on disk.
+        self.assertNotIn("systemtime.csv", source_files)
+        self.assertNotIn("amdtopdown.csv", source_files)
+        self.assertNotIn("plots/amdtopdown.metrics.png", source_files)
+
+    def test_config_excluded_pass_output_not_reintroduced_by_fallback(self):
+        # The pass-output fallback loop (for profiles the config doesn't
+        # know about) must not undo an explicit exclusion for a pass name
+        # the config *does* know about.
+        self._write_manifest([
+            {"name": "tree", "output": "tree.txt", "manifest": None, "status": "ok"},
+        ])
+        _touch(os.path.join(self.tmpdir, "tree.txt"))
+
+        blocks = server.build_default_curation_blocks(self.tmpdir)
+        self.assertNotIn("tree.txt", [b["source_file"] for b in blocks])
+
+    def test_config_unlisted_artifacts_still_appended_via_fallback(self):
+        # A pass name/plot the config has no opinion on (e.g. a different
+        # wspy-run profile) must still show up, same as pre-config behavior.
+        self._write_manifest([
+            {"name": "software_branch", "output": "software_branch.txt", "manifest": None, "status": "ok"},
+        ])
+        _touch(os.path.join(self.tmpdir, "software_branch.txt"))
+        os.mkdir(os.path.join(self.tmpdir, "plots"))
+        _touch(os.path.join(self.tmpdir, "plots", "software_branch.ipc.png"))
+
+        blocks = server.build_default_curation_blocks(self.tmpdir)
+        source_files = [b["source_file"] for b in blocks]
+        self.assertIn("software_branch.txt", source_files)
+        self.assertIn("plots/software_branch.ipc.png", source_files)
 
     def test_no_run_manifest_still_returns_something_sensible(self):
         # No manifest.json at all (e.g. the legacy fixed-config layout) --
