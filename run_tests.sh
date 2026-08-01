@@ -865,6 +865,16 @@ if ! ./tests/wspy_queue_smoke.sh; then
     exit 1
 fi
 
+# wspy-testpoint run role-assignment smoke tests (INVESTIGATION.md's
+# "Test-point-level curated performance-summary README deep-dive"): fake run/manifest fixtures and a
+# local bare git repo standing in for the report-root remote, so this needs no network access and no
+# real hardware counters -- run once here, same idiom as wspy_queue_smoke.sh above.
+echo "Testing wspy-testpoint run role-assignment smoke tests..."
+if ! ./tests/testpoint_smoke.sh; then
+    echo "FAIL: wspy-testpoint smoke tests failed"
+    exit 1
+fi
+
 # Doc/version consistency check (INVESTIGATION.md's 4.2 "Doc/version
 # consistency check" item): static grep against tracked doc/Makefile/header
 # text, no build/GPU axis, run once like wspy_queue_smoke.sh above.

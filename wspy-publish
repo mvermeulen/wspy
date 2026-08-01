@@ -78,7 +78,6 @@ import getpass
 import json
 import os
 import stat
-import subprocess
 import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -89,9 +88,9 @@ from wp_client import CONFIG_PATH, load_config  # noqa: E402 -- canonical defini
 import server as web_export  # noqa: E402 -- only its render_wordpress_content_for_rundir() is used
                               # here; importing it never starts the HTTP server (guarded by
                               # server.py's own __main__ check)
+from report_root import (  # noqa: E402 -- shared with wspy-testpoint's run role-assignment
+    DEFAULT_REPORT_ROOT, DEFAULT_REPORT_ROOT_REMOTE, ensure_report_root, run_git)
 
-DEFAULT_REPORT_ROOT = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "workload"))
-DEFAULT_REPORT_ROOT_REMOTE = "https://github.com/mvermeulen/workload.git"
 TEST_PAGE_SLUG = "wspy-publish-connectivity-test"
 
 
@@ -138,30 +137,6 @@ def cmd_configure(args):
     return 0
 
 
-def _run_git(args, cwd):
-    result = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
-    return result.returncode, result.stdout.strip(), result.stderr.strip()
-
-
-def ensure_report_root(report_root, remote):
-    """Clone `remote` into `report_root` if it doesn't exist yet; if it
-    does, just verify it's a git repo. Returns (ok, message)."""
-    if os.path.isdir(os.path.join(report_root, ".git")):
-        rc, out, err = _run_git(["remote", "get-url", "origin"], cwd=report_root)
-        if rc != 0:
-            return False, "%s exists but `git remote get-url origin` failed: %s" % (report_root, err)
-        if out.rstrip("/").removesuffix(".git") != remote.rstrip("/").removesuffix(".git"):
-            return False, ("%s exists but its origin (%s) does not match the expected report-root "
-                            "remote (%s) -- refusing to touch it" % (report_root, out, remote))
-        return True, "%s already cloned (origin: %s)" % (report_root, out)
-    if os.path.exists(report_root):
-        return False, "%s exists but is not a git repo -- refusing to touch it" % report_root
-    rc, out, err = _run_git(["clone", remote, report_root], cwd=os.path.dirname(report_root) or ".")
-    if rc != 0:
-        return False, "git clone %s %s failed: %s" % (remote, report_root, err)
-    return True, "cloned %s -> %s" % (remote, report_root)
-
-
 ROOT_README_CONTENT = """# workload
 
 Curated wspy performance reports, one directory per
@@ -182,7 +157,7 @@ def commit_root_readme(report_root):
     if os.path.isfile(readme_path):
         return False, "%s already has a README.md -- leaving it alone" % report_root
 
-    rc, out, err = _run_git(["status", "--porcelain"], cwd=report_root)
+    rc, out, err = run_git(["status", "--porcelain"], cwd=report_root)
     if rc != 0:
         return False, "git status failed in %s: %s" % (report_root, err)
     if out:
@@ -191,13 +166,13 @@ def commit_root_readme(report_root):
 
     with open(readme_path, "w") as f:
         f.write(ROOT_README_CONTENT)
-    _run_git(["add", "README.md"], cwd=report_root)
-    rc, out, err = _run_git(
+    run_git(["add", "README.md"], cwd=report_root)
+    rc, out, err = run_git(
         ["commit", "-m", "Add report-root README (wspy-publish test-connection)"],
         cwd=report_root)
     if rc != 0:
         return False, "git commit failed in %s: %s" % (report_root, err)
-    rc, sha, err = _run_git(["rev-parse", "--short", "HEAD"], cwd=report_root)
+    rc, sha, err = run_git(["rev-parse", "--short", "HEAD"], cwd=report_root)
     return True, "committed README.md as %s (local only -- not pushed)" % sha
 
 

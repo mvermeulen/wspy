@@ -31,13 +31,15 @@ make clobber                  # also remove built binaries
 `wspy-store`/`wspy-summary`/`wspy-archetype` link against the system SQLite library — install
 `libsqlite3-dev` (or your distro's equivalent) before building. `wspy-plot` shells out to a `gnuplot`
 binary at run time, not a build-time dependency. `wspy-run` is a bash script; `wspy-sweep`,
-`wspy-queue`, `wspy-bundle`, `wspy-analyze`, `wspy-symbolize`, `wspy-publish`, `wspy-phoronix-import`,
-and the web launcher (`web/server.py`) are plain Python 3 scripts — stdlib only, nothing to build or
-install (`wspy-analyze` additionally needs a running Ollama daemon at use time, not build time, to do
-anything; `wspy-symbolize` needs `addr2line` on `PATH` (binutils, near-universally already installed)
-at use time to resolve anything, though it degrades to an "unresolved" report rather than failing
-outright if it's missing; `wspy-phoronix-import`'s `--result` source needs `phoronix-test-suite`
-installed; `wspy-publish` needs network access to the configured WordPress site and git remote).
+`wspy-queue`, `wspy-bundle`, `wspy-analyze`, `wspy-symbolize`, `wspy-publish`, `wspy-testpoint`,
+`wspy-phoronix-import`, and the web launcher (`web/server.py`) are plain Python 3 scripts — stdlib
+only, nothing to build or install (`wspy-analyze` additionally needs a running Ollama daemon at use
+time, not build time, to do anything; `wspy-symbolize` needs `addr2line` on `PATH` (binutils,
+near-universally already installed) at use time to resolve anything, though it degrades to an
+"unresolved" report rather than failing outright if it's missing; `wspy-phoronix-import`'s `--result`
+source needs `phoronix-test-suite` installed; `wspy-publish`/`wspy-testpoint` need network access to
+the configured git remote to clone the report-root the first time, `wspy-publish` additionally to the
+configured WordPress site).
 
 Performance counters and `--tree` (which uses `ptrace`) generally need root, or
 `CAP_SYS_PTRACE` plus `perf_event_paranoid <= 1`. `scripts/setup_perf.sh` checks and, if you
@@ -535,6 +537,34 @@ uploaded here):
 The create-or-update merge logic for a page a human has since hand-edited, and writing into
 `doc/REPORT_HIERARCHY.md`'s actual hierarchy levels, are future work — see `INVESTIGATION.md`'s
 Tier 3 item 2.
+
+## wspy-testpoint: run selection / role-assignment for a test point
+
+`wspy-testpoint select-runs` resolves, for one `(suite, benchmark, machine)` combination, which role
+each linked run plays — a test point's run history is rarely interchangeable repeats: some are
+genuine repeated trials, some are redos superseding an earlier bad run, and some dive into more
+detail with a different collection scope (extra process-tree/IBS passes) meant to supplement the
+primary numbers rather than be pooled into the same statistics. Each run defaults to `stats-pool`
+(matching command/pass-set, no failure), `excluded` (a failed run), or `supplementary` (a differing
+pass-set), plus one run defaults to `primary`; a human's `--set RUN_ID=ROLE`/`--primary RUN_ID`
+override is remembered (`human_set`/`primary_human_set`) so a later re-run's defaults never silently
+overwrite it. Persists `runs.json` under `doc/REPORT_HIERARCHY.md`'s report-root
+(`<suite>/<test>/<test-point>/<machine>/`), committing locally only (never pushes), same
+clone-or-verify git plumbing `wspy-publish` uses (`web/report_root.py`):
+
+```
+./wspy-testpoint select-runs --suite phoronix --benchmark compress-7zip-default --machine amd-395
+./wspy-testpoint select-runs --suite phoronix --benchmark compress-7zip-default --machine amd-395 \
+    --set 20260801T170831.394-965bd352=excluded --primary 20260731T090012.101-abc12345
+./wspy-testpoint select-runs --suite cpu2026 --benchmark 706.stockfish_r --machine amd-395 --dry-run
+```
+
+`--hostname` (default: this machine's own hostname) is the actual value runs are filtered by;
+`--machine` is only the human-assigned report-root path segment (`doc/REPORT_HIERARCHY.md`'s
+`<vendor>-<short-model>` convention) — no mapping between the two is assumed. This is the run-selection
+piece of `INVESTIGATION.md`'s test-point README deep-dive (Tier 3 item 5); aggregation (via
+`wspy-summary --command --hostname` over the resolved `stats-pool` runs) and README rendering are
+future work. See `./wspy-testpoint select-runs --help` for the full option list.
 
 ## wspy-symbolize: address-to-symbol resolution for --symbol-sample profiling
 

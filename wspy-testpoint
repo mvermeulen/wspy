@@ -1,0 +1,348 @@
+#!/usr/bin/env python3
+"""
+wspy-testpoint -- run selection / role-assignment for a test point + machine
+(INVESTIGATION.md's "Test-point-level curated performance-summary README deep-dive",
+Tier 3 item 5, piece 1).
+
+A test point's linked runs are rarely interchangeable repeats: some are genuine repeated trials, some
+are redos superseding an earlier bad run, and some dive into more detail with a different collection
+scope (extra process-tree/IBS/symbol-sample passes) meant to supplement the primary numbers rather than
+be pooled into the same statistical bucket. This tool resolves, for one (suite, benchmark, machine)
+combination, which role each run plays -- stats-pool member, supplementary source, or excluded/
+superseded -- plus which single run (if any) is "primary" for narrative purposes, and persists that
+decision into doc/REPORT_HIERARCHY.md's report-root tree so later pieces (aggregation via
+`wspy-summary --command --hostname`, template rendering, README writing) have a resolved run set to
+work from instead of an unfiltered "every linked run" default.
+
+A default role/primary is computed for any run not already recorded with human_set=true; a human's own
+--set/--primary choice from a prior invocation is never silently overwritten by a later default-
+heuristic pass -- the same source-pointer-vs-commentary separation the 4.1 curation studio already
+established for per-run blocks (new_block(), web/server.py), applied here one level up: to which runs
+feed a report, not which artifacts within one run do.
+
+Stdlib-only (matches wspy-analyze/wspy-bundle/wspy-queue/wspy-publish's existing "thin client, no
+dependency" convention).
+"""
+import argparse
+import json
+import os
+import socket
+import sys
+from collections import Counter
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(SCRIPT_DIR, "web"))
+import joblib  # noqa: E402 -- REPO_ROOT, list_materialized_phoronix_test_points(), read_run_manifest()
+import server as web_export  # noqa: E402 -- only load_run_history_entry() is used; importing server.py
+                              # never starts the HTTP server (guarded by its own __main__ check, same
+                              # precedent wspy-publish already established for this exact module)
+from wp_client import load_config  # noqa: E402 -- report_root config field, shared with wspy-publish
+import report_root  # noqa: E402 -- shared report-root git plumbing, extracted from wspy-publish
+
+RUNS_JSON_NAME = "runs.json"
+RUNS_JSON_SCHEMA_VERSION = "1.0"
+ROLES = ("stats-pool", "supplementary", "excluded")
+DEFAULT_PHORONIX_DEST_ROOT = os.path.join(joblib.REPO_ROOT, "workload", "phoronix")
+DEFAULT_OUTPUT_ROOT = os.path.join(SCRIPT_DIR, "web", "runs")  # matches web/server.py's own default
+
+
+def resolve_report_root(args):
+    if args.report_root:
+        return args.report_root
+    cfg = load_config()
+    if cfg and cfg.get("report_root"):
+        return cfg["report_root"]
+    return report_root.DEFAULT_REPORT_ROOT
+
+
+def resolve_test_identity(suite, benchmark, phoronix_dest_root):
+    """Returns (test, test_point, warning_or_None). For suite "phoronix", `benchmark` (wspy-run's own
+    naming) already equals a materialized test point's "identity" (bare_name-options_slug,
+    materialize_phoronix_test_point(), web/joblib.py) -- split it back into (bare_name, options_slug)
+    via list_materialized_phoronix_test_points(), rather than re-deriving it some other way. Any other
+    suite, or a phoronix benchmark that doesn't match any materialized point (moved/never materialized),
+    falls back to test=benchmark, test_point="default" per doc/REPORT_HIERARCHY.md's own convention for
+    suites with no option axis -- degrade, don't fail, same idiom used throughout this codebase."""
+    if suite == "phoronix":
+        for entry in joblib.list_materialized_phoronix_test_points(phoronix_dest_root):
+            if entry["identity"] == benchmark:
+                return entry["bare_name"], entry["options_slug"], None
+        return benchmark, "default", (
+            "no materialized Phoronix test point found with identity %r under %r -- "
+            "falling back to test=%r, test_point=\"default\"" % (benchmark, phoronix_dest_root, benchmark))
+    return benchmark, "default", None
+
+
+def read_run_passes(output_root, suite, benchmark, run_id):
+    """Frozenset of this run's own pass names (run-level manifest.json's passes[] -- wspy-run's unified
+    --suite/--benchmark layout), used to detect a run whose collection scope differs from its test
+    point's majority (extra tree/IBS/symbol-sample passes the others lack -> supplementary, not a
+    repeated trial of the same measurement). Empty frozenset if no run-level manifest.json exists (a
+    bare wspy run dropped into this layout by hand) -- treated as its own distinct "scope" by the
+    majority-vote logic below, not silently ignored."""
+    manifest = joblib.read_run_manifest(os.path.join(output_root, suite, benchmark, run_id, joblib.RUN_MANIFEST_NAME))
+    if not manifest:
+        return frozenset()
+    return frozenset(p.get("name") for p in manifest.get("passes", []) if p.get("name"))
+
+
+def enumerate_candidate_runs(output_root, suite, benchmark, hostname):
+    """Every run directory under <output_root>/<suite>/<benchmark>/ whose manifest-derived hostname
+    exactly matches `hostname` -- deliberately not discover_run_history()'s fuzzy substring filter
+    (built for a human typing into a search box), and deliberately a targeted listdir of one already-
+    known suite/benchmark directory rather than that function's whole-output-root scan, which has
+    nothing to offer here since suite/benchmark are already fixed inputs."""
+    bench_dir = os.path.join(output_root, suite, benchmark)
+    candidates = []
+    if not os.path.isdir(bench_dir):
+        return candidates
+    for run_id in sorted(os.listdir(bench_dir)):
+        run_dir = os.path.join(bench_dir, run_id)
+        if not os.path.isdir(run_dir):
+            continue
+        mtime = os.path.getmtime(run_dir)
+        entry = web_export.load_run_history_entry(output_root, suite, benchmark, run_id, mtime)
+        if (entry.get("hostname") or "") != hostname:
+            continue
+        entry["passes"] = read_run_passes(output_root, suite, benchmark, run_id)
+        candidates.append(entry)
+    return candidates
+
+
+def majority_pass_set(candidates):
+    if not candidates:
+        return frozenset()
+    counts = Counter(c["passes"] for c in candidates)
+    return counts.most_common(1)[0][0]
+
+
+def compute_default_role(entry, majority_passes):
+    if entry["status"] == "failed":
+        return "excluded", "status=failed"
+    if entry["passes"] == majority_passes:
+        return "stats-pool", "status=%s, majority pass-set" % entry["status"]
+    return "supplementary", "status=%s, pass-set differs from this test point's majority (%s vs %s)" % (
+        entry["status"], sorted(entry["passes"]), sorted(majority_passes))
+
+
+def load_existing(path):
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        print("wspy-testpoint: warning: %s exists but could not be parsed -- starting fresh" % path,
+              file=sys.stderr)
+        return None
+    if data.get("schema_version") != RUNS_JSON_SCHEMA_VERSION:
+        print("wspy-testpoint: warning: %s has schema_version=%r (expected %r) -- starting fresh" % (
+            path, data.get("schema_version"), RUNS_JSON_SCHEMA_VERSION), file=sys.stderr)
+        return None
+    return data
+
+
+def merge_roles(existing, candidates, majority_passes):
+    """Returns (runs_by_id, primary_run_id) -- existing human_set=true rows are carried forward
+    unchanged; every other row (previously auto-computed, or newly seen this run) gets a freshly
+    computed default. Rows in `existing` whose run_id isn't among `candidates` this time (the run
+    directory was since cleaned up from --output-root) are kept as-is too -- role assignment is a
+    historical decision worth keeping, not just a live view (mirrors the deep-dive's own "excluded runs
+    stay in history for traceability" framing)."""
+    existing_by_id = {r["run_id"]: r for r in (existing or {}).get("runs", [])}
+    candidates_by_id = {c["run_id"]: c for c in candidates}
+
+    runs_by_id = dict(existing_by_id)
+    for run_id, entry in candidates_by_id.items():
+        prior = existing_by_id.get(run_id)
+        if prior and prior.get("human_set"):
+            continue
+        role, reason = compute_default_role(entry, majority_passes)
+        runs_by_id[run_id] = {
+            "run_id": run_id, "benchmark": entry["benchmark"], "hostname": entry["hostname"],
+            "status": entry["status"], "command": entry["workload_str"], "start_time": entry["start_time"],
+            "role": role, "human_set": False, "reason": reason,
+        }
+
+    primary_run_id = (existing or {}).get("primary_run_id")
+    primary_human_set = bool((existing or {}).get("primary_human_set"))
+    if not primary_human_set:
+        stats_pool = [r for r in runs_by_id.values() if r["role"] == "stats-pool"]
+        stats_pool.sort(key=lambda r: r.get("start_time") or "", reverse=True)
+        primary_run_id = stats_pool[0]["run_id"] if stats_pool else None
+
+    return runs_by_id, primary_run_id, primary_human_set
+
+
+def apply_overrides(runs_by_id, set_overrides, primary_override):
+    """Mutates runs_by_id in place; returns primary_human_set's new value (True if this invocation's
+    --primary was given, unchanged otherwise -- a run's own human_set tracks its *role* override, which
+    is a separate decision from whether it was explicitly chosen as primary, so this can't reuse that
+    same flag: --primary alone (no --set for that run) must still survive the next re-run)."""
+    for run_id, role in set_overrides:
+        if run_id not in runs_by_id:
+            raise KeyError(run_id)
+        runs_by_id[run_id]["role"] = role
+        runs_by_id[run_id]["human_set"] = True
+        runs_by_id[run_id]["reason"] = "human override (--set)"
+    if primary_override is not None and primary_override not in runs_by_id:
+        raise KeyError(primary_override)
+    return primary_override is not None
+
+
+def commit_runs_json(report_root_path, rel_path, message):
+    rc, _, err = report_root.run_git(["add", rel_path], cwd=report_root_path)
+    if rc != 0:
+        return False, "git add %s failed in %s: %s" % (rel_path, report_root_path, err)
+    rc, out, err = report_root.run_git(["commit", "-m", message], cwd=report_root_path)
+    if rc != 0:
+        if "nothing to commit" in (out + err):
+            return True, "no change to commit (runs.json already matches)"
+        return False, "git commit failed in %s: %s" % (report_root_path, err)
+    rc, sha, _ = report_root.run_git(["rev-parse", "--short", "HEAD"], cwd=report_root_path)
+    return True, "committed %s as %s (local only -- not pushed)" % (rel_path, sha)
+
+
+def print_summary(data):
+    primary = data.get("primary_run_id")
+    print("%s/%s/%s/%s (%d run(s)):" % (
+        data["suite"], data["test"], data["test_point"], data["machine"], len(data["runs"])))
+    for r in sorted(data["runs"], key=lambda r: r.get("start_time") or ""):
+        marker = " [primary]" if r["run_id"] == primary else ""
+        human = "human-set" if r["human_set"] else "auto"
+        print("  %-12s %-13s %s%s  (%s: %s)" % (
+            r["role"], r["run_id"], r["status"], marker, human, r["reason"]))
+
+
+def cmd_select_runs(args):
+    output_root = os.path.abspath(args.output_root)
+    hostname = args.hostname or socket.gethostname()
+    report_root_path = os.path.abspath(resolve_report_root(args))
+
+    if not args.dry_run:
+        ok, msg = report_root.ensure_report_root(report_root_path, args.report_root_remote)
+        print("wspy-testpoint: %s" % msg, file=sys.stderr)
+        if not ok:
+            return 1
+
+    test, test_point, warning = resolve_test_identity(args.suite, args.benchmark, args.phoronix_dest_root)
+    if warning:
+        print("wspy-testpoint: warning: %s" % warning, file=sys.stderr)
+
+    candidates = enumerate_candidate_runs(output_root, args.suite, args.benchmark, hostname)
+    if not candidates:
+        print("wspy-testpoint: no runs found under %s for suite=%r benchmark=%r hostname=%r" % (
+            output_root, args.suite, args.benchmark, hostname), file=sys.stderr)
+        return 1
+    majority_passes = majority_pass_set(candidates)
+
+    test_point_dir = os.path.join(report_root_path, args.suite, test, test_point, args.machine)
+    runs_json_path = os.path.join(test_point_dir, RUNS_JSON_NAME)
+    existing = load_existing(runs_json_path)
+
+    runs_by_id, primary_run_id, primary_human_set = merge_roles(existing, candidates, majority_passes)
+
+    set_overrides = []
+    for spec in args.set or []:
+        if "=" not in spec:
+            print("wspy-testpoint: error: --set %r must be RUN_ID=ROLE" % spec, file=sys.stderr)
+            return 2
+        run_id, role = spec.split("=", 1)
+        if role not in ROLES:
+            print("wspy-testpoint: error: --set %s: role must be one of %s" % (spec, ", ".join(ROLES)),
+                  file=sys.stderr)
+            return 2
+        set_overrides.append((run_id, role))
+    try:
+        this_run_set_primary = apply_overrides(runs_by_id, set_overrides, args.primary)
+    except KeyError as e:
+        print("wspy-testpoint: error: run_id %r is not among this test point's candidate runs" % e.args[0],
+              file=sys.stderr)
+        return 2
+    if this_run_set_primary:
+        primary_run_id = args.primary
+        primary_human_set = True
+
+    stats_pool_commands = {r["command"] for r in runs_by_id.values() if r["role"] == "stats-pool"}
+    if len(stats_pool_commands) > 1:
+        print("wspy-testpoint: warning: stats-pool runs don't all share the same command text -- "
+              "wspy-summary --command matches exact text, so this will silently split into separate "
+              "buckets:\n  %s" % "\n  ".join(sorted(c or "(unknown)" for c in stats_pool_commands)),
+              file=sys.stderr)
+
+    data = {
+        "schema_version": RUNS_JSON_SCHEMA_VERSION,
+        "suite": args.suite, "test": test, "test_point": test_point, "machine": args.machine,
+        # Deliberately no "generated_at" timestamp: this file is committed to a git repo, which already
+        # tracks when it last meaningfully changed (git log) -- a fresh timestamp on every invocation
+        # would make every run "look" different and defeat commit_runs_json()'s idempotent no-op path.
+        "primary_run_id": primary_run_id,
+        "primary_human_set": primary_human_set,
+        "runs": sorted(runs_by_id.values(), key=lambda r: r["run_id"]),
+    }
+
+    if args.json:
+        print(json.dumps(data, indent=2))
+    else:
+        print_summary(data)
+
+    if args.dry_run:
+        print("wspy-testpoint: --dry-run -- not writing %s or committing" % runs_json_path, file=sys.stderr)
+        return 0
+
+    os.makedirs(test_point_dir, exist_ok=True)
+    with open(runs_json_path, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+
+    rel_path = os.path.relpath(runs_json_path, report_root_path)
+    ok, msg = commit_runs_json(
+        report_root_path, rel_path,
+        "Update run role-assignment for %s/%s/%s/%s" % (args.suite, test, test_point, args.machine))
+    print("wspy-testpoint: %s" % msg, file=sys.stderr)
+    return 0 if ok else 1
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Run selection / role-assignment for a wspy test point + machine "
+                    "(INVESTIGATION.md's test-point README deep-dive, Tier 3 item 5).")
+    sub = ap.add_subparsers(dest="command", required=True)
+
+    sr = sub.add_parser("select-runs", help="resolve and persist run roles for one test point + machine")
+    sr.add_argument("--suite", required=True, help="suite name, e.g. phoronix, cpu2026")
+    sr.add_argument("--benchmark", required=True,
+                     help="benchmark name (wspy-run's own naming) -- for phoronix, this is a "
+                          "materialized test point's identity (bare_name-options_slug)")
+    sr.add_argument("--machine", required=True,
+                     help="human-assigned machine slug (e.g. amd-395, doc/REPORT_HIERARCHY.md) -- "
+                          "the report-root path segment, distinct from --hostname")
+    sr.add_argument("--hostname", default=None,
+                     help="actual hostname to filter the run set by (default: this machine's own "
+                          "hostname) -- no mapping to --machine's slug is assumed")
+    sr.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT,
+                     help="wspy-run --suite/--benchmark unified layout root (default: %(default)s)")
+    sr.add_argument("--report-root", default=None,
+                     help="report-root git clone path (default: wspy-publish's configured report_root, "
+                          "else %s)" % report_root.DEFAULT_REPORT_ROOT)
+    sr.add_argument("--report-root-remote", default=report_root.DEFAULT_REPORT_ROOT_REMOTE,
+                     help="report-root git remote to clone from if --report-root doesn't exist yet "
+                          "(default: %(default)s) -- override for testing against a local/fork remote")
+    sr.add_argument("--phoronix-dest-root", default=DEFAULT_PHORONIX_DEST_ROOT,
+                     help="materialized Phoronix test-point directory (default: %(default)s)")
+    sr.add_argument("--set", action="append", metavar="RUN_ID=ROLE",
+                     help="human override for one run's role (repeatable); ROLE is one of %s" %
+                          ", ".join(ROLES))
+    sr.add_argument("--primary", default=None, metavar="RUN_ID",
+                     help="human override for which run is primary")
+    sr.add_argument("--dry-run", action="store_true",
+                     help="compute and print, but don't touch the report-root clone or write/commit")
+    sr.add_argument("--json", action="store_true", help="print the full resolved data as JSON")
+    sr.set_defaults(func=cmd_select_runs)
+
+    args = ap.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
