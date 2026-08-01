@@ -92,6 +92,10 @@ LOG_NAME = "launch.log"
 PLOTS_DIR_NAME = "plots"
 RUN_MANIFEST_NAME = "manifest.json"
 SUMMARY_NAME = "summary.txt"
+COMMAND_TXT_NAME = "command.txt"  # wspy-run's own plain-text companion to manifest.json's "command"
+                                   # array (INVESTIGATION.md 4.3 Tier 3 item 2's "additional artifacts"
+                                   # work) -- only present for wspy-run-launched runs, same as
+                                   # RUN_MANIFEST_NAME itself.
 
 # Item 6's older fixed-configuration launcher's own artifact names (superseded
 # on the homepage by item 7/9's unified layout above, but still rendered for
@@ -206,6 +210,7 @@ def collect_run_files(rundir):
             if p.get("manifest"):
                 add(p["manifest"], f"{name}: manifest")
         add(SUMMARY_NAME, "summary (concatenated pass output)")
+        add(COMMAND_TXT_NAME, "command line")
         add(RUN_MANIFEST_NAME, "wspy-run run manifest")
         add(LOG_NAME, "launch log")
     else:
@@ -262,10 +267,11 @@ def classify_bundle_kind(filename):
     through to "raw", and the derived filename set before the raw .csv/.txt
     default."""
     base = os.path.basename(filename)
-    if base.endswith(".manifest.json") or base == RUN_MANIFEST_NAME:
+    if base.endswith(".manifest.json") or base in (RUN_MANIFEST_NAME, COMMAND_TXT_NAME):
         return "manifest"
     if (base in (SUMMARY_NAME, CURATION_NAME, PNG_NAME,
-                 "process.tree.summary.txt", "process.tree.simple.txt") or
+                 "process.tree.summary.txt", "process.tree.simple.txt",
+                 "process.tree.top.txt", "process.tree.top1pct.txt") or
             filename.startswith(PLOTS_DIR_NAME + "/") or
             ai_artifact_label(base) is not None):
         return "derived"
@@ -1321,19 +1327,138 @@ def build_symbolize_argv(symbolize_bin, proctree_bin, tree_txt_path, pid=None, c
     return argv
 
 
+# Top-process/pruned-tree derived views (INVESTIGATION.md 4.3 Tier 3 item 2's
+# "additional artifacts" work): a starting default the author expects to
+# tune once used on more runs, not a fixed policy -- top_fraction=0.01 (the
+# "top 1%" the item was scoped around) alone would pick 0-1 processes on a
+# small run and 1500+ on the ~155K-process stress run doc/ARTIFACT_CONTRACT.md
+# mentions, so it's clamped to [PROCESS_TREE_TOP_MIN, PROCESS_TREE_TOP_MAX]
+# to stay a readable-sized artifact either way.
+PROCESS_TREE_TOP_FRACTION = 0.01
+PROCESS_TREE_TOP_MIN = 5
+PROCESS_TREE_TOP_MAX = 50
+
+
+def _process_cpu_seconds(node):
+    return (node.get("utime_seconds") or 0) + (node.get("stime_seconds") or 0)
+
+
+def _flatten_tree_nodes(node, out):
+    out.append(node)
+    for child in node.get("children", []):
+        _flatten_tree_nodes(child, out)
+
+
+def _top_process_count(process_count, top_fraction=PROCESS_TREE_TOP_FRACTION,
+                        top_min=PROCESS_TREE_TOP_MIN, top_max=PROCESS_TREE_TOP_MAX):
+    if not process_count:
+        return top_min
+    return max(top_min, min(top_max, round(process_count * top_fraction)))
+
+
+def render_top_processes_text(tree_json, top_fraction=PROCESS_TREE_TOP_FRACTION,
+                               top_min=PROCESS_TREE_TOP_MIN, top_max=PROCESS_TREE_TOP_MAX):
+    """Flat list of the individual *processes* (pids) with the highest CPU
+    time (utime_seconds+stime_seconds) from a proctree --json document --
+    distinct from proctree's own text summary view, which rolls every pid
+    up by comm and never ranks individual processes. Ranked by actual CPU
+    time (always present in the raw tree file regardless of which --tree-*
+    flags a run used, per proctree's own --help text), not wall-clock
+    start/finish span, since a process that merely waited a long time
+    isn't what "top" should mean here."""
+    root = tree_json.get("tree")
+    if not root:
+        return "(no tree data)\n"
+    nodes = []
+    _flatten_tree_nodes(root, nodes)
+    process_count = tree_json.get("process_count", len(nodes))
+    n = _top_process_count(process_count, top_fraction, top_min, top_max)
+    ranked = sorted(nodes, key=_process_cpu_seconds, reverse=True)[:n]
+
+    lines = ["Top %d of %d processes by CPU time (utime+stime):" % (len(ranked), process_count), ""]
+    for node in ranked:
+        lines.append("%9.3fs  pid=%-8s ppid=%-8s %s" % (
+            _process_cpu_seconds(node), node.get("pid", "?"), node.get("ppid", "?"),
+            node.get("cmdline") or node.get("comm") or "?"))
+    return "\n".join(lines) + "\n"
+
+
+def render_top1pct_tree_text(tree_json, top_fraction=PROCESS_TREE_TOP_FRACTION,
+                              top_min=PROCESS_TREE_TOP_MIN, top_max=PROCESS_TREE_TOP_MAX):
+    """The full process tree pruned to only the highest-CPU-time processes
+    (same selection as render_top_processes_text()) plus whatever ancestor
+    chain keeps them structurally connected to the root -- every other
+    subtree collapses into a one-line "N more process(es) omitted" marker
+    rather than disappearing silently, so the shape of what got hidden
+    stays visible even though its contents don't."""
+    root = tree_json.get("tree")
+    if not root:
+        return "(no tree data)\n"
+    nodes = []
+    _flatten_tree_nodes(root, nodes)
+    process_count = tree_json.get("process_count", len(nodes))
+    n = _top_process_count(process_count, top_fraction, top_min, top_max)
+    kept_pids = {node.get("pid") for node in sorted(nodes, key=_process_cpu_seconds, reverse=True)[:n]}
+
+    # One bottom-up pass marking which subtrees contain a kept pid at all --
+    # naive repeated subtree scans during the print walk below would be
+    # O(process_count^2), prohibitive on the ~155K-process runs
+    # doc/ARTIFACT_CONTRACT.md mentions as a real stress case.
+    has_kept = {}
+
+    def mark(node):
+        found = node.get("pid") in kept_pids
+        for child in node.get("children", []):
+            if mark(child):
+                found = True
+        has_kept[id(node)] = found
+        return found
+
+    mark(root)
+
+    def count_subtree(node):
+        total = 1
+        for child in node.get("children", []):
+            total += count_subtree(child)
+        return total
+
+    lines = ["Process tree pruned to the top %d of %d processes by CPU time (utime+stime), "
+             "plus their ancestor chain:" % (len(kept_pids), process_count), ""]
+
+    def walk(node, depth):
+        marker = "*" if node.get("pid") in kept_pids else " "
+        lines.append("%s%s %6.3fs %s (pid=%s)" % (
+            "  " * depth, marker, _process_cpu_seconds(node), node.get("comm") or "?", node.get("pid", "?")))
+        omitted = 0
+        for child in node.get("children", []):
+            if has_kept.get(id(child)):
+                walk(child, depth + 1)
+            else:
+                omitted += count_subtree(child)
+        if omitted:
+            lines.append("%s  ... %d more process(es) omitted (below top %.0f%%)" % (
+                "  " * depth, omitted, top_fraction * 100))
+
+    walk(root, 0)
+    return "\n".join(lines) + "\n"
+
+
 def run_proctree_besteffort(emit, cfg, rundir, cmdline=False, futex=False, io=False, io_wait=False,
                              schedstat=False, vmsize=False, connect=False, wait=False, poll=False, nanosleep=False):
     """Best-effort trailing step mirroring the wspy-plot step (build_plot_argv()
-    above) but for --tree's raw process.tree.txt record: renders it into two
+    above) but for --tree's raw process.tree.txt record: renders it into
     human-readable views -- process.tree.summary.txt (every annotation this
     run's tree pass actually captured, via the cmdline/futex/... kwargs above,
-    same as before) and process.tree.simple.txt (proctree's own bare default:
+    same as before), process.tree.simple.txt (proctree's own bare default:
     just cpu=/start=/finish= per process, no other flags -- easier to read as
     a pure process hierarchy once a run's tree pass captures enough
-    annotations that the summary view gets visually busy). A no-op (not an
-    error) when no --tree pass ran this time, or its output is missing/empty
-    (e.g. a --tree pass that timed out before writing anything) -- and never
-    fails the run itself, same degrade-don't-fail idiom as the plot step."""
+    annotations that the summary view gets visually busy), and
+    process.tree.top.txt/process.tree.top1pct.txt (render_top_processes_text()/
+    render_top1pct_tree_text() above -- individual processes ranked by CPU
+    time, not proctree's own per-comm rollup). A no-op (not an error) when
+    no --tree pass ran this time, or its output is missing/empty (e.g. a
+    --tree pass that timed out before writing anything) -- and never fails
+    the run itself, same degrade-don't-fail idiom as the plot step."""
     tree_txt = os.path.join(rundir, "process.tree.txt")
     if not (os.path.isfile(tree_txt) and os.path.getsize(tree_txt) > 0):
         return
@@ -1364,6 +1489,32 @@ def run_proctree_besteffort(emit, cfg, rundir, cmdline=False, futex=False, io=Fa
     # default-on field is start=/finish=, everything else defaults off).
     simple_argv = [cfg["proctree_bin"], tree_txt]
     _run("process.tree.simple.txt", simple_argv)
+
+    json_argv = build_proctree_json_argv(cfg["proctree_bin"], tree_txt)
+    emit("$ " + shell_preview(json_argv))
+    try:
+        proc = subprocess.run(json_argv, cwd=REPO_ROOT, capture_output=True, text=True)
+    except OSError as e:
+        emit(f"[error] failed to launch proctree ({cfg['proctree_bin']}): {e}")
+        return
+    if proc.returncode != 0:
+        emit(f"[error] proctree --json exited {proc.returncode}: {proc.stderr.strip()}")
+        return
+    try:
+        tree_json = json.loads(proc.stdout)
+    except ValueError as e:
+        emit(f"[error] proctree --json produced invalid JSON: {e}")
+        return
+
+    for out_name, render in (("process.tree.top.txt", render_top_processes_text),
+                              ("process.tree.top1pct.txt", render_top1pct_tree_text)):
+        out_path = os.path.join(rundir, out_name)
+        try:
+            with open(out_path, "w") as f:
+                f.write(render(tree_json))
+            emit(f"[wrote {out_name}]")
+        except OSError as e:
+            emit(f"[error] failed to write {out_name}: {e}")
 
 
 def shell_preview(argv, cwd=None):
