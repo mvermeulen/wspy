@@ -37,6 +37,8 @@ no-op duplicate on hosts where the standard header already works.
 """
 import base64
 import json
+import mimetypes
+import os
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -67,12 +69,17 @@ def auth_header(username, app_password):
 
 
 def request(site_url, path, username, app_password, method="GET", params=None,
-            json_body=None, timeout=20):
+            json_body=None, raw_body=None, content_type=None, extra_headers=None, timeout=20):
     """One authenticated call to <site_url>/wp-json/<path>. Returns the
     parsed JSON response (or None for an empty body). Raises WPError on
     any non-2xx response or connection failure -- callers decide what
     "not found" vs. "denied" vs. "unreachable" means for their own
     operation rather than this function guessing.
+
+    json_body (a dict) is the common case, JSON-encoded with a matching
+    Content-Type. raw_body (bytes) + content_type is the escape hatch
+    upload_media() uses to PUT/POST a file's raw bytes instead -- the two
+    are mutually exclusive; callers pass one or neither, never both.
 
     Sends the Basic-Auth value under both the standard `Authorization`
     header and a second `X-WSPY-Authorization` header carrying the
@@ -97,6 +104,12 @@ def request(site_url, path, username, app_password, method="GET", params=None,
     if json_body is not None:
         data = json.dumps(json_body).encode("utf-8")
         headers["Content-Type"] = "application/json"
+    elif raw_body is not None:
+        data = raw_body
+        if content_type:
+            headers["Content-Type"] = content_type
+    if extra_headers:
+        headers.update(extra_headers)
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -208,3 +221,42 @@ def find_or_create_page_path(site_url, username, app_password, levels, status="d
         out.append((page, created))
         parent = page["id"]
     return out
+
+
+def upload_media(site_url, username, app_password, file_path, mime_type=None, timeout=60):
+    """POST a file's raw bytes to /wp/v2/media -- WordPress's documented
+    "raw binary" upload method (Content-Type set to the file's MIME type,
+    plus a Content-Disposition: attachment header carrying the filename)
+    rather than multipart/form-data, since a single-file raw body needs no
+    extra library beyond stdlib mimetypes (INVESTIGATION.md 4.3 Tier 3
+    item 2, sub-step 6 -- needed before a report page can embed the
+    topdown/AMD-metrics charts or process-tree diagrams the hand-curated
+    /perf/workloads pages already have). Returns the created attachment
+    (id, source_url, ...) for referencing via a page's featured_media or
+    inline in Gutenberg block markup (`<!-- wp:image {"id":<id>} -->`).
+    Requires upload_files on the authenticated account.
+
+    Uploaded media publishes immediately -- WordPress has no draft state
+    for attachments -- so unlike publish_page()'s two-step flow, this call
+    itself is the only step; keep pages referencing it in draft until the
+    page itself is ready to go live."""
+    if mime_type is None:
+        mime_type, _ = mimetypes.guess_type(file_path)
+        if mime_type is None:
+            raise WPError('could not guess a MIME type for "%s"; pass mime_type= explicitly' % file_path)
+    with open(file_path, "rb") as f:
+        data = f.read()
+    filename = os.path.basename(file_path)
+    return request(site_url, "wp/v2/media", username, app_password, method="POST",
+                    raw_body=data, content_type=mime_type,
+                    extra_headers={"Content-Disposition": 'attachment; filename="%s"' % filename},
+                    timeout=timeout)
+
+
+def update_media(site_url, username, app_password, media_id, **fields):
+    """POST changed fields (title/alt_text/caption/...) onto an existing
+    Media attachment by id -- the raw upload_media() call carries no room
+    for these (its body is the file's raw bytes, not JSON), so setting
+    them is always this separate follow-up call."""
+    return request(site_url, f"wp/v2/media/{media_id}", username, app_password,
+                    method="POST", json_body=fields)

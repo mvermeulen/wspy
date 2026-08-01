@@ -1437,7 +1437,18 @@ reasoning as Tier 1 above.
         `POST /wp-json/wp/v2/media` (multipart) per image, capture the returned attachment ID, reference
         it as `featured_media` or inline in block markup — needed before any benchmark page can include
         the topdown/AMD-metrics charts or process-tree diagram that today's hand-curated `/perf/workloads`
-        pages already have.
+        pages already have. **Done (2026-08-01):** `wp_client.upload_media()` — WordPress's documented
+        raw-binary upload method (`Content-Type: <mime>` + a `Content-Disposition: attachment` header
+        carrying the filename, body = the file's raw bytes) rather than `multipart/form-data`, so no
+        library beyond stdlib `mimetypes` is needed for a single-file upload; `request()` grew a
+        `raw_body`/`content_type`/`extra_headers` escape hatch alongside its existing `json_body` path to
+        support it, reusing the same error handling. `update_media()` sets `alt_text`/`title`/`caption` as
+        a separate follow-up POST (the raw upload's body has no room for JSON fields). New `wspy-publish
+        upload-media` subcommand (`--alt-text`/`--title`/`--caption`, `--set-featured-on <page-id>` to
+        attach it to a page's `featured_media`). Unlike `publish-page`'s pages, WordPress attachments have
+        no draft state — the upload itself is the only step, live in the media library immediately;
+        verified against the real site (id=24, a throwaway 1x1 test PNG). Referencing the id inline in
+        Gutenberg block markup (`<!-- wp:image {"id":<id>} -->`) is sub-step 7's job, not built here.
      7. **Reuse `render_export_wordpress()`'s Gutenberg block markup as the `content` payload** — the 4.1
         exporter already emits valid `<!-- wp:... -->` block-comment HTML for copy-paste; the REST
         pipeline's `page_data["content"]` can likely consume that same generator's output directly rather
