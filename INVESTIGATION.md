@@ -1081,9 +1081,34 @@ from whether it was explicitly chosen as primary), and a `generated_at` timestam
 `commit_runs_json()`'s idempotent no-op path (every write "looked" different regardless of real
 content change) — removed entirely, since git history already tracks when the file last meaningfully
 changed. New `tests/testpoint_smoke.sh` (wired into `run_tests.sh`, no network/hardware dependency —
-a local bare git repo stands in for the report-root remote) covers all of the above. Aggregation
-(`wspy-summary --command --hostname` over the resolved `stats-pool` runs), template rendering, and
-README writing remain open — see the deep-dive below and Tier 3 item 5's own entry.
+a local bare git repo stands in for the report-root remote) covers all of the above. Aggregation,
+template rendering, and README writing remained open at the time — aggregation has since shipped too,
+see the next entry.
+
+**`wspy-testpoint aggregate` (PR #184) — piece 2 of Tier 3 item 5's test-point README work, done for
+this cycle.** Turns a `select-runs`-resolved `stats-pool` run set into real statistics. The prior
+entry's own plan to reuse `wspy-summary --command --hostname` turned out to be a real correctness bug,
+not just an implementation detail: neither `wspy-summary` nor `wspy-archetype` could filter to an
+explicit run_id list, so a redo sharing byte-identical command text with the run it's redoing (the
+single most common reason role-assignment exists) would land in the same `--command`/`--group-by`
+bucket as the runs it's redoing — exactly the case role-assignment was built to prevent. Confirmed with
+the user (plan-mode discussion) to fix this properly: a new `summary.c` `--run-id <hostname>:<run_id>`
+filter (repeatable, same pattern as `--metric`; `TEMP TABLE`/`EXISTS` join, called from inside
+`summarize()` itself so every existing caller gets it for free without needing to know the setup step
+exists) rather than a cheaper Python-side warn-on-mismatch shortcut that wouldn't have actually excluded
+the redo. Verified live against a real `wspy-store` database before any test existed: without the
+filter, a redo's outlier value dragged a bucket's mean from 1.85 to 1.4 with a spurious `WARN:noisy`
+verdict; with `--run-id` naming just the real two runs, `mean=1.85` as expected. `wspy-testpoint
+aggregate` loads a test point's `runs.json`, filters to `stats-pool`, read-only-prechecks which of
+those runs are actually in the target store (warns by name on any missing rather than silently
+dropping them — never auto-ingests, since a run only has a run-index record to ingest if it was
+launched with `--run-index` in the first place), and shells out to `wspy-summary --run-id` per present
+run, passing its output/exit code straight through rather than reparsing it. Scope deliberately limited
+to core aggregation — the `wspy-archetype` cross-run stability signal from the deep-dive's point 2 is
+still open, a fast-follow. New `test_summary.c` cases (the redo scenario, empty-filter-is-a-no-op,
+malformed-spec error) and a `tests/testpoint_smoke.sh` extension (real `wspy-store`/`wspy-summary`
+binaries, the same redo-exclusion proof end to end, missing-run warn-but-proceed, missing-`runs.json`
+error). Template rendering and README writing remain open.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
@@ -1509,22 +1534,22 @@ curation studio's own "generate a sensible default, human edits it, never silent
 edit" idiom (`build_default_curation_blocks()`, `server.py:3037`) — role assignment is exactly that
 idiom applied one level up, to *which runs* feed a report instead of *which artifacts within one run* do.
 
-**2. Aggregation across N runs — turns out to need almost no new code.** `wspy-summary` already accepts
-`--command <exact-text>` and `--hostname <name>` filters (`summary.c:1522-1523`) on top of the min/max/
-mean/median/stddev/CV/CI95/outlier/verdict computation `doc/REPORT_HIERARCHY.md`'s own table already
-points at. So "aggregate every stats-pool-member run of this exact test point on this machine" is
-already directly expressible: `wspy-summary --db <store.db> --command "<test point's command>"
---hostname <machine>`, run only over the stats-pool subset role assignment (above) produced — the
-aggregation math is not new work, the run-set resolution feeding it is. Real edge case worth a warning,
-not a blocker: `--command` matches exact text, so a test point's invocation drifting slightly between
-runs (an iteration-count flag differing) silently splits into two buckets instead of erroring; surface
-a warning if the resolved stats-pool run set's command text isn't identical across its members. The one
-genuinely new piece: `wspy-archetype`'s four classification axes are computed per run with no cross-run
-comparison today. Cheap to add on top, from data already extracted (`run_features`, no new collection):
-run the existing per-run classification across the stats-pool run set and report whether e.g.
+**2. Aggregation across N runs. Shipped 2026-08-01, `wspy-testpoint aggregate`, PR #184 — see "Shipped
+since 4.2" above for the implementation write-up.** Originally scoped as "turns out to need almost no
+new code," reusing `wspy-summary --command <exact-text> --hostname <name>` — that plan turned out to
+have a real correctness bug, not just missing polish: since `--command`/`--hostname` (and the default
+`--group-by command` bucketing on top of them) match by *text*, they cannot distinguish a redo sharing
+byte-identical command text from the runs it's redoing — exactly the scenario role-assignment (point 1)
+exists to separate. Fixed with a real `summary.c` addition instead: `--run-id <hostname>:<run_id>`
+(repeatable, `TEMP TABLE`/`EXISTS`-based), so aggregation runs against the exact resolved run_id set
+rather than a text filter that can't tell two identically-invoked runs apart. The one still-open piece:
+`wspy-archetype`'s four classification axes are computed per run with no cross-run comparison today.
+Still cheap to add on top, from data already extracted (`run_features`, no new collection): run the
+existing per-run classification across the stats-pool run set and report whether e.g.
 `resource_dominance`'s top category agrees across all of them or diverges — a real "this workload's
 characterization looks unstable across its history" finding, not decoration, and a direct input to
-Tier 3 item 3's characterization badges (see point 5 below).
+Tier 3 item 3's characterization badges (see point 5 below). Deliberately deferred out of the PR 184
+slice to keep it reviewable, per plan-mode discussion with the user before implementation.
 
 **3. Template + customization.** A fixed initial section list mirroring `wspy-summary`'s own group
 structure (one section per counter group, a top-line archetype/stability badge, an outlier-runs
@@ -1796,10 +1821,10 @@ reasoning as Tier 1 above.
    selection/role-assignment (a test-point's linked runs are rarely interchangeable repeats),
    aggregation (turns out to need almost no new statistics code), the template/customization model, and
    the living-document/re-curate question are all resolved there. **Run selection/role-assignment shipped
-   (2026-08-01, PR #183) — see "Shipped since 4.2" above.** Aggregation, template rendering, and README
-   writing remain open. Real potential overlap with this tier's own static-site/badge/drill-down items
-   above remains genuinely open — see "Open questions for prioritization" below, worth revisiting now
-   that this item has a real design.
+   (2026-08-01, PR #183) and aggregation shipped (2026-08-01, PR #184) — see "Shipped since 4.2" above
+   for both.** Template rendering and README writing remain open. Real potential overlap with this
+   tier's own static-site/badge/drill-down items above remains genuinely open — see "Open questions for
+   prioritization" below, worth revisiting now that this item has a real design.
 
 6. Benchmark reference-matrix database keyed by (test name, test version, test point) × (machine,
    bucketed to a coarse architecture class: AMD/Intel/ARM/SoC) — a wide, curated comparison table in
