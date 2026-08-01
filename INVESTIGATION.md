@@ -1137,8 +1137,26 @@ staged changes a human happens to have pending in the same clone. New `tests/tes
 sections: the same redo-exclusion correctness proof carried through to the rendered README, a
 WARN-verdict callout, a supplementary-runs listing, living-document preservation across a re-render
 (the test that specifically catches the idempotency bug above), idempotent no-op commits, and
-`--dry-run`. Still open: the `wspy-archetype` cross-run stability signal, and pulling specific artifacts
-from `supplementary`-role runs (today only listed by run_id/reason).
+`--dry-run`. Archetype cross-run stability has since shipped too, see the next entry; pulling specific
+artifacts from `supplementary`-role runs (today only listed by run_id/reason) remains open.
+
+**`wspy-testpoint render`: archetype cross-run stability fast-follow (PR #186) — done for this cycle.**
+Closes the one piece explicitly deferred from both `aggregate` (PR #184) and `render` (PR #185):
+`wspy-archetype`'s four classification axes are computed per run with no cross-run comparison, so a
+workload's characterization could silently drift across its own history with nothing to show it.
+Simpler than `aggregate`'s own `--run-id` fix — no bulk run-set filtering gap applies here, since
+`wspy-archetype --run <hostname>:<run_id>` already names one exact run per call, unlike
+`wspy-summary`'s `--command`/`--hostname` text filters — so this shipped directly rather than through
+plan mode, once research confirmed the lower complexity. `render` now calls `wspy-archetype --run` once
+per stats-pool run, parses its `key=value` output (`archetype.c`'s `print_trace_field()`, no new
+parsing infrastructure needed), and adds a "Workload characterization" section reporting whether
+`resource_dominance` — `wspy-archetype`'s own "headline axis" — agrees across the pool or diverges.
+Verified live with real topdown (`retire`/`frontend`/`backend`/`speculate`) CSV fixtures before the
+formal tests existed: two runs both classifying `compute-bound` render a "Consistent" verdict;
+re-ingesting one run's data to a memory-bound shape renders "Diverges" with the correct per-run
+breakdown. New `tests/testpoint_smoke.sh` sections exercise both verdicts against real
+`wspy-store`/`wspy-archetype` binaries. Tier 3 item 5's only remaining open scope is now pulling
+specific artifacts from `supplementary`-role runs.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
@@ -1572,14 +1590,16 @@ have a real correctness bug, not just missing polish: since `--command`/`--hostn
 byte-identical command text from the runs it's redoing — exactly the scenario role-assignment (point 1)
 exists to separate. Fixed with a real `summary.c` addition instead: `--run-id <hostname>:<run_id>`
 (repeatable, `TEMP TABLE`/`EXISTS`-based), so aggregation runs against the exact resolved run_id set
-rather than a text filter that can't tell two identically-invoked runs apart. The one still-open piece:
-`wspy-archetype`'s four classification axes are computed per run with no cross-run comparison today.
-Still cheap to add on top, from data already extracted (`run_features`, no new collection): run the
-existing per-run classification across the stats-pool run set and report whether e.g.
+rather than a text filter that can't tell two identically-invoked runs apart. The one piece deliberately
+deferred out of the PR 184 slice to keep it reviewable (per plan-mode discussion with the user before
+implementation) — `wspy-archetype`'s four classification axes are computed per run with no cross-run
+comparison — **has since shipped too: 2026-08-01, `wspy-testpoint render`, PR #186.** Turned out cheap
+to add, as scoped: `wspy-archetype --run <hostname>:<run_id>` already names one exact run per call, so
+none of `--run-id`'s own bulk-filtering fix above was needed here. Runs the existing per-run
+classification once per stats-pool run (`run_features`, no new collection) and reports whether
 `resource_dominance`'s top category agrees across all of them or diverges — a real "this workload's
 characterization looks unstable across its history" finding, not decoration, and a direct input to
-Tier 3 item 3's characterization badges (see point 5 below). Deliberately deferred out of the PR 184
-slice to keep it reviewable, per plan-mode discussion with the user before implementation.
+Tier 3 item 3's characterization badges (see point 5 below).
 
 **3. Template + customization. Shipped 2026-08-01, `wspy-testpoint render`, PR #185 — see "Shipped
 since 4.2" above for the implementation write-up.** A fixed initial section list mirroring
@@ -1851,11 +1871,11 @@ reasoning as Tier 1 above.
    repo — `wspy-publish test-connection` (item 2 above) already clones it locally and can commit a root
    README; it never pushes on its own. **Full design scoped (2026-08-01), see "Test-point-level curated
    performance-summary README deep-dive" (Track deep-dives) for the complete reasoning.** **All four
-   scoped pieces now shipped (2026-08-01): run selection/role-assignment (PR #183), aggregation
-   (PR #184), template rendering + README writing (PR #185) — see "Shipped since 4.2" above for all
-   three.** `wspy-testpoint select-runs`/`aggregate`/`render` together form the working end-to-end
-   pipeline this item set out to build. Still open, both small/fast-follow in nature: the
-   `wspy-archetype` cross-run stability signal, and pulling specific artifacts (not just a name/reason
+   scoped pieces plus the archetype cross-run stability fast-follow now shipped (2026-08-01): run
+   selection/role-assignment (PR #183), aggregation (PR #184), template rendering + README writing
+   (PR #185), archetype stability (PR #186) — see "Shipped since 4.2" above for all four.**
+   `wspy-testpoint select-runs`/`aggregate`/`render` together form the working end-to-end pipeline this
+   item set out to build. Only remaining open scope: pulling specific artifacts (not just a name/reason
    listing) from `supplementary`-role runs. Real potential overlap with this tier's own
    static-site/badge/drill-down items above remains genuinely open — see "Open questions for
    prioritization" below, worth revisiting now that a real, shipped pipeline exists to look at instead
