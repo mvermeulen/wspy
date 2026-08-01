@@ -33,6 +33,7 @@ Usage:
 Stdlib only, by design (see CLAUDE.md's web/ entry for the reasoning).
 """
 import argparse
+import fnmatch
 import hashlib
 import html
 import json
@@ -2995,33 +2996,78 @@ def render_history(cfg, qs):
     return page("wspy run history", body)
 
 
+DEFAULT_CURATION_CONFIG_NAME = "default_curation.conf"
+DEFAULT_CURATION_CONFIG_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), DEFAULT_CURATION_CONFIG_NAME)
+
+
+def load_default_curation_config(path=DEFAULT_CURATION_CONFIG_PATH):
+    """Parses default_curation.conf (see that file's own header comment for
+    the format) into an ordered [(pattern, included), ...] list -- pattern is
+    an fnmatch glob (a plain filename like "command.txt" matches only
+    itself), included is False for a "#"-prefixed documented-exclusion line.
+    "##" lines and blank lines are pure comments, never entries. Missing/
+    unreadable config is silently treated as "no policy" -- callers fall
+    back to their pre-config behavior rather than erroring, since this file
+    only ever narrows/orders what was already being offered."""
+    try:
+        with open(path) as f:
+            lines = f.readlines()
+    except OSError:
+        return []
+    entries = []
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("##"):
+            continue
+        if stripped.startswith("#"):
+            included = False
+            body = stripped[1:].strip()
+        else:
+            included = True
+            body = stripped
+        pattern = body.split("#", 1)[0].strip()
+        if pattern:
+            entries.append((pattern, included))
+    return entries
+
+
 def build_default_curation_blocks(rundir):
-    """A fixed starting curation for the Studio's "Apply default curation"
-    button (INVESTIGATION.md 4.3 Tier 3 item 2's "default curation" work):
-    every pass's own raw text/CSV output, command.txt, every AI narrative
-    analysis, and every plot -- mirroring the block selection first
-    hand-curated for the initial published /workload report (WordPress
-    page id=35). A policy over collect_run_files()'s *kinds* (this run's
-    own recorded passes, the ai_generated flag, plots/ membership) rather
-    than hardcoded filenames, since different wspy-run profiles name their
-    passes differently (quick/deep-cpu/ibs-basic/a custom -c file/...) and
-    "counters.txt"/"ibs.txt" specifically were just this one run's own
-    pass names, not something every run has. This is exactly the "default
-    we'll want to change over time" the author flagged when asking for
-    this button -- keep the policy here, not scattered across call sites,
-    so it's easy to find and adjust later. Doesn't include summary.txt
-    (redundant with the per-pass outputs already included) or
-    manifest.json/launch.log (page 35's own curation skipped both too)."""
+    """A starting curation for the Studio's "Apply default curation" button
+    (INVESTIGATION.md 4.3 Tier 3 item 2's "default curation" work), policy
+    driven by default_curation.conf: known artifacts (matched by filename or
+    glob pattern) are included/excluded/ordered exactly as that file lists
+    them. Anything the config doesn't mention at all -- a pass output from a
+    profile the config hasn't been tuned for, a plot template it doesn't
+    list, additional AI narrative variants -- still gets appended after the
+    configured blocks (every pass's own raw output, command.txt, every AI
+    narrative analysis, every plot), matching this function's pre-config
+    behavior, so nothing silently disappears just because the config is
+    incomplete for a given run. This two-layer design (curated known set +
+    catch-all fallback) is exactly the "default we'll want to change over
+    time" the author flagged when asking for this button -- the config file
+    is what to edit, this function's fallback is the safety net."""
     run_manifest = read_run_manifest(os.path.join(rundir, RUN_MANIFEST_NAME))
     by_filename = {item["filename"]: item for item in collect_run_files(rundir)}
     blocks = []
+    handled = set()  # filenames already decided (included or excluded), config or fallback
 
     def add(filename):
         item = by_filename.get(filename)
-        if item is None:
+        if item is None or filename in handled:
             return
+        handled.add(filename)
         blocks.append(new_block("artifact", source_file=filename, source_kind=item["kind"],
                                  title=item["label"], ai_generated=item.get("ai_generated", False)))
+
+    for pattern, included in load_default_curation_config():
+        matches = sorted(fn for fn in by_filename if fn not in handled
+                          and fnmatch.fnmatchcase(fn, pattern))
+        if included:
+            for filename in matches:
+                add(filename)
+        else:
+            handled.update(matches)
 
     if run_manifest is not None:
         for p in run_manifest.get("passes", []):
@@ -3029,6 +3075,8 @@ def build_default_curation_blocks(rundir):
                 add(p["output"])
     add(COMMAND_TXT_NAME)
     for filename in sorted(by_filename):
+        if filename in handled:
+            continue
         label, ai_generated = ai_artifact_label(filename) or (None, False)
         if label and label.startswith("AI narrative analysis"):
             add(filename)
@@ -3286,9 +3334,10 @@ def render_studio(rundir, suite, benchmark, run_id):
         onclick="return confirm('Replace the current curation with the default block set? '
                                  + 'Any edits/reordering you\\'ve made will be discarded.')">
         Apply default curation</button>
-      <span class="muted">Replaces the curation above with a fixed starting set (every pass's raw
-        output, command line, AI narrative analysis, every plot) -- start here, then adjust by
-        hand.</span></p>
+      <span class="muted">Replaces the curation above with the set/order from
+        {html.escape(DEFAULT_CURATION_CONFIG_NAME)} (anything it doesn't mention -- other pass
+        output, AI narrative analysis, other plots -- is still appended) -- start here, then
+        adjust by hand.</span></p>
     <div class="block-card overview-card">
       <label>Report overview <span class="muted">(one note for the report as a whole, separate from
         each block's own commentary below)</span>
