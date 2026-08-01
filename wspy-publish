@@ -52,9 +52,18 @@ This script currently has four subcommands:
                     keeps the *page* unpublished, per publish-page's own
                     draft-first flow).
 
-Rendering real report content into these pages (reusing
-render_export_wordpress()'s block markup, sub-step 7) is future work, not
-built here yet -- see INVESTIGATION.md.
+publish-page also has a --from-rundir mode (sub-step 7: reuse
+web/server.py's render_export_wordpress() as the content payload rather
+than building block markup a second way): reads a run directory's
+curation.json via the same _export_data()/render_export_wordpress()
+the web UI's own export tab uses, pre-uploads every depth="full" image
+block via upload-media's upload_media() (sub-step 6), and threads the
+resulting WordPress media URLs into the generated content in place of
+this server's own /files/... URLs -- see export_block_content()'s
+image_url parameter in web/server.py. Non-image "full file" reference
+links (summary/excerpt text/CSV blocks) still point at --base-url, since
+those files aren't uploaded anywhere; pass a real reachable URL or expect
+relative/dead links in the published content.
 """
 import argparse
 import getpass
@@ -67,6 +76,9 @@ import sys
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(SCRIPT_DIR, "web"))
 import wp_client  # noqa: E402
+import server as web_export  # noqa: E402 -- only its export_block_content()/_export_data()/
+                              # render_export_wordpress() are used here; importing it never starts
+                              # the HTTP server (guarded by server.py's own __main__ check)
 
 CONFIG_PATH = os.path.expanduser("~/.config/wspy/publish.json")
 DEFAULT_REPORT_ROOT = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "workload"))
@@ -260,6 +272,45 @@ def cmd_test_connection(args):
     return 0 if ok else 1
 
 
+def _render_content_from_rundir(site_url, username, app_password, rundir, title, base_url):
+    """Content for --from-rundir: reads the run's curation.json (the same
+    data web/server.py's own export tab reads via _export_data()),
+    pre-uploads every depth="full" image block to the WP media library,
+    and renders via render_export_wordpress() with those uploaded URLs
+    substituted for this server's own /files/... URLs (its image_url
+    parameter). Returns (content, ok) -- ok=False means an error was
+    already printed and the caller should abort without publishing
+    anything."""
+    overview_note, blocks = web_export._export_data(rundir)
+    if not blocks and not overview_note:
+        print("wspy-publish: no curated content in %s (curate it first via the web studio)" % rundir,
+              file=sys.stderr)
+        return None, False
+
+    image_urls = {}
+    for b in blocks:
+        if b.get("source_kind") != "image" or b.get("depth") != "full":
+            continue
+        filename = b.get("source_file")
+        if not filename:
+            continue
+        path = os.path.join(rundir, filename)
+        if not os.path.isfile(path):
+            continue  # export_block_content()'s own "not found" note covers this
+        try:
+            media = wp_client.upload_media(site_url, username, app_password, path)
+        except wp_client.WPError as e:
+            print("wspy-publish: uploading %s FAILED (status=%s code=%s): %s -- this image will fall "
+                  "back to --base-url instead" % (filename, e.status, e.code, e), file=sys.stderr)
+            continue
+        image_urls[filename] = media["source_url"]
+        print("  uploaded %s -> %s" % (filename, media["source_url"]))
+
+    content = web_export.render_export_wordpress(rundir, base_url or "", title, overview_note, blocks,
+                                                   image_url=image_urls.get)
+    return content, True
+
+
 def cmd_publish_page(args):
     cfg = load_config()
     if not cfg:
@@ -272,14 +323,23 @@ def cmd_publish_page(args):
     if bool(args.page_id) == bool(args.slug):
         print("wspy-publish: give exactly one of --page-id or --slug", file=sys.stderr)
         return 1
-    if args.content and args.content_file:
-        print("wspy-publish: use --content or --content-file, not both", file=sys.stderr)
+    if sum(bool(x) for x in (args.content, args.content_file, args.from_rundir)) > 1:
+        print("wspy-publish: use only one of --content, --content-file, --from-rundir", file=sys.stderr)
+        return 1
+    if args.from_rundir and not args.title:
+        print("wspy-publish: --title is required with --from-rundir (used as both the page title "
+              "and the content's own heading)", file=sys.stderr)
         return 1
 
     content = args.content
     if args.content_file:
         with open(args.content_file) as f:
             content = f.read()
+    elif args.from_rundir:
+        content, ok = _render_content_from_rundir(site_url, username, app_password, args.from_rundir,
+                                                    args.title, args.base_url)
+        if not ok:
+            return 1
 
     try:
         if args.page_id:
@@ -414,6 +474,14 @@ def main():
     pub.add_argument("--title", help="page title (required when --slug matches no existing page)")
     pub.add_argument("--content", help="page content (HTML / Gutenberg block markup)")
     pub.add_argument("--content-file", help="read page content from this file instead of --content")
+    pub.add_argument("--from-rundir", metavar="DIR",
+                      help="generate content from this run directory's curated blocks (curation.json) "
+                           "via web/server.py's own render_export_wordpress(), instead of --content; "
+                           "pre-uploads depth=full image blocks to the WP media library")
+    pub.add_argument("--base-url",
+                      help="base URL for non-image 'full file' reference links in --from-rundir content "
+                           "(e.g. a running wspy web launcher's address); images are always uploaded to "
+                           "WordPress directly and don't need this")
     pub.add_argument("--publish", action="store_true",
                       help="flip the page to status=publish after creating/updating it "
                            "(default: leave it as a draft)")

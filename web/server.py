@@ -1639,9 +1639,18 @@ EXPORT_FORMAT_CONTENT_TYPES = {
 }
 
 
-def export_block_content(rundir, base_url, block):
+def export_block_content(rundir, base_url, block, image_url=None):
     """Structured form of one curated block's artifact content, shared by
     every export renderer. Returns (content_kind, payload, note):
+
+    image_url, if given, is called as image_url(filename) for a
+    depth="full" image block and its return value used as the image's src
+    instead of this server's own /files/... URL -- wspy-publish's
+    --from-rundir (INVESTIGATION.md 4.3 Tier 3 item 2, sub-step 7) passes
+    a lookup into already-uploaded WordPress media attachments here, since
+    a URL back at this server is only a documented mockup for real
+    publishing (see the comment above EXPORT_FORMATS), not something that
+    resolves once this server stops running.
 
       content_kind: "none" | "image" | "pre"
       payload: absolute image URL (content_kind == "image"), or preformatted
@@ -1664,7 +1673,9 @@ def export_block_content(rundir, base_url, block):
     kind = block.get("source_kind")
 
     if kind == "image":
-        return ("image", url, None) if depth == "full" else ("none", None, None)
+        if depth != "full":
+            return "none", None, None
+        return "image", (image_url(filename) if image_url else url), None
 
     text, size = read_text_safely(path)
     if text is None:
@@ -1758,7 +1769,9 @@ def _wp_block(name, inner_html, attrs=None):
     return f"<!-- wp:{name}{attrs_json} -->\n{inner_html}\n<!-- /wp:{name} -->"
 
 
-def render_export_wordpress(rundir, base_url, title, overview_note, blocks):
+def render_export_wordpress(rundir, base_url, title, overview_note, blocks, image_url=None):
+    """image_url is export_block_content()'s same optional per-filename
+    image URL resolver, passed straight through -- see its docstring."""
     parts = [_wp_block("heading", f"<h1>{html.escape(title)}</h1>", {"level": 1})]
     if overview_note:
         parts.append(_wp_block("paragraph", f'<p>{html.escape(overview_note)}</p>'))
@@ -1769,7 +1782,7 @@ def render_export_wordpress(rundir, base_url, title, overview_note, blocks):
         parts.append(_wp_block("heading", f'<h2>{heading_html}</h2>', {"level": 2}))
         if b.get("commentary"):
             parts.append(_wp_block("paragraph", f'<p>{html.escape(b["commentary"])}</p>'))
-        content_kind, payload, note = export_block_content(rundir, base_url, b)
+        content_kind, payload, note = export_block_content(rundir, base_url, b, image_url=image_url)
         if content_kind == "image":
             parts.append(_wp_block(
                 "image", f'<figure class="wp-block-image"><img src="{payload}" '

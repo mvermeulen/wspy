@@ -514,7 +514,13 @@ it as a draft, verify the response has an `id`/`link`, and only flip it to `stat
 an explicit `--publish` flag, so a pipeline that dies mid-run leaves an inspectable draft rather
 than a half-written live page; `upload-media` uploads a file's raw bytes to the WordPress media
 library (`--alt-text`/`--title`/`--caption`, `--set-featured-on <page-id>` to attach it to a
-page) — attachments have no draft state, so the upload itself is the only step, live immediately:
+page) — attachments have no draft state, so the upload itself is the only step, live immediately.
+`publish-page --from-rundir <dir>` generates page content straight from a run directory's curated
+blocks (`curation.json`) via `web/server.py`'s own `render_export_wordpress()` — the same renderer
+the web UI's export tab uses — pre-uploading every `depth=full` image block to the WP media
+library first and substituting the resulting URLs in place of the local server's own `/files/...`
+links (`--base-url` still needed for non-image "full file" reference links, since only images get
+uploaded here):
 
 ```
 ./wspy-publish configure
@@ -522,11 +528,13 @@ page) — attachments have no draft state, so the upload itself is the only step
 ./wspy-publish publish-page --slug my-report --title "My Report" --parent-id 17 --content-file report.html
 ./wspy-publish publish-page --page-id 123 --publish
 ./wspy-publish upload-media --file chart.png --alt-text "topdown breakdown" --set-featured-on 123
+./wspy-publish publish-page --slug my-report --title "My Report" --parent-id 17 \
+    --from-rundir web/runs/demo/coremark/some-run-id --base-url http://127.0.0.1:8765/files/x
 ```
 
-Rendering real report content into these pages (reusing `render_export_wordpress()`'s block
-markup) and the create-or-update merge logic for a page a human has since hand-edited are future
-work — see `INVESTIGATION.md`'s Tier 3 item 2.
+The create-or-update merge logic for a page a human has since hand-edited, and writing into
+`doc/REPORT_HIERARCHY.md`'s actual hierarchy levels, are future work — see `INVESTIGATION.md`'s
+Tier 3 item 2.
 
 ## wspy-symbolize: address-to-symbol resolution for --symbol-sample profiling
 
