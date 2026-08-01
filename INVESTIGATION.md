@@ -1056,6 +1056,35 @@ possible AI-narrative-analysis improvements raised in the same discussion (multi
 of `wspy-plot`'s PNG output, `phase.c`-derived trend summaries for any `--interval` CSV generally, and
 `process.tree` critical-path narration) — none of the others are scoped or started yet.
 
+**`wspy-testpoint select-runs`: run selection/role-assignment for a test point (PR #183) — piece 1 of
+Tier 3 item 5's test-point README work, done for this cycle.** A test point's linked runs are rarely
+interchangeable repeats — some are genuine repeated trials, some redo an earlier bad run, some dive
+into more detail with a different collection scope (extra process-tree/IBS passes) meant to supplement
+the primary numbers rather than be pooled into the same statistics — so aggregation (the next piece)
+needs a resolved run set to work from, not an unfiltered "every linked run" default. Implements exactly
+the "Test-point-level curated performance-summary README deep-dive" design below: enumerates a
+`(suite, benchmark, machine)` combination's runs (reusing `web/server.py`'s `load_run_history_entry()`,
+Phoronix test/test-point identity via `web/joblib.py`'s `list_materialized_phoronix_test_points()`),
+defaults each to `stats-pool`/`supplementary`/`excluded` from status + pass-set majority plus one
+`primary`, and persists `runs.json` under the report-root (`doc/REPORT_HIERARCHY.md`), committed
+locally only (never pushed) via a new shared `web/report_root.py` (the report-root git plumbing
+extracted out of `wspy-publish`, so both tools share it rather than duplicating it or reaching into
+each other via fragile cross-script `importlib`). A human's `--set`/`--primary` override
+(`human_set`/`primary_human_set`) is never silently overwritten by a later default-heuristic pass on
+re-run — the curation studio's source-pointer-vs-commentary separation, applied one level up. CLI-only
+for this slice (no web UI yet), matching `wspy-analyze`'s own "CLI-first, web wrapper is a natural
+follow-up" precedent — confirmed via plan-mode discussion before implementation, not assumed. Two real
+bugs found and fixed during manual end-to-end testing, before the formal test suite even existed: a
+`--primary` override that silently reverted on the next plain re-run (needed its own
+`primary_human_set` flag — a run's own `human_set` only tracks its *role* override, a separate decision
+from whether it was explicitly chosen as primary), and a `generated_at` timestamp that defeated
+`commit_runs_json()`'s idempotent no-op path (every write "looked" different regardless of real
+content change) — removed entirely, since git history already tracks when the file last meaningfully
+changed. New `tests/testpoint_smoke.sh` (wired into `run_tests.sh`, no network/hardware dependency —
+a local bare git repo stands in for the report-root remote) covers all of the above. Aggregation
+(`wspy-summary --command --hostname` over the resolved `stats-pool` runs), template rendering, and
+README writing remain open — see the deep-dive below and Tier 3 item 5's own entry.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -1447,7 +1476,9 @@ already references, needed because one Phoronix "test" can fan out into many tes
 suite/benchmark layout alone can't disambiguate which run belongs to which option combo. Machine-level
 scoping (the hierarchy's `<test-point>/<machine>/` leaf) is then a `hostname` filter over that run set.
 
-**1. Run selection / role assignment — the real gap the original framing missed.** Why a test point
+**1. Run selection / role assignment — the real gap the original framing missed. Shipped 2026-08-01,
+`wspy-testpoint select-runs`, PR #183 — see "Shipped since 4.2" above for the implementation write-up.**
+Why a test point
 accumulates multiple runs is not one story, it's (at least) three, and they demand different treatment:
 1. **A redo after a problem** — an earlier run had an issue (crashed, a `wspy-validate` WARN/FAIL, an
    environmental fluke) and got rerun. The bad run should not be silently averaged in with the good
@@ -1764,10 +1795,11 @@ reasoning as Tier 1 above.
    performance-summary README deep-dive" (Track deep-dives) for the complete reasoning** — run
    selection/role-assignment (a test-point's linked runs are rarely interchangeable repeats),
    aggregation (turns out to need almost no new statistics code), the template/customization model, and
-   the living-document/re-curate question are all resolved there; none of it is implemented yet. Real
-   potential overlap with this tier's own static-site/badge/drill-down items above remains genuinely
-   open — see "Open questions for prioritization" below, worth revisiting now that this item has a real
-   design.
+   the living-document/re-curate question are all resolved there. **Run selection/role-assignment shipped
+   (2026-08-01, PR #183) — see "Shipped since 4.2" above.** Aggregation, template rendering, and README
+   writing remain open. Real potential overlap with this tier's own static-site/badge/drill-down items
+   above remains genuinely open — see "Open questions for prioritization" below, worth revisiting now
+   that this item has a real design.
 
 6. Benchmark reference-matrix database keyed by (test name, test version, test point) × (machine,
    bucketed to a coarse architecture class: AMD/Intel/ARM/SoC) — a wide, curated comparison table in
