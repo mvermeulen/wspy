@@ -1,4 +1,4 @@
-PERF_COMPARE_TEMPLATE_VERSION = 1.1
+PERF_COMPARE_TEMPLATE_VERSION = 1.2
 # The line above is parsed by wspy-analyze and copied into every rendered
 # aiprompt.compare.<run-b-slug>.txt so a reader can tell which template
 # version produced a given comparison after this file changes. Same bump
@@ -19,6 +19,10 @@ invent a value that is not present verbatim in this prompt. If the two runs'
 data doesn't support a confident explanation for a difference, say so
 explicitly rather than guessing at a cause (e.g. a code change, a
 configuration change, noise) that isn't evidenced by the counters themselves.
+The "CSV-only counter-group summaries" sections (if present) are aggregate
+statistics -- count/min/max/mean/stddev -- computed over an entire CSV time
+series that was never rendered as text elsewhere in this prompt; treat them
+as aggregate findings for that run as a whole, not a single measurement.
 
 ## Run A identity
 {{WORKLOAD_A}}
@@ -40,6 +44,12 @@ configuration change, noise) that isn't evidenced by the counters themselves.
 
 ## Run B raw counter output (verbatim from wspy -- this is the actual data, not a summary of it)
 {{RAW_TEXT_B}}
+
+## Run A CSV-only counter-group summaries (statistical, not verbatim)
+{{CSV_SUMMARIES_A}}
+
+## Run B CSV-only counter-group summaries (statistical, not verbatim)
+{{CSV_SUMMARIES_B}}
 
 ## Task
 Write a short (4-8 sentence) narrative explanation of what changed between

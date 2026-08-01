@@ -58,6 +58,17 @@ ipc: 1.83
 retire: 60.2%  frontend: 11.3%  backend: 26.1%  speculate: 2.5%
 EOF
 
+# IBS counting-mode CSV (--ibs-basic/--ibs-memory-deep, wspy-run's
+# "ibs"-named pass with --csv): the gap this test is guarding against --
+# collect_raw_text() never sees this data (it's a CSV, not summary.txt/
+# *.txt), so without collect_ibs_csv_summaries() it would be completely
+# invisible to the model despite being real collected data.
+cat > "$RUNDIR/ibs.csv" <<'EOF'
+time,ibs_fetch,ibs_op
+0.0,1000,2000
+1.0,3000,4000
+EOF
+
 # A second run directory (run B) for --compare-rundir mode -- a materially
 # different topdown split (backend-bound rather than retire-bound) so the
 # comparative prompt actually has something to describe changing.
@@ -99,6 +110,12 @@ ipc: 1.10
 retire: 39.3%  frontend: 10.5%  backend: 45.6%  speculate: 4.7%
 EOF
 
+cat > "$RUNDIR_B/ibs.csv" <<'EOF'
+time,ibs_fetch,ibs_op
+0.0,5000,6000
+1.0,7000,8000
+EOF
+
 echo ""
 echo "=== Testing wspy-analyze --dry-run (prompt rendering, no Ollama needed) ==="
 OUT="$(./wspy-analyze --rundir "$RUNDIR" --dry-run 2>&1)"
@@ -108,6 +125,25 @@ echo "$OUT" | grep -q "top-down pipeline-slot breakdown" || { echo "FAIL: topdow
 echo "$OUT" | grep -q "retire: 60.2%" || { echo "FAIL: raw counter text not inlined verbatim"; exit 1; }
 [ -f "$RUNDIR/aiprompt.md" ] || { echo "FAIL: aiprompt.md not written"; exit 1; }
 echo "dry-run prompt rendering OK"
+
+echo ""
+echo "=== Testing IBS CSV summarization (the gap this fix addresses) ==="
+echo "$OUT" | grep -q "AMD IBS" || { echo "FAIL: ibs group note missing (ibs.csv header not detected)"; exit 1; }
+echo "$OUT" | grep -q "### ibs.csv" || { echo "FAIL: ibs.csv summary block missing from prompt"; exit 1; }
+echo "$OUT" | grep -qE '\| ibs_fetch \| 2 \| 1000 \| 3000 \| 2000 \| 1000 \|' || {
+    echo "FAIL: ibs_fetch summary stats wrong or missing"; exit 1; }
+echo "$OUT" | grep -qE '\| ibs_op \| 2 \| 2000 \| 4000 \| 3000 \| 1000 \|' || {
+    echo "FAIL: ibs_op summary stats wrong or missing"; exit 1; }
+echo "IBS CSV summarization OK"
+
+echo ""
+echo "=== Testing --csv-summary-max-bytes skip path (degrade, don't fail, on an oversized CSV) ==="
+OUT="$(./wspy-analyze --rundir "$RUNDIR" --dry-run --csv-summary-max-bytes 10 2>&1)"
+echo "$OUT" | grep -q "### ibs.csv" || { echo "FAIL: ibs.csv block missing entirely when oversized"; exit 1; }
+echo "$OUT" | grep -q "skipped -- .* bytes exceeds the 10-byte summarization cap" || {
+    echo "FAIL: oversized ibs.csv did not degrade to a skip placeholder"; exit 1; }
+echo "$OUT" | grep -q '| ibs_fetch |' && { echo "FAIL: oversized ibs.csv still got summarized"; exit 1; }
+echo "--csv-summary-max-bytes skip path OK"
 
 echo ""
 echo "=== Testing --redact-command ==="
@@ -133,6 +169,10 @@ echo "$OUT" | grep -q "run_id=test-run-1" || { echo "FAIL: run A identity missin
 echo "$OUT" | grep -q "run_id=test-run-2" || { echo "FAIL: run B identity missing from compare prompt"; exit 1; }
 echo "$OUT" | grep -q "retire: 60.2%" || { echo "FAIL: run A raw counter text missing from compare prompt"; exit 1; }
 echo "$OUT" | grep -q "retire: 39.3%" || { echo "FAIL: run B raw counter text missing from compare prompt"; exit 1; }
+echo "$OUT" | grep -qE '\| ibs_fetch \| 2 \| 1000 \| 3000 \| 2000 \| 1000 \|' || {
+    echo "FAIL: run A IBS CSV summary missing from compare prompt"; exit 1; }
+echo "$OUT" | grep -qE '\| ibs_fetch \| 2 \| 5000 \| 7000 \| 6000 \| 1000 \|' || {
+    echo "FAIL: run B IBS CSV summary missing from compare prompt"; exit 1; }
 [ -f "$RUNDIR/aiprompt.compare.manual-sleep-test-run-2.md" ] || {
     echo "FAIL: aiprompt.compare.manual-sleep-test-run-2.md not written into run A's directory"; exit 1; }
 echo "--compare-rundir dry-run OK"
