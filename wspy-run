@@ -717,6 +717,16 @@ generate_manifest(){
     printf '  ]\n'
     printf '}\n'
   } > "$out"
+
+  # Plain-text companion (INVESTIGATION.md 4.3 Tier 3 item 2's "additional
+  # artifacts" work): the workload command line above's "command" array
+  # already records, rendered as one copy-pasteable shell-quoted line
+  # instead of a JSON array a reader has to mentally reassemble -- so it
+  # shows up in the curation studio's "+ add" list as its own small
+  # artifact (guess_kind()'s .txt -> text default), not buried inside
+  # manifest.json.
+  printf '%q ' "${WORKLOAD[@]}" > "${RUNROOT}/command.txt"
+  printf '\n' >> "${RUNROOT}/command.txt"
 }
 
 while [ $# -gt 0 ]; do

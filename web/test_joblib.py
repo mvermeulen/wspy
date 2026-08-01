@@ -667,6 +667,70 @@ class BuildProctreeJsonDiffArgvTest(unittest.TestCase):
             ["./proctree", "--diff", "--json", "/tmp/a.json", "/tmp/b.json"])
 
 
+def _make_node(pid, comm, utime=0.0, stime=0.0, ppid=0, children=None):
+    return {"pid": pid, "comm": comm, "ppid": ppid, "utime_seconds": utime, "stime_seconds": stime,
+            "children": children or []}
+
+
+class RenderTopProcessesTextTest(unittest.TestCase):
+    def _tree_json(self):
+        # root(0s) -> a(1s), b(5s) -> c(3s), d(0.1s)
+        c = _make_node(3, "c", utime=2.0, stime=1.0, ppid=2)
+        d = _make_node(4, "d", utime=0.1, ppid=2)
+        b = _make_node(2, "b", utime=5.0, ppid=1, children=[c, d])
+        a = _make_node(5, "a", utime=1.0, ppid=1)
+        root = _make_node(1, "root", children=[a, b])
+        return {"process_count": 5, "tree": root}
+
+    def test_ranks_by_cpu_time_descending(self):
+        text = joblib.render_top_processes_text(self._tree_json(), top_min=2, top_max=2)
+        lines = [l for l in text.splitlines() if "pid=" in l]
+        self.assertEqual(len(lines), 2)
+        self.assertIn("pid=2", lines[0])   # b: 5s, highest
+        self.assertIn("pid=3", lines[1])   # c: 3s, second
+
+    def test_top_count_respects_min_and_max_clamp(self):
+        text = joblib.render_top_processes_text(self._tree_json(), top_fraction=0.5,
+                                                  top_min=1, top_max=1)
+        lines = [l for l in text.splitlines() if "pid=" in l]
+        self.assertEqual(len(lines), 1)
+
+    def test_no_tree_data(self):
+        self.assertEqual(joblib.render_top_processes_text({}), "(no tree data)\n")
+
+
+class RenderTop1pctTreeTextTest(unittest.TestCase):
+    def _tree_json(self):
+        c = _make_node(3, "c", utime=2.0, stime=1.0, ppid=2)
+        d = _make_node(4, "d", utime=0.1, ppid=2)
+        b = _make_node(2, "b", utime=5.0, ppid=1, children=[c, d])
+        a = _make_node(5, "a", utime=1.0, ppid=1)
+        root = _make_node(1, "root", children=[a, b])
+        return {"process_count": 5, "tree": root}
+
+    def test_kept_nodes_marked_and_ancestor_chain_preserved(self):
+        text = joblib.render_top1pct_tree_text(self._tree_json(), top_min=1, top_max=1)
+        # only pid=2 (b, 5s) is kept; root is its ancestor so must still appear
+        self.assertIn("pid=1)", text)   # root, ancestor of the kept node
+        self.assertIn("* ", text)
+        self.assertIn("pid=2)", text)   # b, the kept node itself
+        self.assertNotIn("pid=5)", text)   # a, sibling of b, not an ancestor -- omitted
+
+    def test_omitted_subtree_reports_per_level_counts(self):
+        # top_min=1 keeps only pid=2 (b, 5s). Each collapsed subtree gets its
+        # own omitted-count line at the level it was collapsed, not one
+        # combined total: b's own two children (c, d) collapse to "2" under
+        # b, and sibling branch a (no children of its own) collapses to "1"
+        # under root -- keeps the shape of what was hidden visible, per the
+        # function's own docstring, rather than flattening it into one number.
+        text = joblib.render_top1pct_tree_text(self._tree_json(), top_min=1, top_max=1)
+        self.assertIn("2 more process(es) omitted", text)
+        self.assertIn("1 more process(es) omitted", text)
+
+    def test_no_tree_data(self):
+        self.assertEqual(joblib.render_top1pct_tree_text({}), "(no tree data)\n")
+
+
 class BuildSymbolizeArgvTest(unittest.TestCase):
     # item 9's web UI drill-down (INVESTIGATION.md's "Symbol-level profiling
     # deep-dive") -- /api/symbolize builds this argv via build_symbolize_argv().
@@ -2033,12 +2097,26 @@ class CollectRunFilesTest(unittest.TestCase):
             filenames = [i["filename"] for i in items]
             self.assertIn("plots/foo.topdown.png", filenames)
 
+    def test_command_txt_labeled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest = {
+                "layout_version": "1.0.0", "suite": "s", "benchmark": "b", "run_id": "r",
+                "command": ["true"], "passes": [],
+            }
+            with open(os.path.join(tmpdir, "manifest.json"), "w") as f:
+                json.dump(manifest, f)
+            open(os.path.join(tmpdir, joblib.COMMAND_TXT_NAME), "w").close()
+            items = joblib.collect_run_files(tmpdir)
+            by_name = {i["filename"]: i for i in items}
+            self.assertEqual(by_name[joblib.COMMAND_TXT_NAME]["label"], "command line")
+
 
 class ClassifyBundleKindTest(unittest.TestCase):
     def test_manifest_kinds(self):
         self.assertEqual(joblib.classify_bundle_kind("manifest.json"), "manifest")
         self.assertEqual(joblib.classify_bundle_kind("quick.manifest.json"), "manifest")
         self.assertEqual(joblib.classify_bundle_kind(joblib.MANIFEST_NAME), "manifest")
+        self.assertEqual(joblib.classify_bundle_kind(joblib.COMMAND_TXT_NAME), "manifest")
 
     def test_derived_kinds(self):
         self.assertEqual(joblib.classify_bundle_kind("summary.txt"), "derived")
@@ -2046,6 +2124,8 @@ class ClassifyBundleKindTest(unittest.TestCase):
         self.assertEqual(joblib.classify_bundle_kind(joblib.PNG_NAME), "derived")
         self.assertEqual(joblib.classify_bundle_kind("plots/foo.png"), "derived")
         self.assertEqual(joblib.classify_bundle_kind("process.tree.summary.txt"), "derived")
+        self.assertEqual(joblib.classify_bundle_kind("process.tree.top.txt"), "derived")
+        self.assertEqual(joblib.classify_bundle_kind("process.tree.top1pct.txt"), "derived")
         self.assertEqual(joblib.classify_bundle_kind("aianalysis.llama3.txt"), "derived")
         self.assertEqual(joblib.classify_bundle_kind("aiprompt.txt"), "derived")
 

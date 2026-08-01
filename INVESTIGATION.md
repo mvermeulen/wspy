@@ -910,6 +910,60 @@ a smaller in-limit kernel-build run and a normal small run (`coremark-default`) 
 trees stay unaffected; user confirmed the tree viewer renders correctly end-to-end in a real browser
 post-fix.
 
+**`wspy-analyze`: fixed a "thinking" model silently producing an empty `aianalysis.<model>.txt`
+(`ollama_generate()`/`analyze_one_model()`).** Root-caused live (2026-08-01) against the real first
+published `/workload` report (WordPress page id=35, `phoronix/coremark-default`): `gpt-oss:20b` drafts
+its answer inside Ollama's separate `"thinking"` stream field before ever emitting `"response"` text,
+and Ollama was running it with only a 4096-token context window (confirmed against the loaded model's
+own `llama-server` process args) — for this codebase's multi-KB prompt, the model exhausted that budget
+still mid-thought (`done_reason: "length"`), so `response` stayed permanently empty with no exception
+anywhere. Replayed the exact real prompt directly against `/api/generate` to confirm both the failure
+and the fix: request now sends `options.num_ctx` (new `--num-ctx`, default 16384) — confirmed this alone
+turns `done_reason` from `"length"` into a normal `"stop"` with real output. Defense in depth: if
+generation is still cut short before any visible response text exists, `analyze_one_model()` now skips
+writing the file and warns instead of silently succeeding empty. `test_ai_analyze.sh` still passes;
+re-ran the real failing case through the actual CLI post-fix (real 1.3KB narrative, not 0 bytes).
+
+**New pre-computed report artifacts + a "default curation" button** — a bundle of three small, related
+additions from iterating on that same first published report, filling gaps found while trying to reuse
+its curation as a starting template for future reports:
+- `wspy-run` now writes `command.txt` alongside `manifest.json` — the same workload argv
+  `manifest.json`'s own `"command"` array already records, as one copy-pasteable shell-quoted line
+  (`printf '%q '`) rather than a JSON array a reader has to mentally reassemble; shows up in the
+  curation studio's "+ add" list as "command line".
+- `web/joblib.py`'s `run_proctree_besteffort()` gains two more best-effort derived views alongside the
+  existing `process.tree.summary.txt`/`process.tree.simple.txt`: `process.tree.top.txt` (individual
+  processes — not proctree's own per-comm rollup — ranked by actual CPU time, `utime_seconds+
+  stime_seconds`) and `process.tree.top1pct.txt` (the full tree pruned to just those top processes plus
+  their ancestor chain, every other subtree collapsed to a "N more process(es) omitted" line at the
+  level it was hidden). "Top 1%" is `top_fraction=0.01` clamped to `[5, 50]` processes
+  (`PROCESS_TREE_TOP_FRACTION`/`_MIN`/`_MAX`) so it stays readable on both a tiny run and the
+  ~155K-process stress run `doc/ARTIFACT_CONTRACT.md` mentions — a starting default the author expects
+  to tune, not a fixed policy. The pruning walk is a single bottom-up "does this subtree contain a kept
+  pid" pass before printing, not repeated per-node subtree scans, to stay O(process_count) rather than
+  O(process_count²) on that same large-tree case. Verified against a real 640-process tree (from a real
+  `ollama-subset` run): the 727-line raw tree collapses to a 15-line pruned view.
+- The curation studio (`render_studio()`) gained an "Apply default curation" button
+  (`build_default_curation_blocks()`, `apply_studio_post()`'s new `default-curation` op) — one click
+  replaces the current curation with a fixed starting set: every pass's own raw text/CSV output,
+  `command.txt`, every AI narrative analysis (not prompt/critique files), every plot, all at
+  `depth="full"`. A policy over `collect_run_files()`'s *kinds* (this run's own recorded passes, the
+  `ai_generated` flag, `plots/` membership) rather than hardcoded filenames, since different `wspy-run`
+  profiles name their passes differently — deliberately *not* a literal reproduction of page 35's exact
+  hand-picked 3-plot/2-text-block selection (which would need per-profile filename knowledge this
+  function doesn't have), a known, accepted gap given the author's own framing that this default will
+  need tuning over time. Always replaces, never merges — confirmed working end to end through the real
+  running server (`curl`-submitted the real form POST against the real `coremark-default` run:
+  correctly produced all 5 pass outputs + `aianalysis.gpt-oss_20b.txt` + all 14 plots).
+
+New tests: `web/test_studio_curation.py` (`build_default_curation_blocks()`), `web/test_joblib.py`
+(`render_top_processes_text()`/`render_top1pct_tree_text()`, `classify_bundle_kind()`/
+`collect_run_files()` for the two new filenames). Not done in this pass: re-publishing WordPress page
+35 itself with the fixed analysis/new curation (held off deliberately — its curation will change again
+once these land, no point publishing twice), and the page's sidebar/full-width layout question (a
+WordPress theme/Customizer setting outside what this codebase's publishing code controls, left for the
+author to check in wp-admin directly).
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:

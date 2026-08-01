@@ -75,7 +75,7 @@ from joblib import (  # noqa: E402,F401
     NAME_RE, resolve_toggles, checklist_from_pass_provenance, valid_affinity_spec,
     parse_run_key, build_proctree_json_argv, build_proctree_diff_argv, build_symbolize_argv,
     run_sync, parse_phoronix_test_names, estimate_phoronix_workload_seconds,
-    CSV_NAME, MANIFEST_NAME, PNG_NAME, CURATION_NAME, guess_kind, read_run_manifest,
+    CSV_NAME, MANIFEST_NAME, PNG_NAME, CURATION_NAME, COMMAND_TXT_NAME, guess_kind, read_run_manifest,
     ai_artifact_label, list_plot_pngs, collect_run_files,
     build_reproducibility_bundle, BUNDLE_MANIFEST_NAME,
 )
@@ -2995,6 +2995,53 @@ def render_history(cfg, qs):
     return page("wspy run history", body)
 
 
+def build_default_curation_blocks(rundir):
+    """A fixed starting curation for the Studio's "Apply default curation"
+    button (INVESTIGATION.md 4.3 Tier 3 item 2's "default curation" work):
+    every pass's own raw text/CSV output, command.txt, every AI narrative
+    analysis, and every plot -- mirroring the block selection first
+    hand-curated for the initial published /workload report (WordPress
+    page id=35). A policy over collect_run_files()'s *kinds* (this run's
+    own recorded passes, the ai_generated flag, plots/ membership) rather
+    than hardcoded filenames, since different wspy-run profiles name their
+    passes differently (quick/deep-cpu/ibs-basic/a custom -c file/...) and
+    "counters.txt"/"ibs.txt" specifically were just this one run's own
+    pass names, not something every run has. This is exactly the "default
+    we'll want to change over time" the author flagged when asking for
+    this button -- keep the policy here, not scattered across call sites,
+    so it's easy to find and adjust later. Doesn't include summary.txt
+    (redundant with the per-pass outputs already included) or
+    manifest.json/launch.log (page 35's own curation skipped both too)."""
+    run_manifest = read_run_manifest(os.path.join(rundir, RUN_MANIFEST_NAME))
+    by_filename = {item["filename"]: item for item in collect_run_files(rundir)}
+    blocks = []
+
+    def add(filename):
+        item = by_filename.get(filename)
+        if item is None:
+            return
+        blocks.append(new_block("artifact", source_file=filename, source_kind=item["kind"],
+                                 title=item["label"], ai_generated=item.get("ai_generated", False)))
+
+    if run_manifest is not None:
+        for p in run_manifest.get("passes", []):
+            if p.get("output"):
+                add(p["output"])
+    add(COMMAND_TXT_NAME)
+    for filename in sorted(by_filename):
+        label, ai_generated = ai_artifact_label(filename) or (None, False)
+        if label and label.startswith("AI narrative analysis"):
+            add(filename)
+    for filename in sorted(by_filename):
+        if filename.startswith(PLOTS_DIR_NAME + "/"):
+            add(filename)
+
+    for b in blocks:
+        allowed = allowed_depths(b)
+        b["depth"] = "full" if "full" in allowed else (allowed[-1] if allowed else "none")
+    return blocks
+
+
 def apply_studio_post(rundir, form):
     """Reconstructs the block list from a studio form submission (in DOM/
     submission order, which is the current on-page order) and applies the one
@@ -3033,7 +3080,13 @@ def apply_studio_post(rundir, form):
             "ai_generated": i < len(ai_generated_flags) and ai_generated_flags[i] == "1",
         })
 
-    if op.startswith("up:") or op.startswith("down:"):
+    if op == "default-curation":
+        # Discards blocks/overview_note reconstructed from the submitted form
+        # above -- "always replace" is this button's own documented behavior
+        # (INVESTIGATION.md 4.3 Tier 3 item 2), not a merge onto prior edits.
+        blocks = build_default_curation_blocks(rundir)
+        overview_note = ""
+    elif op.startswith("up:") or op.startswith("down:"):
         bid = op.split(":", 1)[1]
         idx = next((j for j, b in enumerate(blocks) if b["id"] == bid), None)
         if idx is not None:
@@ -3229,6 +3282,13 @@ def render_studio(rundir, suite, benchmark, run_id):
   <p><a href="/report/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}">Back to report</a>
      &middot; <a href="/export/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}">Export</a></p>
   <form method="post" action="{action}">
+    <p><button type="submit" name="op" value="default-curation" class="danger"
+        onclick="return confirm('Replace the current curation with the default block set? '
+                                 + 'Any edits/reordering you\\'ve made will be discarded.')">
+        Apply default curation</button>
+      <span class="muted">Replaces the curation above with a fixed starting set (every pass's raw
+        output, command line, AI narrative analysis, every plot) -- start here, then adjust by
+        hand.</span></p>
     <div class="block-card overview-card">
       <label>Report overview <span class="muted">(one note for the report as a whole, separate from
         each block's own commentary below)</span>

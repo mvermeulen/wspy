@@ -74,6 +74,21 @@ DEFAULT_TEMPLATE = os.path.join(SCRIPT_DIR, "prompts", "perf_analysis.tmpl")
 DEFAULT_COMPARE_TEMPLATE = os.path.join(SCRIPT_DIR, "prompts", "perf_compare.tmpl")
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_TIMEOUT_SECONDS = 120
+# Ollama commonly loads a model with a runtime context window (4096 tokens,
+# confirmed live 2026-08-01 against a loaded gpt-oss:20b's own llama-server
+# process args) far below what the model itself supports (131072 for
+# gpt-oss:20b) unless a request explicitly asks for more via options.num_ctx.
+# A "thinking"/reasoning model drafts its answer inside a separate internal
+# channel before ever emitting visible response text -- for a several-KB
+# wspy prompt, that reasoning alone can exhaust a 4096 window, so generation
+# stops (done_reason="length") before any response text exists at all,
+# silently producing a 0-byte aianalysis.<model>.txt with no error anywhere.
+# Reproduced directly against Ollama's /api/generate with this codebase's
+# own real aiprompt.txt: response was empty at num_ctx=4096 (the model was
+# still mid-thought, per its own streamed "thinking" field) and complete at
+# num_ctx=16384. Override with --num-ctx if an even larger prompt/model
+# combination still truncates.
+DEFAULT_NUM_CTX = 16384
 # Applied only when neither --model nor --all-models is given, and only when
 # this exact name is confirmed installed (ollama_list_models()) -- never a
 # silent guess. Picked as a reasonable general-purpose default, not tuned
@@ -341,7 +356,7 @@ def ollama_list_models(host, timeout):
     return [m["name"] for m in data.get("models", [])]
 
 
-def ollama_generate(host, model, prompt, timeout):
+def ollama_generate(host, model, prompt, timeout, num_ctx=DEFAULT_NUM_CTX):
     """stream: true (not Ollama's non-streaming default) is deliberate: with
     stream: false, Ollama computes the entire response server-side --
     including any hidden "thinking"/reasoning trace a model like deepseek-r1
@@ -357,12 +372,26 @@ def ollama_generate(host, model, prompt, timeout):
     `timeout` into a per-chunk idle timeout instead: as long as some token
     arrives at least every `timeout` seconds, a slow-but-progressing
     generation of any length succeeds; a genuinely hung Ollama still times
-    out promptly."""
-    body = json.dumps({"model": model, "prompt": prompt, "stream": True}).encode("utf-8")
+    out promptly.
+
+    options.num_ctx overrides Ollama's often much-smaller default runtime
+    context window -- see DEFAULT_NUM_CTX's own comment for why this
+    matters specifically for "thinking" models fed this codebase's own
+    (multi-KB) prompts.
+
+    Returns (response_text, done_reason) -- "thinking" tokens (a
+    reasoning model's internal draft, streamed separately from the
+    visible "response") are intentionally not accumulated into
+    response_text; done_reason lets analyze_one_model() tell a genuine
+    empty answer apart from generation cut short by num_ctx/length before
+    any visible response text existed ("length", vs. a normal "stop")."""
+    body = json.dumps({"model": model, "prompt": prompt, "stream": True,
+                        "options": {"num_ctx": num_ctx}}).encode("utf-8")
     req = urllib.request.Request(
         host.rstrip("/") + "/api/generate", data=body,
         headers={"Content-Type": "application/json"}, method="POST")
     chunks = []
+    done_reason = None
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         for line in resp:
             line = line.strip()
@@ -371,8 +400,9 @@ def ollama_generate(host, model, prompt, timeout):
             obj = json.loads(line)
             chunks.append(obj.get("response", ""))
             if obj.get("done"):
+                done_reason = obj.get("done_reason")
                 break
-    return "".join(chunks)
+    return "".join(chunks), done_reason
 
 
 CRITIQUE_SUFFIX = """
@@ -392,7 +422,8 @@ fine). Do not just restate your analysis.
 
 
 def analyze_one_model(host, model, prompt, timeout, critique, outdir,
-                       analysis_prefix="aianalysis", critique_prefix="aiprompt.critique"):
+                       analysis_prefix="aianalysis", critique_prefix="aiprompt.critique",
+                       num_ctx=DEFAULT_NUM_CTX):
     """Shared by single-run and comparative mode alike -- only the output
     filename prefixes differ (comparative mode namespaces them by run B's
     slug, see run_dir_slug()), the query/critique logic is identical either
@@ -401,7 +432,7 @@ def analyze_one_model(host, model, prompt, timeout, critique, outdir,
     print("wspy-analyze: querying %s ..." % model, file=sys.stderr)
     t0 = time.time()
     try:
-        response = ollama_generate(host, model, prompt, timeout)
+        response, done_reason = ollama_generate(host, model, prompt, timeout, num_ctx=num_ctx)
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
         # ValueError also catches json.JSONDecodeError -- a truncated/malformed
         # NDJSON line from ollama_generate()'s streamed read (e.g. the
@@ -411,19 +442,38 @@ def analyze_one_model(host, model, prompt, timeout, critique, outdir,
               "-- skipping" % (model, host, e), file=sys.stderr)
         return False
     elapsed = time.time() - t0
+
+    if not response.strip() and done_reason == "length":
+        # A reasoning model exhausted num_ctx while still drafting inside its
+        # internal "thinking" channel, never reaching visible response text --
+        # confirmed live against this exact failure mode (see DEFAULT_NUM_CTX's
+        # comment). Writing a 0-byte aianalysis.<model>.txt here would look
+        # like a successful-but-empty analysis with no trace of why; skip the
+        # file entirely and report it as the failure it is instead.
+        print("wspy-analyze: warning: %s: context limit (num_ctx=%d) reached before any response "
+              "text was produced (the model was still \"thinking\") -- retry with a larger "
+              "--num-ctx -- skipping" % (model, num_ctx), file=sys.stderr)
+        return False
+
     out_path = os.path.join(outdir, "%s.%s.txt" % (analysis_prefix, slug))
     with open(out_path, "w") as f:
         f.write(response)
-    print("wspy-analyze: %s -> %s (%.1fs, %d chars)" % (
-        model, out_path, elapsed, len(response)), file=sys.stderr)
+    truncated_note = " [truncated: hit num_ctx=%d]" % num_ctx if done_reason == "length" else ""
+    print("wspy-analyze: %s -> %s (%.1fs, %d chars)%s" % (
+        model, out_path, elapsed, len(response), truncated_note), file=sys.stderr)
 
     if critique:
         critique_prompt = prompt + (CRITIQUE_SUFFIX % response)
         try:
-            critique_text = ollama_generate(host, model, critique_prompt, timeout)
+            critique_text, critique_done_reason = ollama_generate(
+                host, model, critique_prompt, timeout, num_ctx=num_ctx)
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
             print("wspy-analyze: warning: %s: critique call failed: %s" % (model, e),
                   file=sys.stderr)
+            return True
+        if not critique_text.strip() and critique_done_reason == "length":
+            print("wspy-analyze: warning: %s: critique hit num_ctx=%d before any response text -- "
+                  "skipping critique" % (model, num_ctx), file=sys.stderr)
             return True
         critique_path = os.path.join(outdir, "%s.%s.txt" % (critique_prefix, slug))
         with open(critique_path, "w") as f:
@@ -499,6 +549,12 @@ def main():
                           "template itself; writes aiprompt.critique.<model>.txt")
     ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS,
                      help="per-request timeout in seconds (default: %(default)s)")
+    ap.add_argument("--num-ctx", type=int, default=DEFAULT_NUM_CTX,
+                     help="Ollama context window in tokens (default: %(default)s) -- Ollama's own "
+                          "runtime default is often much smaller (4096, confirmed live), which a "
+                          "\"thinking\" model can exhaust while still drafting internally, before "
+                          "any visible response text exists; raise this if a model's output is "
+                          "still empty/truncated at the default")
     ap.add_argument("--dry-run", action="store_true",
                      help="render the prompt and print it, but don't call Ollama at all")
     args = ap.parse_args()
@@ -593,7 +649,8 @@ def main():
     any_ok = False
     for model in models:
         if analyze_one_model(args.ollama_host, model, prompt, args.timeout,
-                              args.critique, rundir, analysis_prefix, critique_prefix):
+                              args.critique, rundir, analysis_prefix, critique_prefix,
+                              num_ctx=args.num_ctx):
             any_ok = True
     return 0 if any_ok else 1
 
