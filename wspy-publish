@@ -64,6 +64,14 @@ image_url parameter in web/server.py. Non-image "full file" reference
 links (summary/excerpt text/CSV blocks) still point at --base-url, since
 those files aren't uploaded anywhere; pass a real reachable URL or expect
 relative/dead links in the published content.
+
+The --from-rundir rendering pipeline (render_wordpress_content_for_rundir())
+and the find-or-create-and-optionally-publish orchestration
+(wp_client.publish_page_content()) both live in web/server.py and
+web/wp_client.py respectively, not here -- this script is a thin CLI
+wrapper over them, shared with web/server.py's own "Publish to WordPress"
+button on the Export tab (sub-step 8), so the CLI and the web UI can
+never drift into different publish behavior for the same operation.
 """
 import argparse
 import getpass
@@ -76,21 +84,15 @@ import sys
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(SCRIPT_DIR, "web"))
 import wp_client  # noqa: E402
-import server as web_export  # noqa: E402 -- only its export_block_content()/_export_data()/
-                              # render_export_wordpress() are used here; importing it never starts
-                              # the HTTP server (guarded by server.py's own __main__ check)
+from wp_client import CONFIG_PATH, load_config  # noqa: E402 -- canonical definitions, shared with
+                                                 # web/server.py's own "Publish to WordPress" button
+import server as web_export  # noqa: E402 -- only its render_wordpress_content_for_rundir() is used
+                              # here; importing it never starts the HTTP server (guarded by
+                              # server.py's own __main__ check)
 
-CONFIG_PATH = os.path.expanduser("~/.config/wspy/publish.json")
 DEFAULT_REPORT_ROOT = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "workload"))
 DEFAULT_REPORT_ROOT_REMOTE = "https://github.com/mvermeulen/workload.git"
 TEST_PAGE_SLUG = "wspy-publish-connectivity-test"
-
-
-def load_config():
-    if not os.path.isfile(CONFIG_PATH):
-        return None
-    with open(CONFIG_PATH) as f:
-        return json.load(f)
 
 
 def save_config(cfg):
@@ -273,41 +275,24 @@ def cmd_test_connection(args):
 
 
 def _render_content_from_rundir(site_url, username, app_password, rundir, title, base_url):
-    """Content for --from-rundir: reads the run's curation.json (the same
-    data web/server.py's own export tab reads via _export_data()),
-    pre-uploads every depth="full" image block to the WP media library,
-    and renders via render_export_wordpress() with those uploaded URLs
-    substituted for this server's own /files/... URLs (its image_url
-    parameter). Returns (content, ok) -- ok=False means an error was
-    already printed and the caller should abort without publishing
-    anything."""
-    overview_note, blocks = web_export._export_data(rundir)
-    if not blocks and not overview_note:
+    """CLI wrapper over web/server.py's render_wordpress_content_for_rundir()
+    (shared with the web UI's own "Publish to WordPress" button) --
+    prints its upload_log as it goes, matching this command's own
+    stderr-progress style. Returns (content, ok) -- ok=False means an
+    error was already printed and the caller should abort without
+    publishing anything."""
+    content, upload_log, ok = web_export.render_wordpress_content_for_rundir(
+        rundir, title, base_url, site_url, username, app_password)
+    if not ok:
         print("wspy-publish: no curated content in %s (curate it first via the web studio)" % rundir,
               file=sys.stderr)
         return None, False
-
-    image_urls = {}
-    for b in blocks:
-        if b.get("source_kind") != "image" or b.get("depth") != "full":
-            continue
-        filename = b.get("source_file")
-        if not filename:
-            continue
-        path = os.path.join(rundir, filename)
-        if not os.path.isfile(path):
-            continue  # export_block_content()'s own "not found" note covers this
-        try:
-            media = wp_client.upload_media(site_url, username, app_password, path)
-        except wp_client.WPError as e:
-            print("wspy-publish: uploading %s FAILED (status=%s code=%s): %s -- this image will fall "
-                  "back to --base-url instead" % (filename, e.status, e.code, e), file=sys.stderr)
-            continue
-        image_urls[filename] = media["source_url"]
-        print("  uploaded %s -> %s" % (filename, media["source_url"]))
-
-    content = web_export.render_export_wordpress(rundir, base_url or "", title, overview_note, blocks,
-                                                   image_url=image_urls.get)
+    for filename, url, error in upload_log:
+        if url:
+            print("  uploaded %s -> %s" % (filename, url))
+        else:
+            print("wspy-publish: uploading %s FAILED: %s -- this image will fall back to --base-url "
+                  "instead" % (filename, error), file=sys.stderr)
     return content, True
 
 

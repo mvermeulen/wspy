@@ -1469,13 +1469,41 @@ reasoning as Tier 1 above.
         a real reachable web launcher, or they render relative/dead — those files aren't uploaded
         anywhere by this step, only images are (matches this item's own "charts/tree diagrams" framing
         for sub-step 6, not every artifact type). New tests: `web/test_export_render.py` (the
-        `image_url` override, HTTP-free). Verified locally end to end (curated fake run directory,
-        `wp_client.upload_media` monkeypatched to avoid a real network call) — the generated content's
-        `<!-- wp:image -->` block correctly carries the uploaded URL, not `127.0.0.1`; not yet exercised
-        against the real site with a real curated run (only sub-steps 5/6's own throwaway test pages/
-        media have been). Content *merge* against a page a human has since hand-edited (sub-step 4) and
-        the actual hierarchy-level write path (item 7 in this tier's outer list, distinct numbering) are
-        still open — this item is "reuse the renderer," not "solve idempotent publish."
+        `image_url` override, HTTP-free). **Verified against the real site (2026-08-01):** a real run
+        directory's plot PNGs, curated and published via `publish-page --from-rundir` — the resulting
+        page's content correctly carries the uploaded `mvermeulen.org` media URLs, not `127.0.0.1`.
+        Content *merge* against a page a human has since hand-edited (sub-step 4) and the actual
+        hierarchy-level write path (item 7 in this tier's outer list, distinct numbering) are still
+        open — this item is "reuse the renderer," not "solve idempotent publish."
+     8. **"Publish to WordPress" button in the web UI, over the same sub-step 5/6/7 primitives** — not
+        from the original 2026-07-27 external-research list above, added once those primitives existed
+        and made a CLI-only publish path feel like an artificial gap for a report already open in the
+        browser. **Done (2026-08-01):** `web/server.py`'s Export tab (`?format=wordpress`) gained a
+        "Publish to WordPress" panel — slug/parent-id/title fields plus a "Publish immediately"
+        checkbox (default off, same drafts-first default as the CLI) — that `POST`s to a new
+        `/publish/<suite>/<benchmark>/<run_id>` route. That route derives `base_url` from the
+        request's own `Host` header (the CLI has no such context, hence its `--base-url` flag), then
+        calls the same two functions the CLI now shares: `render_wordpress_content_for_rundir()`
+        (moved from wspy-publish into `web/server.py` itself, since `wspy-publish` already imports
+        `server.py`, not the other way around, so no circular import) and a new
+        `wp_client.publish_page_content()` (find-or-create by slug/parent, set content, optionally
+        publish — the same orchestration `publish-page --slug` used inline, now factored out so the
+        CLI and the web UI can't drift into different find-or-create behavior). No credential entry
+        point in the web form itself, by design — `wp_client.load_config()` (also newly shared, was
+        wspy-publish-only before) just reads the config `wspy-publish configure`'s terminal-only
+        `getpass` prompt already wrote; a missing config renders a message pointing at that command
+        rather than a form field. Caught a real bug in sub-step 7's original merge: a *failed* image
+        upload left that filename out of the `{filename: url}` map, and `image_url=image_urls.get`
+        then fed `export_block_content()` a literal `None` as the image `src` instead of falling back
+        to the local URL — `export_block_content()` now treats a falsy `image_url()` return as "no
+        override," matching `dict.get()`'s own missing-key default rather than requiring every caller
+        to build a fallback-aware closure. New tests: `web/test_wp_client.py`
+        (`publish_page_content()`/`load_config()`), `web/test_export_render.py`
+        (`render_wordpress_content_for_rundir()`, including the upload-failure fallback path).
+        **Verified against the real site end to end through the actual running server** (not just the
+        underlying functions): `curl`-submitted the real HTML form to a locally-running
+        `web/server.py`, which uploaded a real plot PNG and created a real draft page
+        (`mvermeulen.org/workload`) with the correct embedded media URL.
 3. Characterization badges + similarity panels in reports — a new block type in 4.1's curation studio
    drawing a badge from 4.2's (shipped) archetype scorecard (`wspy-archetype`), not a separate report
    surface.
