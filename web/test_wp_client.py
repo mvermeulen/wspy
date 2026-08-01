@@ -17,6 +17,7 @@ import base64
 import io
 import os
 import sys
+import tempfile
 import unittest
 import urllib.error
 from unittest.mock import patch
@@ -95,6 +96,25 @@ class RequestTest(unittest.TestCase):
             with self.assertRaises(wp_client.WPError) as ctx:
                 wp_client.request("https://nope.invalid", "wp/v2/pages", "wspy", "secret")
         self.assertIsNone(ctx.exception.status)
+
+    def test_raw_body_sends_content_type_and_extra_headers(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["headers"] = dict(req.header_items())
+            captured["data"] = req.data
+            return FakeHTTPResponse(b'{"id": 9}')
+
+        with patch("wp_client.urllib.request.urlopen", side_effect=fake_urlopen):
+            wp_client.request("https://example.org/workload", "wp/v2/media", "wspy", "secret",
+                               method="POST", raw_body=b"\x89PNG...", content_type="image/png",
+                               extra_headers={"Content-Disposition": 'attachment; filename="x.png"'})
+
+        self.assertEqual(captured["data"], b"\x89PNG...")
+        self.assertEqual(captured["headers"]["Content-type"], "image/png")
+        self.assertEqual(captured["headers"]["Content-disposition"], 'attachment; filename="x.png"')
+        # raw_body must never also carry the json_body path's Content-Type
+        self.assertNotIn("application/json", captured["headers"]["Content-type"])
 
 
 class MissingCapabilitiesTest(unittest.TestCase):
@@ -228,6 +248,85 @@ class DeletePageTest(unittest.TestCase):
             wp_client.delete_page("https://example.org/workload", "wspy", "secret", 42, force=True)
 
         self.assertEqual(captured["params"], {"force": "true"})
+
+
+class UploadMediaTest(unittest.TestCase):
+    def test_uploads_raw_bytes_with_guessed_mime_and_filename(self):
+        captured = {}
+
+        def fake_request(site_url, path, username, app_password, method="GET", params=None,
+                          json_body=None, raw_body=None, content_type=None, extra_headers=None,
+                          timeout=20):
+            captured.update(path=path, method=method, raw_body=raw_body,
+                             content_type=content_type, extra_headers=extra_headers)
+            return {"id": 55, "source_url": "https://example.org/workload/wp-content/uploads/x.png"}
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(b"\x89PNG...")
+            path = f.name
+        try:
+            with patch("wp_client.request", side_effect=fake_request):
+                media = wp_client.upload_media("https://example.org/workload", "wspy", "secret", path)
+        finally:
+            os.unlink(path)
+
+        self.assertEqual(captured["path"], "wp/v2/media")
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(captured["raw_body"], b"\x89PNG...")
+        self.assertEqual(captured["content_type"], "image/png")
+        self.assertIn(os.path.basename(path), captured["extra_headers"]["Content-Disposition"])
+        self.assertEqual(media["id"], 55)
+
+    def test_raises_when_mime_type_cannot_be_guessed(self):
+        with tempfile.NamedTemporaryFile(suffix=".this-is-not-a-real-extension", delete=False) as f:
+            f.write(b"data")
+            path = f.name
+        try:
+            with self.assertRaises(wp_client.WPError):
+                wp_client.upload_media("https://example.org/workload", "wspy", "secret", path)
+        finally:
+            os.unlink(path)
+
+    def test_explicit_mime_type_overrides_guess(self):
+        captured = {}
+
+        def fake_request(site_url, path, username, app_password, method="GET", params=None,
+                          json_body=None, raw_body=None, content_type=None, extra_headers=None,
+                          timeout=20):
+            captured["content_type"] = content_type
+            return {"id": 1}
+
+        with tempfile.NamedTemporaryFile(suffix=".dat", delete=False) as f:
+            f.write(b"data")
+            path = f.name
+        try:
+            with patch("wp_client.request", side_effect=fake_request):
+                wp_client.upload_media("https://example.org/workload", "wspy", "secret", path,
+                                        mime_type="image/svg+xml")
+        finally:
+            os.unlink(path)
+        self.assertEqual(captured["content_type"], "image/svg+xml")
+
+
+class UpdateMediaTest(unittest.TestCase):
+    def test_posts_fields_to_media_endpoint(self):
+        captured = {}
+
+        def fake_request(site_url, path, username, app_password, method="GET", params=None,
+                          json_body=None, timeout=20):
+            captured["path"] = path
+            captured["method"] = method
+            captured["json_body"] = json_body
+            return {"id": 55, "alt_text": "a topdown chart"}
+
+        with patch("wp_client.request", side_effect=fake_request):
+            media = wp_client.update_media("https://example.org/workload", "wspy", "secret", 55,
+                                            alt_text="a topdown chart")
+
+        self.assertEqual(captured["path"], "wp/v2/media/55")
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(captured["json_body"], {"alt_text": "a topdown chart"})
+        self.assertEqual(media["alt_text"], "a topdown chart")
 
 
 if __name__ == "__main__":

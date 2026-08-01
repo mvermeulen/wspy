@@ -17,7 +17,7 @@ data copy:
     its own, since a push is a shared/visible action that deserves an
     explicit human decision every time, not automation.
 
-This script currently has three subcommands:
+This script currently has four subcommands:
 
   configure        interactive credential setup (getpass -- the
                     Application Password never touches argv/shell
@@ -40,6 +40,17 @@ This script currently has three subcommands:
                     human's prior edits to an existing page -- that's
                     sub-step 4's still-open design question, not solved
                     here.
+  upload-media      the media upload endpoint (4.3 Tier 3 item 2,
+                    sub-step 6): POST a file's raw bytes to
+                    /wp/v2/media, needed before a report page can embed
+                    the topdown/AMD-metrics charts or process-tree
+                    diagrams the hand-curated /perf/workloads pages
+                    already have. Unlike pages, WordPress attachments
+                    have no draft state -- the upload itself is the only
+                    step, always visible in the media library once it
+                    succeeds (referencing it from a still-draft page
+                    keeps the *page* unpublished, per publish-page's own
+                    draft-first flow).
 
 Rendering real report content into these pages (reusing
 render_export_wordpress()'s block markup, sub-step 7) is future work, not
@@ -328,6 +339,62 @@ def cmd_publish_page(args):
     return 0
 
 
+def cmd_upload_media(args):
+    cfg = load_config()
+    if not cfg:
+        print("wspy-publish: no config at %s -- run `wspy-publish configure` first" % CONFIG_PATH,
+              file=sys.stderr)
+        return 1
+    wp = cfg["wordpress"]
+    site_url, username, app_password = wp["site_url"], wp["username"], wp["app_password"]
+
+    if not os.path.isfile(args.file):
+        print("wspy-publish: no such file: %s" % args.file, file=sys.stderr)
+        return 1
+
+    try:
+        media = wp_client.upload_media(site_url, username, app_password, args.file,
+                                        mime_type=args.mime_type)
+    except wp_client.WPError as e:
+        print("wspy-publish: upload FAILED (status=%s code=%s): %s" % (e.status, e.code, e),
+              file=sys.stderr)
+        return 1
+
+    if not media.get("id") or not media.get("source_url"):
+        print("wspy-publish: response missing id/source_url -- treating as a verification failure: %r"
+              % media, file=sys.stderr)
+        return 1
+    print("  uploaded id=%s source_url=%s" % (media["id"], media["source_url"]))
+
+    meta_fields = {}
+    if args.alt_text:
+        meta_fields["alt_text"] = args.alt_text
+    if args.title:
+        meta_fields["title"] = args.title
+    if args.caption:
+        meta_fields["caption"] = args.caption
+    if meta_fields:
+        try:
+            wp_client.update_media(site_url, username, app_password, media["id"], **meta_fields)
+        except wp_client.WPError as e:
+            print("wspy-publish: setting %s FAILED (status=%s code=%s): %s"
+                  % (", ".join(meta_fields), e.status, e.code, e), file=sys.stderr)
+            return 1
+        print("  set %s" % ", ".join(meta_fields))
+
+    if args.set_featured_on:
+        try:
+            wp_client.update_page(site_url, username, app_password, args.set_featured_on,
+                                   featured_media=media["id"])
+        except wp_client.WPError as e:
+            print("wspy-publish: setting featured_media on page %s FAILED (status=%s code=%s): %s"
+                  % (args.set_featured_on, e.status, e.code, e), file=sys.stderr)
+            return 1
+        print("  set as featured_media on page %s" % args.set_featured_on)
+
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Publish wspy reports to WordPress and/or the report-root git repo "
@@ -351,6 +418,16 @@ def main():
                       help="flip the page to status=publish after creating/updating it "
                            "(default: leave it as a draft)")
 
+    media = sub.add_parser("upload-media",
+                            help="upload a file to the WordPress media library")
+    media.add_argument("--file", required=True, help="path to the image/file to upload")
+    media.add_argument("--mime-type", help="override the guessed MIME type")
+    media.add_argument("--alt-text", help="set the attachment's alt text")
+    media.add_argument("--title", help="set the attachment's title")
+    media.add_argument("--caption", help="set the attachment's caption")
+    media.add_argument("--set-featured-on", type=int, metavar="PAGE_ID",
+                        help="set the uploaded attachment as this page id's featured_media")
+
     args = ap.parse_args()
     if args.command == "configure":
         return cmd_configure(args)
@@ -358,6 +435,8 @@ def main():
         return cmd_test_connection(args)
     if args.command == "publish-page":
         return cmd_publish_page(args)
+    if args.command == "upload-media":
+        return cmd_upload_media(args)
     ap.error("unknown command")
 
 

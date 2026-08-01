@@ -512,13 +512,16 @@ auto-pushed) commit against the report-root repo; `publish-page` is the draft-fi
 for a single WP page (by `--page-id`, or `--slug`/`--parent-id` to find-or-create) — create/update
 it as a draft, verify the response has an `id`/`link`, and only flip it to `status=publish` with
 an explicit `--publish` flag, so a pipeline that dies mid-run leaves an inspectable draft rather
-than a half-written live page:
+than a half-written live page; `upload-media` uploads a file's raw bytes to the WordPress media
+library (`--alt-text`/`--title`/`--caption`, `--set-featured-on <page-id>` to attach it to a
+page) — attachments have no draft state, so the upload itself is the only step, live immediately:
 
 ```
 ./wspy-publish configure
 ./wspy-publish test-connection
 ./wspy-publish publish-page --slug my-report --title "My Report" --parent-id 17 --content-file report.html
 ./wspy-publish publish-page --page-id 123 --publish
+./wspy-publish upload-media --file chart.png --alt-text "topdown breakdown" --set-featured-on 123
 ```
 
 Rendering real report content into these pages (reusing `render_export_wordpress()`'s block
