@@ -27,10 +27,20 @@ Inputs (from a run directory produced by wspy-run's unified --suite/
                                 run identity + per-pass manifest paths, used to
                                 run wspy-validate and to resolve which counter
                                 groups are present
-  - *.csv                      scanned only for their header row, to resolve
-                                which counter groups are present via
-                                web/joblib.py's existing COLUMN_TO_GROUP table
-                                (reused, not reimplemented)
+  - *.csv                      scanned for their header row, to resolve which
+                                counter groups are present via web/joblib.py's
+                                existing COLUMN_TO_GROUP table (reused, not
+                                reimplemented); a CSV whose header carries AMD
+                                IBS columns (counting-mode's own ibs.csv --
+                                the only groups this tool collects as
+                                data, not just header/group-detection, since
+                                IBS is otherwise never narrated in any text
+                                pass output) also gets its rows streamed once
+                                to compute per-column min/max/mean/stddev
+                                (summarize_csv()), capped at
+                                DEFAULT_CSV_SUMMARY_MAX_BYTES so an
+                                arbitrarily long --interval/--per-core time
+                                series is summarized, never inlined verbatim
 
 Outputs, written back into the same run directory (as .md -- the model's own
 response is markdown-flavored prose by default, and web/server.py's report/
@@ -59,8 +69,10 @@ plain single-run analysis of run A:
   - aiprompt.critique.compare.<run-b-slug>.<model-slug>.md  (only with --critique)
 """
 import argparse
+import csv
 import glob
 import json
+import math
 import os
 import re
 import sys
@@ -170,6 +182,23 @@ GROUP_NOTES = {
         "workload's own execution -- useful for ruling out contention from "
         "other processes."
     ),
+    "ibs": (
+        "AMD IBS (`ibs_fetch`/`ibs_op`) reports periodic hardware-sampled "
+        "instruction-fetch and macro-op counts -- a statistical sample of "
+        "instruction behavior, not a full trace. Under `--ibs-memory-deep`, "
+        "`ibs_op` is filtered to L3-miss-only/high-latency ops specifically "
+        "(memory-path analysis), while `ibs_op_unfiltered` is the same "
+        "sampler with no filter, and `ibs_op_accepted_ratio` is the fraction "
+        "of unfiltered samples the filter kept -- a low ratio means the "
+        "filtered `ibs_op` count itself is small and statistically noisier. "
+        "`ibs_l3missonly`/`ibs_ldlat_threshold`/`ibs_fetchlat_threshold` are "
+        "the filter *configuration* in effect, not measurements -- they are "
+        "constant for the whole run. If a 'CSV-Only Counter-Group Summaries' "
+        "section is present below, these are reported as statistics (count/"
+        "min/max/mean/stddev) over every collected sample, not as a single "
+        "measured value -- this data was collected as a CSV time series, "
+        "never as human-readable text."
+    ),
 }
 
 # Files this tool never treats as the "counters" narrative text, even though
@@ -178,6 +207,132 @@ GROUP_NOTES = {
 EXCLUDED_TEXT_BASENAMES = {
     "process.tree.txt", "process.tree.summary.txt", "launch.log",
 }
+
+# AMD IBS's own CSV column names (topdown.c's print_ibs(), PRINT_CSV_HEADER
+# case; doc/METRICS.md documents each). IBS *counting* mode (--ibs-basic/
+# --ibs-memory-deep, wspy-run's default) writes these into a CSV time series
+# (e.g. ibs.csv) rather than human-readable text, so collect_raw_text() never
+# sees them and collect_present_groups() only ever looks at the header row --
+# the model gets told "ibs" columns exist but never sees a single value.
+# Kept local to this tool rather than folded into web/joblib.py's
+# COLUMN_TO_GROUP/resolve_column_group(): that dict doubles as the custom-
+# plot autofit's group vocabulary (ALL_GROUPS-only -- "ibs" isn't one of
+# --counters=<list>'s groups, it's its own separate --ibs-basic/
+# --ibs-memory-deep pass), so adding "ibs" there would let a custom plot's
+# autofit silently try to auto-check a "counters" group that doesn't exist.
+IBS_CSV_COLUMN_NAMES = {
+    "ibs_fetch", "ibs_op", "ibs_op_unfiltered", "ibs_op_accepted_ratio",
+    "ibs_l3missonly", "ibs_ldlat_threshold", "ibs_fetchlat_threshold",
+}
+
+# Cap on how large a CSV this tool will stream through to compute summary
+# statistics -- --interval 1 IBS counting-mode data scales with run duration
+# (and, under --per-core, with core count too), with no fixed upper bound.
+# summarize_csv() itself is O(1) memory regardless of row count (a single
+# streaming pass, Welford's algorithm for mean/stddev), so this cap isn't a
+# memory safety net -- it's a time/output-size one: reporting "skipped, too
+# large" degrades gracefully rather than ever spending a long time
+# summarizing a pathologically large file just to produce one more
+# aggregate-statistics table.
+DEFAULT_CSV_SUMMARY_MAX_BYTES = 5 * 1024 * 1024
+
+
+def summarize_csv(path):
+    """Streams path once and returns (row_count, column_stats): column_stats
+    is an ordered {column_name: {"n","min","max","mean","stddev"}} dict,
+    ordered as the header lists them, covering only columns that parsed as a
+    float on at least one row (a label/phase-name column is silently
+    skipped, not reported as all-zero). Uses Welford's online algorithm for
+    mean/stddev so this never holds more than one row in memory at a time --
+    safe against an arbitrarily long CSV without needing to load it whole."""
+    header = []
+    running = {}  # name -> [n, mean, M2, min, max], first-seen order
+    row_count = 0
+    with open(path, "r", newline="", errors="replace") as f:
+        reader = csv.reader(f)
+        try:
+            header = [h.strip() for h in next(reader)]
+        except StopIteration:
+            return 0, {}
+        for row in reader:
+            if not row or not any(cell.strip() for cell in row):
+                continue
+            row_count += 1
+            for name, cell in zip(header, row):
+                cell = cell.strip()
+                if not cell:
+                    continue
+                try:
+                    v = float(cell)
+                except ValueError:
+                    continue
+                entry = running.get(name)
+                if entry is None:
+                    running[name] = [1, v, 0.0, v, v]
+                    continue
+                entry[0] += 1
+                delta = v - entry[1]
+                entry[1] += delta / entry[0]
+                entry[2] += delta * (v - entry[1])
+                if v < entry[3]:
+                    entry[3] = v
+                if v > entry[4]:
+                    entry[4] = v
+    column_stats = {
+        name: {"n": n, "mean": mean, "stddev": math.sqrt(m2 / n) if n else 0.0,
+               "min": vmin, "max": vmax}
+        for name, (n, mean, m2, vmin, vmax) in running.items()
+    }
+    return row_count, column_stats
+
+
+def format_csv_summary(basename, row_count, column_stats):
+    """Renders one summarize_csv() result as a Markdown table -- fixed size
+    (one row per column) regardless of how many CSV rows went into it, which
+    is the whole point: the model gets aggregate statistics, never a raw
+    per-tick dump, for a time series with no bounded length."""
+    if not column_stats:
+        return "### %s\n(no numeric columns found across %d row(s))" % (basename, row_count)
+    lines = ["### %s (%d row(s))" % (basename, row_count),
+             "| column | n | min | max | mean | stddev |",
+             "|---|---|---|---|---|---|"]
+    for name, s in column_stats.items():
+        lines.append("| %s | %d | %.6g | %.6g | %.6g | %.6g |" % (
+            name, s["n"], s["min"], s["max"], s["mean"], s["stddev"]))
+    return "\n".join(lines)
+
+
+def collect_ibs_csv_summaries(rundir, max_bytes=DEFAULT_CSV_SUMMARY_MAX_BYTES):
+    """Finds every CSV in rundir whose header includes at least one IBS
+    column and renders a per-column statistical summary for each -- the fix
+    for collect_present_groups()'s blind spot: IBS counting-mode data today
+    is only ever detected (group membership), never actually shown to the
+    model. Always returns a non-empty string so {{CSV_SUMMARIES}} never
+    renders as a bare, confusing empty section."""
+    blocks = []
+    for path in sorted(glob.glob(os.path.join(rundir, "*.csv"))):
+        try:
+            with open(path, "r", errors="replace") as f:
+                header_line = f.readline()
+        except OSError:
+            continue
+        columns = {c.strip() for c in header_line.strip().split(",")}
+        if not columns & IBS_CSV_COLUMN_NAMES:
+            continue
+        basename = os.path.basename(path)
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        if size > max_bytes:
+            blocks.append("### %s\n(skipped -- %d bytes exceeds the %d-byte summarization cap)" %
+                           (basename, size, max_bytes))
+            continue
+        row_count, column_stats = summarize_csv(path)
+        blocks.append(format_csv_summary(basename, row_count, column_stats))
+    if not blocks:
+        return "(no IBS CSV time-series data found in this run directory)"
+    return "\n\n".join(blocks)
 
 
 def load_template(path):
@@ -243,7 +398,11 @@ def collect_present_groups(rundir):
         except OSError:
             continue
         for column in header.strip().split(","):
-            group = joblib.resolve_column_group(column.strip())
+            column = column.strip()
+            if column in IBS_CSV_COLUMN_NAMES:
+                groups.add("ibs")
+                continue
+            group = joblib.resolve_column_group(column)
             if group:
                 groups.add(group)
     return groups
@@ -293,12 +452,13 @@ def group_notes_text(groups):
     return "\n".join("- %s" % GROUP_NOTES[g] for g in sorted(groups) if g in GROUP_NOTES)
 
 
-def render_prompt(template_text, workload_text, validation_text, groups, raw_text):
+def render_prompt(template_text, workload_text, validation_text, groups, raw_text, csv_summaries):
     rendered = template_text
     rendered = rendered.replace("{{WORKLOAD}}", workload_text)
     rendered = rendered.replace("{{VALIDATION}}", validation_text)
     rendered = rendered.replace("{{COUNTER_GROUP_NOTES}}", group_notes_text(groups))
     rendered = rendered.replace("{{RAW_TEXT}}", raw_text)
+    rendered = rendered.replace("{{CSV_SUMMARIES}}", csv_summaries)
     return rendered
 
 
@@ -317,6 +477,8 @@ def render_compare_prompt(template_text, data_a, data_b):
         "{{COUNTER_GROUP_NOTES}}", group_notes_text(data_a["groups"] | data_b["groups"]))
     rendered = rendered.replace("{{RAW_TEXT_A}}", data_a["raw_text"])
     rendered = rendered.replace("{{RAW_TEXT_B}}", data_b["raw_text"])
+    rendered = rendered.replace("{{CSV_SUMMARIES_A}}", data_a["csv_summaries"])
+    rendered = rendered.replace("{{CSV_SUMMARIES_B}}", data_b["csv_summaries"])
     return rendered
 
 
@@ -484,7 +646,8 @@ def analyze_one_model(host, model, prompt, timeout, critique, outdir,
     return True
 
 
-def gather_run_data(rundir, validate_bin, redact_command, timeout, ap, label):
+def gather_run_data(rundir, validate_bin, redact_command, timeout, ap, label,
+                     csv_summary_max_bytes=DEFAULT_CSV_SUMMARY_MAX_BYTES):
     """Everything render_prompt()/render_compare_prompt() needs for one run
     directory. Factored out so comparative mode can call this twice (once per
     run) and single-run mode once, without duplicating the collection logic."""
@@ -499,6 +662,7 @@ def gather_run_data(rundir, validate_bin, redact_command, timeout, ap, label):
         "source": source,
         "raw_text": raw_text,
         "groups": collect_present_groups(rundir),
+        "csv_summaries": collect_ibs_csv_summaries(rundir, csv_summary_max_bytes),
         "validation_text": run_wspy_validate(
             validate_bin, find_pass_manifest_paths(rundir, run_manifest), timeout),
         "workload_text": workload_description(run_manifest, redact_command),
@@ -557,6 +721,11 @@ def main():
                           "\"thinking\" model can exhaust while still drafting internally, before "
                           "any visible response text exists; raise this if a model's output is "
                           "still empty/truncated at the default")
+    ap.add_argument("--csv-summary-max-bytes", type=int, default=DEFAULT_CSV_SUMMARY_MAX_BYTES,
+                     help="skip (with a placeholder note) summarizing a CSV-only counter group "
+                          "(e.g. AMD IBS counting mode's ibs.csv) larger than this many bytes, "
+                          "rather than ever streaming a pathologically large time series just to "
+                          "compute one more statistics table (default: %(default)s)")
     ap.add_argument("--dry-run", action="store_true",
                      help="render the prompt and print it, but don't call Ollama at all")
     args = ap.parse_args()
@@ -584,7 +753,8 @@ def main():
             ap.error("--compare-rundir %r is not a directory" % args.compare_rundir)
 
     data_a = gather_run_data(rundir, args.wspy_validate, args.redact_command, args.timeout,
-                              ap, "run A" if compare_rundir else "--rundir")
+                              ap, "run A" if compare_rundir else "--rundir",
+                              args.csv_summary_max_bytes)
 
     template_path = args.prompt_template or (
         DEFAULT_COMPARE_TEMPLATE if compare_rundir else DEFAULT_TEMPLATE)
@@ -592,7 +762,7 @@ def main():
 
     if compare_rundir:
         data_b = gather_run_data(compare_rundir, args.wspy_validate, args.redact_command,
-                                  args.timeout, ap, "run B")
+                                  args.timeout, ap, "run B", args.csv_summary_max_bytes)
         prompt = render_compare_prompt(template_text, data_a, data_b)
         slug_b = run_dir_slug(compare_rundir, data_b["run_manifest"])
         prompt_path = os.path.join(rundir, "aiprompt.compare.%s.md" % slug_b)
@@ -605,7 +775,7 @@ def main():
                         groups_desc, prompt_path))
     else:
         prompt = render_prompt(template_text, data_a["workload_text"], data_a["validation_text"],
-                                data_a["groups"], data_a["raw_text"])
+                                data_a["groups"], data_a["raw_text"], data_a["csv_summaries"])
         prompt_path = os.path.join(rundir, "aiprompt.md")
         analysis_prefix = "aianalysis"
         critique_prefix = "aiprompt.critique"
