@@ -177,6 +177,12 @@ struct summary_opts {
   const char *hostname_filter;  /* exact match against runs.hostname, "" = no filter */
   const char *metrics[64];
   int nmetrics;                 /* 0 = all metrics */
+  const char *run_ids[64];      /* --run-id <hostname>:<run_id>, repeatable -- an exact run-set filter,
+                                  * distinct from command_filter/hostname_filter's substring/exact-
+                                  * column matches: two runs can share identical command+hostname (a
+                                  * redo of a bad run) and still need to land in different buckets, which
+                                  * no text filter over runs.command/runs.hostname alone can express. */
+  int n_run_ids;                 /* 0 = no run-id filter (every existing caller's default) */
   enum group_by group_by;
   const char *group_by_option;  /* --group-by-option <name>: composed secondary grouping axis,
                                   * an arbitrary run_config_options.option_name (NULL = none) */
@@ -701,6 +707,53 @@ static void emit_bucket(const struct bucket *b,const struct summary_opts *opts,F
   totals->groups_reported++;
 }
 
+/* Creates (always, even with zero --run-id flags -- keeps summarize()'s query shape uniform, same
+ * "always join/create, inert when unused" idiom run_config_options's LEFT JOIN already uses below) a
+ * TEMP TABLE holding every --run-id <hostname>:<run_id> pair, so summarize()'s query can filter on
+ * exact (hostname,run_id) membership via EXISTS rather than a dynamically-sized IN (...) clause.
+ * Called from summarize() itself (not by each of its callers) so every caller -- main()'s real CLI
+ * path and every existing test alike -- gets the temp table for free, without needing to know this
+ * setup step exists at all. Returns 0 on success, -1 on a hard error (temp-table creation failed, or a
+ * --run-id spec didn't parse as <hostname>:<run_id> -- the latter is a caller/usage error, same
+ * treatment a malformed --trace/--check-regression/--phase-topdown argument already gets, not a
+ * degrade-and-continue case). */
+static int load_run_id_filter(sqlite3 *db,const struct summary_opts *opts){
+  sqlite3_stmt *stmt;
+  int i;
+
+  if (sqlite3_exec(db,"CREATE TEMP TABLE run_id_filter(hostname TEXT NOT NULL, run_id TEXT NOT NULL);",
+                    NULL,NULL,NULL) != SQLITE_OK){
+    fprintf(stderr,"wspy-summary: failed to create run_id_filter temp table: %s\n",sqlite3_errmsg(db));
+    return -1;
+  }
+  if (opts->n_run_ids == 0) return 0;
+
+  if (sqlite3_prepare_v2(db,"INSERT INTO run_id_filter(hostname,run_id) VALUES (?1,?2);",-1,&stmt,NULL)
+      != SQLITE_OK){
+    fprintf(stderr,"wspy-summary: failed to prepare run_id_filter insert: %s\n",sqlite3_errmsg(db));
+    return -1;
+  }
+  for (i = 0; i < opts->n_run_ids; i++){
+    const char *spec = opts->run_ids[i];
+    const char *colon = strchr(spec,':');
+    if (!colon || colon == spec || colon[1] == '\0'){
+      fprintf(stderr,"wspy-summary: --run-id expects <hostname>:<run_id>, got '%s'\n",spec);
+      sqlite3_finalize(stmt);
+      return -1;
+    }
+    sqlite3_bind_text(stmt,1,spec,(int)(colon - spec),SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt,2,colon + 1,-1,SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) != SQLITE_DONE){
+      fprintf(stderr,"wspy-summary: failed to insert run_id_filter row: %s\n",sqlite3_errmsg(db));
+      sqlite3_finalize(stmt);
+      return -1;
+    }
+    sqlite3_reset(stmt);
+  }
+  sqlite3_finalize(stmt);
+  return 0;
+}
+
 /* Streams (group,secondary,metric,per-run-average-value) rows out of the
  * store, already sorted by (group,secondary,metric,run start_time),
  * bucketing contiguous rows that share (group,secondary,metric) and
@@ -722,6 +775,8 @@ static int summarize(sqlite3 *db,const struct summary_opts *opts,FILE *out,struc
   struct bucket cur;
   int have_bucket = 0;
 
+  if (load_run_id_filter(db,opts) != 0) return -1;
+
   snprintf(sql,sizeof(sql),
     "SELECT %s AS group_val, rco.option_value AS secondary_val, "
     "r.run_id AS run_id, r.hostname AS run_hostname, "
@@ -736,6 +791,8 @@ static int summarize(sqlite3 *db,const struct summary_opts *opts,FILE *out,struc
     "WHERE mv.value IS NOT NULL "
     "AND (?1 = '' OR r.command LIKE '%%' || ?1 || '%%') "
     "AND (?2 = '' OR r.hostname = ?2) "
+    "AND (?4 = 0 OR EXISTS (SELECT 1 FROM run_id_filter f "
+    "WHERE f.hostname = r.hostname AND f.run_id = r.run_id)) "
     "GROUP BY r.id, mv.metric_name "
     "ORDER BY group_val, secondary_val, mv.metric_name, r.start_time, r.id;",
     group_by_column(opts->group_by));
@@ -747,6 +804,7 @@ static int summarize(sqlite3 *db,const struct summary_opts *opts,FILE *out,struc
   sqlite3_bind_text(stmt,1,opts->command_filter,-1,SQLITE_TRANSIENT);
   sqlite3_bind_text(stmt,2,opts->hostname_filter,-1,SQLITE_TRANSIENT);
   sqlite3_bind_text(stmt,3,opts->group_by_option ? opts->group_by_option : "",-1,SQLITE_TRANSIENT);
+  sqlite3_bind_int(stmt,4,opts->n_run_ids > 0 ? 1 : 0);
 
   while (sqlite3_step(stmt) == SQLITE_ROW){
     const unsigned char *group_raw = sqlite3_column_text(stmt,0);
@@ -1440,6 +1498,11 @@ static void usage(const char *prog){
     "  --command <substr>     only include runs whose command matches this substring\n"
     "  --hostname <name>      only include runs from this host\n"
     "  --metric <name>        only include this metric; may be repeated (default: all)\n"
+    "  --run-id <host>:<run_id>  only include this exact run; may be repeated -- an exact run-set\n"
+    "                         filter, distinct from --command/--hostname's substring/exact-column\n"
+    "                         matches: two runs can share identical command+hostname (a redo of a\n"
+    "                         bad run) and still need separate buckets, which no text filter over\n"
+    "                         runs.command/runs.hostname alone can express\n"
     "  --group-by <col>       command (default), hostname, cpu_vendor, affinity_mode,\n"
     "                         preset_name, config_name, cpu_governor, or virt_role\n"
     "  --group-by-option <name>  compose a second grouping axis from an arbitrary\n"
@@ -1522,6 +1585,7 @@ int main(int argc,char **argv){
     { "command",        required_argument, 0, 'c' },
     { "hostname",       required_argument, 0, 'H' },
     { "metric",         required_argument, 0, 'm' },
+    { "run-id",         required_argument, 0, 'I' },
     { "group-by",       required_argument, 0, 'g' },
     { "group-by-option",required_argument, 0, 'O' },
     { "outlier-stddev", required_argument, 0, 'z' },
@@ -1559,6 +1623,13 @@ int main(int argc,char **argv){
         return 2;
       }
       opts.metrics[opts.nmetrics++] = optarg;
+      break;
+    case 'I':
+      if (opts.n_run_ids >= (int)(sizeof(opts.run_ids)/sizeof(opts.run_ids[0]))){
+        fprintf(stderr,"wspy-summary: too many --run-id filters\n");
+        return 2;
+      }
+      opts.run_ids[opts.n_run_ids++] = optarg;
       break;
     case 'g': group_by_str = optarg; break;
     case 'O': opts.group_by_option = optarg; break;
