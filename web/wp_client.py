@@ -153,11 +153,38 @@ def create_page(site_url, username, app_password, slug, title, parent,
                                "content": content, "status": status})
 
 
+def get_page(site_url, username, app_password, page_id):
+    """GET a Page by id -- verifies it exists / fetches its current state
+    (status/link/content) without changing anything."""
+    return request(site_url, f"wp/v2/pages/{page_id}", username, app_password)
+
+
 def update_page(site_url, username, app_password, page_id, **fields):
     """POST changed fields (content/title/status/...) onto an existing
     Page by id."""
     return request(site_url, f"wp/v2/pages/{page_id}", username, app_password,
                     method="POST", json_body=fields)
+
+
+def publish_page(site_url, username, app_password, page_id):
+    """Flip an existing Page from draft to published -- the second POST in
+    the draft-first publish flow (INVESTIGATION.md 4.3 Tier 3 item 2,
+    sub-step 5): create as draft, verify the response (id/link present),
+    optionally populate content/meta, only then call this. Kept as its own
+    call (not folded into create_page's status= argument) so a pipeline
+    that dies between the two POSTs leaves a safely-inspectable draft
+    rather than a half-written live page. Requires publish_pages on the
+    authenticated account."""
+    return update_page(site_url, username, app_password, page_id, status="publish")
+
+
+def delete_page(site_url, username, app_password, page_id, force=False):
+    """DELETE a Page by id. Moves it to the trash by default (WordPress's
+    own reversible default for pages -- recoverable from wp-admin's Trash
+    view); pass force=True to bypass the trash and delete permanently."""
+    params = {"force": "true"} if force else None
+    return request(site_url, f"wp/v2/pages/{page_id}", username, app_password,
+                    method="DELETE", params=params)
 
 
 def find_or_create_page_path(site_url, username, app_password, levels, status="draft"):

@@ -508,15 +508,22 @@ stdlib `urllib` only) and to a local clone of the `doc/REPORT_HIERARCHY.md` repo
 `getpass` so the Application Password never touches shell history); `test-connection` proves both
 connections — WordPress auth + required-capability check, a lookup pass over the hierarchy's
 existing top-level pages, one throwaway draft page, and a clone-or-verify plus one local (never
-auto-pushed) commit against the report-root repo:
+auto-pushed) commit against the report-root repo; `publish-page` is the draft-first publish flow
+for a single WP page (by `--page-id`, or `--slug`/`--parent-id` to find-or-create) — create/update
+it as a draft, verify the response has an `id`/`link`, and only flip it to `status=publish` with
+an explicit `--publish` flag, so a pipeline that dies mid-run leaves an inspectable draft rather
+than a half-written live page:
 
 ```
 ./wspy-publish configure
 ./wspy-publish test-connection
+./wspy-publish publish-page --slug my-report --title "My Report" --parent-id 17 --content-file report.html
+./wspy-publish publish-page --page-id 123 --publish
 ```
 
-Rendering and syncing real report content onto this connectivity layer is future work — see
-`INVESTIGATION.md`'s Tier 3 item 2.
+Rendering real report content into these pages (reusing `render_export_wordpress()`'s block
+markup) and the create-or-update merge logic for a page a human has since hand-edited are future
+work — see `INVESTIGATION.md`'s Tier 3 item 2.
 
 ## wspy-symbolize: address-to-symbol resolution for --symbol-sample profiling
 

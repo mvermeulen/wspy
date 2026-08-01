@@ -1422,7 +1422,17 @@ reasoning as Tier 1 above.
         `status: "draft"`, verify the response (id/link, 201 vs error), optionally populate meta, only
         then flip to `status: "publish"` in a follow-up `POST`. Avoids a half-formed public page if the
         pipeline dies mid-run (network drop, wspy-store query failure, etc.) — matters more here than for
-        one-off human copy-paste export since this runs unattended.
+        one-off human copy-paste export since this runs unattended. **Done (2026-08-01):**
+        `wp_client.get_page()`/`publish_page()` (the latter just `update_page(..., status="publish")`,
+        kept as its own named call so the two POSTs stay visibly distinct) plus a new `wspy-publish
+        publish-page` subcommand — single-page primitive only (no hierarchy walk, that's
+        `find_or_create_page_path()`'s job; no smart merge against a page a human has since hand-edited,
+        that's sub-step 4's still-open question). Find-or-create-as-draft plus content update happen
+        immediately; the final `status=publish` flip requires an explicit `--publish` flag on the same or
+        a later invocation, so testing/dry-running this against the real site never publishes anything
+        by accident. Unit-tested (`web/test_wp_client.py`) with the HTTP layer mocked, matching this
+        file's existing convention; not yet exercised against the real site or wired into any actual
+        content-rendering caller (sub-step 7).
      6. **Media upload endpoint before charts/tree diagrams can go in** — the known gap flagged above.
         `POST /wp-json/wp/v2/media` (multipart) per image, capture the returned attachment ID, reference
         it as `featured_media` or inline in block markup — needed before any benchmark page can include
