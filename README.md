@@ -622,7 +622,12 @@ to run), browsing/curating/exporting reports, comparing runs side by side (with 
 annotation layer), searching run history, viewing/diffing process trees interactively, running
 `wspy-validate`/`wspy-store`/`wspy-summary`/`wspy-core-report`/`wspy --capabilities`/`--preflight`
 without leaving the browser, and (Phoronix tab) decomposing an OpenBenchmarking result/suite into
-single-test-point suites via the same logic `wspy-phoronix-import` uses.
+single-test-point suites via the same logic `wspy-phoronix-import` uses. A curated report's Export
+tab (WordPress format) also has a "Publish to WordPress" button once `wspy-publish configure` has
+been run — same draft-first pipeline as `wspy-publish publish-page --from-rundir` (images uploaded
+to WordPress's media library, content generated from `curation.json`), just reachable without a
+terminal; the Application Password itself is never entered through this web form, only read from
+the config that `configure`'s `getpass` prompt already wrote.
 
 ```
 python3 web/server.py                  # serves http://127.0.0.1:8765/ by default

@@ -45,6 +45,23 @@ import urllib.request
 
 REQUIRED_PAGE_CAPABILITIES = ("edit_pages", "edit_published_pages", "publish_pages", "upload_files")
 
+CONFIG_PATH = os.path.expanduser("~/.config/wspy/publish.json")
+
+
+def load_config():
+    """~/.config/wspy/publish.json (mode 600, written by `wspy-publish
+    configure`'s getpass prompt) -- {"wordpress": {"site_url", "username",
+    "app_password"}, "report_root": ...}, or None if it doesn't exist yet.
+    Shared here (not just in wspy-publish) so web/server.py's own "Publish
+    to WordPress" button can read the same credentials without a second,
+    web-facing way to enter an Application Password -- that stays a
+    terminal-only `getpass` prompt (wspy-publish's own save_config()),
+    deliberately not something this module writes."""
+    if not os.path.isfile(CONFIG_PATH):
+        return None
+    with open(CONFIG_PATH) as f:
+        return json.load(f)
+
 
 class WPError(Exception):
     """A WordPress REST API call failed. Carries the HTTP status (None for
@@ -198,6 +215,34 @@ def delete_page(site_url, username, app_password, page_id, force=False):
     params = {"force": "true"} if force else None
     return request(site_url, f"wp/v2/pages/{page_id}", username, app_password,
                     method="DELETE", params=params)
+
+
+def publish_page_content(site_url, username, app_password, slug, parent, title, content,
+                          do_publish=False):
+    """Find-or-create a Page by (slug, parent), set its content/title, and
+    optionally flip it to published -- the shared orchestration behind both
+    wspy-publish publish-page's --slug path and web/server.py's "Publish to
+    WordPress" button, so the CLI and the web UI can never drift into
+    different find-or-create/publish behavior for the same operation.
+
+    Unlike publish-page's --page-id path (which only touches fields
+    actually given, so a bare `--publish` can flip status without
+    disturbing existing content), this always overwrites content/title --
+    right for a caller that just rendered fresh content and wants it to
+    win, wrong for an interactive "just change one field" edit. Returns
+    (page_dict, created_bool). Raises WPError on any failure -- the caller
+    decides how to present that (CLI stderr vs. an HTML error panel)."""
+    page = find_page(site_url, username, app_password, slug, parent)
+    created = page is None
+    if created:
+        page = create_page(site_url, username, app_password, slug, title, parent,
+                            content=content, status="draft")
+    else:
+        page = update_page(site_url, username, app_password, page["id"],
+                            content=content, title=title)
+    if do_publish:
+        page = publish_page(site_url, username, app_password, page["id"])
+    return page, created
 
 
 def find_or_create_page_path(site_url, username, app_password, levels, status="draft"):

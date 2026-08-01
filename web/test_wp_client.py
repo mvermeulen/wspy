@@ -329,5 +329,67 @@ class UpdateMediaTest(unittest.TestCase):
         self.assertEqual(media["alt_text"], "a topdown chart")
 
 
+class LoadConfigTest(unittest.TestCase):
+    def test_returns_none_when_missing(self):
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(wp_client, "CONFIG_PATH", os.path.join(d, "no-such-file.json")):
+                self.assertIsNone(wp_client.load_config())
+
+    def test_returns_parsed_json_when_present(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "publish.json")
+            with open(path, "w") as f:
+                f.write('{"wordpress": {"site_url": "https://example.org/workload"}}')
+            with patch.object(wp_client, "CONFIG_PATH", path):
+                cfg = wp_client.load_config()
+        self.assertEqual(cfg["wordpress"]["site_url"], "https://example.org/workload")
+
+
+class PublishPageContentTest(unittest.TestCase):
+    def test_creates_when_no_existing_page(self):
+        with patch("wp_client.find_page", return_value=None), \
+             patch("wp_client.create_page",
+                   return_value={"id": 5, "status": "draft"}) as fake_create, \
+             patch("wp_client.publish_page") as fake_publish:
+            page, created = wp_client.publish_page_content(
+                "https://example.org/workload", "wspy", "secret", "my-report", 17,
+                "My Report", "<p>hi</p>")
+
+        fake_create.assert_called_once_with(
+            "https://example.org/workload", "wspy", "secret", "my-report", "My Report", 17,
+            content="<p>hi</p>", status="draft")
+        fake_publish.assert_not_called()
+        self.assertTrue(created)
+        self.assertEqual(page["id"], 5)
+
+    def test_updates_existing_page_content_and_title(self):
+        with patch("wp_client.find_page", return_value={"id": 9, "status": "draft"}), \
+             patch("wp_client.create_page") as fake_create, \
+             patch("wp_client.update_page",
+                   return_value={"id": 9, "status": "draft"}) as fake_update:
+            page, created = wp_client.publish_page_content(
+                "https://example.org/workload", "wspy", "secret", "my-report", 17,
+                "My Report", "<p>updated</p>")
+
+        fake_create.assert_not_called()
+        fake_update.assert_called_once_with(
+            "https://example.org/workload", "wspy", "secret", 9,
+            content="<p>updated</p>", title="My Report")
+        self.assertFalse(created)
+        self.assertEqual(page["id"], 9)
+
+    def test_do_publish_flips_status_after_create(self):
+        with patch("wp_client.find_page", return_value=None), \
+             patch("wp_client.create_page", return_value={"id": 5, "status": "draft"}), \
+             patch("wp_client.publish_page",
+                   return_value={"id": 5, "status": "publish"}) as fake_publish:
+            page, created = wp_client.publish_page_content(
+                "https://example.org/workload", "wspy", "secret", "my-report", 17,
+                "My Report", "<p>hi</p>", do_publish=True)
+
+        fake_publish.assert_called_once_with("https://example.org/workload", "wspy", "secret", 5)
+        self.assertEqual(page["status"], "publish")
+
+
 if __name__ == "__main__":
     unittest.main()

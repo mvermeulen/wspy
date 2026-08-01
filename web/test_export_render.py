@@ -10,13 +10,16 @@ by the C toolchain's test targets" convention -- run standalone:
 
     python3 web/test_export_render.py
 """
+import json
 import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import server
+import wp_client
 
 
 class ExportBlockContentImageUrlTest(unittest.TestCase):
@@ -69,6 +72,64 @@ class RenderExportWordpressImageUrlTest(unittest.TestCase):
                    "depth": "full", "title": "chart"}]
         content = server.render_export_wordpress(
             self.tmpdir, "http://127.0.0.1:8765/files/x", "Report", "", blocks)
+        self.assertIn('src="http://127.0.0.1:8765/files/x/chart.png"', content)
+
+
+def _write_curation(rundir, overview_note, blocks):
+    with open(os.path.join(rundir, "curation.json"), "w") as f:
+        json.dump({"schema_version": "1.1", "overview_note": overview_note, "blocks": blocks}, f)
+
+
+class RenderWordpressContentForRundirTest(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        with open(os.path.join(self.tmpdir, "chart.png"), "wb") as f:
+            f.write(b"\x89PNG...")
+
+    def test_no_curation_returns_not_ok(self):
+        content, upload_log, ok = server.render_wordpress_content_for_rundir(
+            self.tmpdir, "Report", "http://127.0.0.1:8765/files/x",
+            "https://example.org/workload", "wspy", "secret")
+        self.assertFalse(ok)
+        self.assertIsNone(content)
+        self.assertEqual(upload_log, [])
+
+    def test_uploads_full_depth_images_and_substitutes_urls(self):
+        _write_curation(self.tmpdir, "Overview.", [
+            {"id": "b1", "kind": "artifact", "source_file": "chart.png", "source_kind": "image",
+             "title": "Chart", "depth": "full", "commentary": "", "ai_generated": False},
+        ])
+        with patch("server.wp_client.upload_media",
+                   return_value={"id": 9, "source_url": "https://example.org/wp-content/uploads/chart.png"}
+                   ) as fake_upload:
+            content, upload_log, ok = server.render_wordpress_content_for_rundir(
+                self.tmpdir, "Report", "http://127.0.0.1:8765/files/x",
+                "https://example.org/workload", "wspy", "secret")
+
+        self.assertTrue(ok)
+        fake_upload.assert_called_once_with(
+            "https://example.org/workload", "wspy", "secret", os.path.join(self.tmpdir, "chart.png"))
+        self.assertEqual(upload_log, [("chart.png", "https://example.org/wp-content/uploads/chart.png", None)])
+        self.assertIn('src="https://example.org/wp-content/uploads/chart.png"', content)
+        self.assertNotIn("127.0.0.1", content)
+
+    def test_upload_failure_falls_back_to_base_url_and_logs_error(self):
+        _write_curation(self.tmpdir, "", [
+            {"id": "b1", "kind": "artifact", "source_file": "chart.png", "source_kind": "image",
+             "title": "Chart", "depth": "full", "commentary": "", "ai_generated": False},
+        ])
+        with patch("server.wp_client.upload_media",
+                   side_effect=wp_client.WPError("boom", status=403, code="rest_forbidden")):
+            content, upload_log, ok = server.render_wordpress_content_for_rundir(
+                self.tmpdir, "Report", "http://127.0.0.1:8765/files/x",
+                "https://example.org/workload", "wspy", "secret")
+
+        self.assertTrue(ok)
+        self.assertEqual(len(upload_log), 1)
+        filename, url, error = upload_log[0]
+        self.assertEqual(filename, "chart.png")
+        self.assertIsNone(url)
+        self.assertIn("boom", error)
         self.assertIn('src="http://127.0.0.1:8765/files/x/chart.png"', content)
 
 

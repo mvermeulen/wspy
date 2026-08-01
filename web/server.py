@@ -54,6 +54,9 @@ from urllib.parse import urlsplit, parse_qs
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import joblib  # noqa: E402 -- see joblib.py's own docstring; shared with wspy-queue
+import wp_client  # noqa: E402 -- WordPress REST client, for the "Publish to WordPress" button
+                   # (INVESTIGATION.md 4.3 Tier 3 item 2) -- see wp_client.py's own docstring for
+                   # why it lives in its own module rather than here
 
 REPO_ROOT = joblib.REPO_ROOT
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -1644,13 +1647,18 @@ def export_block_content(rundir, base_url, block, image_url=None):
     every export renderer. Returns (content_kind, payload, note):
 
     image_url, if given, is called as image_url(filename) for a
-    depth="full" image block and its return value used as the image's src
-    instead of this server's own /files/... URL -- wspy-publish's
-    --from-rundir (INVESTIGATION.md 4.3 Tier 3 item 2, sub-step 7) passes
-    a lookup into already-uploaded WordPress media attachments here, since
-    a URL back at this server is only a documented mockup for real
+    depth="full" image block and, if it returns something truthy, used as
+    the image's src instead of this server's own /files/... URL -- a
+    falsy return (dict.get()'s default for an unresolved filename) falls
+    back to the local URL rather than embedding "None" as a literal src.
+    wspy-publish's --from-rundir and the web UI's "Publish to WordPress"
+    button (INVESTIGATION.md 4.3 Tier 3 item 2, sub-steps 7/8) pass a
+    lookup into already-uploaded WordPress media attachments here, since a
+    URL back at this server is only a documented mockup for real
     publishing (see the comment above EXPORT_FORMATS), not something that
-    resolves once this server stops running.
+    resolves once this server stops running -- an upload that failed for
+    one image falls back to this local URL for just that image rather
+    than failing the whole render.
 
       content_kind: "none" | "image" | "pre"
       payload: absolute image URL (content_kind == "image"), or preformatted
@@ -1675,7 +1683,8 @@ def export_block_content(rundir, base_url, block, image_url=None):
     if kind == "image":
         if depth != "full":
             return "none", None, None
-        return "image", (image_url(filename) if image_url else url), None
+        resolved = image_url(filename) if image_url else None
+        return "image", (resolved or url), None
 
     text, size = read_text_safely(path)
     if text is None:
@@ -1795,12 +1804,171 @@ def render_export_wordpress(rundir, base_url, title, overview_note, blocks, imag
     return "\n\n".join(parts) + "\n"
 
 
+def render_wordpress_content_for_rundir(rundir, title, base_url, site_url, username, app_password):
+    """Content for wspy-publish's `publish-page --from-rundir` and this
+    file's own "Publish to WordPress" button (INVESTIGATION.md 4.3 Tier 3
+    item 2, sub-step 7 and its web UI follow-on): reads this run's
+    curation.json via the same _export_data() the export tab reads,
+    pre-uploads every depth="full" image block to the WP media library via
+    wp_client.upload_media(), and renders via render_export_wordpress()
+    with those uploaded URLs substituted for this server's own
+    /files/... URLs (its image_url parameter) -- a URL back at this
+    server is only a documented mockup for real publishing, not something
+    that resolves once this server stops running.
+
+    Returns (content, upload_log, ok). ok=False means there was no
+    curated content to publish (content/upload_log are None/[] in that
+    case) -- the caller decides how to report that. upload_log is a list
+    of (filename, url_or_None, error_or_None) tuples, one per image
+    block, so a caller can show what happened per image even though the
+    overall call still succeeds when some uploads fail (those blocks
+    silently fall back to base_url, matching export_block_content()'s own
+    per-block degrade-gracefully idiom)."""
+    overview_note, blocks = _export_data(rundir)
+    if not blocks and not overview_note:
+        return None, [], False
+
+    image_urls = {}
+    upload_log = []
+    for b in blocks:
+        if b.get("source_kind") != "image" or b.get("depth") != "full":
+            continue
+        filename = b.get("source_file")
+        if not filename:
+            continue
+        path = os.path.join(rundir, filename)
+        if not os.path.isfile(path):
+            continue  # export_block_content()'s own "not found" note covers this
+        try:
+            media = wp_client.upload_media(site_url, username, app_password, path)
+        except wp_client.WPError as e:
+            upload_log.append((filename, None, str(e)))
+            continue
+        image_urls[filename] = media["source_url"]
+        upload_log.append((filename, media["source_url"], None))
+
+    content = render_export_wordpress(rundir, base_url or "", title, overview_note, blocks,
+                                       image_url=image_urls.get)
+    return content, upload_log, True
+
+
 def render_export(rundir, base_url, title, fmt, overview_note, blocks):
     if fmt == "markdown":
         return render_export_markdown(rundir, base_url, title, overview_note, blocks)
     if fmt == "html":
         return render_export_html(rundir, base_url, title, overview_note, blocks)
     return render_export_wordpress(rundir, base_url, title, overview_note, blocks)
+
+
+def render_publish_panel(suite, benchmark, run_id, title):
+    """The "Publish to WordPress" form on the export page's wordpress tab
+    -- a UI trigger over the same primitives `wspy-publish publish-page
+    --from-rundir` already uses (render_wordpress_content_for_rundir() +
+    wp_client.publish_page_content()), so a curated report can go live
+    without a terminal. Deliberately has no field for entering WordPress
+    credentials -- those stay a local, terminal-only `wspy-publish
+    configure` (getpass) so an Application Password never touches a web
+    form; this panel only reads the config that command already wrote."""
+    action = f"/publish/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    if wp_client.load_config() is None:
+        return (
+            '<section class="panel"><h2>Publish to WordPress</h2>'
+            '<p class="muted">No WordPress credentials configured &mdash; run '
+            '<code>./wspy-publish configure</code> from a terminal first '
+            '(the Application Password never touches this web form).</p></section>'
+        )
+    return f"""
+<section class="panel">
+  <h2>Publish to WordPress</h2>
+  <p class="config-label">Uploads this report's full-depth images to the WordPress media library and
+     creates or updates a page (found by slug + parent, or created new) with this content &mdash;
+     always left as a draft unless "Publish immediately" is checked.</p>
+  <form method="post" action="{action}">
+    <label>Slug <input type="text" name="slug" value="{html.escape(benchmark)}" required></label>
+    <label>Parent page id <input type="number" name="parent_id" value="0" min="0"></label>
+    <label>Title <input type="text" name="title" value="{html.escape(title)}" required></label>
+    <label><input type="checkbox" name="publish"> Publish immediately (default: leave as a draft)</label>
+    <button type="submit" class="primary">Publish to WordPress</button>
+  </form>
+</section>
+"""
+
+
+def render_publish_result(rundir, base_url, suite, benchmark, run_id, form):
+    """Renders the result of a "Publish to WordPress" form submission
+    (do_POST's /publish/<suite>/<benchmark>/<run_id> route) -- success or
+    failure, either way with a link back to the export page. Runs the
+    same render_wordpress_content_for_rundir() + wp_client.publish_page_content()
+    pipeline wspy-publish publish-page --from-rundir uses, so the CLI and
+    this button can never drift into different behavior."""
+    export_url = f"/export/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}?format=wordpress"
+    back_link = f'<p><a href="{export_url}">Back to export</a></p>'
+
+    wp_cfg = wp_client.load_config()
+    if not wp_cfg:
+        return page("publish failed",
+                    '<section class="panel"><h1>Publish failed</h1>'
+                    '<p class="muted">No WordPress credentials configured &mdash; run '
+                    f'<code>./wspy-publish configure</code> from a terminal first.</p>{back_link}</section>')
+    wp = wp_cfg["wordpress"]
+
+    slug = (form.get("slug", [""])[0] or "").strip()
+    title = (form.get("title", [""])[0] or "").strip()
+    try:
+        parent_id = int(form.get("parent_id", ["0"])[0] or 0)
+    except ValueError:
+        parent_id = 0
+    do_publish = form.get("publish", [""])[0] == "on"
+
+    if not slug or not title:
+        return page("publish failed",
+                    '<section class="panel"><h1>Publish failed</h1>'
+                    f'<p class="muted">Slug and title are both required.</p>{back_link}</section>')
+
+    content, upload_log, ok = render_wordpress_content_for_rundir(
+        rundir, title, base_url, wp["site_url"], wp["username"], wp["app_password"])
+    if not ok:
+        studio_url = f"/studio/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+        return page("publish failed",
+                    '<section class="panel"><h1>Publish failed</h1>'
+                    '<p class="muted">No curated content in this run &mdash; '
+                    f'<a href="{studio_url}">curate it first</a>.</p>{back_link}</section>')
+
+    upload_items = "".join(
+        f'<li>{html.escape(fn)}: ' + (
+            f'uploaded &mdash; <a href="{html.escape(url)}" target="_blank">{html.escape(url)}</a>'
+            if url else f'<span class="danger">FAILED</span> ({html.escape(err or "")})'
+        ) + '</li>'
+        for fn, url, err in upload_log
+    )
+    upload_section = f'<h3>Images</h3><ul>{upload_items}</ul>' if upload_log else ""
+
+    try:
+        wp_page, created = wp_client.publish_page_content(
+            wp["site_url"], wp["username"], wp["app_password"], slug, parent_id, title, content,
+            do_publish=do_publish)
+    except wp_client.WPError as e:
+        return page("publish failed",
+                    '<section class="panel"><h1>Publish failed</h1>'
+                    f'<p class="muted">status={e.status} code={e.code}: {html.escape(str(e))}</p>'
+                    f'{upload_section}{back_link}</section>')
+
+    verb = "Created" if created else "Updated"
+    status = wp_page.get("status")
+    link = wp_page.get("link") or "#"
+    draft_note = ('<p class="muted">Left as a draft &mdash; resubmit with "Publish immediately" '
+                  'checked to make it live.</p>') if status != "publish" else ""
+    body = f"""
+<section class="panel">
+  <h1>{verb} WordPress page</h1>
+  <p>id={wp_page.get("id")} status={html.escape(status or "")}
+     &mdash; <a href="{html.escape(link)}" target="_blank">{html.escape(link)}</a></p>
+  {draft_note}
+  {upload_section}
+  {back_link}
+</section>
+"""
+    return page("publish result", body)
 
 
 def render_export_page(rundir, base_url, suite, benchmark, run_id, fmt):
@@ -1831,6 +1999,8 @@ def render_export_page(rundir, base_url, suite, benchmark, run_id, fmt):
         '<code>INVESTIGATION.md</code>\'s "What shipped in 4.1").</p>'
     ) if has_image else ""
 
+    publish_panel = render_publish_panel(suite, benchmark, run_id, title) if fmt == "wordpress" else ""
+
     body = f"""
 <section class="panel">
   <h1>Export: {html.escape(suite)} / {html.escape(benchmark)} / {html.escape(run_id)}</h1>
@@ -1842,6 +2012,7 @@ def render_export_page(rundir, base_url, suite, benchmark, run_id, fmt):
     >{html.escape(rendered)}</textarea>
   <p><a href="{download_url}">Download as .{EXPORT_FORMAT_EXTENSIONS[fmt]}</a></p>
 </section>
+{publish_panel}
 """
     return page(f"export: {benchmark}/{run_id}", body)
 
@@ -3868,6 +4039,28 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(303)
             self.send_header("Location", f"/studio/{suite}/{benchmark}/{run_id}")
             self.end_headers()
+            return
+
+        m = re.match(r"^/publish/([^/]+)/([^/]+)/([^/]+)$", parsed.path)
+        if m:
+            suite, benchmark, run_id = m.groups()
+            if not all(valid_segment(x) for x in (suite, benchmark, run_id)):
+                self._send(400, "invalid path")
+                return
+            rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+            if not os.path.isdir(rundir):
+                self._send(404, "no such report")
+                return
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length).decode("utf-8", errors="replace")
+            form = parse_qs(raw, keep_blank_values=True)
+            # This does real, network-bound WordPress calls (image uploads, page create/update) --
+            # handled synchronously here rather than via the queued-job machinery other long-running
+            # actions use (_start_run et al.), since it's a one-shot, few-second operation, not a
+            # multi-minute benchmark run.
+            host = self.headers.get("Host") or "127.0.0.1:8765"
+            base_url = f"http://{host}/files/{suite}/{benchmark}/{run_id}"
+            self._send(200, render_publish_result(rundir, base_url, suite, benchmark, run_id, form))
             return
 
         if parsed.path == "/compare/curate":
