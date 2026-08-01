@@ -1453,7 +1453,29 @@ reasoning as Tier 1 above.
         exporter already emits valid `<!-- wp:... -->` block-comment HTML for copy-paste; the REST
         pipeline's `page_data["content"]` can likely consume that same generator's output directly rather
         than building block markup a second way, so the export path and the automated-publish path share
-        one source of truth for "what a rendered report looks like as WP blocks."
+        one source of truth for "what a rendered report looks like as WP blocks." **Done (2026-08-01):**
+        `wspy-publish` now `import server as web_export`s `web/server.py` directly (guarded by its own
+        `__main__` check, so importing it never starts the HTTP server) and calls its real
+        `_export_data()`/`render_export_wordpress()` — the same functions the web UI's own export tab
+        uses — rather than reimplementing block-markup generation. The one real gap this surfaced:
+        `render_export_wordpress()` always baked in this server's own `/files/...` URL for a curated
+        image block, which only resolves while that server keeps running (the doc's own words, quoted in
+        `web/server.py`: "not something that resolves once this server stops running") — so
+        `export_block_content()`/`render_export_wordpress()` grew an optional `image_url` resolver
+        parameter (default `None`, so the web UI's own existing export tab is unaffected) that
+        `wspy-publish publish-page --from-rundir <dir>` uses to substitute each `depth="full"` image
+        block's just-uploaded (sub-step 6) WordPress media URL in place of the local one. Non-image
+        "full file" reference links (summary/excerpt text/CSV blocks) still need `--base-url` pointed at
+        a real reachable web launcher, or they render relative/dead — those files aren't uploaded
+        anywhere by this step, only images are (matches this item's own "charts/tree diagrams" framing
+        for sub-step 6, not every artifact type). New tests: `web/test_export_render.py` (the
+        `image_url` override, HTTP-free). Verified locally end to end (curated fake run directory,
+        `wp_client.upload_media` monkeypatched to avoid a real network call) — the generated content's
+        `<!-- wp:image -->` block correctly carries the uploaded URL, not `127.0.0.1`; not yet exercised
+        against the real site with a real curated run (only sub-steps 5/6's own throwaway test pages/
+        media have been). Content *merge* against a page a human has since hand-edited (sub-step 4) and
+        the actual hierarchy-level write path (item 7 in this tier's outer list, distinct numbering) are
+        still open — this item is "reuse the renderer," not "solve idempotent publish."
 3. Characterization badges + similarity panels in reports — a new block type in 4.1's curation studio
    drawing a badge from 4.2's (shipped) archetype scorecard (`wspy-archetype`), not a separate report
    surface.
