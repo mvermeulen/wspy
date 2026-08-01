@@ -113,6 +113,27 @@ class ResolveTogglesTest(unittest.TestCase):
         self.assertFalse(store_ingest)
 
 
+class ExpandPresetNamesTest(unittest.TestCase):
+    def test_plain_name_passes_through(self):
+        self.assertEqual(joblib.expand_preset_names("deep-cpu"), ["deep-cpu"])
+
+    def test_comma_list_passes_through(self):
+        self.assertEqual(joblib.expand_preset_names("deep-cpu,tree-heavy"),
+                          ["deep-cpu", "tree-heavy"])
+
+    def test_composite_preset_expands_to_constituent_profiles(self):
+        # Regression coverage: execute_profile_run()'s tree-heavy/gpu-compute
+        # post-processing detection used to check the raw, unexpanded
+        # profile string, so a composite preset's embedded tree pass
+        # (zen4plus-deep composes tree-heavy) never triggered
+        # run_proctree_besteffort() automatically.
+        self.assertEqual(joblib.expand_preset_names("zen4plus-deep"),
+                          ["deep-cpu", "ibs-sample", "tree-heavy"])
+        self.assertIn("tree-heavy", joblib.expand_preset_names("zen4plus-deep"))
+        self.assertEqual(joblib.expand_preset_names("zen-portable"),
+                          ["quick", "ibs-basic"])
+
+
 class BuildConfigurationPassesTest(unittest.TestCase):
     def test_empty_checklist_produces_no_passes(self):
         self.assertEqual(joblib.build_configuration_passes("/tmp/rundir", {}), [])

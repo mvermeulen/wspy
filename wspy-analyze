@@ -32,16 +32,18 @@ Inputs (from a run directory produced by wspy-run's unified --suite/
                                 web/joblib.py's existing COLUMN_TO_GROUP table
                                 (reused, not reimplemented)
 
-Outputs, written back into the same run directory:
-  - aiprompt.txt                     the fully rendered prompt (template +
+Outputs, written back into the same run directory (as .md -- the model's own
+response is markdown-flavored prose by default, and web/server.py's report/
+export renderers now convert it to real HTML instead of dumping it verbatim):
+  - aiprompt.md                      the fully rendered prompt (template +
                                       this run's real data), so what was
                                       actually sent to the model is never a
                                       paraphrase a report could get wrong
-  - aianalysis.<model-slug>.txt      the model's response
-  - aiprompt.critique.<model-slug>.txt   (only with --critique) the model's
+  - aianalysis.<model-slug>.md       the model's response
+  - aiprompt.critique.<model-slug>.md    (only with --critique) the model's
                                       own suggestions for improving the prompt
                                       template -- input for a human to fold
-                                      into prompts/perf_analysis.tmpl by hand,
+                                      into prompts/perf_analysis2.tmpl by hand,
                                       never auto-applied
 
 Comparative mode (--compare-rundir <dir>, design decision #8 in the deep-dive):
@@ -52,9 +54,9 @@ than analyzing either run in isolation. Outputs are written into run A's
 directory, namespaced by a slug identifying run B (its suite/benchmark/run_id
 when available, else its directory basename) so they never collide with a
 plain single-run analysis of run A:
-  - aiprompt.compare.<run-b-slug>.txt
-  - aianalysis.compare.<run-b-slug>.<model-slug>.txt
-  - aiprompt.critique.compare.<run-b-slug>.<model-slug>.txt  (only with --critique)
+  - aiprompt.compare.<run-b-slug>.md
+  - aianalysis.compare.<run-b-slug>.<model-slug>.md
+  - aiprompt.critique.compare.<run-b-slug>.<model-slug>.md  (only with --critique)
 """
 import argparse
 import glob
@@ -70,7 +72,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(SCRIPT_DIR, "web"))
 import joblib  # noqa: E402 -- reuses COLUMN_TO_GROUP/resolve_column_group
 
-DEFAULT_TEMPLATE = os.path.join(SCRIPT_DIR, "prompts", "perf_analysis.tmpl")
+DEFAULT_TEMPLATE = os.path.join(SCRIPT_DIR, "prompts", "perf_analysis2.tmpl")
 DEFAULT_COMPARE_TEMPLATE = os.path.join(SCRIPT_DIR, "prompts", "perf_compare.tmpl")
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_TIMEOUT_SECONDS = 120
@@ -447,7 +449,7 @@ def analyze_one_model(host, model, prompt, timeout, critique, outdir,
         # A reasoning model exhausted num_ctx while still drafting inside its
         # internal "thinking" channel, never reaching visible response text --
         # confirmed live against this exact failure mode (see DEFAULT_NUM_CTX's
-        # comment). Writing a 0-byte aianalysis.<model>.txt here would look
+        # comment). Writing a 0-byte aianalysis.<model>.md here would look
         # like a successful-but-empty analysis with no trace of why; skip the
         # file entirely and report it as the failure it is instead.
         print("wspy-analyze: warning: %s: context limit (num_ctx=%d) reached before any response "
@@ -455,7 +457,7 @@ def analyze_one_model(host, model, prompt, timeout, critique, outdir,
               "--num-ctx -- skipping" % (model, num_ctx), file=sys.stderr)
         return False
 
-    out_path = os.path.join(outdir, "%s.%s.txt" % (analysis_prefix, slug))
+    out_path = os.path.join(outdir, "%s.%s.md" % (analysis_prefix, slug))
     with open(out_path, "w") as f:
         f.write(response)
     truncated_note = " [truncated: hit num_ctx=%d]" % num_ctx if done_reason == "length" else ""
@@ -475,7 +477,7 @@ def analyze_one_model(host, model, prompt, timeout, critique, outdir,
             print("wspy-analyze: warning: %s: critique hit num_ctx=%d before any response text -- "
                   "skipping critique" % (model, num_ctx), file=sys.stderr)
             return True
-        critique_path = os.path.join(outdir, "%s.%s.txt" % (critique_prefix, slug))
+        critique_path = os.path.join(outdir, "%s.%s.md" % (critique_prefix, slug))
         with open(critique_path, "w") as f:
             f.write(critique_text)
         print("wspy-analyze: %s critique -> %s" % (model, critique_path), file=sys.stderr)
@@ -535,7 +537,7 @@ def main():
                           "non-default/remote host sends run data off this machine -- see "
                           "--redact-command.")
     ap.add_argument("--prompt-template", default=None,
-                     help="prompt template file (default: prompts/perf_analysis.tmpl, or "
+                     help="prompt template file (default: prompts/perf_analysis2.tmpl, or "
                           "prompts/perf_compare.tmpl when --compare-rundir is given)")
     ap.add_argument("--wspy-validate", default=os.path.join(SCRIPT_DIR, "wspy-validate"),
                      help="wspy-validate binary to run against this run's per-pass "
@@ -546,7 +548,7 @@ def main():
                           "non-default --ollama-host")
     ap.add_argument("--critique", action="store_true",
                      help="after each model's analysis, ask it to critique the prompt "
-                          "template itself; writes aiprompt.critique.<model>.txt")
+                          "template itself; writes aiprompt.critique.<model>.md")
     ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS,
                      help="per-request timeout in seconds (default: %(default)s)")
     ap.add_argument("--num-ctx", type=int, default=DEFAULT_NUM_CTX,
@@ -593,7 +595,7 @@ def main():
                                   args.timeout, ap, "run B")
         prompt = render_compare_prompt(template_text, data_a, data_b)
         slug_b = run_dir_slug(compare_rundir, data_b["run_manifest"])
-        prompt_path = os.path.join(rundir, "aiprompt.compare.%s.txt" % slug_b)
+        prompt_path = os.path.join(rundir, "aiprompt.compare.%s.md" % slug_b)
         analysis_prefix = "aianalysis.compare.%s" % slug_b
         critique_prefix = "aiprompt.critique.compare.%s" % slug_b
         groups_desc = ",".join(sorted(data_a["groups"] | data_b["groups"])) or "(none)"
@@ -604,7 +606,7 @@ def main():
     else:
         prompt = render_prompt(template_text, data_a["workload_text"], data_a["validation_text"],
                                 data_a["groups"], data_a["raw_text"])
-        prompt_path = os.path.join(rundir, "aiprompt.txt")
+        prompt_path = os.path.join(rundir, "aiprompt.md")
         analysis_prefix = "aianalysis"
         critique_prefix = "aiprompt.critique"
         groups_desc = ",".join(sorted(data_a["groups"])) or "(none)"

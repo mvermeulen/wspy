@@ -1041,6 +1041,38 @@
     });
   }
 
+  // Report page's "Generate process-tree views" button (render_proctree_
+  // card() in server.py): a plain synchronous fetch+render like
+  // runSyncEndpoint() above, but with a per-run URL baked in server-side
+  // (data-proctree-url) instead of a fixed endpoint string, same technique
+  // wireAnalyzeForm() uses for its own per-run analyze URL.
+  function wireProctreeViewsButton() {
+    var btn = byId("proctree-views-run");
+    var outputEl = byId("proctree-views-output");
+    if (!btn || !outputEl) return;
+    btn.addEventListener("click", function () {
+      btn.disabled = true;
+      outputEl.hidden = false;
+      outputEl.textContent = "generating…";
+      fetch(btn.dataset.proctreeUrl, { method: "POST" })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          btn.disabled = false;
+          if (data.error) {
+            outputEl.textContent = "Error: " + data.error;
+            return;
+          }
+          outputEl.textContent = (data.output || "(no output)")
+            + "\n\n[done -- reload the page to see the new views as \"+ add\" "
+            + "candidates in the curation studio]";
+        })
+        .catch(function (err) {
+          btn.disabled = false;
+          outputEl.textContent = "Error: " + err.message;
+        });
+    });
+  }
+
   function wireDiscoveryTab() {
     runSyncEndpoint({
       buttonId: "capabilities-run",
@@ -1551,6 +1583,7 @@
   wireStoreTab();
   wireDiscoveryTab();
   wireAnalyzeForm();
+  wireProctreeViewsButton();
   wirePhoronixTab();
   wireCpu2026Tab();
 })();
