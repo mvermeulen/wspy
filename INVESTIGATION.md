@@ -1029,6 +1029,33 @@ markdown headers). Fix, in three parts:
   v2.1 by default. Not done: a one-time rename/backfill tool for pre-existing `.txt` narrative files —
   they keep working, just without the new rendering, per the author's own call when scoping this.
 
+**wspy-analyze: AMD IBS counting-mode CSV data summarized into the prompt instead of being
+invisible** — IBS counting mode (`--ibs-basic`/`--ibs-memory-deep`) writes `ibs_fetch`/`ibs_op`/etc.
+to a CSV time series (`ibs.csv`), which `collect_raw_text()` never reads (only `summary.txt`/`*.txt`
+reach the prompt) and `collect_present_groups()` only ever scanned the header of — worse, IBS columns
+had no entry at all in `web/joblib.py`'s `COLUMN_TO_GROUP`, so even "ibs is present" silently failed to
+register. Net effect: on the most common IBS profiles (counting mode, not `--ibs-sample`'s
+human-readable output, which does reach the prompt via `summary.txt`), the AI narrative analysis never
+saw a single IBS value or even knew the group existed — found by inspecting a real published report
+(`706.stockfish_r-gcc_O3-base`, `zen-portable` = `quick`+`ibs-basic`) where the narrative said nothing
+about IBS at all. Fix: a new streaming per-column summarizer (`summarize_csv()`, Welford's algorithm,
+O(1) memory regardless of row count) renders min/max/mean/stddev/count into a new
+`{{CSV_SUMMARIES}}` prompt section, deliberately bounded by column count rather than row count so an
+arbitrarily long `--interval`/`--per-core` CSV can never blow up the prompt; a new
+`--csv-summary-max-bytes` cap (default 5MB) skips summarizing a pathologically large file rather than
+reading one in full. IBS columns now register locally in `wspy-analyze` as their own `"ibs"` group,
+kept out of `web/joblib.py`'s shared `COLUMN_TO_GROUP`/custom-plot-autofit vocabulary deliberately —
+`ibs` isn't one of `--counters=<list>`'s `ALL_GROUPS`, and adding it there would let a custom plot's
+autofit silently try to auto-check a nonexistent "counters" group.
+`PERF_ANALYSIS_TEMPLATE_VERSION`/`PERF_COMPARE_TEMPLATE_VERSION` bumped (2.2→2.3, 1.1→1.2) to add the
+section (both single-run and `--compare-rundir` modes) plus a rule telling the model these are
+aggregate statistics over a time series, not a single reading. Verified against `test_ai_analyze.sh`'s
+extended fixtures (both modes, plus the size-cap skip path) and a real live Ollama call
+(`qwen2.5-coder:3b`) that correctly reported `groups=ibs,topdown`. This was the first of several
+possible AI-narrative-analysis improvements raised in the same discussion (multimodal/vision analysis
+of `wspy-plot`'s PNG output, `phase.c`-derived trend summaries for any `--interval` CSV generally, and
+`process.tree` critical-path narration) — none of the others are scoped or started yet.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
