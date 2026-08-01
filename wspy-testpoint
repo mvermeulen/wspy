@@ -1,24 +1,30 @@
 #!/usr/bin/env python3
 """
-wspy-testpoint -- run selection / role-assignment for a test point + machine
+wspy-testpoint -- run selection / role-assignment and aggregation for a test point + machine
 (INVESTIGATION.md's "Test-point-level curated performance-summary README deep-dive",
-Tier 3 item 5, piece 1).
+Tier 3 item 5, pieces 1-2).
 
 A test point's linked runs are rarely interchangeable repeats: some are genuine repeated trials, some
 are redos superseding an earlier bad run, and some dive into more detail with a different collection
 scope (extra process-tree/IBS/symbol-sample passes) meant to supplement the primary numbers rather than
-be pooled into the same statistical bucket. This tool resolves, for one (suite, benchmark, machine)
+be pooled into the same statistical bucket. `select-runs` resolves, for one (suite, benchmark, machine)
 combination, which role each run plays -- stats-pool member, supplementary source, or excluded/
 superseded -- plus which single run (if any) is "primary" for narrative purposes, and persists that
-decision into doc/REPORT_HIERARCHY.md's report-root tree so later pieces (aggregation via
-`wspy-summary --command --hostname`, template rendering, README writing) have a resolved run set to
-work from instead of an unfiltered "every linked run" default.
+decision into doc/REPORT_HIERARCHY.md's report-root tree as runs.json.
 
 A default role/primary is computed for any run not already recorded with human_set=true; a human's own
 --set/--primary choice from a prior invocation is never silently overwritten by a later default-
 heuristic pass -- the same source-pointer-vs-commentary separation the 4.1 curation studio already
 established for per-run blocks (new_block(), web/server.py), applied here one level up: to which runs
 feed a report, not which artifacts within one run do.
+
+`aggregate` turns a resolved stats-pool run set into real statistics via `wspy-summary --run-id
+<hostname>:<run_id>` (one per present run) -- not `--command`/`--hostname`, which can't distinguish a
+redo (case 1 above) from the runs it's redoing when they share identical command text, the single most
+common reason a test point ever needs role-assignment in the first place. Requires the runs already be
+ingested into the target `wspy-store` database (never auto-ingests -- a run only has a run-index record
+if it was launched with `--run-index` in the first place, so there's no reliable way to synthesize one
+retroactively); missing runs are warned about, not silently dropped.
 
 Stdlib-only (matches wspy-analyze/wspy-bundle/wspy-queue/wspy-publish's existing "thin client, no
 dependency" convention).
@@ -27,6 +33,8 @@ import argparse
 import json
 import os
 import socket
+import sqlite3
+import subprocess
 import sys
 from collections import Counter
 
@@ -44,6 +52,7 @@ RUNS_JSON_SCHEMA_VERSION = "1.0"
 ROLES = ("stats-pool", "supplementary", "excluded")
 DEFAULT_PHORONIX_DEST_ROOT = os.path.join(joblib.REPO_ROOT, "workload", "phoronix")
 DEFAULT_OUTPUT_ROOT = os.path.join(SCRIPT_DIR, "web", "runs")  # matches web/server.py's own default
+DEFAULT_STORE_DB = os.path.join(DEFAULT_OUTPUT_ROOT, "store.db")  # matches web/server.py's own default
 
 
 def resolve_report_root(args):
@@ -71,6 +80,20 @@ def resolve_test_identity(suite, benchmark, phoronix_dest_root):
             "no materialized Phoronix test point found with identity %r under %r -- "
             "falling back to test=%r, test_point=\"default\"" % (benchmark, phoronix_dest_root, benchmark))
     return benchmark, "default", None
+
+
+def resolve_test_point_paths(args):
+    """Returns (report_root_path, test, test_point, runs_json_path) -- the resolution both
+    select-runs and aggregate need to find one test point's persisted runs.json, factored out so
+    the two subcommands can't drift into slightly different path-construction logic for the same
+    file."""
+    report_root_path = os.path.abspath(resolve_report_root(args))
+    test, test_point, warning = resolve_test_identity(args.suite, args.benchmark, args.phoronix_dest_root)
+    if warning:
+        print("wspy-testpoint: warning: %s" % warning, file=sys.stderr)
+    test_point_dir = os.path.join(report_root_path, args.suite, test, test_point, args.machine)
+    runs_json_path = os.path.join(test_point_dir, RUNS_JSON_NAME)
+    return report_root_path, test, test_point, runs_json_path
 
 
 def read_run_passes(output_root, suite, benchmark, run_id):
@@ -217,17 +240,13 @@ def print_summary(data):
 def cmd_select_runs(args):
     output_root = os.path.abspath(args.output_root)
     hostname = args.hostname or socket.gethostname()
-    report_root_path = os.path.abspath(resolve_report_root(args))
+    report_root_path, test, test_point, runs_json_path = resolve_test_point_paths(args)
 
     if not args.dry_run:
         ok, msg = report_root.ensure_report_root(report_root_path, args.report_root_remote)
         print("wspy-testpoint: %s" % msg, file=sys.stderr)
         if not ok:
             return 1
-
-    test, test_point, warning = resolve_test_identity(args.suite, args.benchmark, args.phoronix_dest_root)
-    if warning:
-        print("wspy-testpoint: warning: %s" % warning, file=sys.stderr)
 
     candidates = enumerate_candidate_runs(output_root, args.suite, args.benchmark, hostname)
     if not candidates:
@@ -236,8 +255,6 @@ def cmd_select_runs(args):
         return 1
     majority_passes = majority_pass_set(candidates)
 
-    test_point_dir = os.path.join(report_root_path, args.suite, test, test_point, args.machine)
-    runs_json_path = os.path.join(test_point_dir, RUNS_JSON_NAME)
     existing = load_existing(runs_json_path)
 
     runs_by_id, primary_run_id, primary_human_set = merge_roles(existing, candidates, majority_passes)
@@ -290,7 +307,7 @@ def cmd_select_runs(args):
         print("wspy-testpoint: --dry-run -- not writing %s or committing" % runs_json_path, file=sys.stderr)
         return 0
 
-    os.makedirs(test_point_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(runs_json_path), exist_ok=True)
     with open(runs_json_path, "w") as f:
         json.dump(data, f, indent=2)
         f.write("\n")
@@ -303,33 +320,116 @@ def cmd_select_runs(args):
     return 0 if ok else 1
 
 
+def split_by_store_presence(db_path, stats_pool):
+    """Returns (present, missing) -- which of stats_pool's runs actually have a matching
+    (hostname, run_id) row in the store's `runs` table, checked with a read-only query rather than
+    blindly trusting runs.json and letting wspy-summary silently report zero matches with no
+    indication why. Never ingests on demand -- same "requires a pre-populated --db" contract
+    wspy-summary/wspy-archetype themselves already have, and a run only has a run-index record to
+    ingest at all if it was launched with --run-index in the first place, so there's no reliable way
+    to synthesize one retroactively for a run that predates that."""
+    if not os.path.isfile(db_path):
+        return [], list(stats_pool)
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        present, missing = [], []
+        for r in stats_pool:
+            cur.execute("SELECT 1 FROM runs WHERE hostname = ? AND run_id = ? LIMIT 1",
+                        (r["hostname"], r["run_id"]))
+            (present if cur.fetchone() else missing).append(r)
+        return present, missing
+    finally:
+        conn.close()
+
+
+def cmd_aggregate(args):
+    _, test, test_point, runs_json_path = resolve_test_point_paths(args)
+
+    if not os.path.isfile(runs_json_path):
+        print("wspy-testpoint: error: %s not found -- run `wspy-testpoint select-runs --suite %s "
+              "--benchmark %s --machine %s` first" % (
+                  runs_json_path, args.suite, args.benchmark, args.machine), file=sys.stderr)
+        return 1
+    data = load_existing(runs_json_path)
+    if data is None:
+        return 1  # load_existing() already printed why (missing/unparseable/schema mismatch)
+
+    stats_pool = [r for r in data["runs"] if r["role"] == "stats-pool"]
+    if not stats_pool:
+        print("wspy-testpoint: no stats-pool runs in %s -- nothing to aggregate" % runs_json_path,
+              file=sys.stderr)
+        return 1
+
+    present, missing = split_by_store_presence(args.db, stats_pool)
+    if missing:
+        print("wspy-testpoint: warning: %d of %d stats-pool run(s) not found in %s -- run `wspy-store "
+              "--db %s --run-index <run-index.jsonl>` to ingest them first:\n  %s" % (
+                  len(missing), len(stats_pool), args.db, args.db,
+                  "\n  ".join("%s:%s" % (r["hostname"], r["run_id"]) for r in missing)), file=sys.stderr)
+    if not present:
+        print("wspy-testpoint: none of this test point's stats-pool runs are in %s -- nothing to "
+              "aggregate" % args.db, file=sys.stderr)
+        return 1
+
+    argv = [args.wspy_summary_bin, "--db", args.db]
+    for r in present:
+        argv += ["--run-id", "%s:%s" % (r["hostname"], r["run_id"])]
+    if args.csv:
+        argv.append("--csv")
+    for m in args.metric or []:
+        argv += ["--metric", m]
+    if args.strict:
+        argv.append("--strict")
+    if args.quiet:
+        argv.append("--quiet")
+
+    print("wspy-testpoint: aggregating %d stats-pool run(s) for %s/%s/%s/%s" % (
+        len(present), args.suite, test, test_point, args.machine), file=sys.stderr)
+    try:
+        proc = subprocess.run(argv)
+    except OSError as e:
+        print("wspy-testpoint: error: failed to launch %s: %s" % (args.wspy_summary_bin, e),
+              file=sys.stderr)
+        return 1
+    return proc.returncode
+
+
+def add_test_point_args(parser):
+    """--suite/--benchmark/--machine/--report-root/--phoronix-dest-root -- shared by every subcommand
+    that needs to resolve a test point's report-root path (resolve_test_point_paths()), factored out
+    so select-runs and aggregate can't drift into slightly different flag definitions for the same
+    inputs."""
+    parser.add_argument("--suite", required=True, help="suite name, e.g. phoronix, cpu2026")
+    parser.add_argument("--benchmark", required=True,
+                         help="benchmark name (wspy-run's own naming) -- for phoronix, this is a "
+                              "materialized test point's identity (bare_name-options_slug)")
+    parser.add_argument("--machine", required=True,
+                         help="human-assigned machine slug (e.g. amd-395, doc/REPORT_HIERARCHY.md) -- "
+                              "the report-root path segment, distinct from --hostname")
+    parser.add_argument("--report-root", default=None,
+                         help="report-root git clone path (default: wspy-publish's configured "
+                              "report_root, else %s)" % report_root.DEFAULT_REPORT_ROOT)
+    parser.add_argument("--phoronix-dest-root", default=DEFAULT_PHORONIX_DEST_ROOT,
+                         help="materialized Phoronix test-point directory (default: %(default)s)")
+
+
 def main():
     ap = argparse.ArgumentParser(
-        description="Run selection / role-assignment for a wspy test point + machine "
+        description="Run selection / role-assignment and aggregation for a wspy test point + machine "
                     "(INVESTIGATION.md's test-point README deep-dive, Tier 3 item 5).")
     sub = ap.add_subparsers(dest="command", required=True)
 
     sr = sub.add_parser("select-runs", help="resolve and persist run roles for one test point + machine")
-    sr.add_argument("--suite", required=True, help="suite name, e.g. phoronix, cpu2026")
-    sr.add_argument("--benchmark", required=True,
-                     help="benchmark name (wspy-run's own naming) -- for phoronix, this is a "
-                          "materialized test point's identity (bare_name-options_slug)")
-    sr.add_argument("--machine", required=True,
-                     help="human-assigned machine slug (e.g. amd-395, doc/REPORT_HIERARCHY.md) -- "
-                          "the report-root path segment, distinct from --hostname")
+    add_test_point_args(sr)
     sr.add_argument("--hostname", default=None,
                      help="actual hostname to filter the run set by (default: this machine's own "
                           "hostname) -- no mapping to --machine's slug is assumed")
     sr.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT,
                      help="wspy-run --suite/--benchmark unified layout root (default: %(default)s)")
-    sr.add_argument("--report-root", default=None,
-                     help="report-root git clone path (default: wspy-publish's configured report_root, "
-                          "else %s)" % report_root.DEFAULT_REPORT_ROOT)
     sr.add_argument("--report-root-remote", default=report_root.DEFAULT_REPORT_ROOT_REMOTE,
                      help="report-root git remote to clone from if --report-root doesn't exist yet "
                           "(default: %(default)s) -- override for testing against a local/fork remote")
-    sr.add_argument("--phoronix-dest-root", default=DEFAULT_PHORONIX_DEST_ROOT,
-                     help="materialized Phoronix test-point directory (default: %(default)s)")
     sr.add_argument("--set", action="append", metavar="RUN_ID=ROLE",
                      help="human override for one run's role (repeatable); ROLE is one of %s" %
                           ", ".join(ROLES))
@@ -339,6 +439,22 @@ def main():
                      help="compute and print, but don't touch the report-root clone or write/commit")
     sr.add_argument("--json", action="store_true", help="print the full resolved data as JSON")
     sr.set_defaults(func=cmd_select_runs)
+
+    ag = sub.add_parser("aggregate",
+                         help="aggregate a test point's stats-pool runs via wspy-summary --run-id")
+    add_test_point_args(ag)
+    ag.add_argument("--db", default=DEFAULT_STORE_DB,
+                     help="normalized wspy-store database (default: %(default)s)")
+    ag.add_argument("--wspy-summary-bin", default=os.path.join(SCRIPT_DIR, "wspy-summary"),
+                     help="wspy-summary binary (default: %(default)s)")
+    ag.add_argument("--csv", action="store_true", help="machine-readable CSV output (passed through)")
+    ag.add_argument("--metric", action="append", metavar="NAME",
+                     help="only include this metric; may be repeated (passed through)")
+    ag.add_argument("--strict", action="store_true",
+                     help="exit non-zero on any WARN verdict or thin bucket (passed through)")
+    ag.add_argument("--quiet", action="store_true",
+                     help="suppress wspy-summary's trailing summary line (passed through)")
+    ag.set_defaults(func=cmd_aggregate)
 
     args = ap.parse_args()
     return args.func(args)

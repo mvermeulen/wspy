@@ -357,6 +357,12 @@ key (e.g. a `wspy-sweep` cell's axis tag), for "this workload, broken out by X" 
 `--strict` fails if any bucket is too thin (`--min-runs`), too noisy (`--max-cv`, default 5%), or
 nothing matched.
 
+`--run-id <hostname>:<run_id>` (repeatable) narrows to an *exact* run set rather than a text/exact-
+column match — needed because two runs can share byte-identical `command`/`hostname` (a redo
+superseding an earlier bad run) and still need to land in separate buckets, which `--command`/
+`--hostname` alone can never express. `wspy-testpoint aggregate` (below) is the intended caller —
+it resolves a curated `stats-pool` run set first, then passes it through as `--run-id` flags.
+
 `env_score` is the fraction of 8 tracked machine-environment fields (`virt_role`, `hypervisor_vendor`,
 `microcode_version`, `bios_vendor`/`bios_version`/`bios_date`, `cpu_governor`, `memory_total_kb` —
 `memory_total_kb` within 5% counts as agreeing, to tolerate routine firmware/DIMM-population jitter)
@@ -538,7 +544,7 @@ The create-or-update merge logic for a page a human has since hand-edited, and w
 `doc/REPORT_HIERARCHY.md`'s actual hierarchy levels, are future work — see `INVESTIGATION.md`'s
 Tier 3 item 2.
 
-## wspy-testpoint: run selection / role-assignment for a test point
+## wspy-testpoint: run selection / role-assignment and aggregation for a test point
 
 `wspy-testpoint select-runs` resolves, for one `(suite, benchmark, machine)` combination, which role
 each linked run plays — a test point's run history is rarely interchangeable repeats: some are
@@ -561,10 +567,25 @@ clone-or-verify git plumbing `wspy-publish` uses (`web/report_root.py`):
 
 `--hostname` (default: this machine's own hostname) is the actual value runs are filtered by;
 `--machine` is only the human-assigned report-root path segment (`doc/REPORT_HIERARCHY.md`'s
-`<vendor>-<short-model>` convention) — no mapping between the two is assumed. This is the run-selection
-piece of `INVESTIGATION.md`'s test-point README deep-dive (Tier 3 item 5); aggregation (via
-`wspy-summary --command --hostname` over the resolved `stats-pool` runs) and README rendering are
-future work. See `./wspy-testpoint select-runs --help` for the full option list.
+`<vendor>-<short-model>` convention) — no mapping between the two is assumed.
+
+`wspy-testpoint aggregate` turns a resolved `stats-pool` run set into real statistics, via
+`wspy-summary --run-id <hostname>:<run_id>` (one per run, not `--command`/`--hostname` — those can't
+tell a redo apart from what it's redoing when they share identical command text, the single most
+common reason role-assignment exists in the first place). Requires the runs already ingested into the
+target `wspy-store` database — never auto-ingests, since a run only has a run-index record to ingest
+at all if it was launched with `--run-index`; a `stats-pool` run not yet in the store is warned about
+by name (with the `wspy-store` command to fix it) but doesn't block aggregating the rest:
+
+```
+./wspy-testpoint aggregate --suite phoronix --benchmark compress-7zip-default --machine amd-395
+./wspy-testpoint aggregate --suite phoronix --benchmark compress-7zip-default --machine amd-395 \
+    --db web/runs/store.db --csv --metric ipc
+```
+
+This is the run-selection and aggregation pieces of `INVESTIGATION.md`'s test-point README deep-dive
+(Tier 3 item 5, pieces 1-2); template rendering and README writing are future work. See
+`./wspy-testpoint select-runs --help`/`./wspy-testpoint aggregate --help` for the full option lists.
 
 ## wspy-symbolize: address-to-symbol resolution for --symbol-sample profiling
 

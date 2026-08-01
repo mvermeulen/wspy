@@ -569,6 +569,96 @@ static void test_summarize_hostname_filter(void){
   printf("test_summarize_hostname_filter passed\n");
 }
 
+/* The redo scenario --run-id exists to solve: three runs share identical command+hostname (a redo of a
+ * bad run looks, to any text filter over runs.command/runs.hostname, indistinguishable from what it's
+ * redoing), so only an exact (hostname,run_id) filter can separate the two --run-id names from the
+ * excluded third. */
+static void test_summarize_run_id_filter_selects_exact_runs(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf;
+  size_t size;
+  FILE *fp;
+  int n,outliers;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,env_score,ci_low,ci_high;
+  char verdict[32];
+
+  insert_run(db,1,"run1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"ipc",1.8);
+  insert_run(db,2,"run2","host1","/bin/workloadA",NULL,"2026-01-02T00:00:00Z");
+  insert_metric(db,2,"ipc",1.9);
+  insert_run(db,3,"run3","host1","/bin/workloadA",NULL,"2026-01-03T00:00:00Z");
+  insert_metric(db,3,"ipc",0.5); /* the excluded redo -- must never affect the reported mean */
+
+  opts.csvflag = 1;
+  opts.run_ids[0] = "host1:run1";
+  opts.run_ids[1] = "host1:run2";
+  opts.n_run_ids = 2;
+
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,&env_score,
+                       &ci_low,&ci_high,verdict,&outliers));
+  assert(n == 2);
+  assert(fabs(min_v - 1.8) < 1e-9 && fabs(max_v - 1.9) < 1e-9);
+  assert(fabs(mean_v - 1.85) < 1e-9); /* the redo's 0.5 must not drag this down */
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_summarize_run_id_filter_selects_exact_runs passed\n");
+}
+
+/* Zero --run-id flags (the default for every other test in this file) must behave identically to
+ * before this feature existed -- load_run_id_filter() still creates the (empty) temp table so
+ * summarize()'s query prepares successfully, and the EXISTS clause's ?4=0 branch is a pure no-op. */
+static void test_summarize_run_id_filter_empty_matches_everything(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+  struct summary_totals totals;
+  char *buf;
+  size_t size;
+  FILE *fp;
+  int n,outliers;
+  double min_v,max_v,mean_v,median_v,stddev_v,cv,env_score,ci_low,ci_high;
+  char verdict[32];
+
+  insert_run(db,1,"run1","host1","/bin/workloadA",NULL,"2026-01-01T00:00:00Z");
+  insert_metric(db,1,"ipc",1.8);
+  insert_run(db,2,"run2","host1","/bin/workloadA",NULL,"2026-01-02T00:00:00Z");
+  insert_metric(db,2,"ipc",1.9);
+
+  opts.csvflag = 1;
+
+  memset(&totals,0,sizeof(totals));
+  fp = open_memstream(&buf,&size);
+  assert(summarize(db,&opts,fp,&totals) == 0);
+  fclose(fp);
+
+  assert(find_csv_row(buf,"/bin/workloadA","ipc",&n,&min_v,&max_v,&mean_v,&median_v,&stddev_v,&cv,&env_score,
+                       &ci_low,&ci_high,verdict,&outliers));
+  assert(n == 2);
+
+  free(buf);
+  sqlite3_close(db);
+  printf("test_summarize_run_id_filter_empty_matches_everything passed\n");
+}
+
+static void test_load_run_id_filter_malformed_spec_errors(void){
+  sqlite3 *db = open_memory_db();
+  struct summary_opts opts = default_opts();
+
+  opts.run_ids[0] = "no-colon-here";
+  opts.n_run_ids = 1;
+  assert(load_run_id_filter(db,&opts) == -1);
+
+  sqlite3_close(db);
+  printf("test_load_run_id_filter_malformed_spec_errors passed\n");
+}
+
 static void test_summarize_metric_filter(void){
   sqlite3 *db = open_memory_db();
   struct summary_opts opts = default_opts();
@@ -2212,6 +2302,9 @@ int main(void){
   test_summarize_averages_per_run_and_groups_by_command();
   test_summarize_command_filter();
   test_summarize_hostname_filter();
+  test_summarize_run_id_filter_selects_exact_runs();
+  test_summarize_run_id_filter_empty_matches_everything();
+  test_load_run_id_filter_malformed_spec_errors();
   test_summarize_metric_filter();
   test_summarize_min_runs_skips_thin_buckets();
   test_summarize_verdict_pass_low_cv_enough_runs();
