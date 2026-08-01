@@ -1,7 +1,7 @@
 #!/bin/bash
 # tests/testpoint_smoke.sh - smoke tests for wspy-testpoint (INVESTIGATION.md's
-# "Test-point-level curated performance-summary README deep-dive", Tier 3 item 5, pieces 1-2: run
-# selection / role-assignment, and aggregation).
+# "Test-point-level curated performance-summary README deep-dive", Tier 3 item 5, pieces 1-4: run
+# selection / role-assignment, aggregation, and README rendering).
 #
 # Piece 1 (select-runs): exercises the default role-assignment heuristic (stats-pool/excluded/
 # supplementary from status+pass-set), human --set/--primary override persistence across a re-run (the
@@ -13,13 +13,20 @@
 # reported statistics -- plus the missing-run warn-but-proceed path and clean errors for an absent
 # runs.json/store.
 #
+# Pieces 3-4 (render): carries the same redo-exclusion correctness proof through to the rendered
+# README.md, plus the WARN-verdict callout, the supplementary-runs listing, living-document preservation
+# of a hand-edited block's title/commentary across a re-render, idempotent no-op commits (this is where
+# a real git-message-parsing bug was found and fixed -- commit_paths() now checks the index directly
+# rather than string-matching git commit's own output, which varies with unrelated repo state), and
+# --dry-run.
+#
 # All against a local bare git repo standing in for the report-root remote, so this needs no network
 # access and no real hardware counters. Run once here (no build/GPU axis), same idiom as
 # tests/wspy_queue_smoke.sh.
 #
 # Usage: ./tests/testpoint_smoke.sh (run from repo root; expects ./wspy-testpoint to be present --
-# a plain Python script, no build step -- and builds ./wspy-summary/./wspy-store for the aggregate
-# section below).
+# a plain Python script, no build step -- and builds ./wspy-summary/./wspy-store for the
+# aggregate/render sections below).
 
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -227,6 +234,83 @@ if ./wspy-testpoint aggregate --suite manual --benchmark does-not-exist --machin
     fail "expected a nonzero exit when runs.json doesn't exist"
 fi
 [ "$FAIL" -eq 0 ] && echo "missing runs.json error handling OK"
+
+echo ""
+echo "=== Testing render: README.md/curation.json content, correctness carried through from aggregate ==="
+REN_TP_DIR="$REPORTROOT/manual/renderbench/default/render-machine"
+mkdir -p "$REN_TP_DIR"
+# Reuses aggrun1/aggrun2/aggrun3-redo, already ingested into $STOREDB above -- role assignment is a
+# per-test-point decision, not a property of the run itself, so the same store rows can back a second,
+# unrelated test point's runs.json. aggrun4-supp is deliberately never ingested: a supplementary run is
+# listed by metadata only, never looked up in the store.
+cat > "$REN_TP_DIR/runs.json" <<'EOF'
+{
+  "schema_version": "1.0",
+  "suite": "manual", "test": "renderbench", "test_point": "default", "machine": "render-machine",
+  "primary_run_id": "aggrun2", "primary_human_set": false,
+  "runs": [
+    {"run_id": "aggrun1", "benchmark": "renderbench", "hostname": "agghost", "status": "ok", "command": "true", "start_time": "2026-08-01T00:00:00Z", "role": "stats-pool", "human_set": false, "reason": "test"},
+    {"run_id": "aggrun2", "benchmark": "renderbench", "hostname": "agghost", "status": "ok", "command": "true", "start_time": "2026-08-02T00:00:00Z", "role": "stats-pool", "human_set": false, "reason": "test"},
+    {"run_id": "aggrun3-redo", "benchmark": "renderbench", "hostname": "agghost", "status": "failed", "command": "true", "start_time": "2026-08-03T00:00:00Z", "role": "excluded", "human_set": false, "reason": "redo, superseded"},
+    {"run_id": "aggrun4-supp", "benchmark": "renderbench", "hostname": "agghost", "status": "ok", "command": "true", "start_time": "2026-08-04T00:00:00Z", "role": "supplementary", "human_set": false, "reason": "extra tree pass"}
+  ]
+}
+EOF
+
+REN="./wspy-testpoint render --suite manual --benchmark renderbench --machine render-machine \
+    --report-root $REPORTROOT --report-root-remote $WORKDIR/remote.git --db $STOREDB"
+
+$REN >/dev/null 2>&1
+[ -f "$REN_TP_DIR/README.md" ] || fail "render did not write README.md"
+[ -f "$REN_TP_DIR/curation.json" ] || fail "render did not write curation.json"
+grep -q "| ipc | 2 | 1.8 | 1.9 | 1.85 |" "$REN_TP_DIR/README.md" || \
+    fail "README.md missing expected n=2 mean=1.85 ipc row"
+grep -q "0.5" "$REN_TP_DIR/README.md" && fail "the redo's ipc=0.5 leaked into the rendered README"
+grep -q "WARN:thin" "$REN_TP_DIR/README.md" || fail "expected a WARN:thin callout for the n=2 bucket"
+grep -q "aggrun4-supp" "$REN_TP_DIR/README.md" || fail "expected the supplementary run listed by name"
+python3 -c "
+import json
+d = json.load(open('$REN_TP_DIR/curation.json'))
+assert d['schema_version'] == '1.1', d
+files = {b['source_file'] for b in d['blocks']}
+assert 'sections/ipc.md' in files, files
+assert 'updated' not in d and 'created' not in d, 'timestamp fields would defeat idempotent commits'
+" || fail "curation.json did not match expected shape"
+[ "$FAIL" -eq 0 ] && echo "render content/correctness OK"
+
+echo ""
+echo "=== Testing render: living document -- a hand-edited block survives re-render ==="
+python3 -c "
+import json
+p = '$REN_TP_DIR/curation.json'
+d = json.load(open(p))
+for b in d['blocks']:
+    if b['source_file'] == 'sections/ipc.md':
+        b['title'] = 'IPC (human-retitled)'
+        b['commentary'] = 'Human note: stable across both runs.'
+json.dump(d, open(p, 'w'), indent=2)
+"
+$REN >/dev/null 2>&1
+grep -q "IPC (human-retitled)" "$REN_TP_DIR/README.md" || fail "hand-edited title did not survive re-render"
+grep -q "Human note: stable across both runs." "$REN_TP_DIR/README.md" || \
+    fail "hand-edited commentary did not survive re-render"
+[ "$FAIL" -eq 0 ] && echo "render living-document preservation OK"
+
+echo ""
+echo "=== Testing render: idempotent -- no new commit when nothing changed ==="
+BEFORE="$(git -C "$REPORTROOT" rev-parse HEAD)"
+$REN >/dev/null 2>&1
+AFTER="$(git -C "$REPORTROOT" rev-parse HEAD)"
+[ "$BEFORE" = "$AFTER" ] || fail "re-rendering with no changes created a new commit ($BEFORE -> $AFTER)"
+[ "$FAIL" -eq 0 ] && echo "render idempotency OK"
+
+echo ""
+echo "=== Testing render --dry-run writes nothing ==="
+[ -f "$REN_TP_DIR/README.md" ] && BEFORE_HASH="$(md5sum "$REN_TP_DIR/README.md" | cut -d' ' -f1)"
+$REN --dry-run >/dev/null 2>&1
+AFTER_HASH="$(md5sum "$REN_TP_DIR/README.md" | cut -d' ' -f1)"
+[ "$BEFORE_HASH" = "$AFTER_HASH" ] || fail "render --dry-run modified README.md on disk"
+[ "$FAIL" -eq 0 ] && echo "render --dry-run OK"
 
 echo ""
 if [ "$FAIL" -eq 0 ]; then
