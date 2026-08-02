@@ -1102,6 +1102,21 @@ auto-created test-point stub real config content too, same parity as PR #192. Ca
 trying a new SPEC benchmark; not yet verified against the real site (no such run exists yet), covered by
 unit tests only for now.
 
+**`wspy-testpoint aggregate`/`render` resolve a run's actual per-pass store run_ids** (PR #194) —
+`select-runs`/`runs.json` name a run by its `wspy-run` directory, but `wspy-store`'s `runs` table keys
+each row by the underlying `wspy` invocation's own run-index `run_id`, generated independently per
+collection pass and never equal to the directory name; `aggregate`/`render` were passing the directory
+name straight through as `--run-id`, so every multi-pass run (the norm for anything collected via
+`wspy-run --suite/--benchmark`, cpu2026 or Phoronix alike) reported "not found in store" even after
+correct ingestion. New `resolve_store_pass_rows()` correlates a run directory to its real store rows by
+matching `output_path`/`manifest_path` under `<suite>/<benchmark>/<run_id>/`, falling back to an exact
+`(hostname, run_id)` match for a bare wspy run dropped into the layout by hand (what the existing smoke-
+test fixtures already modeled); `aggregate`/`render` now expand each stats-pool run into all of its
+resolved pass ids, and the archetype cross-run section picks one representative pass (the `"counters"`
+configuration when present). Caught by the user trying to publish a real 707.ntest_r cpu2026 test-point
+report through the pipeline PRs #183-186 built; new regression coverage in `tests/testpoint_smoke.sh`
+reproduces the exact pre-fix failure. Not yet re-verified against that same live publish attempt.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
