@@ -1059,8 +1059,14 @@ file-system report-root and the live site (`scripts/publish_cpu2026_benchmarks.p
 and published live. New `publish_page_at_path()` is the hierarchy-aware create-with-content primitive
 that was missing (walks/auto-creates parent stubs, then sets content on the leaf) — closes item 6's
 underlying gap in spirit, though the *existing* `publish_page_content()` callers (the web UI button,
-`publish-page --slug`) are still on the old flat lookup, so item 6 itself stays open below. Same recipe
-is intended to cover Phoronix's equivalent pages next.
+`publish-page --slug`) are still on the old flat lookup, so item 6 itself stays open below.
+
+**Phoronix level-3/4 hierarchy pages** (PR #189) — `scripts/publish_phoronix_pages.py`, second use of
+the cpu2026 recipe, confirming `publish_page_at_path()` generalizes: level-3 (97 materialized tests,
+content reused from `write_phoronix_test_readme()`'s existing output — closing `doc/REPORT_HIERARCHY.md`'s
+own flagged migration debt) and level-4 (test-points that actually have a linked run, 2 of 443
+materialized — the rest are never-benchmarked option-combination noise), all published live, no changes
+needed to `wp_client.py`/`report_root.py`/`wspy-publish` themselves.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
