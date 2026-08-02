@@ -39,6 +39,7 @@ import base64
 import json
 import mimetypes
 import os
+import stat
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -51,16 +52,35 @@ CONFIG_PATH = os.path.expanduser("~/.config/wspy/publish.json")
 def load_config():
     """~/.config/wspy/publish.json (mode 600, written by `wspy-publish
     configure`'s getpass prompt) -- {"wordpress": {"site_url", "username",
-    "app_password"}, "report_root": ...}, or None if it doesn't exist yet.
-    Shared here (not just in wspy-publish) so web/server.py's own "Publish
-    to WordPress" button can read the same credentials without a second,
-    web-facing way to enter an Application Password -- that stays a
-    terminal-only `getpass` prompt (wspy-publish's own save_config()),
-    deliberately not something this module writes."""
+    "app_password"}, "report_root": ..., "machine_short_name": ...
+    (optional -- this machine's doc/REPORT_HIERARCHY.md catalog name once
+    registered via scripts/publish_machine_page.py, so later tools default
+    to it instead of asking again every time)}, or None if it doesn't
+    exist yet. Shared here (not just in wspy-publish) so web/server.py's
+    own "Publish to WordPress" button can read the same credentials
+    without a second, web-facing way to enter an Application Password --
+    entering the Application Password itself stays a terminal-only
+    `getpass` prompt (wspy-publish configure), never something a web
+    form or this module writes on its own."""
     if not os.path.isfile(CONFIG_PATH):
         return None
     with open(CONFIG_PATH) as f:
         return json.load(f)
+
+
+def save_config(cfg):
+    """Writes cfg to CONFIG_PATH as mode 600 (owner read/write only) -- the Application Password
+    lives in this file, so it's created with restrictive permissions from the first write rather
+    than briefly existing world-readable between os.open() and a later chmod(). Shared here (moved
+    from wspy-publish, its original sole caller) since scripts/publish_machine_page.py now also
+    needs to persist a field (machine_short_name) without duplicating this same open/dump/chmod
+    dance a second time."""
+    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+    fd = os.open(CONFIG_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+    os.chmod(CONFIG_PATH, stat.S_IRUSR | stat.S_IWUSR)
 
 
 class WPError(Exception):
@@ -268,22 +288,34 @@ def find_or_create_page_path(site_url, username, app_password, levels, status="d
     return out
 
 
-def publish_page_at_path(site_url, username, app_password, levels, content, do_publish=False):
-    """Walk levels[:-1] top-down, creating each as an empty draft stub only if missing (never
-    overwriting an existing page, e.g. a hand-created suite stub) -- the same find-or-create logic
-    find_or_create_page_path() already uses -- then publish_page_content() the final (leaf) level
-    with real content. Neither existing primitive covers this alone: find_or_create_page_path() has
-    no content parameter, and publish_page_content() only operates at one flat (slug, parent) level
-    with no walk. Closes that gap (INVESTIGATION.md Tier 3 item 6) for callers that build a page at
-    an exact hierarchy path, e.g. levels=[("cpu2026", "cpu2026"), ("706.stockfish_r",
-    "706.stockfish_r")]. Returns (page_dict, created_bool) for the leaf page only, same shape as
-    publish_page_content()."""
+def publish_page_at_path(site_url, username, app_password, levels, content, do_publish=False,
+                          stub_content=None):
+    """Walk levels[:-1] top-down, creating each as a draft stub only if missing (never overwriting
+    an existing page, e.g. a hand-created suite stub or a future wspy-testpoint aggregate) -- the
+    same find-or-create logic find_or_create_page_path() already uses -- then publish_page_content()
+    the final (leaf) level with real content. Neither existing primitive covers this alone:
+    find_or_create_page_path() has no content parameter, and publish_page_content() only operates at
+    one flat (slug, parent) level with no walk. Closes that gap (INVESTIGATION.md Tier 3 item 6) for
+    callers that build a page at an exact hierarchy path, e.g. levels=[("cpu2026", "cpu2026"),
+    ("706.stockfish_r", "706.stockfish_r")].
+
+    stub_content, if given, is a {level_index: content} dict (0-based, matching `levels`) applied
+    only when that parent level is newly *created* during the walk -- an already-existing page at
+    that level is never touched, same as every other level. Default None means every stub is
+    created empty, unchanged from this function's original behavior. Lets a caller give a
+    freshly-created intermediate page (e.g. a machine-level stub) real content -- such as a link to
+    its catalog entry -- without risking clobbering real content a later, separate publish already
+    put there.
+
+    Returns (page_dict, created_bool) for the leaf page only, same shape as publish_page_content()."""
     *parent_levels, (leaf_slug, leaf_title) = levels
     parent_id = 0
-    for slug, title in parent_levels:
+    stub_content = stub_content or {}
+    for i, (slug, title) in enumerate(parent_levels):
         page = find_page(site_url, username, app_password, slug, parent_id)
         if page is None:
-            page = create_page(site_url, username, app_password, slug, title, parent_id)
+            page = create_page(site_url, username, app_password, slug, title, parent_id,
+                                content=stub_content.get(i, ""))
         parent_id = page["id"]
     return publish_page_content(site_url, username, app_password, leaf_slug, parent_id, leaf_title,
                                  content, do_publish=do_publish)
