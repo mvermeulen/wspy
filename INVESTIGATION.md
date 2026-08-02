@@ -1041,6 +1041,11 @@ a differently-scoped run never pollutes statistics; `aggregate`/`render` compute
 (now-former) Tier 3 item 5. See `doc/INVESTIGATION_ARCHIVE.md` for the full design and PR-by-PR
 write-up.
 
+**Web UI "Publish test-point report" button** (PR #187) — wires the `wspy-testpoint` pipeline above
+into the report page: a card runs `select-runs`/`render` in a background thread with live SSE output,
+same shape as the existing AI-narrative-analysis card. Closes (now-former) Tier 3 item 6's
+write-path/trigger scope (the WordPress page-hierarchy bug is a separate, still-open item).
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -1604,9 +1609,10 @@ reasoning as Tier 1 above.
         `image_url` override, HTTP-free). **Verified against the real site (2026-08-01):** a real run
         directory's plot PNGs, curated and published via `publish-page --from-rundir` — the resulting
         page's content correctly carries the uploaded `mvermeulen.org` media URLs, not `127.0.0.1`.
-        Content *merge* against a page a human has since hand-edited (sub-step 4) and the actual
-        hierarchy-level write path (item 6 in this tier's outer list, distinct numbering) are still
-        open — this item is "reuse the renderer," not "solve idempotent publish."
+        Content *merge* against a page a human has since hand-edited (sub-step 4) is still open — this
+        item is "reuse the renderer," not "solve idempotent publish." The report-root hierarchy-level
+        write path this tier's own outer list once flagged as depending on this work has since shipped
+        separately (see "Shipped since 4.2").
      8. **"Publish to WordPress" button in the web UI, over the same sub-step 5/6/7 primitives** — not
         from the original 2026-07-27 external-research list above, added once those primitives existed
         and made a CLI-only publish path feel like an artificial gap for a report already open in the
@@ -1670,14 +1676,13 @@ reasoning as Tier 1 above.
      references how a workload compares to others in its cluster — but building the matrix itself never
      depended on clustering existing first; the two were always sequenced, not coupled.
 
-6. Web UI creates/updates reports at the appropriate levels of `doc/REPORT_HIERARCHY.md`'s hierarchy
-   (established this cycle, ahead of any of this tier landing) — wire the web UI's existing
-   publish-ready export (`web/server.py`'s markdown/HTML/WordPress render, "What shipped in 4.1"), or
-   the now-shipped `wspy-testpoint` pipeline (see "Shipped since 4.2"), to *write into*
-   `<report-root>/<suite>/<test>/<test-point>/<machine>/` instead of only ever producing a manual
-   download. Depends on item 5 above for the reference-matrix side of the aggregation logic (this item
-   is about the write path/trigger, not a third way to compute the numbers) — scope further as it comes
-   up, per the author's own framing when this hierarchy was established.
+6. WordPress published pages don't nest under the correct parent — `web/wp_client.py`'s
+   `find_or_create_page_path()` already exists and already does the right slug/parent walk, but isn't
+   wired into `publish_page_content()`'s flat `(slug, parent)` call, and the web export form's
+   `parent_id` field defaults to `0` (WP root). Net effect: every page publishes at the site root
+   instead of nesting under its suite/test/test-point parent, breaking menus and navigation. Confirmed
+   real during planning for the web UI publish-trigger work above (PR #187, see "Shipped since 4.2");
+   queued as the next piece by the author once that item landed.
 
 **Tier 4 — report-layer additions on data already collected in 4.0:**
 
