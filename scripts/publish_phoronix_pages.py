@@ -38,7 +38,6 @@ Usage:
   publish_phoronix_pages.py --publish               # also flip each leaf page to published
 """
 import argparse
-import html
 import os
 import sys
 
@@ -113,21 +112,6 @@ def ensure_test_point_readme(report_root_path, entry, dry_run):
         with open(path, "w") as f:
             f.write(content)
     return rel_path, content, True
-
-
-def test_point_wp_content(entry):
-    """Hand-built WP block markup, matching cpu2026's wp_content() pattern -- arguments text is
-    unpredictable (raw paths/flags/model filenames) and doesn't need markdown_lite's heading/list/bold
-    support, so there's no benefit to routing it through that module."""
-    title = html.escape(entry["options_slug"])
-    test_id = html.escape(entry["test_id"])
-    arguments = html.escape(entry["arguments"] or "(none)")
-    return (
-        '<!-- wp:heading {"level":1} -->\n<h1>%s</h1>\n<!-- /wp:heading -->\n\n'
-        '<!-- wp:paragraph -->\n<p>Test point identity: <code>%s</code></p>\n<!-- /wp:paragraph -->\n\n'
-        '<!-- wp:paragraph -->\n<p>Arguments: <code>%s</code></p>\n<!-- /wp:paragraph -->'
-        % (title, test_id, arguments)
-    )
 
 
 def main():
@@ -245,7 +229,7 @@ def main():
     for entry, _, _, _ in point_rows:
         levels = [(SUITE_SLUG, SUITE_TITLE), (entry["bare_name"], entry["bare_name"]),
                   (entry["options_slug"], entry["options_slug"])]
-        blocks = test_point_wp_content(entry)
+        blocks = joblib.test_point_wp_content(entry)
         if args.dry_run:
             print("  WP %s: would publish_page_at_path(levels=%r, content=%d bytes, publish=%s)"
                   % (entry["identity"], levels, len(blocks), args.publish))
