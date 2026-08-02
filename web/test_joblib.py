@@ -1492,6 +1492,52 @@ class ListMaterializedPhoronixTestPointsTest(unittest.TestCase):
             self.assertEqual(points[0]["runs"], [])
 
 
+class FindMaterializedPhoronixTestPointTest(unittest.TestCase):
+    def test_finds_entry_by_identity(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            point = {"test_id": "pts/openssl-1.0.0", "arguments": "-evp sha256"}
+            info = joblib.materialize_phoronix_test_point(point, dest, "file", "/tmp/src.xml")
+
+            entry = joblib.find_materialized_phoronix_test_point(dest, info["identity"])
+            self.assertIsNotNone(entry)
+            self.assertEqual(entry["identity"], info["identity"])
+            self.assertEqual(entry["test_id"], "pts/openssl-1.0.0")
+
+    def test_returns_none_when_not_found(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            self.assertIsNone(joblib.find_materialized_phoronix_test_point(dest, "openssl-sha256"))
+
+
+class ResolveTestIdentityTest(unittest.TestCase):
+    def test_matches_materialized_phoronix_test_point(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            point = {"test_id": "pts/openssl-1.0.0", "arguments": "-evp sha256"}
+            info = joblib.materialize_phoronix_test_point(point, dest, "file", "/tmp/src.xml")
+
+            test, test_point, warning = joblib.resolve_test_identity("phoronix", info["identity"], dest)
+            self.assertEqual(test, info["bare_name"])
+            self.assertEqual(test_point, info["options_slug"])
+            self.assertIsNone(warning)
+
+    def test_unmatched_phoronix_identity_falls_back_with_warning(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            test, test_point, warning = joblib.resolve_test_identity("phoronix", "openssl-sha256", dest)
+            self.assertEqual(test, "openssl-sha256")
+            self.assertEqual(test_point, "default")
+            self.assertIsNotNone(warning)
+
+    def test_non_phoronix_suite_always_falls_back_with_no_warning(self):
+        test, test_point, warning = joblib.resolve_test_identity(
+            "cpu2026", "706.stockfish_r-gcc_O3-base", "/does/not/matter")
+        self.assertEqual(test, "706.stockfish_r-gcc_O3-base")
+        self.assertEqual(test_point, "default")
+        self.assertIsNone(warning)
+
+
 class ReadPhoronixTestDescriptionTest(unittest.TestCase):
     def test_reads_description_from_readme(self):
         with tempfile.TemporaryDirectory() as tmpdir:

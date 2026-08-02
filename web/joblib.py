@@ -48,6 +48,7 @@ Four groups of things live here:
 """
 import copy
 import hashlib
+import html
 import io
 import json
 import os
@@ -2557,18 +2558,49 @@ def list_materialized_phoronix_test_points(dest_root):
     return entries
 
 
+def find_materialized_phoronix_test_point(dest_root, identity):
+    """The full entry from list_materialized_phoronix_test_points() whose "identity" matches, or
+    None if no such materialized test point exists. Separate from resolve_test_identity() (which
+    only returns the split test/test_point names) since some callers need the full metadata --
+    test_id/arguments -- not just where the page nests, e.g. giving an auto-created test-point WP
+    page real content instead of leaving it empty (web/server.py's "Publish to WordPress" flow)."""
+    for entry in list_materialized_phoronix_test_points(dest_root):
+        if entry["identity"] == identity:
+            return entry
+    return None
+
+
+def test_point_wp_content(entry):
+    """Hand-built WP block markup for one materialized Phoronix test point's page, matching
+    cpu2026's own wp_content() pattern (scripts/publish_cpu2026_benchmarks.py) -- arguments text is
+    unpredictable (raw paths/flags/model filenames) and doesn't need markdown_lite's heading/list/bold
+    support, so there's no benefit to routing it through that module. Shared by
+    scripts/publish_phoronix_pages.py's batch pass and web/server.py's "Publish to WordPress" flow
+    (which uses it to give an auto-created test-point stub real content at publish time, instead of
+    an empty page only a later separate script run would fill in)."""
+    title = html.escape(entry["options_slug"])
+    test_id = html.escape(entry["test_id"])
+    arguments = html.escape(entry["arguments"] or "(none)")
+    return (
+        '<!-- wp:heading {"level":1} -->\n<h1>%s</h1>\n<!-- /wp:heading -->\n\n'
+        '<!-- wp:paragraph -->\n<p>Test point identity: <code>%s</code></p>\n<!-- /wp:paragraph -->\n\n'
+        '<!-- wp:paragraph -->\n<p>Arguments: <code>%s</code></p>\n<!-- /wp:paragraph -->'
+        % (title, test_id, arguments)
+    )
+
+
 def resolve_test_identity(suite, benchmark, phoronix_dest_root):
     """Returns (test, test_point, warning_or_None). For suite "phoronix", `benchmark` (wspy-run's own
     naming) already equals a materialized test point's "identity" (bare_name-options_slug,
     materialize_phoronix_test_point() above) -- split it back into (bare_name, options_slug) via
-    list_materialized_phoronix_test_points(), rather than re-deriving it some other way. Any other
+    find_materialized_phoronix_test_point(), rather than re-deriving it some other way. Any other
     suite, or a phoronix benchmark that doesn't match any materialized point (moved/never materialized),
     falls back to test=benchmark, test_point="default" per doc/REPORT_HIERARCHY.md's own convention for
     suites with no option axis -- degrade, don't fail, same idiom used throughout this codebase."""
     if suite == "phoronix":
-        for entry in list_materialized_phoronix_test_points(phoronix_dest_root):
-            if entry["identity"] == benchmark:
-                return entry["bare_name"], entry["options_slug"], None
+        entry = find_materialized_phoronix_test_point(phoronix_dest_root, benchmark)
+        if entry:
+            return entry["bare_name"], entry["options_slug"], None
         return benchmark, "default", (
             "no materialized Phoronix test point found with identity %r under %r -- "
             "falling back to test=%r, test_point=\"default\"" % (benchmark, phoronix_dest_root, benchmark))
