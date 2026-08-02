@@ -3390,11 +3390,16 @@ def render_testpoint_card(suite, benchmark, run_id):
     render) for the *whole test point* this run belongs to -- every stats-pool run sharing
     suite/benchmark on the given machine, not just this one run. Mirrors render_analyze_card()'s
     SSE-streamed shape exactly (wireTestpointPublishButton() in app.js is the client-side
-    counterpart). "Machine" has no persisted default anywhere in this UI yet, matching
-    wspy-testpoint's own CLI (--machine, required every invocation, no config-file fallback) --
-    doc/REPORT_HIERARCHY.md's own words are that its naming is "deliberately informal/human-assigned
-    for now", so this doesn't invent a mapping the CLI itself doesn't have either."""
+    counterpart). The "Machine" field pre-fills from wp_client's own machine_short_name config (same
+    `wp_client.load_config()` read render_publish_panel() already uses for its own Machine field) --
+    still an editable, required text input, not a silent auto-submit, so this doesn't invent a
+    hardware-to-slug mapping wspy-testpoint's own CLI doesn't have either (doc/REPORT_HIERARCHY.md's
+    own words: that naming stays "deliberately informal/human-assigned for now"). It only removes the
+    friction of retyping a slug this exact web layer already has on hand from a prior `wspy-publish
+    configure`."""
     url = f"/api/testpoint-publish/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    wp_cfg = wp_client.load_config()
+    machine_default = (wp_cfg or {}).get("machine_short_name") or ""
     return f"""
 <h2>Publish test-point report</h2>
 <p class="muted">Resolves run roles (redo/repeat/supplementary) and renders a curated
@@ -3407,7 +3412,7 @@ def render_testpoint_card(suite, benchmark, run_id):
 <form id="testpoint-publish-form">
   <label>Machine slug <span class="muted">(e.g. amd-395 -- doc/REPORT_HIERARCHY.md's
     &lt;vendor&gt;-&lt;short-model&gt; convention)</span>
-    <input type="text" id="testpoint-publish-machine" required>
+    <input type="text" id="testpoint-publish-machine" value="{html.escape(machine_default)}" required>
   </label>
   <button type="button" id="testpoint-publish-run"
     data-testpoint-url="{html.escape(url)}">Publish test-point report</button>
