@@ -72,6 +72,19 @@ web/wp_client.py respectively, not here -- this script is a thin CLI
 wrapper over them, shared with web/server.py's own "Publish to WordPress"
 button on the Export tab (sub-step 8), so the CLI and the web UI can
 never drift into different publish behavior for the same operation.
+
+publish-path        create/update a page nested at a full
+                     doc/REPORT_HIERARCHY.md path (INVESTIGATION.md Tier 3
+                     item 6): publish-page's own --slug path only ever
+                     operates at one flat (slug, parent) level (a human
+                     resolves the parent id themselves), and
+                     find_or_create_page_path() walks a hierarchy but has
+                     no content parameter -- neither alone can create a
+                     content-bearing page nested under a parent that may
+                     itself need auto-creating. wp_client.publish_page_at_path()
+                     closes that gap; this subcommand is its thin CLI
+                     wrapper, matching publish-page's own draft-first
+                     default.
 """
 import argparse
 import getpass
@@ -359,6 +372,51 @@ def cmd_publish_page(args):
     return 0
 
 
+def cmd_publish_path(args):
+    cfg = load_config()
+    if not cfg:
+        print("wspy-publish: no config at %s -- run `wspy-publish configure` first" % CONFIG_PATH,
+              file=sys.stderr)
+        return 1
+    wp = cfg["wordpress"]
+    site_url, username, app_password = wp["site_url"], wp["username"], wp["app_password"]
+
+    if not args.level:
+        print("wspy-publish: at least one --level SLUG TITLE is required", file=sys.stderr)
+        return 1
+    if args.content and args.content_file:
+        print("wspy-publish: use only one of --content, --content-file", file=sys.stderr)
+        return 1
+
+    content = args.content
+    if args.content_file:
+        with open(args.content_file) as f:
+            content = f.read()
+    levels = [(slug, title) for slug, title in args.level]
+
+    try:
+        page, created = wp_client.publish_page_at_path(
+            site_url, username, app_password, levels, content or "", do_publish=args.publish)
+    except wp_client.WPError as e:
+        print("wspy-publish: page create/update FAILED (status=%s code=%s): %s" % (e.status, e.code, e),
+              file=sys.stderr)
+        return 1
+
+    if not page.get("id") or not page.get("link"):
+        print("wspy-publish: response missing id/link -- treating as a verification failure: %r" % page,
+              file=sys.stderr)
+        return 1
+
+    leaf_slug = levels[-1][0]
+    print("  %s leaf page %r (id=%s, status=%s) link=%s"
+          % ("created" if created else "found/updated", leaf_slug, page["id"], page.get("status"),
+             page["link"]))
+    if not args.publish:
+        print("  left as %s -- rerun with the same --level path plus --publish to make it live"
+              % page.get("status"))
+    return 0
+
+
 def cmd_upload_media(args):
     cfg = load_config()
     if not cfg:
@@ -446,6 +504,20 @@ def main():
                       help="flip the page to status=publish after creating/updating it "
                            "(default: leave it as a draft)")
 
+    pub_path = sub.add_parser("publish-path",
+                               help="create/update a page nested at a full hierarchy path, creating "
+                                    "any missing parent pages as empty stubs along the way")
+    pub_path.add_argument("--level", action="append", nargs=2, metavar=("SLUG", "TITLE"),
+                           help="one hierarchy level as SLUG TITLE, given top-down, repeatable "
+                                "(e.g. --level cpu2026 cpu2026 --level 706.stockfish_r 706.stockfish_r); "
+                                "the last one given is the leaf page that receives content")
+    pub_path.add_argument("--content", help="leaf page content (HTML / Gutenberg block markup)")
+    pub_path.add_argument("--content-file",
+                           help="read leaf page content from this file instead of --content")
+    pub_path.add_argument("--publish", action="store_true",
+                           help="flip the leaf page to status=publish after creating/updating it "
+                                "(default: leave it as a draft)")
+
     media = sub.add_parser("upload-media",
                             help="upload a file to the WordPress media library")
     media.add_argument("--file", required=True, help="path to the image/file to upload")
@@ -463,6 +535,8 @@ def main():
         return cmd_test_connection(args)
     if args.command == "publish-page":
         return cmd_publish_page(args)
+    if args.command == "publish-path":
+        return cmd_publish_path(args)
     if args.command == "upload-media":
         return cmd_upload_media(args)
     ap.error("unknown command")

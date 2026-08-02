@@ -40,3 +40,29 @@ def ensure_report_root(report_root, remote):
     if rc != 0:
         return False, "git clone %s %s failed: %s" % (remote, report_root, err)
     return True, "cloned %s -> %s" % (remote, report_root)
+
+
+def commit_paths(report_root_path, rel_paths, message):
+    """git add's each of rel_paths then commits, scoped to exactly those paths (a bare `git commit`
+    with nothing restricting it would sweep up any *other* staged changes a human happens to have
+    pending in the same report-root clone -- not just wrong scope, a real risk of committing someone
+    else's in-progress work). "Nothing changed" (rel_paths already match what's committed) is a soft
+    success, not an error -- the common re-run-with-no-real-changes case every subcommand's commit step
+    needs to handle the same way. Detected by checking the index directly (`git diff --cached
+    --name-only`, restricted to rel_paths) rather than string-matching git commit's own output: its
+    "nothing to commit" message text varies depending on *unrelated* repo state (e.g. some other
+    untracked file elsewhere produces "nothing added to commit but untracked files present" instead of
+    "nothing to commit, working tree clean" -- confirmed live, a real bug this fixes, not a
+    hypothetical), so parsing that text is fragile in a way checking the index isn't."""
+    for rel_path in rel_paths:
+        rc, _, err = run_git(["add", rel_path], cwd=report_root_path)
+        if rc != 0:
+            return False, "git add %s failed in %s: %s" % (rel_path, report_root_path, err)
+    rc, out, err = run_git(["diff", "--cached", "--name-only", "--"] + rel_paths, cwd=report_root_path)
+    if rc == 0 and not out.strip():
+        return True, "no change to commit (already matches)"
+    rc, out, err = run_git(["commit", "-m", message, "--"] + rel_paths, cwd=report_root_path)
+    if rc != 0:
+        return False, "git commit failed in %s: %s" % (report_root_path, err)
+    rc, sha, _ = run_git(["rev-parse", "--short", "HEAD"], cwd=report_root_path)
+    return True, "committed %d file(s) as %s (local only -- not pushed)" % (len(rel_paths), sha)
