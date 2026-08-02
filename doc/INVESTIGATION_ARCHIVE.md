@@ -838,6 +838,102 @@ same "one shared implementation, two front ends" pattern the job queue establish
 `bundle_manifest.json` index at the tar root classifies every file as `manifest`/`raw`/`derived` and
 records its sha256. This closed out 4.2 entirely.
 
+### wspy-analyze: AMD IBS counting-mode CSV data reaches the AI narrative prompt (4.3, shipped)
+IBS counting mode (`--ibs-basic`/`--ibs-memory-deep`) writes `ibs_fetch`/`ibs_op`/etc. to a CSV time
+series (`ibs.csv`), which `collect_raw_text()` never read (only `summary.txt`/`*.txt` reached the
+prompt) and which had no entry at all in `web/joblib.py`'s `COLUMN_TO_GROUP` — so on the most common IBS
+profiles, the AI narrative never saw an IBS value or even knew the group existed. Found by inspecting a
+real published report (`706.stockfish_r-gcc_O3-base`) whose narrative said nothing about IBS at all.
+
+Fix: a new streaming per-column summarizer (`summarize_csv()`, Welford's algorithm, O(1) memory
+regardless of row count) renders min/max/mean/stddev/count into a new `{{CSV_SUMMARIES}}` prompt
+section, deliberately bounded by column count rather than row count so an arbitrarily long
+`--interval`/`--per-core` CSV can never blow up the prompt; a `--csv-summary-max-bytes` cap (default
+5MB) skips summarizing a pathologically large file rather than reading one in full.
+`PERF_ANALYSIS_TEMPLATE_VERSION`/`PERF_COMPARE_TEMPLATE_VERSION` bumped (2.2→2.3, 1.1→1.2). Verified
+against `test_ai_analyze.sh`'s extended fixtures (both single-run and `--compare-rundir` modes, plus the
+size-cap skip path) and a real live Ollama call (`qwen2.5-coder:3b`) that correctly reported
+`groups=ibs,topdown`. First of several possible AI-narrative-analysis improvements raised in the
+originating discussion (multimodal/vision analysis of `wspy-plot`'s PNG output, `phase.c`-derived trend
+summaries, `process.tree` critical-path narration) — none of the others scoped or started.
+
+### wspy-testpoint: run selection, aggregation, and curated README rendering for a test point (4.3, shipped)
+Full design scoped 2026-08-01 for the test-point-level curated performance-summary README (`doc/
+REPORT_HIERARCHY.md`'s `<test-point>/<machine>/README.md` level), then built as four pieces across PRs
+#183-186. The author's own observation drove the design: a test point's linked runs are frequently *not*
+interchangeable repeats — motivating a role-assignment step between run enumeration and aggregation, not
+an implicit "use every linked run" default.
+
+**Design.** Run enumeration needed no new tracking: suites with no option axis already land every run at
+`wspy-run`'s unified `<outdir>/<suite>/<benchmark>/<run-id>/` layout, and Phoronix option-combination
+test points use the existing `runs/<run-id>/` symlinks. The real gap was **why** a test point accumulates
+multiple runs — at least three distinct reasons needing different treatment: (1) a redo after a problem
+(bad run should be excluded, not averaged in), (2) diving into more detail with a different collection
+scope (a supplementary source of specific artifacts, not another statistical sample), (3) genuinely
+repeated runs for statistical power (the one case naive aggregation handles correctly). This produced
+four roles — **stats-pool**, **supplementary**, **excluded/superseded**, **primary** — with a sensible,
+always-overridable default (command-text match + no `wspy-validate` FAIL → stats-pool; FAIL → excluded;
+differing pass/profile set → supplementary), mirroring 4.1's curation studio's own "generate a default,
+human edits it, never silently regenerate over an edit" idiom applied one level up, to *which runs* feed
+a report rather than *which artifacts within one run*. Template/storage reused the curation studio's
+existing block-list-plus-commentary JSON directly (not a second format), and the studio's
+source-pointer-vs-commentary separation (`source_file` regenerates, `commentary` never does) was applied
+to a second thing: role-assignment decisions themselves, so a later re-curate (a new run landing, a
+stats-pool run turning out bad) never silently overwrites a human's explicit call.
+
+**`wspy-testpoint select-runs` (PR #183).** Implements role assignment: enumerates a `(suite, benchmark,
+machine)` combination's runs (reusing `web/server.py`'s `load_run_history_entry()`,
+`web/joblib.py`'s Phoronix test-point identity), defaults roles from status + pass-set majority, and
+persists `runs.json` under the report-root, committed locally via a new shared `web/report_root.py`
+(the report-root git plumbing extracted out of `wspy-publish`). CLI-only, no web UI yet — matching
+`wspy-analyze`'s own "CLI-first, web wrapper is a natural follow-up" precedent. Two bugs fixed before the
+formal test suite existed: a `--primary` override silently reverting on the next plain re-run (needed
+its own `primary_human_set` flag, independent of any single run's own `human_set`), and a `generated_at`
+timestamp that defeated the idempotent-commit no-op path (removed — git history already tracks when a
+file last meaningfully changed). `tests/testpoint_smoke.sh` (a local bare git repo standing in for the
+report-root remote, no network/hardware dependency) covers both.
+
+**`wspy-testpoint aggregate` (PR #184).** Turns a resolved `stats-pool` run set into real statistics. The
+original plan to reuse `wspy-summary --command --hostname` turned out to be a real correctness bug: text
+matching can't distinguish a redo sharing byte-identical command text from the runs it's redoing —
+exactly the case role-assignment exists to separate. Fixed with a `summary.c` `--run-id
+<hostname>:<run_id>` filter (repeatable, `TEMP TABLE`/`EXISTS`-based, applied inside `summarize()` itself
+so every caller gets it for free). Verified live against a real `wspy-store` database: without the
+filter, a redo's outlier dragged a bucket's mean from 1.85 to 1.4 with a spurious `WARN:noisy`; with
+`--run-id` naming just the real two runs, `mean=1.85` as expected. `aggregate` also read-only-prechecks
+which `stats-pool` runs are actually present in the target store, warning by name on any missing rather
+than silently dropping or auto-ingesting them.
+
+**`wspy-testpoint render` (PR #185).** Turns aggregated statistics into a curated `README.md`. "Template
+rendering" and "README writing" collapsed into one piece once researched: `web/server.py`'s curation-
+studio block model (`new_block()`, `load_curation()`/`save_curation()`, `export_block_content()`,
+`render_export_markdown()`) already had exactly the separation needed, reused **unmodified** — each
+counter-group section is written to a generated file under `sections/`, referenced by an ordinary
+`"artifact"` block, so a block whose section file already existed keeps its human-edited
+title/depth/commentary/position across a re-render. A `"freeform"` block (commentary-only, no backing
+file) was considered and rejected — it would conflate "the data" with "the human's notes." Two bugs
+fixed before the formal tests existed: `render` never called `ensure_report_root()` (unlike
+`select-runs`), so a fresh report-root clone failed with a raw git error; and the idempotent-commit check
+string-matched `git commit`'s own "nothing to commit" message, whose exact wording depends on unrelated
+repo state (an untracked file elsewhere in the clone produces different phrasing) —
+`commit_paths()` (now shared by every subcommand) checks the git index directly instead, and scopes each
+commit to exactly its own paths rather than a bare `git commit` that could sweep up unrelated staged
+changes.
+
+**`wspy-testpoint render`: archetype cross-run stability (PR #186).** Closes the one piece deferred from
+both #184 and #185: `wspy-archetype`'s four classification axes were computed per run with no cross-run
+comparison, so a workload's characterization could silently drift across its history with nothing to
+show it. Simpler than `aggregate`'s own fix — `wspy-archetype --run <hostname>:<run_id>` already names
+one exact run per call, so none of the bulk-filtering machinery was needed. `render` now calls it once
+per stats-pool run and adds a "Workload characterization" section reporting whether `resource_dominance`
+(the headline axis) agrees across the pool or diverges. Verified live: two runs both classifying
+compute-bound render "Consistent"; re-ingesting one run's data to a memory-bound shape renders "Diverges"
+with the correct per-run breakdown.
+
+`wspy-testpoint select-runs`/`aggregate`/`render` together form the working end-to-end pipeline this
+item set out to build; only remaining open scope is pulling specific artifacts (not just a name/reason
+listing) from `supplementary`-role runs.
+
 ## Validation narratives (4.2-era)
 
 ### AMD IBS real-hardware validation (Zen5, 2026-07-15)
