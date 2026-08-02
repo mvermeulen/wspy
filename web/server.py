@@ -62,6 +62,7 @@ import wp_client  # noqa: E402 -- WordPress REST client, for the "Publish to Wor
 
 REPO_ROOT = joblib.REPO_ROOT
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+PHORONIX_DEST_ROOT = os.path.join(REPO_ROOT, "workload", "phoronix")
 
 # Re-exported from joblib.py (see its docstring) so the rest of this file --
 # and any external code importing server.py's own names -- keeps working
@@ -1933,12 +1934,27 @@ def render_export(rundir, base_url, title, fmt, overview_note, blocks):
     return render_export_wordpress(rundir, base_url, title, overview_note, blocks)
 
 
+def build_run_publish_levels(suite, test, test_point, machine, run_id):
+    """The doc/REPORT_HIERARCHY.md path for one run's own curated WordPress page: nested as a child
+    of the machine-level page (the future wspy-testpoint aggregate/summary lives at the machine slug
+    itself; this run's own page sits under it, auto-created as an empty draft stub if the machine page
+    doesn't exist yet -- publish_page_at_path()'s existing behavior). Pure list-building, no I/O, so
+    it's unit-testable independent of the WP/subprocess plumbing around it."""
+    return [(suite, suite), (test, test), (test_point, test_point), (machine, machine),
+            (run_id, run_id)]
+
+
 def render_publish_panel(suite, benchmark, run_id, title):
     """The "Publish to WordPress" form on the export page's wordpress tab
     -- a UI trigger over the same primitives `wspy-publish publish-page
     --from-rundir` already uses (render_wordpress_content_for_rundir() +
-    wp_client.publish_page_content()), so a curated report can go live
-    without a terminal. Deliberately has no field for entering WordPress
+    wp_client.publish_page_at_path()), so a curated report can go live
+    without a terminal, nested at its real doc/REPORT_HIERARCHY.md path
+    (<suite>/<test>/<test-point>/<machine>/<run_id>/) rather than at
+    WordPress root (INVESTIGATION.md Tier 3 item 6). No slug/parent-id
+    fields -- both are resolved automatically now: the leaf slug is
+    always this run's own run_id, and the parent chain is walked, not
+    typed in by hand. Deliberately has no field for entering WordPress
     credentials -- those stay a local, terminal-only `wspy-publish
     configure` (getpass) so an Application Password never touches a web
     form; this panel only reads the config that command already wrote."""
@@ -1954,11 +1970,12 @@ def render_publish_panel(suite, benchmark, run_id, title):
 <section class="panel">
   <h2>Publish to WordPress</h2>
   <p class="config-label">Uploads this report's full-depth images to the WordPress media library and
-     creates or updates a page (found by slug + parent, or created new) with this content &mdash;
-     always left as a draft unless "Publish immediately" is checked.</p>
+     creates or updates a page for this run, nested under
+     &lt;suite&gt;/&lt;test&gt;/&lt;test-point&gt;/&lt;machine&gt;/ (auto-creating any missing parent
+     page as an empty draft along the way) &mdash; always left as a draft unless "Publish immediately"
+     is checked.</p>
   <form method="post" action="{action}">
-    <label>Slug <input type="text" name="slug" value="{html.escape(benchmark)}" required></label>
-    <label>Parent page id <input type="number" name="parent_id" value="0" min="0"></label>
+    <label>Machine <input type="text" name="machine" placeholder="e.g. amd-395" required></label>
     <label>Title <input type="text" name="title" value="{html.escape(title)}" required></label>
     <label><input type="checkbox" name="publish"> Publish immediately (default: leave as a draft)</label>
     <button type="submit" class="primary">Publish to WordPress</button>
@@ -1971,9 +1988,10 @@ def render_publish_result(rundir, base_url, suite, benchmark, run_id, form):
     """Renders the result of a "Publish to WordPress" form submission
     (do_POST's /publish/<suite>/<benchmark>/<run_id> route) -- success or
     failure, either way with a link back to the export page. Runs the
-    same render_wordpress_content_for_rundir() + wp_client.publish_page_content()
-    pipeline wspy-publish publish-page --from-rundir uses, so the CLI and
-    this button can never drift into different behavior."""
+    same render_wordpress_content_for_rundir() + wp_client.publish_page_at_path()
+    pipeline wspy-publish publish-path --from-rundir would use, so the CLI
+    and this button share the same hierarchy-aware primitive rather than
+    drifting into different behavior."""
     export_url = f"/export/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}?format=wordpress"
     back_link = f'<p><a href="{export_url}">Back to export</a></p>'
 
@@ -1985,18 +2003,19 @@ def render_publish_result(rundir, base_url, suite, benchmark, run_id, form):
                     f'<code>./wspy-publish configure</code> from a terminal first.</p>{back_link}</section>')
     wp = wp_cfg["wordpress"]
 
-    slug = (form.get("slug", [""])[0] or "").strip()
+    machine = (form.get("machine", [""])[0] or "").strip()
     title = (form.get("title", [""])[0] or "").strip()
-    try:
-        parent_id = int(form.get("parent_id", ["0"])[0] or 0)
-    except ValueError:
-        parent_id = 0
     do_publish = form.get("publish", [""])[0] == "on"
 
-    if not slug or not title:
+    if not machine or not title:
         return page("publish failed",
                     '<section class="panel"><h1>Publish failed</h1>'
-                    f'<p class="muted">Slug and title are both required.</p>{back_link}</section>')
+                    f'<p class="muted">Machine and title are both required.</p>{back_link}</section>')
+
+    test, test_point, identity_warning = joblib.resolve_test_identity(suite, benchmark, PHORONIX_DEST_ROOT)
+    levels = build_run_publish_levels(suite, test, test_point, machine, run_id)
+    warning_note = (f'<p class="muted">Warning: {html.escape(identity_warning)}</p>'
+                     if identity_warning else "")
 
     content, upload_log, ok = render_wordpress_content_for_rundir(
         rundir, title, base_url, wp["site_url"], wp["username"], wp["app_password"])
@@ -2017,8 +2036,8 @@ def render_publish_result(rundir, base_url, suite, benchmark, run_id, form):
     upload_section = f'<h3>Images</h3><ul>{upload_items}</ul>' if upload_log else ""
 
     try:
-        wp_page, created = wp_client.publish_page_content(
-            wp["site_url"], wp["username"], wp["app_password"], slug, parent_id, title, content,
+        wp_page, created = wp_client.publish_page_at_path(
+            wp["site_url"], wp["username"], wp["app_password"], levels, content,
             do_publish=do_publish)
     except wp_client.WPError as e:
         return page("publish failed",
@@ -2037,6 +2056,7 @@ def render_publish_result(rundir, base_url, suite, benchmark, run_id, form):
   <p>id={wp_page.get("id")} status={html.escape(status or "")}
      &mdash; <a href="{html.escape(link)}" target="_blank">{html.escape(link)}</a></p>
   {draft_note}
+  {warning_note}
   {upload_section}
   {back_link}
 </section>
@@ -2661,7 +2681,7 @@ def render_phoronix_inventory_groups(dest_root):
 
 
 def render_phoronix_tab(cfg):
-    dest_root = os.path.join(REPO_ROOT, "workload", "phoronix")
+    dest_root = PHORONIX_DEST_ROOT
     installed_options = "".join(
         f'<option value="{html.escape(name)}">{html.escape(name)}</option>'
         for name in joblib.list_installed_phoronix_suites()

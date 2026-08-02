@@ -2557,6 +2557,24 @@ def list_materialized_phoronix_test_points(dest_root):
     return entries
 
 
+def resolve_test_identity(suite, benchmark, phoronix_dest_root):
+    """Returns (test, test_point, warning_or_None). For suite "phoronix", `benchmark` (wspy-run's own
+    naming) already equals a materialized test point's "identity" (bare_name-options_slug,
+    materialize_phoronix_test_point() above) -- split it back into (bare_name, options_slug) via
+    list_materialized_phoronix_test_points(), rather than re-deriving it some other way. Any other
+    suite, or a phoronix benchmark that doesn't match any materialized point (moved/never materialized),
+    falls back to test=benchmark, test_point="default" per doc/REPORT_HIERARCHY.md's own convention for
+    suites with no option axis -- degrade, don't fail, same idiom used throughout this codebase."""
+    if suite == "phoronix":
+        for entry in list_materialized_phoronix_test_points(phoronix_dest_root):
+            if entry["identity"] == benchmark:
+                return entry["bare_name"], entry["options_slug"], None
+        return benchmark, "default", (
+            "no materialized Phoronix test point found with identity %r under %r -- "
+            "falling back to test=%r, test_point=\"default\"" % (benchmark, phoronix_dest_root, benchmark))
+    return benchmark, "default", None
+
+
 def read_phoronix_test_description(dest_root, bare_name):
     """Returns the Description paragraph write_phoronix_test_readme() put
     in dest_root/<bare_name>/README.md (its second non-blank line -- the

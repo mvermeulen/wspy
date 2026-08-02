@@ -94,31 +94,14 @@ def resolve_report_root(args):
     return report_root.DEFAULT_REPORT_ROOT
 
 
-def resolve_test_identity(suite, benchmark, phoronix_dest_root):
-    """Returns (test, test_point, warning_or_None). For suite "phoronix", `benchmark` (wspy-run's own
-    naming) already equals a materialized test point's "identity" (bare_name-options_slug,
-    materialize_phoronix_test_point(), web/joblib.py) -- split it back into (bare_name, options_slug)
-    via list_materialized_phoronix_test_points(), rather than re-deriving it some other way. Any other
-    suite, or a phoronix benchmark that doesn't match any materialized point (moved/never materialized),
-    falls back to test=benchmark, test_point="default" per doc/REPORT_HIERARCHY.md's own convention for
-    suites with no option axis -- degrade, don't fail, same idiom used throughout this codebase."""
-    if suite == "phoronix":
-        for entry in joblib.list_materialized_phoronix_test_points(phoronix_dest_root):
-            if entry["identity"] == benchmark:
-                return entry["bare_name"], entry["options_slug"], None
-        return benchmark, "default", (
-            "no materialized Phoronix test point found with identity %r under %r -- "
-            "falling back to test=%r, test_point=\"default\"" % (benchmark, phoronix_dest_root, benchmark))
-    return benchmark, "default", None
-
-
 def resolve_test_point_paths(args):
     """Returns (report_root_path, test, test_point, runs_json_path) -- the resolution both
     select-runs and aggregate need to find one test point's persisted runs.json, factored out so
     the two subcommands can't drift into slightly different path-construction logic for the same
     file."""
     report_root_path = os.path.abspath(resolve_report_root(args))
-    test, test_point, warning = resolve_test_identity(args.suite, args.benchmark, args.phoronix_dest_root)
+    test, test_point, warning = joblib.resolve_test_identity(
+        args.suite, args.benchmark, args.phoronix_dest_root)
     if warning:
         print("wspy-testpoint: warning: %s" % warning, file=sys.stderr)
     test_point_dir = os.path.join(report_root_path, args.suite, test, test_point, args.machine)
