@@ -2589,14 +2589,21 @@ def test_point_wp_content(entry):
     )
 
 
-def resolve_test_identity(suite, benchmark, phoronix_dest_root):
+def resolve_test_identity(suite, benchmark, phoronix_dest_root, cpu2026_dest_root=None):
     """Returns (test, test_point, warning_or_None). For suite "phoronix", `benchmark` (wspy-run's own
     naming) already equals a materialized test point's "identity" (bare_name-options_slug,
     materialize_phoronix_test_point() above) -- split it back into (bare_name, options_slug) via
-    find_materialized_phoronix_test_point(), rather than re-deriving it some other way. Any other
-    suite, or a phoronix benchmark that doesn't match any materialized point (moved/never materialized),
-    falls back to test=benchmark, test_point="default" per doc/REPORT_HIERARCHY.md's own convention for
-    suites with no option axis -- degrade, don't fail, same idiom used throughout this codebase."""
+    find_materialized_phoronix_test_point(), rather than re-deriving it some other way. For suite
+    "cpu2026", `benchmark` similarly equals a registered point's "identity" (bench-tag-tune,
+    list_materialized_cpu2026_points() above) when cpu2026_dest_root is given -- split back into
+    (bench, "tag-tune") via find_materialized_cpu2026_point(). cpu2026_dest_root defaults to None
+    (rather than a real default path the way phoronix_dest_root doesn't) so existing callers that
+    never resolve cpu2026 identities (e.g. wspy-testpoint, which only handles Phoronix today) keep
+    their exact prior behavior without having to pass anything new. Any other suite, a phoronix
+    benchmark that doesn't match any materialized point, or a cpu2026 benchmark with no
+    cpu2026_dest_root given/no match, falls back to test=benchmark, test_point="default" per
+    doc/REPORT_HIERARCHY.md's own convention for suites with no option axis -- degrade, don't fail,
+    same idiom used throughout this codebase."""
     if suite == "phoronix":
         entry = find_materialized_phoronix_test_point(phoronix_dest_root, benchmark)
         if entry:
@@ -2604,6 +2611,13 @@ def resolve_test_identity(suite, benchmark, phoronix_dest_root):
         return benchmark, "default", (
             "no materialized Phoronix test point found with identity %r under %r -- "
             "falling back to test=%r, test_point=\"default\"" % (benchmark, phoronix_dest_root, benchmark))
+    if suite == "cpu2026" and cpu2026_dest_root:
+        entry = find_materialized_cpu2026_point(cpu2026_dest_root, benchmark)
+        if entry:
+            return entry["bench"], f"{entry['tag']}-{entry['tune']}", None
+        return benchmark, "default", (
+            "no materialized cpu2026 benchmark point found with identity %r under %r -- "
+            "falling back to test=%r, test_point=\"default\"" % (benchmark, cpu2026_dest_root, benchmark))
     return benchmark, "default", None
 
 
@@ -3041,6 +3055,34 @@ def list_materialized_cpu2026_points(dest_root):
                     "runs": runs,
                 })
     return entries
+
+
+def find_materialized_cpu2026_point(dest_root, identity):
+    """The full entry from list_materialized_cpu2026_points() whose "identity" matches, or None if
+    no such registered point exists -- same shape/role as find_materialized_phoronix_test_point()."""
+    for entry in list_materialized_cpu2026_points(dest_root):
+        if entry["identity"] == identity:
+            return entry
+    return None
+
+
+def cpu2026_test_point_wp_content(entry):
+    """Hand-built WP block markup for one materialized cpu2026 benchmark point's page -- mirrors
+    test_point_wp_content()'s Phoronix shape, using this suite's own config_file/tune/built fields
+    (list_materialized_cpu2026_points()) instead of Phoronix's test_id/arguments. Used by
+    web/server.py's "Publish to WordPress" flow to give an auto-created test-point stub (e.g.
+    cpu2026/706.stockfish_r/gcc_O3-base/) real content at publish time."""
+    title = html.escape(f"{entry['tag']}-{entry['tune']}")
+    config_file = html.escape(entry["config_file"])
+    tune = html.escape(entry["tune"])
+    built = "yes" if entry["built"] else "no"
+    return (
+        '<!-- wp:heading {"level":1} -->\n<h1>%s</h1>\n<!-- /wp:heading -->\n\n'
+        '<!-- wp:paragraph -->\n<p>Config file: <code>%s</code></p>\n<!-- /wp:paragraph -->\n\n'
+        '<!-- wp:paragraph -->\n<p>Tune: <code>%s</code> &mdash; Built: <code>%s</code></p>\n'
+        '<!-- /wp:paragraph -->'
+        % (title, config_file, tune, built)
+    )
 
 
 def group_materialized_cpu2026_points_by_bench(points):

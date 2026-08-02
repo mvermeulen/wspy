@@ -63,6 +63,7 @@ import wp_client  # noqa: E402 -- WordPress REST client, for the "Publish to Wor
 REPO_ROOT = joblib.REPO_ROOT
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 PHORONIX_DEST_ROOT = os.path.join(REPO_ROOT, "workload", "phoronix")
+CPU2026_DEST_ROOT = os.path.join(REPO_ROOT, "workload", "cpu2026")
 
 # Re-exported from joblib.py (see its docstring) so the rest of this file --
 # and any external code importing server.py's own names -- keeps working
@@ -1944,20 +1945,23 @@ def build_run_publish_levels(suite, test, test_point, machine, run_id):
             (run_id, run_id)]
 
 
-def build_run_publish_stub_content(machine_catalog_url, phoronix_entry=None):
+def build_run_publish_stub_content(machine_catalog_url, phoronix_entry=None, cpu2026_entry=None):
     """The {level_index: content} dict for publish_page_at_path()'s stub_content parameter, matching
     build_run_publish_levels()'s index positions: 3 = machine (always -- a link to its catalog
-    entry), 2 = test-point (only when phoronix_entry is given, i.e. a materialized Phoronix test
-    point was found for this run's identity) -- real test_id/arguments content instead of an empty
-    stub, via the same joblib.test_point_wp_content() scripts/publish_phoronix_pages.py already
-    uses. Pure, I/O-free, so it's unit-testable independent of the WP-lookup/HTTP plumbing around
-    it."""
+    entry), 2 = test-point (only when phoronix_entry or cpu2026_entry is given, i.e. a materialized
+    test point was found for this run's identity -- the two are mutually exclusive in practice, a
+    run is either phoronix or cpu2026) -- real content instead of an empty stub, via the same
+    joblib.test_point_wp_content()/cpu2026_test_point_wp_content()
+    scripts/publish_phoronix_pages.py/publish_cpu2026_benchmarks.py already use. Pure, I/O-free, so
+    it's unit-testable independent of the WP-lookup/HTTP plumbing around it."""
     stub_content = {
         3: ('<!-- wp:paragraph -->\n<p>See <a href="%s">the machine catalog</a> for hardware '
             'specifications.</p>\n<!-- /wp:paragraph -->' % html.escape(machine_catalog_url, quote=True)),
     }
     if phoronix_entry:
         stub_content[2] = joblib.test_point_wp_content(phoronix_entry)
+    elif cpu2026_entry:
+        stub_content[2] = joblib.cpu2026_test_point_wp_content(cpu2026_entry)
     return stub_content
 
 
@@ -2032,19 +2036,22 @@ def render_publish_result(rundir, base_url, suite, benchmark, run_id, form):
                     '<section class="panel"><h1>Publish failed</h1>'
                     f'<p class="muted">Machine and title are both required.</p>{back_link}</section>')
 
-    test, test_point, identity_warning = joblib.resolve_test_identity(suite, benchmark, PHORONIX_DEST_ROOT)
+    test, test_point, identity_warning = joblib.resolve_test_identity(
+        suite, benchmark, PHORONIX_DEST_ROOT, CPU2026_DEST_ROOT)
     levels = build_run_publish_levels(suite, test, test_point, machine, run_id)
     warning_note = (f'<p class="muted">Warning: {html.escape(identity_warning)}</p>'
                      if identity_warning else "")
 
     # If the machine-level page doesn't exist yet, give it a link to its catalog entry
-    # (scripts/publish_machine_page.py) instead of leaving it an empty stub -- and if this is a
-    # Phoronix run whose test point is materialized, give the test-point-level stub real content
-    # too (instead of only a separate scripts/publish_phoronix_pages.py re-run filling it in later).
+    # (scripts/publish_machine_page.py) instead of leaving it an empty stub -- and if this run's test
+    # point is materialized (Phoronix or cpu2026), give the test-point-level stub real content too
+    # (instead of only a separate scripts/publish_*.py re-run filling it in later).
     machine_catalog_url = f"{wp['site_url']}/machine/{_urlescape(machine)}/"
     phoronix_entry = (joblib.find_materialized_phoronix_test_point(PHORONIX_DEST_ROOT, benchmark)
                        if suite == "phoronix" else None)
-    stub_content = build_run_publish_stub_content(machine_catalog_url, phoronix_entry)
+    cpu2026_entry = (joblib.find_materialized_cpu2026_point(CPU2026_DEST_ROOT, benchmark)
+                      if suite == "cpu2026" else None)
+    stub_content = build_run_publish_stub_content(machine_catalog_url, phoronix_entry, cpu2026_entry)
 
     content, upload_log, ok = render_wordpress_content_for_rundir(
         rundir, title, base_url, wp["site_url"], wp["username"], wp["app_password"])

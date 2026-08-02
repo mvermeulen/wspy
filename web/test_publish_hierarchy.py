@@ -67,6 +67,31 @@ class BuildRunPublishStubContentTest(unittest.TestCase):
             "https://example.org/workload/machine/amd-395/", phoronix_entry=entry)
         self.assertEqual(stub_content[2], joblib.test_point_wp_content(entry))
 
+    def test_includes_test_point_content_when_cpu2026_entry_given(self):
+        entry = {"tag": "gcc_O3", "tune": "base", "config_file": "gcc_O3.cfg", "built": True}
+        stub_content = server.build_run_publish_stub_content(
+            "https://example.org/workload/machine/amd-395/", cpu2026_entry=entry)
+        self.assertEqual(set(stub_content.keys()), {2, 3})
+        self.assertIn("gcc_O3.cfg", stub_content[2])
+        self.assertIn("base", stub_content[2])
+
+    def test_cpu2026_content_matches_joblib_cpu2026_test_point_wp_content(self):
+        import joblib
+        entry = {"tag": "gcc_O3", "tune": "peak", "config_file": "gcc_O3.cfg", "built": False}
+        stub_content = server.build_run_publish_stub_content(
+            "https://example.org/workload/machine/amd-395/", cpu2026_entry=entry)
+        self.assertEqual(stub_content[2], joblib.cpu2026_test_point_wp_content(entry))
+
+    def test_phoronix_entry_takes_precedence_over_cpu2026_entry(self):
+        # Mutually exclusive in practice (a run is either phoronix or cpu2026), but confirm the
+        # precedence is deterministic rather than accidental.
+        phoronix_entry = {"options_slug": "default", "test_id": "pts/coremark-1.0.1", "arguments": ""}
+        cpu2026_entry = {"tag": "gcc_O3", "tune": "base", "config_file": "gcc_O3.cfg", "built": True}
+        stub_content = server.build_run_publish_stub_content(
+            "https://example.org/workload/machine/amd-395/",
+            phoronix_entry=phoronix_entry, cpu2026_entry=cpu2026_entry)
+        self.assertIn("pts/coremark-1.0.1", stub_content[2])
+
 
 if __name__ == "__main__":
     unittest.main()

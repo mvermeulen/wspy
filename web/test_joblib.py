@@ -1532,10 +1532,39 @@ class ResolveTestIdentityTest(unittest.TestCase):
 
     def test_non_phoronix_suite_always_falls_back_with_no_warning(self):
         test, test_point, warning = joblib.resolve_test_identity(
+            "some-other-suite", "some-benchmark", "/does/not/matter")
+        self.assertEqual(test, "some-benchmark")
+        self.assertEqual(test_point, "default")
+        self.assertIsNone(warning)
+
+    def test_cpu2026_falls_back_with_no_warning_when_dest_root_not_given(self):
+        # cpu2026_dest_root defaults to None -- existing callers (e.g. wspy-testpoint) that never
+        # pass it keep their exact prior behavior, no cpu2026-specific matching attempted at all.
+        test, test_point, warning = joblib.resolve_test_identity(
             "cpu2026", "706.stockfish_r-gcc_O3-base", "/does/not/matter")
         self.assertEqual(test, "706.stockfish_r-gcc_O3-base")
         self.assertEqual(test_point, "default")
         self.assertIsNone(warning)
+
+    def test_matches_materialized_cpu2026_point_when_dest_root_given(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            info = joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O3")
+
+            test, test_point, warning = joblib.resolve_test_identity(
+                "cpu2026", info["identity"], "/does/not/matter", dest)
+            self.assertEqual(test, "706.stockfish_r")
+            self.assertEqual(test_point, "gcc_O3-base")
+            self.assertIsNone(warning)
+
+    def test_unmatched_cpu2026_identity_falls_back_with_warning(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            test, test_point, warning = joblib.resolve_test_identity(
+                "cpu2026", "706.stockfish_r-gcc_O3-base", "/does/not/matter", dest)
+            self.assertEqual(test, "706.stockfish_r-gcc_O3-base")
+            self.assertEqual(test_point, "default")
+            self.assertIsNotNone(warning)
 
 
 class ReadPhoronixTestDescriptionTest(unittest.TestCase):
@@ -2012,6 +2041,26 @@ class ListMaterializedCpu2026PointsTest(unittest.TestCase):
                        os.path.join(info["dir"], "runs", "run1"))
             points = joblib.list_materialized_cpu2026_points(dest)
             self.assertEqual(points[0]["runs"], [])
+
+
+class FindMaterializedCpu2026PointTest(unittest.TestCase):
+    def test_finds_entry_by_identity(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            info = joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O2")
+
+            entry = joblib.find_materialized_cpu2026_point(dest, info["identity"])
+            self.assertIsNotNone(entry)
+            self.assertEqual(entry["identity"], info["identity"])
+            self.assertEqual(entry["bench"], "706.stockfish_r")
+            self.assertEqual(entry["tag"], "gcc_O2")
+            self.assertEqual(entry["tune"], "base")
+
+    def test_returns_none_when_not_found(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            self.assertIsNone(
+                joblib.find_materialized_cpu2026_point(dest, "706.stockfish_r-gcc_O2-base"))
 
 
 class GroupMaterializedCpu2026PointsByBenchTest(unittest.TestCase):
