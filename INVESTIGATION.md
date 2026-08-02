@@ -1094,6 +1094,14 @@ instead of staying empty until a separate manual `scripts/publish_phoronix_pages
 `joblib.find_materialized_phoronix_test_point()`/`test_point_wp_content()` (the latter moved out of the
 script, now shared). Phoronix only for now — verified live against the real site.
 
+**cpu2026 identity resolution fixed** (PR #193) — `resolve_test_identity()` never special-cased cpu2026;
+publishing a cpu2026 run would have created a wrongly-named sibling page instead of nesting under the
+real `cpu2026/<bench>/` page. New `joblib.find_materialized_cpu2026_point()` (mirrors the Phoronix one)
+splits identity into `(bench, "tag-tune")` correctly, and `cpu2026_test_point_wp_content()` gives the
+auto-created test-point stub real config content too, same parity as PR #192. Caught by the user before
+trying a new SPEC benchmark; not yet verified against the real site (no such run exists yet), covered by
+unit tests only for now.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
