@@ -1077,6 +1077,16 @@ page as a child of its auto-created machine stub. Verified against the real site
 page's parent chain resolves correctly leaf-to-root via the WP REST API. `publish-page --slug`'s flat
 CLI path stays a deliberately simple primitive, unchanged.
 
+**Machine catalog pages** (PR #191) — `scripts/publish_machine_page.py` resolves
+`doc/REPORT_HIERARCHY.md`'s two long-open machine-level questions: a `/machine/` index plus one
+`/machine/<short-name>/` detail page per physical machine (run locally, since hardware detection can't
+describe a machine it isn't running on), named `<vendor>-<short-model>-<ram-gib>gb` to disambiguate
+machines sharing a chip but differing in memory. Auto-created machine stubs inside the suite hierarchy
+now link back to their catalog entry (`publish_page_at_path()`'s new `stub_content` parameter). A new
+`machine_short_name` field in `~/.config/wspy/publish.json` (`save_config()` now shared, moved out of
+`wspy-publish`) lets both the CLI and the web UI's publish form remember a machine once registered,
+instead of retyping it every time. Verified live against the real site.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
