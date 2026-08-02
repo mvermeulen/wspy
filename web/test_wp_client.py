@@ -16,6 +16,7 @@ parent chaining) is what's under test, not request()'s wire format.
 import base64
 import io
 import os
+import stat
 import sys
 import tempfile
 import unittest
@@ -345,6 +346,24 @@ class LoadConfigTest(unittest.TestCase):
         self.assertEqual(cfg["wordpress"]["site_url"], "https://example.org/workload")
 
 
+class SaveConfigTest(unittest.TestCase):
+    def test_writes_json_with_mode_600(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "publish.json")
+            with patch.object(wp_client, "CONFIG_PATH", path):
+                wp_client.save_config({"machine_short_name": "amd-370-64gb"})
+                self.assertEqual(wp_client.load_config(), {"machine_short_name": "amd-370-64gb"})
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+            self.assertEqual(mode, stat.S_IRUSR | stat.S_IWUSR)
+
+    def test_creates_parent_directory_if_missing(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "nested", "publish.json")
+            with patch.object(wp_client, "CONFIG_PATH", path):
+                wp_client.save_config({"a": 1})
+                self.assertTrue(os.path.isfile(path))
+
+
 class PublishPageContentTest(unittest.TestCase):
     def test_creates_when_no_existing_page(self):
         with patch("wp_client.find_page", return_value=None), \
@@ -426,10 +445,41 @@ class PublishPageAtPathTest(unittest.TestCase):
                 "<p>hi</p>")
 
         fake_create.assert_called_once_with(
-            "https://example.org/workload", "wspy", "secret", "phoronix", "Phoronix", 0)
+            "https://example.org/workload", "wspy", "secret", "phoronix", "Phoronix", 0, content="")
         fake_publish_content.assert_called_once_with(
             "https://example.org/workload", "wspy", "secret", "coremark", 200,
             "coremark", "<p>hi</p>", do_publish=False)
+
+    def test_stub_content_used_only_for_newly_created_levels(self):
+        # "phoronix" already exists (untouched, no stub_content applied); "coremark" is missing and
+        # gets created with the given stub content instead of the empty-string default.
+        with patch("wp_client.find_page",
+                   side_effect=[{"id": 15, "slug": "phoronix", "parent": 0}, None]), \
+             patch("wp_client.create_page",
+                   return_value={"id": 200, "slug": "coremark", "parent": 15}) as fake_create, \
+             patch("wp_client.publish_page_content",
+                   return_value=({"id": 201, "status": "draft"}, True)):
+            wp_client.publish_page_at_path(
+                "https://example.org/workload", "wspy", "secret",
+                [("phoronix", "Phoronix"), ("coremark", "coremark"), ("default", "default")],
+                "<p>hi</p>", stub_content={1: "<p>link</p>"})
+
+        fake_create.assert_called_once_with(
+            "https://example.org/workload", "wspy", "secret", "coremark", "coremark", 15,
+            content="<p>link</p>")
+
+    def test_stub_content_default_is_empty_string(self):
+        with patch("wp_client.find_page", return_value=None), \
+             patch("wp_client.create_page",
+                   return_value={"id": 200, "slug": "phoronix", "parent": 0}) as fake_create, \
+             patch("wp_client.publish_page_content",
+                   return_value=({"id": 201, "status": "draft"}, True)):
+            wp_client.publish_page_at_path(
+                "https://example.org/workload", "wspy", "secret",
+                [("phoronix", "Phoronix"), ("coremark", "coremark")], "<p>hi</p>")
+
+        fake_create.assert_called_once_with(
+            "https://example.org/workload", "wspy", "secret", "phoronix", "Phoronix", 0, content="")
 
     def test_single_level_publishes_directly_under_root(self):
         with patch("wp_client.publish_page_content",

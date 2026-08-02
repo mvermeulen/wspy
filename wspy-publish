@@ -88,16 +88,15 @@ publish-path        create/update a page nested at a full
 """
 import argparse
 import getpass
-import json
 import os
-import stat
 import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(SCRIPT_DIR, "web"))
 import wp_client  # noqa: E402
-from wp_client import CONFIG_PATH, load_config  # noqa: E402 -- canonical definitions, shared with
-                                                 # web/server.py's own "Publish to WordPress" button
+from wp_client import CONFIG_PATH, load_config, save_config  # noqa: E402 -- canonical definitions,
+                                                 # shared with web/server.py's own "Publish to
+                                                 # WordPress" button and scripts/publish_machine_page.py
 import server as web_export  # noqa: E402 -- only its render_wordpress_content_for_rundir() is used
                               # here; importing it never starts the HTTP server (guarded by
                               # server.py's own __main__ check)
@@ -105,15 +104,6 @@ from report_root import (  # noqa: E402 -- shared with wspy-testpoint's run role
     DEFAULT_REPORT_ROOT, DEFAULT_REPORT_ROOT_REMOTE, ensure_report_root, run_git)
 
 TEST_PAGE_SLUG = "wspy-publish-connectivity-test"
-
-
-def save_config(cfg):
-    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-    fd = os.open(CONFIG_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(cfg, f, indent=2)
-        f.write("\n")
-    os.chmod(CONFIG_PATH, stat.S_IRUSR | stat.S_IWUSR)
 
 
 def cmd_configure(args):
@@ -141,10 +131,18 @@ def cmd_configure(args):
         existing.get("report_root") or DEFAULT_REPORT_ROOT)).strip()
     report_root = report_root or existing.get("report_root") or DEFAULT_REPORT_ROOT
 
+    machine_short_name = input(
+        "This machine's doc/REPORT_HIERARCHY.md catalog short name (blank if not registered yet, "
+        "or run scripts/publish_machine_page.py) [%s]: "
+        % (existing.get("machine_short_name") or "")).strip()
+    machine_short_name = machine_short_name or existing.get("machine_short_name") or None
+
     cfg = {
         "wordpress": {"site_url": site_url, "username": username, "app_password": app_password},
         "report_root": report_root,
     }
+    if machine_short_name:
+        cfg["machine_short_name"] = machine_short_name
     save_config(cfg)
     print("wspy-publish: wrote %s" % CONFIG_PATH, file=sys.stderr)
     return 0

@@ -1959,13 +1959,15 @@ def render_publish_panel(suite, benchmark, run_id, title):
     configure` (getpass) so an Application Password never touches a web
     form; this panel only reads the config that command already wrote."""
     action = f"/publish/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
-    if wp_client.load_config() is None:
+    wp_cfg = wp_client.load_config()
+    if wp_cfg is None:
         return (
             '<section class="panel"><h2>Publish to WordPress</h2>'
             '<p class="muted">No WordPress credentials configured &mdash; run '
             '<code>./wspy-publish configure</code> from a terminal first '
             '(the Application Password never touches this web form).</p></section>'
         )
+    machine_default = wp_cfg.get("machine_short_name") or ""
     return f"""
 <section class="panel">
   <h2>Publish to WordPress</h2>
@@ -1975,7 +1977,8 @@ def render_publish_panel(suite, benchmark, run_id, title):
      page as an empty draft along the way) &mdash; always left as a draft unless "Publish immediately"
      is checked.</p>
   <form method="post" action="{action}">
-    <label>Machine <input type="text" name="machine" placeholder="e.g. amd-395" required></label>
+    <label>Machine <input type="text" name="machine" value="{html.escape(machine_default)}"
+       placeholder="e.g. amd-395" required></label>
     <label>Title <input type="text" name="title" value="{html.escape(title)}" required></label>
     <label><input type="checkbox" name="publish"> Publish immediately (default: leave as a draft)</label>
     <button type="submit" class="primary">Publish to WordPress</button>
@@ -2017,6 +2020,14 @@ def render_publish_result(rundir, base_url, suite, benchmark, run_id, form):
     warning_note = (f'<p class="muted">Warning: {html.escape(identity_warning)}</p>'
                      if identity_warning else "")
 
+    # If the machine-level page doesn't exist yet, give it a link to its catalog entry
+    # (scripts/publish_machine_page.py) instead of leaving it an empty stub -- index 3 is the
+    # machine level in the 5-element `levels` list built above.
+    machine_catalog_url = f"{wp['site_url']}/machine/{_urlescape(machine)}/"
+    machine_stub_content = (
+        '<!-- wp:paragraph -->\n<p>See <a href="%s">the machine catalog</a> for hardware '
+        'specifications.</p>\n<!-- /wp:paragraph -->' % html.escape(machine_catalog_url, quote=True))
+
     content, upload_log, ok = render_wordpress_content_for_rundir(
         rundir, title, base_url, wp["site_url"], wp["username"], wp["app_password"])
     if not ok:
@@ -2038,7 +2049,7 @@ def render_publish_result(rundir, base_url, suite, benchmark, run_id, form):
     try:
         wp_page, created = wp_client.publish_page_at_path(
             wp["site_url"], wp["username"], wp["app_password"], levels, content,
-            do_publish=do_publish)
+            do_publish=do_publish, stub_content={3: machine_stub_content})
     except wp_client.WPError as e:
         return page("publish failed",
                     '<section class="panel"><h1>Publish failed</h1>'
