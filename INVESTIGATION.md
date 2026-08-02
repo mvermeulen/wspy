@@ -1057,9 +1057,9 @@ cross-suite-level pages) Tier 3 item 2 originally asked for — see that item fo
 `doc/REPORT_HIERARCHY.md`'s level-3 pages for all 52 real SPEC CPU2026 benchmarks, on both the
 file-system report-root and the live site (`scripts/publish_cpu2026_benchmarks.py`), verified end to end
 and published live. New `publish_page_at_path()` is the hierarchy-aware create-with-content primitive
-that was missing (walks/auto-creates parent stubs, then sets content on the leaf) — closes item 6's
-underlying gap in spirit, though the *existing* `publish_page_content()` callers (the web UI button,
-`publish-page --slug`) are still on the old flat lookup, so item 6 itself stays open below.
+that was missing (walks/auto-creates parent stubs, then sets content on the leaf) — closed the
+now-former Tier 3 item 6's underlying gap in spirit; the web UI "Publish to WordPress" button has since
+switched onto it too (see below), fully closing that item.
 
 **Phoronix level-3/4 hierarchy pages** (PR #189) — `scripts/publish_phoronix_pages.py`, second use of
 the cpu2026 recipe, confirming `publish_page_at_path()` generalizes: level-3 (97 materialized tests,
@@ -1067,6 +1067,15 @@ content reused from `write_phoronix_test_readme()`'s existing output — closing
 own flagged migration debt) and level-4 (test-points that actually have a linked run, 2 of 443
 materialized — the rest are never-benchmarked option-combination noise), all published live, no changes
 needed to `wp_client.py`/`report_root.py`/`wspy-publish` themselves.
+
+**Web UI "Publish to WordPress" button now nests correctly** (PR #190) — fixes the now-former Tier 3
+item 6: the button's form previously always published at WordPress root (`parent_id` defaulted to `0`,
+had to be typed in by hand). Replaced with a required `machine` field; the full
+`suite/test/test-point/machine/run-id` path resolves automatically via `joblib.resolve_test_identity()`
+(moved from `wspy-testpoint`, now shared) and publishes via `publish_page_at_path()`, nesting each run's
+page as a child of its auto-created machine stub. Verified against the real site — confirmed the created
+page's parent chain resolves correctly leaf-to-root via the WP REST API. `publish-page --slug`'s flat
+CLI path stays a deliberately simple primitive, unchanged.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
@@ -1479,10 +1488,10 @@ reasoning as Tier 1 above.
    - **Idempotent content merge.** Re-publishing over a page a human has since hand-edited only does
      page *lookup* (by slug/parent) today, not a real merge against existing hand-edits — re-running
      publish on an already-curated page would blindly overwrite it.
-   - Also affected by item 6's page-hierarchy bug: `publish_page_content()` (used by both the CLI and
-     the web button) does its own flat `(slug, parent)` lookup rather than calling the hierarchy-walking
-     `find_or_create_page_path()` built in sub-step 4 of the archived build history, so every page
-     published through either path lands at WordPress root today regardless of which item fixes it.
+   - `wspy-publish publish-page --slug`'s flat `(slug, parent)` lookup still lands at WordPress root
+     unless a parent id is typed in by hand — the same now-fixed bug the web UI's "Publish to WordPress"
+     button had (see "Shipped since 4.2"), but this CLI path was deliberately left as a simple
+     single-page primitive rather than switched onto `publish_page_at_path()`.
 3. Characterization badges + similarity panels in reports — a new block type in 4.1's curation studio
    drawing a badge from 4.2's (shipped) archetype scorecard (`wspy-archetype`), not a separate report
    surface.
@@ -1516,17 +1525,6 @@ reasoning as Tier 1 above.
      (shipped, see "Shipped since 4.2") and for `wspy-analyze`-style AI narrative generation that
      references how a workload compares to others in its cluster — but building the matrix itself never
      depended on clustering existing first; the two were always sequenced, not coupled.
-
-6. WordPress published pages don't nest under the correct parent — `web/wp_client.py`'s
-   `find_or_create_page_path()` already exists and already does the right slug/parent walk, but isn't
-   wired into `publish_page_content()`'s flat `(slug, parent)` call, and the web export form's
-   `parent_id` field defaults to `0` (WP root). Net effect: every page publishes at the site root
-   instead of nesting under its suite/test/test-point parent, breaking menus and navigation. Confirmed
-   real during planning for the web UI publish-trigger work above (PR #187, see "Shipped since 4.2");
-   queued as the next piece by the author once that item landed. A hierarchy-aware alternative,
-   `publish_page_at_path()`, has since shipped (PR #188, see "Shipped since 4.2") and is used by the new
-   cpu2026 benchmark-page pipeline — but `publish_page_content()`'s own callers (this bug's actual
-   subject) haven't been switched onto it yet, so the bug as described here is still live.
 
 **Tier 4 — report-layer additions on data already collected in 4.0:**
 
