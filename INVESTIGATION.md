@@ -1053,6 +1053,15 @@ a per-report "Publish to WordPress" button in the web UI, all verified against t
 Does not include the site-wide automated pipeline (walking the whole store to publish/update suite- and
 cross-suite-level pages) Tier 3 item 2 originally asked for — see that item for what's still open.
 
+**cpu2026 level-3 benchmark pages + `wp_client.publish_page_at_path()`** (PR #188) — materializes
+`doc/REPORT_HIERARCHY.md`'s level-3 pages for all 52 real SPEC CPU2026 benchmarks, on both the
+file-system report-root and the live site (`scripts/publish_cpu2026_benchmarks.py`), verified end to end
+and published live. New `publish_page_at_path()` is the hierarchy-aware create-with-content primitive
+that was missing (walks/auto-creates parent stubs, then sets content on the leaf) — closes item 6's
+underlying gap in spirit, though the *existing* `publish_page_content()` callers (the web UI button,
+`publish-page --slug`) are still on the old flat lookup, so item 6 itself stays open below. Same recipe
+is intended to cover Phoronix's equivalent pages next.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -1508,7 +1517,10 @@ reasoning as Tier 1 above.
    `parent_id` field defaults to `0` (WP root). Net effect: every page publishes at the site root
    instead of nesting under its suite/test/test-point parent, breaking menus and navigation. Confirmed
    real during planning for the web UI publish-trigger work above (PR #187, see "Shipped since 4.2");
-   queued as the next piece by the author once that item landed.
+   queued as the next piece by the author once that item landed. A hierarchy-aware alternative,
+   `publish_page_at_path()`, has since shipped (PR #188, see "Shipped since 4.2") and is used by the new
+   cpu2026 benchmark-page pipeline — but `publish_page_content()`'s own callers (this bug's actual
+   subject) haven't been switched onto it yet, so the bug as described here is still live.
 
 **Tier 4 — report-layer additions on data already collected in 4.0:**
 
