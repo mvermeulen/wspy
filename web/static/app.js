@@ -1041,6 +1041,68 @@
     });
   }
 
+  // Report page's "Publish test-point report" button (render_testpoint_card()
+  // in server.py, Tier 3 item 7): same SSE-streamed shape as wireAnalyzeForm()
+  // above (log lines relayed over an EventSource, a "done" event flips the
+  // button back and shows a final status), simplified to this card's single
+  // required field (machine) instead of wireAnalyzeForm()'s model-discovery
+  // chips -- there's nothing to discover here, --machine is always
+  // human-typed (doc/REPORT_HIERARCHY.md's own naming is "deliberately
+  // informal" with no lookup table to offer choices from).
+  function wireTestpointPublishButton() {
+    var runButton = byId("testpoint-publish-run");
+    var logEl = byId("testpoint-publish-log");
+    var resultEl = byId("testpoint-publish-result");
+    var machineEl = byId("testpoint-publish-machine");
+    if (!runButton || !logEl || !resultEl || !machineEl) return;
+
+    runButton.addEventListener("click", function () {
+      var machine = machineEl.value.trim();
+      if (!machine) {
+        resultEl.textContent = "Machine slug is required.";
+        return;
+      }
+      runButton.disabled = true;
+      resultEl.textContent = "";
+      logEl.hidden = false;
+      logEl.textContent = "";
+
+      fetch(runButton.dataset.testpointUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ machine: machine }),
+      })
+        .then(function (resp) {
+          return resp.json().then(function (data) {
+            if (!resp.ok) throw new Error(data.error || ("HTTP " + resp.status));
+            return data;
+          });
+        })
+        .then(function (data) {
+          var es = new EventSource(data.events_url);
+          es.addEventListener("log", function (ev) {
+            logEl.textContent += JSON.parse(ev.data) + "\n";
+            logEl.scrollTop = logEl.scrollHeight;
+          });
+          es.addEventListener("done", function (ev) {
+            var payload = JSON.parse(ev.data);
+            es.close();
+            runButton.disabled = false;
+            resultEl.textContent = payload.status === "done"
+              ? "Done -- see output above for what was committed (local commit only, never pushed)."
+              : "Finished with errors -- see output above.";
+          });
+          es.onerror = function () {
+            runButton.disabled = false;
+          };
+        })
+        .catch(function (err) {
+          runButton.disabled = false;
+          resultEl.textContent = "Error: " + err.message;
+        });
+    });
+  }
+
   // Report page's "Generate process-tree views" button (render_proctree_
   // card() in server.py): a plain synchronous fetch+render like
   // runSyncEndpoint() above, but with a per-run URL baked in server-side
@@ -1583,6 +1645,7 @@
   wireStoreTab();
   wireDiscoveryTab();
   wireAnalyzeForm();
+  wireTestpointPublishButton();
   wireProctreeViewsButton();
   wirePhoronixTab();
   wireCpu2026Tab();

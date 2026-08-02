@@ -162,6 +162,13 @@ ANALYZE_RUNS_LOCK = threading.Lock()
 CPU2026_BUILDS = {}
 CPU2026_BUILDS_LOCK = threading.Lock()
 
+# Fourth registry, same idiom, for the report page's "Publish test-point report" button
+# (execute_testpoint_publish() below, Tier 3 item 7): keyed the same way as ANALYZE_RUNS, kept
+# separate for the identical reason -- triggering a test-point publish must never collide with this
+# run's own launch state or an in-flight AI analysis for the same (suite, benchmark, run_id).
+TESTPOINT_RUNS = {}
+TESTPOINT_RUNS_LOCK = threading.Lock()
+
 
 def run_key(suite, benchmark, run_id):
     return (suite, benchmark, run_id)
@@ -281,6 +288,69 @@ def execute_analyze(state, argv, suite, benchmark, run_id):
     rc = proc.wait()
     emit(f"[wspy-analyze exited {rc}]")
     state.finish("done" if rc == 0 else "error", f"/report/{suite}/{benchmark}/{run_id}")
+
+
+def build_testpoint_publish_argv(cfg, suite, benchmark, machine):
+    """(select_runs_argv, render_argv) for the report page's "Publish test-point report" button
+    (Tier 3 item 7) -- pure, HTTP-free, so it's unit-testable without mocking threading/subprocess.
+    Only two calls, not three: wspy-testpoint render already shells out to wspy-summary/wspy-archetype
+    itself to build the README, so a separate `aggregate` call here would be redundant -- nothing
+    downstream would consume its output. Built from cfg["output_root"]/cfg["store_db"] (the same
+    values run_store_ingest_besteffort() already uses, joblib.py) rather than wspy-testpoint's own
+    separate CLI defaults, so this respects whatever this server instance is actually configured to
+    use. cfg["report_root"]/cfg["report_root_remote"] are optional (None unless this server was
+    started with --report-root/--report-root-remote) -- when unset, both subcommands fall through to
+    wspy-testpoint's own default chain (wspy-publish's configured report_root, else a sibling
+    directory), the correct default for real use; the override exists for pointing a whole server
+    instance at a different clone (e.g. a scratch directory for testing this feature itself, without
+    touching a real configured report-root)."""
+    testpoint_bin = cfg["wspy_testpoint_bin"]
+    select_runs_argv = [testpoint_bin, "select-runs", "--suite", suite, "--benchmark", benchmark,
+                         "--machine", machine, "--output-root", cfg["output_root"]]
+    render_argv = [testpoint_bin, "render", "--suite", suite, "--benchmark", benchmark,
+                   "--machine", machine, "--db", cfg["store_db"]]
+    if cfg.get("report_root"):
+        select_runs_argv += ["--report-root", cfg["report_root"]]
+        render_argv += ["--report-root", cfg["report_root"]]
+    if cfg.get("report_root_remote"):
+        select_runs_argv += ["--report-root-remote", cfg["report_root_remote"]]
+        render_argv += ["--report-root-remote", cfg["report_root_remote"]]
+    return select_runs_argv, render_argv
+
+
+def execute_testpoint_publish(state, select_runs_argv, render_argv):
+    """Runs select-runs then render as one background pipeline (the report page's "Publish
+    test-point report" button, Tier 3 item 7), mirroring execute_analyze()'s subprocess/SSE-relay
+    shape exactly. render only runs if select-runs succeeded -- a role-assignment failure (e.g. no
+    runs found for this suite/benchmark/hostname) means there is nothing coherent for render to
+    aggregate, so running it anyway would just produce a second, more confusing failure on top of the
+    first. Both commands' own output already explains what happened (git commit summaries, warnings
+    about runs missing from the store, etc.) -- this function only relays it, never reinterprets it."""
+    def emit(line):
+        state.append(line)
+
+    def run_one(argv):
+        emit("$ " + shell_preview(argv))
+        try:
+            proc = subprocess.Popen(argv, cwd=REPO_ROOT,
+                                     stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT,
+                                     text=True, bufsize=1)
+        except OSError as e:
+            emit(f"[error] failed to launch {argv[0]}: {e}")
+            return None
+        for line in proc.stdout:
+            emit(line.rstrip("\n"))
+        rc = proc.wait()
+        emit(f"[{os.path.basename(argv[0])} {argv[1]} exited {rc}]")
+        return rc
+
+    rc = run_one(select_runs_argv)
+    if rc is None or rc != 0:
+        state.finish("error", None)
+        return
+    rc = run_one(render_argv)
+    state.finish("done" if rc == 0 else "error", None)
 
 
 # run_store_ingest_besteffort/execute_profile_run/write_custom_run_manifest/
@@ -3258,6 +3328,39 @@ def render_analyze_card(suite, benchmark, run_id):
 """
 
 
+def render_testpoint_card(suite, benchmark, run_id):
+    """Report-page "Publish test-point report" card (Tier 3 item 7, doc/REPORT_HIERARCHY.md): resolves
+    run roles (wspy-testpoint select-runs) and renders/commits a curated README.md (wspy-testpoint
+    render) for the *whole test point* this run belongs to -- every stats-pool run sharing
+    suite/benchmark on the given machine, not just this one run. Mirrors render_analyze_card()'s
+    SSE-streamed shape exactly (wireTestpointPublishButton() in app.js is the client-side
+    counterpart). "Machine" has no persisted default anywhere in this UI yet, matching
+    wspy-testpoint's own CLI (--machine, required every invocation, no config-file fallback) --
+    doc/REPORT_HIERARCHY.md's own words are that its naming is "deliberately informal/human-assigned
+    for now", so this doesn't invent a mapping the CLI itself doesn't have either."""
+    url = f"/api/testpoint-publish/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    return f"""
+<h2>Publish test-point report</h2>
+<p class="muted">Resolves run roles (redo/repeat/supplementary) and renders a curated
+   <code>README.md</code> for the <strong>whole test point</strong> this run belongs to -- every
+   <code>stats-pool</code> run sharing <code>{html.escape(suite)}/{html.escape(benchmark)}</code> on
+   the machine below, not just this one run -- then commits it locally into the configured
+   report-root (see <code>doc/REPORT_HIERARCHY.md</code>; this never pushes automatically). Safe to
+   click repeatedly: a human's role overrides and any hand-edited commentary in the resulting report
+   survive a later re-run.</p>
+<form id="testpoint-publish-form">
+  <label>Machine slug <span class="muted">(e.g. amd-395 -- doc/REPORT_HIERARCHY.md's
+    &lt;vendor&gt;-&lt;short-model&gt; convention)</span>
+    <input type="text" id="testpoint-publish-machine" required>
+  </label>
+  <button type="button" id="testpoint-publish-run"
+    data-testpoint-url="{html.escape(url)}">Publish test-point report</button>
+  <pre id="testpoint-publish-log" class="live-output" hidden></pre>
+  <div id="testpoint-publish-result"></div>
+</form>
+"""
+
+
 def _studio_link_and_curated(rundir, base_url, suite, benchmark, run_id, raw_html):
     """Shared tail assembly for both report shapes: the curated block
     sequence (when curation.json has at least one included block) plus the
@@ -3438,6 +3541,7 @@ def render_fixed_report(rundir, suite, benchmark, run_id):
         parts.append(render_proctree_card(suite, benchmark, run_id))
 
     parts.append(render_analyze_card(suite, benchmark, run_id))
+    parts.append(render_testpoint_card(suite, benchmark, run_id))
 
     raw = ["<h2>Artifacts</h2><ul class=\"artifacts\">"]
     plot_pngs = list_plot_pngs(rundir)
@@ -3516,6 +3620,7 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
         parts.append(render_proctree_card(suite, benchmark, run_id))
 
     parts.append(render_analyze_card(suite, benchmark, run_id))
+    parts.append(render_testpoint_card(suite, benchmark, run_id))
 
     accounted_for = {RUN_MANIFEST_NAME}
     raw = []
@@ -4157,6 +4262,12 @@ class Handler(BaseHTTPRequestHandler):
                                  make_report_url=False)
             return
 
+        m = re.match(r"^/api/testpoint-publish/([^/]+)/([^/]+)/([^/]+)/events$", path)
+        if m:
+            self._stream_events(*m.groups(), registry=TESTPOINT_RUNS, lock=TESTPOINT_RUNS_LOCK,
+                                 make_report_url=False)
+            return
+
         self._send(404, "not found")
 
     def do_POST(self):
@@ -4231,6 +4342,21 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "invalid JSON body"})
                 return
             self._start_analyze(cfg, suite, benchmark, run_id, body)
+            return
+
+        m = re.match(r"^/api/testpoint-publish/([^/]+)/([^/]+)/([^/]+)$", parsed.path)
+        if m:
+            suite, benchmark, run_id = m.groups()
+            if not all(valid_segment(x) for x in (suite, benchmark, run_id)):
+                self._send(400, "invalid path")
+                return
+            length = int(self.headers.get("Content-Length", "0"))
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "invalid JSON body"})
+                return
+            self._start_testpoint_publish(cfg, suite, benchmark, run_id, body)
             return
 
         m = re.match(r"^/api/proctree-views/([^/]+)/([^/]+)/([^/]+)$", parsed.path)
@@ -4834,6 +4960,41 @@ class Handler(BaseHTTPRequestHandler):
             "report_url": f"/report/{suite}/{benchmark}/{run_id}",
             "studio_url": f"/studio/{suite}/{benchmark}/{run_id}",
             "command": shell_preview(argv),
+        })
+
+    def _start_testpoint_publish(self, cfg, suite, benchmark, run_id, body):
+        """Report page's "Publish test-point report" button (render_testpoint_card(), Tier 3 item 7):
+        resolves run roles then renders/commits this test point's README into the configured
+        report-root, streamed over SSE via TESTPOINT_RUNS the same way the AI-analysis button uses
+        ANALYZE_RUNS. Operates on the *whole test point* this run belongs to (every stats-pool run
+        sharing suite/benchmark on the given machine) -- run_id only identifies which report page the
+        button was clicked from, not the scope of what gets published."""
+        rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+        if not os.path.isdir(rundir):
+            self._send_json(404, {"error": "no such report"})
+            return
+
+        machine = (body.get("machine") or "").strip()
+        if not machine:
+            self._send_json(400, {"error": "machine is required"})
+            return
+
+        select_runs_argv, render_argv = build_testpoint_publish_argv(cfg, suite, benchmark, machine)
+
+        key = run_key(suite, benchmark, run_id)
+        state = RunState(rundir)
+        with TESTPOINT_RUNS_LOCK:
+            TESTPOINT_RUNS[key] = state
+
+        t = threading.Thread(target=execute_testpoint_publish, args=(
+            state, select_runs_argv, render_argv,
+        ), daemon=True)
+        t.start()
+
+        self._send_json(202, {
+            "suite": suite, "benchmark": benchmark, "run_id": run_id,
+            "events_url": f"/api/testpoint-publish/{suite}/{benchmark}/{run_id}/events",
+            "command": shell_preview(select_runs_argv) + " && " + shell_preview(render_argv),
         })
 
     def _preview(self, cfg, body):
@@ -5596,6 +5757,19 @@ def main():
                      help="path to the wspy-ledger binary (Phoronix tab's 'materialize' action "
                           "registers each new test point with this via --add; default: repo "
                           "root's ./wspy-ledger)")
+    ap.add_argument("--wspy-testpoint", default=os.path.join(REPO_ROOT, "wspy-testpoint"),
+                     help="path to the wspy-testpoint script (report page's 'Publish test-point "
+                          "report' button, Tier 3 item 7; default: repo root's ./wspy-testpoint)")
+    ap.add_argument("--report-root", default=None,
+                     help="report-root git clone path for the 'Publish test-point report' button "
+                          "(default: unset, so wspy-testpoint falls through to its own default "
+                          "chain -- wspy-publish's configured report_root, else a sibling "
+                          "directory). Override to point this whole server instance at a "
+                          "different clone, e.g. a scratch directory for testing.")
+    ap.add_argument("--report-root-remote", default=None,
+                     help="report-root git remote to clone from if --report-root doesn't exist yet "
+                          "(default: unset, so wspy-testpoint uses its own default remote) -- only "
+                          "meaningful together with --report-root")
     ap.add_argument("--run-index-file",
                      help="shared --run-index file every launched run appends to when the "
                           "'record run index' toggle chip is on (default: <output-root>/run_index.jsonl)")
@@ -5657,6 +5831,9 @@ def main():
     if not os.path.isfile(args.wspy_symbolize):
         print(f"warning: wspy-symbolize not found at {args.wspy_symbolize} (the tree viewer's "
               f"'Profile' drill-down will fail until it's present)", file=sys.stderr)
+    if not os.path.isfile(args.wspy_testpoint):
+        print(f"warning: wspy-testpoint not found at {args.wspy_testpoint} (the report page's "
+              f"'Publish test-point report' button will fail until it's present)", file=sys.stderr)
 
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.wspy_cfg = {
@@ -5672,6 +5849,9 @@ def main():
         "wspy_analyze_bin": os.path.abspath(args.wspy_analyze),
         "wspy_symbolize_bin": os.path.abspath(args.wspy_symbolize),
         "wspy_ledger_bin": os.path.abspath(args.wspy_ledger),
+        "wspy_testpoint_bin": os.path.abspath(args.wspy_testpoint),
+        "report_root": os.path.abspath(args.report_root) if args.report_root else None,
+        "report_root_remote": args.report_root_remote,
         "run_index_file": run_index_file,
         "store_db": store_db,
         "jobs_dir": os.path.abspath(args.jobs_dir),

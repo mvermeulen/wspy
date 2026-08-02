@@ -698,11 +698,16 @@ tab (WordPress format) also has a "Publish to WordPress" button once `wspy-publi
 been run — same draft-first pipeline as `wspy-publish publish-page --from-rundir` (images uploaded
 to WordPress's media library, content generated from `curation.json`), just reachable without a
 terminal; the Application Password itself is never entered through this web form, only read from
-the config that `configure`'s `getpass` prompt already wrote.
+the config that `configure`'s `getpass` prompt already wrote. A report page also has a "Publish
+test-point report" card (Tier 3 item 7) that runs `wspy-testpoint select-runs` + `render` for the
+*whole test point* that run belongs to and commits the result into the configured report-root — a
+web-UI wrapper over the same pipeline `wspy-testpoint`'s own CLI runs, streamed live the same way a
+launched workload's own log is.
 
 ```
 python3 web/server.py                  # serves http://127.0.0.1:8765/ by default
 python3 web/server.py --port 9000 --output-root /path/to/runs
+python3 web/server.py --report-root /path/to/workload --report-root-remote git@example.com:you/workload.git
 ```
 
 See `./web/server.py --help` for the full option list.
