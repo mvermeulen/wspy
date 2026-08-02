@@ -1046,6 +1046,13 @@ into the report page: a card runs `select-runs`/`render` in a background thread 
 same shape as the existing AI-narrative-analysis card. Closes (now-former) Tier 3 item 6's
 write-path/trigger scope (the WordPress page-hierarchy bug is a separate, still-open item).
 
+**WordPress REST publishing primitives** (`web/wp_client.py`, `wspy-publish`) — authenticated page
+create/update/draft/publish, media upload, Gutenberg-block content reuse from the existing exporter, and
+a per-report "Publish to WordPress" button in the web UI, all verified against the real
+`mvermeulen.org/workload` site. See `doc/INVESTIGATION_ARCHIVE.md` for the full 8-step build history.
+Does not include the site-wide automated pipeline (walking the whole store to publish/update suite- and
+cross-suite-level pages) Tier 3 item 2 originally asked for — see that item for what's still open.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -1442,206 +1449,25 @@ reasoning as Tier 1 above.
 
 **Tier 3 — publishing/reporting expansion, needs 4.1's report studio:**
 
-2. Static-site publishing pipeline (per-benchmark + suite + cross-suite pages from templates). Distinct
-   from 4.1's per-run curation studio, not a replacement for it: the studio is where one report gets
-   curated by a person; this is what turns *many* already-curated (or un-curated, template-driven)
-   reports into a browsable site. Likely consumes the same export formats (WordPress/HTML/Markdown,
-   4.1) rather than inventing a fourth. **Real publish target identified (2026-07-27):** the author
-   plans a new WordPress site at `mvermeulen.org/workload`, parallel to (not replacing) the existing
-   hand-curated `mvermeulen.org/perf/workloads/` site, specifically to host this pipeline's output — so
-   this item now has a concrete target rather than a generic "some static site" placeholder. Reviewing
-   `/perf/workloads/` as prior art surfaced several findings, confirmed by the author as a reasonable
-   approximation of the intended direction:
-   - **The existing site already validates most of `doc/REPORT_HIERARCHY.md`'s levels 1-3 by hand.**
-     `/perf/workloads/<suite>/` (e.g. `cpu2017`) is a suite-level page whose entire content is one wide
-     reference-matrix table (~30 columns: elapsed/on_cpu/IPC/GHz/stalls/cache/branch/...) with each row
-     linking to `/perf/workloads/<suite>/<benchmark-slug>/` — effectively today's Tier 3 item 5
-     (benchmark reference-matrix) already exists, hand-maintained, one machine at a time. Each benchmark
-     page mixes a short machine-independent description (REPORT_HIERARCHY's `<test>/README.md` content)
-     with machine-specific metrics tables, topdown/AMD-metrics charts, and a process-tree diagram — i.e.
-     today's single page already blends what the convention splits across `<test>/README.md` and
-     `<test-point>/<machine>/README.md`.
-   - **REPORT_HIERARCHY.md's 4th level (`<test-point>/<machine>/`) has no precedent yet.** The existing
-     site's URLs are two-level (`<suite>/<benchmark-slug>/`) because only one machine (a 7840) has ever
-     been published there — it's never had to represent "the same benchmark, a different machine or
-     option combination" as a distinct page. Since `mvermeulen.org/workload` is a *new* site rather than
-     a retrofit, this is a clean opportunity to build the 4-level hierarchy as real WordPress structure
-     from day one (e.g. child pages/posts per test-point/machine under a benchmark parent) instead of
-     inheriting `/perf`'s flattened, single-machine assumption — but the URL/slug scheme for that
-     (parent/child pages? tags/categories? one post per machine with a shared parent?) is undesigned and
-     should be settled before any automated publishing starts, not discovered via a schema migration
-     later.
-   - **Automated publishing, not just export, is the actual remaining gap.** 4.1 already ships a
-     Gutenberg-block WordPress renderer (`render_export_wordpress()`, `web/server.py`) but only as a
-     copy-paste-into-the-block-editor textarea/download — there's no WP REST API call anywhere in this
-     codebase. A real pipeline (vs. today's per-run manual export) needs authenticated create/update-post
-     calls against `mvermeulen.org/workload`'s WP REST API, idempotent on some stable key (test-point +
-     machine, matching REPORT_HIERARCHY's directory key) so re-running the pipeline updates the existing
-     post instead of duplicating it — mirroring the same "living document, not write-once" concern the
-     now-shipped `wspy-testpoint render` pipeline already solved for the README this would be generated
-     from.
-   - **Image hosting is a known, explicitly-flagged gap that blocks full automation.** The export page's
-     own UI copy (`web/server.py`, ~line 1798) already tells a human to manually re-upload images to the
-     target CMS's media library and swap the URL — fine for one-off copy-paste export, a hard blocker for
-     an unattended pipeline. Needs the WP REST API's media-upload endpoint wired in before charts/tree
-     diagrams (both present on every existing `/perf` benchmark page) can publish unattended.
-   - **Suite/root-level rollup content, `doc/REPORT_HIERARCHY.md`'s own open question, now has a
-     concrete model to follow.** The existing `/perf` suite pages' single wide comparison table is
-     exactly the shape Tier 3 item 5 already described in the abstract — the new site doesn't need to
-     invent suite-level content from scratch, just decide whether to generate that same table shape from
-     `wspy-store` instead of hand-maintaining it.
-   - **Next sub-steps toward automated publishing (2026-07-27, from external research into WP REST API
-     practice, not yet started):** ordered so each step is independently useful/testable before the next:
-     1. **Get `mvermeulen.org/workload` itself stood up first** — the WP site has to exist (hosting,
-        install, theme, page/child-page structure for the 4-level hierarchy per the open URL/slug
-        question above) before any of the below has a target to talk to. Blocks everything else in this
-        list. **Done (2026-07-30):** the site is live at `https://www.mvermeulen.org/workload`,
-        `wp-json/` responds and advertises `authentication.application-passwords` (HTTPS + Application
-        Password auth confirmed working, see step 2/3 below). A static front page exists (`id=12`, slug
-        `home`) plus two hand-created top-level suite stub pages, `cpu2026` (`id=17`) and `phoronix`
-        (`id=15`), both still childless.
-     2. **Dedicated service-account WP user, not the author's own admin login** — create a low-privilege
-        user (Editor role, or Author if posts only need to be self-owned) scoped to this pipeline, e.g.
-        `wspy-publisher`; never authenticate the pipeline as an Administrator. Generate a WordPress
-        **Application Password** (native since WP 5.6, under that user's Users → Profile screen) rather
-        than the account's real login password — it's independently revocable if the publishing host is
-        ever compromised, without touching human logins. HTTPS is mandatory: WP disables Basic Auth over
-        plain HTTP by default, so `mvermeulen.org/workload` needs TLS before this step is testable.
-        **Done (2026-07-30):** a dedicated `wspy` account (Contributor role + custom capabilities, not
-        Administrator) with an Application Password. Required capabilities for the page create/publish
-        flow below: `edit_pages`, `edit_published_pages`, `publish_pages`, `upload_files` — a stock
-        Contributor has none of these, so the "custom capabilities" grant on this account needs to cover
-        them; `wspy-publish test-connection` (below) checks and reports exactly which are present/missing
-        rather than assuming.
-     3. **Minimal REST client wired into this codebase** — likely a small new script (Python, matching
-        `wspy-analyze`/`wspy-bundle`/`wspy-queue`'s existing Python-tool pattern rather than adding to the
-        C build) doing authenticated `POST`/`PUT` against `/wp-json/wp/v2/pages` with HTTP Basic Auth
-        (`Authorization: Basic base64(user:app_password)`). Start with a single hardcoded test page to
-        prove auth + connectivity before wiring in real content. **Done, connectivity proven live
-        (2026-07-31):** `web/wp_client.py` (stdlib `urllib` only, no new dependency — matches
-        `wspy-analyze`'s Ollama client and `web/joblib.py`'s OpenBenchmarking fetch) plus the new
-        top-level `wspy-publish` tool (`configure`/`test-connection` subcommands; see README's
-        "wspy-publish" section and this file's Architecture table). `test-connection` authenticates,
-        reports capabilities, looks up the two existing suite stub pages above (proving find-by-slug works
-        against real data without duplicating them), and creates one throwaway draft page — all confirmed
-        working end to end against the real site. Getting there needed one more fix than expected: IONOS
-        (the site's host) drops the `Authorization` header entirely before PHP ever sees it, defeating
-        every standard server-side recovery trick; `web/wp_client.py` works around it by also sending the
-        credential under a custom `X-WSPY-Authorization` header, recovered server-side by a small installed
-        plugin (`scripts/wp-auth-bridge.php`) — see `doc/INVESTIGATION_ARCHIVE.md`'s "Non-obvious
-        implementation traps" for the full diagnosis (worth reading before debugging any *other* REST/auth
-        integration that shows a generic "not logged in" against a real host). Credentials live in
-        `~/.config/wspy/publish.json` (mode 600, written interactively via `getpass` so the Application
-        Password never touches shell
-        history or an AI assistant's conversation transcript) — resolves this item's credential-handling
-        question, which hadn't been decided before now. **Report-root git connectivity proven too
-        (2026-07-31), same tool:** `wspy-publish test-connection` also clone-or-verifies a local
-        checkout of the report-root repo (`doc/REPORT_HIERARCHY.md`'s `WSPY_REPORT_ROOT` convention,
-        now `github.com/mvermeulen/workload`, created 2026-07-30) and writes/commits a root
-        `README.md` if none exists yet — local commit only, `wspy-publish` never pushes on its own,
-        since a push is a shared/visible action left to an explicit human decision every time.
-     4. **Idempotent create-or-update keyed on test-point+machine** — the create-vs-update decision
-        already flagged above (mirroring the README "living document" concern) needs the WP page ID
-        looked up first (by slug or stored custom `meta`, e.g. a `_wspy_report_key` field set on first
-        publish) so re-running the pipeline `PUT`s the existing post instead of creating a duplicate.
-        **URL/slug scheme and lookup key resolved (2026-07-30):** WordPress's native page parent/child
-        nesting maps one page per `doc/REPORT_HIERARCHY.md` level, exactly matching the two hand-created
-        suite pages above (top-level, `parent=0`) rather than inventing a different scheme. The lookup key
-        is `(slug, parent)` — WordPress's own uniqueness rule for hierarchical post types — walked
-        top-down one level at a time (`wp_client.find_or_create_page_path()`), **not** a custom `meta`
-        field: exposing custom page meta over the REST API needs `register_post_meta(...,
-        show_in_rest=>true)`, an Administrator-only WP-side plugin/mu-plugin install, which is more moving
-        parts than a stock-REST-API slug+parent lookup needs. Still open: this resolves *lookup*, not the
-        full create-or-update *content* flow (comparing/merging generated content against a page a human
-        may have since hand-edited) — that's real remaining scope once actual report content is being
-        written, not just located.
-     5. **Draft-first, not direct-publish** — mirrors the mobile-app REST client pattern: `POST` with
-        `status: "draft"`, verify the response (id/link, 201 vs error), optionally populate meta, only
-        then flip to `status: "publish"` in a follow-up `POST`. Avoids a half-formed public page if the
-        pipeline dies mid-run (network drop, wspy-store query failure, etc.) — matters more here than for
-        one-off human copy-paste export since this runs unattended. **Done (2026-08-01):**
-        `wp_client.get_page()`/`publish_page()` (the latter just `update_page(..., status="publish")`,
-        kept as its own named call so the two POSTs stay visibly distinct) plus a new `wspy-publish
-        publish-page` subcommand — single-page primitive only (no hierarchy walk, that's
-        `find_or_create_page_path()`'s job; no smart merge against a page a human has since hand-edited,
-        that's sub-step 4's still-open question). Find-or-create-as-draft plus content update happen
-        immediately; the final `status=publish` flip requires an explicit `--publish` flag on the same or
-        a later invocation, so testing/dry-running this against the real site never publishes anything
-        by accident. Unit-tested (`web/test_wp_client.py`) with the HTTP layer mocked, matching this
-        file's existing convention; not yet exercised against the real site or wired into any actual
-        content-rendering caller (sub-step 7).
-     6. **Media upload endpoint before charts/tree diagrams can go in** — the known gap flagged above.
-        `POST /wp-json/wp/v2/media` (multipart) per image, capture the returned attachment ID, reference
-        it as `featured_media` or inline in block markup — needed before any benchmark page can include
-        the topdown/AMD-metrics charts or process-tree diagram that today's hand-curated `/perf/workloads`
-        pages already have. **Done (2026-08-01):** `wp_client.upload_media()` — WordPress's documented
-        raw-binary upload method (`Content-Type: <mime>` + a `Content-Disposition: attachment` header
-        carrying the filename, body = the file's raw bytes) rather than `multipart/form-data`, so no
-        library beyond stdlib `mimetypes` is needed for a single-file upload; `request()` grew a
-        `raw_body`/`content_type`/`extra_headers` escape hatch alongside its existing `json_body` path to
-        support it, reusing the same error handling. `update_media()` sets `alt_text`/`title`/`caption` as
-        a separate follow-up POST (the raw upload's body has no room for JSON fields). New `wspy-publish
-        upload-media` subcommand (`--alt-text`/`--title`/`--caption`, `--set-featured-on <page-id>` to
-        attach it to a page's `featured_media`). Unlike `publish-page`'s pages, WordPress attachments have
-        no draft state — the upload itself is the only step, live in the media library immediately;
-        verified against the real site (id=24, a throwaway 1x1 test PNG). Referencing the id inline in
-        Gutenberg block markup (`<!-- wp:image {"id":<id>} -->`) is sub-step 7's job, not built here.
-     7. **Reuse `render_export_wordpress()`'s Gutenberg block markup as the `content` payload** — the 4.1
-        exporter already emits valid `<!-- wp:... -->` block-comment HTML for copy-paste; the REST
-        pipeline's `page_data["content"]` can likely consume that same generator's output directly rather
-        than building block markup a second way, so the export path and the automated-publish path share
-        one source of truth for "what a rendered report looks like as WP blocks." **Done (2026-08-01):**
-        `wspy-publish` now `import server as web_export`s `web/server.py` directly (guarded by its own
-        `__main__` check, so importing it never starts the HTTP server) and calls its real
-        `_export_data()`/`render_export_wordpress()` — the same functions the web UI's own export tab
-        uses — rather than reimplementing block-markup generation. The one real gap this surfaced:
-        `render_export_wordpress()` always baked in this server's own `/files/...` URL for a curated
-        image block, which only resolves while that server keeps running (the doc's own words, quoted in
-        `web/server.py`: "not something that resolves once this server stops running") — so
-        `export_block_content()`/`render_export_wordpress()` grew an optional `image_url` resolver
-        parameter (default `None`, so the web UI's own existing export tab is unaffected) that
-        `wspy-publish publish-page --from-rundir <dir>` uses to substitute each `depth="full"` image
-        block's just-uploaded (sub-step 6) WordPress media URL in place of the local one. Non-image
-        "full file" reference links (summary/excerpt text/CSV blocks) still need `--base-url` pointed at
-        a real reachable web launcher, or they render relative/dead — those files aren't uploaded
-        anywhere by this step, only images are (matches this item's own "charts/tree diagrams" framing
-        for sub-step 6, not every artifact type). New tests: `web/test_export_render.py` (the
-        `image_url` override, HTTP-free). **Verified against the real site (2026-08-01):** a real run
-        directory's plot PNGs, curated and published via `publish-page --from-rundir` — the resulting
-        page's content correctly carries the uploaded `mvermeulen.org` media URLs, not `127.0.0.1`.
-        Content *merge* against a page a human has since hand-edited (sub-step 4) is still open — this
-        item is "reuse the renderer," not "solve idempotent publish." The report-root hierarchy-level
-        write path this tier's own outer list once flagged as depending on this work has since shipped
-        separately (see "Shipped since 4.2").
-     8. **"Publish to WordPress" button in the web UI, over the same sub-step 5/6/7 primitives** — not
-        from the original 2026-07-27 external-research list above, added once those primitives existed
-        and made a CLI-only publish path feel like an artificial gap for a report already open in the
-        browser. **Done (2026-08-01):** `web/server.py`'s Export tab (`?format=wordpress`) gained a
-        "Publish to WordPress" panel — slug/parent-id/title fields plus a "Publish immediately"
-        checkbox (default off, same drafts-first default as the CLI) — that `POST`s to a new
-        `/publish/<suite>/<benchmark>/<run_id>` route. That route derives `base_url` from the
-        request's own `Host` header (the CLI has no such context, hence its `--base-url` flag), then
-        calls the same two functions the CLI now shares: `render_wordpress_content_for_rundir()`
-        (moved from wspy-publish into `web/server.py` itself, since `wspy-publish` already imports
-        `server.py`, not the other way around, so no circular import) and a new
-        `wp_client.publish_page_content()` (find-or-create by slug/parent, set content, optionally
-        publish — the same orchestration `publish-page --slug` used inline, now factored out so the
-        CLI and the web UI can't drift into different find-or-create behavior). No credential entry
-        point in the web form itself, by design — `wp_client.load_config()` (also newly shared, was
-        wspy-publish-only before) just reads the config `wspy-publish configure`'s terminal-only
-        `getpass` prompt already wrote; a missing config renders a message pointing at that command
-        rather than a form field. Caught a real bug in sub-step 7's original merge: a *failed* image
-        upload left that filename out of the `{filename: url}` map, and `image_url=image_urls.get`
-        then fed `export_block_content()` a literal `None` as the image `src` instead of falling back
-        to the local URL — `export_block_content()` now treats a falsy `image_url()` return as "no
-        override," matching `dict.get()`'s own missing-key default rather than requiring every caller
-        to build a fallback-aware closure. New tests: `web/test_wp_client.py`
-        (`publish_page_content()`/`load_config()`), `web/test_export_render.py`
-        (`render_wordpress_content_for_rundir()`, including the upload-failure fallback path).
-        **Verified against the real site end to end through the actual running server** (not just the
-        underlying functions): `curl`-submitted the real HTML form to a locally-running
-        `web/server.py`, which uploaded a real plot PNG and created a real draft page
-        (`mvermeulen.org/workload`) with the correct embedded media URL.
+2. Static-site publishing pipeline (per-benchmark + suite + cross-suite pages from templates), targeting
+   a new WordPress site at `mvermeulen.org/workload` (parallel to, not replacing, the author's existing
+   hand-curated `mvermeulen.org/perf/workloads/`). **REST auth/page/media primitives, a CLI
+   (`wspy-publish`), and a per-report "Publish to WordPress" web UI button are shipped** — see "Shipped
+   since 4.2" and `doc/INVESTIGATION_ARCHIVE.md` for the full build history — but only as a human
+   publishing one report at a time. Two things this item originally asked for are still open:
+   - **The actual site-wide pipeline.** Nothing yet walks the whole `wspy-store` and generates/updates
+     suite-level (a ~30-column reference-matrix table, matching `/perf/workloads/<suite>/`'s existing
+     hand-maintained shape) or cross-suite rollup pages — today's tooling only publishes individual
+     benchmark/test-point pages, one human click at a time. Depends on item 5's reference-matrix
+     database as the suite-level data source (deciding whether to generate that table from the store
+     instead of hand-maintaining it is exactly item 5's own open question).
+   - **Idempotent content merge.** Re-publishing over a page a human has since hand-edited only does
+     page *lookup* (by slug/parent) today, not a real merge against existing hand-edits — re-running
+     publish on an already-curated page would blindly overwrite it.
+   - Also affected by item 6's page-hierarchy bug: `publish_page_content()` (used by both the CLI and
+     the web button) does its own flat `(slug, parent)` lookup rather than calling the hierarchy-walking
+     `find_or_create_page_path()` built in sub-step 4 of the archived build history, so every page
+     published through either path lands at WordPress root today regardless of which item fixes it.
 3. Characterization badges + similarity panels in reports — a new block type in 4.1's curation studio
    drawing a badge from 4.2's (shipped) archetype scorecard (`wspy-archetype`), not a separate report
    surface.
