@@ -1087,6 +1087,13 @@ now link back to their catalog entry (`publish_page_at_path()`'s new `stub_conte
 `wspy-publish`) lets both the CLI and the web UI's publish form remember a machine once registered,
 instead of retyping it every time. Verified live against the real site.
 
+**Phoronix test-point stub auto-populated at publish time** (PR #192) — publishing a run already gave
+its auto-created machine-level page a real catalog link (PR #191); now the test-point-level page above
+it (e.g. `/phoronix/openssl/sha256/`) also gets real content (`test_id`/`arguments`) automatically,
+instead of staying empty until a separate manual `scripts/publish_phoronix_pages.py` re-run. New
+`joblib.find_materialized_phoronix_test_point()`/`test_point_wp_content()` (the latter moved out of the
+script, now shared). Phoronix only for now — verified live against the real site.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
