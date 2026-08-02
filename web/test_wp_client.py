@@ -391,5 +391,57 @@ class PublishPageContentTest(unittest.TestCase):
         self.assertEqual(page["status"], "publish")
 
 
+class PublishPageAtPathTest(unittest.TestCase):
+    def test_reuses_existing_parent_and_publishes_leaf_content(self):
+        # Mirrors the real site's state: "cpu2026" already exists (id=17); its child
+        # benchmark page does not yet.
+        with patch("wp_client.find_page",
+                   return_value={"id": 17, "slug": "cpu2026", "parent": 0}) as fake_find, \
+             patch("wp_client.create_page") as fake_create, \
+             patch("wp_client.publish_page_content",
+                   return_value=({"id": 100, "status": "draft"}, True)) as fake_publish_content:
+            page, created = wp_client.publish_page_at_path(
+                "https://example.org/workload", "wspy", "secret",
+                [("cpu2026", "cpu2026"), ("706.stockfish_r", "706.stockfish_r")],
+                "<p>hi</p>")
+
+        fake_find.assert_called_once_with(
+            "https://example.org/workload", "wspy", "secret", "cpu2026", 0)
+        fake_create.assert_not_called()
+        fake_publish_content.assert_called_once_with(
+            "https://example.org/workload", "wspy", "secret", "706.stockfish_r", 17,
+            "706.stockfish_r", "<p>hi</p>", do_publish=False)
+        self.assertTrue(created)
+        self.assertEqual(page["id"], 100)
+
+    def test_creates_missing_parent_stubs_before_publishing_leaf(self):
+        with patch("wp_client.find_page", return_value=None), \
+             patch("wp_client.create_page",
+                   return_value={"id": 200, "slug": "phoronix", "parent": 0}) as fake_create, \
+             patch("wp_client.publish_page_content",
+                   return_value=({"id": 201, "status": "draft"}, True)) as fake_publish_content:
+            wp_client.publish_page_at_path(
+                "https://example.org/workload", "wspy", "secret",
+                [("phoronix", "Phoronix"), ("coremark", "coremark")],
+                "<p>hi</p>")
+
+        fake_create.assert_called_once_with(
+            "https://example.org/workload", "wspy", "secret", "phoronix", "Phoronix", 0)
+        fake_publish_content.assert_called_once_with(
+            "https://example.org/workload", "wspy", "secret", "coremark", 200,
+            "coremark", "<p>hi</p>", do_publish=False)
+
+    def test_single_level_publishes_directly_under_root(self):
+        with patch("wp_client.publish_page_content",
+                   return_value=({"id": 17, "status": "draft"}, False)) as fake_publish_content:
+            wp_client.publish_page_at_path(
+                "https://example.org/workload", "wspy", "secret",
+                [("cpu2026", "cpu2026")], "<p>hi</p>", do_publish=True)
+
+        fake_publish_content.assert_called_once_with(
+            "https://example.org/workload", "wspy", "secret", "cpu2026", 0,
+            "cpu2026", "<p>hi</p>", do_publish=True)
+
+
 if __name__ == "__main__":
     unittest.main()

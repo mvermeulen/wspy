@@ -268,6 +268,27 @@ def find_or_create_page_path(site_url, username, app_password, levels, status="d
     return out
 
 
+def publish_page_at_path(site_url, username, app_password, levels, content, do_publish=False):
+    """Walk levels[:-1] top-down, creating each as an empty draft stub only if missing (never
+    overwriting an existing page, e.g. a hand-created suite stub) -- the same find-or-create logic
+    find_or_create_page_path() already uses -- then publish_page_content() the final (leaf) level
+    with real content. Neither existing primitive covers this alone: find_or_create_page_path() has
+    no content parameter, and publish_page_content() only operates at one flat (slug, parent) level
+    with no walk. Closes that gap (INVESTIGATION.md Tier 3 item 6) for callers that build a page at
+    an exact hierarchy path, e.g. levels=[("cpu2026", "cpu2026"), ("706.stockfish_r",
+    "706.stockfish_r")]. Returns (page_dict, created_bool) for the leaf page only, same shape as
+    publish_page_content()."""
+    *parent_levels, (leaf_slug, leaf_title) = levels
+    parent_id = 0
+    for slug, title in parent_levels:
+        page = find_page(site_url, username, app_password, slug, parent_id)
+        if page is None:
+            page = create_page(site_url, username, app_password, slug, title, parent_id)
+        parent_id = page["id"]
+    return publish_page_content(site_url, username, app_password, leaf_slug, parent_id, leaf_title,
+                                 content, do_publish=do_publish)
+
+
 def upload_media(site_url, username, app_password, file_path, mime_type=None, timeout=60):
     """POST a file's raw bytes to /wp/v2/media -- WordPress's documented
     "raw binary" upload method (Content-Type set to the file's MIME type,
