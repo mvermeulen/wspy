@@ -19,10 +19,13 @@ established for per-run blocks (new_block(), web/server.py), applied here one le
 feed a report, not which artifacts within one run do.
 
 `aggregate` turns a resolved stats-pool run set into real statistics via `wspy-summary --run-id
-<hostname>:<run_id>` (one per present run) -- not `--command`/`--hostname`, which can't distinguish a
-redo (case 1 above) from the runs it's redoing when they share identical command text, the single most
-common reason a test point ever needs role-assignment in the first place. Requires the runs already be
-ingested into the target `wspy-store` database (never auto-ingests -- a run only has a run-index record
+<hostname>:<run_id>` (one per present run's own store row(s) -- resolve_store_pass_rows() below expands a
+single runs.json entry, which names a *run directory*, into every underlying wspy-store `runs` row that
+directory's passes actually produced, since a directory-level run_id from wspy-run's own naming is never
+itself a store run_id) -- not `--command`/`--hostname`, which can't distinguish a redo (case 1 above)
+from the runs it's redoing when they share identical command text, the single most common reason a test
+point ever needs role-assignment in the first place. Requires the runs already be ingested into the
+target `wspy-store` database (never auto-ingests -- a run only has a run-index record to ingest at all
 if it was launched with `--run-index` in the first place, so there's no reliable way to synthesize one
 retroactively); missing runs are warned about, not silently dropped.
 
@@ -324,14 +327,50 @@ def cmd_select_runs(args):
     return 0 if ok else 1
 
 
-def split_by_store_presence(db_path, stats_pool):
-    """Returns (present, missing) -- which of stats_pool's runs actually have a matching
-    (hostname, run_id) row in the store's `runs` table, checked with a read-only query rather than
-    blindly trusting runs.json and letting wspy-summary silently report zero matches with no
+def escape_like(s):
+    """Escapes %, _, and \\ for safe interpolation into a SQL LIKE pattern (ESCAPE '\\') -- benchmark
+    names routinely contain underscores (e.g. "707.ntest_r-gcc_O3-base"), which LIKE would otherwise
+    treat as a single-character wildcard and silently over-match."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def resolve_store_pass_rows(cur, hostname, suite, benchmark, run_id):
+    """Returns [(store_run_id, config_name), ...] for one candidate run's actual rows in the store.
+    A run_id from runs.json/select-runs names a *run directory* (wspy-run's own naming, one manifest.json
+    per directory) -- but wspy-store's `runs` table is keyed by each underlying wspy invocation's own
+    run-index run_id, generated independently per pass (run_index.c) and never equal to the directory
+    name. wspy-run's unified --suite/--benchmark layout always writes every pass's manifest/output files
+    under <output_root>/<suite>/<benchmark>/<run_id>/, and that path is preserved verbatim in the store's
+    own output_path/manifest_path columns (store.c) regardless of what --output-root prefix the ingesting
+    host used -- so matching on the "/<suite>/<benchmark>/<run_id>/" suffix identifies every pass row
+    belonging to this exact run directory without needing --output-root here at all. Also tries an exact
+    (hostname, run_id) match, kept for the "bare wspy run dropped into this layout by hand" case
+    (read_run_passes()'s own docstring) where a human names the directory after the run-index record's own
+    run_id directly, and it's what the existing test fixtures already model -- so a real wspy-run
+    multi-pass directory and a single hand-placed run both resolve correctly here."""
+    pattern = "%/" + escape_like(suite) + "/" + escape_like(benchmark) + "/" + escape_like(run_id) + "/%"
+    cur.execute(
+        "SELECT run_id, config_name FROM runs WHERE hostname = ? AND "
+        "(manifest_path LIKE ? ESCAPE '\\' OR output_path LIKE ? ESCAPE '\\')",
+        (hostname, pattern, pattern))
+    rows = dict(cur.fetchall())
+    cur.execute("SELECT run_id, config_name FROM runs WHERE hostname = ? AND run_id = ?",
+                (hostname, run_id))
+    rows.update(cur.fetchall())
+    return list(rows.items())
+
+
+def split_by_store_presence(db_path, suite, benchmark, stats_pool):
+    """Returns (present, missing) -- which of stats_pool's runs actually have at least one matching row
+    in the store's `runs` table (resolve_store_pass_rows() above), checked with a read-only query rather
+    than blindly trusting runs.json and letting wspy-summary silently report zero matches with no
     indication why. Never ingests on demand -- same "requires a pre-populated --db" contract
     wspy-summary/wspy-archetype themselves already have, and a run only has a run-index record to
     ingest at all if it was launched with --run-index in the first place, so there's no reliable way
-    to synthesize one retroactively for a run that predates that."""
+    to synthesize one retroactively for a run that predates that. Each present run gets two new keys:
+    store_pass_ids (every resolved store run_id, for wspy-summary's --run-id, one per pass so aggregate
+    covers the run's full collection scope) and store_pass_configs ((run_id, config_name) pairs, for
+    collect_archetype_scorecards() to pick one representative pass)."""
     if not os.path.isfile(db_path):
         return [], list(stats_pool)
     conn = sqlite3.connect(db_path)
@@ -339,9 +378,11 @@ def split_by_store_presence(db_path, stats_pool):
         cur = conn.cursor()
         present, missing = [], []
         for r in stats_pool:
-            cur.execute("SELECT 1 FROM runs WHERE hostname = ? AND run_id = ? LIMIT 1",
-                        (r["hostname"], r["run_id"]))
-            (present if cur.fetchone() else missing).append(r)
+            rows = resolve_store_pass_rows(cur, r["hostname"], suite, benchmark, r["run_id"])
+            if rows:
+                present.append(dict(r, store_pass_ids=[row[0] for row in rows], store_pass_configs=rows))
+            else:
+                missing.append(r)
         return present, missing
     finally:
         conn.close()
@@ -367,7 +408,7 @@ def load_stats_pool_present(args, runs_json_path):
               file=sys.stderr)
         return None, None
 
-    present, missing = split_by_store_presence(args.db, stats_pool)
+    present, missing = split_by_store_presence(args.db, args.suite, args.benchmark, stats_pool)
     if missing:
         print("wspy-testpoint: warning: %d of %d stats-pool run(s) not found in %s -- run `wspy-store "
               "--db %s --run-index <run-index.jsonl>` to ingest them first:\n  %s" % (
@@ -388,7 +429,8 @@ def cmd_aggregate(args):
 
     argv = [args.wspy_summary_bin, "--db", args.db]
     for r in present:
-        argv += ["--run-id", "%s:%s" % (r["hostname"], r["run_id"])]
+        for store_run_id in r["store_pass_ids"]:
+            argv += ["--run-id", "%s:%s" % (r["hostname"], store_run_id)]
     if args.csv:
         argv.append("--csv")
     for m in args.metric or []:
@@ -465,18 +507,32 @@ def render_supplementary_section(data):
     return "\n".join(lines) + "\n"
 
 
+def pick_archetype_pass_id(r):
+    """--run takes exactly one store run_id (unlike aggregate's --run-id, which is repeatable), but a
+    real run has one store row per collection pass (resolve_store_pass_rows()). Prefers the "counters"
+    pass -- the widest single counter set (IPC/topdown/cache/branch/software) and the closest match to
+    what wspy-archetype's feature extraction was built against -- falling back to whichever pass id
+    resolved first if a run has no pass tagged "counters" (e.g. a profile that never collects one)."""
+    for store_run_id, config_name in r["store_pass_configs"]:
+        if config_name == "counters":
+            return store_run_id
+    return r["store_pass_ids"][0]
+
+
 def collect_archetype_scorecards(wspy_archetype_bin, db_path, present):
     """Runs `wspy-archetype --run <hostname>:<run_id>` once per present run (no bulk --command/
     --hostname filter needed here, unlike aggregate's own wspy-summary call -- --run already names an
-    exact run, so the redo-vs-repeat ambiguity that motivated --run-id in summary.c doesn't apply) and
-    parses its key=value output (archetype.c's print_trace_field(): one `key=value` per line, no
-    quoting) into a dict per run. A run wspy-archetype can't find -- shouldn't happen, since
-    split_by_store_presence() already confirmed it's in the store, but degrade rather than crash if it
-    somehow is -- is skipped with a warning, same as a missing/failing binary (an empty result list),
-    rather than aborting the whole render over an optional section."""
+    exact run, so the redo-vs-repeat ambiguity that motivated --run-id in summary.c doesn't apply),
+    against one representative store pass per run (pick_archetype_pass_id()), and parses its key=value
+    output (archetype.c's print_trace_field(): one `key=value` per line, no quoting) into a dict per run.
+    A run wspy-archetype can't find -- shouldn't happen, since split_by_store_presence() already
+    confirmed it's in the store, but degrade rather than crash if it somehow is -- is skipped with a
+    warning, same as a missing/failing binary (an empty result list), rather than aborting the whole
+    render over an optional section."""
     scorecards = []
     for r in present:
-        argv = [wspy_archetype_bin, "--db", db_path, "--run", "%s:%s" % (r["hostname"], r["run_id"])]
+        pass_run_id = pick_archetype_pass_id(r)
+        argv = [wspy_archetype_bin, "--db", db_path, "--run", "%s:%s" % (r["hostname"], pass_run_id)]
         try:
             proc = subprocess.run(argv, capture_output=True, text=True)
         except OSError as e:
@@ -484,8 +540,9 @@ def collect_archetype_scorecards(wspy_archetype_bin, db_path, present):
                   "characterization" % (wspy_archetype_bin, e), file=sys.stderr)
             return scorecards
         if proc.returncode != 0:
-            print("wspy-testpoint: warning: %s --run %s:%s failed: %s" % (
-                wspy_archetype_bin, r["hostname"], r["run_id"], proc.stderr.strip()), file=sys.stderr)
+            print("wspy-testpoint: warning: %s --run %s:%s (run %s) failed: %s" % (
+                wspy_archetype_bin, r["hostname"], pass_run_id, r["run_id"], proc.stderr.strip()),
+                file=sys.stderr)
             continue
         fields = {"run_id": r["run_id"]}
         for line in proc.stdout.splitlines():
@@ -591,7 +648,8 @@ def cmd_render(args):
 
     argv = [args.wspy_summary_bin, "--db", args.db, "--csv", "--quiet"]
     for r in present:
-        argv += ["--run-id", "%s:%s" % (r["hostname"], r["run_id"])]
+        for store_run_id in r["store_pass_ids"]:
+            argv += ["--run-id", "%s:%s" % (r["hostname"], store_run_id)]
     try:
         proc = subprocess.run(argv, capture_output=True, text=True)
     except OSError as e:

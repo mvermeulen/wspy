@@ -243,6 +243,52 @@ fi
 [ "$FAIL" -eq 0 ] && echo "missing runs.json error handling OK"
 
 echo ""
+echo "=== Testing aggregate: a real wspy-run multi-pass run resolves via directory, not run_id equality ==="
+# A run collected by wspy-run's own --suite/--benchmark layout never has its directory name (runs.json's
+# run_id, wspy-run's own naming) equal to any pass's own run-index run_id -- each pass is a separate wspy
+# invocation with its own independently-generated id (run_index.c). Regression coverage for the bug this
+# fixed: aggregate must resolve a stats-pool entry to *all* of its passes' real store rows by directory
+# path, not by treating the directory name itself as a store run_id.
+MPDIR="$OUTROOT/manual/multipassbench/wraprun1"
+mkdir -p "$MPDIR"
+echo "ipc" > "$MPDIR/counters.csv"; echo "2.00" >> "$MPDIR/counters.csv"
+echo "cpu_pct" > "$MPDIR/systemtime.csv"; echo "55.0" >> "$MPDIR/systemtime.csv"
+build_pass_record() {
+    local run_id="$1" csvfile="$2"
+    cat <<EOF
+{"schema_version":"1.9.0","run_id":"$run_id","collector":"wspy","wspy_version":"4.0","hostname":"mphost","cpu_vendor":"AMD","cpu_family":25,"cpu_model":1,"environment":{"virt_role":"host","hypervisor_vendor":null,"microcode_version":null,"bios_vendor":null,"bios_version":null,"bios_date":null,"cpu_governor":null,"cpu_scaling_driver":null,"cpu_governor_uniform":false,"memory_total_kb":null,"compiler_version":null,"libc_version":null},"environment_coverage":{"captured":0,"probed":9},"start_time":"2026-08-01T00:00:00Z","finish_time":"2026-08-01T00:00:00Z","elapsed_seconds":1.0,"command":["true"],"exit_status":{"known":true,"exited":true,"exit_code":0,"signaled":false,"term_signal":null},"options":{"counter_mask":"0x1","per_core":false,"system":true,"csv":true,"tree":false,"interval_seconds":0},"counter_coverage":{"requested":4,"measured":4},"output_files":{"output_path":"$csvfile","tree_output_path":null,"manifest_path":null}}
+EOF
+}
+{
+    build_pass_record wraprun1-pass-counters "$MPDIR/counters.csv"
+    build_pass_record wraprun1-pass-systemtime "$MPDIR/systemtime.csv"
+} > "$WORKDIR/multipass_run_index.jsonl"
+./wspy-store --db "$STOREDB" --run-index "$WORKDIR/multipass_run_index.jsonl" >/dev/null || \
+    fail "wspy-store ingestion (multi-pass fixture) failed"
+
+MP_TP_DIR="$REPORTROOT/manual/multipassbench/default/mp-machine"
+mkdir -p "$MP_TP_DIR"
+cat > "$MP_TP_DIR/runs.json" <<'EOF'
+{
+  "schema_version": "1.0",
+  "suite": "manual", "test": "multipassbench", "test_point": "default", "machine": "mp-machine",
+  "primary_run_id": "wraprun1", "primary_human_set": false,
+  "runs": [
+    {"run_id": "wraprun1", "benchmark": "multipassbench", "hostname": "mphost", "status": "ok", "command": "true", "start_time": "2026-08-01T00:00:00Z", "role": "stats-pool", "human_set": false, "reason": "test"}
+  ]
+}
+EOF
+
+OUT="$(./wspy-testpoint aggregate --suite manual --benchmark multipassbench --machine mp-machine \
+    --report-root "$REPORTROOT" --db "$STOREDB" --csv 2>&1)"
+echo "$OUT" | grep -q "not found in" && fail "multi-pass run wrongly reported not found in store: $OUT"
+echo "$OUT" | grep -qE '^true,ipc,1,2(\.0+)?,2(\.0+)?,2(\.0+)?,' || \
+    fail "expected the counters pass's ipc=2.00 in aggregate output, got: $OUT"
+echo "$OUT" | grep -qE '^true,cpu_pct,1,55' || \
+    fail "expected the systemtime pass's cpu_pct=55.0 in aggregate output, got: $OUT"
+[ "$FAIL" -eq 0 ] && echo "multi-pass directory resolution OK"
+
+echo ""
 echo "=== Testing render: README.md/curation.json content, correctness carried through from aggregate ==="
 REN_TP_DIR="$REPORTROOT/manual/renderbench/default/render-machine"
 mkdir -p "$REN_TP_DIR"
