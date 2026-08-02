@@ -68,6 +68,8 @@ RUNS_JSON_NAME = "runs.json"
 RUNS_JSON_SCHEMA_VERSION = "1.0"
 ROLES = ("stats-pool", "supplementary", "excluded")
 DEFAULT_PHORONIX_DEST_ROOT = os.path.join(joblib.REPO_ROOT, "workload", "phoronix")
+DEFAULT_CPU2026_DEST_ROOT = os.path.join(joblib.REPO_ROOT, "workload", "cpu2026")  # matches web/server.py's
+                                                                                    # own CPU2026_DEST_ROOT
 DEFAULT_OUTPUT_ROOT = os.path.join(SCRIPT_DIR, "web", "runs")  # matches web/server.py's own default
 DEFAULT_STORE_DB = os.path.join(DEFAULT_OUTPUT_ROOT, "store.db")  # matches web/server.py's own default
 SECTIONS_DIR_NAME = "sections"
@@ -101,10 +103,15 @@ def resolve_test_point_paths(args):
     """Returns (report_root_path, test, test_point, runs_json_path) -- the resolution both
     select-runs and aggregate need to find one test point's persisted runs.json, factored out so
     the two subcommands can't drift into slightly different path-construction logic for the same
-    file."""
+    file. Passes --cpu2026-dest-root through to resolve_test_identity() same as --phoronix-dest-root
+    always has -- omitting it (as this call did until now) silently falls through to the generic
+    test=benchmark,test_point="default" fallback for every cpu2026 identity, since that fallback is
+    resolve_test_identity()'s documented behavior for a cpu2026 benchmark with no dest_root given at
+    all, not just one with no matching registered point (this is what PR #193 fixed for web/server.py's
+    single-run publish path; wspy-testpoint's own CLI never got the same follow-up)."""
     report_root_path = os.path.abspath(resolve_report_root(args))
     test, test_point, warning = joblib.resolve_test_identity(
-        args.suite, args.benchmark, args.phoronix_dest_root)
+        args.suite, args.benchmark, args.phoronix_dest_root, args.cpu2026_dest_root)
     if warning:
         print("wspy-testpoint: warning: %s" % warning, file=sys.stderr)
     test_point_dir = os.path.join(report_root_path, args.suite, test, test_point, args.machine)
@@ -719,14 +726,15 @@ def cmd_render(args):
 
 
 def add_test_point_args(parser):
-    """--suite/--benchmark/--machine/--report-root/--phoronix-dest-root -- shared by every subcommand
-    that needs to resolve a test point's report-root path (resolve_test_point_paths()), factored out
-    so select-runs and aggregate can't drift into slightly different flag definitions for the same
-    inputs."""
+    """--suite/--benchmark/--machine/--report-root/--phoronix-dest-root/--cpu2026-dest-root -- shared
+    by every subcommand that needs to resolve a test point's report-root path
+    (resolve_test_point_paths()), factored out so select-runs and aggregate can't drift into slightly
+    different flag definitions for the same inputs."""
     parser.add_argument("--suite", required=True, help="suite name, e.g. phoronix, cpu2026")
     parser.add_argument("--benchmark", required=True,
                          help="benchmark name (wspy-run's own naming) -- for phoronix, this is a "
-                              "materialized test point's identity (bare_name-options_slug)")
+                              "materialized test point's identity (bare_name-options_slug); for "
+                              "cpu2026, a registered benchmark point's identity (bench-tag-tune)")
     parser.add_argument("--machine", required=True,
                          help="human-assigned machine slug (e.g. amd-395, doc/REPORT_HIERARCHY.md) -- "
                               "the report-root path segment, distinct from --hostname")
@@ -735,6 +743,8 @@ def add_test_point_args(parser):
                               "report_root, else %s)" % report_root.DEFAULT_REPORT_ROOT)
     parser.add_argument("--phoronix-dest-root", default=DEFAULT_PHORONIX_DEST_ROOT,
                          help="materialized Phoronix test-point directory (default: %(default)s)")
+    parser.add_argument("--cpu2026-dest-root", default=DEFAULT_CPU2026_DEST_ROOT,
+                         help="materialized cpu2026 benchmark-point directory (default: %(default)s)")
 
 
 def main():

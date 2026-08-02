@@ -171,6 +171,38 @@ OUT="$(./wspy-testpoint select-runs --suite phoronix --benchmark mytest-myoption
 [ "$FAIL" -eq 0 ] && echo "Phoronix test/test-point resolution OK"
 
 echo ""
+echo "=== Testing cpu2026 test/test-point identity resolution ==="
+# Regression coverage: --cpu2026-dest-root previously wasn't threaded through to
+# joblib.resolve_test_identity() at all, so every cpu2026 benchmark silently fell back to
+# test=<full benchmark identity>,test_point="default" (a wrongly-named sibling directory, e.g.
+# "707.ntest_r-gcc_O3-base/default/" instead of nesting under "707.ntest_r/gcc_O3-base/") -- caught
+# publishing a real 707.ntest_r test-point report.
+CPU2026_DEST="$WORKDIR/cpu2026_dest"
+mkdir -p "$CPU2026_DEST/mybench2026/gcc_O3/base"
+cat > "$CPU2026_DEST/mybench2026/gcc_O3/base/source.json" <<'EOF'
+{"schema_version": 1, "bench": "mybench2026", "config_file": "gcc_O3.cfg", "tune": "base",
+ "specdir": "", "generated_at": "2026-08-01T00:00:00Z"}
+EOF
+mkdir -p "$OUTROOT/cpu2026/mybench2026-gcc_O3-base/crun1"
+cat > "$OUTROOT/cpu2026/mybench2026-gcc_O3-base/crun1/manifest.json" <<'EOF'
+{"suite":"cpu2026","benchmark":"mybench2026-gcc_O3-base","run_id":"crun1","command":["true"],
+ "passes":[{"name":"counters","output":"counters.csv","manifest":"counters.manifest.json","status":"ok"}]}
+EOF
+cat > "$OUTROOT/cpu2026/mybench2026-gcc_O3-base/crun1/counters.manifest.json" <<'EOF'
+{"schema_version":"1.9.0","host":{"hostname":"myhost","cpu_vendor":"AMD"},
+ "timing":{"start_time":"2026-08-01T00:00:00Z","elapsed_seconds":1.0},
+ "exit_status":{"known":true,"exited":true,"exit_code":0,"signaled":false}}
+EOF
+OUT="$(./wspy-testpoint select-runs --suite cpu2026 --benchmark mybench2026-gcc_O3-base --machine test-machine \
+    --output-root "$OUTROOT" --report-root "$REPORTROOT" --report-root-remote "$WORKDIR/remote.git" \
+    --cpu2026-dest-root "$CPU2026_DEST" --hostname myhost 2>&1)"
+[ -f "$REPORTROOT/cpu2026/mybench2026/gcc_O3-base/test-machine/runs.json" ] || \
+    fail "expected runs.json under cpu2026/mybench2026/gcc_O3-base/ (test/test-point split), got: $OUT"
+[ -d "$REPORTROOT/cpu2026/mybench2026-gcc_O3-base" ] && \
+    fail "wrongly created a sibling cpu2026/mybench2026-gcc_O3-base/ directory instead of nesting"
+[ "$FAIL" -eq 0 ] && echo "cpu2026 test/test-point resolution OK"
+
+echo ""
 echo "=== Testing aggregate: a redo sharing identical command text must not poison the mean ==="
 STOREDB="$WORKDIR/store.db"
 AGGDATA="$WORKDIR/aggdata"
