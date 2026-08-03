@@ -1179,9 +1179,8 @@ Sitemap plugin newly activated on the live site. `depth="0"` (not `"-1"`) is wha
 a nested `<ul>` tree — `depth="-1"` flattens every descendant into one un-nested list, confirmed live
 when first tried on the parent `cpu2026` index page (hand-edited separately, outside this repo's publish
 tooling, to `[html_sitemap child_of="CURRENT" depth="1"]` for its own flat top-level benchmark listing).
-Not yet verified against the real site — this environment has no `~/.config/wspy/publish.json`, so
-re-running `publish_cpu2026_benchmarks.py` against the 52 live pages is still pending from a machine that
-does.
+Verified live against all 52 `cpu2026` pages (`706.stockfish_r` first, manually inspected, then the
+remaining 51) — every page came back `found/updated (status=publish)` with no errors.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
