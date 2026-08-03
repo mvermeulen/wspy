@@ -79,8 +79,14 @@ def wp_content(entry):
     markdown_lite.to_wp_blocks(): that module's own docstring explicitly scopes out link syntax
     (built for wspy-analyze's LLM narrative output, which never produces links) -- confirmed live, its
     italic-underscore parsing mangled a benchmark id like "706.stockfish_r" sitting inside a URL. This
-    content's shape is small and fixed (one heading, two paragraphs, one link), so hand-building it
-    here avoids misusing a module outside what it documents supporting."""
+    content's shape is small and fixed (one heading, two paragraphs, one link, one sitemap shortcode),
+    so hand-building it here avoids misusing a module outside what it documents supporting.
+
+    The trailing html_sitemap shortcode block (HTML Page Sitemap plugin) lists this benchmark's own
+    config-tag/machine/run-id descendants -- depth="0" (not "-1") because wp_list_pages()'s depth=-1
+    means "every descendant, flattened, no nesting" (meant for callers doing their own CSS indent);
+    depth=0 is what actually recurses into a nested <ul> tree. Confirmed live: depth=-1 on the parent
+    cpu2026 index page rendered as one flat list, not a tree."""
     title = html.escape(entry["bench"])
     description = html.escape("%s. %s." % (entry["description"], entry["language"]))
     link_text = html.escape("SPEC CPU2026 benchmark description")
@@ -89,7 +95,8 @@ def wp_content(entry):
         '<!-- wp:heading {"level":1} -->\n<h1>%s</h1>\n<!-- /wp:heading -->\n\n'
         '<!-- wp:paragraph -->\n<p>%s</p>\n<!-- /wp:paragraph -->\n\n'
         '<!-- wp:paragraph -->\n<p>See the <a href="%s">%s</a> for full details.</p>\n'
-        '<!-- /wp:paragraph -->'
+        '<!-- /wp:paragraph -->\n\n'
+        '<!-- wp:shortcode -->\n[html_sitemap child_of="CURRENT" depth="0"]\n<!-- /wp:shortcode -->'
         % (title, description, url, link_text)
     )
 
