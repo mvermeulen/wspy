@@ -1169,6 +1169,20 @@ callers share one implementation instead of two independently-drifting copies. V
 through the actual running server (generate → file appears in "Add a block" → panel switches to
 "Regenerate"); 16 new unit tests across `web/test_archetype_badge.py`/`web/test_joblib.py`.
 
+**cpu2026 benchmark pages get sitemap navigation** (PR #199) — each of the 52 pages published by
+`scripts/publish_cpu2026_benchmarks.py` gets a trailing `[html_sitemap child_of="CURRENT" depth="0"]`
+shortcode block, closing the "how do you actually browse this hierarchy" gap `doc/REPORT_HIERARCHY.md`'s
+deep suite/test/test-point/machine nesting created — plain WordPress parent/child pages have no built-in
+tree browsing, and the site's Weaver theme's own breadcrumbs only solve "where am I," not "what's under
+here." New addition to `wp_content()`'s existing hand-built Gutenberg block markup, using the HTML Page
+Sitemap plugin newly activated on the live site. `depth="0"` (not `"-1"`) is what actually recurses into
+a nested `<ul>` tree — `depth="-1"` flattens every descendant into one un-nested list, confirmed live
+when first tried on the parent `cpu2026` index page (hand-edited separately, outside this repo's publish
+tooling, to `[html_sitemap child_of="CURRENT" depth="1"]` for its own flat top-level benchmark listing).
+Not yet verified against the real site — this environment has no `~/.config/wspy/publish.json`, so
+re-running `publish_cpu2026_benchmarks.py` against the 52 live pages is still pending from a machine that
+does.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
