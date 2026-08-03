@@ -1355,29 +1355,15 @@ reasoning as Tier 1 above.
    hand-curated `mvermeulen.org/perf/workloads/`). **REST auth/page/media primitives, a CLI
    (`wspy-publish`), a per-report "Publish to WordPress" web UI button, and idempotent content-merge
    protection are all shipped** — see "Shipped since 4.2" and `doc/INVESTIGATION_ARCHIVE.md` for the
-   full build history — but only as a human publishing one report at a time. One thing this item
-   originally asked for is still open:
+   full build history (the latter also carries a correction on `--slug`'s flat lookup, previously
+   miscounted here as a second open gap it never actually was). One thing this item originally asked
+   for is still open:
    - **The actual site-wide pipeline.** Nothing yet walks the whole `wspy-store` and generates/updates
      suite-level (a ~30-column reference-matrix table, matching `/perf/workloads/<suite>/`'s existing
      hand-maintained shape) or cross-suite rollup pages — today's tooling only publishes individual
      benchmark/test-point pages, one human click at a time. Depends on item 5's reference-matrix
      database as the suite-level data source (deciding whether to generate that table from the store
      instead of hand-maintaining it is exactly item 5's own open question).
-
-   Two things previously listed here as open turned out not to be, on closer inspection while
-   scoping this item's remaining work (2026-08-02):
-   - *"Idempotent content merge"* — real gap, now closed. `publish_page_content()` (the shared engine
-     behind `publish-path`, `publish-page --from-rundir`, and the web UI button) now fingerprints each
-     page's content after every write and refuses to overwrite if the live page has since drifted from
-     that fingerprint — `WPContentDriftError`, bypassable with `force=True`/an "Overwrite" checkbox. See
-     "Shipped since 4.2".
-   - *"`wspy-publish publish-page --slug`'s flat lookup still lands at WordPress root"* — this bullet
-     described a real limitation of `--slug` in isolation, but `publish-path` (a separate subcommand
-     wrapping `publish_page_at_path()`, already shipped alongside PR #190) was the actual fix for the
-     hierarchy-aware need this originally flagged — `--slug` staying a flat single-level primitive is
-     intentional, not an open gap. The old bullet conflated "an intentionally-simple primitive exists
-     alongside the real fix" with "the real fix is still missing." No code change needed; corrected here
-     so this doesn't get re-discovered as a phantom gap later.
 3. Characterization badges + similarity panels in reports — a new block type in 4.1's curation studio
    drawing a badge from 4.2's (shipped) archetype scorecard (`wspy-archetype`), not a separate report
    surface.
