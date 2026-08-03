@@ -1187,46 +1187,32 @@ blockers — just don't assume these are confirmed:
 Reasoning that doesn't fit a single backlog line, for tracks with genuinely open work. Deep-dives for
 work that's since fully shipped (blocking I/O, schedstat, vmsize, connect/wait/poll/nanosleep, power,
 the LLM narrative-analysis design, the full critical-path-instrumentation candidate rationale,
-repeatability policy/confidence metadata, and comparison matrix mode) have moved to
-`doc/INVESTIGATION_ARCHIVE.md`.
+repeatability policy/confidence metadata, comparison matrix mode, and symbol-level profiling) have moved
+to `doc/INVESTIGATION_ARCHIVE.md`. The Zen5/IBS and Topdown deep-dives below have also each been trimmed
+to just their one remaining open thread — the confirmed-platform-behavior background that fed their
+now-shipped items moved to the archive too.
 
 ### Zen5/IBS deep-dive
-What appears confirmed from current Linux perf/PMU behavior for AMD Family 1Ah (Zen5):
-1. Zen5-specific IBS load-latency filtering enables L3-miss-only filtering via a Zen5 feature check.
-2. Generic `PERF_COUNT_HW_*` mapping on Family 1Ah still follows the Zen4 event-map path in current
-   kernel PMU logic — there isn't yet a distinct "Zen5-only" generic hardware-event map.
-3. IBS capability extensions (L3-miss-only, load-latency/fetch-latency filters, richer memory-source
-   decoding) are the strongest near-term source of additional signal.
-4. L3-miss-only filtering is documented to skew sampling-period behavior — runs using it need
-   explicit annotation (shipped — see `topdown.c`'s `print_ibs()`).
-5. Zen5's topdown dispatch baseline shifted from Zen4's 6 slots/cycle to 8 — already implemented
-   (`topdown.c`'s `CORE_AMD_ZEN`/`CORE_AMD_ZEN5` slot-multiplier branch). But the finer per-scheduler
-   breakdown events AMD introduced alongside that width change aren't in `amd_raw_events[]` yet:
-   split ALU/AGU scheduler-stall counters, and op-cache/execution-queue events that would separate
-   `Frontend Latency` from `Frontend Bandwidth`. `IBS_LD_L1_DTLB_REFILL_LAT` also isn't named
-   anywhere in the IBS capability-probing rows. Both are candidate inputs for a future "platform
-   formula registry" (see the Topdown deep-dive's "Platform formula registry" item) once Zen5-specific
-   formulas are actually versioned there — no standalone backlog item yet.
-6. AMD IBS sampling-mode's decode scope was deliberately left partial (`ibs_sample.c`/`ibs_sample.h`,
-   shipped — see "Shipped since 4.2"): the fixed-offset prefix every record carries (op-side
-   `dc_miss`/`dc_l1tlb_miss`/`dc_l2tlb_miss`/`op_brn_misp`, `IbsOpData2`'s `dram_rate`/`remote_node_rate`,
-   fetch-side `ic_miss`/`l1tlb_miss`/`l2tlb_miss`) decodes cleanly, but the "variable-position words" —
-   `IbsBrTarget`, `IbsDcLinAd`/`IbsDcPhysAd` — are raw addresses, not rate-shaped data, and don't fit
-   wspy's reporting model without a NUMA-node-of-address or symbol-resolution layer that's really its
-   own separate feature; `IbsOpData4` has no documented bitfield layout anywhere in current kernel/
-   `perf` source, so decoding it would mean inventing bit positions, which this project's own
-   conventions forbid. Not re-added to the open backlog — record this here as the reason those three
-   fields are permanently out of scope for this decode path, not a "not yet" deferral.
+The confirmed-platform-behavior background that fed 4.2's "Zen-family preset packs"/"PMU-capability-
+aware comparability warnings" and 4.3's AMD IBS sampling-mode support (all shipped) has moved to
+`doc/INVESTIGATION_ARCHIVE.md`'s "Zen5/IBS platform-behavior findings" now that everything it informed
+has landed. One thread remains open:
+
+- Zen5's topdown dispatch baseline shifted from Zen4's 6 slots/cycle to 8 — already implemented
+  (`topdown.c`'s `CORE_AMD_ZEN`/`CORE_AMD_ZEN5` slot-multiplier branch). But the finer per-scheduler
+  breakdown events AMD introduced alongside that width change aren't in `amd_raw_events[]` yet: split
+  ALU/AGU scheduler-stall counters, and op-cache/execution-queue events that would separate `Frontend
+  Latency` from `Frontend Bandwidth`. `IBS_LD_L1_DTLB_REFILL_LAT` also isn't named anywhere in the IBS
+  capability-probing rows. Both are candidate inputs for a future "platform formula registry" (see the
+  Topdown deep-dive's own remaining item, and "Open questions for prioritization") once Zen5-specific
+  formulas are actually versioned there — no standalone backlog item yet.
 
 Caveat: if upstream kernel/perf exposes new Zen5-specific generic mappings or PMU caps, update
 presets and coverage logic without changing the report schema.
 
-→ Informed 4.2's "Zen-family preset packs" and "PMU-capability-aware comparability warnings" (both
-shipped). Also informed AMD IBS sampling-mode support (shipped in 4.3, see "Shipped since 4.2" —
-icache/TLB/dcache/L2/L3/branch rate estimates decoded from real per-sample tag data, not just
-counting-mode sample counts) and now unblocks that same phase's "IBS-derived memory-path bottleneck
-decomposition." `--interval`-integrated periodic IBS sampling rates (needs a real poll-loop
-architectural change) was deliberately deferred out of that item's scope — see 4.4 priorities.
+→ Now unblocks 4.3's "IBS-derived memory-path bottleneck decomposition" (shipped, see "Shipped since
+4.2"). `--interval`-integrated periodic IBS sampling rates (needs a real poll-loop architectural change)
+was deliberately deferred out of that item's scope — see 4.4 priorities.
 
 ### Intel hybrid / counter-grouping deep-dive
 Real Intel hybrid hardware became available for the first time this cycle (a Raptor Lake HX host,
@@ -1273,200 +1259,15 @@ event_source/devices/` enumerated live, not from documentation alone):
   this pass; worth scoping now that IBS sampling-mode's mmap-ring-buffer/per-sample decode
   infrastructure exists to model this against.
 
-### Symbol-level profiling deep-dive
-Design for the symbol-level profiling feature (`--symbol-sample`/`wspy-symbolize`; originally 4.4
-priorities item 9, now shipped in full — see "Shipped since 4.2" — so that number has since been
-picked back up by a different, still-open item below; referenced here by name, not number, to avoid
-that ambiguity), scoped to the `--target`-matched-process drill-down use case (2026-07-29/30) — not
-`perf record`/`perf report`'s whole-system capture-then-drill-down model, which `perf` itself already
-covers.
-
-**Status (2026-07-30): capture + parsing have landed.** `perf_ring.c`/`perf_ring.h` (generic mmap
-ring-buffer plumbing factored out of `ibs_sample.c`, which now sits on top of it unchanged in
-externally observable behavior), `symbol_sample.c`/`symbol_sample.h` (the `PERF_SAMPLE_IP` capture
-module below), the `--symbol-sample`/`--symbol-sample-event=<event>` CLI flags, the
-`PTRACE_EVENT_EXEC`/`PTRACE_EVENT_EXIT` wiring in `topdown.c` producing real
-`targetsample`/`targetsamplelost`/`targetmap` tree-file lines, and `proctree.c` parsing those three into
-`target_samples`/`target_samples_lost`/`target_maps` on each `tree` JSON node (`PROCTREE_JSON_SCHEMA_VERSION`
-1.1.0 → 1.2.0; see `doc/ARTIFACT_CONTRACT.md`) — deliberately *not* rolled up into `summary`'s
-per-`comm` totals the way `target_counters` is, since a raw address is only meaningful together with
-the specific process's own `target_maps` (ASLR generally gives two instances of the same comm different
-load addresses); summing addresses across pids the way `target_counters`' plain scalar values are
-summed would be actively wrong, not just imprecise. Verified live end-to-end against real hardware in
-this environment (`--no-ipc --tree ... --target=comm=sleep --symbol-sample --symbol-sample-event=cycles
--- sh -c '/bin/sleep 0.2 & wait'`): real `targetcounter`/`targetsample`/`targetmap` lines, including
-kernel-space sample addresses (expected — `perf_event_attr.exclude_kernel` isn't set, same as every
-other counter in this codebase — and correctly falling outside any `targetmap` region, so they land in
-`wspy-symbolize`'s future "unresolved" bucket rather than being mis-resolved), and one sample's
-file-relative-offset arithmetic checked by hand against its containing `libc.so.6` map. Also added as
-permanent regression coverage: `golden_output.sh`'s `symbol-sample-grammar`/`targetmap` checks (a real
-`targetmap` line is guaranteed whenever the counter opens at all — an idle 0.2s sleep may genuinely
-accrue zero `targetsample` lines, so that one isn't asserted) and `capability_matrix.sh`'s
-`tree-target-symbol-sample`/`symbol-sample-without-target-incompatible` bundles.
-
-`wspy-symbolize` (this feature's resolution half) has now also shipped — a stdlib-only Python tool (`wspy-analyze`/
-`wspy-bundle`'s own category), not linked into `wspy`: shells `proctree --json` against a raw tree
-file, selects one process (`--pid`) or every same-`comm` process (`--comm`), resolves each
-`target_samples` address against its own process's `target_maps` (PIE bias: `addr - map.start +
-map.file_offset`), batches offsets per binary/library into one `addr2line -f -C -a` call each, and
-emits a sorted symbol table as JSON (`--json`) or a human-readable table (default) — see
-`doc/ARTIFACT_CONTRACT.md`'s new "Symbol table" section for the full shape. `--comm` merges by
-`(symbol, file)` only *after* per-process resolution, never by raw address, matching the same
-ASLR-driven reasoning `proctree.c` already declined to roll `target_samples` up by comm. Five
-unresolved reasons are surfaced distinctly rather than one generic bucket: `no backing map` (kernel/
-JIT addresses), `binary deleted during run` (a `target_map` path with a kernel-appended `(deleted)`
-suffix — deliberately never attempted, since what's now at that path, if anything, may not be the
-code that actually ran, so resolving against it risks a *wrong* answer, not just a missing one),
-`binary unavailable` (path unreadable from this machine), `addr2line failed` (binary exists but
-couldn't be processed, or `addr2line` itself isn't installed — degrades to this rather than crashing),
-and `?? (unresolved symbol)` (resolved fine, but no name — typically a stripped binary). Verified live
-against two real workloads in this environment: a `sleep 0.2` (mostly `no backing map` — an idle
-process's few samples land mid-syscall/interrupt) and a `yes >/dev/null` busy loop for 0.5s (742/1826
-samples resolved, correctly dominated by `libc.so.6`'s `write`/`syscall_cancel` internals, plus 63
-samples correctly reported `?? (unresolved symbol)` against this host's own stripped Rust-`coreutils`
-`yes` binary) — both matching real-world expectations by inspection, not just "didn't crash." Every
-degradation path (`--pid`/`--comm` not found, missing tree file, missing/broken `addr2line`) was also
-exercised live and confirmed to exit non-fatally with a clear message rather than a traceback, except
-the two usage errors (`--pid`+`--comm` together, neither given), which correctly exit 2 via
-`argparse`.
-
-The web UI drill-down has now shipped too, closing out this feature completely. `web/server.py` gained
-`/api/symbolize/<suite>/<benchmark>/<run_id>?pid=<n>` (or `?comm=<name>`), mirroring
-`/api/tree-json`'s exact shape (on-demand, nothing written to disk, always reflects the current
-`process.tree.txt`) but shelling `wspy-symbolize --json` instead of `proctree --json`
-(`web/joblib.py`'s `build_symbolize_argv()`, plus a `--wspy-symbolize` CLI flag/`wspy_symbolize_bin`
-cfg entry alongside the server's other tool paths). The tree viewer
-(`web/static/proctree_viewer.js`) gained a "▶ profile" toggle on any node carrying `target_maps` (the
-same gate `topdown.c`'s own `have_symbol_sample` check uses — present whenever the counter opened at
-all, regardless of whether any samples were actually collected) that fetches and renders a symbol
-table inline, right below that node's row; result and expanded/collapsed state are cached on the node
-object itself so they survive a rerender from an unrelated column-checkbox toggle (an improvement
-over this file's own plain expand/collapse state, which does reset on rerender — a pre-existing,
-unrelated limitation, not touched here), and a second click doesn't refetch. Diff mode
-(`/tree-diff`) doesn't get this — `target_samples`/`target_maps` were never part of the diff-mode
-node shape in the first place, same as `target_counters`.
-
-No real browser was available in this session (the user declined the Chrome extension install
-prompt), so this was verified two ways instead: (1) the `/api/symbolize` endpoint directly via `curl`
-against a real server + a real `--target --symbol-sample` run (success, both-selector-missing,
-both-given, no-such-run, no-such-pid); (2) the actual unmodified `proctree_viewer.js` file executed
-under `gjs` (GNOME JavaScript/SpiderMonkey) with a hand-written DOM+`fetch` shim, fed real JSON
-fixtures captured from the live server — confirmed exactly one profile button renders for the one
-node with `target_maps`, clicking shows a synchronous "Loading profile..." state then the resolved
-table (row counts matching the fixture's `symbols`/`unresolved` arrays exactly) once the fetch
-promise chain settles, collapsing hides it, and re-expanding reuses the cached result without a
-second fetch; a separate run of the same harness against a synthetic error response confirmed
-`resp.error` renders as a plain message rather than throwing, matching this viewer's existing
-top-level tree-load error handling (`resp.output` is deliberately not surfaced, same limitation the
-existing `/api/tree-json` error path already has). `web/test_joblib.py` gained
-`BuildSymbolizeArgvTest` (231/231 passing). This is a lighter bar than a real browser click-through,
-worth re-verifying in one if that becomes available.
-
-The rest of this section describes the capture-side design as implemented, with any deviations from
-the original plan noted inline.
-
-**Attachment point.** Same place `--target` already attaches a pid-scoped counter group:
-`ptrace_loop()`'s `PTRACE_EVENT_EXEC` handler (`topdown.c`, the block guarded by `if (target_active)`
-that calls `setup_counter_groups()`/`setup_counters()`/`start_counters()` on a match). On a match, a
-single-counter `symbol_sample_counter_group()` (generic `PERF_TYPE_HARDWARE` event, `is_symbol_sample=1`)
-gets prepended to `pid_entry->target_counters` the same way the `COUNTER_SOFTWARE` group already is, so
-it flows through the *existing* pid-scoped `setup_counters()`/`start_counters()`/`read_counters()`/
-`close_counters()` pipeline via `is_symbol_sample` special-casing (mirroring `is_ibs_sample`'s existing
-special-casing there) rather than needing a separate open/drain/close path. Drains at that pid's own
-`PTRACE_EVENT_EXIT`, the same spot `target_counters` are read back and closed today (via the existing
-`read_counters(pid_entry->target_counters,1)` call, which now also drains any `is_symbol_sample` ring) —
-before `/proc/<pid>/maps` becomes unavailable. One deviation from the original plan: sampling is
-**period-based** (`pe.sample_period`, reusing the exact generic per-counter plumbing `setup_counters()`
-already has for AMD IBS), not frequency-based (`pe.freq=1`/`sample_freq`) — wspy has no per-counter
-frequency-sampling plumbing yet, and adding it purely for this one feature was judged not worth it over
-reusing what already exists. Default periods are a first-cut heuristic per event (`symbol_sample.c`):
-1,000,000 for `cycles`/`instructions`, 10,000 for `cache-misses`/`branch-misses` (rarer events per cycle,
-needing a much smaller period to fire at all against a short-lived process) — not frequency-normalized,
-no `--symbol-sample-period` override yet. Unlike `ibs_sample_state` (one system-wide instance for the
-whole run, left for the OS to reclaim at process exit), `close_counters()` now explicitly frees
-`symbol_sample_state` (`symbol_sample_free()`) whenever it frees any counter's fd — a `--target`-matched
-process's ring buffer is opened fresh per match, so a long matching-heavy run needs it actually unmapped
-rather than accumulating for the run's whole lifetime.
-
-**v1 scope, stated up front rather than discovered later:**
-- Flat self-hit profile only — `PERF_SAMPLE_IP`, no `PERF_SAMPLE_CALLCHAIN`. A call-graph needs
-  frame-pointer or DWARF unwinding at record time, a materially bigger step; candidate follow-on item,
-  not part of this one.
-- Drain only at process exit — same poll-loop gap as item 8 / `ibs_sample.c` (walking/decoding ring
-  records isn't async-signal-safe and there's still no poll/epoll loop anywhere in wspy). A long-lived
-  target risks ring wraparound before drain; `PERF_RECORD_LOST` gets counted the same way
-  `ibs_sample_state.samples_lost` already does, not silently dropped.
-- One `/proc/<pid>/maps` snapshot, taken at the exit-time drain, covering only file-backed executable
-  regions. Covers everything ever mapped (nothing unmaps a live library on its own), but a `dlclose()`'d
-  region before exit loses its map entry — those samples land in an explicit "unresolved" bucket, same
-  bucket JIT'd/anonymous-mapped code and stripped-binary addresses (`addr2line` returns `??`) fall into.
-- Addresses are aggregated to a bounded in-memory histogram as samples drain (hot loops → few distinct
-  IPs), not one wire-format line per sample — keeps the tree file size independent of sample volume.
-- Root required — same `perf_event_open()` sampling privilege class as everything else in wspy.
-
-**Wire format.** Three new tree-file line kinds, parallel to the existing `targetcounter` line (all
-implemented in `topdown.c`'s `PTRACE_EVENT_EXIT` handling and `write_target_maps()`):
-```
-%5.3f %d targetsample <event> <hexaddr> <count>
-%5.3f %d targetsamplelost <event> <count>
-%5.3f %d targetmap <hexstart> <hexend> <hexfileoffset> <path>
-```
-`targetsamplelost` (one deviation from the original plan, which folded lost-sample accounting into prose
-rather than its own line) only appears when `symbol_sample_state.samples_lost > 0` — kept as a real,
-structured line kind rather than a `#`-comment aside, consistent with the rest of this file format's
-"everything is a parseable `<elapsed> <pid> <keyword> ...` line" grammar. `targetmap`'s `path` field is
-parsed via `%n`-based offset math rather than a plain `%s` token, since a backing file's path can
-contain spaces (most commonly a kernel-appended `(deleted)` suffix). `proctree.c` now parses all three
-into `target_samples[]`/`target_samples_lost`/`target_maps[]` on each `tree` JSON node —
-`PROCTREE_JSON_SCHEMA_VERSION` bumped 1.1.0 → 1.2.0; see `doc/ARTIFACT_CONTRACT.md` for the field shapes.
-
-**Symbolization is a separate post-hoc tool, not inline in wspy** (`wspy-symbolize`, Python — same
-category as `wspy-analyze`/`wspy-bundle` — rather than shelling `addr2line` out of the ptrace loop
-itself, which would block the traced children). Reads a tree JSON plus a pid or comm selector:
-- For each sample address, find its containing `targetmap` region; file-relative offset =
-  `addr - map.start + map.file_offset` — the standard PIE/`.so` convention (`perf script`/`eu-addr2line`
-  use the same formula); a non-PIE executable has `file_offset≈0` so this degrades to the identity map.
-- Group resolved offsets by containing file, batch-shell `addr2line -e <path> -f -C -a <offsets...>`
-  once per file rather than once per address.
-- Emit a sorted symbol table (symbol, file, count, % of resolved samples, plus an explicit "unresolved"
-  row for anything that didn't map) as its own JSON file — new output shape, not shoehorned into the
-  run's CSV, per this feature's own framing above.
-
-**CLI.** Two flags, not the originally-planned single `--symbol-sample[=event]` — this codebase has no
-prior use of `getopt_long`'s `optional_argument` anywhere, and it has a real gotcha (`--symbol-sample
-cycles`, space-separated, silently fails to bind "cycles" as the value and can misroute the workload
-command's own `--` boundary), so it was judged not worth introducing for this one flag: **`--symbol-sample`**
-(boolean, defaults to `cycles`) and **`--symbol-sample-event=<event>`** (`required_argument`, implies
-`--symbol-sample`), `event` ∈ a small curated set of generic `PERF_TYPE_HARDWARE` events — `cycles`
-(default, matches `perf record`'s own default) / `instructions` / `cache-misses` / `branch-misses` — not
-arbitrary raw events in v1, and portable across AMD/Intel/ARM with no per-vendor event table needed.
-Fatal without `--target` active, which is itself already fatal without `--tree` — so the dependency
-chain is `--symbol-sample`/`--symbol-sample-event` → `--target` → `--tree`, consistent with how
-`--target` is gated today.
-
-**Web UI.** The tree viewer's per-node/per-comm panel already renders `target_counters` (PR #167,
-"PID-targeted counter attachment" above) — add a sibling "Profile" view next to it that calls
-`wspy-symbolize` (or reads a pre-generated sidecar if report generation already ran it) and renders the
-resulting symbol table, same UI pattern as the existing hot-process table (PR #163).
-
 ### Topdown deep-dive
-Advancements worth adopting, in priority order for `wspy` specifically. Fully done: multiplex-aware
-confidence and decomposition consistency/sanity checks ("What shipped in 4.0"); the hierarchical
-(L1→L2→L3) parent/child schema with explicit raw-vs-contention-adjusted denominators, including L3, and
-SMT/contention-aware normalization (`contention_pct`, "What shipped in 4.2"'s "Hierarchical topdown
-schema"); phase-aware topdown (`wspy-summary --phase-topdown`), cross-signal attribution
-(`wspy-archetype`'s `memory_attribution` axis, including the blocking-syscall-split modifier), and
-hybrid/heterogeneous core-class summaries (`wspy-core-report --weight-by` plus the Intel-hybrid
-default-mode warning) — all three "Shipped since 4.2". One item remains:
+Everything this originally tracked has shipped — multiplex-aware confidence/decomposition sanity checks
+("What shipped in 4.0"), the hierarchical L1→L2→L3 schema ("What shipped in 4.2"'s "Hierarchical topdown
+schema"), and phase-aware topdown/cross-signal attribution/hybrid core-class summaries ("Shipped since
+4.2") — except one item:
 
 - Platform formula registry — versioned event/formula mapping per CPU family/model, for auditability.
-
-**MVP acceptance criteria** (still the right bar):
-- ≥95% of topdown fields in standard profiles include confidence metadata. **Met** for the level-1
-  breakdown (shipped).
-- Reports clearly mark low-confidence topdown rows and avoid strong claims from them. **Met.**
-- One benchmark run demonstrates phase-specific topdown shifts in generated summary output. **Met** —
-  `wspy-summary --phase-topdown`, verified against a real AMD Zen5 host run (see "Shipped since 4.2").
+  See "Open questions for prioritization" and the Zen5/IBS deep-dive above for concrete candidate
+  inputs once this exists.
 
 ### Preset / Configuration / Option hierarchy deep-dive
 A three-level vocabulary for describing what wspy can be asked to do, surfaced while iterating the
@@ -1795,6 +1596,13 @@ core/thread affinity, minimum metadata set for publishable — have been resolve
   browsable, multi-benchmark site) rather than a separate deliverable, and the characterization badges
   are a plausible direct input to the summary rather than a competing surface. Revisit once the summary
   item has a real design, not before.
+- **Should the Topdown deep-dive's "platform formula registry" (versioned event/formula mapping per CPU
+  family/model, for auditability) be scoped and built now?** Not previously linked from here, unlike the
+  Intel-counters list above — noticed while auditing the deep-dives for staleness (2026-08-03).
+  Recommendation: not yet. It currently has exactly two candidate inputs, both from the Zen5/IBS
+  deep-dive (split ALU/AGU scheduler-stall counters, `IBS_LD_L1_DTLB_REFILL_LAT`) and neither is itself
+  a numbered backlog item yet; design a registry against a real third input (e.g. once the Intel-counters
+  list above starts landing) rather than against two AMD-only data points.
 
 ## External brainstorming references
 - ReBench — reproducible experiment configuration, resumable execution, explicit benchmark
