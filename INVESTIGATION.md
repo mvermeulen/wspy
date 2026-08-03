@@ -1153,6 +1153,22 @@ normalization-on-save can't cause a false-positive drift on the very next publis
 (`web/test_wp_client.py`); not yet verified against the real site (no hand-edited page to test drift
 against yet).
 
+**Characterization badges in the curation studio** (PR #198) — closes the badges half of Tier 3 item 3
+(similarity panels remain open, see item 3's own corrected text above). A "Generate characterization
+badge" panel on the studio page shells `wspy-archetype --run <hostname>:<run_id>` and writes a compact
+resource_dominance/confidence/etc. markdown snippet (`archetype_badge.md`) into the run directory —
+deliberately not a new curation-studio block "kind" with its own rendering path in every export format;
+once written it's an ordinary artifact, already offered by `collect_run_files()` and already rendered
+through the existing markdown pipeline via `guess_kind()`'s `.md` rule, the same "external tool output
+becomes a curatable file" precedent `wspy-analyze`'s `aianalysis.<model>.md` established. Resolving which
+store row to classify hit the same directory-name-vs-store-run_id mismatch `wspy-testpoint`'s own
+`aggregate`/`render` had to solve — caught live against the real store before shipping (an early draft
+used the run directory's own name and silently resolved the wrong pass every time). `resolve_store_pass_rows()`/
+`escape_like()`/`pick_counters_pass_id()` moved out of `wspy-testpoint` into `web/joblib.py` so both
+callers share one implementation instead of two independently-drifting copies. Verified live end to end
+through the actual running server (generate → file appears in "Add a block" → panel switches to
+"Regenerate"); 16 new unit tests across `web/test_archetype_badge.py`/`web/test_joblib.py`.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -1364,9 +1380,9 @@ reasoning as Tier 1 above.
      benchmark/test-point pages, one human click at a time. Depends on item 5's reference-matrix
      database as the suite-level data source (deciding whether to generate that table from the store
      instead of hand-maintaining it is exactly item 5's own open question).
-3. Characterization badges + similarity panels in reports — a new block type in 4.1's curation studio
-   drawing a badge from 4.2's (shipped) archetype scorecard (`wspy-archetype`), not a separate report
-   surface.
+3. Similarity panels in reports (`wspy-archetype --nearest`-based nearest-neighbor comparison) — the
+   deferred half of "characterization badges + similarity panels"; the badges half shipped as an
+   ordinary curatable artifact rather than a new block type (see "Shipped since 4.2").
 4. Interactive tree/timeline drill-down, GPU phase overlays — the interactive counterpart to 4.1's
    static inclusion-depth mechanism (none/summary/excerpt/full) for the tree/interval blocks
    specifically; that mechanism stays the right default for a published, non-interactive report even
