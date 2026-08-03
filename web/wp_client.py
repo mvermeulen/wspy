@@ -36,6 +36,7 @@ target site, not part of this codebase's own build/test). A harmless
 no-op duplicate on hosts where the standard header already works.
 """
 import base64
+import hashlib
 import json
 import mimetypes
 import os
@@ -47,6 +48,7 @@ import urllib.request
 REQUIRED_PAGE_CAPABILITIES = ("edit_pages", "edit_published_pages", "publish_pages", "upload_files")
 
 CONFIG_PATH = os.path.expanduser("~/.config/wspy/publish.json")
+PUBLISH_STATE_PATH = os.path.expanduser("~/.config/wspy/publish_state.json")
 
 
 def load_config():
@@ -83,6 +85,37 @@ def save_config(cfg):
     os.chmod(CONFIG_PATH, stat.S_IRUSR | stat.S_IWUSR)
 
 
+def load_publish_state():
+    """{"<page_id>": "<sha256 hex digest of the content wspy itself last confirmed live on that
+    page>"} -- PUBLISH_STATE_PATH, sibling to CONFIG_PATH but kept separate since it holds no
+    secrets (no mode 600 needed) and grows one entry per published page rather than staying a fixed
+    handful of config fields. {} if missing/unparseable, same "always safe to start fresh" contract
+    load_config() doesn't need but this does: publish_page_content()'s drift check treats an unknown
+    page id as "no fingerprint on record yet" and skips protection for that one page rather than
+    failing, so a reset/missing state file just means every page gets one untracked publish before
+    tracking resumes -- never a hard failure."""
+    try:
+        with open(PUBLISH_STATE_PATH) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_publish_state(state):
+    """Atomic write (tmp + os.replace) so a crash mid-write can never leave a truncated/corrupt state
+    file behind for the next load_publish_state() to choke on."""
+    os.makedirs(os.path.dirname(PUBLISH_STATE_PATH), exist_ok=True)
+    tmp = PUBLISH_STATE_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, PUBLISH_STATE_PATH)
+
+
+def _content_hash(content):
+    return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
+
+
 class WPError(Exception):
     """A WordPress REST API call failed. Carries the HTTP status (None for
     a connection-level failure) and the site's own error code/message when
@@ -93,6 +126,22 @@ class WPError(Exception):
         super().__init__(message)
         self.status = status
         self.code = code
+
+
+class WPContentDriftError(WPError):
+    """Raised by publish_page_content() when an existing page's live content no longer matches the
+    fingerprint wspy itself recorded from its own last write to that page id -- a human likely
+    hand-edited it in wp-admin since. Carries page_id/link so a caller can point back at the live
+    page in its own error message. Pass force=True to publish_page_content()/publish_page_at_path()
+    to overwrite anyway -- the same "never silently overwrite a human's own edits, but let a human
+    explicitly override" idiom this codebase already uses for run-role human_set overrides
+    (wspy-testpoint) and curation.json's preserved per-block commentary."""
+    def __init__(self, page_id, link):
+        super().__init__(
+            "page content has changed since wspy last published it -- likely hand-edited since; "
+            "pass force=True to overwrite anyway", code="wspy_content_drift")
+        self.page_id = page_id
+        self.link = link
 
 
 def auth_header(username, app_password):
@@ -203,10 +252,14 @@ def create_page(site_url, username, app_password, slug, title, parent,
                                "content": content, "status": status})
 
 
-def get_page(site_url, username, app_password, page_id):
-    """GET a Page by id -- verifies it exists / fetches its current state
-    (status/link/content) without changing anything."""
-    return request(site_url, f"wp/v2/pages/{page_id}", username, app_password)
+def get_page(site_url, username, app_password, page_id, context=None):
+    """GET a Page by id -- verifies it exists / fetches its current state (status/link/content)
+    without changing anything. context="edit" additionally requests content.raw (the actual stored
+    block markup) alongside content.rendered (sanitized HTML) -- needed by publish_page_content()'s
+    drift check, which must compare against exactly what WordPress has stored, not its rendered
+    view."""
+    params = {"context": context} if context else None
+    return request(site_url, f"wp/v2/pages/{page_id}", username, app_password, params=params)
 
 
 def update_page(site_url, username, app_password, page_id, **fields):
@@ -237,8 +290,37 @@ def delete_page(site_url, username, app_password, page_id, force=False):
                     method="DELETE", params=params)
 
 
+def _live_raw_content(site_url, username, app_password, page_id):
+    """Re-fetches a page's own content.raw via an explicit context="edit" GET -- the exact bytes
+    WordPress currently has stored. Always used as the fingerprint basis (both checking for drift and
+    recording a fresh baseline after a write) rather than trusting a caller's own content string
+    verbatim, since WordPress can reformat/normalize block markup on save -- anchoring every
+    comparison to what the server actually reports avoids a false "drift" positive on the very next
+    publish of unchanged content."""
+    page = get_page(site_url, username, app_password, page_id, context="edit")
+    return (page.get("content") or {}).get("raw", "")
+
+
+def _check_no_drift(site_url, username, app_password, page_id, link):
+    """Raises WPContentDriftError if page_id's live content no longer matches the fingerprint
+    recorded from wspy's own last write. A page with no fingerprint on record (predates this feature,
+    or was never published by wspy before) is trusted rather than blocked -- protection only applies
+    going forward from the first publish that records a baseline."""
+    known_hash = load_publish_state().get(str(page_id))
+    if known_hash is None:
+        return
+    if _content_hash(_live_raw_content(site_url, username, app_password, page_id)) != known_hash:
+        raise WPContentDriftError(page_id, link)
+
+
+def _record_publish_fingerprint(site_url, username, app_password, page_id):
+    state = load_publish_state()
+    state[str(page_id)] = _content_hash(_live_raw_content(site_url, username, app_password, page_id))
+    save_publish_state(state)
+
+
 def publish_page_content(site_url, username, app_password, slug, parent, title, content,
-                          do_publish=False):
+                          do_publish=False, force=False):
     """Find-or-create a Page by (slug, parent), set its content/title, and
     optionally flip it to published -- the shared orchestration behind both
     wspy-publish publish-page's --slug path and web/server.py's "Publish to
@@ -249,19 +331,27 @@ def publish_page_content(site_url, username, app_password, slug, parent, title, 
     actually given, so a bare `--publish` can flip status without
     disturbing existing content), this always overwrites content/title --
     right for a caller that just rendered fresh content and wants it to
-    win, wrong for an interactive "just change one field" edit. Returns
-    (page_dict, created_bool). Raises WPError on any failure -- the caller
-    decides how to present that (CLI stderr vs. an HTML error panel)."""
+    win, wrong for an interactive "just change one field" edit.
+
+    Before overwriting an *existing* page's content, checks it hasn't drifted from what wspy itself
+    last wrote there (_check_no_drift()) -- raises WPContentDriftError instead of clobbering a human's
+    hand-edit, unless force=True. After any successful create/update, records a fresh fingerprint
+    (_record_publish_fingerprint()) so the next publish has a baseline to check against. Returns
+    (page_dict, created_bool). Raises WPError (or the WPContentDriftError subclass) on any failure --
+    the caller decides how to present that (CLI stderr vs. an HTML error panel)."""
     page = find_page(site_url, username, app_password, slug, parent)
     created = page is None
     if created:
         page = create_page(site_url, username, app_password, slug, title, parent,
                             content=content, status="draft")
     else:
+        if not force:
+            _check_no_drift(site_url, username, app_password, page["id"], page.get("link"))
         page = update_page(site_url, username, app_password, page["id"],
                             content=content, title=title)
     if do_publish:
         page = publish_page(site_url, username, app_password, page["id"])
+    _record_publish_fingerprint(site_url, username, app_password, page["id"])
     return page, created
 
 
@@ -289,7 +379,7 @@ def find_or_create_page_path(site_url, username, app_password, levels, status="d
 
 
 def publish_page_at_path(site_url, username, app_password, levels, content, do_publish=False,
-                          stub_content=None):
+                          stub_content=None, force=False):
     """Walk levels[:-1] top-down, creating each as a draft stub only if missing (never overwriting
     an existing page, e.g. a hand-created suite stub or a future wspy-testpoint aggregate) -- the
     same find-or-create logic find_or_create_page_path() already uses -- then publish_page_content()
@@ -305,7 +395,9 @@ def publish_page_at_path(site_url, username, app_password, levels, content, do_p
     created empty, unchanged from this function's original behavior. Lets a caller give a
     freshly-created intermediate page (e.g. a machine-level stub) real content -- such as a link to
     its catalog entry -- without risking clobbering real content a later, separate publish already
-    put there.
+    put there. force is passed straight through to the leaf's publish_page_content() call -- parent
+    stub levels are never overwritten regardless (create-if-missing only), so drift protection only
+    ever applies to the one page this call actually sets content on.
 
     Returns (page_dict, created_bool) for the leaf page only, same shape as publish_page_content()."""
     *parent_levels, (leaf_slug, leaf_title) = levels
@@ -318,7 +410,7 @@ def publish_page_at_path(site_url, username, app_password, levels, content, do_p
                                 content=stub_content.get(i, ""))
         parent_id = page["id"]
     return publish_page_content(site_url, username, app_password, leaf_slug, parent_id, leaf_title,
-                                 content, do_publish=do_publish)
+                                 content, do_publish=do_publish, force=force)
 
 
 def upload_media(site_url, username, app_password, file_path, mime_type=None, timeout=60):

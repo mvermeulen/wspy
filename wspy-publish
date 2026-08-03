@@ -394,7 +394,12 @@ def cmd_publish_path(args):
 
     try:
         page, created = wp_client.publish_page_at_path(
-            site_url, username, app_password, levels, content or "", do_publish=args.publish)
+            site_url, username, app_password, levels, content or "", do_publish=args.publish,
+            force=args.force)
+    except wp_client.WPContentDriftError as e:
+        print("wspy-publish: refusing to overwrite page id=%s (%s) -- %s\n"
+              "  rerun with --force to overwrite anyway" % (e.page_id, e.link, e), file=sys.stderr)
+        return 1
     except wp_client.WPError as e:
         print("wspy-publish: page create/update FAILED (status=%s code=%s): %s" % (e.status, e.code, e),
               file=sys.stderr)
@@ -515,6 +520,9 @@ def main():
     pub_path.add_argument("--publish", action="store_true",
                            help="flip the leaf page to status=publish after creating/updating it "
                                 "(default: leave it as a draft)")
+    pub_path.add_argument("--force", action="store_true",
+                           help="overwrite the leaf page's content even if it's changed since wspy "
+                                "last published it (default: refuse -- likely a human hand-edit)")
 
     media = sub.add_parser("upload-media",
                             help="upload a file to the WordPress media library")
