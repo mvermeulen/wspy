@@ -1115,7 +1115,43 @@ test fixtures already modeled); `aggregate`/`render` now expand each stats-pool 
 resolved pass ids, and the archetype cross-run section picks one representative pass (the `"counters"`
 configuration when present). Caught by the user trying to publish a real 707.ntest_r cpu2026 test-point
 report through the pipeline PRs #183-186 built; new regression coverage in `tests/testpoint_smoke.sh`
-reproduces the exact pre-fix failure. Not yet re-verified against that same live publish attempt.
+reproduces the exact pre-fix failure. Verified live retrying that same publish attempt — which then
+surfaced a second, separate identity-resolution bug this fix didn't touch (PR #196 below).
+
+**"Publish test-point report" pre-fills Machine slug from config** (PR #195) — the card's Machine field
+was always blank, even though `wp_client.load_config()`'s `machine_short_name` (set once via
+`wspy-publish configure`) already backs the sibling single-run "Publish to WordPress" panel's own
+Machine field. Same read, same still-editable/required text input — just removes retyping a slug this
+web layer already had on hand. Verified live: a real report page now renders the field pre-filled from
+the real config.
+
+**`wspy-testpoint` threads `--cpu2026-dest-root` through to identity resolution** (PR #196) —
+`resolve_test_point_paths()` called `joblib.resolve_test_identity()` with only `--phoronix-dest-root`,
+never a cpu2026 one; PR #193 fixed this exact call site in `web/server.py`'s single-run publish path,
+but `wspy-testpoint`'s own CLI (what the "Publish test-point report" button shells out to) never got the
+same follow-up. Every cpu2026 benchmark identity therefore hit `resolve_test_identity()`'s generic
+fallback (`test=<full identity>`, `test_point="default"`), landing as a wrongly-named sibling directory
+instead of nesting under its real `<bench>/` page — caught live publishing a real 707.ntest_r test-point
+report. New `--cpu2026-dest-root` flag (default matches `web/server.py`'s own `CPU2026_DEST_ROOT`),
+threaded through the same way `--phoronix-dest-root` already was; new regression coverage in
+`tests/testpoint_smoke.sh`. Verified live: hierarchy confirmed correct on retry; the wrongly-nested tree
+the pre-fix code had already committed into the real report-root was manually cleaned up (git-committed
+removal, local-only, same "never push automatically" convention as every other `wspy-testpoint` commit).
+
+**WordPress idempotent content-merge protection** (PR #197) — closes Tier 3 item 2's "idempotent content
+merge" gap (see the corrected item 2 bullet list above). `publish_page_content()` always did an
+unconditional `update_page()` on an existing page, with no way to tell "nothing's changed since our last
+write" from "a human hand-edited this in wp-admin since" — any repeat publish would silently clobber a
+hand-edit. New fingerprint tracking (`~/.config/wspy/publish_state.json`, page id → sha256 of the
+content wspy itself last confirmed live there): before overwriting, refetches the page's current raw
+content and compares against the recorded fingerprint, raising `WPContentDriftError` on a mismatch
+instead of overwriting (a page with no fingerprint on record yet — predating this feature — is trusted,
+not retroactively blocked). `force=True` (`wspy-publish publish-path --force`, or the web UI's new
+"Overwrite" checkbox) bypasses the check. Every successful write re-fetches the page's own post-write
+live content (not the caller's raw input) to record the new fingerprint, so WordPress's own block-markup
+normalization-on-save can't cause a false-positive drift on the very next publish. 5 new unit tests
+(`web/test_wp_client.py`); not yet verified against the real site (no hand-edited page to test drift
+against yet).
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
@@ -1516,22 +1552,31 @@ reasoning as Tier 1 above.
 2. Static-site publishing pipeline (per-benchmark + suite + cross-suite pages from templates), targeting
    a new WordPress site at `mvermeulen.org/workload` (parallel to, not replacing, the author's existing
    hand-curated `mvermeulen.org/perf/workloads/`). **REST auth/page/media primitives, a CLI
-   (`wspy-publish`), and a per-report "Publish to WordPress" web UI button are shipped** — see "Shipped
-   since 4.2" and `doc/INVESTIGATION_ARCHIVE.md` for the full build history — but only as a human
-   publishing one report at a time. Two things this item originally asked for are still open:
+   (`wspy-publish`), a per-report "Publish to WordPress" web UI button, and idempotent content-merge
+   protection are all shipped** — see "Shipped since 4.2" and `doc/INVESTIGATION_ARCHIVE.md` for the
+   full build history — but only as a human publishing one report at a time. One thing this item
+   originally asked for is still open:
    - **The actual site-wide pipeline.** Nothing yet walks the whole `wspy-store` and generates/updates
      suite-level (a ~30-column reference-matrix table, matching `/perf/workloads/<suite>/`'s existing
      hand-maintained shape) or cross-suite rollup pages — today's tooling only publishes individual
      benchmark/test-point pages, one human click at a time. Depends on item 5's reference-matrix
      database as the suite-level data source (deciding whether to generate that table from the store
      instead of hand-maintaining it is exactly item 5's own open question).
-   - **Idempotent content merge.** Re-publishing over a page a human has since hand-edited only does
-     page *lookup* (by slug/parent) today, not a real merge against existing hand-edits — re-running
-     publish on an already-curated page would blindly overwrite it.
-   - `wspy-publish publish-page --slug`'s flat `(slug, parent)` lookup still lands at WordPress root
-     unless a parent id is typed in by hand — the same now-fixed bug the web UI's "Publish to WordPress"
-     button had (see "Shipped since 4.2"), but this CLI path was deliberately left as a simple
-     single-page primitive rather than switched onto `publish_page_at_path()`.
+
+   Two things previously listed here as open turned out not to be, on closer inspection while
+   scoping this item's remaining work (2026-08-02):
+   - *"Idempotent content merge"* — real gap, now closed. `publish_page_content()` (the shared engine
+     behind `publish-path`, `publish-page --from-rundir`, and the web UI button) now fingerprints each
+     page's content after every write and refuses to overwrite if the live page has since drifted from
+     that fingerprint — `WPContentDriftError`, bypassable with `force=True`/an "Overwrite" checkbox. See
+     "Shipped since 4.2".
+   - *"`wspy-publish publish-page --slug`'s flat lookup still lands at WordPress root"* — this bullet
+     described a real limitation of `--slug` in isolation, but `publish-path` (a separate subcommand
+     wrapping `publish_page_at_path()`, already shipped alongside PR #190) was the actual fix for the
+     hierarchy-aware need this originally flagged — `--slug` staying a flat single-level primitive is
+     intentional, not an open gap. The old bullet conflated "an intentionally-simple primitive exists
+     alongside the real fix" with "the real fix is still missing." No code change needed; corrected here
+     so this doesn't get re-discovered as a phantom gap later.
 3. Characterization badges + similarity panels in reports — a new block type in 4.1's curation studio
    drawing a badge from 4.2's (shipped) archetype scorecard (`wspy-archetype`), not a separate report
    surface.
