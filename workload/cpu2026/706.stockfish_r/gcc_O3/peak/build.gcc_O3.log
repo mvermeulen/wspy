@@ -1,0 +1,44 @@
+$ bash -c 'cd /home/mev/cpu2026 && source /home/mev/cpu2026/shrc && ulimit -s unlimited && runcpu --config gcc_O3.cfg --action=build --tune peak 706.stockfish_r'
+SPEC CPU 2026 Benchmark Suites
+Copyright 1995-2026 Standard Performance Evaluation Corporation (SPEC)
+
+runcpu (9ba4d1e3)
+Using 'linux-x86_64' tools
+Reading file manifests... read 64967 entries from 2 files in 0.11s (581948 files/s)
+Loading runcpu modules.................
+Locating benchmarks...found 54 benchmarks in 82 benchsets.
+Reading config file '/home/mev/cpu2026/config/gcc_O3.cfg'
+1 configuration selected:
+
+Action   Benchmarks
+------   ----------------------------------------------------------------------
+build    706.stockfish_r                                                       
+-------------------------------------------------------------------------------
+
+Setting up environment for running 706.stockfish_r...
+Starting runcpu for 706.stockfish_r...
+Running "specperl /home/mev/cpu2026/bin/sysinfo" to gather system information.
+sysinfo: sysinfo 779ab21020787073335a329f3a45e2cd
+sysinfo: ...getting basic information about kernel, users, and limits
+sysinfo: Getting system information for Linux...
+sysinfo: ...getting CPU info
+sysinfo: ...getting info from numactl
+sysinfo: ...getting memory info
+sysinfo: ...getting info from systemd
+sysinfo: ...getting power info
+sysinfo: ...getting system tuning info
+sysinfo: ...getting OS info
+sysinfo: ...getting disk info
+sysinfo: ...getting info from /sys/devices/virtual/dmi/id
+sysinfo: ...getting info from dmidecode
+Retrieving flags file (/home/mev/cpu2026/config/flags/gcc.xml)...
+Benchmarks selected: 706.stockfish_r
+Compiling Binaries
+  Up to date 706.stockfish_r peak gcc_O3
+
+
+Build Complete
+The log for this run is in /home/mev/cpu2026/result/CPU2026.004.log
+
+runcpu finished at 2026-08-01 12:07:49; 2 total seconds elapsed
+[runcpu build exited 0]
