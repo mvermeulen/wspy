@@ -2002,6 +2002,8 @@ def render_publish_panel(suite, benchmark, run_id, title):
        placeholder="e.g. amd-395" required></label>
     <label>Title <input type="text" name="title" value="{html.escape(title)}" required></label>
     <label><input type="checkbox" name="publish"> Publish immediately (default: leave as a draft)</label>
+    <label><input type="checkbox" name="force"> Overwrite even if the live page has changed since
+       wspy last published it (default: refuse, since that usually means a hand-edit)</label>
     <button type="submit" class="primary">Publish to WordPress</button>
   </form>
 </section>
@@ -2030,6 +2032,7 @@ def render_publish_result(rundir, base_url, suite, benchmark, run_id, form):
     machine = (form.get("machine", [""])[0] or "").strip()
     title = (form.get("title", [""])[0] or "").strip()
     do_publish = form.get("publish", [""])[0] == "on"
+    force = form.get("force", [""])[0] == "on"
 
     if not machine or not title:
         return page("publish failed",
@@ -2074,7 +2077,14 @@ def render_publish_result(rundir, base_url, suite, benchmark, run_id, form):
     try:
         wp_page, created = wp_client.publish_page_at_path(
             wp["site_url"], wp["username"], wp["app_password"], levels, content,
-            do_publish=do_publish, stub_content=stub_content)
+            do_publish=do_publish, stub_content=stub_content, force=force)
+    except wp_client.WPContentDriftError as e:
+        return page("publish failed",
+                    '<section class="panel"><h1>Publish failed</h1>'
+                    f'<p class="muted">{html.escape(str(e))} &mdash; '
+                    f'<a href="{html.escape(e.link or "#")}" target="_blank">view the live page</a>, '
+                    'then resubmit with "Overwrite even if hand-edited" checked if you still want to '
+                    f'replace it.</p>{upload_section}{back_link}</section>')
     except wp_client.WPError as e:
         return page("publish failed",
                     '<section class="panel"><h1>Publish failed</h1>'

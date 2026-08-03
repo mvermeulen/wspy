@@ -365,11 +365,16 @@ class SaveConfigTest(unittest.TestCase):
 
 
 class PublishPageContentTest(unittest.TestCase):
+    # Every test here patches _record_publish_fingerprint() as a no-op -- it always runs after a
+    # successful create/update, so leaving it real would hit the network (a real get_page() call) and
+    # write to the real ~/.config/wspy/publish_state.json on whatever machine runs these tests.
+    # Fingerprint/drift behavior itself is covered separately below (ContentDriftProtectionTest).
     def test_creates_when_no_existing_page(self):
         with patch("wp_client.find_page", return_value=None), \
              patch("wp_client.create_page",
                    return_value={"id": 5, "status": "draft"}) as fake_create, \
-             patch("wp_client.publish_page") as fake_publish:
+             patch("wp_client.publish_page") as fake_publish, \
+             patch("wp_client._record_publish_fingerprint"):
             page, created = wp_client.publish_page_content(
                 "https://example.org/workload", "wspy", "secret", "my-report", 17,
                 "My Report", "<p>hi</p>")
@@ -385,7 +390,9 @@ class PublishPageContentTest(unittest.TestCase):
         with patch("wp_client.find_page", return_value={"id": 9, "status": "draft"}), \
              patch("wp_client.create_page") as fake_create, \
              patch("wp_client.update_page",
-                   return_value={"id": 9, "status": "draft"}) as fake_update:
+                   return_value={"id": 9, "status": "draft"}) as fake_update, \
+             patch("wp_client.load_publish_state", return_value={}), \
+             patch("wp_client._record_publish_fingerprint"):
             page, created = wp_client.publish_page_content(
                 "https://example.org/workload", "wspy", "secret", "my-report", 17,
                 "My Report", "<p>updated</p>")
@@ -401,13 +408,97 @@ class PublishPageContentTest(unittest.TestCase):
         with patch("wp_client.find_page", return_value=None), \
              patch("wp_client.create_page", return_value={"id": 5, "status": "draft"}), \
              patch("wp_client.publish_page",
-                   return_value={"id": 5, "status": "publish"}) as fake_publish:
+                   return_value={"id": 5, "status": "publish"}) as fake_publish, \
+             patch("wp_client._record_publish_fingerprint"):
             page, created = wp_client.publish_page_content(
                 "https://example.org/workload", "wspy", "secret", "my-report", 17,
                 "My Report", "<p>hi</p>", do_publish=True)
 
         fake_publish.assert_called_once_with("https://example.org/workload", "wspy", "secret", 5)
         self.assertEqual(page["status"], "publish")
+
+
+class ContentDriftProtectionTest(unittest.TestCase):
+    """publish_page_content()'s protection against silently overwriting a page a human hand-edited in
+    wp-admin since wspy's own last write. _live_raw_content() is patched directly (rather than mocking
+    get_page()/request()) since these tests are about the drift-decision logic, not the wire format of
+    fetching a page's raw content -- same "mock the boundary under test, not everything beneath it"
+    convention FindOrCreatePagePathTest already uses for find_page()/create_page()."""
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.state_path = os.path.join(self.tmpdir.name, "publish_state.json")
+        patcher = patch.object(wp_client, "PUBLISH_STATE_PATH", self.state_path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_no_recorded_fingerprint_publishes_without_checking_live_content(self):
+        # A page that predates this feature (or was never published by wspy before) has no
+        # fingerprint on record -- trusted rather than retroactively blocked.
+        with patch("wp_client.find_page", return_value={"id": 9, "link": "https://x/foo/"}), \
+             patch("wp_client.update_page", return_value={"id": 9}) as fake_update, \
+             patch("wp_client._live_raw_content", return_value="<p>whatever is live</p>") as fake_live:
+            wp_client.publish_page_content(
+                "https://example.org/workload", "wspy", "secret", "my-report", 17,
+                "My Report", "<p>new</p>")
+
+        fake_update.assert_called_once()
+        # _live_raw_content is still called once, to record this write's own fingerprint.
+        fake_live.assert_called_once()
+        self.assertEqual(
+            wp_client.load_publish_state()["9"], wp_client._content_hash("<p>whatever is live</p>"))
+
+    def test_matching_fingerprint_publishes_normally(self):
+        wp_client.save_publish_state({"9": wp_client._content_hash("<p>old</p>")})
+        with patch("wp_client.find_page", return_value={"id": 9, "link": "https://x/foo/"}), \
+             patch("wp_client.update_page", return_value={"id": 9}) as fake_update, \
+             patch("wp_client._live_raw_content", return_value="<p>old</p>"):
+            page, created = wp_client.publish_page_content(
+                "https://example.org/workload", "wspy", "secret", "my-report", 17,
+                "My Report", "<p>new</p>")
+
+        fake_update.assert_called_once_with(
+            "https://example.org/workload", "wspy", "secret", 9, content="<p>new</p>", title="My Report")
+        self.assertFalse(created)
+
+    def test_mismatched_fingerprint_refuses_by_default(self):
+        wp_client.save_publish_state({"9": wp_client._content_hash("<p>old</p>")})
+        with patch("wp_client.find_page", return_value={"id": 9, "link": "https://x/foo/"}), \
+             patch("wp_client.update_page") as fake_update, \
+             patch("wp_client._live_raw_content", return_value="<p>a human's hand-edit</p>"):
+            with self.assertRaises(wp_client.WPContentDriftError) as ctx:
+                wp_client.publish_page_content(
+                    "https://example.org/workload", "wspy", "secret", "my-report", 17,
+                    "My Report", "<p>new</p>")
+
+        fake_update.assert_not_called()
+        self.assertEqual(ctx.exception.page_id, 9)
+        self.assertEqual(ctx.exception.link, "https://x/foo/")
+
+    def test_force_overwrites_despite_mismatched_fingerprint(self):
+        wp_client.save_publish_state({"9": wp_client._content_hash("<p>old</p>")})
+        with patch("wp_client.find_page", return_value={"id": 9, "link": "https://x/foo/"}), \
+             patch("wp_client.update_page", return_value={"id": 9}) as fake_update, \
+             patch("wp_client._live_raw_content", return_value="<p>new</p>"):
+            wp_client.publish_page_content(
+                "https://example.org/workload", "wspy", "secret", "my-report", 17,
+                "My Report", "<p>new</p>", force=True)
+
+        fake_update.assert_called_once()
+        # the new fingerprint reflects the post-overwrite live content, so the *next* publish has a
+        # correct baseline again.
+        self.assertEqual(wp_client.load_publish_state()["9"], wp_client._content_hash("<p>new</p>"))
+
+    def test_fingerprint_recorded_after_create(self):
+        with patch("wp_client.find_page", return_value=None), \
+             patch("wp_client.create_page", return_value={"id": 5, "status": "draft"}), \
+             patch("wp_client._live_raw_content", return_value="<p>hi</p>"):
+            wp_client.publish_page_content(
+                "https://example.org/workload", "wspy", "secret", "my-report", 17,
+                "My Report", "<p>hi</p>")
+
+        self.assertEqual(
+            wp_client.load_publish_state()["5"], wp_client._content_hash("<p>hi</p>"))
 
 
 class PublishPageAtPathTest(unittest.TestCase):
@@ -429,7 +520,7 @@ class PublishPageAtPathTest(unittest.TestCase):
         fake_create.assert_not_called()
         fake_publish_content.assert_called_once_with(
             "https://example.org/workload", "wspy", "secret", "706.stockfish_r", 17,
-            "706.stockfish_r", "<p>hi</p>", do_publish=False)
+            "706.stockfish_r", "<p>hi</p>", do_publish=False, force=False)
         self.assertTrue(created)
         self.assertEqual(page["id"], 100)
 
@@ -448,7 +539,7 @@ class PublishPageAtPathTest(unittest.TestCase):
             "https://example.org/workload", "wspy", "secret", "phoronix", "Phoronix", 0, content="")
         fake_publish_content.assert_called_once_with(
             "https://example.org/workload", "wspy", "secret", "coremark", 200,
-            "coremark", "<p>hi</p>", do_publish=False)
+            "coremark", "<p>hi</p>", do_publish=False, force=False)
 
     def test_stub_content_used_only_for_newly_created_levels(self):
         # "phoronix" already exists (untouched, no stub_content applied); "coremark" is missing and
@@ -490,7 +581,7 @@ class PublishPageAtPathTest(unittest.TestCase):
 
         fake_publish_content.assert_called_once_with(
             "https://example.org/workload", "wspy", "secret", "cpu2026", 0,
-            "cpu2026", "<p>hi</p>", do_publish=True)
+            "cpu2026", "<p>hi</p>", do_publish=True, force=False)
 
 
 if __name__ == "__main__":
