@@ -334,37 +334,9 @@ def cmd_select_runs(args):
     return 0 if ok else 1
 
 
-def escape_like(s):
-    """Escapes %, _, and \\ for safe interpolation into a SQL LIKE pattern (ESCAPE '\\') -- benchmark
-    names routinely contain underscores (e.g. "707.ntest_r-gcc_O3-base"), which LIKE would otherwise
-    treat as a single-character wildcard and silently over-match."""
-    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
-def resolve_store_pass_rows(cur, hostname, suite, benchmark, run_id):
-    """Returns [(store_run_id, config_name), ...] for one candidate run's actual rows in the store.
-    A run_id from runs.json/select-runs names a *run directory* (wspy-run's own naming, one manifest.json
-    per directory) -- but wspy-store's `runs` table is keyed by each underlying wspy invocation's own
-    run-index run_id, generated independently per pass (run_index.c) and never equal to the directory
-    name. wspy-run's unified --suite/--benchmark layout always writes every pass's manifest/output files
-    under <output_root>/<suite>/<benchmark>/<run_id>/, and that path is preserved verbatim in the store's
-    own output_path/manifest_path columns (store.c) regardless of what --output-root prefix the ingesting
-    host used -- so matching on the "/<suite>/<benchmark>/<run_id>/" suffix identifies every pass row
-    belonging to this exact run directory without needing --output-root here at all. Also tries an exact
-    (hostname, run_id) match, kept for the "bare wspy run dropped into this layout by hand" case
-    (read_run_passes()'s own docstring) where a human names the directory after the run-index record's own
-    run_id directly, and it's what the existing test fixtures already model -- so a real wspy-run
-    multi-pass directory and a single hand-placed run both resolve correctly here."""
-    pattern = "%/" + escape_like(suite) + "/" + escape_like(benchmark) + "/" + escape_like(run_id) + "/%"
-    cur.execute(
-        "SELECT run_id, config_name FROM runs WHERE hostname = ? AND "
-        "(manifest_path LIKE ? ESCAPE '\\' OR output_path LIKE ? ESCAPE '\\')",
-        (hostname, pattern, pattern))
-    rows = dict(cur.fetchall())
-    cur.execute("SELECT run_id, config_name FROM runs WHERE hostname = ? AND run_id = ?",
-                (hostname, run_id))
-    rows.update(cur.fetchall())
-    return list(rows.items())
+# escape_like()/resolve_store_pass_rows() come from joblib.py (import block above) -- shared with
+# server.py's characterization-badge generator, which hits this exact same directory-name-vs-store-
+# run_id mismatch.
 
 
 def split_by_store_presence(db_path, suite, benchmark, stats_pool):
@@ -385,7 +357,7 @@ def split_by_store_presence(db_path, suite, benchmark, stats_pool):
         cur = conn.cursor()
         present, missing = [], []
         for r in stats_pool:
-            rows = resolve_store_pass_rows(cur, r["hostname"], suite, benchmark, r["run_id"])
+            rows = joblib.resolve_store_pass_rows(cur, r["hostname"], suite, benchmark, r["run_id"])
             if rows:
                 present.append(dict(r, store_pass_ids=[row[0] for row in rows], store_pass_configs=rows))
             else:
@@ -516,14 +488,10 @@ def render_supplementary_section(data):
 
 def pick_archetype_pass_id(r):
     """--run takes exactly one store run_id (unlike aggregate's --run-id, which is repeatable), but a
-    real run has one store row per collection pass (resolve_store_pass_rows()). Prefers the "counters"
-    pass -- the widest single counter set (IPC/topdown/cache/branch/software) and the closest match to
-    what wspy-archetype's feature extraction was built against -- falling back to whichever pass id
-    resolved first if a run has no pass tagged "counters" (e.g. a profile that never collects one)."""
-    for store_run_id, config_name in r["store_pass_configs"]:
-        if config_name == "counters":
-            return store_run_id
-    return r["store_pass_ids"][0]
+    real run has one store row per collection pass (resolve_store_pass_rows()). Thin wrapper over
+    joblib.pick_counters_pass_id() (shared with server.py's characterization-badge generator) adapting
+    this module's own runs.json-shaped entry to that function's plain pass-rows list."""
+    return joblib.pick_counters_pass_id(r["store_pass_configs"])
 
 
 def collect_archetype_scorecards(wspy_archetype_bin, db_path, present):

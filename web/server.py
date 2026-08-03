@@ -43,6 +43,7 @@ import re
 import secrets
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -80,7 +81,7 @@ from joblib import (  # noqa: E402,F401
     parse_run_key, build_proctree_json_argv, build_proctree_diff_argv, build_symbolize_argv,
     run_sync, parse_phoronix_test_names, estimate_phoronix_workload_seconds,
     CSV_NAME, MANIFEST_NAME, PNG_NAME, CURATION_NAME, COMMAND_TXT_NAME, guess_kind, read_run_manifest,
-    ai_artifact_label, list_plot_pngs, collect_run_files,
+    ai_artifact_label, list_plot_pngs, collect_run_files, ARCHETYPE_BADGE_NAME,
     build_reproducibility_bundle, BUNDLE_MANIFEST_NAME,
     COMPOSITE_PRESET_PROFILES, expand_preset_names, run_proctree_besteffort,
 )
@@ -510,6 +511,25 @@ def run_status_from_passes(passes):
     return "ok" if all(p.get("status") == "ok" for p in passes) else "failed"
 
 
+def find_representative_host_manifest(rundir, run_manifest):
+    """The first per-pass manifest.json found via a run-level manifest.json's passes[] list (wspy-run's
+    unified layout, already loaded by the caller as run_manifest), or a bare manifest.json if
+    run_manifest is None (a lone wspy invocation dropped into this layout by hand) -- whichever gives a
+    real per-process manifest.json (host/timing/exit_status fields), not wspy-run's own run-level one
+    (which carries none of those). None if neither resolves. Shared by load_run_history_entry() (run-
+    history table metadata) and generate_archetype_badge() (wspy-archetype --run needs this run's own
+    hostname)."""
+    if run_manifest is not None:
+        for p in run_manifest.get("passes", []):
+            pass_manifest = p.get("manifest")
+            if pass_manifest:
+                host_manifest = read_json_file(os.path.join(rundir, pass_manifest))
+                if host_manifest:
+                    return host_manifest
+        return None
+    return read_json_file(os.path.join(rundir, MANIFEST_NAME))
+
+
 def load_run_history_entry(output_root, suite, benchmark, run_id, mtime):
     """Best-effort metadata for one run directory: workload command, overall
     status, and (from a representative per-process manifest -- wspy-run's own
@@ -520,18 +540,11 @@ def load_run_history_entry(output_root, suite, benchmark, run_id, mtime):
     fields, applied here across a run's identifying metadata instead."""
     rundir = os.path.join(output_root, suite, benchmark, run_id)
     run_manifest = read_run_manifest(os.path.join(rundir, RUN_MANIFEST_NAME))
-    host_manifest = None
+    host_manifest = find_representative_host_manifest(rundir, run_manifest)
     if run_manifest is not None:
         workload = run_manifest.get("command") or None
         status = run_status_from_passes(run_manifest.get("passes"))
-        for p in run_manifest.get("passes", []):
-            pass_manifest = p.get("manifest")
-            if pass_manifest:
-                host_manifest = read_json_file(os.path.join(rundir, pass_manifest))
-                if host_manifest:
-                    break
     else:
-        host_manifest = read_json_file(os.path.join(rundir, MANIFEST_NAME))
         workload = (host_manifest.get("command", {}).get("argv") if host_manifest else None) or None
         status = run_status_from_exit_status(host_manifest.get("exit_status") if host_manifest else None)
 
@@ -3456,6 +3469,140 @@ def _studio_link_and_curated(rundir, base_url, suite, benchmark, run_id, raw_htm
             f'{raw_html}')
 
 
+# ---------------------------------------------------------------------------
+# Characterization badge (INVESTIGATION.md 4.3 Tier 3 item 3, badges half): a compact
+# resource_dominance/confidence/etc. summary from wspy-archetype's already-shipped scorecard
+# (`wspy-archetype --run <hostname>:<run_id>`), surfaced inside the curation studio. Deliberately not a
+# new curation-studio block "kind" with its own rendering path in every export format -- instead,
+# generate_archetype_badge() below shells wspy-archetype once, formats its output as a small markdown
+# file (ARCHETYPE_BADGE_NAME, joblib.py), and writes it into the run directory. From that point on it's
+# an ordinary artifact: collect_run_files() already offers it, guess_kind()'s ".md" rule already routes
+# it through the existing markdown artifact pipeline (render_block_content()/export_block_content()/all
+# three export renderers), unchanged. Same "external tool output becomes a curatable file" precedent
+# wspy-analyze's aianalysis.<model>.md already established -- avoids threading a live wspy-archetype
+# dependency through every rendering/export code path (several of which, e.g. render_export_markdown(),
+# are also called by wspy-testpoint with no wspy-archetype config available at all).
+# ---------------------------------------------------------------------------
+
+def format_archetype_badge_markdown(fields):
+    """Formats wspy-archetype --run's key=value scorecard (archetype.c's print_trace_field() output,
+    already parsed into a dict by generate_archetype_badge() below) as a compact markdown snippet.
+    Deliberately just the headline numbers, not a restatement of doc/PROFILE_COOKBOOK.md's fuller guide
+    to reading verdict/confidence output -- links there instead."""
+    dominance = fields.get("resource_dominance", "unknown")
+    pct = fields.get("resource_dominance_pct")
+    headline = f"**{dominance}**" + (f" ({pct}%)" if pct else "")
+    confidence = fields.get("confidence", "unknown")
+    lines = [
+        "# Workload characterization",
+        "",
+        f"{headline} — confidence: **{confidence}**",
+        "",
+        "| axis | value |",
+        "|---|---|",
+    ]
+    for axis in ("parallelism_shape", "control_flow_style", "runtime_stability", "memory_attribution"):
+        lines.append(f"| {axis} | {fields.get(axis, 'unknown')} |")
+    lines.append("")
+    if fields.get("confidence_reasons"):
+        lines.append(f"*{fields['confidence_reasons']}*")
+        lines.append("")
+    lines.append("Classified via `wspy-archetype` from this run's own collected counters -- see "
+                  "`doc/PROFILE_COOKBOOK.md` for how to read verdict/confidence output.")
+    return "\n".join(lines) + "\n"
+
+
+def resolve_archetype_run_key(cfg, rundir, suite, benchmark, run_id):
+    """Returns (hostname, store_run_id) for `wspy-archetype --run <hostname>:<run_id>`, or (None,
+    error_message) on failure. A run *directory's* name is never itself a store run_id -- wspy-store's
+    `runs` table is keyed by each underlying wspy invocation's own run-index run_id, one per collection
+    pass, generated independently of the directory name (the exact mismatch wspy-testpoint's own
+    aggregate/render had to resolve too). joblib.resolve_store_pass_rows() finds this directory's real
+    pass rows by path correlation; joblib.pick_counters_pass_id() picks the "counters" pass (the widest
+    counter set, closest to what wspy-archetype's feature extraction was built against) as the one
+    representative pass a single `--run` call needs."""
+    run_manifest = read_run_manifest(os.path.join(rundir, RUN_MANIFEST_NAME))
+    host_manifest = find_representative_host_manifest(rundir, run_manifest)
+    hostname = ((host_manifest or {}).get("host") or {}).get("hostname")
+    if not hostname:
+        return None, "could not determine this run's hostname from its own manifest"
+    if not os.path.isfile(cfg["store_db"]):
+        return None, f"store database not found: {cfg['store_db']}"
+    conn = sqlite3.connect(cfg["store_db"])
+    try:
+        pass_rows = joblib.resolve_store_pass_rows(conn.cursor(), hostname, suite, benchmark, run_id)
+    finally:
+        conn.close()
+    if not pass_rows:
+        return None, (f"{hostname}:{run_id} not found in {cfg['store_db']} -- run `wspy-store --db "
+                       f"{cfg['store_db']} --run-index <run-index.jsonl>` to ingest it first")
+    return hostname, joblib.pick_counters_pass_id(pass_rows)
+
+
+def generate_archetype_badge(cfg, rundir, suite, benchmark, run_id):
+    """Runs `wspy-archetype --run <hostname>:<store_run_id>` (resolved via resolve_archetype_run_key())
+    and writes ARCHETYPE_BADGE_NAME into rundir on success. Returns (ok, message) -- message is a short
+    human-readable summary on success, or an explanatory failure reason (missing binary, hostname
+    unresolvable, run not yet in the store, ...) on failure -- never raises, so the caller can always
+    render *something* rather than a 500."""
+    hostname, store_run_id = resolve_archetype_run_key(cfg, rundir, suite, benchmark, run_id)
+    if hostname is None:
+        return False, store_run_id  # store_run_id carries the error message in this branch
+    argv = [cfg["wspy_archetype_bin"], "--db", cfg["store_db"], "--run", f"{hostname}:{store_run_id}"]
+    rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=20)
+    if timed_out:
+        return False, f"{cfg['wspy_archetype_bin']} timed out"
+    if rc != 0:
+        return False, output.strip() or f"wspy-archetype exited {rc}"
+    fields = {}
+    for line in output.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            fields[k] = v
+    with open(os.path.join(rundir, ARCHETYPE_BADGE_NAME), "w") as f:
+        f.write(format_archetype_badge_markdown(fields))
+    return True, "resource_dominance=%s, confidence=%s" % (
+        fields.get("resource_dominance", "unknown"), fields.get("confidence", "unknown"))
+
+
+def render_badge_panel(suite, benchmark, run_id, badge_exists):
+    """The "Generate characterization badge" panel on the studio page -- a plain form POST (no JS),
+    same pattern render_publish_panel() already uses, since this is a one-shot few-second action, not a
+    multi-minute run needing SSE. Deliberately outside the studio's own main <form> (a nested <form>
+    isn't valid HTML), so it's rendered as its own trailing section."""
+    action = f"/generate-badge/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    verb = "Regenerate" if badge_exists else "Generate"
+    note = (f"Already generated as <code>{html.escape(ARCHETYPE_BADGE_NAME)}</code> -- add it as a "
+            "block above, or regenerate to refresh its classification." if badge_exists else
+            "Classifies this run (resource_dominance/confidence/etc.) via <code>wspy-archetype</code>, "
+            "using data already ingested into the store.")
+    return f"""
+<section class="panel">
+  <h2>Characterization badge</h2>
+  <p class="config-label">{note}</p>
+  <form method="post" action="{action}">
+    <button type="submit">{verb} characterization badge</button>
+  </form>
+</section>
+"""
+
+
+def render_badge_result(cfg, rundir, suite, benchmark, run_id):
+    """Renders the result of a "Generate characterization badge" form submission."""
+    studio_url = f"/studio/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    back_link = f'<p><a href="{studio_url}">Back to studio</a></p>'
+    ok, message = generate_archetype_badge(cfg, rundir, suite, benchmark, run_id)
+    if not ok:
+        return page("badge generation failed",
+                    '<section class="panel"><h1>Characterization badge failed</h1>'
+                    f'<p class="muted">{html.escape(message)}</p>{back_link}</section>')
+    return page("badge generated",
+                '<section class="panel"><h1>Characterization badge generated</h1>'
+                f'<p>{html.escape(message)}</p>'
+                f'<p class="muted">Add <code>{html.escape(ARCHETYPE_BADGE_NAME)}</code> to your curated '
+                f'report from the studio\'s "Add a block" list.</p>{back_link}</section>')
+
+
 def render_studio(rundir, suite, benchmark, run_id):
     curation = load_curation(rundir) or {"blocks": []}
     blocks = curation.get("blocks", [])
@@ -3557,7 +3704,8 @@ def render_studio(rundir, suite, benchmark, run_id):
     <button type="submit" name="op" value="save" class="primary">Save</button>
   </form>
 </section>
-"""
+""" + render_badge_panel(suite, benchmark, run_id,
+                          any(item["filename"] == ARCHETYPE_BADGE_NAME for item in available))
     return page(f"curation studio: {benchmark}/{run_id}", body)
 
 
@@ -4362,6 +4510,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(303)
             self.send_header("Location", f"/studio/{suite}/{benchmark}/{run_id}")
             self.end_headers()
+            return
+
+        m = re.match(r"^/generate-badge/([^/]+)/([^/]+)/([^/]+)$", parsed.path)
+        if m:
+            suite, benchmark, run_id = m.groups()
+            if not all(valid_segment(x) for x in (suite, benchmark, run_id)):
+                self._send(400, "invalid path")
+                return
+            rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+            if not os.path.isdir(rundir):
+                self._send(404, "no such report")
+                return
+            self._send(200, render_badge_result(cfg, rundir, suite, benchmark, run_id))
             return
 
         m = re.match(r"^/publish/([^/]+)/([^/]+)/([^/]+)$", parsed.path)
@@ -5831,6 +5992,9 @@ def main():
     ap.add_argument("--wspy-testpoint", default=os.path.join(REPO_ROOT, "wspy-testpoint"),
                      help="path to the wspy-testpoint script (report page's 'Publish test-point "
                           "report' button, Tier 3 item 7; default: repo root's ./wspy-testpoint)")
+    ap.add_argument("--wspy-archetype", default=os.path.join(REPO_ROOT, "wspy-archetype"),
+                     help="path to the wspy-archetype binary (studio's 'Generate characterization "
+                          "badge' button, Tier 3 item 3; default: repo root's ./wspy-archetype)")
     ap.add_argument("--report-root", default=None,
                      help="report-root git clone path for the 'Publish test-point report' button "
                           "(default: unset, so wspy-testpoint falls through to its own default "
@@ -5921,6 +6085,7 @@ def main():
         "wspy_symbolize_bin": os.path.abspath(args.wspy_symbolize),
         "wspy_ledger_bin": os.path.abspath(args.wspy_ledger),
         "wspy_testpoint_bin": os.path.abspath(args.wspy_testpoint),
+        "wspy_archetype_bin": os.path.abspath(args.wspy_archetype),
         "report_root": os.path.abspath(args.report_root) if args.report_root else None,
         "report_root_remote": args.report_root_remote,
         "run_index_file": run_index_file,

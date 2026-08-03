@@ -17,6 +17,7 @@ processes.
 import io
 import json
 import os
+import sqlite3
 import sys
 import tarfile
 import tempfile
@@ -2230,6 +2231,74 @@ class CollectRunFilesTest(unittest.TestCase):
             items = joblib.collect_run_files(tmpdir)
             by_name = {i["filename"]: i for i in items}
             self.assertEqual(by_name[joblib.COMMAND_TXT_NAME]["label"], "command line")
+
+    def test_archetype_badge_absent_until_generated(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            items = joblib.collect_run_files(tmpdir)
+            self.assertNotIn(joblib.ARCHETYPE_BADGE_NAME, [i["filename"] for i in items])
+
+    def test_archetype_badge_offered_once_present(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            open(os.path.join(tmpdir, joblib.ARCHETYPE_BADGE_NAME), "w").close()
+            items = joblib.collect_run_files(tmpdir)
+            by_name = {i["filename"]: i for i in items}
+            self.assertIn(joblib.ARCHETYPE_BADGE_NAME, by_name)
+            self.assertEqual(by_name[joblib.ARCHETYPE_BADGE_NAME]["kind"], "markdown")
+            self.assertFalse(by_name[joblib.ARCHETYPE_BADGE_NAME]["ai_generated"])
+
+
+class ResolveStorePassRowsTest(unittest.TestCase):
+    """resolve_store_pass_rows()/pick_counters_pass_id() -- shared by wspy-testpoint (aggregate/render's
+    --run-id resolution) and server.py's characterization-badge generator. A minimal `runs` table (just
+    the columns these two functions touch) rather than store.c's full schema, matching this test file's
+    "test the function under test, not the whole subsystem" convention elsewhere."""
+
+    def _connect(self):
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE runs (hostname TEXT, run_id TEXT, config_name TEXT, "
+                     "manifest_path TEXT, output_path TEXT)")
+        self.addCleanup(conn.close)
+        return conn
+
+    def test_resolves_by_directory_path_correlation(self):
+        conn = self._connect()
+        conn.execute("INSERT INTO runs VALUES ('roswell', 'pass-a', 'counters', "
+                     "'/out/cpu2026/707.ntest_r-gcc_O3-base/wraprun1/counters.manifest.json', NULL)")
+        conn.execute("INSERT INTO runs VALUES ('roswell', 'pass-b', 'systemtime', NULL, "
+                     "'/out/cpu2026/707.ntest_r-gcc_O3-base/wraprun1/systemtime.csv')")
+        rows = joblib.resolve_store_pass_rows(
+            conn.cursor(), "roswell", "cpu2026", "707.ntest_r-gcc_O3-base", "wraprun1")
+        self.assertEqual(sorted(rows), [("pass-a", "counters"), ("pass-b", "systemtime")])
+
+    def test_underscore_in_benchmark_name_does_not_over_match_via_like_wildcard(self):
+        # "707.ntest_r-gcc_O3-base" contains underscores -- unescaped these are LIKE single-char
+        # wildcards and would also match "707.ntestXr-gccXO3-base"-shaped paths.
+        conn = self._connect()
+        conn.execute("INSERT INTO runs VALUES ('roswell', 'wrong-match', 'counters', "
+                     "'/out/cpu2026/707XntestXr-gccXO3-base/wraprun1/counters.manifest.json', NULL)")
+        rows = joblib.resolve_store_pass_rows(
+            conn.cursor(), "roswell", "cpu2026", "707.ntest_r-gcc_O3-base", "wraprun1")
+        self.assertEqual(rows, [])
+
+    def test_exact_hostname_run_id_match_for_bare_wspy_runs(self):
+        conn = self._connect()
+        conn.execute("INSERT INTO runs VALUES ('archhost', 'archrun1', 'counters', NULL, NULL)")
+        rows = joblib.resolve_store_pass_rows(
+            conn.cursor(), "archhost", "manual", "archbench", "archrun1")
+        self.assertEqual(rows, [("archrun1", "counters")])
+
+    def test_no_match_returns_empty_list(self):
+        conn = self._connect()
+        rows = joblib.resolve_store_pass_rows(conn.cursor(), "roswell", "cpu2026", "bench", "run1")
+        self.assertEqual(rows, [])
+
+    def test_pick_counters_pass_id_prefers_counters(self):
+        rows = [("pass-b", "systemtime"), ("pass-a", "counters"), ("pass-c", "ibs")]
+        self.assertEqual(joblib.pick_counters_pass_id(rows), "pass-a")
+
+    def test_pick_counters_pass_id_falls_back_to_first_when_no_counters_pass(self):
+        rows = [("pass-b", "systemtime"), ("pass-c", "ibs")]
+        self.assertEqual(joblib.pick_counters_pass_id(rows), "pass-b")
 
 
 class ClassifyBundleKindTest(unittest.TestCase):

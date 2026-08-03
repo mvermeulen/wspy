@@ -112,6 +112,61 @@ PNG_NAME = "amdtopdown.png"
 # candidate artifact (it's studio-owned metadata, not a run artifact).
 CURATION_NAME = "curation.json"
 
+# server.py's characterization-badge generator (INVESTIGATION.md 4.3 Tier 3 item 3) writes this file
+# once a human clicks "Generate characterization badge" in the studio -- a small wspy-archetype --run
+# scorecard formatted as markdown. From then on it's an ordinary artifact: collect_run_files() below
+# offers it, guess_kind()'s ".md" -> "markdown" rule renders it through the existing markdown artifact
+# pipeline unchanged, same "external tool output becomes a curatable file" precedent
+# aianalysis.<model>.md already established for wspy-analyze -- no new block kind needed.
+ARCHETYPE_BADGE_NAME = "archetype_badge.md"
+
+
+def escape_like(s):
+    """Escapes %, _, and \\ for safe interpolation into a SQL LIKE pattern (ESCAPE '\\') -- benchmark
+    names routinely contain underscores (e.g. "707.ntest_r-gcc_O3-base"), which LIKE would otherwise
+    treat as a single-character wildcard and silently over-match."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def resolve_store_pass_rows(cur, hostname, suite, benchmark, run_id):
+    """Returns [(store_run_id, config_name), ...] for one run directory's actual rows in wspy-store's
+    `runs` table. A run directory's own name (wspy-run's naming, one manifest.json per directory) is
+    *not* a store run_id -- wspy-store's `runs` table is keyed by each underlying wspy invocation's own
+    run-index run_id, generated independently per collection pass (run_index.c). wspy-run's unified
+    --suite/--benchmark layout always writes every pass's manifest/output files under
+    <output_root>/<suite>/<benchmark>/<run_id>/, and that path is preserved verbatim in the store's own
+    output_path/manifest_path columns (store.c) regardless of what --output-root prefix the ingesting
+    host used -- so matching on the "/<suite>/<benchmark>/<run_id>/" suffix identifies every pass row
+    belonging to this exact run directory without needing --output-root here at all. Also tries an exact
+    (hostname, run_id) match, for a bare wspy run dropped into this layout by hand (a directory named
+    after the run-index record's own run_id directly) -- so both a real wspy-run multi-pass directory
+    and a single hand-placed run resolve correctly. Shared by wspy-testpoint (aggregate/render's --run-id
+    resolution) and server.py's characterization-badge generator (wspy-archetype --run needs one real
+    store run_id, not the directory name)."""
+    pattern = "%/" + escape_like(suite) + "/" + escape_like(benchmark) + "/" + escape_like(run_id) + "/%"
+    cur.execute(
+        "SELECT run_id, config_name FROM runs WHERE hostname = ? AND "
+        "(manifest_path LIKE ? ESCAPE '\\' OR output_path LIKE ? ESCAPE '\\')",
+        (hostname, pattern, pattern))
+    rows = dict(cur.fetchall())
+    cur.execute("SELECT run_id, config_name FROM runs WHERE hostname = ? AND run_id = ?",
+                (hostname, run_id))
+    rows.update(cur.fetchall())
+    return list(rows.items())
+
+
+def pick_counters_pass_id(pass_rows):
+    """Given [(store_run_id, config_name), ...] (resolve_store_pass_rows() above), prefers the
+    "counters" pass -- the widest single counter set (IPC/topdown/cache/branch/software) and the
+    closest match to what wspy-archetype's feature extraction was built against -- falling back to
+    whichever pass id resolved first if none is tagged "counters" (e.g. a profile that never collects
+    one). `wspy-archetype --run` takes exactly one store run_id, unlike a bulk aggregate call that can
+    take one per pass."""
+    for store_run_id, config_name in pass_rows:
+        if config_name == "counters":
+            return store_run_id
+    return pass_rows[0][0]
+
 
 def guess_kind(filename):
     ext = os.path.splitext(filename)[1].lower()
@@ -232,6 +287,10 @@ def collect_run_files(rundir):
         add(CSV_NAME, "amdtopdown.csv")
         add(MANIFEST_NAME, "manifest")
         add(LOG_NAME, "launch log")
+
+    # Independent of run shape (unlike the two branches above) -- a no-op via add()'s own
+    # os.path.isfile() check until a human actually generates one.
+    add(ARCHETYPE_BADGE_NAME, "Workload characterization badge")
 
     try:
         extras = sorted(
