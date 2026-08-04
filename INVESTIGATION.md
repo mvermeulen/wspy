@@ -1201,6 +1201,26 @@ to the new schema in the same PR, so the repo was never left in a mixed-schema s
 `web/test_joblib.py` (270 total there, 405 across `web/`); `./run_tests.sh`'s full C/shell matrix (which
 doesn't cover `web/`) also green.
 
+**Similarity panels in reports** (PR #201) — closes out 4.3 Tier 3 item 3's other half; badges (PR #198)
+were the first half. A "Generate similarity panel" Studio button runs `wspy-archetype --nearest
+<host>:<run_id> --csv` once (same store-run-id resolution `resolve_archetype_run_key()` already gave
+badges), resolves each neighbor's own run directory via a new `joblib.resolve_store_run_directory()` —
+the reverse of `resolve_store_pass_rows()`, reading a neighbor's `output_path`/`manifest_path` back out
+of the `runs` table and taking the dirname's last 3 path components as `(suite, benchmark, run_id)` —
+and writes a small markdown neighbor table (`archetype_similar.md`) into the run directory. From there
+it's an ordinary curatable artifact through the existing markdown pipeline, same "external tool output
+becomes a curatable file" precedent badges established, for the identical reason: several render/export
+paths (e.g. `render_export_markdown()`) are also called by `wspy-testpoint` with no `wspy-archetype`
+config available at all. A neighbor whose own directory can't be resolved (pruned from disk, ingested
+from elsewhere) still renders as plain text rather than a dead link. Also brought
+`doc/PROFILE_COOKBOOK.md`'s `--nearest`/`--kmeans` section up to date — it previously said neither
+existed, though both had already shipped earlier this cycle (PRs #152/#155) — and added
+`distance`/`compared_features` to `doc/METRICS.md`. Verified end to end against the real dev store via
+the actual running server: a real zero-neighbor render, and a real multi-neighbor case with
+correctly-resolved `/report/...` links, both added as a curated block and confirmed rendering on the
+report page. 15 new tests (8 in `web/test_archetype_similar.py`, 7 in `web/test_joblib.py`; 420 total
+across `web/`); `./run_tests.sh`'s full C/shell matrix also green.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -1412,9 +1432,10 @@ reasoning as Tier 1 above.
      benchmark/test-point pages, one human click at a time. Depends on item 5's reference-matrix
      database as the suite-level data source (deciding whether to generate that table from the store
      instead of hand-maintaining it is exactly item 5's own open question).
-3. Similarity panels in reports (`wspy-archetype --nearest`-based nearest-neighbor comparison) — the
-   deferred half of "characterization badges + similarity panels"; the badges half shipped as an
-   ordinary curatable artifact rather than a new block type (see "Shipped since 4.2").
+3. **Fully shipped for 4.3:** "characterization badges + similarity panels" — badges (PR #198) and
+   similarity panels (PR #201) both landed as ordinary curatable artifacts rather than a new block
+   type, see "Shipped since 4.2" for both write-ups. Item number kept stable rather than renumbering
+   items 4-20 below, same reasoning as Tier 1/2's own tier-number stability above.
 4. Interactive tree/timeline drill-down, GPU phase overlays — the interactive counterpart to 4.1's
    static inclusion-depth mechanism (none/summary/excerpt/full) for the tree/interval blocks
    specifically; that mechanism stays the right default for a published, non-interactive report even
