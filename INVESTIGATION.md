@@ -1459,28 +1459,58 @@ reasoning as Tier 1 above.
      benchmark/test-point pages, one human click at a time. Depends on item 5's reference-matrix
      database as the suite-level data source (deciding whether to generate that table from the store
      instead of hand-maintaining it is exactly item 5's own open question).
-5. Benchmark reference-matrix database keyed by (test name, test version, test point) × (machine,
-   bucketed to a coarse architecture class: AMD/Intel/ARM/SoC) — a wide, curated comparison table in
-   the spirit of the author's existing external reference page
-   (https://mvermeulen.org/perf/workloads/, 60+ columns per test), but generated from wspy's own
-   normalized store (4.1's `store.c`) and extended with metrics that page doesn't carry (notably the AMD
-   IBS-derived fields shipped in 4.2/4.3). Distinct from `store.c`'s per-run long/tall `metric_values`
-   table and from the now-shipped `wspy-testpoint` per-test-point narrative README pipeline (see
-   "Shipped since 4.2"): this is a queryable, pivoted-wide table meant for side-by-side comparison
-   across tests and machines, not one run's or one test point's own story. `doc/REPORT_HIERARCHY.md`
-   (established this cycle) already earmarks
-   `<report-root>/` (the hierarchy's own top level) as this database's natural home, alongside the
-   rendered reports it would feed/be fed by. Real design work needed before scoping further:
-   - **Column vocabulary.** Audit what the reference page's 60+ columns actually measure against what
-     wspy already captures/`extract_run_features()` already derives, to find the real gap (expected to
-     be mostly-covered plus new IBS columns, but unverified until audited).
-   - **Machine identity granularity.** The requested key is deliberately coarse (AMD/Intel/ARM/SoC)
-     rather than full provenance (4.0's per-run environment capture) — needs a defined bucketing rule
-     from the already-captured vendor/family/model fields, not a new capture mechanism.
-   - **Web integration.** Once the schema exists, wire it into the web interface (4.1) as both a
-     collection target (new runs populate rows as they land) and a browsing surface (multiple views: by
-     test, by machine, cross-machine comparison for one test) — likely a new tab alongside Run/Validate/
-     Store & Summary/Discovery, not a retrofit of an existing one.
+5. Benchmark reference-matrix database keyed by (test name, test version, test point) ×
+   (machine — `doc/REPORT_HIERARCHY.md`'s own `<vendor>-<short-model>` slug, not a coarser
+   AMD/Intel/ARM/SoC bucket, see "Machine identity" below) — a wide, curated comparison table in the
+   spirit of the author's existing external reference page (https://mvermeulen.org/perf/workloads/,
+   60+ columns per test), but generated from wspy's own normalized store (4.1's `store.c`) and extended
+   with metrics that page doesn't carry (notably the AMD IBS-derived fields shipped in 4.2/4.3).
+   Distinct from `store.c`'s per-run long/tall `metric_values` table and from the now-shipped
+   `wspy-testpoint` per-test-point narrative README pipeline (see "Shipped since 4.2"): this is a
+   queryable, pivoted-wide table meant for side-by-side comparison across tests and machines, not one
+   run's or one test point's own story. `doc/REPORT_HIERARCHY.md` (established this cycle) already
+   earmarks `<report-root>/` (the hierarchy's own top level) as this database's natural home, alongside
+   the rendered reports it would feed/be fed by. Design settled (2026-08-04), not yet built:
+   - **Generation model.** Computed on demand from `store.c`'s existing `runs`/`run_features`/
+     `metric_values` tables at web-request time — no new persistent matrix table, so a newly-ingested
+     run just appears on next page load. This also satisfies the "collection target" half of the old
+     web-integration bullet below without any separate populate step.
+   - **Rows/cells.** One row per `(suite, test, test-point)`, one column per machine slug. Each cell
+     aggregates that cell's runs the same way `wspy-testpoint aggregate` already does (mean/median/etc.
+     via `wspy-summary`), restricted to `stats-pool`-role runs from that test-point's `runs.json` when
+     one exists (shipped, see "Shipped since 4.2"); test points never run through `wspy-testpoint
+     select-runs` fall back to "all successfully-validated runs" so they still appear, just without
+     curated role filtering.
+   - **Machine identity.** Column key is the REPORT_HIERARCHY machine slug (e.g. `amd-370-64gb`), not
+     the originally-floated coarse vendor-class bucket — finer-grained, and it's the same key the
+     publish pipeline already uses, so matrix columns line up 1:1 with published machine pages. Slug
+     resolution per hostname, in order: (1) a new small `<report-root>/machines.json`
+     (`hostname → slug`) that every existing publish flow (`wspy-publish configure`, the web UI's
+     Machine field, `wspy-testpoint`'s publish card) writes to automatically at the moment it already
+     collects a slug from the human — not a separately hand-maintained file, just persisting an
+     association that's already being typed today instead of only forwarding it to WordPress as a URL
+     segment; (2) fallback to a live WordPress page-hierarchy lookup (see next bullet) if
+     `machines.json` predates a given publish or is stale; (3) fallback to a raw
+     `vendor-familyNNN-modelNNN` placeholder column for a machine that has runs in the store but has
+     never gone through any publish flow from any host — self-heals the first time that machine is
+     published from.
+   - **Publish status per cell.** Live lookup against WordPress itself rather than a local cache — the
+     machine slug is literally the level-4 page slug in the live hierarchy (see "Machine identity"
+     above), so WordPress's own page tree is the authoritative record of what's actually posted. Needs
+     one new small primitive in `web/wp_client.py`, `list_child_pages(parent_id)`
+     (`GET /wp/v2/pages?parent=<id>`), symmetric to the existing single-lookup `find_page()`. Each cell
+     renders one of: not run on this machine / run, not yet published / published (linked to the live
+     page) — reusing this same lookup is also what makes `machines.json` need no separate "is it
+     published" bookkeeping.
+   - **Web integration.** A new "Reference" tab in the web interface (4.1), not a retrofit of an
+     existing one, with three views: by test (rows=test-points, cols=machines), by machine
+     (rows=test-points, cols=metrics for one machine), and cross-machine comparison for one test. Every
+     cell links to the local `/report` rollup for that test-point+machine, the drill-down list of
+     individual runs behind it, and the live WordPress page when published (previous bullet).
+   - **Column vocabulary.** Still open, deliberately deferred rather than a v1 blocker: ship with
+     whatever `run_features`/`wspy-summary` already expose (IPC, topdown, cache, IBS-derived fields);
+     audit the reference page's 60+ columns against that coverage as a follow-up once the matrix itself
+     is proven, not before.
    - **Analysis feed.** Once populated, this is a natural input table for `wspy-archetype --kmeans`
      (shipped, see "Shipped since 4.2") and for `wspy-analyze`-style AI narrative generation that
      references how a workload compares to others in its cluster — but building the matrix itself never
