@@ -1248,6 +1248,18 @@ with a hand-rolled bracket/string/comment-aware balance checker (no `node` in th
 reviewed carefully by hand. **Still worth a manual click-through** before relying on the hover/zoom
 interactions in anger.
 
+**wspy-analyze: `on_cpu` explained to the AI-analysis prompt** (PR #203) — fixes a real misreading caught
+on a published cpu2026 report: a local model's narrative claimed "30% of the cores are active" for a run
+whose `on_cpu` line actually read `0.939  # 30.03 / 32 cores` (93.9% core-busy, i.e. ~30 of 32 cores). Root
+cause: `on_cpu` is `print_usage()`'s human-text-only output, never a CSV column, so it fell outside
+`GROUP_NOTES`' CSV-header-driven detection (`collect_present_groups()`) and got zero explanation in the
+prompt — unlike every other counter group — leaving a small model to pattern-match the `30` inside the
+trailing `#`-comment as a percentage instead of using the actual ratio it was told to quote verbatim.
+`group_notes_text()` now also checks the raw counter text directly for `on_cpu` and, when present, adds a
+note spelling out that the ratio is already the percentage and the comment just restates it in
+core-equivalents, not a second finding — applies to both single-run and `--compare-rundir` prompts.
+`./test_ai_analyze.sh` (structural + live Ollama calls, both modes) still passes.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
