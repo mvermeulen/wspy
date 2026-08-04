@@ -1221,6 +1221,33 @@ correctly-resolved `/report/...` links, both added as a curated block and confir
 report page. 15 new tests (8 in `web/test_archetype_similar.py`, 7 in `web/test_joblib.py`; 420 total
 across `web/`); `./run_tests.sh`'s full C/shell matrix also green.
 
+**Interactive timeline viewer for --interval CSVs** (PR #202) — closes 4.3 Tier 3 item 4. Scope
+correction found during scoping: item 4's "interactive tree/timeline drill-down" wording predates the
+discovery that the *tree* half was already fully shipped in 4.2 (`proctree_viewer.js` — collapsible
+hierarchy, search, filter, diff, linked from every report). Only the *timeline* half was actually
+missing — an `--interval` run's CSV had exactly two renderings before this: a static gnuplot PNG, or raw
+preformatted text under the curation studio's generic depth mechanism, neither interactive, neither ever
+plotting GPU utilization alongside CPU phase. New `/interval-viewer/<suite>/<benchmark>/<run_id>/
+<filename>` page (mirrors `/tree-viewer/...`) backed by `/api/interval-json/...`
+(`joblib.parse_interval_csv()`, a stdlib `csv`-module parse, no subprocess), linked from the report page
+next to any pass's CSV artifact with a `time` column (`joblib.csv_has_time_column()`). `interval_viewer.js`
+is hand-rolled SVG, same no-charting-library precedent `proctree_viewer.js` established: percentage-shaped
+columns (topdown axes plus GPU busy/activity — all naturally 0-100%) share one chart with phase-shaded
+background bands; every other numeric column gets its own auto-scaled small-multiple chart — deliberately
+not a single chart with a second y-axis, per the dataviz skill's own non-negotiable rule against dual
+y-axis charts. All charts share one x-domain and phase shading, with a shared hover crosshair/tooltip and
+click-drag zoom rescaling every chart together, so GPU/CPU/phase stay correlated regardless of which
+chart the pointer is over. New `--series-1..8` CSS custom properties (the dataviz skill's validated
+CVD-safe categorical order) for series colors; phase bands reuse this app's own existing
+`--good`/`--warn`/`--bad` tokens (already used for `status-ok`/`status-warn`/`status-failed` elsewhere)
+rather than importing a second, unrelated status palette. 9 new tests in `web/test_joblib.py`; 429 total
+across `web/`, full `run_tests.sh` matrix green. Verified live against the real dev store via the actual
+running server (endpoint responses, path-traversal rejection, HTML wiring) — no browser tooling was
+available to drive a full interactive click-through (hover/zoom) this session; JS syntax was verified
+with a hand-rolled bracket/string/comment-aware balance checker (no `node` in this environment) and
+reviewed carefully by hand. **Still worth a manual click-through** before relying on the hover/zoom
+interactions in anger.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -1432,10 +1459,6 @@ reasoning as Tier 1 above.
      benchmark/test-point pages, one human click at a time. Depends on item 5's reference-matrix
      database as the suite-level data source (deciding whether to generate that table from the store
      instead of hand-maintaining it is exactly item 5's own open question).
-4. Interactive tree/timeline drill-down, GPU phase overlays — the interactive counterpart to 4.1's
-   static inclusion-depth mechanism (none/summary/excerpt/full) for the tree/interval blocks
-   specifically; that mechanism stays the right default for a published, non-interactive report even
-   once this exists.
 5. Benchmark reference-matrix database keyed by (test name, test version, test point) × (machine,
    bucketed to a coarse architecture class: AMD/Intel/ARM/SoC) — a wide, curated comparison table in
    the spirit of the author's existing external reference page
