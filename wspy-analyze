@@ -182,6 +182,17 @@ GROUP_NOTES = {
         "workload's own execution -- useful for ruling out contention from "
         "other processes."
     ),
+    "on_cpu": (
+        "`on_cpu <ratio>` (in a 'Process Resource Usage'/`elapsed`/`utime` block) is already the "
+        "fraction, 0-1, of the process's available cores kept continuously busy end-to-end -- read "
+        "`0.939` as 93.9% busy, NOT as \"30%\" or any other reading. Its trailing `# <core-equivalents> "
+        "/ <cores available> cores` comment re-expresses that exact same ratio unnormalized -- e.g. "
+        "`0.939          # 30.03 / 32 cores` means 93.9% core-busy (equivalent to ~30 of the 32 "
+        "available cores kept continuously busy), not a separate \"30% of cores\" finding. The number "
+        "before `#` is the metric's actual value; the `#` comment only restates it in different units, "
+        "it never introduces an independent measurement -- do not substitute a digit from inside the "
+        "comment for the primary ratio's own meaning."
+    ),
     "ibs": (
         "AMD IBS (`ibs_fetch`/`ibs_op`) reports periodic hardware-sampled "
         "instruction-fetch and macro-op counts -- a statistical sample of "
@@ -446,17 +457,29 @@ def run_wspy_validate(validate_bin, manifest_paths, timeout):
     return (proc.stdout or "").strip() or "(wspy-validate produced no output)"
 
 
-def group_notes_text(groups):
-    if not groups:
+def group_notes_text(groups, raw_texts=()):
+    """raw_texts (verbatim counter text, one string per run) is checked for
+    "on_cpu" separately from `groups`: unlike every other entry in
+    GROUP_NOTES, on_cpu is print_usage()'s human-text-only output (never a
+    CSV column, see topdown.c), so collect_present_groups()'s CSV-header scan
+    can never resolve it into `groups` -- without this, the model gets an
+    explanation for every counter group's numbers except this one, which is
+    exactly the line (a ratio followed by a `# X / Y cores` restatement) a
+    small model has been observed misreading (e.g. quoting the `X` inside the
+    comment as if it were a percentage, ignoring the actual ratio value)."""
+    lines = ["- %s" % GROUP_NOTES[g] for g in sorted(groups) if g in GROUP_NOTES]
+    if any(t and "on_cpu" in t for t in raw_texts):
+        lines.append("- %s" % GROUP_NOTES["on_cpu"])
+    if not lines:
         return "(no counter-group columns were resolved from this run's CSV headers)"
-    return "\n".join("- %s" % GROUP_NOTES[g] for g in sorted(groups) if g in GROUP_NOTES)
+    return "\n".join(lines)
 
 
 def render_prompt(template_text, workload_text, validation_text, groups, raw_text, csv_summaries):
     rendered = template_text
     rendered = rendered.replace("{{WORKLOAD}}", workload_text)
     rendered = rendered.replace("{{VALIDATION}}", validation_text)
-    rendered = rendered.replace("{{COUNTER_GROUP_NOTES}}", group_notes_text(groups))
+    rendered = rendered.replace("{{COUNTER_GROUP_NOTES}}", group_notes_text(groups, (raw_text,)))
     rendered = rendered.replace("{{RAW_TEXT}}", raw_text)
     rendered = rendered.replace("{{CSV_SUMMARIES}}", csv_summaries)
     return rendered
@@ -474,7 +497,8 @@ def render_compare_prompt(template_text, data_a, data_b):
     rendered = rendered.replace("{{VALIDATION_A}}", data_a["validation_text"])
     rendered = rendered.replace("{{VALIDATION_B}}", data_b["validation_text"])
     rendered = rendered.replace(
-        "{{COUNTER_GROUP_NOTES}}", group_notes_text(data_a["groups"] | data_b["groups"]))
+        "{{COUNTER_GROUP_NOTES}}", group_notes_text(
+            data_a["groups"] | data_b["groups"], (data_a["raw_text"], data_b["raw_text"])))
     rendered = rendered.replace("{{RAW_TEXT_A}}", data_a["raw_text"])
     rendered = rendered.replace("{{RAW_TEXT_B}}", data_b["raw_text"])
     rendered = rendered.replace("{{CSV_SUMMARIES_A}}", data_a["csv_summaries"])
