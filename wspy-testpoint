@@ -45,8 +45,6 @@ Stdlib-only (matches wspy-analyze/wspy-bundle/wspy-queue/wspy-publish's existing
 dependency" convention).
 """
 import argparse
-import csv
-import io
 import json
 import os
 import socket
@@ -430,20 +428,6 @@ def cmd_aggregate(args):
     return proc.returncode
 
 
-def parse_summary_csv(text):
-    """Parses wspy-summary --csv --quiet output (header row + one row per (group,metric) bucket -- for
-    a run set already narrowed to one test point via --run-id, "group" is constant, the useful
-    dimension is "metric") into a list of {column_name: value} dicts using its own header row, rather
-    than hardcoding the column order -- stays correct if wspy-summary's own CSV columns are ever
-    reordered/extended. --quiet suppresses the trailing summary line so every remaining line is a real
-    data row; the row-width check below is a second guard against any other stray non-CSV line."""
-    rows = list(csv.reader(io.StringIO(text)))
-    if not rows:
-        return []
-    header = rows[0]
-    return [dict(zip(header, row)) for row in rows[1:] if len(row) == len(header)]
-
-
 def render_section_markdown(rows):
     lines = ["| metric | n | min | max | mean | stddev | cv% | verdict |",
              "|---|---|---|---|---|---|---|---|"]
@@ -635,7 +619,7 @@ def cmd_render(args):
         print("wspy-testpoint: error: %s failed:\n%s" % (args.wspy_summary_bin, proc.stderr.strip()),
               file=sys.stderr)
         return 1
-    rows = parse_summary_csv(proc.stdout)
+    rows = joblib.parse_summary_csv(proc.stdout)
     if not rows:
         print("wspy-testpoint: warning: %s produced no rows for this test point's stats-pool runs" %
               args.wspy_summary_bin, file=sys.stderr)
