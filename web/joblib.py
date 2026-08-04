@@ -56,6 +56,7 @@ import re
 import secrets
 import shlex
 import shutil
+import socket
 import subprocess
 import tarfile
 import threading
@@ -2948,7 +2949,18 @@ def cpu2026_benchmark_built(specdir, bench, tag, tune="base"):
     return any(needle in name for name in os.listdir(exe_dir))
 
 
-def register_cpu2026_point(dest_root, specdir, bench, tag, tune="base"):
+def cpu2026_host_specdir(source, hostname=None):
+    """Resolves the calling host's own specdir out of a source.json dict's "hosts" map
+    (register_cpu2026_point() below) -- a point registered by a different host, or not
+    yet registered by this host at all, resolves to "" rather than falling back to
+    another host's specdir, which may not exist on this filesystem or (worse) happen to
+    resolve to some unrelated directory. Shared by list_materialized_cpu2026_points()
+    and web/server.py's Build/Use-in-Run-tab handlers, which read source.json directly."""
+    hostname = hostname or socket.gethostname()
+    return source.get("hosts", {}).get(hostname, {}).get("specdir", "")
+
+
+def register_cpu2026_point(dest_root, specdir, bench, tag, tune="base", hostname=None):
     """Pairs an already-installed benchmark with an already-discovered
     config tag under dest_root/<bench>/<tag>/<tune>/ (mirroring
     materialize_phoronix_test_point()'s dest_root/<test>/<options>/), by
@@ -2959,27 +2971,62 @@ def register_cpu2026_point(dest_root, specdir, bench, tag, tune="base"):
     exists because base and peak are separate runcpu builds of the same
     bench+config -- nesting under <tag>/ rather than folding tune into the
     tag name keeps a single config's base/peak pair visually grouped.
-    Idempotent/additive: an existing source.json is left untouched, same
-    "additive across sessions" convention materialize_phoronix_test_point()
-    documents. Returns {"bench", "tag", "tune", "identity", "dir",
-    "status"} where status is "created" or "exists"."""
+
+    dest_root is this repo's checked-in workload/cpu2026/ (web/server.py's
+    CPU2026_DEST_ROOT) -- shared across every host that clones it, unlike a
+    per-host runtime cache. specdir is an absolute, host-local SPEC install
+    path, so it's recorded per-hostname under a "hosts" map rather than as a
+    single flat field: a flat field would silently belong to whichever host
+    registered first, leaving every other host's "built" check
+    (list_materialized_cpu2026_points()) and Build/Use-in-Run-tab actions
+    (web/server.py) resolving a specdir that isn't theirs.
+
+    Idempotent/additive at both levels, same "additive across sessions"
+    convention materialize_phoronix_test_point() documents: a hostname
+    already present in "hosts" is left untouched (re-registering with a
+    different path doesn't silently repoint it -- unregister/re-register
+    to do that intentionally); a new hostname is added without touching
+    other hosts' entries. Returns {"bench", "tag", "tune", "identity",
+    "dir", "status"} where status is "created" (brand-new point),
+    "host_added" (existing point, this host's first registration), or
+    "exists" (this host already registered)."""
+    hostname = hostname or socket.gethostname()
     identity = f"{bench}-{tag}-{tune}"
     out_dir = os.path.join(dest_root, bench, tag, tune)
     source_path = os.path.join(out_dir, "source.json")
     result = {"bench": bench, "tag": tag, "tune": tune, "identity": identity, "dir": out_dir}
+
     if os.path.isfile(source_path):
-        result["status"] = "exists"
+        with open(source_path) as f:
+            source = json.load(f)
+        hosts = source.setdefault("hosts", {})
+        if hostname in hosts:
+            result["status"] = "exists"
+            return result
+        hosts[hostname] = {
+            "specdir": specdir,
+            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        source["schema_version"] = 2
+        with open(source_path, "w") as f:
+            json.dump(source, f, indent=2)
+            f.write("\n")
+        result["status"] = "host_added"
         return result
 
     os.makedirs(out_dir, exist_ok=True)
     with open(source_path, "w") as f:
         json.dump({
-            "schema_version": 1,
+            "schema_version": 2,
             "bench": bench,
             "config_file": f"{tag}.cfg",
             "tune": tune,
-            "specdir": specdir,
-            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "hosts": {
+                hostname: {
+                    "specdir": specdir,
+                    "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                },
+            },
         }, f, indent=2)
         f.write("\n")
 
@@ -3054,16 +3101,23 @@ def unregister_cpu2026_point(dest_root, point_dir):
     return True
 
 
-def list_materialized_cpu2026_points(dest_root):
+def list_materialized_cpu2026_points(dest_root, hostname=None):
     """Inventory of registered (bench, tag, tune) triples under
     dest_root/<bench>/<tag>/<tune>/ -- same shape/role as
     list_materialized_phoronix_test_points(). "built" is recomputed live
-    via cpu2026_benchmark_built() against each point's own recorded
-    specdir (not cached at registration time the way Phoronix's
-    "installed" is) since a Build action changes that state after
-    registration, and staleness here would just be wrong rather than
-    merely a re-check-later warning. Returns a list of {bench, tag, tune,
-    identity, dir, config_file, specdir, generated_at, built, runs}."""
+    via cpu2026_benchmark_built() against hostname's (defaults to
+    socket.gethostname()) own recorded specdir (not cached at registration
+    time the way Phoronix's "installed" is) since a Build action changes
+    that state after registration, and staleness here would just be wrong
+    rather than merely a re-check-later warning. A point registered by a
+    different host (or not registered by this one at all) reports
+    specdir="" and built=False here rather than resolving some other
+    host's path -- see cpu2026_host_specdir()/register_cpu2026_point().
+    Returns a list of {bench, tag, tune, identity, dir, config_file,
+    specdir, generated_at, built, hosts, runs} -- "hosts" is the raw
+    per-hostname map for cross-host visibility, "specdir"/"generated_at"
+    are hostname's own entry out of it."""
+    hostname = hostname or socket.gethostname()
     entries = []
     if not os.path.isdir(dest_root):
         return entries
@@ -3100,7 +3154,8 @@ def list_materialized_cpu2026_points(dest_root):
                         real_run_id, run_benchmark, run_suite = parts[-1], parts[-2], parts[-3]
                         runs.append({"run_id": real_run_id, "suite": run_suite, "benchmark": run_benchmark})
 
-                point_specdir = source.get("specdir", "")
+                hosts = source.get("hosts", {})
+                point_specdir = cpu2026_host_specdir(source, hostname)
                 entries.append({
                     "bench": bench,
                     "tag": tag,
@@ -3109,7 +3164,8 @@ def list_materialized_cpu2026_points(dest_root):
                     "dir": point_dir,
                     "config_file": source.get("config_file", f"{tag}.cfg"),
                     "specdir": point_specdir,
-                    "generated_at": source.get("generated_at", ""),
+                    "generated_at": hosts.get(hostname, {}).get("generated_at", ""),
+                    "hosts": hosts,
                     "built": cpu2026_benchmark_built(point_specdir, bench, tag, tune) if point_specdir else False,
                     "runs": runs,
                 })

@@ -1,8 +1,12 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "bench": "707.ntest_r",
   "config_file": "gcc_O3.cfg",
   "tune": "peak",
-  "specdir": "/home/mev/cpu2026",
-  "generated_at": "2026-08-02T19:08:39+00:00"
+  "hosts": {
+    "roswell": {
+      "specdir": "/home/mev/cpu2026",
+      "generated_at": "2026-08-02T19:08:39+00:00"
+    }
+  }
 }

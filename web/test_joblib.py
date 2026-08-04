@@ -1854,14 +1854,16 @@ class RegisterCpu2026PointTest(unittest.TestCase):
     def test_creates_source_json_and_readme(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             dest = os.path.join(tmpdir, "dest")
-            result = joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O2")
+            result = joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O2",
+                                                     hostname="host-a")
             self.assertEqual(result["status"], "created")
             self.assertEqual(result["identity"], "706.stockfish_r-gcc_O2-base")
             source_path = os.path.join(dest, "706.stockfish_r", "gcc_O2", "base", "source.json")
             with open(source_path) as f:
                 source = json.load(f)
+            self.assertEqual(source["schema_version"], 2)
             self.assertEqual(source["config_file"], "gcc_O2.cfg")
-            self.assertEqual(source["specdir"], "/opt/cpu2026")
+            self.assertEqual(source["hosts"]["host-a"]["specdir"], "/opt/cpu2026")
             self.assertEqual(source["tune"], "base")
             readme_path = os.path.join(dest, "706.stockfish_r", "README.md")
             self.assertTrue(os.path.isfile(readme_path))
@@ -1880,13 +1882,50 @@ class RegisterCpu2026PointTest(unittest.TestCase):
     def test_idempotent_does_not_overwrite(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             dest = os.path.join(tmpdir, "dest")
-            joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O2")
-            second = joblib.register_cpu2026_point(dest, "/other/specdir", "706.stockfish_r", "gcc_O2")
+            joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O2", hostname="host-a")
+            second = joblib.register_cpu2026_point(dest, "/other/specdir", "706.stockfish_r", "gcc_O2",
+                                                     hostname="host-a")
             self.assertEqual(second["status"], "exists")
             source_path = os.path.join(dest, "706.stockfish_r", "gcc_O2", "base", "source.json")
             with open(source_path) as f:
                 source = json.load(f)
-            self.assertEqual(source["specdir"], "/opt/cpu2026")  # untouched by the second call
+            # untouched by the second call -- same host re-registering doesn't repoint its specdir
+            self.assertEqual(source["hosts"]["host-a"]["specdir"], "/opt/cpu2026")
+
+    def test_second_host_adds_without_touching_first(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O2", hostname="host-a")
+            second = joblib.register_cpu2026_point(dest, "/other/specdir", "706.stockfish_r", "gcc_O2",
+                                                     hostname="host-b")
+            self.assertEqual(second["status"], "host_added")
+            source_path = os.path.join(dest, "706.stockfish_r", "gcc_O2", "base", "source.json")
+            with open(source_path) as f:
+                source = json.load(f)
+            self.assertEqual(source["hosts"]["host-a"]["specdir"], "/opt/cpu2026")
+            self.assertEqual(source["hosts"]["host-b"]["specdir"], "/other/specdir")
+
+    def test_built_status_uses_only_this_hosts_specdir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            specdir_a = os.path.join(tmpdir, "cpu2026-a")
+            exe_dir = os.path.join(specdir_a, "benchspec", "CPU", "706.stockfish_r", "exe")
+            os.makedirs(exe_dir)
+            with open(os.path.join(exe_dir, "stockfish_r_base.gcc_O2-m64"), "w") as f:
+                f.write("")
+            dest = os.path.join(tmpdir, "dest")
+            joblib.register_cpu2026_point(dest, specdir_a, "706.stockfish_r", "gcc_O2", hostname="host-a")
+            joblib.register_cpu2026_point(dest, "/does/not/exist", "706.stockfish_r", "gcc_O2", hostname="host-b")
+
+            points_a = joblib.list_materialized_cpu2026_points(dest, hostname="host-a")
+            self.assertTrue(points_a[0]["built"])
+            self.assertEqual(points_a[0]["specdir"], specdir_a)
+
+            points_b = joblib.list_materialized_cpu2026_points(dest, hostname="host-b")
+            self.assertFalse(points_b[0]["built"])
+
+            points_c = joblib.list_materialized_cpu2026_points(dest, hostname="host-c")
+            self.assertFalse(points_c[0]["built"])
+            self.assertEqual(points_c[0]["specdir"], "")
 
     def test_base_and_peak_of_same_tag_do_not_collide(self):
         with tempfile.TemporaryDirectory() as tmpdir:

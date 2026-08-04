@@ -5761,7 +5761,11 @@ class Handler(BaseHTTPRequestHandler):
         tag = os.path.basename(os.path.dirname(point_dir))
         config_file = source.get("config_file", f"{tag}.cfg")
         tune = source.get("tune", "base")
-        specdir = source.get("specdir", "")
+        specdir = joblib.cpu2026_host_specdir(source)
+        if not specdir:
+            self._send_json(400, {"error": "this host has not registered a specdir for this "
+                                            "benchmark/config pair -- use Register first"})
+            return
         if not joblib.cpu2026_suite_installed(specdir):
             self._send_json(400, {"error": f"no shrc found under {specdir} -- not a real SPEC install"})
             return
@@ -5806,7 +5810,11 @@ class Handler(BaseHTTPRequestHandler):
         tag = os.path.basename(os.path.dirname(point_dir))
         config_file = source.get("config_file", f"{tag}.cfg")
         tune = source.get("tune", "base")
-        specdir = source.get("specdir", "")
+        specdir = joblib.cpu2026_host_specdir(source)
+        if not specdir:
+            self._send_json(400, {"error": "this host has not registered a specdir for this "
+                                            "benchmark/config pair -- use Register first"})
+            return
         identity = f"{bench}-{tag}-{tune}"
         workload = joblib.build_cpu2026_run_workload(specdir, config_file, bench, tune=tune)
         self._send_json(200, {
