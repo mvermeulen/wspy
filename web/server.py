@@ -3885,8 +3885,13 @@ def render_fixed_report(rundir, suite, benchmark, run_id):
     else:
         raw.append('<li class="muted">no plots generated</li>')
     if os.path.exists(csv_path):
+        interval_link = ""
+        if joblib.csv_has_time_column(csv_path):
+            interval_url = (f"/interval-viewer/{_urlescape(suite)}/{_urlescape(benchmark)}/"
+                             f"{_urlescape(run_id)}/{_urlescape(CSV_NAME)}")
+            interval_link = f' &middot; <a href="{interval_url}">Interactive timeline</a>'
         raw.append(f'<li><a href="{base}/{CSV_NAME}">{CSV_NAME}</a> (raw CSV)'
-                   f'{core_report_link(csv_path)}</li>')
+                   f'{core_report_link(csv_path)}{interval_link}</li>')
     else:
         raw.append('<li class="muted">amdtopdown.csv missing</li>')
     if os.path.exists(manifest_path):
@@ -3969,8 +3974,13 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
             if output.endswith(".png") and os.path.isfile(output_path):
                 raw.append(f'<img class="plot" src="{base}/{_urlescape(output)}" alt="{html.escape(name)}">')
             elif os.path.isfile(output_path):
+                interval_link = ""
+                if output.endswith(".csv") and joblib.csv_has_time_column(output_path):
+                    interval_url = (f"/interval-viewer/{_urlescape(suite)}/{_urlescape(benchmark)}/"
+                                     f"{_urlescape(run_id)}/{_urlescape(output)}")
+                    interval_link = f' &middot; <a href="{interval_url}">Interactive timeline</a>'
                 raw.append(f'<a href="{base}/{_urlescape(output)}">{html.escape(output)}</a>'
-                           f'{core_report_link(output_path)}')
+                           f'{core_report_link(output_path)}{interval_link}')
             else:
                 raw.append(f'<span class="muted">{html.escape(output)} (missing)</span>')
         if pass_manifest:
@@ -4344,6 +4354,32 @@ def render_tree_diff(cfg, keys):
     return page("wspy tree diff", body)
 
 
+def render_interval_viewer(suite, benchmark, run_id, filename):
+    """Item 4's interactive timeline viewer page -- the --interval-CSV
+    counterpart to render_tree_viewer() above, same thin-HTML-shell shape:
+    the actual chart (series toggles, phase-shaded bands, GPU overlay,
+    hover, zoom) happens client-side in interval_viewer.js, which fetches
+    this CSV's parsed columns via /api/interval-json/<suite>/<benchmark>/
+    <run_id>/<filename> on load. filename may be nested (see
+    _serve_artifact()'s own "no fixed whitelist" reasoning) -- whichever
+    CSV a report page's "View interactive timeline" link pointed at."""
+    json_url = (f"/api/interval-json/{_urlescape(suite)}/{_urlescape(benchmark)}/"
+                f"{_urlescape(run_id)}/{_urlescape(filename)}")
+    report_url = f"/report/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    body = f"""
+<section class="panel">
+  <h1>Timeline: {html.escape(suite)} / {html.escape(benchmark)} / {html.escape(run_id)}
+  <span class="muted">({html.escape(filename)})</span></h1>
+  <p><a href="{report_url}">Back to report</a></p>
+  <div id="itv-controls"></div>
+  <div id="itv-root"><p class="muted">Loading timeline...</p></div>
+</section>
+<script>window.ITV_CONFIG = {json.dumps({"jsonUrl": json_url})};</script>
+<script src="/static/interval_viewer.js"></script>
+"""
+    return page(f"timeline: {benchmark}/{run_id}", body)
+
+
 # ---------------------------------------------------------------------------
 # HTTP handler
 # ---------------------------------------------------------------------------
@@ -4464,6 +4500,21 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, render_tree_viewer(suite, benchmark, run_id))
             return
 
+        m = re.match(r"^/interval-viewer/([^/]+)/([^/]+)/([^/]+)/(.+)$", path)
+        if m:
+            suite, benchmark, run_id, filename = m.groups()
+            if (not all(valid_segment(x) for x in (suite, benchmark, run_id))
+                    or not valid_relpath(filename)):
+                self._send(400, "invalid path")
+                return
+            rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+            csv_path = os.path.join(rundir, *filename.split("/"))
+            if not (os.path.isfile(csv_path) and joblib.csv_has_time_column(csv_path)):
+                self._send(404, f"no --interval CSV at {filename!r} in this run directory")
+                return
+            self._send(200, render_interval_viewer(suite, benchmark, run_id, filename))
+            return
+
         m = re.match(r"^/studio/([^/]+)/([^/]+)/([^/]+)$", path)
         if m:
             suite, benchmark, run_id = m.groups()
@@ -4564,6 +4615,11 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/tree-json/([^/]+)/([^/]+)/([^/]+)$", path)
         if m:
             self._api_tree_json(cfg, *m.groups())
+            return
+
+        m = re.match(r"^/api/interval-json/([^/]+)/([^/]+)/([^/]+)/(.+)$", path)
+        if m:
+            self._api_interval_json(cfg, *m.groups())
             return
 
         if path == "/api/tree-diff-json":
@@ -4841,6 +4897,26 @@ class Handler(BaseHTTPRequestHandler):
                 data["summary_file_url"] = f"/files/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}/{TREE_SUMMARY_TXT_NAME}"
             serialized = json.dumps(body_obj)
         self._send(200, serialized, content_type="application/json")
+
+    def _api_interval_json(self, cfg, suite, benchmark, run_id, filename):
+        """Item 4's on-demand JSON endpoint: parses one --interval CSV via
+        joblib.parse_interval_csv() and returns the result -- computed
+        fresh on each request, same "no artifact written to disk" posture
+        as _api_tree_json() above. filename validated the same way
+        _serve_artifact() validates a nested, non-whitelisted filename."""
+        if (not all(valid_segment(x) for x in (suite, benchmark, run_id))
+                or not valid_relpath(filename)):
+            self._send_json(400, {"error": "invalid path"})
+            return
+        csv_path = os.path.join(cfg["output_root"], suite, benchmark, run_id, *filename.split("/"))
+        if not os.path.isfile(csv_path):
+            self._send_json(404, {"error": f"no such file: {filename}"})
+            return
+        if not joblib.csv_has_time_column(csv_path):
+            self._send_json(400, {"error": f"{filename} has no 'time' column -- not an "
+                                            "--interval CSV"})
+            return
+        self._send_json(200, joblib.parse_interval_csv(csv_path))
 
     def _api_symbolize(self, cfg, suite, benchmark, run_id, qs):
         """Item 9's web UI drill-down: symbol-level profile for one

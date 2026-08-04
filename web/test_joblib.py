@@ -2203,6 +2203,91 @@ class BuildCpu2026ArgvTest(unittest.TestCase):
         self.assertIn("runcpu --config gcc_O2.cfg --action=validate", reparsed[2])
 
 
+class CsvHasTimeColumnTest(unittest.TestCase):
+    def test_true_when_time_column_present(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "interval.csv")
+            with open(path, "w") as f:
+                f.write("time,ipc,\n1,1.5,\n")
+            self.assertTrue(joblib.csv_has_time_column(path))
+
+    def test_false_when_no_time_column(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "aggregate.csv")
+            with open(path, "w") as f:
+                f.write("ipc,retire,\n1.5,20.0,\n")
+            self.assertFalse(joblib.csv_has_time_column(path))
+
+    def test_false_for_empty_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "empty.csv")
+            open(path, "w").close()
+            self.assertFalse(joblib.csv_has_time_column(path))
+
+    def test_false_for_missing_file(self):
+        self.assertFalse(joblib.csv_has_time_column("/does/not/exist.csv"))
+
+
+class ParseIntervalCsvTest(unittest.TestCase):
+    def test_parses_columns_and_drops_trailing_empty_header(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "amdtopdown.csv")
+            with open(path, "w") as f:
+                # trailing comma before the newline -- every wspy CSV row is
+                # comma-terminated (CLAUDE.md's own noted pitfall), which
+                # produces one trailing empty header field to ignore.
+                f.write("time,retire,frontend,\n1,20.0,10.0,\n2,25.0,12.0,\n")
+            result = joblib.parse_interval_csv(path)
+            self.assertEqual(result["columns"], ["time", "retire", "frontend"])
+            self.assertEqual(result["dimension_columns"], ["time"])
+            self.assertEqual(result["gpu_columns"], [])
+            self.assertEqual(result["series"]["time"], [1.0, 2.0])
+            self.assertEqual(result["series"]["retire"], [20.0, 25.0])
+            self.assertEqual(result["row_count"], 2)
+            self.assertFalse(result["decimated"])
+
+    def test_detects_phase_and_gpu_columns(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "interval.csv")
+            with open(path, "w") as f:
+                f.write("time,phase,gpu_activity\n1,warmup,10.0\n2,steady,20.0\n")
+            result = joblib.parse_interval_csv(path)
+            self.assertEqual(result["dimension_columns"], ["time", "phase"])
+            self.assertEqual(result["gpu_columns"], ["gpu_activity"])
+            # phase stays a raw string series, not cast to float
+            self.assertEqual(result["series"]["phase"], ["warmup", "steady"])
+
+    def test_malformed_or_empty_cell_becomes_none(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "interval.csv")
+            with open(path, "w") as f:
+                f.write("time,ipc\n1,abc\n2,\n3,1.5\n")
+            result = joblib.parse_interval_csv(path)
+            self.assertEqual(result["series"]["ipc"], [None, None, 1.5])
+
+    def test_decimates_above_max_rows_but_keeps_endpoints_representative(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "interval.csv")
+            with open(path, "w") as f:
+                f.write("time,ipc\n")
+                for i in range(1000):
+                    f.write(f"{i},{i}\n")
+            result = joblib.parse_interval_csv(path, max_rows=100)
+            self.assertEqual(result["row_count"], 1000)
+            self.assertTrue(result["decimated"])
+            self.assertLessEqual(len(result["series"]["time"]), 100)
+            self.assertGreater(len(result["series"]["time"]), 0)
+
+    def test_not_decimated_when_under_cap(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "interval.csv")
+            with open(path, "w") as f:
+                f.write("time,ipc\n1,1.0\n2,2.0\n")
+            result = joblib.parse_interval_csv(path, max_rows=100)
+            self.assertFalse(result["decimated"])
+            self.assertEqual(len(result["series"]["time"]), 2)
+
+
 class CollectRunFilesTest(unittest.TestCase):
     """collect_run_files() is shared between the curation studio's "+ add"
     buttons and build_reproducibility_bundle()'s archive contents -- exercise
