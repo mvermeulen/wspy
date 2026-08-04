@@ -121,6 +121,13 @@ CURATION_NAME = "curation.json"
 # aianalysis.<model>.md already established for wspy-analyze -- no new block kind needed.
 ARCHETYPE_BADGE_NAME = "archetype_badge.md"
 
+# Item 3's other half -- server.py's similarity-panel generator writes this file once a human clicks
+# "Generate similarity panel" in the studio: a wspy-archetype --nearest neighbor table formatted as
+# markdown. Same "external tool output becomes a curatable file" precedent as ARCHETYPE_BADGE_NAME
+# above, for the same reason (avoids threading a live wspy-archetype dependency through every render/
+# export path, several of which wspy-testpoint also calls with no wspy-archetype config available).
+ARCHETYPE_SIMILAR_NAME = "archetype_similar.md"
+
 
 def escape_like(s):
     """Escapes %, _, and \\ for safe interpolation into a SQL LIKE pattern (ESCAPE '\\') -- benchmark
@@ -154,6 +161,29 @@ def resolve_store_pass_rows(cur, hostname, suite, benchmark, run_id):
                 (hostname, run_id))
     rows.update(cur.fetchall())
     return list(rows.items())
+
+
+def resolve_store_run_directory(cur, hostname, store_run_id):
+    """The reverse of resolve_store_pass_rows() above: given a store run_id (as `wspy-archetype
+    --nearest`'s neighbor rows name them, not a run directory's own name), returns the
+    (suite, benchmark, run_id) of the run directory it belongs to, or None if the row doesn't exist or
+    its recorded path doesn't look like wspy-run's unified <suite>/<benchmark>/<run_id>/ layout. Reads
+    whichever of output_path/manifest_path is set and takes the dirname's last 3 path components -- same
+    "path preserved verbatim regardless of --output-root prefix" property resolve_store_pass_rows()
+    relies on, just walked in the other direction. Used by server.py's similarity-panel generator to
+    turn a bare neighbor identity into a /report/<suite>/<benchmark>/<run_id> link."""
+    cur.execute("SELECT output_path, manifest_path FROM runs WHERE hostname = ? AND run_id = ?",
+                (hostname, store_run_id))
+    row = cur.fetchone()
+    if not row:
+        return None
+    for path in row:
+        if not path:
+            continue
+        parts = os.path.normpath(os.path.dirname(path)).split(os.sep)
+        if len(parts) >= 3 and all(parts[-3:]):
+            return tuple(parts[-3:])
+    return None
 
 
 def pick_counters_pass_id(pass_rows):
@@ -292,6 +322,7 @@ def collect_run_files(rundir):
     # Independent of run shape (unlike the two branches above) -- a no-op via add()'s own
     # os.path.isfile() check until a human actually generates one.
     add(ARCHETYPE_BADGE_NAME, "Workload characterization badge")
+    add(ARCHETYPE_SIMILAR_NAME, "Nearest-neighbor similarity panel")
 
     try:
         extras = sorted(

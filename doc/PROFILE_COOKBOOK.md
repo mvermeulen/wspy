@@ -181,16 +181,47 @@ classification (`resource_dominance`), not a single combined label — a `comput
 `straight-line` / `steady` run are both "compute-bound," but they're very different workloads, and
 the axes are what tell you that apart.
 
-## Statistical clustering — not yet shipped
+## Nearest-neighbor search and clustering (`--nearest`, `--kmeans`)
 
-The backlog line this cookbook was written to close out also names "cluster" output. There is
-**no statistical clustering/nearest-neighbor feature in this codebase today** — it's a distinct,
-not-yet-built 4.3 priority ("Clustering + nearest-neighbor + cluster profile cards," needs 4.1's
-normalized store and history, which do exist). A 2024 external clustering analysis
-(`archetype.c`'s own header comment cites it) informed `resource_dominance`'s axis design, but no
-clustering algorithm runs anywhere in this repo — don't confuse `wspy-archetype`'s rule-based
-classification above with a learned/statistical cluster assignment. This section will be filled in
-once that item ships, rather than describing something that doesn't exist yet.
+Unlike `--run`'s rule-based classification above (thresholds on individual metrics), these two modes
+compare runs to each other directly, over the same `run_features` vocabulary. Both compute a
+**coverage-aware, z-score-standardized RMS distance**, counted only over the dimensions both runs
+actually have `coverage='measured'` — a pair sharing 6 features isn't penalized just for sharing less
+than a pair sharing 18. Population mean/stddev for standardization are computed once across every
+candidate, so every pairwise distance shares the same scale.
+
+**`wspy-archetype --db <path> --nearest <host>:<run_id> [--k N] [--csv]`** ranks every other run in the
+store by similarity to the named one, most similar first, printing `--k` of them (default 5):
+
+```
+hostname:run_id                            distance  compared_features
+roswell:20260801T151107.433-1157536         0.06405                  5
+roswell:20260803T112631.909-710276           0.7518                  5
+```
+
+- **distance** — lower means more similar. Not bounded to a fixed range, so only meaningful *relative
+  to the other rows in the same ranking*, never as an absolute score, and never comparable across two
+  different `--nearest` invocations (the population stats it's standardized against can differ).
+- **compared_features** — how many `run_features` dimensions both runs shared. A `distance` computed
+  over 2 shared features and one computed over 15 aren't equally trustworthy even if the numbers look
+  similar — always read them together, not `distance` alone.
+- `--command`/`--hostname` filter the candidate pool the same way they filter `wspy-summary`'s bucket.
+- Exit 1 if the target run isn't in the store at all; exit 0 with an empty result if it has no measured
+  features or nothing else in the store shares any — not an error, just nothing to rank.
+
+**`wspy-archetype --db <path> --kmeans <n> [--seed <n>] [--iterations <n>] [--csv]`** partitions every
+candidate run into `n` clusters over the same distance, printing one row per member grouped by cluster,
+closest-to-centroid first. Each member's row carries a **profile card**: the `KMEANS_TOP_FEATURES`
+dimensions where that cluster's centroid sits furthest from the population mean — the "what makes this
+cluster distinctive" summary, not every feature. A centroid, per dimension, is the *available-case
+mean* (averaged only over members that actually measured that dimension) — the same "only shared
+dimensions count" idiom `--nearest`'s distance already uses, just applied to a group instead of a pair.
+Same seed + same data always yields the same clustering (`--seed`, default 1, seeds k-means++
+initialization from real data points).
+
+Read the web report's "Similarity panel" (a `--nearest` snapshot for that run, linked to each
+neighbor's own report) as the everyday entry point to this — reach for the raw CLI modes above when you
+need `--kmeans`, a custom `--k`, or `--command`/`--hostname` filtering the panel doesn't expose.
 
 (Separately, and unrelated to this section despite the shared word: `wspy --capabilities` reports
 real ARM PMU **hardware** clusters — `cpu_info.c`'s `discover_arm_pmu_topology()`, e.g. `"ARM PMU
