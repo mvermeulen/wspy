@@ -33,6 +33,7 @@ Usage:
 Stdlib only, by design (see CLAUDE.md's web/ entry for the reasoning).
 """
 import argparse
+import csv
 import fnmatch
 import hashlib
 import html
@@ -82,6 +83,7 @@ from joblib import (  # noqa: E402,F401
     run_sync, parse_phoronix_test_names, estimate_phoronix_workload_seconds,
     CSV_NAME, MANIFEST_NAME, PNG_NAME, CURATION_NAME, COMMAND_TXT_NAME, guess_kind, read_run_manifest,
     ai_artifact_label, list_plot_pngs, collect_run_files, ARCHETYPE_BADGE_NAME,
+    ARCHETYPE_SIMILAR_NAME,
     build_reproducibility_bundle, BUNDLE_MANIFEST_NAME,
     COMPOSITE_PRESET_PROFILES, expand_preset_names, run_proctree_besteffort,
 )
@@ -3565,6 +3567,75 @@ def generate_archetype_badge(cfg, rundir, suite, benchmark, run_id):
         fields.get("resource_dominance", "unknown"), fields.get("confidence", "unknown"))
 
 
+def format_archetype_similar_markdown(neighbors):
+    """Formats wspy-archetype --nearest --csv's neighbor rows (already parsed and link-resolved by
+    generate_archetype_similar() below) as a compact markdown table. Each neighbor is
+    {"hostname", "run_id", "distance", "compared_features", "link"} -- "link" is a /report/... URL when
+    resolve_store_run_directory() found that run's own directory, or None if it can't be located from
+    here (pruned from disk, ingested from a store this server doesn't serve reports from, ...), rendered
+    as plain text in that case rather than a dead link. Deliberately just the table, not a restatement of
+    doc/PROFILE_COOKBOOK.md's fuller guide to reading distance/coverage output -- links there instead,
+    same convention format_archetype_badge_markdown() above uses."""
+    lines = ["# Similar runs", ""]
+    if not neighbors:
+        lines.append("No other collected runs currently share measured features with this one.")
+        lines.append("")
+        lines.append("Classified via `wspy-archetype --nearest` -- see `doc/PROFILE_COOKBOOK.md` for "
+                      "how to read distance/coverage output.")
+        return "\n".join(lines) + "\n"
+    lines += ["| run | distance | features compared |", "|---|---|---|"]
+    for n in neighbors:
+        ident = f"{n['hostname']}:{n['run_id']}"
+        run_cell = f"[{ident}]({n['link']})" if n.get("link") else f"{ident} (report not available)"
+        lines.append(f"| {run_cell} | {n['distance']} | {n['compared_features']} |")
+    lines.append("")
+    lines.append("Lower distance = more similar (a coverage-aware, z-standardized distance computed "
+                  "only over features both runs measured). Classified via `wspy-archetype --nearest` -- "
+                  "see `doc/PROFILE_COOKBOOK.md` for how to read this output.")
+    return "\n".join(lines) + "\n"
+
+
+def generate_archetype_similar(cfg, rundir, suite, benchmark, run_id):
+    """Runs `wspy-archetype --nearest <hostname>:<store_run_id> --csv` (resolved via
+    resolve_archetype_run_key(), the same store-run-id resolution generate_archetype_badge() uses) and
+    writes ARCHETYPE_SIMILAR_NAME into rundir on success. Resolves each neighbor's own run directory via
+    joblib.resolve_store_run_directory() so the rendered table can link straight to its report -- a
+    neighbor whose directory can't be resolved still renders (as plain text, see
+    format_archetype_similar_markdown() above), it just isn't a link. Returns (ok, message), same
+    never-raises contract as generate_archetype_badge()."""
+    hostname, store_run_id = resolve_archetype_run_key(cfg, rundir, suite, benchmark, run_id)
+    if hostname is None:
+        return False, store_run_id  # store_run_id carries the error message in this branch
+    argv = [cfg["wspy_archetype_bin"], "--db", cfg["store_db"], "--nearest",
+            f"{hostname}:{store_run_id}", "--csv"]
+    rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=20)
+    if timed_out:
+        return False, f"{cfg['wspy_archetype_bin']} timed out"
+    if rc != 0:
+        return False, output.strip() or f"wspy-archetype exited {rc}"
+    rows = list(csv.DictReader(output.splitlines()))
+    neighbors = []
+    if rows:
+        conn = sqlite3.connect(cfg["store_db"])
+        try:
+            cur = conn.cursor()
+            for row in rows:
+                ident = joblib.resolve_store_run_directory(cur, row["hostname"], row["run_id"])
+                link = (f"/report/{_urlescape(ident[0])}/{_urlescape(ident[1])}/{_urlescape(ident[2])}"
+                        if ident else None)
+                neighbors.append({**row, "link": link})
+        finally:
+            conn.close()
+    with open(os.path.join(rundir, ARCHETYPE_SIMILAR_NAME), "w") as f:
+        f.write(format_archetype_similar_markdown(neighbors))
+    if not neighbors:
+        return True, "no similar runs found"
+    nearest = neighbors[0]
+    return True, "%d similar run%s found, nearest: %s:%s (distance %s)" % (
+        len(neighbors), "" if len(neighbors) == 1 else "s",
+        nearest["hostname"], nearest["run_id"], nearest["distance"])
+
+
 def render_badge_panel(suite, benchmark, run_id, badge_exists):
     """The "Generate characterization badge" panel on the studio page -- a plain form POST (no JS),
     same pattern render_publish_panel() already uses, since this is a one-shot few-second action, not a
@@ -3601,6 +3672,42 @@ def render_badge_result(cfg, rundir, suite, benchmark, run_id):
                 f'<p>{html.escape(message)}</p>'
                 f'<p class="muted">Add <code>{html.escape(ARCHETYPE_BADGE_NAME)}</code> to your curated '
                 f'report from the studio\'s "Add a block" list.</p>{back_link}</section>')
+
+
+def render_similar_panel(suite, benchmark, run_id, similar_exists):
+    """The "Generate similarity panel" panel on the studio page -- same plain form POST (no JS) pattern
+    as render_badge_panel() above, and for the same reason (a one-shot few-second action)."""
+    action = f"/generate-similar/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    verb = "Regenerate" if similar_exists else "Generate"
+    note = (f"Already generated as <code>{html.escape(ARCHETYPE_SIMILAR_NAME)}</code> -- add it as a "
+            "block above, or regenerate to refresh its neighbor list." if similar_exists else
+            "Finds the most similar other runs in the store via <code>wspy-archetype --nearest</code>, "
+            "using data already ingested into the store.")
+    return f"""
+<section class="panel">
+  <h2>Similarity panel</h2>
+  <p class="config-label">{note}</p>
+  <form method="post" action="{action}">
+    <button type="submit">{verb} similarity panel</button>
+  </form>
+</section>
+"""
+
+
+def render_similar_result(cfg, rundir, suite, benchmark, run_id):
+    """Renders the result of a "Generate similarity panel" form submission."""
+    studio_url = f"/studio/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    back_link = f'<p><a href="{studio_url}">Back to studio</a></p>'
+    ok, message = generate_archetype_similar(cfg, rundir, suite, benchmark, run_id)
+    if not ok:
+        return page("similarity panel generation failed",
+                    '<section class="panel"><h1>Similarity panel failed</h1>'
+                    f'<p class="muted">{html.escape(message)}</p>{back_link}</section>')
+    return page("similarity panel generated",
+                '<section class="panel"><h1>Similarity panel generated</h1>'
+                f'<p>{html.escape(message)}</p>'
+                f'<p class="muted">Add <code>{html.escape(ARCHETYPE_SIMILAR_NAME)}</code> to your '
+                f'curated report from the studio\'s "Add a block" list.</p>{back_link}</section>')
 
 
 def render_studio(rundir, suite, benchmark, run_id):
@@ -3704,8 +3811,11 @@ def render_studio(rundir, suite, benchmark, run_id):
     <button type="submit" name="op" value="save" class="primary">Save</button>
   </form>
 </section>
-""" + render_badge_panel(suite, benchmark, run_id,
-                          any(item["filename"] == ARCHETYPE_BADGE_NAME for item in available))
+"""
+    badge_exists = any(item["filename"] == ARCHETYPE_BADGE_NAME for item in available)
+    similar_exists = any(item["filename"] == ARCHETYPE_SIMILAR_NAME for item in available)
+    body += (render_badge_panel(suite, benchmark, run_id, badge_exists)
+             + render_similar_panel(suite, benchmark, run_id, similar_exists))
     return page(f"curation studio: {benchmark}/{run_id}", body)
 
 
@@ -4523,6 +4633,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, "no such report")
                 return
             self._send(200, render_badge_result(cfg, rundir, suite, benchmark, run_id))
+            return
+
+        m = re.match(r"^/generate-similar/([^/]+)/([^/]+)/([^/]+)$", parsed.path)
+        if m:
+            suite, benchmark, run_id = m.groups()
+            if not all(valid_segment(x) for x in (suite, benchmark, run_id)):
+                self._send(400, "invalid path")
+                return
+            rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+            if not os.path.isdir(rundir):
+                self._send(404, "no such report")
+                return
+            self._send(200, render_similar_result(cfg, rundir, suite, benchmark, run_id))
             return
 
         m = re.match(r"^/publish/([^/]+)/([^/]+)/([^/]+)$", parsed.path)

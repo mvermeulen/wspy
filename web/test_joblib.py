@@ -2285,6 +2285,20 @@ class CollectRunFilesTest(unittest.TestCase):
             self.assertEqual(by_name[joblib.ARCHETYPE_BADGE_NAME]["kind"], "markdown")
             self.assertFalse(by_name[joblib.ARCHETYPE_BADGE_NAME]["ai_generated"])
 
+    def test_archetype_similar_absent_until_generated(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            items = joblib.collect_run_files(tmpdir)
+            self.assertNotIn(joblib.ARCHETYPE_SIMILAR_NAME, [i["filename"] for i in items])
+
+    def test_archetype_similar_offered_once_present(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            open(os.path.join(tmpdir, joblib.ARCHETYPE_SIMILAR_NAME), "w").close()
+            items = joblib.collect_run_files(tmpdir)
+            by_name = {i["filename"]: i for i in items}
+            self.assertIn(joblib.ARCHETYPE_SIMILAR_NAME, by_name)
+            self.assertEqual(by_name[joblib.ARCHETYPE_SIMILAR_NAME]["kind"], "markdown")
+            self.assertFalse(by_name[joblib.ARCHETYPE_SIMILAR_NAME]["ai_generated"])
+
 
 class ResolveStorePassRowsTest(unittest.TestCase):
     """resolve_store_pass_rows()/pick_counters_pass_id() -- shared by wspy-testpoint (aggregate/render's
@@ -2338,6 +2352,52 @@ class ResolveStorePassRowsTest(unittest.TestCase):
     def test_pick_counters_pass_id_falls_back_to_first_when_no_counters_pass(self):
         rows = [("pass-b", "systemtime"), ("pass-c", "ibs")]
         self.assertEqual(joblib.pick_counters_pass_id(rows), "pass-b")
+
+
+class ResolveStoreRunDirectoryTest(unittest.TestCase):
+    """resolve_store_run_directory() -- the reverse of resolve_store_pass_rows() above, used by
+    server.py's similarity-panel generator to turn one of wspy-archetype --nearest's bare
+    (hostname, run_id) neighbor identities back into a linkable (suite, benchmark, run_id) report
+    path. Same minimal `runs` table convention as ResolveStorePassRowsTest."""
+
+    def _connect(self):
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE runs (hostname TEXT, run_id TEXT, config_name TEXT, "
+                     "manifest_path TEXT, output_path TEXT)")
+        self.addCleanup(conn.close)
+        return conn
+
+    def test_resolves_from_output_path(self):
+        conn = self._connect()
+        conn.execute("INSERT INTO runs VALUES ('roswell', 'pass-a', 'topdown', NULL, "
+                     "'/out/phoronix/coremark-default/wraprun1/amdtopdown.csv')")
+        result = joblib.resolve_store_run_directory(conn.cursor(), "roswell", "pass-a")
+        self.assertEqual(result, ("phoronix", "coremark-default", "wraprun1"))
+
+    def test_resolves_from_manifest_path_when_output_path_is_null(self):
+        conn = self._connect()
+        conn.execute("INSERT INTO runs VALUES ('roswell', 'pass-a', 'counters', "
+                     "'/out/cpu2026/706.stockfish_r-gcc_O3-base/wraprun1/counters.manifest.json', NULL)")
+        result = joblib.resolve_store_run_directory(conn.cursor(), "roswell", "pass-a")
+        self.assertEqual(result, ("cpu2026", "706.stockfish_r-gcc_O3-base", "wraprun1"))
+
+    def test_no_matching_row_returns_none(self):
+        conn = self._connect()
+        result = joblib.resolve_store_run_directory(conn.cursor(), "roswell", "nope")
+        self.assertIsNone(result)
+
+    def test_both_paths_null_returns_none(self):
+        conn = self._connect()
+        conn.execute("INSERT INTO runs VALUES ('roswell', 'pass-a', 'counters', NULL, NULL)")
+        result = joblib.resolve_store_run_directory(conn.cursor(), "roswell", "pass-a")
+        self.assertIsNone(result)
+
+    def test_path_too_shallow_to_hold_suite_benchmark_run_id_returns_none(self):
+        conn = self._connect()
+        conn.execute("INSERT INTO runs VALUES ('roswell', 'pass-a', 'counters', NULL, "
+                     "'/counters.csv')")
+        result = joblib.resolve_store_run_directory(conn.cursor(), "roswell", "pass-a")
+        self.assertIsNone(result)
 
 
 class ClassifyBundleKindTest(unittest.TestCase):

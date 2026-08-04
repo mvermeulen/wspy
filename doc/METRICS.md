@@ -574,6 +574,17 @@ above, for human/agent consumption.
   `run_features` row, only ever printed alongside `memory_attribution_locus` in `wspy-archetype`'s own
   CSV/human/`--run` output) — comma-joined trace of which precision tier and signal(s) produced the
   `memory_attribution_locus` label, in the same `name=value` style as `memory_attribution_reasons`.
+- **distance** (`wspy-archetype --nearest`/`--kmeans`) — `[human-only]`/`[categorical]` (not a
+  `run_features` row, only ever printed by `--nearest`'s neighbor ranking or `--kmeans`'s
+  distance-to-centroid ordering) — a coverage-aware, z-score-standardized RMS distance between two runs'
+  feature vectors, computed only over the `run_features` dimensions both runs actually measured (a pair
+  sharing 6 features isn't penalized for sharing less than a pair sharing 18 — see `compared_features`
+  below). Lower = more similar; not bounded to a fixed range, so only meaningful relative to other
+  distances printed alongside it in the same ranking, not as an absolute score.
+- **compared_features** (`wspy-archetype --nearest`) — `[human-only]`/`[categorical]` count of
+  `run_features` dimensions both runs in a `--nearest` row actually measured (`coverage='measured'` on
+  both sides) — the coverage-transparency companion to `distance` above, so a low distance computed over
+  only 2 shared features can be told apart from one computed over 15.
 - **blocking_wait_pct** (`wspy-archetype` input, `store.c`) — `[feature]` `(futex_wait_seconds +
   io_wait_seconds) / elapsed_seconds * 100`, scanned directly from `--tree`'s raw `futex`/`io_wait` lines
   (needs `--tree-futex`/`--tree-io-wait`; `unavailable` without `--tree` at all, the common case).
