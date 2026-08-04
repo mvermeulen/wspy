@@ -1182,6 +1182,25 @@ tooling, to `[html_sitemap child_of="CURRENT" depth="1"]` for its own flat top-l
 Verified live against all 52 `cpu2026` pages (`706.stockfish_r` first, manually inspected, then the
 remaining 51) — every page came back `found/updated (status=publish)` with no errors.
 
+**cpu2026 registration tracks SPEC install specdir per host** (PR #200) — found while double-checking
+PR #199's freshly-committed `workload/cpu2026/<bench>/<tag>/<tune>/source.json` files: that directory is
+this repo's own checked-in `web/server.py:CPU2026_DEST_ROOT`, shared across every host that clones it, but
+`specdir` (the absolute local SPEC install path `register_cpu2026_point()` records) was a single flat
+field — silently belonging to whichever host registered first, leaving every *other* host's "built"
+status (`list_materialized_cpu2026_points()`) and the CPU2026 tab's Build/Use-in-Run-tab actions
+(`web/server.py`) resolving a specdir that wasn't theirs (wrong path or none at all). `source.json`'s
+`schema_version` bumped 1→2: the flat `specdir`/`generated_at` became a `hosts` map keyed by hostname.
+`register_cpu2026_point()` stays idempotent/additive, now per host — a hostname already present is left
+untouched, a new one is added without touching others (`status` gained `"host_added"` alongside
+`"created"`/`"exists"`). A new shared `cpu2026_host_specdir()` helper (defaulting to
+`socket.gethostname()`) is the single place that resolves "this host's own entry," used by
+`list_materialized_cpu2026_points()` and by the two `web/server.py` handlers that read `source.json`
+directly (Build, Use in Run tab) — both now give a clear 400 instead of trying to build/run against an
+empty or wrong path. Hand-migrated the 4 already-committed `source.json` files (all written on one host)
+to the new schema in the same PR, so the repo was never left in a mixed-schema state. 3 new tests in
+`web/test_joblib.py` (270 total there, 405 across `web/`); `./run_tests.sh`'s full C/shell matrix (which
+doesn't cover `web/`) also green.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
