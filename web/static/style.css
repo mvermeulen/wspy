@@ -10,6 +10,17 @@
   --good: #2da44e;
   --warn: #d4a72c;
   --bad: #cf222e;
+  /* Categorical series colors for interval_viewer.js's multi-line charts -- the
+     dataviz skill's validated 8-hue order (CVD-safe adjacent pairs, fixed slot order
+     assigned by column position, never reassigned as a filter changes series count). */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #4a3aa7;
+  --series-8: #e34948;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -25,6 +36,16 @@
     --good: #3fb950;
     --warn: #d29922;
     --bad: #f85149;
+    /* Same 8 hues, dark-surface steps (dataviz skill's palette.md) -- not a separate
+       palette, the same validated ordering stepped for the dark surface. */
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;
   }
 }
 
@@ -651,3 +672,72 @@ table.ptv-profile-table th, table.ptv-profile-table td {
 }
 table.ptv-profile-table thead, table.ptv-profile-table tr:first-child { background: var(--bg); }
 tr.ptv-profile-unresolved td { color: var(--muted); font-style: italic; }
+
+/* Interval timeline viewer (item 4): interactive --interval-CSV chart,
+ * web/static/interval_viewer.js. Prefixed .itv- throughout, same reasoning
+ * proctree viewer's .ptv- prefix documents above. */
+#itv-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.itv-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+}
+.itv-legend label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.itv-legend input[type="checkbox"] { margin: 0; }
+.itv-swatch {
+  display: inline-block;
+  width: 1rem;
+  height: 2px;
+  border-radius: 1px;
+}
+.itv-chart-block {
+  margin-bottom: 0.5rem;
+}
+.itv-chart-title {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin: 0 0 0.15rem 0;
+}
+.itv-chart-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  cursor: crosshair;
+  user-select: none;
+}
+.itv-axis-line { stroke: var(--border); stroke-width: 1; }
+.itv-gridline { stroke: var(--border); stroke-width: 1; opacity: 0.5; }
+.itv-axis-label { fill: var(--muted); font-size: 10px; }
+.itv-series-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.itv-phase-warmup { fill: var(--warn); opacity: 0.12; }
+.itv-phase-steady { fill: var(--good); opacity: 0.12; }
+.itv-phase-degraded { fill: var(--bad); opacity: 0.12; }
+.itv-crosshair { stroke: var(--muted); stroke-width: 1; pointer-events: none; }
+.itv-zoom-band { fill: var(--accent); opacity: 0.15; pointer-events: none; }
+.itv-tooltip {
+  position: absolute;
+  pointer-events: none;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.78rem;
+  max-width: 20rem;
+  z-index: 10;
+}
+.itv-tooltip-time { color: var(--muted); margin-bottom: 0.25rem; }
+.itv-tooltip-row { display: flex; align-items: center; gap: 0.35rem; white-space: nowrap; }
+.itv-tooltip-value { font-weight: 600; }
+.itv-tooltip-name { color: var(--muted); }

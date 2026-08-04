@@ -47,6 +47,7 @@ Four groups of things live here:
      by wspy-phoronix-import's CLI and web/server.py's Phoronix tab.
 """
 import copy
+import csv
 import hashlib
 import html
 import io
@@ -277,6 +278,85 @@ def list_plot_pngs(rundir):
     except OSError:
         return []
     return [f"{PLOTS_DIR_NAME}/{f}" for f in names]
+
+
+# Dimension columns a wspy --interval/--csv header can carry -- never plotted as a metric
+# themselves, the same three names store.c's ingest_csv_metrics() and plot.c's template matcher
+# both already special-case (a column named exactly one of these is a dimension, every other
+# non-empty-named column is a metric). Shared here so server.py's interval-timeline viewer treats
+# a CSV's columns identically to how the C toolchain already does.
+INTERVAL_DIMENSION_COLUMNS = ("time", "core", "phase")
+
+# GPU utilization-percentage columns plot.c already groups onto their own dedicated chart
+# (templates[], "GPU busy/activity percentages") -- the same set the interval-timeline viewer
+# overlays on a secondary axis. Other GPU columns (temp/power/freq/vram) are different units with
+# their own separate plots already; not part of this overlay.
+INTERVAL_GPU_COLUMNS = ("gpu_busy", "gpu_activity", "nv_gpu_busy")
+
+# Row cap for the interval-timeline viewer's JSON payload -- a multi-hour --interval 1 soak run
+# could have tens of thousands of rows, more than a hand-rolled SVG chart (or a browser tab) wants
+# to render point-by-point. parse_interval_csv() below stride-decimates down to this cap rather
+# than truncating, so a long run still shows its whole shape, just at lower resolution.
+INTERVAL_VIEWER_MAX_ROWS = 5000
+
+
+def csv_has_time_column(path):
+    """True if path's CSV header names a "time" column -- the same eligibility rule plot.c already
+    uses ("Only CSVs with a 'time' column ... are plottable time series"), i.e. this CSV was
+    produced with --interval. Reads only the first line, not the whole file, so it's cheap enough
+    to call once per pass artifact while rendering a report page."""
+    try:
+        with open(path, newline="") as f:
+            header = next(csv.reader(f), None)
+    except OSError:
+        return False
+    return bool(header) and "time" in header
+
+
+def parse_interval_csv(path, max_rows=INTERVAL_VIEWER_MAX_ROWS):
+    """Parses an --interval CSV into the shape web/static/interval_viewer.js charts: {"columns",
+    "dimension_columns", "gpu_columns", "series": {col: [values...]}, "row_count", "decimated"}.
+    Every non-dimension column is cast to float (invalid/empty cells become None, same "missing
+    counter reads as absent, not zero" convention the rest of this codebase follows); "phase" (if
+    present) is kept as its raw string values (warmup/steady/degraded) for the viewer's own
+    run-length grouping. Uniformly stride-decimates down to max_rows if the file has more rows than
+    that -- simple "don't lose the shape entirely" downsampling, not a precision feature, matching
+    INTERVAL_VIEWER_MAX_ROWS's own reasoning."""
+    with open(path, newline="") as f:
+        reader = csv.reader(f)
+        header = next(reader, [])
+        rows = list(reader)
+
+    dimension_columns = [c for c in INTERVAL_DIMENSION_COLUMNS if c in header]
+    gpu_columns = [c for c in INTERVAL_GPU_COLUMNS if c in header]
+
+    row_count = len(rows)
+    decimated = row_count > max_rows
+    if decimated:
+        stride = -(-row_count // max_rows)  # ceil division -- guarantees len(rows) <= max_rows
+        rows = rows[::stride]
+
+    series = {col: [] for col in header if col}
+    for row in rows:
+        for col, cell in zip(header, row):
+            if not col:
+                continue
+            if col == "phase":
+                series[col].append(cell)
+                continue
+            try:
+                series[col].append(float(cell))
+            except ValueError:
+                series[col].append(None)
+
+    return {
+        "columns": [c for c in header if c],
+        "dimension_columns": dimension_columns,
+        "gpu_columns": gpu_columns,
+        "series": series,
+        "row_count": row_count,
+        "decimated": decimated,
+    }
 
 
 def collect_run_files(rundir):
