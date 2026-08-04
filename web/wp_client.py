@@ -243,6 +243,30 @@ def find_page(site_url, username, app_password, slug, parent):
     return results[0] if results else None
 
 
+def list_child_pages(site_url, username, app_password, parent):
+    """All Pages directly under `parent` (0 for top-level) -- GET /wp/v2/pages?parent=<id>,
+    paginated at per_page=100 (WordPress REST's own max) since a test-point page could plausibly
+    accumulate more machine-level children than the default per_page=10. status="any" so a
+    still-draft machine page is reported too, matching find_page()'s own convention. Symmetric to
+    find_page()'s single (slug, parent) lookup -- this is the "what's actually posted under here"
+    read the reference-matrix database's per-cell publish-status column needs (INVESTIGATION.md 4.3
+    Tier 3 item 5), rather than a second, separately-maintained local record of what's been
+    published."""
+    pages = []
+    page_num = 1
+    while True:
+        results = request(site_url, "wp/v2/pages", username, app_password,
+                           params={"parent": parent, "status": "any", "per_page": 100,
+                                   "page": page_num})
+        if not results:
+            break
+        pages.extend(results)
+        if len(results) < 100:
+            break
+        page_num += 1
+    return pages
+
+
 def create_page(site_url, username, app_password, slug, title, parent,
                  content="", status="draft"):
     """POST a new Page. Requires edit_pages (status="draft") /

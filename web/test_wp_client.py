@@ -198,6 +198,45 @@ class GetPageTest(unittest.TestCase):
         self.assertEqual(page["id"], 42)
 
 
+class ListChildPagesTest(unittest.TestCase):
+    def test_single_page_of_results(self):
+        captured_params = []
+
+        def fake_request(site_url, path, username, app_password, method="GET", params=None,
+                          json_body=None, timeout=20):
+            captured_params.append(params)
+            return [{"id": 1, "slug": "amd-395"}, {"id": 2, "slug": "amd-370-64gb"}]
+
+        with patch("wp_client.request", side_effect=fake_request):
+            pages = wp_client.list_child_pages("https://example.org/workload", "wspy", "secret", 17)
+
+        self.assertEqual([p["slug"] for p in pages], ["amd-395", "amd-370-64gb"])
+        # exactly one call: a short result (< per_page) means no next page to fetch
+        self.assertEqual(len(captured_params), 1)
+        self.assertEqual(captured_params[0],
+                          {"parent": 17, "status": "any", "per_page": 100, "page": 1})
+
+    def test_stops_after_empty_page(self):
+        with patch("wp_client.request", side_effect=lambda *a, **kw: []):
+            pages = wp_client.list_child_pages("https://example.org/workload", "wspy", "secret", 0)
+        self.assertEqual(pages, [])
+
+    def test_paginates_when_a_full_page_is_returned(self):
+        full_page = [{"id": i, "slug": "m%d" % i} for i in range(100)]
+        second_page = [{"id": 100, "slug": "m100"}]
+        responses = [full_page, second_page]
+
+        def fake_request(site_url, path, username, app_password, method="GET", params=None,
+                          json_body=None, timeout=20):
+            return responses.pop(0)
+
+        with patch("wp_client.request", side_effect=fake_request):
+            pages = wp_client.list_child_pages("https://example.org/workload", "wspy", "secret", 5)
+
+        self.assertEqual(len(pages), 101)
+        self.assertEqual(pages[-1]["slug"], "m100")
+
+
 class PublishPageTest(unittest.TestCase):
     def test_flips_status_to_publish(self):
         captured = {}
