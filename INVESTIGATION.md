@@ -1154,7 +1154,7 @@ normalization-on-save can't cause a false-positive drift on the very next publis
 against yet).
 
 **Characterization badges in the curation studio** (PR #198) — closes the badges half of Tier 3 item 3
-(similarity panels remain open, see item 3's own corrected text above). A "Generate characterization
+(similarity panels shipped separately, see PR #201 below). A "Generate characterization
 badge" panel on the studio page shells `wspy-archetype --run <hostname>:<run_id>` and writes a compact
 resource_dominance/confidence/etc. markdown snippet (`archetype_badge.md`) into the run directory —
 deliberately not a new curation-studio block "kind" with its own rendering path in every export format;
@@ -1432,10 +1432,6 @@ reasoning as Tier 1 above.
      benchmark/test-point pages, one human click at a time. Depends on item 5's reference-matrix
      database as the suite-level data source (deciding whether to generate that table from the store
      instead of hand-maintaining it is exactly item 5's own open question).
-3. **Fully shipped for 4.3:** "characterization badges + similarity panels" — badges (PR #198) and
-   similarity panels (PR #201) both landed as ordinary curatable artifacts rather than a new block
-   type, see "Shipped since 4.2" for both write-ups. Item number kept stable rather than renumbering
-   items 4-20 below, same reasoning as Tier 1/2's own tier-number stability above.
 4. Interactive tree/timeline drill-down, GPU phase overlays — the interactive counterpart to 4.1's
    static inclusion-depth mechanism (none/summary/excerpt/full) for the tree/interval blocks
    specifically; that mechanism stays the right default for a published, non-interactive report even
