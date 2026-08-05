@@ -1980,6 +1980,30 @@ def build_run_publish_stub_content(machine_catalog_url, phoronix_entry=None, cpu
     return stub_content
 
 
+def resolve_reference_matrix_row_publish_status(wp_cfg, suite, test, test_point):
+    """For one reference-matrix row (INVESTIGATION.md 4.3 Tier 3 item 5), returns
+    {machine_slug: {"link":, "status":}} for every machine-level page that already exists under this
+    test-point's WordPress hierarchy -- the per-cell "already posted" status the item's design calls
+    for. {} if wp_cfg is None (no WordPress configured) or any level of suite/test/test_point doesn't
+    have a page yet (nothing published under this test-point at all, so no machine columns can either).
+    One list_child_pages() call covers every machine column in the row at once, after walking
+    suite->test->test_point (at most 3 more find_page() calls) -- O(rows) WordPress calls rather than
+    O(cells). status is WordPress's own page status ("draft"/"publish") -- surfaced as-is rather than
+    collapsed to a single "posted" boolean, so a caller can distinguish "posted but still a draft"
+    from "live" the same way render_publish_result() already does for a single run's page."""
+    if not wp_cfg:
+        return {}
+    wp = wp_cfg["wordpress"]
+    parent = 0
+    for slug in (suite, test, test_point):
+        page = wp_client.find_page(wp["site_url"], wp["username"], wp["app_password"], slug, parent)
+        if page is None:
+            return {}
+        parent = page["id"]
+    children = wp_client.list_child_pages(wp["site_url"], wp["username"], wp["app_password"], parent)
+    return {c["slug"]: {"link": c.get("link"), "status": c.get("status")} for c in children}
+
+
 def render_publish_panel(suite, benchmark, run_id, title):
     """The "Publish to WordPress" form on the export page's wordpress tab
     -- a UI trigger over the same primitives `wspy-publish publish-page
