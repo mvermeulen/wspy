@@ -1260,6 +1260,56 @@ note spelling out that the ratio is already the percentage and the comment just 
 core-equivalents, not a second finding — applies to both single-run and `--compare-rundir` prompts.
 `./test_ai_analyze.sh` (structural + live Ollama calls, both modes) still passes.
 
+**Benchmark reference-matrix database: query layer + web UI** (PR #204) — ships most of 4.3 Tier 3
+item 5 (still open: a standalone "by machine" view, drill-down links to individual runs, the
+archetype/kmeans analysis-feed hookup, and the 60+-column vocabulary audit — see item 5's own
+trimmed entry above). Computed on demand at web-request time, no new persistent matrix table:
+`joblib.enumerate_reference_matrix_cells()` walks materialized Phoronix/cpu2026 test points against
+which `<report-root>/<suite>/<test>/<test-point>/<machine>/` directories already have a `runs.json`
+(`wspy-testpoint select-runs`) — reusing that curated run selection rather than re-deriving one from
+raw store rows, and sidestepping the fact that `store.c`'s own `runs` table has no
+`suite`/`test`/`test-point` columns to group by at all (only reconstructable from
+`output_path`/`manifest_path` parsing). `joblib.aggregate_reference_matrix_cell()` shells out to
+`wspy-testpoint aggregate --csv` per cell (that tool has a hyphenated filename, not importable as a
+module); `parse_summary_csv()` moved from `wspy-testpoint` into `joblib.py` so both share one copy
+instead of two drifting apart.
+
+Machine identity revised from the settled design during implementation: rather than a new
+hand-maintained `<report-root>/machines.json`, discovered `scripts/publish_machine_page.py` already
+maintains an equivalent per-machine catalog (`<report-root>/machine/<short-name>/machine.json`, run
+once per physical machine) that only lacked a `hostname` field — added that one field instead of
+building a second, parallel registry. `web/machine_registry.py` is a read-only scan of that existing
+catalog (`{hostname: short_name}`); it never writes. A machine with runs in the store that has never
+run `publish_machine_page.py` simply has no slug yet — no synthetic placeholder, self-heals the
+first time that machine registers.
+
+Publish status per cell: new `wp_client.list_child_pages()` (`GET /wp/v2/pages?parent=<id>`,
+paginated) plus `server.resolve_reference_matrix_row_publish_status()`, which walks one row's
+suite/test/test-point pages and lists its machine children in a single call — O(rows) WordPress
+calls, not O(cells). Surfaces WordPress's own draft/publish status per machine rather than collapsing
+to one posted/not-posted boolean.
+
+Web UI: a new "Reference" tab (`render_reference_tab()`) lists every row with run counts and
+publish-status badges per machine column, deliberately no per-metric aggregation on the overview so
+it stays fast regardless of matrix size. Clicking a cell opens
+`/reference/<suite>/<test>/<test-point>` (`render_reference_test_point_detail()`), which does run
+real aggregation per machine and renders a metric × machine cross-machine comparison table
+(verdict-driven warning highlighting).
+
+Caught and fixed mid-session, real incidents rather than hypotheticals: (1) a smoke test of
+`publish_machine_page.py` with a scratchpad `--report-root` but no `--dry-run` still used real
+WordPress credentials and the real report-root git remote — it published a live bogus draft page,
+overwrote the live `/machine/` index page's content, and overwrote the local `machine_short_name`
+config; all three were restored/cleaned up (one stray draft page needed manual deletion in wp-admin,
+since the `wspy` WP account intentionally lacks `delete_pages`). (2) An earlier commit re-annotated
+every settled-design sub-bullet in place with "(built)"/"(partly built)" narrative, growing item 5 to
+~65 lines in the active backlog — corrected back to the terse form above, matching this doc's own
+established convention (see the item-3 correction, `90c2a3a`) of keeping implementation-diary detail
+out of the live backlog entirely.
+
+13 `web/test_*.py` files green (2 new: `test_machine_registry.py`, `test_reference_matrix.py`), full
+`run_tests.sh` C matrix green (67 bundles, 0 failed).
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -1475,13 +1525,15 @@ reasoning as Tier 1 above.
    `doc/REPORT_HIERARCHY.md`'s `<vendor>-<short-model>` slug) — a wide, curated comparison table in the
    spirit of the author's existing external reference page (https://mvermeulen.org/perf/workloads/,
    60+ columns per test), generated from wspy's own normalized store rather than hand-maintained.
-   **In progress** on `feature/reference-matrix-database` (not yet merged): generation/aggregation
-   query layer, machine-slug resolution (reusing `scripts/publish_machine_page.py`'s existing catalog
-   rather than a new file — that script now also records `hostname`), per-row WordPress publish-status
-   lookup, and a new web "Reference" tab (overview + per-test-point cross-machine comparison) are
-   built and tested. Still open once that PR lands: a standalone "by machine" view, drill-down links to
-   individual runs, the archetype/kmeans analysis-feed hookup, and the 60+-column vocabulary audit
-   against the external reference page.
+   **Query layer, machine-slug resolution, publish-status lookup, and a web "Reference" tab (overview +
+   per-test-point cross-machine comparison) are shipped** (PR #204) — see "Shipped since 4.2". Still
+   open:
+   - A standalone "by machine" view (rows=test-points, cols=metrics for one machine) — deferred as
+     largely redundant with the per-test-point detail page sliced the other way.
+   - Drill-down links from a cell to the individual runs behind it (today only the aggregate/detail
+     link exists).
+   - The `wspy-archetype --kmeans` / `wspy-analyze` analysis-feed hookup.
+   - The 60+-column vocabulary audit against the external reference page.
 
 **Tier 4 — report-layer additions on data already collected in 4.0:**
 
