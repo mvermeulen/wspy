@@ -1553,7 +1553,32 @@ reasoning as Tier 1 above.
     need reverse-engineering metadata (timestamps, full provenance) the recovered text doesn't carry
     and would let every other tool assume a completeness this data doesn't have. A page later deleted
     from WordPress simply stops appearing next time the matrix loads — no separate reconciliation
-    step needed as a result of that same "always live, nothing cached" choice.
+    step needed as a result of that same "always live, nothing cached" choice. **Deliberately narrow:**
+    only fills in a machine column for a test-point *row* the matrix already knows about locally (a
+    `runs.json` exists for at least one other machine there) — see item 22 for discovering rows that
+    have no local trace at all.
+22. Full top-down WordPress discovery for the reference matrix (raised 2026-08-05, depends on item
+    21's parsing/recovery primitives). Item 21's overview (`render_reference_tab()`) only lists rows
+    found by scanning the local report-root's `runs.json` files — a test point published on WordPress
+    for one or more machines but with *no* local `runs.json` anywhere never appears as a row at all,
+    since nothing currently walks the WordPress hierarchy top-down (`suite → test → test-point →
+    machine → run`, repeated `list_child_pages()` calls) independent of already knowing where to
+    look. Real open questions before building: cost (potentially hundreds of WordPress API calls
+    across a whole site — incompatible with the overview's current "fast, no per-cell aggregation on
+    load" property unless this becomes a separate, explicit action rather than something that runs on
+    every tab load) and how a discovered-only row should be presented (same visibly-distinct
+    "recovered, not locally verified" treatment item 21 already established for its columns, applied
+    at the row level too).
+23. Investigate `wspy-archetype`/`wspy-analyze` using WordPress-recovered data (items 21/22) as a
+    more definitive, complete source (raised 2026-08-05) — today both tools only ever read
+    `wspy-store`, blind to any machine that exists solely via published pages. Genuinely an
+    "investigate" item, not a scoped build: `wspy-archetype`'s clustering/nearest-neighbor math
+    expects `extract_run_features()`'s fixed feature vocabulary (`store.c`), which the human-text-
+    recovered metric labels don't map to cleanly (same metric-name-spelling caveat item 21 already
+    surfaces in the reference-matrix UI) — needs real design work on whether/how to bridge that gap
+    before any implementation, not just wiring the two together. Overlaps item 5's still-open
+    "analysis feed" bullet (the `wspy-archetype --kmeans`/`wspy-analyze` hookup for store-based data);
+    this item is the WordPress-recovered-data half of that same eventual goal.
 
 **Tier 4 — report-layer additions on data already collected in 4.0:**
 

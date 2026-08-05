@@ -14,6 +14,11 @@ approach web/test_wp_client.py's FindOrCreatePagePathTest uses for the same unde
 and joblib.subprocess.run() is mocked for the aggregation-calling detail-page tests. server.py's
 module-level PHORONIX_DEST_ROOT/CPU2026_DEST_ROOT are monkeypatched per test to a throwaway
 tempfile.TemporaryDirectory() rather than touching this checkout's real workload/ tree.
+Every RenderReferenceTestPointDetailTest case also patches wp_client.load_config -- that function
+render_reference_test_point_detail() now calls unconditionally (item 21's WordPress-recovery merge,
+tested for real in web/test_wordpress_recovery.py) would otherwise read this machine's real
+~/.config/wspy/publish.json and, if one exists, reach live WordPress from what must stay a
+network-free unit test.
 """
 import json
 import os
@@ -147,12 +152,18 @@ class RenderReferenceTabTest(unittest.TestCase):
 
 
 class RenderReferenceTestPointDetailTest(unittest.TestCase):
+    # Every test here patches wp_client.load_config to return None (item 21's WordPress-recovery
+    # merge is inert with no config) -- without it, render_reference_test_point_detail's new
+    # unconditional wp_client.load_config() call would read this machine's real
+    # ~/.config/wspy/publish.json and, if one exists, make live WordPress calls from what must stay a
+    # network-free unit test.
     def test_no_curated_run_set_shows_message(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             report_root_path = os.path.join(tmpdir, "report-root")
             os.makedirs(report_root_path)
             with patch("server.PHORONIX_DEST_ROOT", os.path.join(tmpdir, "phoronix")), \
-                 patch("server.CPU2026_DEST_ROOT", os.path.join(tmpdir, "cpu2026")):
+                 patch("server.CPU2026_DEST_ROOT", os.path.join(tmpdir, "cpu2026")), \
+                 patch("server.wp_client.load_config", return_value=None):
                 html_out = server.render_reference_test_point_detail(
                     {"report_root": report_root_path}, "phoronix", "coremark", "default")
         self.assertIn("No machine here has a curated", html_out)
@@ -175,7 +186,8 @@ class RenderReferenceTestPointDetailTest(unittest.TestCase):
                    "wspy_testpoint_bin": "wspy-testpoint", "store_db": "store.db"}
             with patch("server.PHORONIX_DEST_ROOT", phoronix_dest), \
                  patch("server.CPU2026_DEST_ROOT", os.path.join(tmpdir, "cpu2026")), \
-                 patch("joblib.subprocess.run", side_effect=fake_run):
+                 patch("joblib.subprocess.run", side_effect=fake_run), \
+                 patch("server.wp_client.load_config", return_value=None):
                 html_out = server.render_reference_test_point_detail(
                     cfg, "phoronix", info["bare_name"], info["options_slug"])
 
@@ -202,7 +214,8 @@ class RenderReferenceTestPointDetailTest(unittest.TestCase):
                    "wspy_testpoint_bin": "wspy-testpoint", "store_db": "store.db"}
             with patch("server.PHORONIX_DEST_ROOT", phoronix_dest), \
                  patch("server.CPU2026_DEST_ROOT", os.path.join(tmpdir, "cpu2026")), \
-                 patch("joblib.subprocess.run", side_effect=fake_run):
+                 patch("joblib.subprocess.run", side_effect=fake_run), \
+                 patch("server.wp_client.load_config", return_value=None):
                 html_out = server.render_reference_test_point_detail(
                     cfg, "phoronix", info["bare_name"], info["options_slug"])
 
@@ -220,11 +233,80 @@ class RenderReferenceTestPointDetailTest(unittest.TestCase):
                    "wspy_testpoint_bin": "wspy-testpoint", "store_db": "store.db"}
             with patch("server.PHORONIX_DEST_ROOT", phoronix_dest), \
                  patch("server.CPU2026_DEST_ROOT", os.path.join(tmpdir, "cpu2026")), \
-                 patch("joblib.subprocess.run", side_effect=OSError("no such file")):
+                 patch("joblib.subprocess.run", side_effect=OSError("no such file")), \
+                 patch("server.wp_client.load_config", return_value=None):
                 html_out = server.render_reference_test_point_detail(
                     cfg, "phoronix", info["bare_name"], info["options_slug"])
 
         self.assertIn("failed or produced no rows", html_out)
+
+    def test_wordpress_only_machine_appears_as_extra_column(self):
+        # No local runs.json anywhere -- item 21's whole point: a machine known only via WordPress
+        # still shows up, clearly marked, instead of the page just saying "no data at all".
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_root_path = os.path.join(tmpdir, "report-root")
+            os.makedirs(report_root_path)
+            cfg = {"report_root": report_root_path, "report_root_remote": None,
+                   "wspy_testpoint_bin": "wspy-testpoint", "store_db": "store.db"}
+
+            def fake_status(wp_cfg, suite, test, test_point):
+                return {"amd-395-96gb": {"link": "https://example.org/x/", "status": "publish"}}
+
+            with patch("server.PHORONIX_DEST_ROOT", os.path.join(tmpdir, "phoronix")), \
+                 patch("server.CPU2026_DEST_ROOT", os.path.join(tmpdir, "cpu2026")), \
+                 patch("server.wp_client.load_config", return_value={"wordpress": {}}), \
+                 patch("server.resolve_reference_matrix_row_publish_status", side_effect=fake_status), \
+                 patch("server.recover_machine_metrics_from_wordpress",
+                       return_value=[{"metric": "elapsed", "n": "1", "min": "1.0", "max": "1.0",
+                                      "mean": "1.0", "stddev": "0"}]):
+                html_out = server.render_reference_test_point_detail(
+                    cfg, "phoronix", "coremark", "default")
+
+        self.assertIn("amd-395-96gb", html_out)
+        self.assertIn("(from WordPress)", html_out)
+        self.assertIn("wp-recovered", html_out)
+        self.assertIn("elapsed", html_out)
+
+    def test_local_data_wins_over_wordpress_for_the_same_machine(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            phoronix_dest = os.path.join(tmpdir, "phoronix")
+            info = materialize_fake_phoronix_point(phoronix_dest)
+            report_root_path = os.path.join(tmpdir, "report-root")
+            write_runs_json(report_root_path, "phoronix", info["bare_name"], info["options_slug"],
+                             "amd-395", [{"role": "stats-pool"}])
+
+            fake_csv = ("group,metric,n,min,max,mean,stddev,cv_percent,verdict\n"
+                        "ipc,ipc,2,1.0,1.2,1.1,0.05,4.5,PASS\n")
+
+            def fake_run(argv, capture_output, text, timeout):
+                return subprocess.CompletedProcess(argv, 0, stdout=fake_csv, stderr="")
+
+            def fake_status(wp_cfg, suite, test, test_point):
+                return {"amd-395": {"link": "https://example.org/x/", "status": "publish"}}
+
+            recover_mock_calls = []
+
+            def fake_recover(wp_cfg, suite, test, test_point, machine):
+                recover_mock_calls.append(machine)
+                return [{"metric": "ipc", "n": "9", "min": "9", "max": "9", "mean": "9", "stddev": "0"}]
+
+            cfg = {"report_root": report_root_path, "report_root_remote": None,
+                   "wspy_testpoint_bin": "wspy-testpoint", "store_db": "store.db"}
+            with patch("server.PHORONIX_DEST_ROOT", phoronix_dest), \
+                 patch("server.CPU2026_DEST_ROOT", os.path.join(tmpdir, "cpu2026")), \
+                 patch("joblib.subprocess.run", side_effect=fake_run), \
+                 patch("server.wp_client.load_config", return_value={"wordpress": {}}), \
+                 patch("server.resolve_reference_matrix_row_publish_status", side_effect=fake_status), \
+                 patch("server.recover_machine_metrics_from_wordpress", side_effect=fake_recover):
+                html_out = server.render_reference_test_point_detail(
+                    cfg, "phoronix", info["bare_name"], info["options_slug"])
+
+        # amd-395 already has local data -- recover_machine_metrics_from_wordpress must never be
+        # called for it, and the real (store-based) 1.1 value must win, not WordPress's 9.
+        self.assertEqual(recover_mock_calls, [])
+        self.assertIn("1.1", html_out)
+        self.assertNotIn(">9 ", html_out)
+        self.assertNotIn("(from WordPress)", html_out)
 
 
 if __name__ == "__main__":

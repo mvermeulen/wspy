@@ -45,6 +45,7 @@ import secrets
 import shlex
 import shutil
 import sqlite3
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -61,6 +62,8 @@ import markdown_lite  # noqa: E402 -- see markdown_lite.py's own docstring
 import wp_client  # noqa: E402 -- WordPress REST client, for the "Publish to WordPress" button
                    # (INVESTIGATION.md 4.3 Tier 3 item 2) -- see wp_client.py's own docstring for
                    # why it lives in its own module rather than here
+import counter_text  # noqa: E402 -- parses counters.txt/ibs.txt human-text output, INVESTIGATION.md
+                      # 4.3 item 21
 
 REPO_ROOT = joblib.REPO_ROOT
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -2020,6 +2023,76 @@ def resolve_reference_matrix_row_publish_status(wp_cfg, suite, test, test_point)
     return {c["slug"]: {"link": c.get("link"), "status": c.get("status")} for c in children}
 
 
+MAX_WORDPRESS_RECOVERED_RUNS = 20
+
+
+def _first_value_per_metric(records):
+    """One value per metric name from a counter_text.parse_counter_text() records list -- first
+    occurrence wins when a label repeats. `topdown.c`'s per-pass counters.txt output can print the
+    same label (e.g. "instructions") under more than one `##### pass N #####` section -- the first is
+    the primary reading, a later repeat belongs to a different pass's own re-read of the same
+    hardware counter, not a second independent sample of the same metric. Averaging the two together
+    would quietly conflate two different things, so this keeps only the first."""
+    out = {}
+    for r in records:
+        out.setdefault(r["metric"], r["value"])
+    return out
+
+
+def recover_machine_metrics_from_wordpress(wp_cfg, suite, test, test_point, machine):
+    """INVESTIGATION.md 4.3 item 21: aggregated metric rows recovered directly from WordPress for a
+    machine with no local runs.json/wspy-store presence -- a machine that published reports but has
+    no direct file/SSH access to whichever host serves the reference-matrix web UI. Walks
+    suite/test/test-point/machine pages, lists that machine page's own run-id-slugged children (up to
+    MAX_WORDPRESS_RECOVERED_RUNS, most recent first by WordPress's own `date` field), and for each
+    fetches the page's raw content and parses every embedded full-depth counters.txt/ibs.txt
+    `<pre class="wp-block-preformatted">` block (wp_client.extract_preformatted_blocks() +
+    counter_text.parse_counter_text()) -- a block that doesn't look like either shape
+    (counter_text.classify_counter_text() returns None, e.g. a process-tree dump) is skipped.
+
+    Returns a list of {metric, n, min, max, mean, stddev} dicts, deliberately not the exact
+    parse_summary_csv() shape (`aggregate_reference_matrix_cell()`'s own return) -- no `group`/
+    `cv_percent`/`verdict` fields, since this data has no wspy-summary reliability analysis behind it
+    at all. Callers must render this as visibly distinct from real store-based aggregation, not blend
+    it into the same table as if it were equally complete. [] if wp_cfg is None, any hierarchy level
+    is missing, or the machine page has no run-id children."""
+    if not wp_cfg:
+        return []
+    wp = wp_cfg["wordpress"]
+    parent = 0
+    for slug in (suite, test, test_point, machine):
+        page = wp_client.find_page(wp["site_url"], wp["username"], wp["app_password"], slug, parent)
+        if page is None:
+            return []
+        parent = page["id"]
+    run_pages = wp_client.list_child_pages(wp["site_url"], wp["username"], wp["app_password"], parent)
+    run_pages = sorted(run_pages, key=lambda p: p.get("date") or "", reverse=True)
+    run_pages = run_pages[:MAX_WORDPRESS_RECOVERED_RUNS]
+
+    per_metric_values = {}
+    for run_page in run_pages:
+        raw = wp_client.fetch_page_raw_content(
+            wp["site_url"], wp["username"], wp["app_password"], run_page["id"])
+        per_run_metrics = {}
+        for block_text in wp_client.extract_preformatted_blocks(raw):
+            if counter_text.classify_counter_text(block_text) is None:
+                continue
+            per_run_metrics.update(_first_value_per_metric(counter_text.parse_counter_text(block_text)))
+        for metric, value in per_run_metrics.items():
+            per_metric_values.setdefault(metric, []).append(value)
+
+    rows = []
+    for metric in sorted(per_metric_values):
+        values = per_metric_values[metric]
+        rows.append({
+            "metric": metric, "n": str(len(values)),
+            "min": str(min(values)), "max": str(max(values)),
+            "mean": str(statistics.mean(values)),
+            "stddev": str(statistics.stdev(values)) if len(values) > 1 else "0",
+        })
+    return rows
+
+
 def render_publish_panel(suite, benchmark, run_id, title):
     """The "Publish to WordPress" form on the export page's wordpress tab
     -- a UI trigger over the same primitives `wspy-publish publish-page
@@ -3066,17 +3139,22 @@ def render_reference_test_point_detail(cfg, suite, test, test_point):
     machine comparison for one test" view) -- one `wspy-testpoint aggregate` call per machine that has
     a curated run set here, rendered as metric rows x machine columns. Unlike render_reference_tab()'s
     overview, this does real per-metric aggregation -- an acceptable cost for one on-demand test point
-    rather than every cell on every tab load."""
+    rather than every cell on every tab load.
+
+    Also brings in machines with no local runs.json but a published WordPress presence (item 21):
+    resolve_reference_matrix_row_publish_status() already walks this test-point's WordPress hierarchy
+    for the publish-status badges elsewhere, so its machine-slug set doubles as the candidate list
+    here -- any machine already covered by local aggregation is left alone (real store-based data
+    always wins over recovered data), and any WordPress-only machine gets a
+    recover_machine_metrics_from_wordpress() column instead, rendered as visibly distinct (own CSS
+    class, no verdict-based coloring -- that data has no wspy-summary reliability analysis behind it
+    at all)."""
     back_link = '<p><a href="/?active_tab=reference">Back to reference matrix</a></p>'
     report_root_path = resolve_report_root_for_web(cfg)
     cells = [c for c in joblib.enumerate_reference_matrix_cells(
                  report_root_path, PHORONIX_DEST_ROOT, CPU2026_DEST_ROOT)
              if c["suite"] == suite and c["test"] == test and c["test_point"] == test_point]
     title = f"{test} / {test_point}"
-    if not cells:
-        return page("reference matrix", f'<section class="panel"><h1>{html.escape(title)}</h1>'
-                    f'<p class="muted">No machine here has a curated (select-runs) run set yet.</p>'
-                    f'{back_link}</section>')
 
     by_machine = {}
     for c in cells:
@@ -3084,8 +3162,24 @@ def render_reference_test_point_detail(cfg, suite, test, test_point):
             cfg["wspy_testpoint_bin"], cfg["store_db"], suite, c["benchmark"], c["machine"],
             report_root_path=cfg.get("report_root"), report_root_remote=cfg.get("report_root_remote"))
 
-    machines = sorted(by_machine)
-    metrics = sorted({r["metric"] for rows in by_machine.values() if rows for r in rows})
+    wp_cfg = wp_client.load_config()
+    wp_recovered = {}
+    for machine in resolve_reference_matrix_row_publish_status(wp_cfg, suite, test, test_point):
+        if machine in by_machine:
+            continue
+        rows = recover_machine_metrics_from_wordpress(wp_cfg, suite, test, test_point, machine)
+        if rows:
+            wp_recovered[machine] = rows
+
+    if not by_machine and not wp_recovered:
+        return page("reference matrix", f'<section class="panel"><h1>{html.escape(title)}</h1>'
+                    f'<p class="muted">No machine here has a curated (select-runs) run set yet, and '
+                    f'none is published on WordPress either.</p>{back_link}</section>')
+
+    machines = sorted(set(by_machine) | set(wp_recovered))
+    local_metrics = {r["metric"] for rows in by_machine.values() if rows for r in rows}
+    wp_metrics = {r["metric"] for rows in wp_recovered.values() for r in rows}
+    metrics = sorted(local_metrics | wp_metrics)
     if not metrics:
         return page("reference matrix", f'<section class="panel"><h1>{html.escape(title)}</h1>'
                     '<p class="muted">Every machine\'s aggregation failed or produced no rows -- see '
@@ -3094,25 +3188,45 @@ def render_reference_test_point_detail(cfg, suite, test, test_point):
 
     def cell_html(machine, metric):
         rows = by_machine.get(machine)
-        if not rows:
-            return '<td class="muted">no data</td>'
-        for r in rows:
-            if r["metric"] == metric:
-                cls = "metric-warn" if r.get("verdict") != "PASS" else ""
-                mean, n = html.escape(r.get("mean", "")), html.escape(r.get("n", ""))
-                return f'<td class="{cls}">{mean} <span class="muted">(n={n})</span></td>'
-        return '<td class="muted">&mdash;</td>'
+        if rows:
+            for r in rows:
+                if r["metric"] == metric:
+                    cls = "metric-warn" if r.get("verdict") != "PASS" else ""
+                    mean, n = html.escape(r.get("mean", "")), html.escape(r.get("n", ""))
+                    return f'<td class="{cls}">{mean} <span class="muted">(n={n})</span></td>'
+            return '<td class="muted">&mdash;</td>'
+        rows = wp_recovered.get(machine)
+        if rows:
+            for r in rows:
+                if r["metric"] == metric:
+                    mean, n = html.escape(r.get("mean", "")), html.escape(r.get("n", ""))
+                    return f'<td class="wp-recovered">{mean} <span class="muted">(n={n})</span></td>'
+            return '<td class="muted">&mdash;</td>'
+        return '<td class="muted">no data</td>'
 
-    header_cells = "".join(f"<th>{html.escape(m)}</th>" for m in machines)
+    def header_cell(machine):
+        if machine in wp_recovered:
+            return (f'<th>{html.escape(machine)} '
+                     '<span class="muted">(from WordPress)</span></th>')
+        return f"<th>{html.escape(machine)}</th>"
+
+    header_cells = "".join(header_cell(m) for m in machines)
     body_rows = "".join(
         f"<tr><td>{html.escape(metric)}</td>" + "".join(cell_html(m, metric) for m in machines) + "</tr>"
         for metric in metrics)
+    wp_note = (
+        ' Columns marked "(from WordPress)" have no local runs.json/store presence and were recovered '
+        "directly from that machine's already-published pages instead (INVESTIGATION.md 4.3 item 21) "
+        "-- metric names there are counters.txt/ibs.txt's own raw labels and may not exactly match "
+        "wspy-summary's column names for the same counter, and there's no reliability verdict behind "
+        "them." if wp_recovered else ""
+    )
     body = f"""
 <section class="panel">
   <h1>{html.escape(title)}</h1>
   <p class="muted">Cross-machine comparison, aggregated from each machine's stats-pool runs
      (<code>wspy-testpoint aggregate</code>). Cells in red carry a non-PASS
-     <code>wspy-summary</code> verdict (thin/noisy/mixed-pmu/mixed-env).</p>
+     <code>wspy-summary</code> verdict (thin/noisy/mixed-pmu/mixed-env).{wp_note}</p>
   <table class="reference-matrix">
     <thead><tr><th>metric</th>{header_cells}</tr></thead>
     <tbody>{body_rows}</tbody>
