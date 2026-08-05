@@ -323,6 +323,22 @@ def build_testpoint_publish_argv(cfg, suite, benchmark, machine):
     return select_runs_argv, render_argv
 
 
+def resolve_report_root_for_web(cfg):
+    """report-root path this server should read from for report-root-reading features
+    (INVESTIGATION.md 4.3 Tier 3 item 5's reference matrix) -- cfg["report_root"] if this server
+    instance was started with --report-root, else wp_client's configured report_root, else
+    report_root.DEFAULT_REPORT_ROOT. Same fallback chain build_testpoint_publish_argv()'s docstring
+    already describes as wspy-testpoint's own default (that function lets wspy-testpoint itself do
+    the fallback since it only ever passes flags through); this one resolves locally since the
+    reference matrix reads the report-root directly rather than shelling out for that part."""
+    if cfg.get("report_root"):
+        return cfg["report_root"]
+    wp_cfg = wp_client.load_config()
+    if wp_cfg and wp_cfg.get("report_root"):
+        return wp_cfg["report_root"]
+    return report_root.DEFAULT_REPORT_ROOT
+
+
 def execute_testpoint_publish(state, select_runs_argv, render_argv):
     """Runs select-runs then render as one background pipeline (the report page's "Publish
     test-point report" button, Tier 3 item 7), mirroring execute_analyze()'s subprocess/SSE-relay
@@ -1980,6 +1996,30 @@ def build_run_publish_stub_content(machine_catalog_url, phoronix_entry=None, cpu
     return stub_content
 
 
+def resolve_reference_matrix_row_publish_status(wp_cfg, suite, test, test_point):
+    """For one reference-matrix row (INVESTIGATION.md 4.3 Tier 3 item 5), returns
+    {machine_slug: {"link":, "status":}} for every machine-level page that already exists under this
+    test-point's WordPress hierarchy -- the per-cell "already posted" status the item's design calls
+    for. {} if wp_cfg is None (no WordPress configured) or any level of suite/test/test_point doesn't
+    have a page yet (nothing published under this test-point at all, so no machine columns can either).
+    One list_child_pages() call covers every machine column in the row at once, after walking
+    suite->test->test_point (at most 3 more find_page() calls) -- O(rows) WordPress calls rather than
+    O(cells). status is WordPress's own page status ("draft"/"publish") -- surfaced as-is rather than
+    collapsed to a single "posted" boolean, so a caller can distinguish "posted but still a draft"
+    from "live" the same way render_publish_result() already does for a single run's page."""
+    if not wp_cfg:
+        return {}
+    wp = wp_cfg["wordpress"]
+    parent = 0
+    for slug in (suite, test, test_point):
+        page = wp_client.find_page(wp["site_url"], wp["username"], wp["app_password"], slug, parent)
+        if page is None:
+            return {}
+        parent = page["id"]
+    children = wp_client.list_child_pages(wp["site_url"], wp["username"], wp["app_password"], parent)
+    return {c["slug"]: {"link": c.get("link"), "status": c.get("status")} for c in children}
+
+
 def render_publish_panel(suite, benchmark, run_id, title):
     """The "Publish to WordPress" form on the export page's wordpress tab
     -- a UI trigger over the same primitives `wspy-publish publish-page
@@ -2958,6 +2998,131 @@ def render_cpu2026_tab(cfg, specdir_override=None):
 """
 
 
+def render_reference_tab(cfg):
+    """INVESTIGATION.md 4.3 Tier 3 item 5's reference-matrix database: one row per (suite, test,
+    test-point) that has a curated run set (wspy-testpoint select-runs) on at least one machine, one
+    column per machine. Deliberately lightweight -- run counts and publish status only, no per-metric
+    aggregation here (that's render_reference_test_point_detail() below, reached by clicking a cell)
+    -- so opening this tab stays fast regardless of how many test points/machines exist; the item's
+    own "Column vocabulary" bullet defers picking specific overview metrics to a later pass anyway."""
+    report_root_path = resolve_report_root_for_web(cfg)
+    cells = joblib.enumerate_reference_matrix_cells(report_root_path, PHORONIX_DEST_ROOT, CPU2026_DEST_ROOT)
+    if not cells:
+        return (
+            '<section class="panel"><h2>Reference matrix</h2>'
+            '<p class="muted">No test points have a curated run set yet &mdash; run '
+            '<code>wspy-testpoint select-runs</code> (or the report page\'s "Publish test-point '
+            "report\" button) for at least one machine first.</p></section>"
+        )
+
+    rows = {}
+    machines = set()
+    for c in cells:
+        rows.setdefault((c["suite"], c["test"], c["test_point"]), {})[c["machine"]] = c
+        machines.add(c["machine"])
+    machines = sorted(machines)
+
+    wp_cfg = wp_client.load_config()
+    header_cells = "".join(f"<th>{html.escape(m)}</th>" for m in machines)
+    body_rows = []
+    for (suite, test, test_point), by_machine in sorted(rows.items()):
+        publish_status = resolve_reference_matrix_row_publish_status(wp_cfg, suite, test, test_point)
+        detail_url = f"/reference/{_urlescape(suite)}/{_urlescape(test)}/{_urlescape(test_point)}"
+        cell_html = []
+        for m in machines:
+            if m not in by_machine:
+                cell_html.append('<td class="muted">&mdash;</td>')
+                continue
+            runs_json_path = os.path.join(report_root_path, suite, test, test_point, m, "runs.json")
+            n_runs = joblib.count_stats_pool_runs(runs_json_path)
+            status = publish_status.get(m)
+            badge = ""
+            if status:
+                badge_cls = "badge-published" if status["status"] == "publish" else "badge-draft"
+                badge = (f' <a href="{html.escape(status["link"] or "#")}" class="badge {badge_cls}" '
+                         f'target="_blank">{html.escape(status["status"] or "")}</a>')
+            cell_html.append(
+                f'<td><a href="{html.escape(detail_url)}">{n_runs} run(s)</a>{badge}</td>')
+        body_rows.append(
+            f"<tr><td>{html.escape(suite)}</td><td>{html.escape(test)}</td>"
+            f"<td>{html.escape(test_point)}</td>{''.join(cell_html)}</tr>")
+
+    return f"""
+<section class="panel">
+  <h2>Reference matrix</h2>
+  <p class="muted">One row per test point with a curated run set on at least one machine &mdash;
+     click a cell's run count for a cross-machine metric comparison. Publish-status badges are a
+     live WordPress lookup (only shown when <code>wspy-publish configure</code> has been run).</p>
+  <table class="reference-matrix">
+    <thead><tr><th>suite</th><th>test</th><th>test point</th>{header_cells}</tr></thead>
+    <tbody>{"".join(body_rows)}</tbody>
+  </table>
+</section>
+"""
+
+
+def render_reference_test_point_detail(cfg, suite, test, test_point):
+    """Cross-machine comparison for one test point (INVESTIGATION.md 4.3 Tier 3 item 5's own "cross-
+    machine comparison for one test" view) -- one `wspy-testpoint aggregate` call per machine that has
+    a curated run set here, rendered as metric rows x machine columns. Unlike render_reference_tab()'s
+    overview, this does real per-metric aggregation -- an acceptable cost for one on-demand test point
+    rather than every cell on every tab load."""
+    back_link = '<p><a href="/?active_tab=reference">Back to reference matrix</a></p>'
+    report_root_path = resolve_report_root_for_web(cfg)
+    cells = [c for c in joblib.enumerate_reference_matrix_cells(
+                 report_root_path, PHORONIX_DEST_ROOT, CPU2026_DEST_ROOT)
+             if c["suite"] == suite and c["test"] == test and c["test_point"] == test_point]
+    title = f"{test} / {test_point}"
+    if not cells:
+        return page("reference matrix", f'<section class="panel"><h1>{html.escape(title)}</h1>'
+                    f'<p class="muted">No machine here has a curated (select-runs) run set yet.</p>'
+                    f'{back_link}</section>')
+
+    by_machine = {}
+    for c in cells:
+        by_machine[c["machine"]] = joblib.aggregate_reference_matrix_cell(
+            cfg["wspy_testpoint_bin"], cfg["store_db"], suite, c["benchmark"], c["machine"],
+            report_root_path=cfg.get("report_root"), report_root_remote=cfg.get("report_root_remote"))
+
+    machines = sorted(by_machine)
+    metrics = sorted({r["metric"] for rows in by_machine.values() if rows for r in rows})
+    if not metrics:
+        return page("reference matrix", f'<section class="panel"><h1>{html.escape(title)}</h1>'
+                    '<p class="muted">Every machine\'s aggregation failed or produced no rows -- see '
+                    '<code>wspy-testpoint aggregate</code> directly for the underlying error.</p>'
+                    f'{back_link}</section>')
+
+    def cell_html(machine, metric):
+        rows = by_machine.get(machine)
+        if not rows:
+            return '<td class="muted">no data</td>'
+        for r in rows:
+            if r["metric"] == metric:
+                cls = "metric-warn" if r.get("verdict") != "PASS" else ""
+                mean, n = html.escape(r.get("mean", "")), html.escape(r.get("n", ""))
+                return f'<td class="{cls}">{mean} <span class="muted">(n={n})</span></td>'
+        return '<td class="muted">&mdash;</td>'
+
+    header_cells = "".join(f"<th>{html.escape(m)}</th>" for m in machines)
+    body_rows = "".join(
+        f"<tr><td>{html.escape(metric)}</td>" + "".join(cell_html(m, metric) for m in machines) + "</tr>"
+        for metric in metrics)
+    body = f"""
+<section class="panel">
+  <h1>{html.escape(title)}</h1>
+  <p class="muted">Cross-machine comparison, aggregated from each machine's stats-pool runs
+     (<code>wspy-testpoint aggregate</code>). Cells in red carry a non-PASS
+     <code>wspy-summary</code> verdict (thin/noisy/mixed-pmu/mixed-env).</p>
+  <table class="reference-matrix">
+    <thead><tr><th>metric</th>{header_cells}</tr></thead>
+    <tbody>{body_rows}</tbody>
+  </table>
+  {back_link}
+</section>
+"""
+    return page(title, body)
+
+
 def render_index(cfg, prefill):
     output_root = cfg["output_root"]
     reports = discover_reports(output_root)
@@ -3004,6 +3169,7 @@ def render_index(cfg, prefill):
   {tab_btn("discovery", "Discovery")}
   {tab_btn("phoronix", "Phoronix")}
   {tab_btn("cpu2026", "CPU2026")}
+  {tab_btn("reference", "Reference")}
 </nav>
 <div class="tab-panel" id="tab-run"{tab_hidden("run")}>{render_run_tab(prefill, cfg)}</div>
 <div class="tab-panel" id="tab-validate"{tab_hidden("validate")}>{render_validate_tab(cfg, prefill)}</div>
@@ -3011,6 +3177,7 @@ def render_index(cfg, prefill):
 <div class="tab-panel" id="tab-discovery"{tab_hidden("discovery")}>{render_discovery_tab()}</div>
 <div class="tab-panel" id="tab-phoronix"{tab_hidden("phoronix")}>{render_phoronix_tab(cfg)}</div>
 <div class="tab-panel" id="tab-cpu2026"{tab_hidden("cpu2026")}>{render_cpu2026_tab(cfg, prefill.get("cpu2026_specdir"))}</div>
+<div class="tab-panel" id="tab-reference"{tab_hidden("reference")}>{render_reference_tab(cfg)}</div>
 <section class="panel">
   <h2>Recent reports</h2>
   {reports_html}
@@ -4467,6 +4634,12 @@ class Handler(BaseHTTPRequestHandler):
             if "cpu2026_specdir" in qs:
                 prefill["active_tab"] = "cpu2026"
                 prefill["cpu2026_specdir"] = qs["cpu2026_specdir"][0]
+            # Generic passthrough (the reference-matrix detail page's "Back to reference matrix"
+            # link uses this) -- safe to accept whatever value verbatim since active_tab is only
+            # ever compared with == against fixed tab-name literals (tab_btn()/tab_hidden() above),
+            # never echoed into the page.
+            if "active_tab" in qs:
+                prefill["active_tab"] = qs["active_tab"][0]
             self._send(200, render_index(cfg, prefill))
             return
 
@@ -4485,6 +4658,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, "no such report")
             else:
                 self._send(200, out)
+            return
+
+        m = re.match(r"^/reference/([^/]+)/([^/]+)/([^/]+)$", path)
+        if m:
+            suite, test, test_point = m.groups()
+            if not all(valid_segment(x) for x in (suite, test, test_point)):
+                self._send(400, "invalid reference path")
+                return
+            self._send(200, render_reference_test_point_detail(cfg, suite, test, test_point))
             return
 
         m = re.match(r"^/tree-viewer/([^/]+)/([^/]+)/([^/]+)$", path)

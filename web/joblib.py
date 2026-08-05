@@ -2760,6 +2760,23 @@ def test_point_wp_content(entry):
     )
 
 
+def parse_summary_csv(text):
+    """Parses wspy-summary --csv --quiet output (header row + one row per (group,metric) bucket) into
+    a list of {column_name: value} dicts using its own header row, rather than hardcoding the column
+    order -- stays correct if wspy-summary's own CSV columns are ever reordered/extended. --quiet
+    suppresses the trailing summary line so every remaining line is a real data row; the row-width
+    check below is a second guard against any other stray non-CSV line. Moved here from
+    wspy-testpoint (its original sole caller, cmd_render) so INVESTIGATION.md 4.3 Tier 3 item 5's
+    reference-matrix database can reuse it too, aggregating cells by shelling out to `wspy-testpoint
+    aggregate --csv` the same way wspy-testpoint's own render subcommand shells out to
+    wspy-summary."""
+    rows = list(csv.reader(io.StringIO(text)))
+    if not rows:
+        return []
+    header = rows[0]
+    return [dict(zip(header, row)) for row in rows[1:] if len(row) == len(header)]
+
+
 def resolve_test_identity(suite, benchmark, phoronix_dest_root, cpu2026_dest_root=None):
     """Returns (test, test_point, warning_or_None). For suite "phoronix", `benchmark` (wspy-run's own
     naming) already equals a materialized test point's "identity" (bare_name-options_slug,
@@ -2790,6 +2807,76 @@ def resolve_test_identity(suite, benchmark, phoronix_dest_root, cpu2026_dest_roo
             "no materialized cpu2026 benchmark point found with identity %r under %r -- "
             "falling back to test=%r, test_point=\"default\"" % (benchmark, cpu2026_dest_root, benchmark))
     return benchmark, "default", None
+
+
+def enumerate_reference_matrix_cells(report_root_path, phoronix_dest_root, cpu2026_dest_root):
+    """INVESTIGATION.md 4.3 Tier 3 item 5's reference-matrix database row/column enumeration: every
+    (suite, test, test_point, machine) combination that has both a materialized test point (Phoronix
+    or cpu2026 -- resolve_test_identity()'s own two suites) and an already-written
+    <report-root>/<suite>/<test>/<test_point>/<machine>/runs.json (wspy-testpoint select-runs). A
+    materialized test point with no runs.json yet for a given machine contributes no cell for that
+    machine -- there is nothing to aggregate -- matching item 5's design choice to reuse
+    wspy-testpoint's already-curated stats-pool role selection rather than re-deriving a run set
+    directly from the store. Returns a list of {suite, test, test_point, machine, benchmark} dicts
+    (benchmark is the --benchmark identity a caller needs for `wspy-testpoint aggregate`/`render`),
+    sorted by (suite, test, test_point, machine)."""
+    points = []
+    if phoronix_dest_root:
+        points += [("phoronix", e["identity"], e["bare_name"], e["options_slug"])
+                   for e in list_materialized_phoronix_test_points(phoronix_dest_root)]
+    if cpu2026_dest_root:
+        points += [("cpu2026", e["identity"], e["bench"], f"{e['tag']}-{e['tune']}")
+                   for e in list_materialized_cpu2026_points(cpu2026_dest_root)]
+
+    cells = []
+    for suite, identity, test, test_point in points:
+        test_point_dir = os.path.join(report_root_path, suite, test, test_point)
+        if not os.path.isdir(test_point_dir):
+            continue
+        for machine in sorted(os.listdir(test_point_dir)):
+            if os.path.isfile(os.path.join(test_point_dir, machine, "runs.json")):
+                cells.append({"suite": suite, "test": test, "test_point": test_point,
+                              "machine": machine, "benchmark": identity})
+    return sorted(cells, key=lambda c: (c["suite"], c["test"], c["test_point"], c["machine"]))
+
+
+def count_stats_pool_runs(runs_json_path):
+    """Number of stats-pool-role runs recorded in a wspy-testpoint runs.json, or 0 if the file is
+    missing/unparseable. The reference-matrix overview's cheap per-cell coverage count
+    (INVESTIGATION.md 4.3 Tier 3 item 5) -- deliberately not a full wspy-summary aggregation, which
+    enumerate_reference_matrix_cells()'s own docstring already scopes to the per-test-point detail
+    view instead, so the overview stays fast even with many cells."""
+    try:
+        with open(runs_json_path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return 0
+    return sum(1 for r in data.get("runs", []) if r.get("role") == "stats-pool")
+
+
+def aggregate_reference_matrix_cell(wspy_testpoint_bin, db, suite, benchmark, machine,
+                                     report_root_path=None, report_root_remote=None, timeout=30):
+    """Runs `wspy-testpoint aggregate --csv --quiet` for one enumerate_reference_matrix_cells() cell
+    and returns parse_summary_csv()-shaped rows ({metric, n, min, max, mean, stddev, cv_percent,
+    verdict}, one per counter-group metric), or None on any failure (missing store rows since the
+    last select-runs, a --strict violation, a launch/timeout failure) -- callers render a "no data"
+    cell rather than raising, since one cell failing to aggregate shouldn't take down the whole
+    matrix. Shells out rather than importing wspy-testpoint directly (a hyphenated script name, not a
+    plain importable module) -- same subprocess-reuse precedent web/server.py's
+    execute_testpoint_publish() already established for select-runs/render."""
+    argv = [wspy_testpoint_bin, "aggregate", "--suite", suite, "--benchmark", benchmark,
+            "--machine", machine, "--db", db, "--csv", "--quiet"]
+    if report_root_path:
+        argv += ["--report-root", report_root_path]
+    if report_root_remote:
+        argv += ["--report-root-remote", report_root_remote]
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    return parse_summary_csv(proc.stdout)
 
 
 def read_phoronix_test_description(dest_root, bare_name):

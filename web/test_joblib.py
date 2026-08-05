@@ -18,10 +18,12 @@ import io
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import joblib
@@ -1566,6 +1568,165 @@ class ResolveTestIdentityTest(unittest.TestCase):
             self.assertEqual(test, "706.stockfish_r-gcc_O3-base")
             self.assertEqual(test_point, "default")
             self.assertIsNotNone(warning)
+
+
+class ParseSummaryCsvTest(unittest.TestCase):
+    def test_parses_rows_by_header(self):
+        text = "group,metric,n,verdict\nipc,ipc,3,PASS\ncache,l1_miss_rate,3,WARN:noisy\n"
+        rows = joblib.parse_summary_csv(text)
+        self.assertEqual(rows, [
+            {"group": "ipc", "metric": "ipc", "n": "3", "verdict": "PASS"},
+            {"group": "cache", "metric": "l1_miss_rate", "n": "3", "verdict": "WARN:noisy"},
+        ])
+
+    def test_empty_text_returns_empty_list(self):
+        self.assertEqual(joblib.parse_summary_csv(""), [])
+
+    def test_header_only_returns_empty_list(self):
+        self.assertEqual(joblib.parse_summary_csv("group,metric,n,verdict\n"), [])
+
+    def test_short_row_is_skipped(self):
+        text = "group,metric,n,verdict\nipc,ipc,3\n"  # missing the trailing verdict field
+        self.assertEqual(joblib.parse_summary_csv(text), [])
+
+
+class EnumerateReferenceMatrixCellsTest(unittest.TestCase):
+    def test_no_cell_without_a_runs_json(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            phoronix_dest = os.path.join(tmpdir, "phoronix")
+            point = {"test_id": "pts/openssl-1.0.0", "arguments": "-evp sha256"}
+            joblib.materialize_phoronix_test_point(point, phoronix_dest, "file", "/tmp/src.xml")
+            report_root_path = os.path.join(tmpdir, "report-root")
+            os.makedirs(report_root_path)
+
+            cells = joblib.enumerate_reference_matrix_cells(report_root_path, phoronix_dest, None)
+            self.assertEqual(cells, [])
+
+    def test_one_cell_per_machine_with_runs_json(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            phoronix_dest = os.path.join(tmpdir, "phoronix")
+            point = {"test_id": "pts/openssl-1.0.0", "arguments": "-evp sha256"}
+            info = joblib.materialize_phoronix_test_point(point, phoronix_dest, "file", "/tmp/src.xml")
+            report_root_path = os.path.join(tmpdir, "report-root")
+            for machine in ("amd-395", "amd-370-64gb"):
+                machine_dir = os.path.join(report_root_path, "phoronix", info["bare_name"],
+                                            info["options_slug"], machine)
+                os.makedirs(machine_dir)
+                with open(os.path.join(machine_dir, "runs.json"), "w") as f:
+                    f.write("{}")
+
+            cells = joblib.enumerate_reference_matrix_cells(report_root_path, phoronix_dest, None)
+            self.assertEqual([c["machine"] for c in cells], ["amd-370-64gb", "amd-395"])  # sorted
+            for c in cells:
+                self.assertEqual(c["suite"], "phoronix")
+                self.assertEqual(c["test"], info["bare_name"])
+                self.assertEqual(c["test_point"], info["options_slug"])
+                self.assertEqual(c["benchmark"], info["identity"])
+
+    def test_machine_directory_without_runs_json_is_skipped(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            phoronix_dest = os.path.join(tmpdir, "phoronix")
+            point = {"test_id": "pts/openssl-1.0.0", "arguments": "-evp sha256"}
+            info = joblib.materialize_phoronix_test_point(point, phoronix_dest, "file", "/tmp/src.xml")
+            report_root_path = os.path.join(tmpdir, "report-root")
+            machine_dir = os.path.join(report_root_path, "phoronix", info["bare_name"],
+                                        info["options_slug"], "amd-395")
+            os.makedirs(machine_dir)  # no runs.json written
+
+            cells = joblib.enumerate_reference_matrix_cells(report_root_path, phoronix_dest, None)
+            self.assertEqual(cells, [])
+
+    def test_cpu2026_test_point_uses_tag_tune_as_test_point(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cpu2026_dest = os.path.join(tmpdir, "cpu2026")
+            info = joblib.register_cpu2026_point(cpu2026_dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O3")
+            report_root_path = os.path.join(tmpdir, "report-root")
+            machine_dir = os.path.join(report_root_path, "cpu2026", "706.stockfish_r", "gcc_O3-base",
+                                        "amd-395")
+            os.makedirs(machine_dir)
+            with open(os.path.join(machine_dir, "runs.json"), "w") as f:
+                f.write("{}")
+
+            cells = joblib.enumerate_reference_matrix_cells(report_root_path, None, cpu2026_dest)
+            self.assertEqual(len(cells), 1)
+            self.assertEqual(cells[0], {"suite": "cpu2026", "test": "706.stockfish_r",
+                                         "test_point": "gcc_O3-base", "machine": "amd-395",
+                                         "benchmark": info["identity"]})
+
+    def test_no_dest_roots_given_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertEqual(joblib.enumerate_reference_matrix_cells(tmpdir, None, None), [])
+
+
+class CountStatsPoolRunsTest(unittest.TestCase):
+    def test_counts_only_stats_pool_role(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_json_path = os.path.join(tmpdir, "runs.json")
+            with open(runs_json_path, "w") as f:
+                json.dump({"runs": [{"role": "stats-pool"}, {"role": "stats-pool"},
+                                     {"role": "supplementary"}, {"role": "excluded"}]}, f)
+            self.assertEqual(joblib.count_stats_pool_runs(runs_json_path), 2)
+
+    def test_zero_when_missing(self):
+        self.assertEqual(joblib.count_stats_pool_runs("/does/not/exist/runs.json"), 0)
+
+    def test_zero_when_unparseable(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_json_path = os.path.join(tmpdir, "runs.json")
+            with open(runs_json_path, "w") as f:
+                f.write("not json")
+            self.assertEqual(joblib.count_stats_pool_runs(runs_json_path), 0)
+
+
+class AggregateReferenceMatrixCellTest(unittest.TestCase):
+    def test_returns_parsed_rows_on_success(self):
+        fake_stdout = "group,metric,n,min,max,mean,stddev,cv_percent,verdict\nipc,ipc,3,1.0,1.2,1.1,0.1,9.0,PASS\n"
+
+        def fake_run(argv, capture_output, text, timeout):
+            self.assertIn("aggregate", argv)
+            self.assertIn("--csv", argv)
+            self.assertIn("--quiet", argv)
+            return subprocess.CompletedProcess(argv, 0, stdout=fake_stdout, stderr="")
+
+        with patch("joblib.subprocess.run", side_effect=fake_run):
+            rows = joblib.aggregate_reference_matrix_cell(
+                "/path/to/wspy-testpoint", "/path/to/store.db", "phoronix", "openssl-sha256",
+                "amd-395")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["metric"], "ipc")
+        self.assertEqual(rows[0]["verdict"], "PASS")
+
+    def test_none_on_nonzero_exit(self):
+        def fake_run(argv, capture_output, text, timeout):
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="no stats-pool runs")
+
+        with patch("joblib.subprocess.run", side_effect=fake_run):
+            rows = joblib.aggregate_reference_matrix_cell(
+                "/path/to/wspy-testpoint", "/path/to/store.db", "phoronix", "openssl-sha256",
+                "amd-395")
+        self.assertIsNone(rows)
+
+    def test_none_on_launch_failure(self):
+        with patch("joblib.subprocess.run", side_effect=OSError("no such file")):
+            rows = joblib.aggregate_reference_matrix_cell(
+                "/does/not/exist", "/path/to/store.db", "phoronix", "openssl-sha256", "amd-395")
+        self.assertIsNone(rows)
+
+    def test_passes_report_root_overrides_through(self):
+        captured = {}
+
+        def fake_run(argv, capture_output, text, timeout):
+            captured["argv"] = argv
+            return subprocess.CompletedProcess(argv, 0, stdout="metric\n", stderr="")
+
+        with patch("joblib.subprocess.run", side_effect=fake_run):
+            joblib.aggregate_reference_matrix_cell(
+                "wspy-testpoint", "store.db", "phoronix", "openssl-sha256", "amd-395",
+                report_root_path="/custom/root", report_root_remote="https://example.org/x.git")
+        self.assertIn("--report-root", captured["argv"])
+        self.assertIn("/custom/root", captured["argv"])
+        self.assertIn("--report-root-remote", captured["argv"])
+        self.assertIn("https://example.org/x.git", captured["argv"])
 
 
 class ReadPhoronixTestDescriptionTest(unittest.TestCase):

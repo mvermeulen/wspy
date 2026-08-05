@@ -29,6 +29,13 @@ vendor/short_model/ram_gib than what's freshly detected, refuses rather than sil
 protects against two different physical machines accidentally landing on the same computed name.
 --force overrides.
 
+Each sidecar also records this script's own `socket.gethostname()` (refreshed on every run, not a
+collision field -- a rename shouldn't block re-registering the same physical hardware). This is what
+lets INVESTIGATION.md 4.3 Tier 3 item 5's reference-matrix database resolve a wspy-store run's own
+recorded hostname back to a `<short-name>` for display, via `web/machine_registry.py`'s read-only
+scan of this catalog -- the intended single place a hostname/short-name association is ever written,
+so nothing else in the tree maintains a second, parallel copy of it.
+
 Usage:
   publish_machine_page.py --short-name amd-370-64gb --dry-run   # preview, touches nothing
   publish_machine_page.py --short-name amd-370-64gb              # real run, this machine only
@@ -38,6 +45,7 @@ import argparse
 import html
 import json
 import os
+import socket
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -204,7 +212,11 @@ def main():
 
     sidecar = {
         "short_name": args.short_name, "vendor": vendor, "short_model": short_model,
-        "ram_gib": ram_gib, "core_summary": core_summary,
+        "ram_gib": ram_gib, "core_summary": core_summary, "hostname": socket.gethostname(),
+        # hostname is this script's own machine, always refreshed on every run (not a collision
+        # field in check_collision() -- a rename shouldn't block re-registering the same physical
+        # hardware) -- it's what lets INVESTIGATION.md 4.3 Tier 3 item 5's reference-matrix database
+        # resolve a wspy-store run's own recorded hostname back to this catalog's short_name.
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
     detail_md = "# %s\n\n```\n%s\n```\n" % (args.short_name, report_text.rstrip())

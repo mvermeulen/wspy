@@ -220,6 +220,21 @@ table.reports th, table.reports td {
   border: 1px solid var(--border);
 }
 .ai-badge { color: var(--accent); border-color: var(--accent); }
+.badge-published { color: var(--accent); border-color: var(--accent); }
+.badge-draft { color: var(--muted); }
+
+table.reference-matrix {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+table.reference-matrix th, table.reference-matrix td {
+  text-align: left;
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+table.reference-matrix td.metric-warn { color: #cf222e; }
 
 a { color: var(--accent); }
 
