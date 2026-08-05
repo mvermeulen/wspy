@@ -37,9 +37,11 @@ no-op duplicate on hosts where the standard header already works.
 """
 import base64
 import hashlib
+import html
 import json
 import mimetypes
 import os
+import re
 import stat
 import urllib.error
 import urllib.parse
@@ -314,15 +316,35 @@ def delete_page(site_url, username, app_password, page_id, force=False):
                     method="DELETE", params=params)
 
 
-def _live_raw_content(site_url, username, app_password, page_id):
+def fetch_page_raw_content(site_url, username, app_password, page_id):
     """Re-fetches a page's own content.raw via an explicit context="edit" GET -- the exact bytes
-    WordPress currently has stored. Always used as the fingerprint basis (both checking for drift and
-    recording a fresh baseline after a write) rather than trusting a caller's own content string
-    verbatim, since WordPress can reformat/normalize block markup on save -- anchoring every
-    comparison to what the server actually reports avoids a false "drift" positive on the very next
-    publish of unchanged content."""
+    WordPress currently has stored. Used as the fingerprint basis for publish_page_content()'s drift
+    check (both checking for drift and recording a fresh baseline after a write) rather than trusting
+    a caller's own content string verbatim, since WordPress can reformat/normalize block markup on
+    save -- anchoring every comparison to what the server actually reports avoids a false "drift"
+    positive on the very next publish of unchanged content. Also the read path for
+    INVESTIGATION.md 4.3 item 21's WordPress-recovered metrics: a published run page's raw content is
+    where a full-depth counters.txt/ibs.txt block's exact text still lives, verbatim inside a
+    `<pre class="wp-block-preformatted">` wrapper."""
     page = get_page(site_url, username, app_password, page_id, context="edit")
     return (page.get("content") or {}).get("raw", "")
+
+
+_PREFORMATTED_RE = re.compile(
+    r'<pre[^>]*class="[^"]*wp-block-preformatted[^"]*"[^>]*>(.*?)</pre>', re.DOTALL)
+
+
+def extract_preformatted_blocks(raw_content):
+    """Every `<pre class="wp-block-preformatted">...</pre>` block's inner text, HTML-unescaped, in
+    document order -- the read-side counterpart to render_export_wordpress()'s `_wp_block("preformatted",
+    ...)` write side (web/server.py), and INVESTIGATION.md 4.3 item 21's actual data-recovery step: a
+    full-depth curated counters.txt/ibs.txt block is published exactly this way, so this is where its
+    original text (numbers included) survives verbatim on a page this tool no longer has any other
+    copy of. Matches the class attribute loosely (`[^>]*class="[^"]*wp-block-preformatted[^"]*"`)
+    rather than the exact literal tag `render_export_wordpress()` writes, since WordPress can
+    reformat/reorder a block's own HTML attributes on save (same reason `fetch_page_raw_content()`
+    always re-fetches rather than trusting a caller's own string)."""
+    return [html.unescape(m.group(1)) for m in _PREFORMATTED_RE.finditer(raw_content)]
 
 
 def _check_no_drift(site_url, username, app_password, page_id, link):
@@ -333,13 +355,13 @@ def _check_no_drift(site_url, username, app_password, page_id, link):
     known_hash = load_publish_state().get(str(page_id))
     if known_hash is None:
         return
-    if _content_hash(_live_raw_content(site_url, username, app_password, page_id)) != known_hash:
+    if _content_hash(fetch_page_raw_content(site_url, username, app_password, page_id)) != known_hash:
         raise WPContentDriftError(page_id, link)
 
 
 def _record_publish_fingerprint(site_url, username, app_password, page_id):
     state = load_publish_state()
-    state[str(page_id)] = _content_hash(_live_raw_content(site_url, username, app_password, page_id))
+    state[str(page_id)] = _content_hash(fetch_page_raw_content(site_url, username, app_password, page_id))
     save_publish_state(state)
 
 

@@ -235,6 +235,7 @@ table.reference-matrix th, table.reference-matrix td {
   white-space: nowrap;
 }
 table.reference-matrix td.metric-warn { color: #cf222e; }
+table.reference-matrix td.wp-recovered { font-style: italic; color: var(--accent); }
 
 a { color: var(--accent); }
 

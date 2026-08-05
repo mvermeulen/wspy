@@ -198,6 +198,41 @@ class GetPageTest(unittest.TestCase):
         self.assertEqual(page["id"], 42)
 
 
+class ExtractPreformattedBlocksTest(unittest.TestCase):
+    def test_extracts_single_block_unescaped(self):
+        raw = ('<!-- wp:preformatted -->\n'
+               '<pre class="wp-block-preformatted">elapsed  1.5\n# a &amp; b &lt;c&gt;</pre>\n'
+               '<!-- /wp:preformatted -->')
+        blocks = wp_client.extract_preformatted_blocks(raw)
+        self.assertEqual(blocks, ["elapsed  1.5\n# a & b <c>"])
+
+    def test_extracts_multiple_blocks_in_order(self):
+        raw = ('<!-- wp:heading --><h2>Counters</h2><!-- /wp:heading -->'
+               '<!-- wp:preformatted --><pre class="wp-block-preformatted">first</pre>'
+               '<!-- /wp:preformatted -->'
+               '<!-- wp:heading --><h2>IBS</h2><!-- /wp:heading -->'
+               '<!-- wp:preformatted --><pre class="wp-block-preformatted">second</pre>'
+               '<!-- /wp:preformatted -->')
+        self.assertEqual(wp_client.extract_preformatted_blocks(raw), ["first", "second"])
+
+    def test_no_preformatted_blocks_returns_empty(self):
+        raw = '<!-- wp:paragraph --><p>just text</p><!-- /wp:paragraph -->'
+        self.assertEqual(wp_client.extract_preformatted_blocks(raw), [])
+
+    def test_tolerates_reordered_attributes(self):
+        # WordPress can reformat a block's own HTML attributes on save (see this function's own
+        # docstring) -- an extra attribute before/after the class, or an id, shouldn't break matching.
+        raw = '<pre id="x" class="wp-block-preformatted foo">hi</pre>'
+        self.assertEqual(wp_client.extract_preformatted_blocks(raw), ["hi"])
+
+    def test_round_trips_real_counter_text_through_the_same_encoding_server_uses(self):
+        import html as html_mod
+        original = "elapsed              290.472\non_cpu               0.884          # 21.21 / 24 cores\n"
+        encoded = ('<!-- wp:preformatted -->\n<pre class="wp-block-preformatted">'
+                   + html_mod.escape(original) + '</pre>\n<!-- /wp:preformatted -->')
+        self.assertEqual(wp_client.extract_preformatted_blocks(encoded), [original])
+
+
 class ListChildPagesTest(unittest.TestCase):
     def test_single_page_of_results(self):
         captured_params = []
@@ -459,7 +494,7 @@ class PublishPageContentTest(unittest.TestCase):
 
 class ContentDriftProtectionTest(unittest.TestCase):
     """publish_page_content()'s protection against silently overwriting a page a human hand-edited in
-    wp-admin since wspy's own last write. _live_raw_content() is patched directly (rather than mocking
+    wp-admin since wspy's own last write. fetch_page_raw_content() is patched directly (rather than mocking
     get_page()/request()) since these tests are about the drift-decision logic, not the wire format of
     fetching a page's raw content -- same "mock the boundary under test, not everything beneath it"
     convention FindOrCreatePagePathTest already uses for find_page()/create_page()."""
@@ -476,13 +511,13 @@ class ContentDriftProtectionTest(unittest.TestCase):
         # fingerprint on record -- trusted rather than retroactively blocked.
         with patch("wp_client.find_page", return_value={"id": 9, "link": "https://x/foo/"}), \
              patch("wp_client.update_page", return_value={"id": 9}) as fake_update, \
-             patch("wp_client._live_raw_content", return_value="<p>whatever is live</p>") as fake_live:
+             patch("wp_client.fetch_page_raw_content", return_value="<p>whatever is live</p>") as fake_live:
             wp_client.publish_page_content(
                 "https://example.org/workload", "wspy", "secret", "my-report", 17,
                 "My Report", "<p>new</p>")
 
         fake_update.assert_called_once()
-        # _live_raw_content is still called once, to record this write's own fingerprint.
+        # fetch_page_raw_content is still called once, to record this write's own fingerprint.
         fake_live.assert_called_once()
         self.assertEqual(
             wp_client.load_publish_state()["9"], wp_client._content_hash("<p>whatever is live</p>"))
@@ -491,7 +526,7 @@ class ContentDriftProtectionTest(unittest.TestCase):
         wp_client.save_publish_state({"9": wp_client._content_hash("<p>old</p>")})
         with patch("wp_client.find_page", return_value={"id": 9, "link": "https://x/foo/"}), \
              patch("wp_client.update_page", return_value={"id": 9}) as fake_update, \
-             patch("wp_client._live_raw_content", return_value="<p>old</p>"):
+             patch("wp_client.fetch_page_raw_content", return_value="<p>old</p>"):
             page, created = wp_client.publish_page_content(
                 "https://example.org/workload", "wspy", "secret", "my-report", 17,
                 "My Report", "<p>new</p>")
@@ -504,7 +539,7 @@ class ContentDriftProtectionTest(unittest.TestCase):
         wp_client.save_publish_state({"9": wp_client._content_hash("<p>old</p>")})
         with patch("wp_client.find_page", return_value={"id": 9, "link": "https://x/foo/"}), \
              patch("wp_client.update_page") as fake_update, \
-             patch("wp_client._live_raw_content", return_value="<p>a human's hand-edit</p>"):
+             patch("wp_client.fetch_page_raw_content", return_value="<p>a human's hand-edit</p>"):
             with self.assertRaises(wp_client.WPContentDriftError) as ctx:
                 wp_client.publish_page_content(
                     "https://example.org/workload", "wspy", "secret", "my-report", 17,
@@ -518,7 +553,7 @@ class ContentDriftProtectionTest(unittest.TestCase):
         wp_client.save_publish_state({"9": wp_client._content_hash("<p>old</p>")})
         with patch("wp_client.find_page", return_value={"id": 9, "link": "https://x/foo/"}), \
              patch("wp_client.update_page", return_value={"id": 9}) as fake_update, \
-             patch("wp_client._live_raw_content", return_value="<p>new</p>"):
+             patch("wp_client.fetch_page_raw_content", return_value="<p>new</p>"):
             wp_client.publish_page_content(
                 "https://example.org/workload", "wspy", "secret", "my-report", 17,
                 "My Report", "<p>new</p>", force=True)
@@ -531,7 +566,7 @@ class ContentDriftProtectionTest(unittest.TestCase):
     def test_fingerprint_recorded_after_create(self):
         with patch("wp_client.find_page", return_value=None), \
              patch("wp_client.create_page", return_value={"id": 5, "status": "draft"}), \
-             patch("wp_client._live_raw_content", return_value="<p>hi</p>"):
+             patch("wp_client.fetch_page_raw_content", return_value="<p>hi</p>"):
             wp_client.publish_page_content(
                 "https://example.org/workload", "wspy", "secret", "my-report", 17,
                 "My Report", "<p>hi</p>")
