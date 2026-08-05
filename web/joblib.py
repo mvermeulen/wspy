@@ -2840,6 +2840,20 @@ def enumerate_reference_matrix_cells(report_root_path, phoronix_dest_root, cpu20
     return sorted(cells, key=lambda c: (c["suite"], c["test"], c["test_point"], c["machine"]))
 
 
+def count_stats_pool_runs(runs_json_path):
+    """Number of stats-pool-role runs recorded in a wspy-testpoint runs.json, or 0 if the file is
+    missing/unparseable. The reference-matrix overview's cheap per-cell coverage count
+    (INVESTIGATION.md 4.3 Tier 3 item 5) -- deliberately not a full wspy-summary aggregation, which
+    enumerate_reference_matrix_cells()'s own docstring already scopes to the per-test-point detail
+    view instead, so the overview stays fast even with many cells."""
+    try:
+        with open(runs_json_path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return 0
+    return sum(1 for r in data.get("runs", []) if r.get("role") == "stats-pool")
+
+
 def aggregate_reference_matrix_cell(wspy_testpoint_bin, db, suite, benchmark, machine,
                                      report_root_path=None, report_root_remote=None, timeout=30):
     """Runs `wspy-testpoint aggregate --csv --quiet` for one enumerate_reference_matrix_cells() cell

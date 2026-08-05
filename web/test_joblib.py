@@ -1658,6 +1658,26 @@ class EnumerateReferenceMatrixCellsTest(unittest.TestCase):
             self.assertEqual(joblib.enumerate_reference_matrix_cells(tmpdir, None, None), [])
 
 
+class CountStatsPoolRunsTest(unittest.TestCase):
+    def test_counts_only_stats_pool_role(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_json_path = os.path.join(tmpdir, "runs.json")
+            with open(runs_json_path, "w") as f:
+                json.dump({"runs": [{"role": "stats-pool"}, {"role": "stats-pool"},
+                                     {"role": "supplementary"}, {"role": "excluded"}]}, f)
+            self.assertEqual(joblib.count_stats_pool_runs(runs_json_path), 2)
+
+    def test_zero_when_missing(self):
+        self.assertEqual(joblib.count_stats_pool_runs("/does/not/exist/runs.json"), 0)
+
+    def test_zero_when_unparseable(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_json_path = os.path.join(tmpdir, "runs.json")
+            with open(runs_json_path, "w") as f:
+                f.write("not json")
+            self.assertEqual(joblib.count_stats_pool_runs(runs_json_path), 0)
+
+
 class AggregateReferenceMatrixCellTest(unittest.TestCase):
     def test_returns_parsed_rows_on_success(self):
         fake_stdout = "group,metric,n,min,max,mean,stddev,cv_percent,verdict\nipc,ipc,3,1.0,1.2,1.1,0.1,9.0,PASS\n"
