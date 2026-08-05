@@ -1310,6 +1310,43 @@ out of the live backlog entirely.
 13 `web/test_*.py` files green (2 new: `test_machine_registry.py`, `test_reference_matrix.py`), full
 `run_tests.sh` C matrix green (67 bundles, 0 failed).
 
+**Recover metrics from already-published WordPress pages** (PR #205) — closes 4.3 item 21: a machine
+that publishes reports but has no direct file/SSH access to whichever host serves the reference-
+matrix web UI can still contribute real metric data, recovered straight from its own already-
+published WordPress pages, instead of needing that machine reachable at all. Raised the same day as
+item 5's PR #204, once real use surfaced a machine (`amd-395-96gb`) that had published reports but
+whose raw run data lived on a separate host the reference-matrix-serving machine couldn't reach.
+
+New `web/counter_text.py` parses wspy's human-readable `counters.txt`/`ibs.txt` output (`topdown.c`'s
+`PRINT_NORMAL` mode, not the CSV format) into structured `{metric, value, is_percent, comment}`
+records — nothing in this codebase parsed this format before (`wspy-analyze`, the only other reader,
+hands it to an LLM as unstructured prose). `classify_counter_text()` tells the two formats apart by
+content shape (`##### pass N #####` vs. `ibs_sample_` prefixes) since a full-depth curated block
+carries no filename tag once published. `wp_client.fetch_page_raw_content()` (promoted from a private
+drift-checking helper to a public read primitive) plus new `extract_preformatted_blocks()` pull a
+published page's exact `<pre class="wp-block-preformatted">` text back out, HTML-unescaped — confirmed
+to round-trip exactly against the encoding `render_export_wordpress()` already uses to publish it.
+
+`server.recover_machine_metrics_from_wordpress()` ties it together: walks a machine's published
+run-id pages (most recent `MAX_WORDPRESS_RECOVERED_RUNS` first), parses every full-depth counter
+block, and aggregates per metric — first-occurrence-wins within one run when a label repeats (the
+same primary-reading-vs-different-pass distinction `topdown.c`'s own multi-pass output can produce).
+Wired into `render_reference_test_point_detail()` as an additive column for any machine with
+WordPress presence but no local `runs.json` — real local aggregation always wins when both exist, and
+recovered columns render visibly distinct (own CSS class, no verdict-based coloring, an explicit
+"(from WordPress)" label, and a caption noting the recovered metric-name spellings may not exactly
+match `wspy-summary`'s own column names for the same counter). Settled scope: compute on the fly, no
+new persistent storage or synthesized `wspy-store` rows — a page later deleted from WordPress simply
+stops appearing next load.
+
+Deliberately narrow, with two follow-ups split out rather than folded in (items 22/23, still open):
+this only fills a machine column for a test-point *row* already known locally, never discovers a row
+with no local trace at all; and `wspy-archetype`/`wspy-analyze` don't yet know this data source
+exists. Verified end to end against the real site (read-only): recovered 77 real metrics for
+`amd-395-96gb` with no local `runs.json`, confirmed the detail page renders both the store-based and
+WordPress-recovered columns together correctly. 18 `web/test_*.py` files green (2 new:
+`test_counter_text.py`, `test_wordpress_recovery.py`), full `run_tests.sh` C matrix green.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -1534,44 +1571,22 @@ reasoning as Tier 1 above.
      link exists).
    - The `wspy-archetype --kmeans` / `wspy-analyze` analysis-feed hookup.
    - The 60+-column vocabulary audit against the external reference page.
-21. WordPress-published pages as a reference-matrix data source, for machines that publish reports
-    but have no direct file/SSH access to whichever host serves the web UI (raised 2026-08-05,
-    scoped separately from item 5 rather than re-growing it). A full-depth curated text block
-    (`counters.txt`/`ibs.txt`, not the two time-series CSVs — `amdtopdown.csv`/`systemtime.csv` stay
-    file-only, no equivalent need there) is published verbatim as a plain
-    `<pre class="wp-block-preformatted">` block (confirmed live against a real published page) — no
-    Gutenberg-comment parsing needed, just HTML-unescape the inner text. Both formats are regular and
-    mechanically parseable (space-delimited `label / value / # comment` lines, `##### pass N #####`
-    section markers in `counters.txt`, one indented sub-list in `ibs.txt`) but need a new parser —
-    nothing in this codebase parses them today (`wspy-analyze` only ever hands this text to an LLM as
-    unstructured prose). One real wrinkle: full-depth blocks carry no filename/note (only
-    summary/excerpt depth does), so which `<pre>` block is which file has to be recognized by content
-    shape (the `##### pass`/`ibs_sample_` prefixes are distinctive enough), not by an explicit tag.
-    Scope, settled 2026-08-05: compute on the fly for the reference matrix only (fetch + parse a
-    machine's published run pages when its detail page is requested, no new persistent storage,
-    same generation model the matrix already uses) — not synthesized `wspy-store` rows, which would
-    need reverse-engineering metadata (timestamps, full provenance) the recovered text doesn't carry
-    and would let every other tool assume a completeness this data doesn't have. A page later deleted
-    from WordPress simply stops appearing next time the matrix loads — no separate reconciliation
-    step needed as a result of that same "always live, nothing cached" choice. **Deliberately narrow:**
-    only fills in a machine column for a test-point *row* the matrix already knows about locally (a
-    `runs.json` exists for at least one other machine there) — see item 22 for discovering rows that
-    have no local trace at all.
-22. Full top-down WordPress discovery for the reference matrix (raised 2026-08-05, depends on item
-    21's parsing/recovery primitives). Item 21's overview (`render_reference_tab()`) only lists rows
-    found by scanning the local report-root's `runs.json` files — a test point published on WordPress
-    for one or more machines but with *no* local `runs.json` anywhere never appears as a row at all,
-    since nothing currently walks the WordPress hierarchy top-down (`suite → test → test-point →
-    machine → run`, repeated `list_child_pages()` calls) independent of already knowing where to
-    look. Real open questions before building: cost (potentially hundreds of WordPress API calls
-    across a whole site — incompatible with the overview's current "fast, no per-cell aggregation on
-    load" property unless this becomes a separate, explicit action rather than something that runs on
-    every tab load) and how a discovered-only row should be presented (same visibly-distinct
-    "recovered, not locally verified" treatment item 21 already established for its columns, applied
-    at the row level too).
-23. Investigate `wspy-archetype`/`wspy-analyze` using WordPress-recovered data (items 21/22) as a
-    more definitive, complete source (raised 2026-08-05) — today both tools only ever read
-    `wspy-store`, blind to any machine that exists solely via published pages. Genuinely an
+22. Full top-down WordPress discovery for the reference matrix (raised 2026-08-05, depends on the
+    WordPress-recovered-metrics parsing/recovery primitives shipped via PR #205 — see "Shipped since
+    4.2"). The reference matrix's overview (`render_reference_tab()`) only lists rows found by
+    scanning the local report-root's `runs.json` files — a test point published on WordPress for one
+    or more machines but with *no* local `runs.json` anywhere never appears as a row at all, since
+    nothing currently walks the WordPress hierarchy top-down (`suite → test → test-point → machine →
+    run`, repeated `list_child_pages()` calls) independent of already knowing where to look. Real
+    open questions before building: cost (potentially hundreds of WordPress API calls across a whole
+    site — incompatible with the overview's current "fast, no per-cell aggregation on load" property
+    unless this becomes a separate, explicit action rather than something that runs on every tab
+    load) and how a discovered-only row should be presented (same visibly-distinct "recovered, not
+    locally verified" treatment PR #205 already established for its columns, applied at the row
+    level too).
+23. Investigate `wspy-archetype`/`wspy-analyze` using WordPress-recovered data (PR #205, item 22
+    above) as a more definitive, complete source (raised 2026-08-05) — today both tools only ever
+    read `wspy-store`, blind to any machine that exists solely via published pages. Genuinely an
     "investigate" item, not a scoped build: `wspy-archetype`'s clustering/nearest-neighbor math
     expects `extract_run_features()`'s fixed feature vocabulary (`store.c`), which the human-text-
     recovered metric labels don't map to cleanly (same metric-name-spelling caveat item 21 already
