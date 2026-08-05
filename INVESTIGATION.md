@@ -1534,6 +1534,26 @@ reasoning as Tier 1 above.
      link exists).
    - The `wspy-archetype --kmeans` / `wspy-analyze` analysis-feed hookup.
    - The 60+-column vocabulary audit against the external reference page.
+21. WordPress-published pages as a reference-matrix data source, for machines that publish reports
+    but have no direct file/SSH access to whichever host serves the web UI (raised 2026-08-05,
+    scoped separately from item 5 rather than re-growing it). A full-depth curated text block
+    (`counters.txt`/`ibs.txt`, not the two time-series CSVs — `amdtopdown.csv`/`systemtime.csv` stay
+    file-only, no equivalent need there) is published verbatim as a plain
+    `<pre class="wp-block-preformatted">` block (confirmed live against a real published page) — no
+    Gutenberg-comment parsing needed, just HTML-unescape the inner text. Both formats are regular and
+    mechanically parseable (space-delimited `label / value / # comment` lines, `##### pass N #####`
+    section markers in `counters.txt`, one indented sub-list in `ibs.txt`) but need a new parser —
+    nothing in this codebase parses them today (`wspy-analyze` only ever hands this text to an LLM as
+    unstructured prose). One real wrinkle: full-depth blocks carry no filename/note (only
+    summary/excerpt depth does), so which `<pre>` block is which file has to be recognized by content
+    shape (the `##### pass`/`ibs_sample_` prefixes are distinctive enough), not by an explicit tag.
+    Scope, settled 2026-08-05: compute on the fly for the reference matrix only (fetch + parse a
+    machine's published run pages when its detail page is requested, no new persistent storage,
+    same generation model the matrix already uses) — not synthesized `wspy-store` rows, which would
+    need reverse-engineering metadata (timestamps, full provenance) the recovered text doesn't carry
+    and would let every other tool assume a completeness this data doesn't have. A page later deleted
+    from WordPress simply stops appearing next time the matrix loads — no separate reconciliation
+    step needed as a result of that same "always live, nothing cached" choice.
 
 **Tier 4 — report-layer additions on data already collected in 4.0:**
 
