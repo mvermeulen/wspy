@@ -95,10 +95,11 @@ def parse_comment_ratio(comment):
     TOPDOWN_SECOND_PERCENT_LABELS/TOPDOWN_FIRST_PERCENT_LABELS' explicit label-based handling instead
     (extract_derived_ratios() below), not a generic parse.
 
-    The slugified name is NOT guaranteed to match wspy-summary's own CSV column name for the same
-    ratio (e.g. this produces "branch_miss", not the real `branch_mispredict_pct` column -- see
-    doc/METRICS.md for authoritative names where exact alignment matters); the numeric value itself
-    is still correct either way, just not yet cross-referenceable by name against store-based data."""
+    The slugified name is a best-effort guess, not guaranteed to match wspy-summary's own CSV column
+    name for the same ratio -- extract_derived_ratios() below applies GENERIC_LABEL_NAME_OVERRIDES/
+    GENERIC_SLUG_NAME_OVERRIDES on top of this function's raw output for every case confirmed against
+    store.c's real feature vocabulary (item 24's audit); anything still unmapped keeps this
+    function's own slug, correct in value but not yet cross-referenceable by name."""
     if not comment:
         return None
     m = _GENERIC_COMMENT_RE.match(_strip_qualifiers(comment.strip()))
@@ -136,9 +137,82 @@ TOPDOWN_FIRST_PERCENT_LABELS = {
     "-- latency": "frontend_latency_pct", "-- bandwidth": "frontend_bandwidth_pct",
     "-- cpu": "backend_cpu_pct", "-- memory": "backend_memory_pct",
     "-- branch mispredict": "spec_branch_pct", "-- pipeline restart": "spec_pipeline_pct",
-    "smt-contention": "contention_pct",
+    # store.c's SIMPLE_METRIC_FEATURES promotes this raw CSV column ("contention_pct") under the
+    # feature name "smt_contention_pct" (the name archetype.c's run_snapshot_apply_feature() actually
+    # recognizes) -- confirmed by reading both files directly, not guessed; a prior version of this
+    # table used the raw CSV name here instead, which archetype.c silently ignored as unrecognized.
+    "smt-contention": "smt_contention_pct",
 }
 _PERCENT_RE = re.compile(r"(-?\d+(?:\.\d+)?)%")
+
+# INVESTIGATION.md 4.3 item 24's own residual: labels whose comment is already correctly parsed by
+# the generic "<number>[%] <description>" case above (parse_comment_ratio()) -- a plain single-number
+# parse, no special extraction needed -- but whose slugified description doesn't match store.c's real
+# SIMPLE_METRIC_FEATURES name for the same ratio. Confirmed entry by entry directly against store.c's
+# SIMPLE_METRIC_FEATURES table and the topdown.c print function that emits each comment (not guessed
+# from sample output) -- see the print function named in each comment below for the exact format
+# string this was read from.
+GENERIC_LABEL_NAME_OVERRIDES = {
+    # print_cache() (shared cross-vendor helper), via print_dcache()'s own "L1-dcache" name.
+    "L1-dcache miss": "dcache_miss_pct",
+    # topdown.c's AMD-only print_topdown_fe() (the --topdown-optlb group) prints its own "icache"/
+    # "icache miss" pair, distinct from print_icache()'s cross-vendor "L1-icache"/"L1-icache miss" --
+    # store.c's icache_miss_pct is sourced from the *former* raw CSV column ("icache") specifically;
+    # print_icache()'s own "L1-icache miss" isn't in SIMPLE_METRIC_FEATURES at all today, so it's
+    # deliberately left un-renamed below (nothing to align it to yet).
+    "icache miss": "icache_miss_pct",
+    # print_l2cache(): ARM/Intel label this line "l2 miss"; AMD's own branch (a composite ratio
+    # combining demand-miss and prefetch-miss sources, see topdown.c's own comment there) labels the
+    # same ratio "l2 miss from l1" instead -- both comments carry the identical real l2miss value.
+    "l2 miss": "l2_miss_pct",
+    "l2 miss from l1": "l2_miss_pct",
+    # print_l3cache() (AMD only).
+    "l3 miss": "l3_miss_pct",
+    # print_branch(): CSV column is literally "branch miss" (with a space) -- store.c's own real
+    # feature name is branch_mispredict_pct, not the "branch_miss" a bare slugify produces. This is
+    # the one that fed archetype.c's control_flow_style axis, and was verifiably wrong before this
+    # entry existed (confirmed live: control_flow_style came back "unknown" for a WordPress-recovered
+    # machine that had real branch data, because run_snapshot_apply_feature() didn't recognize
+    # "branch_miss" as a feature name at all).
+    "branch misses": "branch_mispredict_pct",
+    # topdown.c's AMD-only print_topdown_fe()/print_topdown_op() groups -- the L2 (itlb2/dtlb2) rate,
+    # distinct from the L1 (itlb1/dtlb1) rate on the sibling "l1 iTLB miss"/"l1 dTLB miss" lines, which
+    # aren't in SIMPLE_METRIC_FEATURES and are left un-renamed.
+    "l2 iTLB miss": "itlb_miss_per1k",
+    "l2 dTLB miss": "dtlb_miss_per1k",
+}
+
+# Same idea as GENERIC_LABEL_NAME_OVERRIDES above, but keyed by the *slugified description* instead
+# of the line's label -- needed specifically for IPC, since its comment lives on an "instructions"
+# line (print_ipc()'s own PRINT_NORMAL format), a label multiple other counter groups also reuse with
+# entirely different comments (l2/l3 access rate, float density, ...), so the label alone can't
+# safely identify which comment this is. "ipc" itself is a specific enough slug that this is safe.
+GENERIC_SLUG_NAME_OVERRIDES = {
+    "ipc": "ipc_mean",
+}
+
+# INVESTIGATION.md 4.3 item 24: ibs.txt's own sampling-rate lines are already correctly parsed as
+# *primary* values (is_percent=True, not comment-derived at all -- see parse_counter_text()'s own
+# docstring), but store.c's SIMPLE_METRIC_FEATURES promotes them under shorter feature names than
+# their raw ibs_sample_* CSV column text (confirmed directly against store.c, not guessed). Applied
+# by web/server.py's recover_machine_metrics_from_wordpress() as a final rename over every metric
+# name (raw values and derived ratios alike), not here -- this dict lives alongside the others since
+# it's the same underlying alignment problem, just against a primary value instead of a comment.
+IBS_FEATURE_NAME_OVERRIDES = {
+    "ibs_sample_dc_miss_rate": "ibs_dc_miss_pct",
+    "ibs_sample_dram_rate": "ibs_dram_pct",
+    "ibs_sample_dc_l1tlb_miss_rate": "ibs_dc_l1tlb_miss_pct",
+    "ibs_sample_dc_l2tlb_miss_rate": "ibs_dc_l2tlb_miss_pct",
+    "ibs_sample_remote_node_rate": "ibs_remote_node_pct",
+}
+
+
+def canonical_metric_name(raw_metric_name):
+    """Maps a primary (not comment-derived) metric name -- currently just ibs.txt's sampling rates,
+    IBS_FEATURE_NAME_OVERRIDES above -- to its real store.c SIMPLE_METRIC_FEATURES name, the same
+    alignment GENERIC_LABEL_NAME_OVERRIDES/GENERIC_SLUG_NAME_OVERRIDES already give comment-derived
+    ratios. Anything not in the table is returned unchanged."""
+    return IBS_FEATURE_NAME_OVERRIDES.get(raw_metric_name, raw_metric_name)
 
 
 def extract_derived_ratios(records):
@@ -153,8 +227,11 @@ def extract_derived_ratios(records):
     Three cases per record, checked in this order: (1) its metric label is one of
     TOPDOWN_SECOND_PERCENT_LABELS -- take the second (parenthetical) percentage found in the comment;
     (2) its label is one of TOPDOWN_FIRST_PERCENT_LABELS -- take the first; (3) otherwise, try
-    parse_comment_ratio()'s generic "<number>[%] <description>" parse. Never raises on an unexpected
-    comment shape -- skips it, same best-effort contract as parse_counter_text() itself."""
+    parse_comment_ratio()'s generic "<number>[%] <description>" parse, then apply
+    GENERIC_SLUG_NAME_OVERRIDES (by the parsed slug) and GENERIC_LABEL_NAME_OVERRIDES (by the line's
+    own label, which wins if both apply) -- item 24's audited name alignment for every generic-tier
+    case confirmed against store.c's real feature vocabulary. Never raises on an unexpected comment
+    shape -- skips it, same best-effort contract as parse_counter_text() itself."""
     derived = []
     for r in records:
         comment = r.get("comment")
@@ -176,6 +253,8 @@ def extract_derived_ratios(records):
         parsed = parse_comment_ratio(comment)
         if parsed:
             name, value, is_percent = parsed
+            name = GENERIC_SLUG_NAME_OVERRIDES.get(name, name)
+            name = GENERIC_LABEL_NAME_OVERRIDES.get(metric, name)
             derived.append({"metric": name, "value": value, "is_percent": is_percent, "comment": None})
     return derived
 

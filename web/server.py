@@ -2089,6 +2089,11 @@ def recover_machine_metrics_from_wordpress(wp_cfg, suite, test, test_point, mach
             # (e.g. "ipc" vs. "instructions"), so both coexist rather than one overwriting the other.
             per_run_metrics.update(_first_value_per_metric(counter_text.extract_derived_ratios(block_records)))
         for metric, value in per_run_metrics.items():
+            # Item 24's audit: a handful of primary (not comment-derived) values -- ibs.txt's own
+            # sampling rates -- are still named after their raw CSV column text at this point;
+            # canonical_metric_name() renames them to the real store.c feature name, the same
+            # alignment extract_derived_ratios() already gives comment-derived ratios.
+            metric = counter_text.canonical_metric_name(metric)
             per_metric_values.setdefault(metric, []).append(value)
 
     rows = []

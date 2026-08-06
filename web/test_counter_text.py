@@ -32,8 +32,12 @@ backend              31509439317734 # 17.2% (24.4%)
 speculation          8986175920281  #  4.9% ( 7.0%) low
 smt-contention       53416184858519 # 29.2% ( 0.0%)
 l3 miss              0              # -nan% l3 miss
+l2 miss              9819149704     # 3.12% l2 miss
 icache miss          1196643001389  #  8.4% icache miss rate
 branch misses        116367530656   # 2.65% branch miss
+l2 iTLB miss         0               # 0.000 L2 iTLB per 1000 inst
+l2 dTLB miss         88087467        # 0.002 L2 dTLB per 1000 inst
+L1-dcache miss       500000          # 1.23% L1-dcache miss
 counter coverage     57/57 measured
 """
 
@@ -151,12 +155,15 @@ class ParseCommentRatioTest(unittest.TestCase):
 
 
 class ExtractDerivedRatiosTest(unittest.TestCase):
-    def test_ipc_recovered_from_counters_txt(self):
+    def test_ipc_recovered_and_renamed_to_store_feature_name(self):
         records = counter_text.parse_counter_text(COUNTERS_TXT)
         derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
-        self.assertEqual(derived["ipc"]["value"], 2.38)
-        self.assertFalse(derived["ipc"]["is_percent"])
-        self.assertIsNone(derived["ipc"]["comment"])
+        # store.c's SIMPLE_METRIC_FEATURES calls this "ipc_mean", not the bare "ipc" a plain slugify
+        # of the "IPC" comment text would produce.
+        self.assertNotIn("ipc", derived)
+        self.assertEqual(derived["ipc_mean"]["value"], 2.38)
+        self.assertFalse(derived["ipc_mean"]["is_percent"])
+        self.assertIsNone(derived["ipc_mean"]["comment"])
 
     def test_topdown_l1_takes_second_percentage_not_first(self):
         records = counter_text.parse_counter_text(COUNTERS_TXT)
@@ -171,20 +178,51 @@ class ExtractDerivedRatiosTest(unittest.TestCase):
         derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
         self.assertEqual(derived["retire_ucode_pct"]["value"], 0.0)
         # smt-contention's own second, parenthesized number is a hardcoded literal per topdown.c's
-        # own comment, not real data -- must take the first (29.2), not the fake "0.0".
-        self.assertEqual(derived["contention_pct"]["value"], 29.2)
+        # own comment, not real data -- must take the first (29.2), not the fake "0.0". Renamed to
+        # the real store.c feature name (archetype.c's run_snapshot_apply_feature() only recognizes
+        # "smt_contention_pct", not the raw CSV column name "contention_pct").
+        self.assertNotIn("contention_pct", derived)
+        self.assertEqual(derived["smt_contention_pct"]["value"], 29.2)
 
-    def test_generic_miss_rate_and_ghz_also_recovered(self):
+    def test_ghz_still_generic_since_no_real_feature_exists_for_it(self):
+        # GHz is documented [human-only] in doc/METRICS.md -- not a CSV column at all -- so there's
+        # nothing to align it to; it keeps its plain slugified name.
         records = counter_text.parse_counter_text(COUNTERS_TXT)
         derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
-        self.assertEqual(derived["icache_miss_rate"]["value"], 8.4)
         self.assertEqual(derived["ghz"]["value"], 3.27)
-        self.assertEqual(derived["branch_miss"]["value"], 2.65)
+
+    def test_cache_and_branch_comments_renamed_to_store_feature_names(self):
+        # INVESTIGATION.md 4.3 item 24's own audit: each of these confirmed directly against
+        # store.c's SIMPLE_METRIC_FEATURES table and the topdown.c print function that emits the
+        # comment, not guessed from the text alone.
+        records = counter_text.parse_counter_text(COUNTERS_TXT)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        self.assertEqual(derived["dcache_miss_pct"]["value"], 1.23)
+        self.assertEqual(derived["icache_miss_pct"]["value"], 8.4)
+        self.assertEqual(derived["l2_miss_pct"]["value"], 3.12)
+        self.assertEqual(derived["itlb_miss_per1k"]["value"], 0.0)
+        self.assertEqual(derived["dtlb_miss_per1k"]["value"], 0.002)
+        # branch_mispredict_pct is the one that actually feeds archetype.c's control_flow_style axis
+        # (run_snapshot_apply_feature() only recognizes this exact name) -- confirmed this was
+        # previously silently dropped as "branch_miss", an unrecognized name, before this fix.
+        self.assertEqual(derived["branch_mispredict_pct"]["value"], 2.65)
+        for old_name in ("l1_dcache_miss", "icache_miss_rate", "l2_miss", "branch_miss",
+                          "l2_itlb_per_1000_inst", "l2_dtlb_per_1000_inst"):
+            self.assertNotIn(old_name, derived)
+
+    def test_amd_l2_miss_from_l1_label_maps_to_same_real_feature(self):
+        # AMD's own branch of print_l2cache() labels the identical l2miss ratio "l2 miss from l1"
+        # instead of "l2 miss" (ARM/Intel) -- both must resolve to the same real feature name.
+        text = "l2 miss from l1      9819149704     # 3.12% l2 miss\n"
+        records = counter_text.parse_counter_text(text)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        self.assertEqual(derived["l2_miss_pct"]["value"], 3.12)
 
     def test_nan_and_non_numeric_comments_produce_no_derived_metric(self):
         records = counter_text.parse_counter_text(COUNTERS_TXT)
         derived_names = {d["metric"] for d in counter_text.extract_derived_ratios(records)}
         self.assertNotIn("l3_miss", derived_names)  # "-nan% l3 miss" -- not a real number
+        self.assertNotIn("l3_miss_pct", derived_names)
 
     def test_ibs_txt_comment_still_extracted(self):
         records = counter_text.parse_counter_text(IBS_TXT)
@@ -195,6 +233,26 @@ class ExtractDerivedRatiosTest(unittest.TestCase):
 
     def test_empty_records_returns_empty_list(self):
         self.assertEqual(counter_text.extract_derived_ratios([]), [])
+
+
+class CanonicalMetricNameTest(unittest.TestCase):
+    def test_ibs_sampling_rates_renamed_to_store_feature_names(self):
+        # INVESTIGATION.md 4.3 item 24's audit: ibs.txt's own rates are primary values (is_percent=
+        # True, not comment-derived), so parse_counter_text()/extract_derived_ratios() never touch
+        # their names -- canonical_metric_name() is the rename step web/server.py applies instead.
+        self.assertEqual(counter_text.canonical_metric_name("ibs_sample_dc_miss_rate"), "ibs_dc_miss_pct")
+        self.assertEqual(counter_text.canonical_metric_name("ibs_sample_dram_rate"), "ibs_dram_pct")
+        self.assertEqual(counter_text.canonical_metric_name("ibs_sample_dc_l1tlb_miss_rate"),
+                          "ibs_dc_l1tlb_miss_pct")
+        self.assertEqual(counter_text.canonical_metric_name("ibs_sample_dc_l2tlb_miss_rate"),
+                          "ibs_dc_l2tlb_miss_pct")
+        self.assertEqual(counter_text.canonical_metric_name("ibs_sample_remote_node_rate"),
+                          "ibs_remote_node_pct")
+
+    def test_unmapped_name_returned_unchanged(self):
+        self.assertEqual(counter_text.canonical_metric_name("ibs_sample_fetch_count"),
+                          "ibs_sample_fetch_count")
+        self.assertEqual(counter_text.canonical_metric_name("elapsed"), "elapsed")
 
 
 class ClassifyCounterTextTest(unittest.TestCase):
