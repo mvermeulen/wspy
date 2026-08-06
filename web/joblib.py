@@ -2854,6 +2854,21 @@ def count_stats_pool_runs(runs_json_path):
     return sum(1 for r in data.get("runs", []) if r.get("role") == "stats-pool")
 
 
+def load_reference_matrix_cell_runs(runs_json_path):
+    """Full run list from a wspy-testpoint runs.json -- the individual runs behind one reference-matrix
+    cell's aggregate (INVESTIGATION.md 4.3 item 5's drill-down links). Each entry has
+    run_id/benchmark/hostname/status/role/reason/start_time/human_set (wspy-testpoint's merge_roles()
+    shape); returns them in runs.json's own on-disk order (cmd_select_runs() writes them sorted by
+    run_id) rather than re-sorting here. [] if the file is missing/unparseable -- mirrors
+    count_stats_pool_runs()'s degrade-to-empty contract rather than raising."""
+    try:
+        with open(runs_json_path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    return data.get("runs", [])
+
+
 def aggregate_reference_matrix_cell(wspy_testpoint_bin, db, suite, benchmark, machine,
                                      report_root_path=None, report_root_remote=None, timeout=30):
     """Runs `wspy-testpoint aggregate --csv --quiet` for one enumerate_reference_matrix_cells() cell

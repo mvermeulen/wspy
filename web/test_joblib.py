@@ -1678,6 +1678,27 @@ class CountStatsPoolRunsTest(unittest.TestCase):
             self.assertEqual(joblib.count_stats_pool_runs(runs_json_path), 0)
 
 
+class LoadReferenceMatrixCellRunsTest(unittest.TestCase):
+    def test_returns_full_runs_list_all_roles(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_json_path = os.path.join(tmpdir, "runs.json")
+            runs = [{"run_id": "r1", "role": "stats-pool"}, {"run_id": "r2", "role": "supplementary"},
+                    {"run_id": "r3", "role": "excluded"}]
+            with open(runs_json_path, "w") as f:
+                json.dump({"runs": runs}, f)
+            self.assertEqual(joblib.load_reference_matrix_cell_runs(runs_json_path), runs)
+
+    def test_empty_list_when_missing(self):
+        self.assertEqual(joblib.load_reference_matrix_cell_runs("/does/not/exist/runs.json"), [])
+
+    def test_empty_list_when_unparseable(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_json_path = os.path.join(tmpdir, "runs.json")
+            with open(runs_json_path, "w") as f:
+                f.write("not json")
+            self.assertEqual(joblib.load_reference_matrix_cell_runs(runs_json_path), [])
+
+
 class AggregateReferenceMatrixCellTest(unittest.TestCase):
     def test_returns_parsed_rows_on_success(self):
         fake_stdout = "group,metric,n,min,max,mean,stddev,cv_percent,verdict\nipc,ipc,3,1.0,1.2,1.1,0.1,9.0,PASS\n"
