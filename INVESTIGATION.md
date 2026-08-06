@@ -1410,6 +1410,41 @@ source, since those were the specific trap worth getting right this pass; the re
 item 24's own residual entry. 16 `web/test_*.py` files green (12 new tests in `test_counter_text.py`),
 full `run_tests.sh` C matrix green.
 
+**wspy-archetype characterization for WordPress-recovered machines** (PR #208) — closes 4.3 item 23.
+Split, on reflection, into a pre-publish/post-publish distinction: `wspy-analyze`'s AI narrative is
+generated *before* a run is curated/published, from that run's own real local data — no WordPress
+angle there, no gap to close. The real opportunity was post-publish: making `wspy-testpoint render`'s
+"Workload characterization" section see peers it currently couldn't at all.
+
+Investigated `--nearest`/`--kmeans` as the entry point and ruled them out as bigger than needed —
+their coverage-aware distance already tolerates partial feature overlap, but z-score standardization
+is population-relative (computed once across whatever `load_feature_vectors()` loads from SQL), so an
+external vector can't be compared after the fact without joining that population first, a real
+`archetype.c` change. The section this item actually targets uses `--run` instead
+(`trace_run_archetype()`) — a *pure* rule-based classification (`score_snapshot()`) over a small fixed
+struct, no database or population statistics involved at all. Shipped the much smaller match: new
+`--run-guest <json-file>` mode on `archetype.c` that skips the database lookup entirely, builds that
+same struct directly from a flat JSON object (`json_reader.c`, now linked into `wspy-archetype`/
+`test_archetype`), and reuses `score_snapshot()` plus the exact same key=value output
+`print_scorecard_fields()` (factored out of `trace_run_archetype()`) already emits for `--run` —
+`wspy-testpoint`'s existing parser needed zero changes.
+
+`wspy-testpoint`'s `collect_wordpress_archetype_scorecards()` runs this for every machine published
+on WordPress for a test point other than the one being rendered, using item 21's
+`recover_machine_metrics_from_wordpress()` as the feature source, and `render_archetype_section()`
+renders the result as a visibly distinct "WordPress-recovered peers" table — never merged into the
+real stats-pool consistency verdict, same visible-provenance principle items 21/22 already
+established.
+
+Verified end to end against the real site: `amd-395-96gb` correctly classifies as compute-bound
+(40.6%), with `control_flow_style` correctly falling back to "unknown" — a direct, visible
+consequence of item 24's still-open residual (`branch_miss` vs. the real `branch_mispredict_pct`
+name), not a bug in this item. 5 new C tests (`test_archetype.c`), 12 new Python tests
+(`web/test_testpoint_archetype.py`, loading `wspy-testpoint` via `importlib` since it has no `.py`
+suffix — no prior precedent for unit-testing that script directly, established here). Full
+`run_tests.sh` C matrix green (clean rebuild, given this touches core C code), all 17 `web/test_*.py`
+files green.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -1634,40 +1669,6 @@ reasoning as Tier 1 above.
      link exists).
    - The `wspy-archetype --kmeans` / `wspy-analyze` analysis-feed hookup.
    - The 60+-column vocabulary audit against the external reference page.
-23. `wspy-archetype` characterization for WordPress-recovered machines with no local `wspy-store`
-    presence (raised 2026-08-05, design settled 2026-08-06). Split, on reflection, into a
-    pre-publish/post-publish distinction that matters: `wspy-analyze`'s AI narrative is generated
-    *before* a run is curated/published, from that run's own real local data — there's no WordPress
-    angle there at all, and no gap to close. The real opportunity is post-publish: `wspy-archetype`
-    characterizing a machine that's *only* known via already-published pages, making
-    `wspy-testpoint render`'s existing "Workload characterization" section (`collect_archetype_scorecards()`,
-    "Shipped since 4.2") more complete by including peers it currently can't see at all.
-    - **Why `--nearest`/`--kmeans` are the wrong entry point, on closer inspection.** Their
-      coverage-aware distance metric already tolerates partial feature overlap by design (good fit
-      for a WordPress-recovered vector's smaller feature set), but z-score standardization is
-      population-relative — computed once across whatever `load_feature_vectors()` loads from SQL —
-      so an external vector can't be meaningfully compared against already-standardized results after
-      the fact; it would need to join that population before standardization, a real `archetype.c`
-      change (a new `--guest-features <json>` input reusing `json_reader.c`, appended into the loaded
-      set before `compute_feature_stats()`). Not ruled out for later, but bigger than needed here.
-    - **The actual chosen entry point needs much less.** `wspy-testpoint`'s characterization section
-      uses `--run` (`trace_run_archetype()`), not `--nearest`/`--kmeans` — a *pure*, rule-based
-      classification (`score_snapshot()`) over a small fixed struct of raw topdown/cache percentages,
-      no database access or population statistics involved at all. Settled design: a new
-      `--run-guest <json-file>` mode on `archetype.c` that skips the `hostname:run_id` database
-      lookup entirely, builds that same struct directly from a flat JSON object (`json_reader.c`
-      already exposes an object's keys/values for direct iteration, no new JSON infra needed), and
-      reuses `score_snapshot()` plus the exact same key=value output format `--run` already emits —
-      `wspy-testpoint`'s existing parser needs zero changes. On the Python side, `collect_archetype_scorecards()`
-      gets extended to also build one JSON payload per WordPress-recovered machine (from item 21's
-      `recover_machine_metrics_from_wordpress()` output — a plain `{metric: mean}` subset; any key
-      `run_snapshot` doesn't recognize is just ignored) and run this new mode against it. Reported
-      *separately* from the real stats-pool consistency verdict (e.g. "N WordPress-recovered peer(s)
-      also classify as X"), not silently merged into it — same visibly-distinct-provenance principle
-      item 21/22 already established, and a real consequence of item 24's still-open residual: only
-      the topdown four (`retire_pct`/`frontend_pct`/`backend_pct`/`speculate_pct`) have exact-name
-      alignment today, so a WordPress-recovered scorecard will often be classified from less evidence
-      than a real stats-pool run until that audit widens coverage.
 24. **Generic comment-ratio parsing plus the topdown L1/L2 percentage table are shipped** (PR #207) —
     see "Shipped since 4.2". Still open: a full audit mapping every remaining per-1000-inst/miss-rate
     comment (cache/branch/TLB groups) to its real `wspy-summary` CSV column name — shipped names are
