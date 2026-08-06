@@ -1690,8 +1690,22 @@ reasoning as Tier 1 above.
      largely redundant with the per-test-point detail page sliced the other way.
    - Drill-down links from a cell to the individual runs behind it (today only the aggregate/detail
      link exists).
-   - The `wspy-archetype --kmeans` / `wspy-analyze` analysis-feed hookup.
-   - The 60+-column vocabulary audit against the external reference page.
+   - **Analysis-feed hookup, scope settled 2026-08-06:** surface characterization
+     (`resource_dominance`/`confidence`) on the reference-matrix pages themselves (today it only
+     exists on individual run report pages, via the curation studio's existing "Generate
+     characterization badge" button). `--run`/`--run-guest` (item 23), not `--kmeans` — `--kmeans`
+     clusters the *whole* store population, it doesn't map cleanly onto one test-point's narrow
+     cross-machine view, so a whole-population clustering surface (if wanted later) belongs as its
+     own separate item, not folded in here. New read-only `wspy-testpoint characterize` subcommand
+     (`--json`) wraps the already-built `collect_archetype_scorecards()`/
+     `collect_wordpress_archetype_scorecards()` (item 23) so `web/server.py` can reuse them without a
+     circular import (`wspy-testpoint` already imports `server.py`, not the other way around) —
+     `render_reference_test_point_detail()` shells out to it once per real local machine and renders
+     the result as header context next to each machine column, not a synthetic row mixed into the
+     numeric metric table. `wspy-analyze`'s own cluster-aware narrative (referencing a run's cluster
+     peers, not just its own numbers or one `--compare-rundir` other run) stays deferred, along with
+     the `--kmeans` whole-population view — this pass is the reference-matrix-surfacing half only.
+
 **Tier 4 — report-layer additions on data already collected in 4.0:**
 
 7. `--tree-open` → file-I/O topology summary (hot paths, open-failure rates, startup storms,
