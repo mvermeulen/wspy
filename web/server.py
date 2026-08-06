@@ -3338,7 +3338,10 @@ def render_reference_test_point_detail(cfg, suite, test, test_point):
     class, no verdict-based coloring -- that data has no wspy-summary reliability analysis behind it
     at all). Each machine column header also carries a resource_dominance/confidence characterization
     badge when available (characterize_reference_matrix_machines(), item 5's analysis-feed hookup) --
-    header context, not a row in the numeric metric table, since it isn't itself a comparable ratio."""
+    header context, not a row in the numeric metric table, since it isn't itself a comparable ratio.
+    Each local machine's header also links to render_reference_test_point_runs() (item 5's drill-down
+    links) -- a per-column link, not per-cell, since every metric in a machine's column is aggregated
+    from that same machine's exact stats-pool run set, not a per-metric one."""
     back_link = '<p><a href="/?active_tab=reference">Back to reference matrix</a></p>'
     report_root_path = resolve_report_root_for_web(cfg)
     cells = [c for c in joblib.enumerate_reference_matrix_cells(
@@ -3347,10 +3350,13 @@ def render_reference_test_point_detail(cfg, suite, test, test_point):
     title = f"{test} / {test_point}"
 
     by_machine = {}
+    run_counts = {}
     for c in cells:
         by_machine[c["machine"]] = joblib.aggregate_reference_matrix_cell(
             cfg["wspy_testpoint_bin"], cfg["store_db"], suite, c["benchmark"], c["machine"],
             report_root_path=cfg.get("report_root"), report_root_remote=cfg.get("report_root_remote"))
+        runs_json_path = os.path.join(report_root_path, suite, test, test_point, c["machine"], "runs.json")
+        run_counts[c["machine"]] = len(joblib.load_reference_matrix_cell_runs(runs_json_path))
 
     local_characterization, wp_characterization = characterize_reference_matrix_machines(cfg, cells)
 
@@ -3403,11 +3409,20 @@ def render_reference_test_point_detail(cfg, suite, test, test_point):
         return (f'<br><span class="muted">{html.escape(badge["resource_dominance"])} '
                 f'({html.escape(badge["confidence"])} confidence)</span>')
 
+    def runs_link(machine):
+        n = run_counts.get(machine, 0)
+        if not n:
+            return ""
+        label = "1 run" if n == 1 else f"{n} runs"
+        url = (f"/reference/{_urlescape(suite)}/{_urlescape(test)}/{_urlescape(test_point)}/"
+               f"{_urlescape(machine)}/runs")
+        return f' <a href="{url}" class="muted">({label})</a>'
+
     def header_cell(machine):
         if machine in wp_recovered:
             return (f'<th>{html.escape(machine)} '
                      f'<span class="muted">(from WordPress)</span>{characterization_badge(machine)}</th>')
-        return f"<th>{html.escape(machine)}{characterization_badge(machine)}</th>"
+        return f"<th>{html.escape(machine)}{runs_link(machine)}{characterization_badge(machine)}</th>"
 
     header_cells = "".join(header_cell(m) for m in machines)
     body_rows = "".join(
@@ -3428,6 +3443,57 @@ def render_reference_test_point_detail(cfg, suite, test, test_point):
      <code>wspy-summary</code> verdict (thin/noisy/mixed-pmu/mixed-env).{wp_note}</p>
   <table class="reference-matrix">
     <thead><tr><th>metric</th>{header_cells}</tr></thead>
+    <tbody>{body_rows}</tbody>
+  </table>
+  {back_link}
+</section>
+"""
+    return page(title, body)
+
+
+def render_reference_test_point_runs(cfg, suite, test, test_point, machine):
+    """The individual runs behind one reference-matrix cell's aggregate (INVESTIGATION.md 4.3 item 5's
+    drill-down links, reached from render_reference_test_point_detail()'s per-machine "(N runs)"
+    header link). Lists every entry in that (suite, test, test_point, machine)'s wspy-testpoint
+    runs.json -- not just the stats-pool subset aggregate_reference_matrix_cell() actually averages --
+    so a human can also see which runs were excluded/supplementary and why (each row's own `reason`,
+    from wspy-testpoint's compute_default_role()/apply_overrides()). A row links to its own report
+    page only when that run's output directory still exists locally: merge_roles() deliberately keeps
+    a run's role decision in runs.json even after its output directory is cleaned up from
+    --output-root (a historical record, not just a live view), so this link is conditional rather than
+    assumed."""
+    report_root_path = resolve_report_root_for_web(cfg)
+    runs_json_path = os.path.join(report_root_path, suite, test, test_point, machine, "runs.json")
+    runs = joblib.load_reference_matrix_cell_runs(runs_json_path)
+    detail_url = f"/reference/{_urlescape(suite)}/{_urlescape(test)}/{_urlescape(test_point)}"
+    back_link = f'<p><a href="{detail_url}">Back to {html.escape(test)} / {html.escape(test_point)}</a></p>'
+    title = f"{test} / {test_point} / {machine} -- runs"
+    if not runs:
+        return page("reference matrix", f'<section class="panel"><h1>{html.escape(title)}</h1>'
+                    f'<p class="muted">No runs.json here, or it has no runs recorded.</p>{back_link}</section>')
+
+    def row_html(r):
+        run_id, benchmark = r.get("run_id", ""), r.get("benchmark", "")
+        run_dir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+        if run_id and benchmark and os.path.isdir(run_dir):
+            report_url = f"/report/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+            run_cell = f'<a href="{report_url}">{html.escape(run_id)}</a>'
+        else:
+            run_cell = f'{html.escape(run_id)} <span class="muted">(output dir not found)</span>'
+        return (f"<tr><td>{run_cell}</td><td>{html.escape(r.get('hostname', ''))}</td>"
+                f"<td>{html.escape(r.get('status', ''))}</td><td>{html.escape(r.get('role', ''))}</td>"
+                f"<td>{html.escape(r.get('start_time', ''))}</td>"
+                f"<td class=\"muted\">{html.escape(r.get('reason', ''))}</td></tr>")
+
+    body_rows = "".join(row_html(r) for r in runs)
+    body = f"""
+<section class="panel">
+  <h1>{html.escape(title)}</h1>
+  <p class="muted">Every run wspy-testpoint select-runs has considered for this test point + machine,
+     not just the stats-pool rows the reference-matrix aggregate actually averages.</p>
+  <table class="reference-matrix">
+    <thead><tr><th>run</th><th>hostname</th><th>status</th><th>role</th><th>start time</th>
+      <th>reason</th></tr></thead>
     <tbody>{body_rows}</tbody>
   </table>
   {back_link}
@@ -4980,6 +5046,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, "invalid reference path")
                 return
             self._send(200, render_reference_test_point_detail(cfg, suite, test, test_point))
+            return
+
+        m = re.match(r"^/reference/([^/]+)/([^/]+)/([^/]+)/([^/]+)/runs$", path)
+        if m:
+            suite, test, test_point, machine = m.groups()
+            if not all(valid_segment(x) for x in (suite, test, test_point, machine)):
+                self._send(400, "invalid reference path")
+                return
+            self._send(200, render_reference_test_point_runs(cfg, suite, test, test_point, machine))
             return
 
         m = re.match(r"^/tree-viewer/([^/]+)/([^/]+)/([^/]+)$", path)

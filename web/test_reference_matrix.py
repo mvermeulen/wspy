@@ -2,8 +2,9 @@
 """
 web/test_reference_matrix.py -- unit tests for server.py's reference-matrix pieces
 (INVESTIGATION.md 4.3 Tier 3 item 5): resolve_reference_matrix_row_publish_status() (per-cell
-"already posted" lookup), render_reference_tab() (the overview), and
-render_reference_test_point_detail() (the cross-machine comparison page). Not wired into make
+"already posted" lookup), render_reference_tab() (the overview),
+render_reference_test_point_detail() (the cross-machine comparison page), and
+render_reference_test_point_runs() (the per-machine drill-down to individual runs). Not wired into make
 test/run_tests.sh, same "web/ is stdlib-only Python, not covered by the C toolchain's test targets"
 convention as the rest of web/test_*.py -- run standalone:
 
@@ -492,6 +493,117 @@ class RenderReferenceTestPointDetailTest(unittest.TestCase):
         # No crash, no badge -- the metric table itself still renders fine.
         self.assertIn("1.1", html_out)
         self.assertNotIn("confidence)", html_out)
+
+    def test_runs_link_appears_in_column_header_with_count(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            phoronix_dest = os.path.join(tmpdir, "phoronix")
+            info = materialize_fake_phoronix_point(phoronix_dest)
+            report_root_path = os.path.join(tmpdir, "report-root")
+            write_runs_json(report_root_path, "phoronix", info["bare_name"], info["options_slug"],
+                             "amd-395", [{"role": "stats-pool"}, {"role": "supplementary"}])
+
+            fake_csv = ("group,metric,n,min,max,mean,stddev,cv_percent,verdict\n"
+                        "ipc,ipc,2,1.0,1.2,1.1,0.05,4.5,PASS\n")
+
+            def fake_run(argv, capture_output, text, timeout=None):
+                if "characterize" in argv:
+                    raise OSError("characterize not mocked in this test")
+                return subprocess.CompletedProcess(argv, 0, stdout=fake_csv, stderr="")
+
+            cfg = {"report_root": report_root_path, "report_root_remote": None,
+                   "wspy_testpoint_bin": "wspy-testpoint", "store_db": "store.db"}
+            with patch("server.PHORONIX_DEST_ROOT", phoronix_dest), \
+                 patch("server.CPU2026_DEST_ROOT", os.path.join(tmpdir, "cpu2026")), \
+                 patch("joblib.subprocess.run", side_effect=fake_run), \
+                 patch("server.wp_client.load_config", return_value=None):
+                html_out = server.render_reference_test_point_detail(
+                    cfg, "phoronix", info["bare_name"], info["options_slug"])
+
+        self.assertIn("(2 runs)", html_out)
+        self.assertIn(f"/reference/phoronix/{info['bare_name']}/{info['options_slug']}/amd-395/runs",
+                       html_out)
+
+    def test_runs_link_absent_for_wordpress_only_machine(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_root_path = os.path.join(tmpdir, "report-root")
+            os.makedirs(report_root_path)
+            cfg = {"report_root": report_root_path, "report_root_remote": None,
+                   "wspy_testpoint_bin": "wspy-testpoint", "store_db": "store.db"}
+
+            def fake_status(wp_cfg, suite, test, test_point):
+                return {"amd-395-96gb": {"link": "https://example.org/x/", "status": "publish"}}
+
+            with patch("server.PHORONIX_DEST_ROOT", os.path.join(tmpdir, "phoronix")), \
+                 patch("server.CPU2026_DEST_ROOT", os.path.join(tmpdir, "cpu2026")), \
+                 patch("server.wp_client.load_config", return_value={"wordpress": {}}), \
+                 patch("server.resolve_reference_matrix_row_publish_status", side_effect=fake_status), \
+                 patch("server.recover_machine_metrics_from_wordpress",
+                       return_value=[{"metric": "elapsed", "n": "1", "min": "1.0", "max": "1.0",
+                                      "mean": "1.0", "stddev": "0"}]):
+                html_out = server.render_reference_test_point_detail(
+                    cfg, "phoronix", "coremark", "default")
+
+        self.assertNotIn("runs)", html_out)
+
+
+class RenderReferenceTestPointRunsTest(unittest.TestCase):
+    def test_no_runs_json_shows_message(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_root_path = os.path.join(tmpdir, "report-root")
+            os.makedirs(report_root_path)
+            html_out = server.render_reference_test_point_runs(
+                {"report_root": report_root_path, "output_root": tmpdir},
+                "phoronix", "coremark", "default", "amd-395")
+        self.assertIn("No runs.json here", html_out)
+
+    def test_lists_runs_with_role_status_and_reason(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_root_path = os.path.join(tmpdir, "report-root")
+            write_runs_json(report_root_path, "phoronix", "coremark", "default", "amd-395", [
+                {"run_id": "run1", "benchmark": "coremark", "hostname": "amd-395", "status": "done",
+                 "role": "stats-pool", "start_time": "2026-08-01T00:00:00", "reason": "majority pass-set"},
+                {"run_id": "run2", "benchmark": "coremark", "hostname": "amd-395", "status": "failed",
+                 "role": "excluded", "start_time": "2026-08-02T00:00:00", "reason": "status=failed"},
+            ])
+            html_out = server.render_reference_test_point_runs(
+                {"report_root": report_root_path, "output_root": tmpdir},
+                "phoronix", "coremark", "default", "amd-395")
+
+        self.assertIn("run1", html_out)
+        self.assertIn("stats-pool", html_out)
+        self.assertIn("majority pass-set", html_out)
+        self.assertIn("run2", html_out)
+        self.assertIn("excluded", html_out)
+        self.assertIn("status=failed", html_out)
+
+    def test_run_links_to_report_when_output_dir_exists(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_root_path = os.path.join(tmpdir, "report-root")
+            write_runs_json(report_root_path, "phoronix", "coremark", "default", "amd-395", [
+                {"run_id": "run1", "benchmark": "coremark", "hostname": "amd-395", "status": "done",
+                 "role": "stats-pool", "start_time": "2026-08-01T00:00:00", "reason": "majority pass-set"},
+            ])
+            os.makedirs(os.path.join(tmpdir, "phoronix", "coremark", "run1"))
+            html_out = server.render_reference_test_point_runs(
+                {"report_root": report_root_path, "output_root": tmpdir},
+                "phoronix", "coremark", "default", "amd-395")
+
+        self.assertIn("/report/phoronix/coremark/run1", html_out)
+        self.assertNotIn("output dir not found", html_out)
+
+    def test_run_shows_not_found_when_output_dir_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_root_path = os.path.join(tmpdir, "report-root")
+            write_runs_json(report_root_path, "phoronix", "coremark", "default", "amd-395", [
+                {"run_id": "run1", "benchmark": "coremark", "hostname": "amd-395", "status": "done",
+                 "role": "stats-pool", "start_time": "2026-08-01T00:00:00", "reason": "majority pass-set"},
+            ])
+            html_out = server.render_reference_test_point_runs(
+                {"report_root": report_root_path, "output_root": tmpdir},
+                "phoronix", "coremark", "default", "amd-395")
+
+        self.assertIn("output dir not found", html_out)
+        self.assertNotIn("/report/phoronix/coremark/run1", html_out)
 
 
 if __name__ == "__main__":
