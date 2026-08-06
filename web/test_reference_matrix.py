@@ -3,8 +3,9 @@
 web/test_reference_matrix.py -- unit tests for server.py's reference-matrix pieces
 (INVESTIGATION.md 4.3 Tier 3 item 5): resolve_reference_matrix_row_publish_status() (per-cell
 "already posted" lookup), render_reference_tab() (the overview),
-render_reference_test_point_detail() (the cross-machine comparison page), and
-render_reference_test_point_runs() (the per-machine drill-down to individual runs). Not wired into make
+render_reference_test_point_detail() (the cross-machine comparison page),
+render_reference_test_point_runs() (the per-machine drill-down to individual runs), and
+render_reference_by_machine() (the "by machine" view, item 5's last open piece). Not wired into make
 test/run_tests.sh, same "web/ is stdlib-only Python, not covered by the C toolchain's test targets"
 convention as the rest of web/test_*.py -- run standalone:
 
@@ -148,6 +149,8 @@ class RenderReferenceTabTest(unittest.TestCase):
         self.assertIn("2 run(s)", html_out)
         self.assertIn(f"/reference/phoronix/{info['bare_name']}/{info['options_slug']}", html_out)
         self.assertIn("Discover from WordPress", html_out)
+        self.assertIn("By machine", html_out)
+        self.assertIn("/reference/phoronix/by-machine/amd-395", html_out)
 
     def test_publish_status_badge_shown_when_wordpress_configured(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -172,6 +175,88 @@ class RenderReferenceTabTest(unittest.TestCase):
 
         self.assertIn("badge-published", html_out)
         self.assertIn("https://example.org/amd-395/", html_out)
+
+
+class RenderReferenceByMachineTest(unittest.TestCase):
+    def test_no_curated_run_set_shows_message(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_root_path = os.path.join(tmpdir, "report-root")
+            os.makedirs(report_root_path)
+            with patch("server.PHORONIX_DEST_ROOT", os.path.join(tmpdir, "phoronix")), \
+                 patch("server.CPU2026_DEST_ROOT", os.path.join(tmpdir, "cpu2026")):
+                html_out = server.render_reference_by_machine(
+                    {"report_root": report_root_path}, "phoronix", "amd-395")
+        self.assertIn("No curated run set for this machine", html_out)
+
+    def test_renders_test_point_rows_across_metric_columns(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            phoronix_dest = os.path.join(tmpdir, "phoronix")
+            info1 = materialize_fake_phoronix_point(phoronix_dest, bare_name="coremark")
+            info2 = materialize_fake_phoronix_point(phoronix_dest, bare_name="stream")
+            report_root_path = os.path.join(tmpdir, "report-root")
+            write_runs_json(report_root_path, "phoronix", info1["bare_name"], info1["options_slug"],
+                             "amd-395", [{"role": "stats-pool"}])
+            write_runs_json(report_root_path, "phoronix", info2["bare_name"], info2["options_slug"],
+                             "amd-395", [{"role": "stats-pool"}])
+
+            fake_csv = ("group,metric,n,min,max,mean,stddev,cv_percent,verdict\n"
+                        "ipc,ipc,2,1.0,1.2,1.1,0.05,4.5,PASS\n")
+
+            def fake_run(argv, capture_output, text, timeout=None):
+                return subprocess.CompletedProcess(argv, 0, stdout=fake_csv, stderr="")
+
+            cfg = {"report_root": report_root_path, "report_root_remote": None,
+                   "wspy_testpoint_bin": "wspy-testpoint", "store_db": "store.db"}
+            with patch("server.PHORONIX_DEST_ROOT", phoronix_dest), \
+                 patch("server.CPU2026_DEST_ROOT", os.path.join(tmpdir, "cpu2026")), \
+                 patch("joblib.subprocess.run", side_effect=fake_run):
+                html_out = server.render_reference_by_machine(cfg, "phoronix", "amd-395")
+
+        self.assertIn("coremark", html_out)
+        self.assertIn("stream", html_out)
+        self.assertIn("1.1", html_out)
+        self.assertIn(f"/reference/phoronix/{info1['bare_name']}/{info1['options_slug']}", html_out)
+        self.assertIn(f"/reference/phoronix/{info2['bare_name']}/{info2['options_slug']}", html_out)
+
+    def test_non_pass_verdict_gets_warn_class(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            phoronix_dest = os.path.join(tmpdir, "phoronix")
+            info = materialize_fake_phoronix_point(phoronix_dest)
+            report_root_path = os.path.join(tmpdir, "report-root")
+            write_runs_json(report_root_path, "phoronix", info["bare_name"], info["options_slug"],
+                             "amd-395", [{"role": "stats-pool"}])
+
+            fake_csv = ("group,metric,n,min,max,mean,stddev,cv_percent,verdict\n"
+                        "ipc,ipc,2,1.0,1.2,1.1,0.05,4.5,WARN:noisy\n")
+
+            def fake_run(argv, capture_output, text, timeout=None):
+                return subprocess.CompletedProcess(argv, 0, stdout=fake_csv, stderr="")
+
+            cfg = {"report_root": report_root_path, "report_root_remote": None,
+                   "wspy_testpoint_bin": "wspy-testpoint", "store_db": "store.db"}
+            with patch("server.PHORONIX_DEST_ROOT", phoronix_dest), \
+                 patch("server.CPU2026_DEST_ROOT", os.path.join(tmpdir, "cpu2026")), \
+                 patch("joblib.subprocess.run", side_effect=fake_run):
+                html_out = server.render_reference_by_machine(cfg, "phoronix", "amd-395")
+
+        self.assertIn("metric-warn", html_out)
+
+    def test_aggregation_failure_shows_message_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            phoronix_dest = os.path.join(tmpdir, "phoronix")
+            info = materialize_fake_phoronix_point(phoronix_dest)
+            report_root_path = os.path.join(tmpdir, "report-root")
+            write_runs_json(report_root_path, "phoronix", info["bare_name"], info["options_slug"],
+                             "amd-395", [{"role": "stats-pool"}])
+
+            cfg = {"report_root": report_root_path, "report_root_remote": None,
+                   "wspy_testpoint_bin": "wspy-testpoint", "store_db": "store.db"}
+            with patch("server.PHORONIX_DEST_ROOT", phoronix_dest), \
+                 patch("server.CPU2026_DEST_ROOT", os.path.join(tmpdir, "cpu2026")), \
+                 patch("joblib.subprocess.run", side_effect=OSError("no such file")):
+                html_out = server.render_reference_by_machine(cfg, "phoronix", "amd-395")
+
+        self.assertIn("failed or produced no rows", html_out)
 
 
 class CharacterizeReferenceMatrixMachinesTest(unittest.TestCase):

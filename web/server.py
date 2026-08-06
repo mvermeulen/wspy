@@ -3228,6 +3228,8 @@ def render_reference_tab(cfg):
             f"<tr><td>{html.escape(suite)}</td><td>{html.escape(test)}</td>"
             f"<td>{html.escape(test_point)}</td>{''.join(cell_html)}</tr>")
 
+    by_machine_panel = render_reference_by_machine_panel(cells)
+
     return f"""
 <section class="panel">
   <h2>Reference matrix</h2>
@@ -3238,8 +3240,32 @@ def render_reference_tab(cfg):
     <thead><tr><th>suite</th><th>test</th><th>test point</th>{header_cells}</tr></thead>
     <tbody>{"".join(body_rows)}</tbody>
   </table>
+  {by_machine_panel}
   {discover_panel}
 </section>
+"""
+
+
+def render_reference_by_machine_panel(cells):
+    """Link chips into render_reference_by_machine() -- one entry per (suite, machine) pair that has
+    at least one reference-matrix cell (INVESTIGATION.md 4.3 item 5's own "by machine" sub-bullet,
+    the item's last open piece). Scoped per suite rather than one global cross-suite view: different
+    suites collect different metric sets, so a single machine's row would need column-union across
+    suites for no real benefit -- the author's own external reference page this item is modeled on
+    (mvermeulen.org/perf/workloads/<suite>/) is one table per suite for the same reason."""
+    pairs = sorted({(c["suite"], c["machine"]) for c in cells})
+    if not pairs:
+        return ""
+    chips = "".join(
+        f'<a class="badge" href="/reference/{_urlescape(suite)}/by-machine/{_urlescape(machine)}">'
+        f'{html.escape(suite)} / {html.escape(machine)}</a>'
+        for suite, machine in pairs
+    )
+    return f"""
+<h3>By machine</h3>
+<p class="muted">Same per-cell aggregation as the table above, sliced the other way -- one machine's
+   metrics across every test point in a suite, rather than one test point across every machine.</p>
+<div class="chips">{chips}</div>
 """
 
 
@@ -3494,6 +3520,81 @@ def render_reference_test_point_runs(cfg, suite, test, test_point, machine):
   <table class="reference-matrix">
     <thead><tr><th>run</th><th>hostname</th><th>status</th><th>role</th><th>start time</th>
       <th>reason</th></tr></thead>
+    <tbody>{body_rows}</tbody>
+  </table>
+  {back_link}
+</section>
+"""
+    return page(title, body)
+
+
+def render_reference_by_machine(cfg, suite, machine):
+    """"By machine" view for one machine within one suite -- INVESTIGATION.md 4.3 item 5's own
+    "by machine" sub-bullet, its last open piece (reached from render_reference_by_machine_panel()'s
+    chip links). The same per-cell aggregation as render_reference_test_point_detail(), sliced along
+    the other axis: rows are this machine's test points, columns are metrics -- reuses
+    aggregate_reference_matrix_cell() unchanged, since it's already keyed by (suite, benchmark,
+    machine) regardless of which axis a caller iterates. Deliberately narrower than the cross-machine
+    detail page: no WordPress-recovery merge (that page's item 21 integration is about filling in
+    *other* machines missing local data, not relevant when the machine is already fixed and known
+    locally) and no characterization badges (item 5's analysis-feed hookup is a per-machine header
+    context on the cross-machine page; here every row is already the same one machine, so it would
+    just repeat once per row for no benefit) -- both stay reachable via the existing per-test-point
+    detail page this view links each row to."""
+    report_root_path = resolve_report_root_for_web(cfg)
+    cells = [c for c in joblib.enumerate_reference_matrix_cells(
+                 report_root_path, PHORONIX_DEST_ROOT, CPU2026_DEST_ROOT)
+             if c["suite"] == suite and c["machine"] == machine]
+    back_link = '<p><a href="/?active_tab=reference">Back to reference matrix</a></p>'
+    title = f"{machine} -- {suite}"
+    if not cells:
+        return page("reference matrix", f'<section class="panel"><h1>{html.escape(title)}</h1>'
+                    f'<p class="muted">No curated run set for this machine in this suite.</p>'
+                    f'{back_link}</section>')
+
+    by_test_point = {}
+    for c in cells:
+        by_test_point[(c["test"], c["test_point"])] = joblib.aggregate_reference_matrix_cell(
+            cfg["wspy_testpoint_bin"], cfg["store_db"], suite, c["benchmark"], machine,
+            report_root_path=cfg.get("report_root"), report_root_remote=cfg.get("report_root_remote"))
+
+    test_points = sorted(by_test_point.keys())
+    metrics = sorted({r["metric"] for rows in by_test_point.values() if rows for r in rows})
+    if not metrics:
+        return page("reference matrix", f'<section class="panel"><h1>{html.escape(title)}</h1>'
+                    '<p class="muted">Every test point\'s aggregation failed or produced no rows -- '
+                    'see <code>wspy-testpoint aggregate</code> directly for the underlying error.</p>'
+                    f'{back_link}</section>')
+
+    def cell_html(test_point_key, metric):
+        rows = by_test_point.get(test_point_key)
+        if not rows:
+            return '<td class="muted">no data</td>'
+        for r in rows:
+            if r["metric"] == metric:
+                cls = "metric-warn" if r.get("verdict") != "PASS" else ""
+                mean, n = html.escape(r.get("mean", "")), html.escape(r.get("n", ""))
+                return f'<td class="{cls}">{mean} <span class="muted">(n={n})</span></td>'
+        return '<td class="muted">&mdash;</td>'
+
+    def row_header(test_point_key):
+        test, test_point = test_point_key
+        detail_url = f"/reference/{_urlescape(suite)}/{_urlescape(test)}/{_urlescape(test_point)}"
+        return f'<td><a href="{detail_url}">{html.escape(test)} / {html.escape(test_point)}</a></td>'
+
+    header_cells = "".join(f"<th>{html.escape(m)}</th>" for m in metrics)
+    body_rows = "".join(
+        f"<tr>{row_header(tp)}" + "".join(cell_html(tp, m) for m in metrics) + "</tr>"
+        for tp in test_points)
+    body = f"""
+<section class="panel">
+  <h1>{html.escape(title)}</h1>
+  <p class="muted">This machine's stats-pool aggregation across every test point in {html.escape(suite)}
+     it has a curated run set for. Cells in red carry a non-PASS <code>wspy-summary</code> verdict
+     (thin/noisy/mixed-pmu/mixed-env). Click a test point for the cross-machine comparison (and
+     drill-down to individual runs) instead.</p>
+  <table class="reference-matrix">
+    <thead><tr><th>test point</th>{header_cells}</tr></thead>
     <tbody>{body_rows}</tbody>
   </table>
   {back_link}
@@ -5037,6 +5138,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, "no such report")
             else:
                 self._send(200, out)
+            return
+
+        m = re.match(r"^/reference/([^/]+)/by-machine/([^/]+)$", path)
+        if m:
+            suite, machine = m.groups()
+            if not all(valid_segment(x) for x in (suite, machine)):
+                self._send(400, "invalid reference path")
+                return
+            self._send(200, render_reference_by_machine(cfg, suite, machine))
             return
 
         m = re.match(r"^/reference/([^/]+)/([^/]+)/([^/]+)$", path)
