@@ -2093,6 +2093,97 @@ def recover_machine_metrics_from_wordpress(wp_cfg, suite, test, test_point, mach
     return rows
 
 
+REFERENCE_MATRIX_SUITES = ("phoronix", "cpu2026")
+
+
+def discover_wordpress_matrix_rows(wp_cfg, suite, progress=None):
+    """INVESTIGATION.md 4.3 item 22: full top-down discovery of every (suite, test, test_point,
+    machine) combination published on WordPress under `suite`, independent of local
+    runs.json/wspy-store presence entirely -- item 21's recover_machine_metrics_from_wordpress()
+    only ever fills a gap in a *row the caller already knows about*; this is what finds a row with
+    no local trace at all. Existence only (per settled scope): stops at the machine-level page,
+    never lists that machine's own run-id children or recovers any metrics -- both stay deferred to
+    render_reference_test_point_detail()'s own existing per-row WordPress-merge logic (item 21),
+    triggered lazily only if a human actually opens that row's detail page.
+
+    A real site can have (confirmed live, 2026-08-05) ~100 test-level pages per suite, each
+    potentially with several test-points and machines -- this is one `list_child_pages()` call per
+    test page plus one per test-point page, easily hundreds of WordPress round trips for a whole
+    suite. progress(), if given, is called with a human-readable string after each test page
+    finishes, for a caller to relay as background-job progress (execute_discovery() below).
+
+    Returns a list of {suite, test, test_point, machine} dicts, one per machine-level page found --
+    deliberately not filtered against local presence; that's the caller's job (comparing against
+    joblib.enumerate_reference_matrix_cells()'s own local-only set)."""
+    if not wp_cfg:
+        return []
+    wp = wp_cfg["wordpress"]
+    site_url, username, app_password = wp["site_url"], wp["username"], wp["app_password"]
+
+    suite_page = wp_client.find_page(site_url, username, app_password, suite, 0)
+    if not suite_page:
+        return []
+
+    rows = []
+    test_pages = wp_client.list_child_pages(site_url, username, app_password, suite_page["id"])
+    for i, test_page in enumerate(test_pages):
+        if progress:
+            progress("scanning %s/%s (%d/%d)..." % (suite, test_page["slug"], i + 1, len(test_pages)))
+        test_point_pages = wp_client.list_child_pages(site_url, username, app_password, test_page["id"])
+        for test_point_page in test_point_pages:
+            machine_pages = wp_client.list_child_pages(
+                site_url, username, app_password, test_point_page["id"])
+            for machine_page in machine_pages:
+                rows.append({"suite": suite, "test": test_page["slug"],
+                             "test_point": test_point_page["slug"], "machine": machine_page["slug"]})
+    return rows
+
+
+class DiscoveryState:
+    """Same running/lines/status shape as joblib.RunState (SSE relay for a background job), but
+    keyed by suite name alone (discover_wordpress_matrix_rows() has no per-run identity at all) and
+    carrying the crawl's own result rows instead of a report_url -- a report_url means nothing for a
+    discovery job, so reusing RunState's finish(status, report_url) as-is would just be repurposing
+    that field to mean something else, more confusing than a small dedicated class."""
+    def __init__(self):
+        self.lines = []
+        self.status = "running"  # running | done | error
+        self.rows = []
+        self.cond = threading.Condition()
+
+    def append(self, line):
+        with self.cond:
+            self.lines.append(line)
+            self.cond.notify_all()
+
+    def finish(self, status, rows=None):
+        with self.cond:
+            self.status = status
+            self.rows = rows or []
+            self.cond.notify_all()
+
+
+DISCOVERY_RUNS = {}
+DISCOVERY_RUNS_LOCK = threading.Lock()
+
+
+def execute_discovery(state, wp_cfg, suite):
+    """Runs discover_wordpress_matrix_rows() in a background thread (the Reference tab's "Discover
+    from WordPress" button, item 22), relaying progress the same way execute_analyze()/
+    execute_testpoint_publish() relay theirs -- state.append() for each line, state.finish() once,
+    from whichever thread actually does the work."""
+    def emit(line):
+        state.append(line)
+    try:
+        rows = discover_wordpress_matrix_rows(wp_cfg, suite, progress=emit)
+    except wp_client.WPError as e:
+        emit("[error] %s" % e)
+        state.finish("error")
+        return
+    emit("done -- found %d machine-level page(s) under %s" % (len(rows), suite))
+    state.finish("done", rows)
+
+
 def render_publish_panel(suite, benchmark, run_id, title):
     """The "Publish to WordPress" form on the export page's wordpress tab
     -- a UI trigger over the same primitives `wspy-publish publish-page
@@ -3080,12 +3171,14 @@ def render_reference_tab(cfg):
     own "Column vocabulary" bullet defers picking specific overview metrics to a later pass anyway."""
     report_root_path = resolve_report_root_for_web(cfg)
     cells = joblib.enumerate_reference_matrix_cells(report_root_path, PHORONIX_DEST_ROOT, CPU2026_DEST_ROOT)
+    discover_panel = render_reference_discover_panel()
     if not cells:
         return (
             '<section class="panel"><h2>Reference matrix</h2>'
             '<p class="muted">No test points have a curated run set yet &mdash; run '
             '<code>wspy-testpoint select-runs</code> (or the report page\'s "Publish test-point '
-            "report\" button) for at least one machine first.</p></section>"
+            "report\" button) for at least one machine first.</p>"
+            f"{discover_panel}</section>"
         )
 
     rows = {}
@@ -3130,7 +3223,33 @@ def render_reference_tab(cfg):
     <thead><tr><th>suite</th><th>test</th><th>test point</th>{header_cells}</tr></thead>
     <tbody>{"".join(body_rows)}</tbody>
   </table>
+  {discover_panel}
 </section>
+"""
+
+
+def render_reference_discover_panel():
+    """"Discover from WordPress" panel (INVESTIGATION.md 4.3 item 22), one button per
+    REFERENCE_MATRIX_SUITES entry -- finds test points published on WordPress with no local
+    run-selection trace at all, existence only (no metrics pulled during discovery itself; opening a
+    discovered row's own detail page recovers its real numbers via item 21's already-existing
+    per-row WordPress merge). Kept as its own small function since render_reference_tab() renders it
+    from two different return points (the "no local rows at all" early return, and the normal
+    table view) and it shouldn't drift into two slightly different copies."""
+    buttons = "".join(
+        f'<button type="button" class="reference-discover-btn" data-suite="{html.escape(s)}">'
+        f'Discover {html.escape(s)}</button>'
+        for s in REFERENCE_MATRIX_SUITES
+    )
+    return f"""
+<h3>Discover from WordPress</h3>
+<p class="muted">Finds test points already published on WordPress with no local
+   <code>runs.json</code> at all (existence only -- no metrics pulled here; open a discovered
+   row's detail page afterwards to recover its real numbers). Can take a while on a large site
+   (one WordPress call per test/test-point page).</p>
+<div class="chips">{buttons}</div>
+<pre id="reference-discover-log" class="live-output" hidden></pre>
+<div id="reference-discover-result"></div>
 """
 
 
@@ -4949,6 +5068,11 @@ class Handler(BaseHTTPRequestHandler):
                                  make_report_url=False)
             return
 
+        m = re.match(r"^/api/reference-discover/([^/]+)/events$", path)
+        if m:
+            self._stream_discovery_events(*m.groups())
+            return
+
         self._send(404, "not found")
 
     def do_POST(self):
@@ -5064,6 +5188,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "invalid JSON body"})
                 return
             self._start_testpoint_publish(cfg, suite, benchmark, run_id, body)
+            return
+
+        m = re.match(r"^/api/reference-discover/([^/]+)$", parsed.path)
+        if m:
+            suite, = m.groups()
+            if suite not in REFERENCE_MATRIX_SUITES:
+                self._send_json(400, {"error": "unknown suite %r" % suite})
+                return
+            self._start_reference_discovery(suite)
             return
 
         m = re.match(r"^/api/proctree-views/([^/]+)/([^/]+)/([^/]+)$", parsed.path)
@@ -5723,6 +5856,23 @@ class Handler(BaseHTTPRequestHandler):
             "events_url": f"/api/testpoint-publish/{suite}/{benchmark}/{run_id}/events",
             "command": shell_preview(select_runs_argv) + " && " + shell_preview(render_argv),
         })
+
+    def _start_reference_discovery(self, suite):
+        """Reference tab's "Discover from WordPress" button (item 22): kicks off
+        discover_wordpress_matrix_rows() in a background thread, streamed over SSE via
+        DISCOVERY_RUNS the same way the AI-analysis/testpoint-publish buttons use their own
+        registries -- keyed by suite alone (no per-run identity exists here at all)."""
+        wp_cfg = wp_client.load_config()
+        if not wp_cfg:
+            self._send_json(400, {"error": "no WordPress credentials configured -- run "
+                                            "./wspy-publish configure from a terminal first"})
+            return
+        state = DiscoveryState()
+        with DISCOVERY_RUNS_LOCK:
+            DISCOVERY_RUNS[suite] = state
+        t = threading.Thread(target=execute_discovery, args=(state, wp_cfg, suite), daemon=True)
+        t.start()
+        self._send_json(202, {"suite": suite, "events_url": f"/api/reference-discover/{suite}/events"})
 
     def _preview(self, cfg, body):
         """Source of truth for the Run tab's command-line preview -- shares
@@ -6444,6 +6594,49 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(
                         f"event: done\ndata: {json.dumps(payload)}\n\n".encode()
                     )
+                    self.wfile.flush()
+                    break
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _stream_discovery_events(self, suite):
+        """SSE relay for the Reference tab's "Discover from WordPress" button (item 22) --
+        DISCOVERY_RUNS is keyed by suite alone, so this can't reuse _stream_events() above (built
+        around a 3-part (suite, benchmark, run_id) key and a report_url payload that means nothing
+        for a discovery job); otherwise the same relay loop, and its own "done" payload carries the
+        crawl's discovered rows instead."""
+        with DISCOVERY_RUNS_LOCK:
+            state = DISCOVERY_RUNS.get(suite)
+        if state is None:
+            self._send(404, "no such discovery run")
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+        sent = 0
+        try:
+            while True:
+                with state.cond:
+                    state.cond.wait_for(
+                        lambda: len(state.lines) > sent or state.status != "running",
+                        timeout=15,
+                    )
+                    pending = state.lines[sent:]
+                    sent = len(state.lines)
+                    status = state.status
+                    rows = state.rows
+                for line in pending:
+                    self.wfile.write(f"event: log\ndata: {json.dumps(line)}\n\n".encode())
+                if not pending:
+                    self.wfile.write(b": keep-alive\n\n")
+                self.wfile.flush()
+                if status != "running" and sent >= len(state.lines):
+                    payload = {"status": status, "rows": rows}
+                    self.wfile.write(f"event: done\ndata: {json.dumps(payload)}\n\n".encode())
                     self.wfile.flush()
                     break
         except (BrokenPipeError, ConnectionResetError):

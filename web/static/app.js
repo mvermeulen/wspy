@@ -1049,6 +1049,84 @@
   // chips -- there's nothing to discover here, --machine is always
   // human-typed (doc/REPORT_HIERARCHY.md's own naming is "deliberately
   // informal" with no lookup table to offer choices from).
+  // Reference tab's "Discover from WordPress" buttons (item 22) -- one button per suite
+  // (data-suite, server-rendered from REFERENCE_MATRIX_SUITES). Same POST-then-EventSource shape as
+  // wireTestpointPublishButton() below, except the "done" payload carries the crawl's own discovered
+  // rows instead of a report_url, rendered here as a plain list of links into each row's detail page
+  // (/reference/<suite>/<test>/<test_point> -- item 21's own per-row page already knows how to merge
+  // in a WordPress-only machine once it's reachable at all).
+  function wireReferenceDiscoverButtons() {
+    var buttons = document.querySelectorAll(".reference-discover-btn");
+    if (!buttons.length) return;
+    var logEl = byId("reference-discover-log");
+    var resultEl = byId("reference-discover-result");
+
+    function renderRows(rows) {
+      if (!rows.length) {
+        resultEl.textContent = "No new test points found -- everything published is already " +
+          "reflected locally.";
+        return;
+      }
+      var byRow = {};
+      rows.forEach(function (r) {
+        var key = r.suite + "/" + r.test + "/" + r.test_point;
+        if (!byRow[key]) byRow[key] = { suite: r.suite, test: r.test, test_point: r.test_point, machines: [] };
+        byRow[key].machines.push(r.machine);
+      });
+      var items = Object.keys(byRow).map(function (key) {
+        var row = byRow[key];
+        var url = "/reference/" + encodeURIComponent(row.suite) + "/" +
+          encodeURIComponent(row.test) + "/" + encodeURIComponent(row.test_point);
+        return "<li>" + row.suite + " / " + row.test + " / " + row.test_point +
+          " (machines: " + row.machines.join(", ") + ") -- <a href=\"" + url + "\">view</a></li>";
+      });
+      resultEl.innerHTML = "<p>Found " + Object.keys(byRow).length +
+        " new test point(s) not in your local report-root:</p><ul>" + items.join("") + "</ul>";
+    }
+
+    buttons.forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var suite = btn.dataset.suite;
+        buttons.forEach(function (b) { b.disabled = true; });
+        resultEl.textContent = "";
+        logEl.hidden = false;
+        logEl.textContent = "";
+
+        fetch("/api/reference-discover/" + encodeURIComponent(suite), { method: "POST" })
+          .then(function (resp) {
+            return resp.json().then(function (data) {
+              if (!resp.ok) throw new Error(data.error || ("HTTP " + resp.status));
+              return data;
+            });
+          })
+          .then(function (data) {
+            var es = new EventSource(data.events_url);
+            es.addEventListener("log", function (ev) {
+              logEl.textContent += JSON.parse(ev.data) + "\n";
+              logEl.scrollTop = logEl.scrollHeight;
+            });
+            es.addEventListener("done", function (ev) {
+              var payload = JSON.parse(ev.data);
+              es.close();
+              buttons.forEach(function (b) { b.disabled = false; });
+              if (payload.status === "done") {
+                renderRows(payload.rows || []);
+              } else {
+                resultEl.textContent = "Discovery finished with errors -- see output above.";
+              }
+            });
+            es.onerror = function () {
+              buttons.forEach(function (b) { b.disabled = false; });
+            };
+          })
+          .catch(function (err) {
+            buttons.forEach(function (b) { b.disabled = false; });
+            resultEl.textContent = "Error: " + err.message;
+          });
+      });
+    });
+  }
+
   function wireTestpointPublishButton() {
     var runButton = byId("testpoint-publish-run");
     var logEl = byId("testpoint-publish-log");
@@ -1646,6 +1724,7 @@
   wireDiscoveryTab();
   wireAnalyzeForm();
   wireTestpointPublishButton();
+  wireReferenceDiscoverButtons();
   wireProctreeViewsButton();
   wirePhoronixTab();
   wireCpu2026Tab();

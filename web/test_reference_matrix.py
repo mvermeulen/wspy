@@ -98,6 +98,15 @@ def write_runs_json(report_root_path, suite, test, test_point, machine, runs):
         json.dump({"runs": runs}, f)
 
 
+class RenderReferenceDiscoverPanelTest(unittest.TestCase):
+    def test_one_button_per_reference_matrix_suite(self):
+        html_out = server.render_reference_discover_panel()
+        for suite in server.REFERENCE_MATRIX_SUITES:
+            self.assertIn(f'data-suite="{suite}"', html_out)
+        self.assertIn("reference-discover-log", html_out)
+        self.assertIn("reference-discover-result", html_out)
+
+
 class RenderReferenceTabTest(unittest.TestCase):
     def test_no_cells_shows_placeholder(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -107,6 +116,18 @@ class RenderReferenceTabTest(unittest.TestCase):
                  patch("server.CPU2026_DEST_ROOT", os.path.join(tmpdir, "cpu2026")):
                 html_out = server.render_reference_tab({"report_root": report_root_path})
         self.assertIn("No test points have a curated run set yet", html_out)
+
+    def test_no_cells_still_shows_discover_panel(self):
+        # Item 22's whole point: this is exactly the state (no local rows at all) discovery is meant
+        # to help with, so the button must still be reachable here, not just once rows already exist.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_root_path = os.path.join(tmpdir, "report-root")
+            os.makedirs(report_root_path)
+            with patch("server.PHORONIX_DEST_ROOT", os.path.join(tmpdir, "phoronix")), \
+                 patch("server.CPU2026_DEST_ROOT", os.path.join(tmpdir, "cpu2026")):
+                html_out = server.render_reference_tab({"report_root": report_root_path})
+        self.assertIn("Discover from WordPress", html_out)
+        self.assertIn("reference-discover-btn", html_out)
 
     def test_shows_run_count_and_links_to_detail(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -125,6 +146,7 @@ class RenderReferenceTabTest(unittest.TestCase):
         self.assertIn("amd-395", html_out)
         self.assertIn("2 run(s)", html_out)
         self.assertIn(f"/reference/phoronix/{info['bare_name']}/{info['options_slug']}", html_out)
+        self.assertIn("Discover from WordPress", html_out)
 
     def test_publish_status_badge_shown_when_wordpress_configured(self):
         with tempfile.TemporaryDirectory() as tmpdir:
