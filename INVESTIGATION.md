@@ -1347,6 +1347,35 @@ exists. Verified end to end against the real site (read-only): recovered 77 real
 WordPress-recovered columns together correctly. 18 `web/test_*.py` files green (2 new:
 `test_counter_text.py`, `test_wordpress_recovery.py`), full `run_tests.sh` C matrix green.
 
+**Full top-down WordPress discovery for the reference matrix** (PR #206) — closes 4.3 item 22, the
+other item 21 follow-up: a "Discover from WordPress" button per suite in the Reference tab finds test
+points published on WordPress with no local `runs.json` anywhere, rather than item 21's per-row
+recovery, which only ever fills a gap in a row already known locally.
+`server.discover_wordpress_matrix_rows()` walks `suite → test → test-point → machine`
+(`list_child_pages()` at each level), stopping at the machine-level page — existence only, resolving
+the item's own settled scope: never lists run-id children or recovers metrics, both stay deferred to
+`render_reference_test_point_detail()`'s already-existing per-row WordPress merge (item 21), triggered
+lazily only if a human opens that row's detail page afterwards.
+
+Resolved the item's other open question (cost) by running as a background thread
+(`DiscoveryState`/`DISCOVERY_RUNS`, same SSE-relay shape as `execute_analyze()`/
+`execute_testpoint_publish()`, keyed by suite name alone since there's no per-run identity here)
+rather than on every tab load — confirmed necessary, not theoretical: a real crawl of one suite
+(cpu2026, 52 test pages) took 50 seconds against the live site. New
+`/api/reference-discover/<suite>` (POST, starts the job) and `/api/reference-discover/<suite>/events`
+(GET, SSE stream) routes. Resolved the "how should a discovered row be presented" question more
+simply than originally floated: rather than merging discovered rows into the main overview table with
+row-level visual distinction, `wireReferenceDiscoverButtons()` (`app.js`) renders them as a plain
+list of links straight into each row's detail page once the crawl finishes — simpler to build, and
+arguably clearer than blending an unverified discovery into the primary sortable table.
+
+Verified end to end against the real site (read-only): a live cpu2026 crawl found 15 machine-level
+pages, including 8 benchmarks with zero local trace at all; the detail page correctly rendered one of
+them (`706-stockfish_r`/`amd-395-96gb`) using WordPress's own already-sanitized slug form (dots become
+hyphens on page creation; discovery reports the slug WordPress actually assigned, not the original
+dotted name, and the detail route works correctly with either). 17 `web/test_*.py` files green (1
+new: `test_wordpress_discovery.py`), full `run_tests.sh` C matrix green.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -1571,22 +1600,9 @@ reasoning as Tier 1 above.
      link exists).
    - The `wspy-archetype --kmeans` / `wspy-analyze` analysis-feed hookup.
    - The 60+-column vocabulary audit against the external reference page.
-22. Full top-down WordPress discovery for the reference matrix (raised 2026-08-05, depends on the
-    WordPress-recovered-metrics parsing/recovery primitives shipped via PR #205 — see "Shipped since
-    4.2"). The reference matrix's overview (`render_reference_tab()`) only lists rows found by
-    scanning the local report-root's `runs.json` files — a test point published on WordPress for one
-    or more machines but with *no* local `runs.json` anywhere never appears as a row at all, since
-    nothing currently walks the WordPress hierarchy top-down (`suite → test → test-point → machine →
-    run`, repeated `list_child_pages()` calls) independent of already knowing where to look. Real
-    open questions before building: cost (potentially hundreds of WordPress API calls across a whole
-    site — incompatible with the overview's current "fast, no per-cell aggregation on load" property
-    unless this becomes a separate, explicit action rather than something that runs on every tab
-    load) and how a discovered-only row should be presented (same visibly-distinct "recovered, not
-    locally verified" treatment PR #205 already established for its columns, applied at the row
-    level too).
-23. Investigate `wspy-archetype`/`wspy-analyze` using WordPress-recovered data (PR #205, item 22
-    above) as a more definitive, complete source (raised 2026-08-05) — today both tools only ever
-    read `wspy-store`, blind to any machine that exists solely via published pages. Genuinely an
+23. Investigate `wspy-archetype`/`wspy-analyze` using WordPress-recovered data (PRs #205/#206) as a
+    more definitive, complete source (raised 2026-08-05) — today both tools only ever read
+    `wspy-store`, blind to any machine that exists solely via published pages. Genuinely an
     "investigate" item, not a scoped build: `wspy-archetype`'s clustering/nearest-neighbor math
     expects `extract_run_features()`'s fixed feature vocabulary (`store.c`), which the human-text-
     recovered metric labels don't map to cleanly (same metric-name-spelling caveat item 21 already
