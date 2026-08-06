@@ -27,7 +27,13 @@ instructions         54412256231580 # 2.38 IPC
 ##### pass  1 (mask 0x4) #####################
 retiring             52444026804212 # 28.7% (40.6%) low-confidence(50%)
 -- ucode             1706753854     #     0.0%
+frontend             36264644519310 # 19.9% (28.1%) high
+backend              31509439317734 # 17.2% (24.4%)
+speculation          8986175920281  #  4.9% ( 7.0%) low
+smt-contention       53416184858519 # 29.2% ( 0.0%)
 l3 miss              0              # -nan% l3 miss
+icache miss          1196643001389  #  8.4% icache miss rate
+branch misses        116367530656   # 2.65% branch miss
 counter coverage     57/57 measured
 """
 
@@ -102,6 +108,93 @@ class ParseCounterTextTest(unittest.TestCase):
 
     def test_empty_text_returns_empty_list(self):
         self.assertEqual(counter_text.parse_counter_text(""), [])
+
+
+class ParseCommentRatioTest(unittest.TestCase):
+    def test_ipc_style(self):
+        self.assertEqual(counter_text.parse_comment_ratio("2.38 IPC"), ("ipc", 2.38, False))
+
+    def test_ipc_with_trailing_high_qualifier_still_slugs_to_plain_ipc(self):
+        # topdown.c's print_ipc() appends " high"/" low" when a threshold is crossed -- the metric
+        # name must stay stable regardless, or the same ratio would fragment into "ipc"/"ipc_high"
+        # depending on which side of the threshold a given run happened to land on.
+        self.assertEqual(counter_text.parse_comment_ratio("3.50 IPC high"), ("ipc", 3.50, False))
+        self.assertEqual(counter_text.parse_comment_ratio("0.50 IPC low"), ("ipc", 0.50, False))
+
+    def test_percent_with_description(self):
+        self.assertEqual(counter_text.parse_comment_ratio("8.4% icache miss rate"),
+                          ("icache_miss_rate", 8.4, True))
+
+    def test_per_1000_inst_rate(self):
+        self.assertEqual(counter_text.parse_comment_ratio("260.598 icache per 1000 inst"),
+                          ("icache_per_1000_inst", 260.598, False))
+
+    def test_ghz_annotation(self):
+        self.assertEqual(counter_text.parse_comment_ratio("3.27 GHz"), ("ghz", 3.27, False))
+
+    def test_none_for_empty_comment(self):
+        self.assertIsNone(counter_text.parse_comment_ratio(None))
+        self.assertIsNone(counter_text.parse_comment_ratio(""))
+
+    def test_none_for_bare_percentage_with_no_description(self):
+        self.assertIsNone(counter_text.parse_comment_ratio("0.0%"))
+
+    def test_none_for_two_percentage_topdown_shape(self):
+        # Starts with a percentage but the next thing isn't a plain description (it's a second
+        # parenthesized percentage) -- must NOT match here; TOPDOWN_SECOND_PERCENT_LABELS handles
+        # this shape instead, in extract_derived_ratios().
+        self.assertIsNone(counter_text.parse_comment_ratio("28.7% (40.6%) low-confidence(50%)"))
+
+    def test_none_for_non_numeric_comment(self):
+        self.assertIsNone(counter_text.parse_comment_ratio("of 111 branch-retiring ops"))
+        self.assertIsNone(counter_text.parse_comment_ratio("21.21 / 24 cores"))
+
+
+class ExtractDerivedRatiosTest(unittest.TestCase):
+    def test_ipc_recovered_from_counters_txt(self):
+        records = counter_text.parse_counter_text(COUNTERS_TXT)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        self.assertEqual(derived["ipc"]["value"], 2.38)
+        self.assertFalse(derived["ipc"]["is_percent"])
+        self.assertIsNone(derived["ipc"]["comment"])
+
+    def test_topdown_l1_takes_second_percentage_not_first(self):
+        records = counter_text.parse_counter_text(COUNTERS_TXT)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        self.assertEqual(derived["retire_pct"]["value"], 40.6)   # not 28.7 (the first percentage)
+        self.assertEqual(derived["frontend_pct"]["value"], 28.1)  # despite trailing " high"
+        self.assertEqual(derived["backend_pct"]["value"], 24.4)   # no qualifier at all
+        self.assertEqual(derived["speculate_pct"]["value"], 7.0)  # despite trailing " low"
+
+    def test_topdown_l2_and_contention_take_first_percentage(self):
+        records = counter_text.parse_counter_text(COUNTERS_TXT)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        self.assertEqual(derived["retire_ucode_pct"]["value"], 0.0)
+        # smt-contention's own second, parenthesized number is a hardcoded literal per topdown.c's
+        # own comment, not real data -- must take the first (29.2), not the fake "0.0".
+        self.assertEqual(derived["contention_pct"]["value"], 29.2)
+
+    def test_generic_miss_rate_and_ghz_also_recovered(self):
+        records = counter_text.parse_counter_text(COUNTERS_TXT)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        self.assertEqual(derived["icache_miss_rate"]["value"], 8.4)
+        self.assertEqual(derived["ghz"]["value"], 3.27)
+        self.assertEqual(derived["branch_miss"]["value"], 2.65)
+
+    def test_nan_and_non_numeric_comments_produce_no_derived_metric(self):
+        records = counter_text.parse_counter_text(COUNTERS_TXT)
+        derived_names = {d["metric"] for d in counter_text.extract_derived_ratios(records)}
+        self.assertNotIn("l3_miss", derived_names)  # "-nan% l3 miss" -- not a real number
+
+    def test_ibs_txt_comment_still_extracted(self):
+        records = counter_text.parse_counter_text(IBS_TXT)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        # "of 111 branch-retiring ops" has no leading number -- nothing to derive from it, but this
+        # must not crash, and the primary value (already a percent) is untouched by this function.
+        self.assertNotIn("of_111_branch_retiring_ops", derived)
+
+    def test_empty_records_returns_empty_list(self):
+        self.assertEqual(counter_text.extract_derived_ratios([]), [])
 
 
 class ClassifyCounterTextTest(unittest.TestCase):

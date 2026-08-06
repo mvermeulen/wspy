@@ -2049,6 +2049,11 @@ def recover_machine_metrics_from_wordpress(wp_cfg, suite, test, test_point, mach
     `<pre class="wp-block-preformatted">` block (wp_client.extract_preformatted_blocks() +
     counter_text.parse_counter_text()) -- a block that doesn't look like either shape
     (counter_text.classify_counter_text() returns None, e.g. a process-tree dump) is skipped.
+    counter_text.extract_derived_ratios() (item 24) additionally recovers each line's own embedded
+    ratio/rate (IPC, topdown percentages, miss/branch rates) from its comment, not just the line's
+    raw operand value -- these are the actually-comparable numbers across differently-scaled or
+    differently-multiplexed runs (doc/METRICS.md), and land in the same flat metric namespace as
+    distinct entries (e.g. "ipc" alongside "instructions"), never overwriting the raw value.
 
     Returns a list of {metric, n, min, max, mean, stddev} dicts, deliberately not the exact
     parse_summary_csv() shape (`aggregate_reference_matrix_cell()`'s own return) -- no `group`/
@@ -2077,7 +2082,12 @@ def recover_machine_metrics_from_wordpress(wp_cfg, suite, test, test_point, mach
         for block_text in wp_client.extract_preformatted_blocks(raw):
             if counter_text.classify_counter_text(block_text) is None:
                 continue
-            per_run_metrics.update(_first_value_per_metric(counter_text.parse_counter_text(block_text)))
+            block_records = counter_text.parse_counter_text(block_text)
+            per_run_metrics.update(_first_value_per_metric(block_records))
+            # Item 24: the comment on each line carries the actually-comparable ratio (IPC, topdown
+            # percentages, miss/branch rates) -- distinct metric names from the raw values above
+            # (e.g. "ipc" vs. "instructions"), so both coexist rather than one overwriting the other.
+            per_run_metrics.update(_first_value_per_metric(counter_text.extract_derived_ratios(block_records)))
         for metric, value in per_run_metrics.items():
             per_metric_values.setdefault(metric, []).append(value)
 
