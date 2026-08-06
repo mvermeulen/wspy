@@ -1261,9 +1261,9 @@ core-equivalents, not a second finding — applies to both single-run and `--com
 `./test_ai_analyze.sh` (structural + live Ollama calls, both modes) still passes.
 
 **Benchmark reference-matrix database: query layer + web UI** (PR #204) — ships most of 4.3 Tier 3
-item 5 (still open: a standalone "by machine" view and drill-down links to individual runs — see
-item 5's own trimmed entry above; the analysis-feed hookup shipped separately, see PR #210 below).
-Computed on demand at web-request time, no new persistent matrix table:
+item 5 (still open: a standalone "by machine" view — see item 5's own trimmed entry above; the
+analysis-feed hookup and drill-down links shipped separately, see PR #210/#211 below). Computed on
+demand at web-request time, no new persistent matrix table:
 `joblib.enumerate_reference_matrix_cells()` walks materialized Phoronix/cpu2026 test points against
 which `<report-root>/<suite>/<test>/<test-point>/<machine>/` directories already have a `runs.json`
 (`wspy-testpoint select-runs`) — reusing that curated run selection rather than re-deriving one from
@@ -1479,6 +1479,18 @@ they disagree and merging WordPress-recovered peer scorecards across cells. `--r
 based, not `--kmeans` (deferred — see item 5's own entry for why). Verified live: `amd-395-96gb`
 shows "compute-bound (medium confidence)"; `amd-370-64gb` correctly shows no badge (no topdown data
 for that run). All 17 `web/test_*.py` files green, full `run_tests.sh` C matrix green.
+
+**Drill-down links from a reference-matrix cell to its individual runs** (PR #211) — closes 4.3 item
+5's last open sub-bullet. Each local machine's column header on a reference-matrix test-point detail
+page now links to a "(N runs)" page listing every run `wspy-testpoint select-runs` has considered for
+that test point + machine — not just the stats-pool subset the aggregate actually averages, so a
+human can also see which runs were excluded/supplementary and why. A per-column link, not per-cell,
+since every metric in a machine's column is aggregated from that same machine's exact stats-pool run
+set. New `joblib.load_reference_matrix_cell_runs()` reads a `runs.json`'s full run list; new
+`server.render_reference_test_point_runs()` renders it as a table, linking each run to its own
+`/report/` page only when that run's output directory still exists locally. Verified live:
+`amd-370-64gb`'s header shows "(1 run)", linking correctly to its one real report page. All 17
+`web/test_*.py` files green, full `run_tests.sh` C matrix green.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
@@ -1700,8 +1712,6 @@ reasoning as Tier 1 above.
    open:
    - A standalone "by machine" view (rows=test-points, cols=metrics for one machine) — deferred as
      largely redundant with the per-test-point detail page sliced the other way.
-   - Drill-down links from a cell to the individual runs behind it (today only the aggregate/detail
-     link exists).
 
 **Tier 4 — report-layer additions on data already collected in 4.0:**
 
