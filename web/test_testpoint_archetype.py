@@ -13,8 +13,10 @@ importlib.util, same approach a caller would need regardless of where this test 
 subprocess.run and server.py's WordPress-facing functions are mocked directly; no network/subprocess
 access.
 """
+import argparse
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -189,6 +191,73 @@ class RenderArchetypeSectionTest(unittest.TestCase):
         wp_scorecards = [{"machine": "amd-395-96gb", "resource_dominance": "unknown"}]
         md = testpoint.render_archetype_section(scorecards, wp_scorecards)
         self.assertNotIn("WordPress-recovered peers", md)
+
+
+class CmdCharacterizeTest(unittest.TestCase):
+    """INVESTIGATION.md 4.3 item 5's analysis-feed hookup: `wspy-testpoint characterize` is a
+    read-only counterpart to `render`'s own characterization section, letting web/server.py's live
+    Reference-tab pages reuse collect_archetype_scorecards()/collect_wordpress_archetype_scorecards()
+    without a circular import."""
+
+    def _args(self, **overrides):
+        ns = argparse.Namespace(
+            suite="phoronix", benchmark="coremark-default", machine="amd-395",
+            report_root="/report-root", phoronix_dest_root="/phoronix", cpu2026_dest_root="/cpu2026",
+            db="store.db", wspy_archetype_bin="wspy-archetype",
+        )
+        for k, v in overrides.items():
+            setattr(ns, k, v)
+        return ns
+
+    def test_prints_json_with_both_scorecard_kinds_and_returns_0(self):
+        args = self._args()
+        with patch("wspy_testpoint.resolve_test_point_paths",
+                   return_value=("/report-root", "coremark", "default", "/report-root/runs.json")), \
+             patch("wspy_testpoint.load_stats_pool_present",
+                   return_value=({"runs": []}, [{"hostname": "h1", "run_id": "r1"}])), \
+             patch("wspy_testpoint.collect_archetype_scorecards",
+                   return_value=[{"run_id": "r1", "resource_dominance": "compute-bound"}]), \
+             patch("wspy_testpoint.collect_wordpress_archetype_scorecards",
+                   return_value=[{"machine": "amd-395-96gb", "resource_dominance": "memory-bound"}]), \
+             patch("wspy_testpoint.load_config", return_value={"wordpress": {}}), \
+             patch("sys.stdout", new_callable=io.StringIO) as fake_out:
+            rc = testpoint.cmd_characterize(args)
+
+        self.assertEqual(rc, 0)
+        payload = json.loads(fake_out.getvalue())
+        self.assertEqual(payload["scorecards"],
+                          [{"run_id": "r1", "resource_dominance": "compute-bound"}])
+        self.assertEqual(payload["wordpress_scorecards"],
+                          [{"machine": "amd-395-96gb", "resource_dominance": "memory-bound"}])
+
+    def test_returns_1_when_no_stats_pool_present(self):
+        args = self._args()
+        with patch("wspy_testpoint.resolve_test_point_paths",
+                   return_value=("/report-root", "coremark", "default", "/report-root/runs.json")), \
+             patch("wspy_testpoint.load_stats_pool_present", return_value=(None, None)), \
+             patch("wspy_testpoint.collect_archetype_scorecards") as mock_scorecards, \
+             patch("wspy_testpoint.collect_wordpress_archetype_scorecards") as mock_wp_scorecards:
+            rc = testpoint.cmd_characterize(args)
+        self.assertEqual(rc, 1)
+        mock_scorecards.assert_not_called()
+        mock_wp_scorecards.assert_not_called()
+
+    def test_never_touches_report_root_git_state(self):
+        # Read-only, unlike select-runs/render: no ensure_report_root()/commit_paths() call at all.
+        args = self._args()
+        with patch("wspy_testpoint.resolve_test_point_paths",
+                   return_value=("/report-root", "coremark", "default", "/report-root/runs.json")), \
+             patch("wspy_testpoint.load_stats_pool_present", return_value=({"runs": []}, [])), \
+             patch("wspy_testpoint.collect_archetype_scorecards", return_value=[]), \
+             patch("wspy_testpoint.collect_wordpress_archetype_scorecards", return_value=[]), \
+             patch("wspy_testpoint.load_config", return_value=None), \
+             patch("wspy_testpoint.report_root.ensure_report_root") as mock_ensure, \
+             patch("wspy_testpoint.report_root.commit_paths") as mock_commit, \
+             patch("sys.stdout", new_callable=io.StringIO):
+            rc = testpoint.cmd_characterize(args)
+        self.assertEqual(rc, 0)
+        mock_ensure.assert_not_called()
+        mock_commit.assert_not_called()
 
 
 if __name__ == "__main__":

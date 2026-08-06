@@ -3268,6 +3268,60 @@ def render_reference_discover_panel():
 """
 
 
+def characterize_reference_matrix_machines(cfg, cells):
+    """Resource_dominance/confidence badges for the reference-matrix detail page (INVESTIGATION.md
+    4.3 item 5's analysis-feed hookup, settled 2026-08-06). Shells out to the read-only `wspy-
+    testpoint characterize` subcommand once per cell -- `cells` here is always the local-runs.json
+    set (joblib.enumerate_reference_matrix_cells()'s own definition never includes a WordPress-only
+    machine), reusing collect_archetype_scorecards()/collect_wordpress_archetype_scorecards() (item
+    23) without a circular import: wspy-testpoint already imports server.py (as web_export), not the
+    other way around, so server.py can't call those functions directly.
+
+    Returns (local, wordpress): local[machine] is one {resource_dominance, confidence} dict
+    summarizing that machine's own stats-pool runs -- "mixed"/"n/a" if they disagree, matching
+    render_archetype_section()'s own Consistent/Diverges framing but compressed to fit a header badge
+    rather than a full table. wordpress[machine] is the same shape for every WordPress-recovered peer
+    seen across all the calls, merged/deduped by machine name (a peer's own characterization doesn't
+    depend on which cell's call happened to surface it). Deliberately `--run`/`--run-guest`-based
+    (via the subcommand), not `--kmeans` -- kmeans clusters the whole store population, it doesn't
+    map onto one test-point's narrow cross-machine view. Never raises: a launch/parse failure for one
+    cell just leaves that machine out of the result, same degrade-not-crash contract every other
+    reference-matrix WordPress integration already follows."""
+    local = {}
+    wordpress = {}
+    for c in cells:
+        argv = [cfg["wspy_testpoint_bin"], "characterize", "--suite", c["suite"], "--benchmark",
+                c["benchmark"], "--machine", c["machine"], "--db", cfg["store_db"]]
+        if cfg.get("report_root"):
+            argv += ["--report-root", cfg["report_root"]]
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if proc.returncode != 0:
+            continue
+        try:
+            payload = json.loads(proc.stdout)
+        except ValueError:
+            continue
+
+        known = [s for s in payload.get("scorecards", [])
+                 if s.get("resource_dominance", "unknown") != "unknown"]
+        if known:
+            labels = {s["resource_dominance"] for s in known}
+            if len(labels) == 1:
+                local[c["machine"]] = {"resource_dominance": next(iter(labels)),
+                                        "confidence": known[0].get("confidence", "unknown")}
+            else:
+                local[c["machine"]] = {"resource_dominance": "mixed", "confidence": "n/a"}
+
+        for s in payload.get("wordpress_scorecards", []):
+            if s.get("resource_dominance", "unknown") != "unknown":
+                wordpress[s["machine"]] = {"resource_dominance": s["resource_dominance"],
+                                            "confidence": s.get("confidence", "unknown")}
+    return local, wordpress
+
+
 def render_reference_test_point_detail(cfg, suite, test, test_point):
     """Cross-machine comparison for one test point (INVESTIGATION.md 4.3 Tier 3 item 5's own "cross-
     machine comparison for one test" view) -- one `wspy-testpoint aggregate` call per machine that has
@@ -3282,7 +3336,9 @@ def render_reference_test_point_detail(cfg, suite, test, test_point):
     always wins over recovered data), and any WordPress-only machine gets a
     recover_machine_metrics_from_wordpress() column instead, rendered as visibly distinct (own CSS
     class, no verdict-based coloring -- that data has no wspy-summary reliability analysis behind it
-    at all)."""
+    at all). Each machine column header also carries a resource_dominance/confidence characterization
+    badge when available (characterize_reference_matrix_machines(), item 5's analysis-feed hookup) --
+    header context, not a row in the numeric metric table, since it isn't itself a comparable ratio."""
     back_link = '<p><a href="/?active_tab=reference">Back to reference matrix</a></p>'
     report_root_path = resolve_report_root_for_web(cfg)
     cells = [c for c in joblib.enumerate_reference_matrix_cells(
@@ -3295,6 +3351,8 @@ def render_reference_test_point_detail(cfg, suite, test, test_point):
         by_machine[c["machine"]] = joblib.aggregate_reference_matrix_cell(
             cfg["wspy_testpoint_bin"], cfg["store_db"], suite, c["benchmark"], c["machine"],
             report_root_path=cfg.get("report_root"), report_root_remote=cfg.get("report_root_remote"))
+
+    local_characterization, wp_characterization = characterize_reference_matrix_machines(cfg, cells)
 
     wp_cfg = wp_client.load_config()
     wp_recovered = {}
@@ -3338,11 +3396,18 @@ def render_reference_test_point_detail(cfg, suite, test, test_point):
             return '<td class="muted">&mdash;</td>'
         return '<td class="muted">no data</td>'
 
+    def characterization_badge(machine):
+        badge = local_characterization.get(machine) or wp_characterization.get(machine)
+        if not badge:
+            return ""
+        return (f'<br><span class="muted">{html.escape(badge["resource_dominance"])} '
+                f'({html.escape(badge["confidence"])} confidence)</span>')
+
     def header_cell(machine):
         if machine in wp_recovered:
             return (f'<th>{html.escape(machine)} '
-                     '<span class="muted">(from WordPress)</span></th>')
-        return f"<th>{html.escape(machine)}</th>"
+                     f'<span class="muted">(from WordPress)</span>{characterization_badge(machine)}</th>')
+        return f"<th>{html.escape(machine)}{characterization_badge(machine)}</th>"
 
     header_cells = "".join(header_cell(m) for m in machines)
     body_rows = "".join(

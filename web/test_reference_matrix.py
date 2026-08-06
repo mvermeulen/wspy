@@ -173,6 +173,95 @@ class RenderReferenceTabTest(unittest.TestCase):
         self.assertIn("https://example.org/amd-395/", html_out)
 
 
+class CharacterizeReferenceMatrixMachinesTest(unittest.TestCase):
+    CELLS = [{"suite": "phoronix", "test": "coremark", "test_point": "default",
+              "machine": "amd-395", "benchmark": "coremark-default"}]
+    CFG = {"wspy_testpoint_bin": "wspy-testpoint", "store_db": "store.db", "report_root": None}
+
+    def test_empty_cells_returns_empty_dicts_no_subprocess_call(self):
+        with patch("server.subprocess.run") as mock_run:
+            local, wordpress = server.characterize_reference_matrix_machines(self.CFG, [])
+        self.assertEqual((local, wordpress), ({}, {}))
+        mock_run.assert_not_called()
+
+    def test_consistent_local_scorecards_produce_one_badge(self):
+        payload = json.dumps({
+            "scorecards": [{"resource_dominance": "compute-bound", "confidence": "high"},
+                            {"resource_dominance": "compute-bound", "confidence": "medium"}],
+            "wordpress_scorecards": [],
+        })
+        with patch("server.subprocess.run",
+                   return_value=subprocess.CompletedProcess([], 0, stdout=payload, stderr="")):
+            local, wordpress = server.characterize_reference_matrix_machines(self.CFG, self.CELLS)
+        self.assertEqual(local, {"amd-395": {"resource_dominance": "compute-bound",
+                                              "confidence": "high"}})
+        self.assertEqual(wordpress, {})
+
+    def test_disagreeing_local_scorecards_produce_mixed_badge(self):
+        payload = json.dumps({
+            "scorecards": [{"resource_dominance": "compute-bound", "confidence": "high"},
+                            {"resource_dominance": "memory-bound", "confidence": "high"}],
+            "wordpress_scorecards": [],
+        })
+        with patch("server.subprocess.run",
+                   return_value=subprocess.CompletedProcess([], 0, stdout=payload, stderr="")):
+            local, _ = server.characterize_reference_matrix_machines(self.CFG, self.CELLS)
+        self.assertEqual(local["amd-395"], {"resource_dominance": "mixed", "confidence": "n/a"})
+
+    def test_unknown_only_scorecards_produce_no_badge(self):
+        payload = json.dumps({"scorecards": [{"resource_dominance": "unknown"}],
+                               "wordpress_scorecards": []})
+        with patch("server.subprocess.run",
+                   return_value=subprocess.CompletedProcess([], 0, stdout=payload, stderr="")):
+            local, _ = server.characterize_reference_matrix_machines(self.CFG, self.CELLS)
+        self.assertEqual(local, {})
+
+    def test_wordpress_scorecards_merged_and_unknown_filtered(self):
+        payload = json.dumps({
+            "scorecards": [{"resource_dominance": "compute-bound", "confidence": "high"}],
+            "wordpress_scorecards": [
+                {"machine": "amd-395-96gb", "resource_dominance": "memory-bound", "confidence": "medium"},
+                {"machine": "amd-unknown", "resource_dominance": "unknown"},
+            ],
+        })
+        with patch("server.subprocess.run",
+                   return_value=subprocess.CompletedProcess([], 0, stdout=payload, stderr="")):
+            _, wordpress = server.characterize_reference_matrix_machines(self.CFG, self.CELLS)
+        self.assertEqual(wordpress, {"amd-395-96gb": {"resource_dominance": "memory-bound",
+                                                        "confidence": "medium"}})
+
+    def test_launch_failure_leaves_machine_out_not_a_crash(self):
+        with patch("server.subprocess.run", side_effect=OSError("no such binary")):
+            local, wordpress = server.characterize_reference_matrix_machines(self.CFG, self.CELLS)
+        self.assertEqual((local, wordpress), ({}, {}))
+
+    def test_nonzero_exit_leaves_machine_out(self):
+        with patch("server.subprocess.run",
+                   return_value=subprocess.CompletedProcess([], 1, stdout="", stderr="boom")):
+            local, wordpress = server.characterize_reference_matrix_machines(self.CFG, self.CELLS)
+        self.assertEqual((local, wordpress), ({}, {}))
+
+    def test_malformed_json_leaves_machine_out(self):
+        with patch("server.subprocess.run",
+                   return_value=subprocess.CompletedProcess([], 0, stdout="not json", stderr="")):
+            local, wordpress = server.characterize_reference_matrix_machines(self.CFG, self.CELLS)
+        self.assertEqual((local, wordpress), ({}, {}))
+
+    def test_report_root_passed_through_when_configured(self):
+        captured_argv = []
+
+        def fake_run(argv, capture_output, text, timeout=None):
+            captured_argv.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout='{"scorecards": [], '
+                                                '"wordpress_scorecards": []}', stderr="")
+
+        cfg = dict(self.CFG, report_root="/custom/root")
+        with patch("server.subprocess.run", side_effect=fake_run):
+            server.characterize_reference_matrix_machines(cfg, self.CELLS)
+        self.assertIn("--report-root", captured_argv[0])
+        self.assertIn("/custom/root", captured_argv[0])
+
+
 class RenderReferenceTestPointDetailTest(unittest.TestCase):
     # Every test here patches wp_client.load_config to return None (item 21's WordPress-recovery
     # merge is inert with no config) -- without it, render_reference_test_point_detail's new
@@ -201,7 +290,12 @@ class RenderReferenceTestPointDetailTest(unittest.TestCase):
             fake_csv = ("group,metric,n,min,max,mean,stddev,cv_percent,verdict\n"
                         "ipc,ipc,2,1.0,1.2,1.1,0.05,4.5,PASS\n")
 
-            def fake_run(argv, capture_output, text, timeout):
+            def fake_run(argv, capture_output, text, timeout=None):
+                # joblib.subprocess and server.subprocess are the same module object, so one patch
+                # target has to handle both aggregate_reference_matrix_cell's ("aggregate") and
+                # characterize_reference_matrix_machines' ("characterize") subprocess calls.
+                if "characterize" in argv:
+                    raise OSError("characterize not mocked in this test")
                 return subprocess.CompletedProcess(argv, 0, stdout=fake_csv, stderr="")
 
             cfg = {"report_root": report_root_path, "report_root_remote": None,
@@ -229,7 +323,11 @@ class RenderReferenceTestPointDetailTest(unittest.TestCase):
             fake_csv = ("group,metric,n,min,max,mean,stddev,cv_percent,verdict\n"
                         "ipc,ipc,2,1.0,1.2,1.1,0.05,4.5,WARN:noisy\n")
 
-            def fake_run(argv, capture_output, text, timeout):
+            def fake_run(argv, capture_output, text, timeout=None):
+                # See test_renders_metric_rows_across_machine_columns's own comment: one patch target
+                # covers both aggregate's and characterize's subprocess calls.
+                if "characterize" in argv:
+                    raise OSError("characterize not mocked in this test")
                 return subprocess.CompletedProcess(argv, 0, stdout=fake_csv, stderr="")
 
             cfg = {"report_root": report_root_path, "report_root_remote": None,
@@ -300,7 +398,11 @@ class RenderReferenceTestPointDetailTest(unittest.TestCase):
             fake_csv = ("group,metric,n,min,max,mean,stddev,cv_percent,verdict\n"
                         "ipc,ipc,2,1.0,1.2,1.1,0.05,4.5,PASS\n")
 
-            def fake_run(argv, capture_output, text, timeout):
+            def fake_run(argv, capture_output, text, timeout=None):
+                # See RenderReferenceTestPointDetailTest's own comment: one patch target covers both
+                # aggregate's and characterize's subprocess calls (joblib.subprocess is server.subprocess).
+                if "characterize" in argv:
+                    raise OSError("characterize not mocked in this test")
                 return subprocess.CompletedProcess(argv, 0, stdout=fake_csv, stderr="")
 
             def fake_status(wp_cfg, suite, test, test_point):
@@ -329,6 +431,67 @@ class RenderReferenceTestPointDetailTest(unittest.TestCase):
         self.assertIn("1.1", html_out)
         self.assertNotIn(">9 ", html_out)
         self.assertNotIn("(from WordPress)", html_out)
+
+    def test_characterization_badge_appears_in_column_header(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            phoronix_dest = os.path.join(tmpdir, "phoronix")
+            info = materialize_fake_phoronix_point(phoronix_dest)
+            report_root_path = os.path.join(tmpdir, "report-root")
+            write_runs_json(report_root_path, "phoronix", info["bare_name"], info["options_slug"],
+                             "amd-395", [{"role": "stats-pool"}])
+
+            fake_csv = ("group,metric,n,min,max,mean,stddev,cv_percent,verdict\n"
+                        "ipc,ipc,2,1.0,1.2,1.1,0.05,4.5,PASS\n")
+            fake_characterize_payload = json.dumps({
+                "scorecards": [{"resource_dominance": "compute-bound", "confidence": "high"}],
+                "wordpress_scorecards": [],
+            })
+
+            def fake_run(argv, capture_output, text, timeout=None):
+                if "characterize" in argv:
+                    return subprocess.CompletedProcess(argv, 0, stdout=fake_characterize_payload,
+                                                         stderr="")
+                return subprocess.CompletedProcess(argv, 0, stdout=fake_csv, stderr="")
+
+            cfg = {"report_root": report_root_path, "report_root_remote": None,
+                   "wspy_testpoint_bin": "wspy-testpoint", "store_db": "store.db"}
+            with patch("server.PHORONIX_DEST_ROOT", phoronix_dest), \
+                 patch("server.CPU2026_DEST_ROOT", os.path.join(tmpdir, "cpu2026")), \
+                 patch("joblib.subprocess.run", side_effect=fake_run), \
+                 patch("server.wp_client.load_config", return_value=None):
+                html_out = server.render_reference_test_point_detail(
+                    cfg, "phoronix", info["bare_name"], info["options_slug"])
+
+        self.assertIn("compute-bound (high confidence)", html_out)
+
+    def test_no_characterization_badge_when_characterize_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            phoronix_dest = os.path.join(tmpdir, "phoronix")
+            info = materialize_fake_phoronix_point(phoronix_dest)
+            report_root_path = os.path.join(tmpdir, "report-root")
+            write_runs_json(report_root_path, "phoronix", info["bare_name"], info["options_slug"],
+                             "amd-395", [{"role": "stats-pool"}])
+
+            fake_csv = ("group,metric,n,min,max,mean,stddev,cv_percent,verdict\n"
+                        "ipc,ipc,2,1.0,1.2,1.1,0.05,4.5,PASS\n")
+
+            def fake_run(argv, capture_output, text, timeout=None):
+                if "characterize" in argv:
+                    raise OSError("no such binary")
+                return subprocess.CompletedProcess(argv, 0, stdout=fake_csv, stderr="")
+
+            cfg = {"report_root": report_root_path, "report_root_remote": None,
+                   "wspy_testpoint_bin": "wspy-testpoint", "store_db": "store.db"}
+            with patch("server.PHORONIX_DEST_ROOT", phoronix_dest), \
+                 patch("server.CPU2026_DEST_ROOT", os.path.join(tmpdir, "cpu2026")), \
+                 patch("joblib.subprocess.run", side_effect=fake_run), \
+                 patch("server.wp_client.load_config", return_value=None):
+                html_out = server.render_reference_test_point_detail(
+                    cfg, "phoronix", info["bare_name"], info["options_slug"])
+
+        # No crash, no badge -- the metric table itself still renders fine.
+        self.assertIn("1.1", html_out)
+        self.assertNotIn("confidence)", html_out)
 
 
 if __name__ == "__main__":

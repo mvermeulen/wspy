@@ -769,6 +769,30 @@ def cmd_render(args):
     return 0 if ok else 1
 
 
+def cmd_characterize(args):
+    """Read-only counterpart to render's own "Workload characterization" section (item 5's
+    analysis-feed hookup, INVESTIGATION.md 4.3 item 5) -- resolves this test point + machine's
+    stats-pool scorecards (collect_archetype_scorecards()) and any WordPress-recovered peer
+    scorecards (collect_wordpress_archetype_scorecards(), item 23) and prints them as one JSON object,
+    with no report-root write/commit at all (unlike render, which folds the same two calls into a
+    full README render + git commit). Exists so web/server.py's live Reference-tab pages can reuse
+    this exact characterization logic without a circular import -- wspy-testpoint already imports
+    server.py (as web_export), not the other way around, so server.py can't import these functions
+    back directly. Never clones/creates the report-root (unlike select-runs/render) -- a missing
+    runs.json just degrades to the same "nothing to characterize" error load_stats_pool_present()
+    already gives every other subcommand, read-only throughout."""
+    _, test, test_point, runs_json_path = resolve_test_point_paths(args)
+    data, present = load_stats_pool_present(args, runs_json_path)
+    if data is None:
+        return 1
+
+    scorecards = collect_archetype_scorecards(args.wspy_archetype_bin, args.db, present)
+    wordpress_scorecards = collect_wordpress_archetype_scorecards(
+        args.wspy_archetype_bin, load_config(), args.suite, test, test_point, args.machine)
+    print(json.dumps({"scorecards": scorecards, "wordpress_scorecards": wordpress_scorecards}))
+    return 0
+
+
 def add_test_point_args(parser):
     """--suite/--benchmark/--machine/--report-root/--phoronix-dest-root/--cpu2026-dest-root -- shared
     by every subcommand that needs to resolve a test point's report-root path
@@ -850,6 +874,17 @@ def main():
     rn.add_argument("--dry-run", action="store_true",
                      help="compute and print which sections would be written, but touch nothing on disk")
     rn.set_defaults(func=cmd_render)
+
+    ch = sub.add_parser("characterize",
+                         help="print archetype characterization for a test point + machine as JSON "
+                              "(read-only, no report-root write -- for a caller that wants render's "
+                              "own characterization data without a full README render + commit)")
+    add_test_point_args(ch)
+    ch.add_argument("--db", default=DEFAULT_STORE_DB,
+                     help="normalized wspy-store database (default: %(default)s)")
+    ch.add_argument("--wspy-archetype-bin", default=os.path.join(SCRIPT_DIR, "wspy-archetype"),
+                     help="wspy-archetype binary (default: %(default)s)")
+    ch.set_defaults(func=cmd_characterize)
 
     args = ap.parse_args()
     return args.func(args)
