@@ -1438,12 +1438,35 @@ established.
 
 Verified end to end against the real site: `amd-395-96gb` correctly classifies as compute-bound
 (40.6%), with `control_flow_style` correctly falling back to "unknown" — a direct, visible
-consequence of item 24's still-open residual (`branch_miss` vs. the real `branch_mispredict_pct`
-name), not a bug in this item. 5 new C tests (`test_archetype.c`), 12 new Python tests
-(`web/test_testpoint_archetype.py`, loading `wspy-testpoint` via `importlib` since it has no `.py`
-suffix — no prior precedent for unit-testing that script directly, established here). Full
-`run_tests.sh` C matrix green (clean rebuild, given this touches core C code), all 17 `web/test_*.py`
-files green.
+consequence of item 24's then-still-open residual (`branch_miss` vs. the real `branch_mispredict_pct`
+name; see the very next entry below, which closed that residual the same day), not a bug in this
+item. 5 new C tests (`test_archetype.c`), 12 new Python tests (`web/test_testpoint_archetype.py`,
+loading `wspy-testpoint` via `importlib` since it has no `.py` suffix — no prior precedent for
+unit-testing that script directly, established here). Full `run_tests.sh` C matrix green (clean
+rebuild, given this touches core C code), all 17 `web/test_*.py` files green.
+
+**Align WordPress-recovered metric names with real store.c feature names** (PR #209) — closes item
+24's residual: a full audit mapping every `counters.txt`/`ibs.txt` comment-derived (and a few
+primary-value) metric name to its real `SIMPLE_METRIC_FEATURES` name, traced directly against
+`store.c` and the exact `topdown.c` print function emitting each comment, not guessed from sample
+output. Real gaps found and fixed: `branch_mispredict_pct` (the `"branch misses"` comment slugified
+to `"branch_miss"`, silently unrecognized by `archetype.c`'s `run_snapshot_apply_feature()` — this is
+what caused item 23's own `control_flow_style=unknown` write-up above), `smt_contention_pct` (was
+targeting the raw CSV column name `"contention_pct"` instead), `dcache_miss_pct`/`icache_miss_pct`/
+`l2_miss_pct` (both the ARM/Intel `"l2 miss"` and AMD `"l2 miss from l1"` labels)/`itlb_miss_per1k`/
+`dtlb_miss_per1k`, `ipc_mean`, and (via a separate `canonical_metric_name()` rename step, since these
+are primary values, not comment-derived) `ibs_dc_miss_pct`/`ibs_dram_pct`/`ibs_dc_l1tlb_miss_pct`/
+`ibs_dc_l2tlb_miss_pct`/`ibs_remote_node_pct`. Deliberately left unrenamed, not gaps but genuine
+non-issues: GHz (`doc/METRICS.md`: no real CSV column exists at all, human-only annotation),
+float/AVX breakdown (not yet promoted to any `SIMPLE_METRIC_FEATURES` entry), and the L1-level
+iTLB/dTLB/icache variants that aren't in `SIMPLE_METRIC_FEATURES` today — nothing to align any of
+these three to unless `store.c` itself promotes a matching feature later, a `store.c` change, not
+something this text-parsing layer can fix on its own.
+
+Verified end to end against the real site: `amd-395-96gb`'s `control_flow_style` now correctly
+resolves to `"branch-heavy"` (previously `"unknown"`), confidence improved from `"low"` to
+`"medium"` with the extra known axis. All 17 `web/test_*.py` files green, full `run_tests.sh` C
+matrix green.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
@@ -1669,12 +1692,6 @@ reasoning as Tier 1 above.
      link exists).
    - The `wspy-archetype --kmeans` / `wspy-analyze` analysis-feed hookup.
    - The 60+-column vocabulary audit against the external reference page.
-24. **Generic comment-ratio parsing plus the topdown L1/L2 percentage table are shipped** (PR #207) —
-    see "Shipped since 4.2". Still open: a full audit mapping every remaining per-1000-inst/miss-rate
-    comment (cache/branch/TLB groups) to its real `wspy-summary` CSV column name — shipped names are
-    slugified from the comment text itself (e.g. `branch_miss`, not the real `branch_mispredict_pct`
-    column) and aren't yet guaranteed to line up with store-based data by name.
-
 **Tier 4 — report-layer additions on data already collected in 4.0:**
 
 7. `--tree-open` → file-I/O topology summary (hot paths, open-failure rates, startup storms,
