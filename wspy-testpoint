@@ -51,14 +51,18 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import tempfile
 from collections import Counter
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(SCRIPT_DIR, "web"))
 import joblib  # noqa: E402 -- REPO_ROOT, list_materialized_phoronix_test_points(), read_run_manifest()
-import server as web_export  # noqa: E402 -- only load_run_history_entry() is used; importing server.py
-                              # never starts the HTTP server (guarded by its own __main__ check, same
-                              # precedent wspy-publish already established for this exact module)
+import server as web_export  # noqa: E402 -- load_run_history_entry(), plus (item 23)
+                              # resolve_reference_matrix_row_publish_status()/
+                              # recover_machine_metrics_from_wordpress() for WordPress-recovered
+                              # characterization; importing server.py never starts the HTTP server
+                              # (guarded by its own __main__ check, same precedent wspy-publish
+                              # already established for this exact module)
 from wp_client import load_config  # noqa: E402 -- report_root config field, shared with wspy-publish
 import report_root  # noqa: E402 -- shared report-root git plumbing, extracted from wspy-publish
 
@@ -512,35 +516,121 @@ def collect_archetype_scorecards(wspy_archetype_bin, db_path, present):
     return scorecards
 
 
-def render_archetype_section(scorecards):
-    """None if no scorecards were collected (wspy-archetype missing/failed for every run) or if every
-    run's resource_dominance came back "unknown" (nothing measured worth reporting). Otherwise a
+def collect_wordpress_archetype_scorecards(wspy_archetype_bin, wp_cfg, suite, test, test_point,
+                                            local_machine):
+    """INVESTIGATION.md 4.3 item 23: characterizes every machine published on WordPress for this test
+    point other than local_machine (this invocation's own --machine, already covered by
+    collect_archetype_scorecards() above) -- the post-publish half of the pre-publish/post-publish
+    split settled for this item: wspy-analyze's own AI narrative stays local-data-only (generated
+    before/independent of publishing), this is what makes the *characterization* section see peers
+    it currently can't at all.
+
+    For each such machine, web_export.recover_machine_metrics_from_wordpress() (item 21) supplies a
+    {metric: mean} guest feature vector, written to a temp JSON file and scored via
+    `wspy-archetype --run-guest <file>` (item 23's own archetype.c addition -- no database, no
+    hostname:run_id needed, since this machine has no local wspy-store presence at all). Degrades to
+    an empty list, never an error: no WordPress configured, no other machine published here, or an
+    individual machine's recovery/scoring step failing are all silently skipped (with a stderr
+    warning for the latter) rather than aborting the whole render over an optional section."""
+    if not wp_cfg:
+        return []
+    status = web_export.resolve_reference_matrix_row_publish_status(wp_cfg, suite, test, test_point)
+    scorecards = []
+    for machine in sorted(m for m in status if m != local_machine):
+        rows = web_export.recover_machine_metrics_from_wordpress(
+            wp_cfg, suite, test, test_point, machine)
+        if not rows:
+            continue
+        guest = {r["metric"]: float(r["mean"]) for r in rows}
+        fd, tmp_path = tempfile.mkstemp(suffix=".json", prefix="wspy-archetype-guest-")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(guest, f)
+            try:
+                proc = subprocess.run([wspy_archetype_bin, "--run-guest", tmp_path],
+                                       capture_output=True, text=True)
+            except OSError as e:
+                print("wspy-testpoint: warning: failed to launch %s: %s -- skipping WordPress "
+                      "characterization for %s" % (wspy_archetype_bin, e, machine), file=sys.stderr)
+                continue
+            if proc.returncode != 0:
+                print("wspy-testpoint: warning: %s --run-guest for %s failed: %s" % (
+                    wspy_archetype_bin, machine, proc.stderr.strip()), file=sys.stderr)
+                continue
+        finally:
+            os.unlink(tmp_path)
+        fields = {"machine": machine}
+        for line in proc.stdout.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                fields[k] = v
+        scorecards.append(fields)
+    return scorecards
+
+
+def render_archetype_section(scorecards, wordpress_scorecards=None):
+    """None if nothing at all was collected (neither real scorecards nor WordPress-recovered ones)
+    or if every one of them came back "unknown" (nothing measured worth reporting). Otherwise a
     per-run table plus a consistent/diverges verdict across whichever runs *did* report a known
     dominance -- resource_dominance is wspy-archetype's own "headline axis" (its --help's own words),
     so this is the one worth calling out explicitly; a run with insufficient data to classify doesn't
-    count against agreement, it's simply not evidence either way, not a vote for "diverges"."""
-    if not scorecards:
-        return None
+    count against agreement, it's simply not evidence either way, not a vote for "diverges".
+
+    wordpress_scorecards (item 23, collect_wordpress_archetype_scorecards()'s own return) is rendered
+    as a visibly distinct second block -- a machine-keyed table plus a simple agree/differs note
+    against this machine's own verdict -- never merged into the "Consistent"/"Diverges" computation
+    above, the same visible-provenance principle item 21/22 already established: this data has no
+    wspy-summary reliability verdict behind it, and today only the topdown axes have exact-name
+    alignment with real store features (item 24's own still-open residual)."""
+    wordpress_scorecards = wordpress_scorecards or []
     known = [s for s in scorecards if s.get("resource_dominance", "unknown") != "unknown"]
-    if not known:
+    wp_known = [s for s in wordpress_scorecards if s.get("resource_dominance", "unknown") != "unknown"]
+    if not known and not wp_known:
         return None
-    lines = ["| run_id | resource_dominance | confidence |", "|---|---|---|"]
-    for s in scorecards:
-        dom = s.get("resource_dominance", "unknown")
-        pct = s.get("resource_dominance_pct")
-        dom_display = "%s (%s%%)" % (dom, pct) if pct else dom
-        lines.append("| %s | %s | %s |" % (s["run_id"], dom_display, s.get("confidence", "unknown")))
-    lines.append("")
-    labels = {s["resource_dominance"] for s in known}
-    if len(labels) == 1:
-        lines.append("**Consistent** -- `resource_dominance` agrees (`%s`) across all %d run(s) with "
-                      "archetype data." % (next(iter(labels)), len(known)))
-    else:
-        counts = Counter(s["resource_dominance"] for s in known)
-        breakdown = ", ".join("%d run(s) `%s`" % (n, label) for label, n in counts.most_common())
-        lines.append("**Diverges** -- `resource_dominance` does not agree across stats-pool runs: "
-                      "%s. This may indicate a genuinely unstable workload characterization, not just "
-                      "measurement noise -- worth a closer look." % breakdown)
+
+    lines = []
+    if known:
+        lines += ["| run_id | resource_dominance | confidence |", "|---|---|---|"]
+        for s in scorecards:
+            dom = s.get("resource_dominance", "unknown")
+            pct = s.get("resource_dominance_pct")
+            dom_display = "%s (%s%%)" % (dom, pct) if pct else dom
+            lines.append("| %s | %s | %s |" % (s["run_id"], dom_display, s.get("confidence", "unknown")))
+        lines.append("")
+        labels = {s["resource_dominance"] for s in known}
+        if len(labels) == 1:
+            lines.append("**Consistent** -- `resource_dominance` agrees (`%s`) across all %d run(s) "
+                          "with archetype data." % (next(iter(labels)), len(known)))
+        else:
+            counts = Counter(s["resource_dominance"] for s in known)
+            breakdown = ", ".join("%d run(s) `%s`" % (n, label) for label, n in counts.most_common())
+            lines.append("**Diverges** -- `resource_dominance` does not agree across stats-pool runs: "
+                          "%s. This may indicate a genuinely unstable workload characterization, not "
+                          "just measurement noise -- worth a closer look." % breakdown)
+
+    if wp_known:
+        if lines:
+            lines.append("")
+        lines.append("**WordPress-recovered peers** -- machines with no local `runs.json`/store "
+                      "presence, characterized from their own already-published pages instead:")
+        lines.append("")
+        lines += ["| machine | resource_dominance | confidence |", "|---|---|---|"]
+        for s in wordpress_scorecards:
+            dom = s.get("resource_dominance", "unknown")
+            pct = s.get("resource_dominance_pct")
+            dom_display = "%s (%s%%)" % (dom, pct) if pct else dom
+            lines.append("| %s | %s | %s |" % (s["machine"], dom_display, s.get("confidence", "unknown")))
+        lines.append("")
+        local_labels = {s["resource_dominance"] for s in known}
+        wp_labels = {s["resource_dominance"] for s in wp_known}
+        if local_labels and wp_labels:
+            if local_labels == wp_labels and len(local_labels) == 1:
+                lines.append("Agrees with this machine's own `resource_dominance` (`%s`)." %
+                              next(iter(local_labels)))
+            else:
+                lines.append("Differs from this machine's own `resource_dominance` -- worth a closer "
+                              "look, kept in mind that this data has no `wspy-summary` reliability "
+                              "verdict behind it.")
     return "\n".join(lines) + "\n"
 
 
@@ -634,7 +724,9 @@ def cmd_render(args):
     if warn_md:
         sections.append(("_warnings", "Reliability warnings", warn_md))
     scorecards = collect_archetype_scorecards(args.wspy_archetype_bin, args.db, present)
-    archetype_md = render_archetype_section(scorecards)
+    wordpress_scorecards = collect_wordpress_archetype_scorecards(
+        args.wspy_archetype_bin, load_config(), args.suite, test, test_point, args.machine)
+    archetype_md = render_archetype_section(scorecards, wordpress_scorecards)
     if archetype_md:
         sections.append(("_archetype", "Workload characterization", archetype_md))
     for group in sorted(grouped):

@@ -70,6 +70,7 @@
 #include <float.h>
 #include <getopt.h>
 #include <sqlite3.h>
+#include "json_reader.h"
 
 /* run_features (store.c) didn't exist before store.c's schema version 4
  * (MIGRATION_V3_TO_V4) -- a database older than that has nothing for this
@@ -779,6 +780,38 @@ static void print_trace_field(FILE *out,const char *key,const char *value){
   fputc('\n',out);
 }
 
+/* Shared key=value rendering for a computed scorecard -- factored out of trace_run_archetype()
+ * (INVESTIGATION.md 4.3 item 23) so run_guest_archetype() below can emit the exact same field set
+ * and ordering for an externally-supplied (not-in-the-store) feature vector, letting
+ * wspy-testpoint's existing key=value parser (collect_archetype_scorecards()) work unmodified for
+ * either source. */
+static void print_scorecard_fields(FILE *out,const char *hostname,const char *run_id_text,
+                                    const char *command,const struct scorecard *sc){
+  char pct_buf[32];
+  print_trace_field(out,"hostname",hostname);
+  print_trace_field(out,"run_id",run_id_text);
+  print_trace_field(out,"command",command);
+  print_trace_field(out,"resource_dominance",sc->dominance.available ? sc->dominance.primary_label : "unknown");
+  if (sc->dominance.available){
+    snprintf(pct_buf,sizeof(pct_buf),"%.2f",sc->dominance.primary_pct);
+    print_trace_field(out,"resource_dominance_pct",pct_buf);
+  }
+  if (sc->dominance.has_alternative){
+    print_trace_field(out,"alternative",sc->dominance.alternative_label);
+    snprintf(pct_buf,sizeof(pct_buf),"%.2f",sc->dominance.alternative_pct);
+    print_trace_field(out,"alternative_pct",pct_buf);
+  }
+  print_trace_field(out,"parallelism_shape",sc->simple[AXIS_PARALLELISM_SHAPE].label);
+  print_trace_field(out,"control_flow_style",sc->simple[AXIS_CONTROL_FLOW_STYLE].label);
+  print_trace_field(out,"runtime_stability",sc->simple[AXIS_RUNTIME_STABILITY].label);
+  print_trace_field(out,"confidence",sc->confidence.level);
+  print_trace_field(out,"confidence_reasons",sc->confidence.reasons);
+  print_trace_field(out,"memory_attribution",sc->memory_attribution.label);
+  print_trace_field(out,"memory_attribution_reasons",sc->memory_attribution.reasons);
+  print_trace_field(out,"memory_attribution_locus",sc->memory_attribution.locus);
+  print_trace_field(out,"memory_attribution_locus_reasons",sc->memory_attribution.locus_reasons);
+}
+
 /* --run <hostname>:<run_id>: detailed single-run scorecard, key=value lines
  * like summary.c's --trace. Existence is checked against `runs` directly
  * first (not inferred from the JOIN below coming back empty), so a run
@@ -794,7 +827,6 @@ static int trace_run_archetype(sqlite3 *db,const char *hostname,const char *run_
   char command[512] = "";
   struct run_snapshot snap;
   struct scorecard sc;
-  char pct_buf[32];
 
   if (sqlite3_prepare_v2(db,"SELECT id,command FROM runs WHERE hostname=? AND run_id=?;",
                          -1,&stmt,NULL) != SQLITE_OK){
@@ -831,29 +863,55 @@ static int trace_run_archetype(sqlite3 *db,const char *hostname,const char *run_
   }
 
   score_snapshot(&snap,&sc);
+  print_scorecard_fields(out,hostname,run_id_text,command,&sc);
+  return 0;
+}
 
-  print_trace_field(out,"hostname",hostname);
-  print_trace_field(out,"run_id",run_id_text);
-  print_trace_field(out,"command",command);
-  print_trace_field(out,"resource_dominance",sc.dominance.available ? sc.dominance.primary_label : "unknown");
-  if (sc.dominance.available){
-    snprintf(pct_buf,sizeof(pct_buf),"%.2f",sc.dominance.primary_pct);
-    print_trace_field(out,"resource_dominance_pct",pct_buf);
+/* --run-guest <json-file>: same scorecard as --run, but scored from a flat JSON object of
+ * feature_name->value pairs instead of a `runs`/`run_features` database row (INVESTIGATION.md 4.3
+ * item 23) -- lets a caller characterize a run this store has never heard of, e.g. one recovered
+ * from an already-published WordPress page for a machine with no local wspy-store presence at all
+ * (web/server.py's recover_machine_metrics_from_wordpress(), item 21). No database access at all:
+ * score_snapshot() is a pure function of struct run_snapshot, so this mode doesn't even require
+ * --db. Every value is treated as "measured" (present in the JSON at all is the only signal this
+ * mode has -- there's no separate coverage concept for external data the way store.c's `coverage`
+ * column has for a real run); a key run_snapshot_apply_feature() doesn't recognize is silently
+ * ignored, same forward-compatible behavior a real run_features row with an unrecognized name
+ * already gets. hostname/run_id/command are always printed as "(guest)"/""  -- there's no real
+ * identity to report, and wspy-testpoint's own caller supplies the actual machine label separately
+ * rather than relying on this tool to know it. Returns 0 normally, 1 if the JSON can't be parsed or
+ * isn't an object, matching --run's own "bad input" exit code.
+ */
+static int run_guest_archetype(const char *json_path,FILE *out){
+  char errbuf[256];
+  struct json_value *root;
+  struct run_snapshot snap;
+  struct scorecard sc;
+  size_t i;
+
+  root = json_parse_file(json_path,errbuf,sizeof(errbuf));
+  if (!root){
+    fprintf(stderr,"wspy-archetype: --run-guest %s: %s\n",json_path,errbuf);
+    return 1;
   }
-  if (sc.dominance.has_alternative){
-    print_trace_field(out,"alternative",sc.dominance.alternative_label);
-    snprintf(pct_buf,sizeof(pct_buf),"%.2f",sc.dominance.alternative_pct);
-    print_trace_field(out,"alternative_pct",pct_buf);
+  if (root->type != JSON_OBJECT){
+    fprintf(stderr,"wspy-archetype: --run-guest %s: expected a JSON object of feature_name->value "
+                   "pairs\n",json_path);
+    json_free(root);
+    return 1;
   }
-  print_trace_field(out,"parallelism_shape",sc.simple[AXIS_PARALLELISM_SHAPE].label);
-  print_trace_field(out,"control_flow_style",sc.simple[AXIS_CONTROL_FLOW_STYLE].label);
-  print_trace_field(out,"runtime_stability",sc.simple[AXIS_RUNTIME_STABILITY].label);
-  print_trace_field(out,"confidence",sc.confidence.level);
-  print_trace_field(out,"confidence_reasons",sc.confidence.reasons);
-  print_trace_field(out,"memory_attribution",sc.memory_attribution.label);
-  print_trace_field(out,"memory_attribution_reasons",sc.memory_attribution.reasons);
-  print_trace_field(out,"memory_attribution_locus",sc.memory_attribution.locus);
-  print_trace_field(out,"memory_attribution_locus_reasons",sc.memory_attribution.locus_reasons);
+
+  run_snapshot_reset(&snap,0,"(guest)","(guest)","");
+  for (i = 0; i < root->u.object.count; i++){
+    const struct json_value *v = root->u.object.values[i];
+    if (v->type == JSON_NUMBER){
+      run_snapshot_apply_feature(&snap,root->u.object.keys[i],v->u.number,1);
+    }
+  }
+  json_free(root);
+
+  score_snapshot(&snap,&sc);
+  print_scorecard_fields(out,"(guest)","(guest)","",&sc);
   return 0;
 }
 
@@ -1675,6 +1733,16 @@ static void usage(const char *prog){
     "                       other option above except --db. Prints key=value\n"
     "                       lines.\n"
     "\n"
+    "  --run-guest <json>   standalone mode: same scorecard as --run, but scored\n"
+    "                       from a flat JSON object of feature_name->value pairs\n"
+    "                       instead of a database row -- no --db needed at all.\n"
+    "                       For characterizing a run this store has never heard\n"
+    "                       of (e.g. one recovered from an already-published\n"
+    "                       page for a machine with no local store presence).\n"
+    "                       An unrecognized JSON key is silently ignored. Prints\n"
+    "                       the same key=value lines as --run, with hostname/\n"
+    "                       run_id always \"(guest)\".\n"
+    "\n"
     "  --nearest <host>:<run_id>  standalone mode: rank every other run in the\n"
     "                       store by similarity to this one, over whichever\n"
     "                       run_features both runs have measured (a\n"
@@ -1712,7 +1780,8 @@ static void usage(const char *prog){
     "whose axes all came back \"unknown\"/\"unavailable\".\n"
     "\n"
     "Exit status: 0 normally; 1 with --run/--nearest if no such run is\n"
-    "recorded, or with --kmeans if fewer candidate runs than n are available;\n"
+    "recorded, with --run-guest if the JSON can't be parsed or isn't an object,\n"
+    "or with --kmeans if fewer candidate runs than n are available;\n"
     "2 on a usage error or if the database could not be opened.\n",
     prog);
 }
@@ -1723,6 +1792,7 @@ int main(int argc,char **argv){
   const char *command_filter = "";
   const char *hostname_filter = "";
   const char *run_key = NULL;
+  const char *run_guest_key = NULL;
   const char *nearest_key = NULL;
   const char *kmeans_key = NULL;
   int k = NEAREST_DEFAULT_K;
@@ -1738,6 +1808,7 @@ int main(int argc,char **argv){
     { "hostname",   required_argument, 0, 'H' },
     { "csv",        no_argument,       0, 'C' },
     { "run",        required_argument, 0, 'r' },
+    { "run-guest",  required_argument, 0, 'g' },
     { "nearest",    required_argument, 0, 'n' },
     { "k",          required_argument, 0, 'k' },
     { "kmeans",     required_argument, 0, 'K' },
@@ -1754,6 +1825,7 @@ int main(int argc,char **argv){
     case 'H': hostname_filter = optarg; break;
     case 'C': csvflag = 1; break;
     case 'r': run_key = optarg; break;
+    case 'g': run_guest_key = optarg; break;
     case 'n': nearest_key = optarg; break;
     case 'k': k = atoi(optarg); break;
     case 'K': kmeans_key = optarg; break;
@@ -1763,13 +1835,21 @@ int main(int argc,char **argv){
     default: usage(argv[0]); return 2;
     }
   }
-  if (!db_path){
-    fprintf(stderr,"wspy-archetype: --db <path> is required\n\n");
+  if ((run_key && run_guest_key) || (run_key && nearest_key) || (run_key && kmeans_key) ||
+      (run_guest_key && nearest_key) || (run_guest_key && kmeans_key) || (nearest_key && kmeans_key)){
+    fprintf(stderr,
+            "wspy-archetype: --run, --run-guest, --nearest, and --kmeans are mutually exclusive\n\n");
     usage(argv[0]);
     return 2;
   }
-  if ((run_key && nearest_key) || (run_key && kmeans_key) || (nearest_key && kmeans_key)){
-    fprintf(stderr,"wspy-archetype: --run, --nearest, and --kmeans are mutually exclusive\n\n");
+  /* --run-guest scores a caller-supplied JSON feature vector via the pure score_snapshot()
+   * function -- no database involved at all, so it's dispatched before the --db requirement below
+   * applies to every other mode. */
+  if (run_guest_key){
+    return run_guest_archetype(run_guest_key,stdout);
+  }
+  if (!db_path){
+    fprintf(stderr,"wspy-archetype: --db <path> is required\n\n");
     usage(argv[0]);
     return 2;
   }

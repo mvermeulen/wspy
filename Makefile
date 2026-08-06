@@ -73,8 +73,8 @@ wspy-plot:	plot.o
 wspy-core-report:	core_report.o error.o cpu_info.c cpu_info.h
 	$(CC) -o wspy-core-report $(CFLAGS) core_report.o cpu_info.c error.o -lm
 
-wspy-archetype:	archetype.o
-	$(CC) -o wspy-archetype $(CFLAGS) archetype.o $(STORE_LIBS) -lm
+wspy-archetype:	archetype.o json_reader.o
+	$(CC) -o wspy-archetype $(CFLAGS) archetype.o json_reader.o $(STORE_LIBS) -lm
 
 cpu_info:	cpu_info.c error.o cpu_info.h
 	$(CC) -o cpu_info $(CFLAGS) -DTEST_CPU_INFO cpu_info.c error.o
@@ -208,8 +208,8 @@ test_core_report: test_core_report.c core_report.c cpu_info.h error.c error.h
 test_cgroup: test_cgroup.c cgroup.c cgroup.h
 	$(CC) -o test_cgroup $(CFLAGS) test_cgroup.c
 
-test_archetype: test_archetype.c archetype.c
-	$(CC) -o test_archetype $(CFLAGS) -DTEST_ARCHETYPE test_archetype.c $(STORE_LIBS) -lm
+test_archetype: test_archetype.c archetype.c json_reader.c json_reader.h
+	$(CC) -o test_archetype $(CFLAGS) -DTEST_ARCHETYPE test_archetype.c json_reader.c $(STORE_LIBS) -lm
 
 test: test_wspy test_proctree test_validate test_ledger test_ibs test_ibs_sample test_symbol_sample test_power test_phase test_store test_summary test_plot test_affinity test_gpu_fusion test_core_report test_cgroup test_archetype
 	./test_wspy
