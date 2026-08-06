@@ -1261,9 +1261,9 @@ core-equivalents, not a second finding — applies to both single-run and `--com
 `./test_ai_analyze.sh` (structural + live Ollama calls, both modes) still passes.
 
 **Benchmark reference-matrix database: query layer + web UI** (PR #204) — ships most of 4.3 Tier 3
-item 5 (still open: a standalone "by machine" view, drill-down links to individual runs, the
-archetype/kmeans analysis-feed hookup, and the 60+-column vocabulary audit — see item 5's own
-trimmed entry above). Computed on demand at web-request time, no new persistent matrix table:
+item 5 (still open: a standalone "by machine" view and drill-down links to individual runs — see
+item 5's own trimmed entry above; the analysis-feed hookup shipped separately, see PR #210 below).
+Computed on demand at web-request time, no new persistent matrix table:
 `joblib.enumerate_reference_matrix_cells()` walks materialized Phoronix/cpu2026 test points against
 which `<report-root>/<suite>/<test>/<test-point>/<machine>/` directories already have a `runs.json`
 (`wspy-testpoint select-runs`) — reusing that curated run selection rather than re-deriving one from
@@ -1467,6 +1467,18 @@ Verified end to end against the real site: `amd-395-96gb`'s `control_flow_style`
 resolves to `"branch-heavy"` (previously `"unknown"`), confidence improved from `"low"` to
 `"medium"` with the extra known axis. All 17 `web/test_*.py` files green, full `run_tests.sh` C
 matrix green.
+
+**Surface archetype characterization on reference-matrix pages** (PR #210) — closes 4.3 item 5's
+"analysis-feed hookup" sub-bullet. Each machine column header on a reference-matrix test-point
+detail page now shows a `resource_dominance`/`confidence` badge when available (e.g. "compute-bound
+(medium confidence)"). New read-only `wspy-testpoint characterize` subcommand wraps
+`collect_archetype_scorecards()`/`collect_wordpress_archetype_scorecards()` (item 23) as JSON so
+`web/server.py` can reuse them without a circular import; `characterize_reference_matrix_machines()`
+shells out to it once per cell, summarizing a machine's own stats-pool runs to "mixed"/"n/a" when
+they disagree and merging WordPress-recovered peer scorecards across cells. `--run`/`--run-guest`
+based, not `--kmeans` (deferred — see item 5's own entry for why). Verified live: `amd-395-96gb`
+shows "compute-bound (medium confidence)"; `amd-370-64gb` correctly shows no badge (no topdown data
+for that run). All 17 `web/test_*.py` files green, full `run_tests.sh` C matrix green.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
@@ -1690,21 +1702,6 @@ reasoning as Tier 1 above.
      largely redundant with the per-test-point detail page sliced the other way.
    - Drill-down links from a cell to the individual runs behind it (today only the aggregate/detail
      link exists).
-   - **Analysis-feed hookup, scope settled 2026-08-06:** surface characterization
-     (`resource_dominance`/`confidence`) on the reference-matrix pages themselves (today it only
-     exists on individual run report pages, via the curation studio's existing "Generate
-     characterization badge" button). `--run`/`--run-guest` (item 23), not `--kmeans` — `--kmeans`
-     clusters the *whole* store population, it doesn't map cleanly onto one test-point's narrow
-     cross-machine view, so a whole-population clustering surface (if wanted later) belongs as its
-     own separate item, not folded in here. New read-only `wspy-testpoint characterize` subcommand
-     (`--json`) wraps the already-built `collect_archetype_scorecards()`/
-     `collect_wordpress_archetype_scorecards()` (item 23) so `web/server.py` can reuse them without a
-     circular import (`wspy-testpoint` already imports `server.py`, not the other way around) —
-     `render_reference_test_point_detail()` shells out to it once per real local machine and renders
-     the result as header context next to each machine column, not a synthetic row mixed into the
-     numeric metric table. `wspy-analyze`'s own cluster-aware narrative (referencing a run's cluster
-     peers, not just its own numbers or one `--compare-rundir` other run) stays deferred, along with
-     the `--kmeans` whole-population view — this pass is the reference-matrix-surfacing half only.
 
 **Tier 4 — report-layer additions on data already collected in 4.0:**
 
