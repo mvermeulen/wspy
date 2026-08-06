@@ -3,6 +3,7 @@
 #include <string.h>
 #include <assert.h>
 #include <math.h>
+#include <unistd.h>
 
 #define TEST_ARCHETYPE 1
 #include "archetype.c"
@@ -772,6 +773,130 @@ static char *slurp(FILE *out,char *buf,size_t bufsize){
   return buf;
 }
 
+/* --- end-to-end: run_guest_archetype() (--run-guest mode) --- */
+
+static char *write_tmp_file(char *tmpfile_template,const char *contents){
+  int fd = mkstemp(tmpfile_template);
+  ssize_t written;
+  assert(fd >= 0);
+  written = write(fd,contents,strlen(contents));
+  assert(written == (ssize_t)strlen(contents));
+  close(fd);
+  return tmpfile_template;
+}
+
+static void test_run_guest_archetype_scores_from_json(void){
+  char json_file[] = "/tmp/test_archetype_guest_XXXXXX";
+  char out_file[] = "/tmp/test_archetype_guest_out_XXXXXX";
+  FILE *out;
+  char buf[8192];
+  int rc;
+
+  printf("Testing run_guest_archetype: scores a flat JSON feature object with no database at all...\n");
+  write_tmp_file(json_file,
+    "{\"retire_pct\": 70.0, \"frontend_pct\": 5.0, \"backend_pct\": 20.0, \"speculate_pct\": 5.0}");
+  out = open_tmp_out(out_file);
+
+  rc = run_guest_archetype(json_file,out);
+  assert(rc == 0);
+
+  slurp(out,buf,sizeof(buf));
+  assert(strstr(buf,"hostname=(guest)\n") != NULL);
+  assert(strstr(buf,"run_id=(guest)\n") != NULL);
+  assert(strstr(buf,"resource_dominance=compute-bound\n") != NULL);
+  assert(strstr(buf,"alternative=memory-bound\n") != NULL);
+
+  fclose(out);
+  remove(json_file);
+  remove(out_file);
+  printf("PASS: run_guest_archetype scores from JSON\n");
+}
+
+static void test_run_guest_archetype_ignores_unrecognized_keys(void){
+  char json_file[] = "/tmp/test_archetype_guest_XXXXXX";
+  char out_file[] = "/tmp/test_archetype_guest_out_XXXXXX";
+  FILE *out;
+  char buf[8192];
+  int rc;
+
+  printf("Testing run_guest_archetype: an unrecognized JSON key is silently ignored, not an error...\n");
+  write_tmp_file(json_file,
+    "{\"retire_pct\": 70.0, \"frontend_pct\": 5.0, \"backend_pct\": 20.0, \"speculate_pct\": 5.0, "
+    "\"some_future_metric_this_tool_does_not_know_about\": 42.0}");
+  out = open_tmp_out(out_file);
+
+  rc = run_guest_archetype(json_file,out);
+  assert(rc == 0);
+  slurp(out,buf,sizeof(buf));
+  assert(strstr(buf,"resource_dominance=compute-bound\n") != NULL);
+
+  fclose(out);
+  remove(json_file);
+  remove(out_file);
+  printf("PASS: run_guest_archetype ignores unrecognized keys\n");
+}
+
+static void test_run_guest_archetype_partial_features_still_scores(void){
+  char json_file[] = "/tmp/test_archetype_guest_XXXXXX";
+  char out_file[] = "/tmp/test_archetype_guest_out_XXXXXX";
+  FILE *out;
+  char buf[8192];
+  int rc;
+
+  printf("Testing run_guest_archetype: a partial feature set (e.g. topdown only, no branch data) "
+         "still scores what it can...\n");
+  write_tmp_file(json_file,"{\"retire_pct\": 10.0, \"frontend_pct\": 65.0, \"backend_pct\": 20.0, "
+                            "\"speculate_pct\": 5.0}");
+  out = open_tmp_out(out_file);
+
+  rc = run_guest_archetype(json_file,out);
+  assert(rc == 0);
+  slurp(out,buf,sizeof(buf));
+  assert(strstr(buf,"resource_dominance=frontend-bound\n") != NULL);
+  assert(strstr(buf,"control_flow_style=unknown\n") != NULL);  /* no branch_mispredict_pct given */
+
+  fclose(out);
+  remove(json_file);
+  remove(out_file);
+  printf("PASS: run_guest_archetype partial features still scores\n");
+}
+
+static void test_run_guest_archetype_malformed_json_returns_1(void){
+  char json_file[] = "/tmp/test_archetype_guest_XXXXXX";
+  FILE *devnull;
+  int rc;
+
+  printf("Testing run_guest_archetype: malformed JSON returns 1, not a crash...\n");
+  write_tmp_file(json_file,"not json at all");
+  devnull = fopen("/dev/null","w");
+  assert(devnull != NULL);
+
+  rc = run_guest_archetype(json_file,devnull);
+  assert(rc == 1);
+
+  fclose(devnull);
+  remove(json_file);
+  printf("PASS: run_guest_archetype malformed JSON\n");
+}
+
+static void test_run_guest_archetype_non_object_json_returns_1(void){
+  char json_file[] = "/tmp/test_archetype_guest_XXXXXX";
+  FILE *devnull;
+  int rc;
+
+  printf("Testing run_guest_archetype: a JSON array (not an object) returns 1...\n");
+  write_tmp_file(json_file,"[1, 2, 3]");
+  devnull = fopen("/dev/null","w");
+  assert(devnull != NULL);
+
+  rc = run_guest_archetype(json_file,devnull);
+  assert(rc == 1);
+
+  fclose(devnull);
+  remove(json_file);
+  printf("PASS: run_guest_archetype non-object JSON\n");
+}
+
 /* CSV row shape is "hostname,run_id,distance,compared_features\n" -- finds the
  * row for run_id_text and returns its compared_features column, or -1 if the
  * run isn't present in the output at all. */
@@ -1342,6 +1467,11 @@ int main(void){
   test_score_runs_memory_attribution_locus_end_to_end();
   test_trace_run_archetype_found();
   test_trace_run_archetype_not_found();
+  test_run_guest_archetype_scores_from_json();
+  test_run_guest_archetype_ignores_unrecognized_keys();
+  test_run_guest_archetype_partial_features_still_scores();
+  test_run_guest_archetype_malformed_json_returns_1();
+  test_run_guest_archetype_non_object_json_returns_1();
   test_nearest_basic_ranking();
   test_nearest_common_subspace_normalization();
   test_nearest_zero_shared_features_excluded();
