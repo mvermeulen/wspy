@@ -1376,6 +1376,40 @@ hyphens on page creation; discovery reports the slug WordPress actually assigned
 dotted name, and the detail route works correctly with either). 17 `web/test_*.py` files green (1
 new: `test_wordpress_discovery.py`), full `run_tests.sh` C matrix green.
 
+**Parse normalized ratios from counters.txt/ibs.txt comments** (PR #207) — closes most of 4.3 item
+24, refining item 21's recovery rather than growing it further. `recover_machine_metrics_from_wordpress()`
+previously discarded each line's comment, keeping only the raw operand value — but `doc/METRICS.md`
+documents that wspy's own store deliberately keeps the *ratio* (IPC, topdown percentages, miss
+rates), not the raw operand counts, since raw counts aren't comparable across differently-scaled or
+differently-multiplexed runs. The WordPress-recovered path was the only one working from the wrong
+number — exactly the values a future clustering/archetype pass (item 23's own eventual target, e.g.
+"is this floating-point-heavy" / "what's the branch-miss rate" / "is this front-end-bound") would
+need to be genuinely comparable.
+
+New `counter_text.extract_derived_ratios()`, two tiers: (1) a generic
+`parse_comment_ratio()` handling most comments, which are self-describing enough for one
+`"<number>[%] <description>"` parse (`2.38 IPC`, `8.4% icache miss rate`, `260.598 icache per 1000
+inst` → slugify the description into a metric name) — strips `topdown.c`'s own trailing "high"/"low"
+classification word first so the same ratio always slugifies to the same name regardless of which
+side of a threshold a given run landed on; (2) explicit, `topdown.c`-source-verified tables for two
+real traps a generic parse can't handle: `retiring`/`frontend`/`backend`/`speculation` print *two*
+percentages (`27.6% (47.0%)`) where only the second, parenthetical one matches the real
+`retire_pct`/`frontend_pct`/`backend_pct`/`speculate_pct` CSV column (confirmed directly against
+`topdown.c`'s own `PRINT_CSV` branch, not guessed from `PRINT_NORMAL` text alone); their L2 children
+and `smt-contention` print one bare percentage with no description text to name a metric from at all
+(`smt-contention`'s own second, parenthesized number is a hardcoded literal per `topdown.c`'s own
+comment, not real data — takes the first, not second).
+
+Verified end to end against the real site: `amd-395-96gb` now recovers real IPC (2.31), topdown
+breakdown (retire 40.6%, frontend 29.6%, backend 23.2%, speculate 6.6%), branch miss rate (2.68%),
+and cache/float rates, not just raw operand magnitudes. **Deliberately not a full audit:** the
+generic tier's slugified names (e.g. `branch_miss`, `icache_miss_rate`) aren't guaranteed to match
+`wspy-summary`'s own real CSV column spelling (`branch_mispredict_pct`, etc.) for every remaining
+cache/branch/TLB comment — only the topdown L1/L2 percentages got exact-name verification against
+source, since those were the specific trap worth getting right this pass; the rest stays open as
+item 24's own residual entry. 16 `web/test_*.py` files green (12 new tests in `test_counter_text.py`),
+full `run_tests.sh` C matrix green.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -1610,32 +1644,11 @@ reasoning as Tier 1 above.
     before any implementation, not just wiring the two together. Overlaps item 5's still-open
     "analysis feed" bullet (the `wspy-archetype --kmeans`/`wspy-analyze` hookup for store-based data);
     this item is the WordPress-recovered-data half of that same eventual goal.
-24. Parse the normalized ratios embedded in `counters.txt`/`ibs.txt` *comments*, not just each line's
-    raw operand value (raised 2026-08-06, refines item 21's recovery rather than growing it further —
-    `recover_machine_metrics_from_wordpress()`'s `_first_value_per_metric()` currently keeps only
-    `value`, discarding `comment` entirely, even though `parse_counter_text()` already captures it).
-    Real gap, not cosmetic: `doc/METRICS.md` documents that wspy's own CSV/store schema stores IPC,
-    topdown percentages, etc. as the *ratio*, deliberately not the raw operand counts, "since the
-    ratio is comparable across differently-scaled or differently-multiplexed runs, the raw operand
-    counts mostly aren't" — so the WordPress-recovered path is currently the only one working from
-    the wrong (raw, not comparable) number, exactly the values a future clustering/archetype pass
-    (`wspy-archetype`-style "is this floating-point-heavy" / "what's the branch-miss rate" / "is this
-    front-end-bound" questions, item 23's own eventual target) would need to be genuinely comparable.
-    Confirmed directly against `topdown.c` source (not guessed from sample output) that most comments
-    are self-describing enough for one generic `"<number>[%] <description>"` parse (`2.38 IPC`, `8.4%
-    icache miss rate`, `260.598 icache per 1000 inst` → slugify the description into a metric name),
-    but topdown's own four L1 lines are a real trap: `retiring`/`frontend`/`backend`/`speculation`
-    print *two* percentages (`27.6% (47.0%)`) and it's the second, parenthetical one that matches the
-    real `retire_pct`/etc. CSV column (confirmed against `topdown.c`'s `PRINT_CSV` branch directly,
-    matching `doc/METRICS.md`'s own documented wrinkle) — a naive "first percent found" parse would
-    silently produce a wrong value there. Their L2 children (`-- ucode`, `-- fastpath`, ...) and
-    `smt-contention` print one bare percentage with no description text to name a metric from at all,
-    needing an explicit label→name table instead of the generic parse. Scope for a first pass:
-    generic comment parsing (broad coverage, slugified names not guaranteed to match `wspy-summary`'s
-    own CSV column spelling) plus an explicit, `topdown.c`-verified table for the L1/L2 topdown
-    percentages specifically (exact names). A full audit mapping every remaining per-1000-inst/
-    miss-rate comment to its real CSV column name (cache/branch/TLB groups) is a further follow-up,
-    not required for this pass to be useful.
+24. **Generic comment-ratio parsing plus the topdown L1/L2 percentage table are shipped** (PR #207) —
+    see "Shipped since 4.2". Still open: a full audit mapping every remaining per-1000-inst/miss-rate
+    comment (cache/branch/TLB groups) to its real `wspy-summary` CSV column name — shipped names are
+    slugified from the comment text itself (e.g. `branch_miss`, not the real `branch_mispredict_pct`
+    column) and aren't yet guaranteed to line up with store-based data by name.
 
 **Tier 4 — report-layer additions on data already collected in 4.0:**
 
