@@ -3380,7 +3380,7 @@ def render_reference_test_point_detail(cfg, suite, test, test_point):
     for c in cells:
         by_machine[c["machine"]] = joblib.aggregate_reference_matrix_cell(
             cfg["wspy_testpoint_bin"], cfg["store_db"], suite, c["benchmark"], c["machine"],
-            report_root_path=cfg.get("report_root"), report_root_remote=cfg.get("report_root_remote"))
+            report_root_path=cfg.get("report_root"))
         runs_json_path = os.path.join(report_root_path, suite, test, test_point, c["machine"], "runs.json")
         run_counts[c["machine"]] = len(joblib.load_reference_matrix_cell_runs(runs_json_path))
 
@@ -3556,7 +3556,7 @@ def render_reference_by_machine(cfg, suite, machine):
     for c in cells:
         by_test_point[(c["test"], c["test_point"])] = joblib.aggregate_reference_matrix_cell(
             cfg["wspy_testpoint_bin"], cfg["store_db"], suite, c["benchmark"], machine,
-            report_root_path=cfg.get("report_root"), report_root_remote=cfg.get("report_root_remote"))
+            report_root_path=cfg.get("report_root"))
 
     test_points = sorted(by_test_point.keys())
     metrics = sorted({r["metric"] for rows in by_test_point.values() if rows for r in rows})

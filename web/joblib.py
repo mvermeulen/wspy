@@ -2870,7 +2870,7 @@ def load_reference_matrix_cell_runs(runs_json_path):
 
 
 def aggregate_reference_matrix_cell(wspy_testpoint_bin, db, suite, benchmark, machine,
-                                     report_root_path=None, report_root_remote=None, timeout=30):
+                                     report_root_path=None, timeout=30):
     """Runs `wspy-testpoint aggregate --csv --quiet` for one enumerate_reference_matrix_cells() cell
     and returns parse_summary_csv()-shaped rows ({metric, n, min, max, mean, stddev, cv_percent,
     verdict}, one per counter-group metric), or None on any failure (missing store rows since the
@@ -2878,13 +2878,17 @@ def aggregate_reference_matrix_cell(wspy_testpoint_bin, db, suite, benchmark, ma
     cell rather than raising, since one cell failing to aggregate shouldn't take down the whole
     matrix. Shells out rather than importing wspy-testpoint directly (a hyphenated script name, not a
     plain importable module) -- same subprocess-reuse precedent web/server.py's
-    execute_testpoint_publish() already established for select-runs/render."""
+    execute_testpoint_publish() already established for select-runs/render.
+
+    No report_root_remote parameter (unlike select-runs/render): `wspy-testpoint aggregate` never
+    accepted --report-root-remote in the first place (it only reads an already-selected run set, never
+    clones), so a caller passing one through here was a latent bug -- silently never hit before because
+    every prior caller happened to pass None. Found live while building scripts/publish_reference_matrix.py,
+    the first caller to pass a real value."""
     argv = [wspy_testpoint_bin, "aggregate", "--suite", suite, "--benchmark", benchmark,
             "--machine", machine, "--db", db, "--csv", "--quiet"]
     if report_root_path:
         argv += ["--report-root", report_root_path]
-    if report_root_remote:
-        argv += ["--report-root-remote", report_root_remote]
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired):
