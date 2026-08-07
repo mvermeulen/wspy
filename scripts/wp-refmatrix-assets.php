@@ -207,11 +207,22 @@ table.wspy-refmatrix tr.wspy-row-unchecked { display: none; }
             });
 
             groupCb.addEventListener('change', function () {
-                groupCb.indeterminate = false;
+                // Capture the target once -- each child's own "change" handler above recomputes
+                // and overwrites groupCb.checked/indeterminate from the partial checked count as
+                // it fires, so re-reading groupCb.checked live on every loop iteration (instead of
+                // this captured snapshot) meant a sibling's handler could flip it back mid-loop:
+                // unchecking a fully-checked group only ever cleared the first child before this
+                // fix, since checkedCount stayed > 0 for every iteration except the last.
+                var target = groupCb.checked;
                 colCheckboxes.forEach(function (cb) {
-                    cb.checked = groupCb.checked;
+                    cb.checked = target;
                     cb.dispatchEvent(new Event('change'));
                 });
+                // Children's handlers already leave the right value in the all-same-target case,
+                // but pin it explicitly rather than trust the last child's handler to have been
+                // the final write.
+                groupCb.checked = target;
+                groupCb.indeterminate = false;
             });
         });
 
