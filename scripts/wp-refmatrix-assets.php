@@ -64,6 +64,9 @@ table.wspy-refmatrix { margin-top: 0.5em; }
 }
 .wspy-refmatrix-toolbar summary { cursor: pointer; }
 .wspy-refmatrix-toolbar details label { display: block; margin: 0.2em 0 0.2em 0.2em; }
+.wspy-refmatrix-toolbar details label.wspy-refmatrix-group-toggle { margin-top: 0.6em; }
+.wspy-refmatrix-toolbar details label.wspy-refmatrix-group-toggle:first-of-type { margin-top: 0.2em; }
+.wspy-refmatrix-toolbar details label.wspy-refmatrix-col-toggle { margin-left: 1.4em; }
 .wspy-refmatrix-row-buttons { margin: 0.3em 0 0.3em 0.2em; }
 .wspy-refmatrix-row-buttons button {
     font-size: 0.85em; margin-right: 0.4em; padding: 0.1em 0.5em; cursor: pointer;
@@ -78,18 +81,34 @@ table.wspy-refmatrix tr.wspy-row-unchecked { display: none; }
 <script>
 (function () {
     // Friendly labels for the --counters/--system/--power group tokens publish_reference_matrix.py
-    // emits (joblib.py's ALL_GROUPS/"system"/"power" plus its own SUPPLEMENTARY_COLUMN_GROUPS) --
-    // falls back to the raw token itself for anything this list hasn't caught up with yet, so a new
-    // group never disappears from the panel, it just shows up unprettified.
+    // emits (joblib.py's ALL_GROUPS/"system"/"power" plus its own SUPPLEMENTARY_COLUMN_GROUPS,
+    // topdown/topdown2/topdown-frontend/topdown-backend/topdown-optlb pre-merged into one "topdown"
+    // token by metric_col_group() -- see that function's own comment) -- falls back to the raw token
+    // itself for anything this list hasn't caught up with yet, so a new group never disappears from
+    // the panel, it just shows up unprettified.
     var GROUP_LABELS = {
-        ipc: 'IPC', topdown: 'Topdown', 'topdown-frontend': 'Frontend/op-cache (AMD)',
-        'topdown-backend': 'Backend deep-dive', 'topdown-optlb': 'Op-cache/TLB (AMD)',
-        branch: 'Branch prediction', cache2: 'L2 cache', cache3: 'L3 cache', dcache: 'L1 dcache',
-        icache: 'L1 icache', tlb: 'TLB', memory: 'Memory bandwidth', opcache: 'Op-cache',
-        software: 'Software counters', float: 'Floating point', system: 'System', power: 'Power',
-        process: 'Process/rusage', ibs: 'AMD IBS', gpu: 'GPU', coverage: 'Counter coverage',
-        other: 'Other'
+        ipc: 'IPC', topdown: 'Topdown', branch: 'Branch prediction', cache2: 'L2 cache',
+        cache3: 'L3 cache', dcache: 'L1 dcache', icache: 'L1 icache', tlb: 'TLB',
+        memory: 'Memory bandwidth', opcache: 'Op-cache', software: 'Software counters',
+        float: 'Floating point', system: 'System', power: 'Power', process: 'Process/rusage',
+        ibs: 'AMD IBS', gpu: 'GPU', coverage: 'Counter coverage', other: 'Other'
     };
+
+    // Orders the Columns panel by publish_reference_matrix.py's own COLUMN_GROUP_ORDER (read off the
+    // table's data-group-order attribute, so there's one source of truth rather than a second
+    // hand-maintained copy here) -- fundamental groups (ipc, topdown) first, niche/vendor-specific
+    // ones last. Any group not present in that list (shouldn't happen; the Python side has its own
+    // test guarding against drift) sorts after everything that is listed, still before falling back
+    // to alphabetical among themselves.
+    function orderGroups(table, groupNames) {
+        var order = (table.getAttribute('data-group-order') || '').split(',');
+        return groupNames.slice().sort(function (a, b) {
+            var ai = order.indexOf(a), bi = order.indexOf(b);
+            if (ai === -1) ai = order.length;
+            if (bi === -1) bi = order.length;
+            return ai !== bi ? ai - bi : a.localeCompare(b);
+        });
+    }
 
     function buildSearchBox(toolbar, table) {
         var search = document.createElement('input');
@@ -105,25 +124,44 @@ table.wspy-refmatrix tr.wspy-row-unchecked { display: none; }
         toolbar.appendChild(search);
     }
 
-    function setGroupVisible(table, group, visible) {
-        // The `hidden` attribute, not a CSS class -- group tokens are dynamic (whatever
-        // publish_reference_matrix.py's metric_col_group() produced), so there's no fixed set of
-        // data-col-group values a static stylesheet rule could target ahead of time the way the
-        // fixed raw/ratio split could.
-        Array.prototype.forEach.call(
-            table.querySelectorAll('[data-col-group="' + group + '"]'),
-            function (el) { el.hidden = !visible; }
-        );
+    function setColumnVisible(table, colIndex, visible) {
+        var headRow = table.tHead && table.tHead.rows[0];
+        if (headRow && headRow.cells[colIndex]) {
+            headRow.cells[colIndex].hidden = !visible;
+        }
+        Array.prototype.forEach.call(table.tBodies[0].rows, function (row) {
+            if (row.cells[colIndex]) {
+                row.cells[colIndex].hidden = !visible;
+            }
+        });
     }
 
+    // One checkbox per individual metric column (addresses "can't filter columns one by one"),
+    // organized under a per-group header checkbox that's a standard tri-state
+    // all-checked/all-unchecked/indeterminate toggle for its own columns -- checking/unchecking the
+    // group checkbox sets every column in it together; checking/unchecking an individual column
+    // updates its own group checkbox's checked/indeterminate state to match, but never touches any
+    // other group.
     function buildColumnPanel(toolbar, table) {
-        var groupKinds = {};  // group -> true iff every column seen so far in it is "raw"
-        Array.prototype.forEach.call(table.querySelectorAll('th[data-col-group]'), function (th) {
+        var headRow = table.tHead && table.tHead.rows[0];
+        if (!headRow) {
+            return;
+        }
+        // group -> [{colIndex, metric, kind}], in column order (already alphabetical by metric --
+        // build_machine_page() sorts `metrics` before emitting columns)
+        var byGroup = {};
+        Array.prototype.forEach.call(headRow.cells, function (th, colIndex) {
             var g = th.getAttribute('data-col-group');
-            var isRaw = th.getAttribute('data-col-kind') === 'raw';
-            groupKinds[g] = (g in groupKinds) ? (groupKinds[g] && isRaw) : isRaw;
+            if (!g) {
+                return;  // the leading "test point" label column carries no data-col-group
+            }
+            (byGroup[g] || (byGroup[g] = [])).push({
+                colIndex: colIndex,
+                metric: th.getAttribute('data-metric') || th.textContent.trim(),
+                kind: th.getAttribute('data-col-kind')
+            });
         });
-        var groupNames = Object.keys(groupKinds).sort();
+        var groupNames = orderGroups(table, Object.keys(byGroup));
         if (groupNames.length < 2) {
             return;  // nothing to toggle between
         }
@@ -134,17 +172,47 @@ table.wspy-refmatrix tr.wspy-row-unchecked { display: none; }
         details.appendChild(summary);
 
         groupNames.forEach(function (g) {
-            var checked = !groupKinds[g];  // start unchecked only if every column in it is raw
-            setGroupVisible(table, g, checked);
+            var cols = byGroup[g];
+            var startChecked = cols.some(function (c) { return c.kind !== 'raw'; });
 
-            var label = document.createElement('label');
-            var cb = document.createElement('input');
-            cb.type = 'checkbox';
-            cb.checked = checked;
-            cb.addEventListener('change', function () { setGroupVisible(table, g, cb.checked); });
-            label.appendChild(cb);
-            label.appendChild(document.createTextNode(' ' + (GROUP_LABELS[g] || g)));
-            details.appendChild(label);
+            var groupLabel = document.createElement('label');
+            groupLabel.className = 'wspy-refmatrix-group-toggle';
+            var groupCb = document.createElement('input');
+            groupCb.type = 'checkbox';
+            groupCb.checked = startChecked;
+            groupLabel.appendChild(groupCb);
+            var groupText = document.createElement('strong');
+            groupText.textContent = GROUP_LABELS[g] || g;
+            groupLabel.appendChild(groupText);
+            details.appendChild(groupLabel);
+
+            var colCheckboxes = cols.map(function (c) {
+                setColumnVisible(table, c.colIndex, startChecked);
+
+                var label = document.createElement('label');
+                label.className = 'wspy-refmatrix-col-toggle';
+                var cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.checked = startChecked;
+                cb.addEventListener('change', function () {
+                    setColumnVisible(table, c.colIndex, cb.checked);
+                    var checkedCount = colCheckboxes.filter(function (x) { return x.checked; }).length;
+                    groupCb.checked = checkedCount > 0;
+                    groupCb.indeterminate = checkedCount > 0 && checkedCount < colCheckboxes.length;
+                });
+                label.appendChild(cb);
+                label.appendChild(document.createTextNode(' ' + c.metric));
+                details.appendChild(label);
+                return cb;
+            });
+
+            groupCb.addEventListener('change', function () {
+                groupCb.indeterminate = false;
+                colCheckboxes.forEach(function (cb) {
+                    cb.checked = groupCb.checked;
+                    cb.dispatchEvent(new Event('change'));
+                });
+            });
         });
 
         toolbar.appendChild(details);

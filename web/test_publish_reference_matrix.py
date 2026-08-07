@@ -56,6 +56,25 @@ class MetricColGroupTest(unittest.TestCase):
     def test_unclassified_metric_falls_back_to_other(self):
         self.assertEqual(prm.metric_col_group("some_brand_new_metric_nobody_has_seen"), "other")
 
+    def test_topdown_variants_all_merge_into_one_group(self):
+        # "backend" (main L1 split), l1_bound (--topdown-backend deep-dive), and icache/itlb1/opcache
+        # (AMD --topdown-frontend/--topdown-optlb deep-dives) are four different joblib.py group
+        # tokens (topdown/topdown-backend/topdown-frontend/topdown-optlb) -- all must collapse to the
+        # single "topdown" bucket so the plugin's Columns panel doesn't split one mental model across
+        # four near-identical-looking checkboxes.
+        for name in ("backend", "l1_bound", "icache", "itlb1", "opcache", "dtlb1"):
+            self.assertEqual(prm.metric_col_group(name), "topdown", name)
+
+    def test_column_group_order_covers_every_group_metric_col_group_can_return(self):
+        # A group token missing from COLUMN_GROUP_ORDER doesn't break anything (the plugin sorts it
+        # in right before "other"), but it does mean the priority list has drifted out of sync with
+        # what metric_col_group() can actually produce -- catch that here rather than live in
+        # production.
+        descs = prm.load_metric_descriptions()
+        produced = {prm.metric_col_group(name) for name in descs}
+        unlisted = produced - set(prm.COLUMN_GROUP_ORDER)
+        self.assertEqual(unlisted, set(), "groups missing from COLUMN_GROUP_ORDER: %s" % unlisted)
+
 
 class LoadMetricDescriptionsSyntheticTest(unittest.TestCase):
     """Exact-match assertions against a small synthetic doc/METRICS.md-shaped file, so these don't
@@ -162,6 +181,13 @@ class BuildMachinePageTest(unittest.TestCase):
         self.assertNotIn('title="', wp_html)
         self.assertIn('data-col-group="ipc"', wp_html)
         self.assertIn('data-col-group="software"', wp_html)  # "context switches"
+        # data-metric so the plugin's per-column checkboxes can label themselves without scraping
+        # the info-span text out of the <th>.
+        self.assertIn('data-metric="ipc"', wp_html)
+        self.assertIn('data-metric="context switches"', wp_html)
+        # data-group-order on the <table> itself -- single source of truth for the plugin's Columns-
+        # panel ordering, not a second hand-maintained list in wp-refmatrix-assets.php.
+        self.assertIn('data-group-order="%s"' % ",".join(prm.COLUMN_GROUP_ORDER), wp_html)
 
     def test_no_data_returns_none(self):
         self.assertEqual(prm.build_machine_page("cpu2026", "amd-370-64gb", []), (None, None))

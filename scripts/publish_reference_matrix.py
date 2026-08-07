@@ -187,11 +187,34 @@ SUPPLEMENTARY_COLUMN_GROUPS = {
 }
 
 
+# joblib.resolve_column_group() (and this module's own SUPPLEMENTARY_COLUMN_GROUPS above) return
+# four separate tokens for what's really one methodology to anyone not tracking which --topdown-*
+# CLI flag collected which column: the main L1 split ("topdown"/"topdown2", both print_topdown()),
+# the AMD-only backend deep-dive ("topdown-backend", print_topdown_be() -- l1_bound/l2_bound/...),
+# and the AMD-only frontend/op-cache deep-dive ("topdown-frontend"/"topdown-optlb", print_topdown_fe()/
+# print_topdown_op() -- icache/itlb1/opcache/dtlb1/...). Collapsed into one "topdown" group here so
+# they show up together in the plugin's Columns panel instead of splitting a single mental model
+# ("topdown") across four same-looking-but-not-quite-matching checkboxes.
+_TOPDOWN_GROUP_ALIASES = {"topdown2", "topdown-frontend", "topdown-backend", "topdown-optlb"}
+
+
 def metric_col_group(metric):
     """The --counters/--system/--power group token (or a SUPPLEMENTARY_COLUMN_GROUPS bucket, or
     "other" as a last resort) for the data-col-group attribute -- what the plugin's per-group
-    "Columns" checkboxes filter on."""
-    return joblib.resolve_column_group(metric) or SUPPLEMENTARY_COLUMN_GROUPS.get(metric, "other")
+    "Columns" checkboxes filter on. See _TOPDOWN_GROUP_ALIASES above for the one merge applied on
+    top of the raw group token."""
+    group = joblib.resolve_column_group(metric) or SUPPLEMENTARY_COLUMN_GROUPS.get(metric, "other")
+    return "topdown" if group in _TOPDOWN_GROUP_ALIASES else group
+
+
+# Priority order for the plugin's Columns panel -- fundamental/commonly-read groups first (ipc and
+# topdown are what most people reach for first), niche/vendor-specific ones last, "other" always the
+# final catch-all. Anything not listed here (there shouldn't be any -- every joblib.ALL_GROUPS/
+# SUPPLEMENTARY_COLUMN_GROUPS token is covered) sorts just before "other" rather than disappearing.
+COLUMN_GROUP_ORDER = [
+    "ipc", "topdown", "branch", "dcache", "icache", "cache2", "cache3", "opcache", "tlb", "memory",
+    "process", "software", "float", "system", "power", "ibs", "gpu", "coverage", "other",
+]
 
 
 _METRIC_DESC_BULLET_RE = re.compile(r'^-\s+((?:\*\*[^*]+\*\*,?\s*)+)—\s*(.*)$')
@@ -362,16 +385,22 @@ def build_machine_page(suite, machine, entries):
         # scripts/wp-refmatrix-assets.php applies it as a real title attribute client-side instead.
         info = (' <span class="wspy-info" data-desc="%s">ⓘ</span>' % html.escape(desc)
                 if desc else "")
-        return ('<th data-col-kind="%s" data-col-group="%s">%s%s</th>'
-                % (kind, group, html.escape(metric), info))
+        # data-metric duplicates the visible label -- the plugin's per-column checkbox panel reads
+        # it directly rather than scraping the info-span out of the <th>'s text content.
+        return ('<th data-col-kind="%s" data-col-group="%s" data-metric="%s">%s%s</th>'
+                % (kind, group, html.escape(metric), html.escape(metric), info))
 
     header_html = "".join(th(m, k, g) for m, k, g in zip(metrics, kinds, groups))
+    # data-group-order on the table itself, not hardcoded a second time in wp-refmatrix-assets.php --
+    # COLUMN_GROUP_ORDER above is the single source of truth for the plugin's Columns-panel ordering.
+    group_order_attr = html.escape(",".join(COLUMN_GROUP_ORDER))
     wp_html = (
         '<!-- wp:heading {"level":1} -->\n<h1>%s -- %s</h1>\n<!-- /wp:heading -->\n\n'
         '%s'
-        '<!-- wp:table --><figure class="wp-block-table"><table class="wspy-refmatrix"><thead><tr>'
+        '<!-- wp:table --><figure class="wp-block-table">'
+        '<table class="wspy-refmatrix" data-group-order="%s"><thead><tr>'
         '<th>test point</th>%s</tr></thead><tbody>%s</tbody></table></figure><!-- /wp:table -->'
-        % (html.escape(machine), html.escape(suite), footnote_html, header_html,
+        % (html.escape(machine), html.escape(suite), footnote_html, group_order_attr, header_html,
            "".join(body_rows_html))
     )
     return markdown, wp_html
