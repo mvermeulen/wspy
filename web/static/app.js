@@ -1127,6 +1127,75 @@
     });
   }
 
+  // Reference tab's "Publish reference matrix" card (render_reference_publish_panel() in server.py):
+  // same POST-then-EventSource shape as wireTestpointPublishButton() below, generalized to a
+  // whole-site job with no per-run identity (job_id is server-generated per click, not baked into the
+  // page like the testpoint-publish button's per-run URL). "Preview (dry-run)" defaults checked in
+  // the server-rendered HTML -- this function only reads whatever state the checkboxes are in at
+  // click time, it never second-guesses that default client-side.
+  function wireReferencePublishButton() {
+    var runButton = byId("reference-publish-run");
+    var logEl = byId("reference-publish-log");
+    var resultEl = byId("reference-publish-result");
+    if (!runButton || !logEl || !resultEl) return;
+
+    runButton.addEventListener("click", function () {
+      var suites = Array.prototype.slice.call(
+        document.querySelectorAll(".reference-publish-suite:checked")
+      ).map(function (el) { return el.value; });
+      var machinesRaw = (byId("reference-publish-machines").value || "").trim();
+      var machines = machinesRaw ? machinesRaw.split(",").map(function (s) { return s.trim(); })
+        .filter(function (s) { return s; }) : [];
+      var dryRun = byId("reference-publish-dry-run").checked;
+      var skipDiscovery = byId("reference-publish-skip-discovery").checked;
+      var doPublish = byId("reference-publish-publish").checked;
+      var force = byId("reference-publish-force").checked;
+
+      runButton.disabled = true;
+      resultEl.textContent = "";
+      logEl.hidden = false;
+      logEl.textContent = "";
+
+      fetch("/api/reference-publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          suites: suites, machines: machines, dry_run: dryRun,
+          skip_wordpress_discovery: skipDiscovery, publish: doPublish, force: force,
+        }),
+      })
+        .then(function (resp) {
+          return resp.json().then(function (data) {
+            if (!resp.ok) throw new Error(data.error || ("HTTP " + resp.status));
+            return data;
+          });
+        })
+        .then(function (data) {
+          var es = new EventSource(data.events_url);
+          es.addEventListener("log", function (ev) {
+            logEl.textContent += JSON.parse(ev.data) + "\n";
+            logEl.scrollTop = logEl.scrollHeight;
+          });
+          es.addEventListener("done", function (ev) {
+            var payload = JSON.parse(ev.data);
+            es.close();
+            runButton.disabled = false;
+            resultEl.textContent = payload.status === "done"
+              ? (dryRun ? "Preview finished -- see output above, nothing was touched."
+                        : "Done -- see output above for what was published/committed.")
+              : "Finished with errors -- see output above.";
+          });
+          es.onerror = function () {
+            runButton.disabled = false;
+          };
+        })
+        .catch(function (err) {
+          runButton.disabled = false;
+          resultEl.textContent = "Error: " + err.message;
+        });
+    });
+  }
+
   function wireTestpointPublishButton() {
     var runButton = byId("testpoint-publish-run");
     var logEl = byId("testpoint-publish-log");
@@ -1725,6 +1794,7 @@
   wireAnalyzeForm();
   wireTestpointPublishButton();
   wireReferenceDiscoverButtons();
+  wireReferencePublishButton();
   wireProctreeViewsButton();
   wirePhoronixTab();
   wireCpu2026Tab();
