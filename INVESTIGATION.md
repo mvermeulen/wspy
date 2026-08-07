@@ -1712,12 +1712,39 @@ reasoning as Tier 1 above.
    full build history (the latter also carries a correction on `--slug`'s flat lookup, previously
    miscounted here as a second open gap it never actually was). One thing this item originally asked
    for is still open:
-   - **The actual site-wide pipeline.** Nothing yet walks the whole `wspy-store` and generates/updates
-     suite-level (a ~30-column reference-matrix table, matching `/perf/workloads/<suite>/`'s existing
-     hand-maintained shape) or cross-suite rollup pages — today's tooling only publishes individual
-     benchmark/test-point pages, one human click at a time. Depends on the benchmark reference-matrix
-     database (shipped, see "Shipped since 4.2") as the suite-level data source — whether to generate
-     that table from the store instead of hand-maintaining it is still an open question here.
+   - **The actual site-wide pipeline, scope settled 2026-08-07.** Nothing yet walks the whole
+     `wspy-store` and generates/updates suite-level or cross-suite pages — today's tooling only
+     publishes individual benchmark/test-point pages, one human click at a time. Fetching the real
+     `/perf/workloads/<suite>/` pages during scoping showed their actual shape: rows=test-points,
+     columns=metrics, **one machine per page** (e.g. `cpu2017/` is entirely AMD 7840's numbers) — not
+     a cross-machine table. That's exactly `render_reference_by_machine()`'s shape (the benchmark
+     reference-matrix database's "by machine" view, shipped PR #212), so this item is mostly
+     publishing plumbing over data that already exists, not new analysis:
+     - New `scripts/publish_reference_matrix.py`, same two-phase generate-then-push pattern as
+       `publish_cpu2026_benchmarks.py`/`publish_phoronix_pages.py` (write to the report-root, commit
+       locally, then `wp_client.publish_page_at_path()`; `--dry-run`, draft-by-default, `--publish`,
+       `--force`). Can't reuse `render_reference_by_machine()`'s HTML directly (local-only `/reference/`
+       links, CSS classes WordPress doesn't have) — reuses the same data layer
+       (`joblib.enumerate_reference_matrix_cells()`/`aggregate_reference_matrix_cell()`) but needs its
+       own WP-block-markup rendering, same as those two scripts already hand-build their own rather
+       than sharing one.
+     - One new page per (suite, machine) that has reference-matrix cells, at
+       `<suite>/by-machine-<machine>/` (mirroring the `/reference/<suite>/by-machine/<machine>` web
+       route) — the full wide table, replacing the currently-empty auto-created suite-level stub as
+       the real destination for numeric content.
+     - The suite-level page itself (`<suite>/`) becomes a lightweight index — one row per test-point
+       with per-machine run counts/links (`render_reference_tab()`'s per-suite slice, already cheap by
+       design), plus links to each machine's own wide-table page.
+     - Root-level cross-suite rollup is an index of suite × machine links, not a merged table — a
+       cross-suite metric union would be noisy (different suites collect different metrics), the same
+       reason `render_reference_by_machine()` is already suite-scoped.
+     - Confirmed with the author: generated-only on the new site (nothing hand-maintained exists there
+       yet to protect — the suite-level pages are empty stubs today). The *old* `/perf/workloads/` site
+       stays untouched by this item, same "parallel, not replacing" framing this item already had;
+       retiring its hand-maintenance in favor of this same generated pipeline, once the new site is
+       complete enough to have real authority, is a deliberate future follow-on, not part of this item.
+     - Published content is a snapshot at publish time, not live like the web UI's on-demand queries —
+       re-running the script is how a page gets refreshed.
 
 **Tier 4 — report-layer additions on data already collected in 4.0:**
 
