@@ -36,6 +36,27 @@ class MetricColKindTest(unittest.TestCase):
         self.assertEqual(prm.metric_col_kind("some_brand_new_metric_nobody_has_seen"), "ratio")
 
 
+class MetricColGroupTest(unittest.TestCase):
+    def test_delegates_to_joblib_resolve_column_group_first(self):
+        # ipc/l2miss/branch miss are all resolved by joblib.resolve_column_group() itself --
+        # metric_col_group() must not shadow that with its own supplementary table.
+        self.assertEqual(prm.metric_col_group("ipc"), "ipc")
+        self.assertEqual(prm.metric_col_group("l2miss"), "cache2")
+        self.assertEqual(prm.metric_col_group("branch miss"), "branch")
+
+    def test_supplementary_table_covers_what_joblib_does_not(self):
+        # rusage/IBS/GPU/coverage columns aren't in joblib's COLUMN_TO_GROUP (they're not gated by a
+        # --counters flag), so metric_col_group() must fill them in itself rather than falling
+        # through to "other".
+        self.assertEqual(prm.metric_col_group("maxrss"), "process")
+        self.assertEqual(prm.metric_col_group("ibs_fetch"), "ibs")
+        self.assertEqual(prm.metric_col_group("nv_gpu_busy"), "gpu")
+        self.assertEqual(prm.metric_col_group("counters_measured"), "coverage")
+
+    def test_unclassified_metric_falls_back_to_other(self):
+        self.assertEqual(prm.metric_col_group("some_brand_new_metric_nobody_has_seen"), "other")
+
+
 class LoadMetricDescriptionsSyntheticTest(unittest.TestCase):
     """Exact-match assertions against a small synthetic doc/METRICS.md-shaped file, so these don't
     depend on the real file's prose staying byte-identical."""
@@ -133,6 +154,14 @@ class BuildMachinePageTest(unittest.TestCase):
         self.assertIn('data-col-kind="ratio"', wp_html)
         self.assertIn('data-col-kind="raw"', wp_html)
         self.assertIn('class="wspy-info"', wp_html)
+        # data-desc, not title -- a bare title="..." on <span> gets silently stripped by
+        # WordPress's post-content sanitizer for the wspy service account (no unfiltered_html);
+        # data-* attributes survive, and scripts/wp-refmatrix-assets.php applies the real title
+        # client-side instead. See th()'s own comment in publish_reference_matrix.py.
+        self.assertIn('data-desc="', wp_html)
+        self.assertNotIn('title="', wp_html)
+        self.assertIn('data-col-group="ipc"', wp_html)
+        self.assertIn('data-col-group="software"', wp_html)  # "context switches"
 
     def test_no_data_returns_none(self):
         self.assertEqual(prm.build_machine_page("cpu2026", "amd-370-64gb", []), (None, None))

@@ -80,10 +80,11 @@ ROOT_TITLE = "Reference matrix"
 # account is deliberately scoped without unfiltered_html (see CLAUDE.md's wp_client.py entry), so
 # <script>/<style> embedded directly in REST-published post content gets stripped by wp_kses_post()
 # on save. Rather than fight that, generated pages only ever carry plain <table>/<th>/<td> markup --
-# a data-col-kind attribute per column and a `title`-bearing info span -- and all the actual
-# search/sort/column-toggle behavior lives in scripts/wp-refmatrix-assets.php, a small site-wide
-# plugin (same install pattern as scripts/wp-auth-bridge.php) that decorates any
-# <table class="wspy-refmatrix"> it finds. Confirmed with the author (2026-08-07).
+# data-col-kind/data-col-group attributes per column and a data-desc-bearing info span -- and all the
+# actual search/sort/column-group-toggle/row-toggle/tooltip behavior lives in
+# scripts/wp-refmatrix-assets.php, a small site-wide plugin (same install pattern as
+# scripts/wp-auth-bridge.php) that decorates any <table class="wspy-refmatrix"> it finds. Confirmed
+# with the author (2026-08-07).
 # ---------------------------------------------------------------------------
 METRICS_MD_PATH = os.path.join(REPO_ROOT, "doc", "METRICS.md")
 
@@ -126,6 +127,71 @@ def metric_col_kind(metric):
     """"raw" or "ratio" for the data-col-kind attribute build_machine_page() emits -- see
     RAW_COUNT_METRICS above."""
     return "raw" if metric in RAW_COUNT_METRICS else "ratio"
+
+
+# joblib.resolve_column_group() already maps a wspy CSV column name to the ALL_GROUPS/--counters
+# token that produces it (or the "system"/"power" sentinel) -- reused here as the primary source for
+# the plugin's per-group "Columns" checkboxes, rather than a second classification table duplicating
+# it. It only covers columns gated by a --counters/--system/--power flag, though: rusage ("always
+# emitted regardless of counter_mask" per doc/METRICS.md), AMD IBS, GPU, counter-coverage, and the
+# topdown L2/backend-deep-dive splits aren't in its COLUMN_TO_GROUP table, so this fills those in and
+# falls back to "other" for anything neither covers -- every metric ends up in some group, so the
+# checkbox list is never silently incomplete for an unclassified column.
+SUPPLEMENTARY_COLUMN_GROUPS = {
+    # rusage/process (topdown.c:print_usage())
+    "elapsed": "process", "utime": "process", "stime": "process", "on_cpu": "process",
+    "nvcsw": "process", "nivcsw": "process", "inblock": "process", "oublock": "process",
+    "maxrss": "process", "minflt": "process", "majflt": "process", "nswap": "process",
+    # topdown quality indicators + L2 splits (share the top-level "topdown" bucket)
+    "confidence": "topdown", "sanity": "topdown", "contention_pct": "topdown",
+    "retire_ucode_pct": "topdown", "retire_fastpath_pct": "topdown",
+    "frontend_latency_pct": "topdown", "frontend_bandwidth_pct": "topdown",
+    "backend_cpu_pct": "topdown", "backend_memory_pct": "topdown",
+    "spec_branch_pct": "topdown", "spec_pipeline_pct": "topdown",
+    # topdown backend deep-dive (--topdown-backend) -- own group, doesn't roll up to "topdown"
+    "l1_bound": "topdown-backend", "l2_bound": "topdown-backend", "l3_bound": "topdown-backend",
+    "dram_bound": "topdown-backend", "store_bound": "topdown-backend",
+    "l1_bound_slots_pct": "topdown-backend", "l2_bound_slots_pct": "topdown-backend",
+    "l3_bound_slots_pct": "topdown-backend", "dram_bound_slots_pct": "topdown-backend",
+    "store_bound_slots_pct": "topdown-backend",
+    # branch raw extras (AMD/ARM)
+    "near_return": "branch", "near_return_mispredicted": "branch",
+    "indirect_branch_mispredicted": "branch", "br_immed_retired": "branch",
+    "br_return_retired": "branch", "br_pred": "branch", "br_mis_pred": "branch",
+    "branches per 1000 inst": "branch", "conditional per 1000 inst": "branch",
+    "indirect per 1000 inst": "branch",
+    # ARM-only raw dumps -- no headline ratio of their own, closest existing bucket is TLB
+    "l1d_cache_refill": "tlb", "l1d_tlb_refill": "tlb", "l2d_cache_refill": "tlb",
+    "l2d_tlb_refill": "tlb", "l1i_cache_refill": "tlb", "l1i_tlb_refill": "tlb",
+    "l2i_tlb_refill": "tlb", "dtlb_walk": "tlb", "itlb_walk": "tlb",
+    "ld_align_lat": "tlb", "st_align_lat": "tlb",
+    # power extras beyond joblib's POWER_COLUMN_NAMES (pkg_joules/pkg_watts only)
+    "core_joules": "power", "core_watts": "power",
+    # AMD IBS
+    "ibs_fetch": "ibs", "ibs_op": "ibs", "ibs_op_unfiltered": "ibs", "ibs_op_accepted_ratio": "ibs",
+    "ibs_l3missonly": "ibs", "ibs_ldlat_threshold": "ibs", "ibs_fetchlat_threshold": "ibs",
+    "ibs_sample_fetch_count": "ibs", "ibs_sample_ic_miss_rate": "ibs",
+    "ibs_sample_l1tlb_miss_rate": "ibs", "ibs_sample_l2tlb_miss_rate": "ibs",
+    "ibs_sample_op_count": "ibs", "ibs_sample_dc_miss_rate": "ibs",
+    "ibs_sample_dc_l1tlb_miss_rate": "ibs", "ibs_sample_dc_l2tlb_miss_rate": "ibs",
+    "ibs_sample_brn_misp_rate": "ibs", "ibs_sample_lost": "ibs",
+    "ibs_sample_dram_rate": "ibs", "ibs_sample_remote_node_rate": "ibs",
+    # GPU (all three backends, plus system.c's own generic gpu_busy column)
+    "gpu_busy": "gpu", "gpu_busy_percent": "gpu", "temp_gfx": "gpu", "gfx_activity": "gpu", "gfx_power": "gpu",
+    "gfxclk_freq": "gpu", "gpu_temp": "gpu", "gpu_activity": "gpu", "gpu_power": "gpu",
+    "gpu_freq": "gpu", "gpu_vram_used": "gpu", "gpu_vram_total": "gpu", "gpu_temp_source": "gpu",
+    "gpu_activity_source": "gpu", "nv_gpu_busy": "gpu", "nv_vram_used_mb": "gpu",
+    "nv_vram_total_mb": "gpu",
+    # counter coverage -- measurement quality, not a workload characteristic
+    "counters_measured": "coverage", "counters_requested": "coverage",
+}
+
+
+def metric_col_group(metric):
+    """The --counters/--system/--power group token (or a SUPPLEMENTARY_COLUMN_GROUPS bucket, or
+    "other" as a last resort) for the data-col-group attribute -- what the plugin's per-group
+    "Columns" checkboxes filter on."""
+    return joblib.resolve_column_group(metric) or SUPPLEMENTARY_COLUMN_GROUPS.get(metric, "other")
 
 
 _METRIC_DESC_BULLET_RE = re.compile(r'^-\s+((?:\*\*[^*]+\*\*,?\s*)+)—\s*(.*)$')
@@ -252,6 +318,7 @@ def build_machine_page(suite, machine, entries):
                    for _, _, rows, source in entries if source == "local" for r in rows)
 
     kinds = [metric_col_kind(m) for m in metrics]
+    groups = [metric_col_group(m) for m in metrics]
     descriptions = load_metric_descriptions()
 
     md_lines = ["# %s -- %s" % (machine, suite), "",
@@ -263,8 +330,8 @@ def build_machine_page(suite, machine, entries):
         cells = [cell_text(rows, m, source) for m in metrics]
         md_lines.append("| %s | %s |" % (label, " | ".join(cells)))
         cells_html = "".join(
-            '<td data-col-kind="%s">%s</td>' % (kind, html.escape(c))
-            for c, kind in zip(cells, kinds))
+            '<td data-col-kind="%s" data-col-group="%s">%s</td>' % (kind, group, html.escape(c))
+            for c, kind, group in zip(cells, kinds, groups))
         body_rows_html.append("<tr><td>%s</td>%s</tr>" % (html.escape(label), cells_html))
 
     md_lines.append("")
@@ -287,13 +354,18 @@ def build_machine_page(suite, machine, entries):
             '<!-- wp:paragraph --><p><em>`†` -- carries a non-PASS wspy-summary verdict '
             "(thin/noisy/mixed-pmu/mixed-env).</em></p><!-- /wp:paragraph -->\n\n")
 
-    def th(metric, kind):
+    def th(metric, kind, group):
         desc = descriptions.get(metric)
-        info = (' <span class="wspy-info" title="%s">ⓘ</span>' % html.escape(desc)
+        # data-desc, not title -- WordPress's post-content sanitizer (wp_kses_post(), see the
+        # module docstring) allows data-* attributes by default but not a bare title on <span>, so
+        # a title="..." here would silently get stripped on save while surviving fine as data-desc.
+        # scripts/wp-refmatrix-assets.php applies it as a real title attribute client-side instead.
+        info = (' <span class="wspy-info" data-desc="%s">ⓘ</span>' % html.escape(desc)
                 if desc else "")
-        return '<th data-col-kind="%s">%s%s</th>' % (kind, html.escape(metric), info)
+        return ('<th data-col-kind="%s" data-col-group="%s">%s%s</th>'
+                % (kind, group, html.escape(metric), info))
 
-    header_html = "".join(th(m, k) for m, k in zip(metrics, kinds))
+    header_html = "".join(th(m, k, g) for m, k, g in zip(metrics, kinds, groups))
     wp_html = (
         '<!-- wp:heading {"level":1} -->\n<h1>%s -- %s</h1>\n<!-- /wp:heading -->\n\n'
         '%s'
