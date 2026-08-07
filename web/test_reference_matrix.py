@@ -131,6 +131,19 @@ class RenderReferenceTabTest(unittest.TestCase):
         self.assertIn("Discover from WordPress", html_out)
         self.assertIn("reference-discover-btn", html_out)
 
+    def test_no_cells_still_shows_publish_panel(self):
+        # Publishing can meaningfully run purely from WordPress-discovered content, so the button
+        # must be reachable even with zero local rows, same reasoning as the discover panel above.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_root_path = os.path.join(tmpdir, "report-root")
+            os.makedirs(report_root_path)
+            with patch("server.PHORONIX_DEST_ROOT", os.path.join(tmpdir, "phoronix")), \
+                 patch("server.CPU2026_DEST_ROOT", os.path.join(tmpdir, "cpu2026")):
+                html_out = server.render_reference_tab({"report_root": report_root_path})
+        self.assertIn("Publish reference matrix", html_out)
+        self.assertIn("reference-publish-run", html_out)
+        self.assertIn("reference-publish-dry-run", html_out)
+
     def test_shows_run_count_and_links_to_detail(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             phoronix_dest = os.path.join(tmpdir, "phoronix")
@@ -151,6 +164,7 @@ class RenderReferenceTabTest(unittest.TestCase):
         self.assertIn("Discover from WordPress", html_out)
         self.assertIn("By machine", html_out)
         self.assertIn("/reference/phoronix/by-machine/amd-395", html_out)
+        self.assertIn("Publish reference matrix", html_out)
 
     def test_publish_status_badge_shown_when_wordpress_configured(self):
         with tempfile.TemporaryDirectory() as tmpdir:

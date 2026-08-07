@@ -177,6 +177,14 @@ CPU2026_BUILDS_LOCK = threading.Lock()
 TESTPOINT_RUNS = {}
 TESTPOINT_RUNS_LOCK = threading.Lock()
 
+# Fifth registry, for the Reference tab's "Publish reference matrix" button
+# (execute_reference_publish() below) -- same DiscoveryState-style single-key shape as DISCOVERY_RUNS
+# (a whole-site publish run has no natural (suite, benchmark, run_id) identity either), keyed by a
+# freshly generated job id per click rather than suite alone, since this job can span every suite in
+# one invocation and a human might reasonably fire off more than one filtered run in a session.
+REFERENCE_PUBLISH_RUNS = {}
+REFERENCE_PUBLISH_RUNS_LOCK = threading.Lock()
+
 
 def run_key(suite, benchmark, run_id):
     return (suite, benchmark, run_id)
@@ -324,6 +332,69 @@ def build_testpoint_publish_argv(cfg, suite, benchmark, machine):
         select_runs_argv += ["--report-root-remote", cfg["report_root_remote"]]
         render_argv += ["--report-root-remote", cfg["report_root_remote"]]
     return select_runs_argv, render_argv
+
+
+def build_reference_publish_argv(cfg, suites, machines, skip_wordpress_discovery=False,
+                                  do_publish=False, force=False, dry_run=True):
+    """argv for `scripts/publish_reference_matrix.py` (the Reference tab's "Publish reference
+    matrix" button, closing INVESTIGATION.md 4.3's site-wide publishing pipeline item out to the web
+    UI) -- pure, HTTP-free, so it's unit-testable without mocking threading/subprocess. Mirrors
+    build_testpoint_publish_argv()'s cfg-driven defaults (`store_db`/`wspy_testpoint_bin`/
+    `report_root`/`report_root_remote`), so this respects whatever this server instance is actually
+    configured to use rather than the script's own separate CLI defaults.
+
+    dry_run defaults True here, the opposite of the CLI script's own default -- a web button is a much
+    easier way to fat-finger a real publish than a deliberately-typed terminal command (no `--dry-run`
+    to remember to type first), so the safe default belongs at this layer. suites/machines are both
+    plain lists, empty meaning "no filter" (every suite/machine the script itself would default to),
+    matching the script's own `--suite`/`--machine` repeatable-flag semantics exactly."""
+    argv = [sys.executable, os.path.join(REPO_ROOT, "scripts", "publish_reference_matrix.py")]
+    for s in suites:
+        argv += ["--suite", s]
+    for m in machines:
+        argv += ["--machine", m]
+    if skip_wordpress_discovery:
+        argv.append("--skip-wordpress-discovery")
+    if do_publish:
+        argv.append("--publish")
+    if force:
+        argv.append("--force")
+    if dry_run:
+        argv.append("--dry-run")
+    argv += ["--db", cfg["store_db"], "--wspy-testpoint-bin", cfg["wspy_testpoint_bin"]]
+    if cfg.get("report_root"):
+        argv += ["--report-root", cfg["report_root"]]
+    if cfg.get("report_root_remote"):
+        argv += ["--report-root-remote", cfg["report_root_remote"]]
+    return argv
+
+
+def execute_reference_publish(state, argv):
+    """Runs `scripts/publish_reference_matrix.py` (the Reference tab's "Publish reference matrix"
+    button) as a background subprocess, relaying output through the same RunState/SSE machinery
+    execute_analyze() uses -- a real run (WordPress discovery included, ~50s/suite) can take minutes
+    across every suite/machine, so this needs a live tail, not a bounded synchronous call. No
+    report_url on finish (unlike execute_analyze()): a reference-matrix publish has no single report
+    page to link back to, mirrored by _stream_reference_publish_events() below never emitting one."""
+    def emit(line):
+        state.append(line)
+
+    emit("$ " + shell_preview(argv))
+    try:
+        proc = subprocess.Popen(argv, cwd=REPO_ROOT,
+                                 stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT,
+                                 text=True, bufsize=1)
+    except OSError as e:
+        emit(f"[error] failed to launch publish_reference_matrix.py ({argv[0]}): {e}")
+        state.finish("error", None)
+        return
+
+    for line in proc.stdout:
+        emit(line.rstrip("\n"))
+    rc = proc.wait()
+    emit(f"[publish_reference_matrix.py exited {rc}]")
+    state.finish("done" if rc == 0 else "error", None)
 
 
 def resolve_report_root_for_web(cfg):
@@ -3187,13 +3258,14 @@ def render_reference_tab(cfg):
     report_root_path = resolve_report_root_for_web(cfg)
     cells = joblib.enumerate_reference_matrix_cells(report_root_path, PHORONIX_DEST_ROOT, CPU2026_DEST_ROOT)
     discover_panel = render_reference_discover_panel()
+    publish_panel = render_reference_publish_panel()
     if not cells:
         return (
             '<section class="panel"><h2>Reference matrix</h2>'
             '<p class="muted">No test points have a curated run set yet &mdash; run '
             '<code>wspy-testpoint select-runs</code> (or the report page\'s "Publish test-point '
             "report\" button) for at least one machine first.</p>"
-            f"{discover_panel}</section>"
+            f"{discover_panel}{publish_panel}</section>"
         )
 
     rows = {}
@@ -3242,6 +3314,7 @@ def render_reference_tab(cfg):
   </table>
   {by_machine_panel}
   {discover_panel}
+  {publish_panel}
 </section>
 """
 
@@ -3291,6 +3364,52 @@ def render_reference_discover_panel():
 <div class="chips">{buttons}</div>
 <pre id="reference-discover-log" class="live-output" hidden></pre>
 <div id="reference-discover-result"></div>
+"""
+
+
+def render_reference_publish_panel():
+    """"Publish reference matrix" card -- the web-UI trigger for `scripts/publish_reference_matrix.py`
+    (INVESTIGATION.md 4.3's site-wide publishing pipeline item), following the same background-thread/
+    SSE-streamed shape as the report page's "Publish test-point report" card
+    (render_testpoint_card()) and the "AI narrative analysis" card. Kept as its own small function for
+    the same reason render_reference_discover_panel() is -- render_reference_tab() renders it from two
+    different return points (the "no local rows at all" early return, and the normal table view).
+
+    Suite checkboxes and a free-text machine-slug filter both default to empty/unchecked, meaning "no
+    filter" (every suite/machine the script itself would default to) -- matching
+    build_reference_publish_argv()'s own empty-list-means-no-filter contract. "Preview (dry-run)"
+    defaults checked: a web button is a much easier way to fat-finger a real publish than a
+    deliberately-typed terminal command, so the safe default belongs here, not in the script."""
+    suite_chips = "".join(
+        f'<label class="chip"><input type="checkbox" class="reference-publish-suite" value="{html.escape(s)}"> '
+        f'{html.escape(s)}</label>'
+        for s in REFERENCE_MATRIX_SUITES
+    )
+    return f"""
+<h3>Publish reference matrix</h3>
+<p class="muted">Materializes the reference matrix as real WordPress content
+   (<code>mvermeulen.org/workload</code>), merging local <code>wspy-store</code> data with anything
+   already published on WordPress (a real, slow crawl -- ~50s/suite -- unless skipped below). Pages
+   are always left as drafts unless "Publish immediately" is checked; review before checking that
+   box.</p>
+<label>Suites <span class="muted">(none checked = every suite)</span></label>
+<div class="chips">{suite_chips}</div>
+<label>Machines <span class="muted">(comma-separated slugs, blank = every machine found)</span>
+  <input type="text" id="reference-publish-machines" placeholder="e.g. amd-370-64gb, amd-395-96gb">
+</label>
+<div class="chips">
+  <label class="chip"><input type="checkbox" id="reference-publish-dry-run" checked> Preview
+    (dry-run) -- touches nothing, including WordPress</label>
+  <label class="chip"><input type="checkbox" id="reference-publish-skip-discovery"> Skip WordPress
+    discovery (local wspy-store machines only, much faster)</label>
+  <label class="chip"><input type="checkbox" id="reference-publish-publish"> Publish immediately
+    (default: leave as drafts)</label>
+  <label class="chip"><input type="checkbox" id="reference-publish-force"> Overwrite even if a live
+    page has changed since wspy last published it</label>
+</div>
+<button type="button" id="reference-publish-run">Publish reference matrix</button>
+<pre id="reference-publish-log" class="live-output" hidden></pre>
+<div id="reference-publish-result"></div>
 """
 
 
@@ -5338,6 +5457,11 @@ class Handler(BaseHTTPRequestHandler):
             self._stream_discovery_events(*m.groups())
             return
 
+        m = re.match(r"^/api/reference-publish/([^/]+)/events$", path)
+        if m:
+            self._stream_reference_publish_events(*m.groups())
+            return
+
         self._send(404, "not found")
 
     def do_POST(self):
@@ -5462,6 +5586,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "unknown suite %r" % suite})
                 return
             self._start_reference_discovery(suite)
+            return
+
+        if parsed.path == "/api/reference-publish":
+            length = int(self.headers.get("Content-Length", "0"))
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "invalid JSON body"})
+                return
+            self._start_reference_publish(cfg, body)
             return
 
         m = re.match(r"^/api/proctree-views/([^/]+)/([^/]+)/([^/]+)$", parsed.path)
@@ -6138,6 +6272,35 @@ class Handler(BaseHTTPRequestHandler):
         t = threading.Thread(target=execute_discovery, args=(state, wp_cfg, suite), daemon=True)
         t.start()
         self._send_json(202, {"suite": suite, "events_url": f"/api/reference-discover/{suite}/events"})
+
+    def _start_reference_publish(self, cfg, body):
+        """Reference tab's "Publish reference matrix" button: kicks off
+        scripts/publish_reference_matrix.py in a background thread, streamed over SSE via
+        REFERENCE_PUBLISH_RUNS the same way the AI-analysis/testpoint-publish/discovery buttons use
+        their own registries. No pre-check for WordPress credentials here (unlike
+        _start_reference_discovery() above) -- the script itself only requires them for a real
+        (non-dry-run) publish, and dry_run defaults True at the build_reference_publish_argv() layer,
+        so the common case needs no WordPress config at all; a real run with none configured surfaces
+        the script's own error into the live log instead, same "let the underlying tool explain
+        itself" posture execute_testpoint_publish() already documents."""
+        suites = [s for s in (body.get("suites") or []) if s in REFERENCE_MATRIX_SUITES]
+        machines = [m.strip() for m in (body.get("machines") or []) if m.strip()]
+        argv = build_reference_publish_argv(
+            cfg, suites, machines,
+            skip_wordpress_discovery=bool(body.get("skip_wordpress_discovery")),
+            do_publish=bool(body.get("publish")),
+            force=bool(body.get("force")),
+            dry_run=bool(body.get("dry_run", True)),
+        )
+        job_id = make_run_id()
+        state = RunState(None)
+        with REFERENCE_PUBLISH_RUNS_LOCK:
+            REFERENCE_PUBLISH_RUNS[job_id] = state
+        t = threading.Thread(target=execute_reference_publish, args=(state, argv), daemon=True)
+        t.start()
+        self._send_json(202, {"job_id": job_id,
+                               "events_url": f"/api/reference-publish/{job_id}/events",
+                               "command": shell_preview(argv)})
 
     def _preview(self, cfg, body):
         """Source of truth for the Run tab's command-line preview -- shares
@@ -6902,6 +7065,49 @@ class Handler(BaseHTTPRequestHandler):
                 if status != "running" and sent >= len(state.lines):
                     payload = {"status": status, "rows": rows}
                     self.wfile.write(f"event: done\ndata: {json.dumps(payload)}\n\n".encode())
+                    self.wfile.flush()
+                    break
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _stream_reference_publish_events(self, job_id):
+        """SSE relay for the Reference tab's "Publish reference matrix" button -- REFERENCE_PUBLISH_RUNS
+        is keyed by a freshly generated job id (no natural (suite, benchmark, run_id) identity for a
+        whole-site publish run), so this can't reuse _stream_events() above the same way
+        _stream_discovery_events() can't; otherwise the same relay loop, minus a report_url or any
+        other payload field beyond status -- a reference-matrix publish has no single report page to
+        link back to."""
+        with REFERENCE_PUBLISH_RUNS_LOCK:
+            state = REFERENCE_PUBLISH_RUNS.get(job_id)
+        if state is None:
+            self._send(404, "no such publish run")
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+        sent = 0
+        try:
+            while True:
+                with state.cond:
+                    state.cond.wait_for(
+                        lambda: len(state.lines) > sent or state.status != "running",
+                        timeout=15,
+                    )
+                    pending = state.lines[sent:]
+                    sent = len(state.lines)
+                    status = state.status
+                for line in pending:
+                    self.wfile.write(f"event: log\ndata: {json.dumps(line)}\n\n".encode())
+                if not pending:
+                    self.wfile.write(b": keep-alive\n\n")
+                self.wfile.flush()
+                if status != "running" and sent >= len(state.lines):
+                    self.wfile.write(
+                        f"event: done\ndata: {json.dumps({'status': status})}\n\n".encode())
                     self.wfile.flush()
                     break
         except (BrokenPipeError, ConnectionResetError):
