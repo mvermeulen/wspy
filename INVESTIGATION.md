@@ -18,6 +18,16 @@ narratives moved to `doc/INVESTIGATION_ARCHIVE.md`. A "Shipped since 4.2" rollin
 described below) now tracks 4.3 progress until its backlog empties out and it folds into a proper
 "What shipped in 4.3" section.
 
+Status update (2026-08-07): **4.3's originally-scoped work (Tiers 1-3: clustering/nearest-neighbor,
+topdown/attribution, publishing/reporting expansion) is fully shipped** — see "Shipped since 4.2" for
+the complete rolling list. The remaining open backlog was reorganized the same day from phase-numbered
+dependency tiers into four buckets: **"4.3 release closure"** (housekeeping only — nothing here blocks
+tagging the release), **"4.4 priorities"** (refocused around three named goals — ease-of-use/one-click
+web UI flows, GPU support, and Phoronix suite build-out — rather than dependency tiers), **"4.5
+priorities"** (lower priority, still wanted, loosely grouped by topic), and **"Deferred indefinitely"**
+(explicitly not planned for any numbered release; revisit only on a concrete trigger). Once 4.3 tags,
+"Shipped since 4.2" folds into a proper "What shipped in 4.3" section per this doc's own convention.
+
 ## Purpose
 This document captures ideas for improvements focused on making benchmark collection, organization,
 and publication easier and more repeatable.
@@ -38,9 +48,13 @@ and publication easier and more repeatable.
   local index, but don't reference an item elsewhere in this file (or from `CLAUDE.md`/commit
   messages) as "4.2 #27" — describe it by name instead ("AMD IBS sampling-mode support"). Numbers shift
   every time a tier is reorganized; names don't.
-- "4.3 priorities" / "4.4 priorities" are ordered backlogs, one per phase, grouped into dependency
-  tiers (earlier tiers unlock later ones within the same phase). Add or reorder an item there rather
-  than inventing a parallel table.
+- The open backlog is sorted into four buckets: **"4.3 release closure"** (housekeeping only — nothing
+  here blocks tagging the release), **"4.4 priorities"** (grouped into three named focus areas — ease of
+  use, GPU support, Phoronix build-out — rather than dependency tiers), **"4.5 priorities"** (lower
+  priority but still wanted, loosely grouped by topic), and **"Deferred indefinitely"** (explicitly not
+  planned, revisit only on a concrete trigger). Add a new item to whichever bucket fits, or move an
+  existing one, rather than inventing a parallel table. (Reorganized 2026-08-07 — previously "4.3
+  priorities"/"4.4 priorities" were dependency-tiered backlogs per phase; see git history for that shape.)
 - "Track deep-dives" hold reasoning that doesn't fit a single backlog line (Zen5/IBS, Intel hybrid/
   counter-grouping, topdown, the preset/configuration/option vocabulary). Each points back at the
   priority-list items it informs. Deep-dives for work that has since fully shipped live in
@@ -431,7 +445,7 @@ decoder) is decoded scheme-agnostically but only *named* in human-readable outpu
 permanent CSV column. The remaining raw-address fields (`IbsBrTarget`/`IbsDcLinAd`/`IbsDcPhysAd`) and
 `IbsOpData4` (no documented bitfield layout) are deliberately out of scope permanently, not deferred —
 see the Zen5/IBS deep-dive's item 6 for the full reasoning. `--interval`-integrated periodic rates
-(needs a real poll-loop architectural change) is split out as its own 4.4 priorities item.
+(needs a real poll-loop architectural change) is split out and tracked in "Deferred indefinitely" below.
 
 **`--ibs-sample` wired into a real `wspy-run` profile, plus its own `CAP_PERFMON` permission
 requirement discovered and fixed.** New `ibs-sample` builtin profile (`wspy-run`: `--ibs-sample
@@ -837,8 +851,8 @@ those numbers are only meaningful as the ratio — no other counter-pair gets th
 
 This item was originally planned as two backlog entries — PID-targeting (item 10) and a later
 uprobe-based argument-capture item (item 11) meant to reuse its comm/PID-match plumbing — but the
-argument-capture half hadn't landed yet at the time this doc entry was written; see 4.4 priorities below,
-which now picks up numbering at 10 again for that remaining piece. PR #164 verified via `run_tests.sh`'s
+argument-capture half hadn't landed yet at the time this doc entry was written; now tracked in "Deferred
+indefinitely" below (uprobe-based function-argument capture). PR #164 verified via `run_tests.sh`'s
 full matrix (incl. two new `capability_matrix.sh` bundles: graceful attach, and the
 `--target`-without-`--tree` fatal rejection); PRs #165/#166 verified via `web/test_joblib.py` (228/228,
 6 new cases incl. a regression test for the `ALL_GROUPS` fix) plus a live web-launcher smoke test
@@ -878,8 +892,8 @@ unresolved; web UI: the real, unmodified `proctree_viewer.js` executed under `gj
 browser was available this session — see "Symbol-level profiling deep-dive" for the full verification
 narrative of each piece). This item was originally planned as two backlog entries — the capture/
 resolution work itself (item 9) and a later uprobe-based argument-capture item (item 10) meant to
-reuse its resolution output — but the argument-capture half hasn't landed yet; see 4.4 priorities
-below, which now picks up numbering at 9 again for that remaining piece.
+reuse its resolution output — but the argument-capture half hasn't landed yet; now tracked in "Deferred
+indefinitely" below (uprobe-based function-argument capture).
 
 **Tree viewer oversized-JSON handling (`web/server.py`/`proctree_viewer.js`, 2026-07-30, PR #170) —
 bugfix, found via real use rather than backlog.** A `build-linux-kernel-defconfig` run forking ~99,570
@@ -1588,16 +1602,16 @@ has landed. One thread remains open:
   breakdown events AMD introduced alongside that width change aren't in `amd_raw_events[]` yet: split
   ALU/AGU scheduler-stall counters, and op-cache/execution-queue events that would separate `Frontend
   Latency` from `Frontend Bandwidth`. `IBS_LD_L1_DTLB_REFILL_LAT` also isn't named anywhere in the IBS
-  capability-probing rows. Both are candidate inputs for a future "platform formula registry" (see the
-  Topdown deep-dive's own remaining item, and "Open questions for prioritization") once Zen5-specific
-  formulas are actually versioned there — no standalone backlog item yet.
+  capability-probing rows. Tracked as 4.5's "Zen5 fine-grained scheduler-stall counters" item — both are
+  also candidate inputs for 4.5's "Platform formula registry" item once Zen5-specific formulas are
+  actually versioned there.
 
 Caveat: if upstream kernel/perf exposes new Zen5-specific generic mappings or PMU caps, update
 presets and coverage logic without changing the report schema.
 
 → Now unblocks 4.3's "IBS-derived memory-path bottleneck decomposition" (shipped, see "Shipped since
 4.2"). `--interval`-integrated periodic IBS sampling rates (needs a real poll-loop architectural change)
-was deliberately deferred out of that item's scope — see 4.4 priorities.
+was deliberately deferred out of that item's scope — see "Deferred indefinitely" above.
 
 ### Intel hybrid / counter-grouping deep-dive
 Real Intel hybrid hardware became available for the first time this cycle (a Raptor Lake HX host,
@@ -1611,7 +1625,8 @@ full root-cause/fix/verification detail moved to `doc/INVESTIGATION_ARCHIVE.md`'
 counter-grouping real-hardware findings and fixes" now that nothing here remains open backlog.
 
 Additional Intel counters worth adding, grounded in the same real-hardware pass (`/sys/bus/
-event_source/devices/` enumerated live, not from documentation alone):
+event_source/devices/` enumerated live, not from documentation alone). The GPU item (`i915` GPU PMU) is
+tracked in 4.4(b); everything else here is tracked as 4.5's "Intel counter expansion" item:
 - **Real DRAM bandwidth** (`COUNTER_MEMORY`, nonexistent for Intel today). `uncore_imc_free_running_0`/
   `_1` expose `data_read`/`data_write`/`data_total` with their own `.scale`/`.unit` sysfs files — the
   exact shape `power.c` already knows how to parse; comparatively low-effort riding on existing code.
@@ -1651,8 +1666,8 @@ schema"), and phase-aware topdown/cross-signal attribution/hybrid core-class sum
 4.2") — except one item:
 
 - Platform formula registry — versioned event/formula mapping per CPU family/model, for auditability.
-  See "Open questions for prioritization" and the Zen5/IBS deep-dive above for concrete candidate
-  inputs once this exists.
+  Tracked as 4.5's "Platform formula registry" item; see the Zen5/IBS deep-dive above for concrete
+  candidate inputs once this exists.
 
 ### Preset / Configuration / Option hierarchy deep-dive
 A three-level vocabulary for describing what wspy can be asked to do, surfaced while iterating the
@@ -1692,223 +1707,253 @@ framing with a live "customized away from preset" indicator, and structured conf
 recording which preset/configuration/option choice actually produced a run so a report can say "this
 was `deep-cpu`, with the TLB group swapped for L3" rather than re-deriving it from a flat argv.
 
-Cross-cutting goal, not yet committed to: the same preset/configuration/option vocabulary should
-eventually describe `wspy`'s own CLI options (today an unstructured flat flag list) and `wspy-run`'s
-profile format (today hardcoded `PASS_NAMES`/`PASS_FLAGS` bash arrays in `load_builtin_profile()`), not
-just the web UI. Nothing here commits to that refactor — see "Open questions for prioritization" below
-— but this is the vocabulary to design against as any later CLI/`wspy-run` restructuring proceeds, so
-it doesn't independently invent a different model for the same thing. There is real leeway to adjust
-existing options/commands toward this if it produces a cleaner architecture.
+Cross-cutting goal, now active 4.4(a) scope (see "4.4 priorities" above — promoted 2026-08-07 from "not
+yet committed to"): the same preset/configuration/option vocabulary should describe `wspy`'s own CLI
+options (today an unstructured flat flag list) and `wspy-run`'s profile format (today hardcoded
+`PASS_NAMES`/`PASS_FLAGS` bash arrays in `load_builtin_profile()`), not just the web UI — this is the
+vocabulary to design against as that refactor proceeds, so it doesn't independently invent a different
+model for the same thing. There is real leeway to adjust existing options/commands toward this if it
+produces a cleaner architecture.
 
 ### Critical-path / synchronization-latency: what's left
 All six originally-scoped syscall-latency candidates (futex, blocking I/O, connect, nanosleep, wait,
 poll) have shipped — see "What shipped in 4.2" above and `doc/INVESTIGATION_ARCHIVE.md` for the full
 motivation and per-syscall design rationale. What remains open from this track:
 - The *general*, table-driven mechanism (`tree_open`'s "syscall name → number → decode →
-  log-vs-aggregate" generalization, 4.3's "General syscall-level critical-path instrumentation" entry)
-  was deliberately not built — six syscall families were still cheap enough as individual `if`
-  branches in `ptrace_loop()`'s dispatch. Revisit only if a seventh syscall family comes up.
+  log-vs-aggregate" generalization) was deliberately not built — six syscall families were still cheap
+  enough as individual `if` branches in `ptrace_loop()`'s dispatch. Tracked in "Deferred indefinitely"
+  above; revisit only if a seventh syscall family comes up.
 - `ptrace` itself imposes a real stop-the-world cost on every syscall of the traced process, so
   absolute latency numbers collected this way are inflated relative to an untraced run. The *relative*
   split (fraction of wall time in futex-wait vs. read-wait vs. on-CPU) stays informative even when
-  absolute numbers are skewed, but this is an inherent limitation of the mechanism — 4.3's "Low-overhead
-  tracing alternative to ptrace" entry is the eventual fix, not a documentation note.
+  absolute numbers are skewed, but this is an inherent limitation of the mechanism — the low-overhead
+  tracing alternative to `ptrace` that would fix it is also in "Deferred indefinitely" above, not
+  actively planned.
 
-## 4.3 priorities
-Goal: use the normalized store built in 4.1 for regression detection, clustering, phase-aware
-topdown/IBS attribution, static-site publishing, and a lower-overhead tracing backend.
+## 4.3 release closure
+4.3's originally-scoped tiers (clustering/nearest-neighbor, topdown/attribution, publishing/reporting
+expansion) are all fully shipped — see "Shipped since 4.2" for every write-up. Nothing in the open
+backlog blocks tagging this release; what's left is housekeeping before cutting the tag.
 
-All of the originally-scoped Tier 1 (clustering/nearest-neighbor), Tier 2 (topdown/attribution), and
-Tier 3 (publishing/reporting expansion) work is now fully shipped for 4.3 — see "Shipped since 4.2" for
-every write-up. Tiers below are renumbered starting from 1 now that those three are gone entirely
-(previously kept stable through each intermediate shipped-tier removal; now collapsed in one pass since
-none of the remaining tiers are cross-referenced by number from outside this section — see "Cross-
-references are by name, not number" above).
+1. Contributor guide for adding a collector/metric/schema bump safely.
 
-**Tier 1 — report-layer additions on data already collected in 4.0:**
+Once this lands (or is explicitly skipped), run `scripts/release_prep.sh`'s checklist and fold "Shipped
+since 4.2" into a proper "What shipped in 4.3" section per this doc's own convention (see "How to use
+this document" above).
 
-7. `--tree-open` → file-I/O topology summary (hot paths, open-failure rates, startup storms,
-   process→file maps) — `tree_open`/`SYS_openat` capture already exists (`topdown.c`).
-8. System (`--system`) → per-interface network attribution and local-vs-system-pressure
-   attribution, plus steal-time capture (user/system/iowait are already captured and printed —
-   `system.c`'s existing `/proc/stat` parsing — this item is the missing steal column and the
-   analysis layer on top of what's already there, not the raw mix itself).
-9. Tree/lifecycle enrichments (exit code/signal summary, spawn/exit burst indicators, optional
-   `comm`-pattern role tagging).
+## 4.4 priorities
+Goal: refocus away from adding more analysis surface and toward (a) making the large amount of
+functionality already shipped easier to actually use, (b) GPU support parity with the CPU side, and
+(c) building out Phoronix suite coverage/workflow. Items are grouped by focus, not by dependency tier —
+pick items within a group in any order that fits.
 
-**Tier 2 — GPU deeper profiling:**
+**4.4(a) — Ease of use / one-click web UI flows.** Grounded in a 2026-08-07 audit of the actual surface
+area rather than guesswork: 16 separate CLI entry points (`wspy`, `wspy-run`, `wspy-validate`,
+`wspy-ledger`, `wspy-store`, `wspy-summary`, `wspy-plot`, `wspy-core-report`, `wspy-archetype`,
+`wspy-testpoint`, `wspy-publish`, `wspy-queue`, `wspy-sweep`, `wspy-analyze`, `wspy-bundle`,
+`wspy-symbolize`) with no unified pipeline or suggested order; the report/studio/reference web pages
+have accumulated roughly ten independent manual-trigger actions (generate process-tree views, AI
+narrative analysis, characterization badge, similarity panel, apply default curation, add freeform
+curation block, export, publish to WordPress, publish test-point report, publish reference matrix,
+discover from WordPress), each its own card added the moment its capability shipped, with nothing on
+the page indicating order or which are "normally do this" vs. optional; and per-suite flags
+(`--phoronix-dest-root`/`--cpu2026-dest-root`) and run-identity conventions (`--run-id` alone vs.
+`--hostname`+`--command` vs. `--hostname`+`--run-id`, depending which tool) have drifted apart tool by
+tool despite resolving near-identical shapes underneath.
 
-10. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
-    heavier, optional trace-rich profile, same "default vs debug profile" pattern as IBS.
-11. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds
-    on 4.2's (shipped) GPU fusion layer (`gpu_fusion.c`, `--gpu-metrics`) for consistent per-metric data.
-12. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`,
-    extended once GPU runs feed the same index.
+1. Preset/Configuration/Option vocabulary refactor — unify the CLI's flat flag list, `wspy-run`'s
+   hardcoded `PASS_NAMES`/`PASS_FLAGS` bash arrays, and the web UI's own preset/configuration/option
+   model (shipped 4.1) onto one declarative vocabulary, so all three describe the same thing the same
+   way instead of each inventing its own mental model. Promoted from "open question" (below, previously
+   "not yet") to active scope — see the "Preset / Configuration / Option hierarchy deep-dive" below for
+   the full reasoning.
+2. One-click end-to-end pipeline. Today a human runs `wspy-run`, then separately has to already know to
+   run `wspy-store`'s ingest, `wspy-testpoint select-runs`, `wspy-testpoint render`, and a publish step —
+   each its own command or its own web-UI button, in an order nowhere written down for a CLI-only user.
+   Chain the common path (a finished run → ingested → selected → rendered → published) into one action,
+   with a dry-run/preview step before anything writes or pushes, mirroring the caution
+   `scripts/publish_reference_matrix.py`'s web button already applies ("Preview (dry-run)" checked by
+   default). Web UI first — it already has every piece as a background-thread/SSE card; a CLI wrapper is
+   a natural follow-on once the sequencing is settled, not a prerequisite.
+3. Report-page guided flow / progress indicator. Add a lightweight checklist/progress view (Run done /
+   Curate — / Characterize — / Publish —) framing the report/studio page's ~10 existing cards as one
+   flow rather than an unordered stack discovered by scrolling. Doesn't require merging the actions
+   mechanically (the item above covers that) — presentation/sequencing only.
+4. CLI flag/identity consistency pass. Two concrete inconsistencies found in the 2026-08-07 audit: (1)
+   `--phoronix-dest-root`/`--cpu2026-dest-root` are separate flags even though both suites resolve
+   through the identical `find_materialized_*_test_point()` shape — every future suite added this way
+   means another bespoke flag pair rather than one generic mechanism; (2) a run is identified three
+   different ways depending which tool you're using, for a real reason (`wspy-summary`'s own rationale:
+   two runs can share identical command+hostname when one is a redo of the other) but with that rule
+   undocumented as a single cross-tool convention anywhere a user would find it before hitting the
+   surprise. Audit and, where safe, unify; where a difference is load-bearing, document it once in one
+   place rather than re-deriving it per tool.
+5. Quickstart guide / guided onboarding path. `README.md` documents all 16 CLI tools each in their own
+   section with no suggested order — a new checkout or new machine has to infer the
+   run→store→summarize→publish sequence from first principles. Add a single "benchmark X, get a
+   published report" walkthrough near the top of `README.md`, and consider surfacing the same sequence
+   as a first-run hint in the web UI.
+6. Detect and resume interrupted `wspy-run` profiles (raised after a real host crash mid-batch, twice,
+   with no way to tell from a report that the run never finished, or to resume without redoing completed
+   passes). Two phases, second depends on first:
+   - **Phase A — surface incompleteness.** `generate_manifest()` writes the run-level `manifest.json`
+     only after every pass finishes, so a mid-loop crash leaves per-pass artifacts but no top-level
+     manifest — an unambiguous, already-computable "never finished" signal (distinct from a run that
+     finished all passes but whose workload itself failed, already covered by `wspy-validate`). Surface
+     on `/report` (an "incomplete — N of M passes ran" banner) and `/history` (a new status value).
+   - **Phase B — resume, skipping completed passes.** `wspy-run --resume <existing-run-dir>` reuses the
+     existing `RUNROOT`/`RUN_ID`; for each pass, skip re-running only if its own manifest exists with a
+     clean exit *and* its recorded configuration exactly matches what this invocation would run now
+     (exact-match, via a new `--config-option pass_flags_hash=<hash>` provenance field) — never resumes a
+     pass that was itself interrupted mid-execution.
+   - Distinct from `wspy-queue`'s job lifecycle and from 4.5's much heavier config-first experiment
+     system.
+7. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead of
+   running it now" checkbox) is visible today only via `wspy-queue list`/`show`, not from the web UI
+   itself. Bundle in sharing structured configuration provenance with the job format (`web/joblib.py`'s
+   job schema and `manifest.h`'s `configuration_provenance` are designed to be close in shape but aren't
+   wired together yet).
 
-**Tier 3 — infra:**
+**4.4(b) — GPU support:**
 
-13. Low-overhead tracing alternative to `ptrace` (`ftrace` tracepoints or minimal eBPF) for
-    `--tree`/`--tree-open` — `ptrace` context-switches on every syscall entry/exit, which skews the
-    very counters being measured for I/O-heavy or fork-heavy workloads. Also the eventual fix for the
-    observer-effect caveat noted under "Critical-path / synchronization-latency: what's left" above.
-14. Collector-plugin implementation (perf stat / trace-cmd / GPU tools as collectors behind the
-    `collector` field, normalization path) — the schema seam shipped in 4.0; this is the actual
-    implementation of wrapping a non-wspy collector.
-15. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
+8. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
+   heavier, optional trace-rich profile, same "default vs debug profile" pattern as IBS.
+9. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds on
+   4.2's GPU fusion layer (`gpu_fusion.c`, `--gpu-metrics`) for consistent per-metric data.
+10. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`, extended
+    once GPU runs feed the same index.
+11. Intel `i915` GPU PMU — an Intel-native busy/frequency alternative to the current AMD-sysfs/NVML-only
+    GPU support, `perf_event_open()`-based rather than a vendor SMI/sysfs scrape. See the Intel hybrid /
+    counter-grouping deep-dive for detail (the rest of that deep-dive's counter wishlist is non-GPU,
+    tracked in 4.5).
+
+**4.4(c) — Phoronix suite build-out:**
+
+12. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
     CSVs into per-test-case/per-trial datasets by correlating run manifests with PTS results,
     composite.xml, and log timestamps. See
     [phoronix_hook_investigation.md](file:///home/mev/source/wspy/doc/phoronix_hook_investigation.md)
-    for design and prototypes. **Capture instrumentation landed ahead of the full item:**
+    for design and prototypes. **Capture instrumentation already landed:**
     `scripts/pts_hooks/*.sh`/`scripts/setup_phoronix_hooks.sh` register PTS `result_notifier` hooks and
-    capture their output into a per-pass `pts_hooks.log` artifact across every launch path (`wspy-run`,
-    the web launcher's custom path, `wspy-queue`); real-host testing found and fixed a registration bug
-    on our side and surfaced/patched an upstream PTS crash bug (filed/fixed upstream:
-    phoronix-test-suite/phoronix-test-suite#924/#925) — see `doc/INVESTIGATION_ARCHIVE.md`'s "Phoronix
-    `result_notifier` hook capture: real-host findings" for the full story. **Still open:** teaching
-    `wspy-phoronix-segment.py` to prefer `pts_hooks.log` over the composite.xml/log-timestamp
-    correlation it uses today, and the segmentation tool itself.
-16. Collapse `wspy-run`'s builtin profiles onto native `--passes` bin-packing. Low value relative to
-    everything else on the 4.3 board, no dependents, safe to leave alone indefinitely. Most profiles
-    are already collapsed as far as they can go: `deep-cpu`/`deep-gpu` folded their pure-counter middle
-    pass onto `--passes=...` back in 4.1; their remaining separate passes all use `--interval 1`, which
-    is hard-fatal'd against `--passes` (no defined multi-pass merge semantics for periodic ticks) — a
-    real architectural constraint, not a missed collapse. `tree-heavy`/`gpu-compute` (`--tree`) and
-    `ibs-basic`/`ibs-memory-deep`/`ibs-sample` (IBS) are excluded from `--passes` the same way; `quick`
-    is already one pass; `zen-portable`/`zen4plus-deep` just compose other profiles. The only real
-    remaining candidate is `deep-cpu-intel`, which still hand-authors 4 separate `wspy` invocations
-    that don't touch any `--passes`-incompatible flag — collapsing it to one pass is the entire
-    remaining scope. Note: this changes on-disk output shape from 4 files to 1, so anything downstream
-    assuming those 4 filenames (external scripts, `tests/capability_matrix.sh`) would need checking.
-17. Detect and resume interrupted `wspy-run` profiles (raised after a real host crash mid-batch, twice,
-    with no way to tell from a report that the run never finished, or to resume without redoing
-    completed passes). Two phases, second depends on first:
-    - **Phase A — surface incompleteness.** `generate_manifest()` writes the run-level `manifest.json`
-      only after every pass finishes, so a mid-loop crash leaves per-pass artifacts but no top-level
-      manifest — an unambiguous, already-computable "never finished" signal (distinct from a run that
-      finished all passes but whose workload itself failed, already covered by `wspy-validate`).
-      Surface on `/report` (an "incomplete — N of M passes ran" banner) and `/history` (a new status
-      value).
-    - **Phase B — resume, skipping completed passes.** `wspy-run --resume <existing-run-dir>` reuses the
-      existing `RUNROOT`/`RUN_ID`; for each pass, skip re-running only if its own manifest exists with a
-      clean exit *and* its recorded configuration exactly matches what this invocation would run now
-      (exact-match, via a new `--config-option pass_flags_hash=<hash>` provenance field) — never resumes
-      a pass that was itself interrupted mid-execution; that pass is simply discarded and rerun.
-    - Distinct from `wspy-queue`'s job lifecycle (whole-job scheduling/retry, not resuming partway
-      through one multi-pass invocation's own internal passes) and from 4.4's much heavier config-first
-      experiment system.
-18. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
-    (`web/joblib.py`/`wspy-phoronix-import`/web launcher's Phoronix tab; see "Shipped since 4.2" for
+    capture their output into a per-pass `pts_hooks.log` artifact across every launch path — see
+    `doc/INVESTIGATION_ARCHIVE.md`'s "Phoronix `result_notifier` hook capture" write-up. **Still open:**
+    teaching `wspy-phoronix-segment.py` to prefer `pts_hooks.log` over composite.xml/log-timestamp
+    correlation, and the segmentation tool itself.
+13. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
+    (`web/joblib.py`/`wspy-phoronix-import`/web launcher's Phoronix tab — see "Shipped since 4.2" for
     what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
     across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
     point, launched by a human clicking Run) exists today.
 
-**Tier 4 — testing:**
+## 4.5 priorities
+Goal: lower priority than 4.4 but still real, wanted work — pick up once 4.4's three focus areas are
+substantially done. Not ordered into dependency tiers; a few internal dependencies are called out inline.
+Cross-referenced by name, not number, per this doc's own convention — item numbers here will shift the
+next time this section is reorganized.
 
-19. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
-    guardrails — needs deterministic micro-workloads and 4.1's normalized store plus 4.2's
-    stats/confidence infrastructure.
-20. Contributor guide for adding a collector/metric/schema bump safely.
+**Report-layer additions on data already collected:**
 
-## 4.4 priorities
-Goal: optional/heavier pieces that shouldn't block the rest, in priority order:
-1. Config-first experiment definition system (full YAML/JSON suites/benchmarks/repetitions,
-   resumable/selective re-execution) — full version of the lightweight config-file execution
-   already in `wspy-run` (4.0); don't build both at once.
-2. Optional deep trace analysis (Perfetto-compatible export of tree+topdown+interval timelines) —
-   advanced companion path for difficult workloads, needs 4.3's lower-overhead tracing backend to
-   feed it.
-3. Temporal drift detection (cluster movement across versions/configs/machines) — needs 4.3's
-   clustering plus enough history to detect movement; treat as an investigation trigger, not a
-   standalone feature.
-4. Optional dashboard backend (e.g. Grafana) for exploratory slicing — explicitly optional/coexists
-   with static-first publishing; doesn't block 4.0-4.3.
-5. Optional live TUI (run progress, interval metrics, throttling/skew warnings) — a terminal-side
-   surface, unrelated to and not superseded by 4.1's web interface work; nice-to-have, CLI-first model
-   stays primary.
-6. Process/thread migration diagnostics (did a process's threads actually move between cores during
-   the run) — split out of 4.2's "Per-core imbalance/hot-core diagnostics" item, since it needs new
-   instrumentation (periodic `/proc/<pid>/stat` `processor`-field sampling, or scheduler tracepoints)
-   rather than just new analysis of data `--per-core` already collects. Natural pairing with 4.3's
-   lower-overhead tracing backend if that lands first, but not a hard dependency.
-7. Job-browsing view in the web UI — pushed out of 4.2 (2026-07-20). A queued job (`wspy-queue add`,
-   or the Run tab's "Queue instead of running it now" checkbox) is visible today only via
-   `wspy-queue list`/`show`, not from the web UI itself. Bundle in sharing structured configuration
-   provenance with the job format (`web/joblib.py`'s job schema and `manifest.h`'s
-   `configuration_provenance` are designed to be close in shape but aren't wired together yet).
-8. AMD IBS sampling-mode: `--interval`-integrated periodic rates — split out of 4.3's now-shipped "AMD
-   IBS sampling-mode support" item (see "Shipped since 4.2" and the Zen5/IBS deep-dive). Today
-   `ibs_sample.c` only drains the perf ring buffer once, at end-of-run (walking/decoding records isn't
-   async-signal-safe, and wspy has no poll/epoll loop anywhere to hang a real-time drain off of), so
-   `--ibs-sample` combined with `--interval` zeroes every periodic row and populates only the final tail
-   row. A real per-tick rate needs an actual poll-loop architectural change — genuinely a different
-   scale of work than the fixed-offset decode work that shipped, not a small follow-on.
-9. Uprobe-based function-argument capture ("ltrace-style" hooks) for hot functions identified by
-    symbol-level profiling (now shipped — `--symbol-sample`/`wspy-symbolize`, see "Shipped since 4.2"
-    and the "Symbol-level profiling deep-dive") — e.g. recovering GEMM dimensions (M/N/K) from a BLAS
-    library's hottest routine once profiling shows it's the actual bottleneck, or any other case where a
-    Pareto list of hot symbols isn't enough and the actual call arguments matter. Mechanically: manage
-    `/sys/kernel/tracing/uprobe_events` to attach at a resolved `symbol+offset` in a target binary/shared
-    library (the offset comes from `wspy-symbolize`'s own address-to-symbol resolution), declare an
-    arg-capture spec against the calling-convention register at function entry (e.g. `%di:s32 %si:s32
-    %dx:s32` for the first three integer args under the x86_64 System V ABI), and drain events via the
-    same `perf_event_open()` + mmap ring-buffer pattern `ibs_sample.c`/`symbol_sample.c` already
-    established (`perf_ring.c`) — mechanically similar to code already in the tree rather than a new
-    paradigm. Reuses the shipped `--target=comm=<name>[,cmdline=<substr>]` comm/PID-match plumbing
-    ("Shipped since 4.2" above) to decide which process(es) get the uprobe attached, same as it reuses
-    `wspy-symbolize`'s resolution to find where to attach it. Deliberately not `PTRACE_POKETEXT`/manual
-    INT3 injection — fragile, forces singlestepping, and has no precedent in this codebase; the kernel's
-    uprobe infrastructure is the existing, supported mechanism for this. Explicit, real limitations to
-    document up front rather than discover per-target: works cleanly only for register-passed scalar
-    args under a stable calling convention; degrades or fails outright on inlined callees (no call site
-    to hook), stack/struct-passed args, stripped symbols with no resolvable offset, and JIT'd code. Needs
-    root (writing `uprobe_events` is root-only, same privilege class wspy already assumes for its
-    ptrace/perf paths).
+1. `--tree-open` → file-I/O topology summary (hot paths, open-failure rates, startup storms,
+   process→file maps) — `tree_open`/`SYS_openat` capture already exists (`topdown.c`).
+2. System (`--system`) → per-interface network attribution and local-vs-system-pressure attribution,
+   plus steal-time capture (user/system/iowait are already captured and printed — this item is the
+   missing steal column and the analysis layer on top, not the raw mix itself).
+3. Tree/lifecycle enrichments (exit code/signal summary, spawn/exit burst indicators, optional
+   `comm`-pattern role tagging).
+
+**Infra:**
+
+4. Collapse `wspy-run`'s builtin profiles onto native `--passes` bin-packing. Most profiles are already
+   collapsed as far as `--passes`'s own architectural constraints allow (their remaining separate passes
+   use `--interval 1`, hard-fatal'd against `--passes`, or are IBS/`--tree`, excluded the same way); the
+   one real remaining candidate is `deep-cpu-intel`, which still hand-authors 4 separate `wspy`
+   invocations that don't touch any `--passes`-incompatible flag. Note: collapsing it changes on-disk
+   output shape from 4 files to 1, so anything downstream assuming those 4 filenames (external scripts,
+   `tests/capability_matrix.sh`) would need checking.
+5. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead guardrails —
+   needs deterministic micro-workloads plus the normalized store/stats infrastructure already shipped.
+
+**Hardware counter expansion (Intel/AMD, non-GPU):**
+
+6. Intel counter expansion (real DRAM bandwidth via `uncore_imc_free_running_0`/`_1`, true LLC/L3 via
+   `uncore_cbox_0`..`_11`, per-core-domain/iGPU RAPL energy via the `power` PMU's `energy-cores`/
+   `energy-gpu`, C-state residency via `cstate_core`/`cstate_pkg`, PEBS-based precise memory-latency
+   sampling as the Intel counterpart to AMD IBS sampling-mode) — see the Intel hybrid / counter-grouping
+   deep-dive's "Additional Intel counters worth adding" list for the full real-hardware-grounded detail
+   per counter (that list's one GPU item, `i915` GPU PMU, is tracked in 4.4(b) instead).
+7. Zen5 fine-grained scheduler-stall counters (split ALU/AGU scheduler-stall counters, op-cache/
+   execution-queue events) and `IBS_LD_L1_DTLB_REFILL_LAT` — see the Zen5/IBS deep-dive's remaining open
+   thread for detail.
+8. Platform formula registry — versioned event/formula mapping per CPU family/model, for auditability.
+   Design against a real third candidate input once one of the two items above lands, rather than
+   against the two AMD-only data points available today.
+
+**Heavier/optional pieces:**
+
+9. Config-first experiment definition system (full YAML/JSON suites/benchmarks/repetitions,
+   resumable/selective re-execution) — full version of the lightweight config-file execution already in
+   `wspy-run` (4.0); don't build both at once.
+10. Process/thread migration diagnostics (did a process's threads actually move between cores during the
+    run) — split out of 4.2's "Per-core imbalance/hot-core diagnostics" item; needs new instrumentation
+    (periodic `/proc/<pid>/stat` `processor`-field sampling, or scheduler tracepoints) rather than just
+    new analysis of data `--per-core` already collects.
+
+## Deferred indefinitely
+Explicitly not planned for any numbered release. Revisit only if a concrete need surfaces — don't let
+these block or distract from 4.4/4.5 scoping.
+
+- **Collector-plugin implementation** (perf stat / trace-cmd / GPU tools as collectors behind the
+  `collector` field, normalization path) — the schema seam shipped in 4.0; no concrete non-wspy collector
+  consumer exists to build the actual implementation against yet.
+- **Optional dashboard backend** (e.g. Grafana) for exploratory slicing — static-site publishing already
+  covers the real need; revisit only if that stops being enough.
+- **Optional live TUI** (run progress, interval metrics, throttling/skew warnings) — the web UI already
+  covers this; CLI-first model stays primary without a dedicated terminal surface.
+- **General, table-driven syscall-level critical-path instrumentation** (`tree_open`'s "syscall name →
+  number → decode → log-vs-aggregate" generalization) — six syscall families (futex, blocking I/O,
+  connect, nanosleep, wait, poll) are still cheap enough as individual `if` branches in `ptrace_loop()`'s
+  dispatch. Revisit only if a seventh syscall family comes up.
+- **Low-overhead tracing alternative to `ptrace`** (`ftrace` tracepoints or minimal eBPF) for
+  `--tree`/`--tree-open` — real value (`ptrace`'s stop-the-world cost skews I/O-heavy/fork-heavy
+  measurements, see the Critical-path deep-dive below) but a genuine architecture change with no
+  immediate forcing function. Revisit if the observer-effect problem becomes a concrete blocker on a
+  specific workload rather than a standing theoretical caveat.
+- **Optional deep trace analysis** (Perfetto-compatible export of tree+topdown+interval timelines) —
+  depends entirely on the low-overhead tracing backend above; deferred alongside it.
+- **Temporal drift detection** (cluster movement across versions/configs/machines) — needs far more
+  historical run accumulation across the shipped clustering work than exists today to be meaningful;
+  revisit once that history actually exists.
+- **AMD IBS sampling-mode: `--interval`-integrated periodic rates** — `ibs_sample.c` only drains the perf
+  ring buffer once, at end-of-run; a real per-tick rate needs an actual poll-loop architectural change, a
+  different scale of work than the fixed-offset decode work that already shipped. The end-of-run-only
+  rate is sufficient for now.
+- **Uprobe-based function-argument capture** ("ltrace-style" hooks for hot functions found via
+  symbol-level profiling, e.g. recovering GEMM dimensions from a BLAS library's hottest routine) — heavy,
+  niche, root-required. Revisit if a real investigation actually hits the "Pareto list of hot symbols
+  isn't enough, need the real call arguments" wall this was scoped for.
 
 ## Open questions for prioritization
 Each carries a recommendation; treat these as the current default, not a closed decision. (Several
-earlier open questions here — native multi-pass execution, ARM64 support, publication automation,
-core/thread affinity, minimum metadata set for publishable — have been resolved by shipped work; see
-"What shipped in 4.1" and "What shipped in 4.2" above rather than a stale "resolved" note here.)
+earlier open questions here have been resolved by shipped work or promoted to active backlog items —
+native multi-pass execution, ARM64 support, publication automation, core/thread affinity, minimum
+metadata set for publishable, cross-machine comparability scoring (`env_score`/`mixed-env`, shipped 4.3),
+the static-vs-interactive-backend question (resolved: static-first, see "Deferred indefinitely" above),
+and the `wspy-run` declarative-profile refactor (promoted to 4.4(a) above) — rather than a stale
+"resolved" note here for each.)
 
-- **Should `wspy-run`'s builtin profiles be refactored to be declaratively defined (as
-  configurations+options) instead of today's hardcoded `PASS_NAMES`/`PASS_FLAGS` bash arrays in
-  `load_builtin_profile()`?** Opened by the preset/configuration/option deep-dive above.
-  Recommendation: not yet — let the web UI's preset/configuration/option model (shipped in 4.1)
-  stabilize against real feedback first, then decide whether `wspy-run` itself should be rebuilt on the
-  same vocabulary. Premature to commit to a CLI/`wspy-run` restructure before the vocabulary has been
-  used for anything real; there's real leeway to make this change later if it produces a cleaner
-  architecture, but no reason to rush it ahead of the UI work that motivated it.
-- **Is cross-machine comparability a hard requirement for the first round?** Still open.
-  Recommendation: no. Provenance fields are captured (4.0); defer comparability *scoring* to 4.3 —
-  scoring needs enough historical runs across machines to be meaningful, which doesn't exist yet.
-- **Should the website stay static-only, or add an interactive backend?** Still open. Recommendation:
-  static-first through 4.3, keep an optional Grafana-style backend as a 4.4 nice-to-have. Non-goal:
-  don't let the interactive-backend question block 4.3's static-site work.
 - **Does wspy's counter-group naming/organization need a separate Intel-focused and AMD-focused split
   (CLI flags, `--counters=` group names, web UI panels), since today's single vocabulary can feel
   AMD-centric on Intel hardware?** Raised 2026-07-22 off a real Intel Coremark run where several
-  requested groups (`opcache`, `memory`) silently produced zero columns. Recommendation: no — don't
-  fork the vocabulary. The Preset/Configuration/Option deep-dive above already commits to one vocabulary
-  shared by the CLI/`wspy-run`/web UI specifically so none of them invents its own mental model, and
-  forking by vendor would double that surface (two flag sets, two web-UI panels, two things to keep in
-  sync in `wspy-run`/`wspy-queue`/tests) while also making `wspy-summary`/`wspy-plot`'s cross-run
-  comparisons harder, since those already lean on shared column *identity* across vendors (`CLAUDE.md`:
-  "column identity decides template membership"). The actual problem is **coverage, not naming**:
-  `intel_raw_events[]` has zero entries for `COUNTER_OPCACHE`/`COUNTER_MEMORY` today, so those group
-  names are silent no-ops on Intel with no warning — already tracked as the Intel hybrid deep-dive's
-  "Additional Intel counters worth adding" list (op-cache/DSB raw events, `uncore_imc` DRAM bandwidth,
-  `uncore_cbox` LLC, per-core-domain/iGPU RAPL energy, `i915` GPU PMU, C-state residency). Closing those
-  gaps makes the *same* group names carry real data on Intel; a follow-up worth scoping alongside that
-  work is making coverage/capability reporting explicit about "not implemented on this vendor" (a
-  `raw_counter_group()` call that matched zero table entries) vs. "requested but failed to open" (a real
-  per-run EINVAL/EACCES) — today both look identical (silently zero columns) from the CLI/web UI.
-- **Should the Topdown deep-dive's "platform formula registry" (versioned event/formula mapping per CPU
-  family/model, for auditability) be scoped and built now?** Not previously linked from here, unlike the
-  Intel-counters list above — noticed while auditing the deep-dives for staleness (2026-08-03).
-  Recommendation: not yet. It currently has exactly two candidate inputs, both from the Zen5/IBS
-  deep-dive (split ALU/AGU scheduler-stall counters, `IBS_LD_L1_DTLB_REFILL_LAT`) and neither is itself
-  a numbered backlog item yet; design a registry against a real third input (e.g. once the Intel-counters
-  list above starts landing) rather than against two AMD-only data points.
+  requested groups (`opcache`, `memory`) silently produced zero columns. Recommendation: no — don't fork
+  the vocabulary. The Preset/Configuration/Option deep-dive (now active 4.4(a) scope) already commits to
+  one vocabulary shared by the CLI/`wspy-run`/web UI specifically so none of them invents its own mental
+  model, and forking by vendor would double that surface while also making `wspy-summary`/`wspy-plot`'s
+  cross-run comparisons harder, since those already lean on shared column *identity* across vendors. The
+  actual problem is **coverage, not naming**: `intel_raw_events[]` has zero entries for
+  `COUNTER_OPCACHE`/`COUNTER_MEMORY` today, so those group names are silent no-ops on Intel with no
+  warning — tracked as 4.5's Intel counter expansion item above. A follow-up worth scoping alongside that
+  work: making coverage/capability reporting explicit about "not implemented on this vendor" vs.
+  "requested but failed to open" — today both look identical (silently zero columns) from the CLI/web UI.
 
 ## External brainstorming references
 - ReBench — reproducible experiment configuration, resumable execution, explicit benchmark
