@@ -1051,7 +1051,8 @@ create/update/draft/publish, media upload, Gutenberg-block content reuse from th
 a per-report "Publish to WordPress" button in the web UI, all verified against the real
 `mvermeulen.org/workload` site. See `doc/INVESTIGATION_ARCHIVE.md` for the full 8-step build history.
 Does not include the site-wide automated pipeline (walking the whole store to publish/update suite- and
-cross-suite-level pages) Tier 3 item 2 originally asked for — see that item for what's still open.
+cross-suite-level pages) Tier 3 item 2 originally asked for — that shipped later, see
+`scripts/publish_reference_matrix.py`'s own "Shipped since 4.2" write-up below.
 
 **cpu2026 level-3 benchmark pages + `wp_client.publish_page_at_path()`** (PR #188) — materializes
 `doc/REPORT_HIERARCHY.md`'s level-3 pages for all 52 real SPEC CPU2026 benchmarks, on both the
@@ -1139,7 +1140,7 @@ the pre-fix code had already committed into the real report-root was manually cl
 removal, local-only, same "never push automatically" convention as every other `wspy-testpoint` commit).
 
 **WordPress idempotent content-merge protection** (PR #197) — closes Tier 3 item 2's "idempotent content
-merge" gap (see the corrected item 2 bullet list above). `publish_page_content()` always did an
+merge" gap. `publish_page_content()` always did an
 unconditional `update_page()` on an existing page, with no way to tell "nothing's changed since our last
 write" from "a human hand-edited this in wp-admin since" — any repeat publish would silently clobber a
 hand-edit. New fingerprint tracking (`~/.config/wspy/publish_state.json`, page id → sha256 of the
@@ -1687,66 +1688,14 @@ motivation and per-syscall design rationale. What remains open from this track:
 Goal: use the normalized store built in 4.1 for regression detection, clustering, phase-aware
 topdown/IBS attribution, static-site publishing, and a lower-overhead tracing backend.
 
-**Tier 1 — needs 4.1's normalized store/history:**
+All of the originally-scoped Tier 1 (clustering/nearest-neighbor), Tier 2 (topdown/attribution), and
+Tier 3 (publishing/reporting expansion) work is now fully shipped for 4.3 — see "Shipped since 4.2" for
+every write-up. Tiers below are renumbered starting from 1 now that those three are gone entirely
+(previously kept stable through each intermediate shipped-tier removal; now collapsed in one pass since
+none of the remaining tiers are cross-referenced by number from outside this section — see "Cross-
+references are by name, not number" above).
 
-Fully shipped for 4.3: nearest-neighbor search and K-means clustering + cluster profile cards, both
-`wspy-archetype` modes (`--nearest`, `--kmeans`) — see "Shipped since 4.2" for both write-ups. Tier
-number kept stable rather than renumbering Tier 2-7 below, since several other entries in this document
-cross-reference them by tier number.
-
-**Tier 2 — topdown/attribution, needs 4.2's hierarchical schema + phase detection (both shipped) +
-AMD IBS sampling-mode support (shipped, see "Shipped since 4.2" and the Zen5/IBS deep-dive):**
-
-Fully shipped for 4.3: phase-aware topdown, composite attribution (including its blocking-syscall-split
-modifier), core-class-aware topdown, and IBS-derived memory-path bottleneck decomposition — see "Shipped
-since 4.2" for all four write-ups. Tier number kept stable rather than renumbering Tier 3-7 below, same
-reasoning as Tier 1 above.
-
-**Tier 3 — publishing/reporting expansion, needs 4.1's report studio:**
-
-2. Static-site publishing pipeline (per-benchmark + suite + cross-suite pages from templates), targeting
-   a new WordPress site at `mvermeulen.org/workload` (parallel to, not replacing, the author's existing
-   hand-curated `mvermeulen.org/perf/workloads/`). **REST auth/page/media primitives, a CLI
-   (`wspy-publish`), a per-report "Publish to WordPress" web UI button, and idempotent content-merge
-   protection are all shipped** — see "Shipped since 4.2" and `doc/INVESTIGATION_ARCHIVE.md` for the
-   full build history (the latter also carries a correction on `--slug`'s flat lookup, previously
-   miscounted here as a second open gap it never actually was). One thing this item originally asked
-   for is still open:
-   - **The actual site-wide pipeline, scope settled 2026-08-07.** Nothing yet walks the whole
-     `wspy-store` and generates/updates suite-level or cross-suite pages — today's tooling only
-     publishes individual benchmark/test-point pages, one human click at a time. Fetching the real
-     `/perf/workloads/<suite>/` pages during scoping showed their actual shape: rows=test-points,
-     columns=metrics, **one machine per page** (e.g. `cpu2017/` is entirely AMD 7840's numbers) — not
-     a cross-machine table. That's exactly `render_reference_by_machine()`'s shape (the benchmark
-     reference-matrix database's "by machine" view, shipped PR #212), so this item is mostly
-     publishing plumbing over data that already exists, not new analysis:
-     - New `scripts/publish_reference_matrix.py`, same two-phase generate-then-push pattern as
-       `publish_cpu2026_benchmarks.py`/`publish_phoronix_pages.py` (write to the report-root, commit
-       locally, then `wp_client.publish_page_at_path()`; `--dry-run`, draft-by-default, `--publish`,
-       `--force`). Can't reuse `render_reference_by_machine()`'s HTML directly (local-only `/reference/`
-       links, CSS classes WordPress doesn't have) — reuses the same data layer
-       (`joblib.enumerate_reference_matrix_cells()`/`aggregate_reference_matrix_cell()`) but needs its
-       own WP-block-markup rendering, same as those two scripts already hand-build their own rather
-       than sharing one.
-     - One new page per (suite, machine) that has reference-matrix cells, at
-       `<suite>/by-machine-<machine>/` (mirroring the `/reference/<suite>/by-machine/<machine>` web
-       route) — the full wide table, replacing the currently-empty auto-created suite-level stub as
-       the real destination for numeric content.
-     - The suite-level page itself (`<suite>/`) becomes a lightweight index — one row per test-point
-       with per-machine run counts/links (`render_reference_tab()`'s per-suite slice, already cheap by
-       design), plus links to each machine's own wide-table page.
-     - Root-level cross-suite rollup is an index of suite × machine links, not a merged table — a
-       cross-suite metric union would be noisy (different suites collect different metrics), the same
-       reason `render_reference_by_machine()` is already suite-scoped.
-     - Confirmed with the author: generated-only on the new site (nothing hand-maintained exists there
-       yet to protect — the suite-level pages are empty stubs today). The *old* `/perf/workloads/` site
-       stays untouched by this item, same "parallel, not replacing" framing this item already had;
-       retiring its hand-maintenance in favor of this same generated pipeline, once the new site is
-       complete enough to have real authority, is a deliberate future follow-on, not part of this item.
-     - Published content is a snapshot at publish time, not live like the web UI's on-demand queries —
-       re-running the script is how a page gets refreshed.
-
-**Tier 4 — report-layer additions on data already collected in 4.0:**
+**Tier 1 — report-layer additions on data already collected in 4.0:**
 
 7. `--tree-open` → file-I/O topology summary (hot paths, open-failure rates, startup storms,
    process→file maps) — `tree_open`/`SYS_openat` capture already exists (`topdown.c`).
@@ -1757,7 +1706,7 @@ reasoning as Tier 1 above.
 9. Tree/lifecycle enrichments (exit code/signal summary, spawn/exit burst indicators, optional
    `comm`-pattern role tagging).
 
-**Tier 5 — GPU deeper profiling:**
+**Tier 2 — GPU deeper profiling:**
 
 10. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
     heavier, optional trace-rich profile, same "default vs debug profile" pattern as IBS.
@@ -1766,7 +1715,7 @@ reasoning as Tier 1 above.
 12. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`,
     extended once GPU runs feed the same index.
 
-**Tier 6 — infra:**
+**Tier 3 — infra:**
 
 13. Low-overhead tracing alternative to `ptrace` (`ftrace` tracepoints or minimal eBPF) for
     `--tree`/`--tree-open` — `ptrace` context-switches on every syscall entry/exit, which skews the
@@ -1822,7 +1771,8 @@ reasoning as Tier 1 above.
     what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
     across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
     point, launched by a human clicking Run) exists today.
-**Tier 7 — testing:**
+
+**Tier 4 — testing:**
 
 19. Statistical regression harness (tolerance bands, not exact-value) + per-profile overhead
     guardrails — needs deterministic micro-workloads and 4.1's normalized store plus 4.2's
@@ -1922,14 +1872,6 @@ core/thread affinity, minimum metadata set for publishable — have been resolve
   work is making coverage/capability reporting explicit about "not implemented on this vendor" (a
   `raw_counter_group()` call that matched zero table entries) vs. "requested but failed to open" (a real
   per-run EINVAL/EACCES) — today both look identical (silently zero columns) from the CLI/web UI.
-- **Does the test-point-level curated performance-summary README (Tier 4) reduce the scope of, or
-  replace, this same tier's static-site publishing pipeline / characterization badges / interactive
-  drill-down items?** Raised 2026-07-23 alongside that item. Recommendation: not decidable yet — scope
-  the summary item first and see what it actually needs. A static-site pipeline that indexes these
-  per-test-point READMEs might turn out to *be* most of the static-site item's remaining value (a
-  browsable, multi-benchmark site) rather than a separate deliverable, and the characterization badges
-  are a plausible direct input to the summary rather than a competing surface. Revisit once the summary
-  item has a real design, not before.
 - **Should the Topdown deep-dive's "platform formula registry" (versioned event/formula mapping per CPU
   family/model, for auditability) be scoped and built now?** Not previously linked from here, unlike the
   Intel-counters list above — noticed while auditing the deep-dives for staleness (2026-08-03).
@@ -1948,8 +1890,9 @@ core/thread affinity, minimum metadata set for publishable — have been resolve
 - Perfetto — timeline/trace analysis and SQL-based trace queries, relevant to the optional deep
   trace analysis pipeline (4.4): https://perfetto.dev/docs/
 - OpenBenchmarking.org — public Phoronix Test Suite result archive; individual result pages expose an
-  "Export Benchmark Data: Result File to Test Suite (XML)" link, the seed mechanism for 4.3 Tier 7's
-  new "openbenchmarking.org-seeded single-test-point Phoronix suites" item: https://openbenchmarking.org/
+  "Export Benchmark Data: Result File to Test Suite (XML)" link, the seed mechanism for the now-shipped
+  "openbenchmarking.org-seeded single-test-point Phoronix suites" item (see "Shipped since 4.2"):
+  https://openbenchmarking.org/
 
 Note (2026-07-22): an earlier research pass hit an HTTP 403 fetching OpenBenchmarking.org directly from
 this environment and left it unreviewed (see prior revisions of this note); a user-provided result URL
