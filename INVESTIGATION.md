@@ -1508,6 +1508,36 @@ both still reachable via the per-test-point detail page each row links to. Verif
 local metric-name union. All 17 `web/test_*.py` files green, full `run_tests.sh` C matrix green. **This
 closes out the benchmark reference-matrix database item entirely** — deleted from the open backlog.
 
+**Site-wide publishing pipeline for the reference matrix** (`scripts/publish_reference_matrix.py`, PR
+#213) — closes 4.3's static-site publishing pipeline item, the last piece of what was Tier 3. Fetching
+the real `/perf/workloads/<suite>/` pages during scoping showed their actual shape: rows=test-points,
+columns=metrics, one machine per page — exactly `render_reference_by_machine()`'s shape (PR #212), so
+this was mostly publishing plumbing over data that already existed, not new analysis. Same two-phase
+generate-then-push pattern as `publish_cpu2026_benchmarks.py`/`publish_phoronix_pages.py`: per-(suite,
+machine) wide table at `<suite>/by-machine-<machine>/`, merging local `wspy-store` data with
+`recover_machine_metrics_from_wordpress()` (item 21) for WordPress-only machines discovered via
+`discover_wordpress_matrix_rows()` (item 22, default-on — the author noted the store mechanism is
+cumbersome and wasn't always followed historically, so pulling from what's already published matters
+more than a niche fallback); a per-suite index; and a root rollup. Local data always wins per test
+point when both exist; WordPress-recovered cells marked `*`, non-PASS-verdict cells marked `†`. Also
+fixed a real, previously-dormant bug found while building this: `joblib.aggregate_reference_matrix_cell()`
+passed `--report-root-remote` to `wspy-testpoint aggregate`, which never supported that flag — silently
+never hit before because every existing caller passed `None`. Verified via `--dry-run` against the real
+local report-root/store and a mocked mixed local+WordPress scenario. All 17 `web/test_*.py` files
+green, full `run_tests.sh` C matrix green.
+
+**Web UI "Publish reference matrix" button** (PR #214) — wraps the script above as a background-
+thread/SSE-streamed card on the Reference tab, same shape as the existing "Publish test-point report"/
+"AI narrative analysis" cards, closing the gap where publishing was CLI-only. "Preview (dry-run)"
+defaults checked in the form — a web button is a much easier way to fat-finger a live publish than a
+deliberately-typed terminal command, so the safe default lives here rather than in the script's own
+CLI default (a real run). New `REFERENCE_PUBLISH_RUNS` registry keyed by a fresh per-click job id
+(mirrors `DiscoveryState`'s single-key shape — a whole-site publish run has no natural `(suite,
+benchmark, run_id)` identity — but a job id rather than suite alone, since one invocation can span
+every suite). Verified live: started the dev server, confirmed the button/checkboxes render, POSTed a
+real dry-run job against the real local store/report-root, and streamed its SSE events end to end —
+correct command line, correct log output, `done` event fired, confirmed nothing was touched on disk.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
