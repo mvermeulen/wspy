@@ -56,8 +56,10 @@ Usage:
   publish_reference_matrix.py --skip-wordpress-discovery       # local wspy-store machines only, fast
 """
 import argparse
+import functools
 import html
 import os
+import re
 import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -72,6 +74,109 @@ import server as web_export  # noqa: E402
 SUITES = web_export.REFERENCE_MATRIX_SUITES
 ROOT_SLUG = "reference-matrix"
 ROOT_TITLE = "Reference matrix"
+
+# ---------------------------------------------------------------------------
+# Table interactivity (INVESTIGATION.md follow-up to Tier 3 item 2): the wspy WordPress service
+# account is deliberately scoped without unfiltered_html (see CLAUDE.md's wp_client.py entry), so
+# <script>/<style> embedded directly in REST-published post content gets stripped by wp_kses_post()
+# on save. Rather than fight that, generated pages only ever carry plain <table>/<th>/<td> markup --
+# a data-col-kind attribute per column and a `title`-bearing info span -- and all the actual
+# search/sort/column-toggle behavior lives in scripts/wp-refmatrix-assets.php, a small site-wide
+# plugin (same install pattern as scripts/wp-auth-bridge.php) that decorates any
+# <table class="wspy-refmatrix"> it finds. Confirmed with the author (2026-08-07).
+# ---------------------------------------------------------------------------
+METRICS_MD_PATH = os.path.join(REPO_ROOT, "doc", "METRICS.md")
+
+# Metric names whose reference-matrix column is an absolute accumulated count/duration rather than
+# something already normalized (a percentage, a per-1000-instruction rate, IPC, bandwidth, ...) --
+# these are real numbers but not comparable across differently-sized runs the way a ratio is, so the
+# plugin's "show raw counts" toolbar checkbox hides them by default. Curated by hand against
+# doc/METRICS.md's own derivations rather than inferred from its [raw]/[feature]/... tags -- those
+# track *database promotion status*, not "is this a ratio" (e.g. itlb1/dtlb1/tlbflush are tagged
+# [raw] there but are already per-1000-instruction rates, not raw counts). Anything NOT in this set
+# defaults to visible, including a future metric this list hasn't caught up with yet -- silently
+# hiding an unclassified column is a worse failure than showing one that could arguably be hidden.
+RAW_COUNT_METRICS = {
+    # rusage (topdown.c:print_usage()) -- accumulated absolute counts/durations
+    "nvcsw", "nivcsw", "inblock", "oublock", "maxrss", "minflt", "majflt", "nswap", "utime", "stime",
+    # software counters -- raw event counts over the run, not rates
+    "page faults", "context switches", "cpu migrations", "major page faults", "minor page faults",
+    "alignment faults", "emulation faults", "cpu-clock", "task-clock", "float",
+    # branch raw counts (AMD/ARM extras)
+    "near_return", "near_return_mispredicted", "indirect_branch_mispredicted",
+    "br_immed_retired", "br_return_retired", "br_pred", "br_mis_pred",
+    # ARM-only raw dumps (topdown.c:print_arm_dcache_mem()/print_arm_icache_tlb()/
+    # print_arm_mem_align_tlb()) -- event counts, no headline ratio
+    "l1d_cache_refill", "l1d_tlb_refill", "l2d_cache_refill", "l2d_tlb_refill",
+    "l1i_cache_refill", "l1i_tlb_refill", "l2i_tlb_refill", "dtlb_walk", "itlb_walk",
+    "ld_align_lat", "st_align_lat",
+    # power
+    "pkg_joules",
+    # AMD IBS -- raw sampled-event counts (ibs_op_accepted_ratio and the *_rate columns stay "ratio")
+    "ibs_fetch", "ibs_op", "ibs_op_unfiltered",
+    "ibs_sample_fetch_count", "ibs_sample_op_count", "ibs_sample_lost",
+    # GPU -- absolute memory sizes, not comparable across differently-sized runs
+    "gpu_vram_used", "gpu_vram_total", "nv_vram_used_mb", "nv_vram_total_mb",
+    # counter coverage -- running tallies, not a workload characteristic
+    "counters_measured", "counters_requested",
+}
+
+
+def metric_col_kind(metric):
+    """"raw" or "ratio" for the data-col-kind attribute build_machine_page() emits -- see
+    RAW_COUNT_METRICS above."""
+    return "raw" if metric in RAW_COUNT_METRICS else "ratio"
+
+
+_METRIC_DESC_BULLET_RE = re.compile(r'^-\s+((?:\*\*[^*]+\*\*,?\s*)+)—\s*(.*)$')
+_METRIC_DESC_TAG_RE = re.compile(r'^(\s*`\[[a-z-]+\]`[,\s]*)+')
+
+
+@functools.lru_cache(maxsize=1)
+def load_metric_descriptions(metrics_md_path=METRICS_MD_PATH):
+    """{metric_name: one-line description} parsed from doc/METRICS.md's own `- **name** -- ...`
+    bullets -- that file is already "the single index of every metric wspy produces" (CLAUDE.md), so
+    this reads tooltip text from there instead of hand-duplicating descriptions that would drift out
+    of sync. A bullet naming several metrics at once (e.g. "**l1_bound**, **l2_bound** -- ...") maps
+    all of them to the same description. Best-effort and cached (doc/METRICS.md doesn't change mid-run
+    across the many machine pages this script generates in one invocation) -- returns {} if the file
+    is missing rather than failing the whole publish run over a tooltip."""
+    try:
+        with open(metrics_md_path) as f:
+            raw_lines = f.readlines()
+    except OSError:
+        return {}
+
+    # Markdown wraps a single bullet across several physical lines (this file is hand-wrapped at
+    # ~100 columns) -- rejoin any line that isn't itself a new bullet/heading/blank into the bullet
+    # it continues, so a description isn't truncated at an arbitrary mid-sentence line break.
+    bullets = []
+    for raw in raw_lines:
+        line = raw.rstrip("\n")
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            bullets.append(stripped)
+        elif stripped and not stripped.startswith("#") and bullets:
+            bullets[-1] += " " + stripped
+        # blank lines / headings / non-continuation lines just end the current bullet implicitly --
+        # the next "- " line starts a fresh one.
+
+    descriptions = {}
+    for bullet in bullets:
+        m = _METRIC_DESC_BULLET_RE.match(bullet)
+        if not m:
+            continue
+        names = re.findall(r'\*\*([^*]+)\*\*', m.group(1))
+        desc = _METRIC_DESC_TAG_RE.sub("", m.group(2)).replace("`", "").replace("**", "").strip()
+        # Cut at the end of the first sentence where there's a clean one, else hard-wrap -- either
+        # way this is tooltip text (title attribute), not the full doc/METRICS.md entry.
+        first_sentence = re.split(r'(?<=[.!?])\s+', desc, maxsplit=1)[0]
+        desc = first_sentence if 20 <= len(first_sentence) <= 200 else desc
+        if len(desc) > 200:
+            desc = desc[:197].rsplit(" ", 1)[0] + "…"
+        for name in names:
+            descriptions.setdefault(name.strip(), desc)
+    return descriptions
 
 
 def resolve_report_root(args):
@@ -146,6 +251,9 @@ def build_machine_page(suite, machine, entries):
     has_warn = any(r.get("verdict") not in (None, "PASS")
                    for _, _, rows, source in entries if source == "local" for r in rows)
 
+    kinds = [metric_col_kind(m) for m in metrics]
+    descriptions = load_metric_descriptions()
+
     md_lines = ["# %s -- %s" % (machine, suite), "",
                 "| test point | " + " | ".join(metrics) + " |",
                 "|---|" + "|".join("---" for _ in metrics) + "|"]
@@ -154,7 +262,9 @@ def build_machine_page(suite, machine, entries):
         label = "%s / %s" % (test, test_point)
         cells = [cell_text(rows, m, source) for m in metrics]
         md_lines.append("| %s | %s |" % (label, " | ".join(cells)))
-        cells_html = "".join("<td>%s</td>" % html.escape(c) for c in cells)
+        cells_html = "".join(
+            '<td data-col-kind="%s">%s</td>' % (kind, html.escape(c))
+            for c, kind in zip(cells, kinds))
         body_rows_html.append("<tr><td>%s</td>%s</tr>" % (html.escape(label), cells_html))
 
     md_lines.append("")
@@ -177,11 +287,17 @@ def build_machine_page(suite, machine, entries):
             '<!-- wp:paragraph --><p><em>`†` -- carries a non-PASS wspy-summary verdict '
             "(thin/noisy/mixed-pmu/mixed-env).</em></p><!-- /wp:paragraph -->\n\n")
 
-    header_html = "".join("<th>%s</th>" % html.escape(m) for m in metrics)
+    def th(metric, kind):
+        desc = descriptions.get(metric)
+        info = (' <span class="wspy-info" title="%s">ⓘ</span>' % html.escape(desc)
+                if desc else "")
+        return '<th data-col-kind="%s">%s%s</th>' % (kind, html.escape(metric), info)
+
+    header_html = "".join(th(m, k) for m, k in zip(metrics, kinds))
     wp_html = (
         '<!-- wp:heading {"level":1} -->\n<h1>%s -- %s</h1>\n<!-- /wp:heading -->\n\n'
         '%s'
-        '<!-- wp:table --><figure class="wp-block-table"><table><thead><tr>'
+        '<!-- wp:table --><figure class="wp-block-table"><table class="wspy-refmatrix"><thead><tr>'
         '<th>test point</th>%s</tr></thead><tbody>%s</tbody></table></figure><!-- /wp:table -->'
         % (html.escape(machine), html.escape(suite), footnote_html, header_html,
            "".join(body_rows_html))
@@ -221,8 +337,11 @@ def build_suite_index(report_root_path, suite, local_cells, wp_rows, by_machine_
         md_lines.append("- [%s](by-machine-%s/)" % (machine, machine))
     markdown = "\n".join(md_lines) + "\n"
 
+    # wspy-refmatrix class gets this table the plugin's search/sort toolbar too (scripts/
+    # wp-refmatrix-assets.php) -- no data-col-kind attributes here since none of these columns are
+    # metrics, so the "show raw counts" checkbox correctly stays hidden for this table.
     tp_table_html = (
-        '<!-- wp:table --><figure class="wp-block-table"><table><thead><tr>'
+        '<!-- wp:table --><figure class="wp-block-table"><table class="wspy-refmatrix"><thead><tr>'
         '<th>test</th><th>test point</th><th>machines</th></tr></thead><tbody>%s</tbody>'
         '</table></figure><!-- /wp:table -->\n\n' % "".join(tp_rows_html)
         if tp_rows_html else
