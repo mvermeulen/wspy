@@ -1261,9 +1261,9 @@ core-equivalents, not a second finding — applies to both single-run and `--com
 `./test_ai_analyze.sh` (structural + live Ollama calls, both modes) still passes.
 
 **Benchmark reference-matrix database: query layer + web UI** (PR #204) — ships most of 4.3 Tier 3
-item 5 (still open: a standalone "by machine" view — see item 5's own trimmed entry above; the
-analysis-feed hookup and drill-down links shipped separately, see PR #210/#211 below). Computed on
-demand at web-request time, no new persistent matrix table:
+item 5, now fully shipped (the analysis-feed hookup, drill-down links, and "by machine" view landed
+separately, see PR #210/#211/#212 below). Computed on demand at web-request time, no new persistent
+matrix table:
 `joblib.enumerate_reference_matrix_cells()` walks materialized Phoronix/cpu2026 test points against
 which `<report-root>/<suite>/<test>/<test-point>/<machine>/` directories already have a `runs.json`
 (`wspy-testpoint select-runs`) — reusing that curated run selection rather than re-deriving one from
@@ -1492,6 +1492,21 @@ set. New `joblib.load_reference_matrix_cell_runs()` reads a `runs.json`'s full r
 `amd-370-64gb`'s header shows "(1 run)", linking correctly to its one real report page. All 17
 `web/test_*.py` files green, full `run_tests.sh` C matrix green.
 
+**"By machine" reference-matrix view** (PR #212) — closes the benchmark reference-matrix database's
+last open piece, previously deferred as "largely redundant" with the per-test-point detail page —
+built after all, sliced the other way: rows are one machine's test points within a suite, columns are
+metrics. Reuses `aggregate_reference_matrix_cell()` unchanged (already keyed by suite/benchmark/
+machine regardless of which axis a caller iterates over). Scoped per suite, not globally cross-suite,
+matching the author's own external reference page this feature is modeled on (one table per suite —
+different suites collect different metric sets). New `render_reference_by_machine_panel()` adds a "By
+machine" chip list to the reference-tab overview, one chip per (suite, machine) pair, linking to the
+new `render_reference_by_machine()` at `/reference/<suite>/by-machine/<machine>`. Deliberately
+narrower than the cross-machine detail page: no WordPress-recovery merge or characterization badges,
+both still reachable via the per-test-point detail page each row links to. Verified live:
+`cpu2026/amd-370-64gb`'s page correctly renders `707.ntest_r/gcc_O3-base` as a row across the full
+local metric-name union. All 17 `web/test_*.py` files green, full `run_tests.sh` C matrix green. **This
+closes out the benchmark reference-matrix database item entirely** — deleted from the open backlog.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -1700,18 +1715,9 @@ reasoning as Tier 1 above.
    - **The actual site-wide pipeline.** Nothing yet walks the whole `wspy-store` and generates/updates
      suite-level (a ~30-column reference-matrix table, matching `/perf/workloads/<suite>/`'s existing
      hand-maintained shape) or cross-suite rollup pages — today's tooling only publishes individual
-     benchmark/test-point pages, one human click at a time. Depends on item 5's reference-matrix
-     database as the suite-level data source (deciding whether to generate that table from the store
-     instead of hand-maintaining it is exactly item 5's own open question).
-5. Benchmark reference-matrix database keyed by (test name, test version, test point) × (machine —
-   `doc/REPORT_HIERARCHY.md`'s `<vendor>-<short-model>` slug) — a wide, curated comparison table in the
-   spirit of the author's existing external reference page (https://mvermeulen.org/perf/workloads/,
-   60+ columns per test), generated from wspy's own normalized store rather than hand-maintained.
-   **Query layer, machine-slug resolution, publish-status lookup, and a web "Reference" tab (overview +
-   per-test-point cross-machine comparison) are shipped** (PR #204) — see "Shipped since 4.2". Still
-   open:
-   - A standalone "by machine" view (rows=test-points, cols=metrics for one machine) — deferred as
-     largely redundant with the per-test-point detail page sliced the other way.
+     benchmark/test-point pages, one human click at a time. Depends on the benchmark reference-matrix
+     database (shipped, see "Shipped since 4.2") as the suite-level data source — whether to generate
+     that table from the store instead of hand-maintaining it is still an open question here.
 
 **Tier 4 — report-layer additions on data already collected in 4.0:**
 
