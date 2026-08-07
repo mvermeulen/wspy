@@ -1733,7 +1733,11 @@ class AggregateReferenceMatrixCellTest(unittest.TestCase):
                 "/does/not/exist", "/path/to/store.db", "phoronix", "openssl-sha256", "amd-395")
         self.assertIsNone(rows)
 
-    def test_passes_report_root_overrides_through(self):
+    def test_passes_report_root_override_through(self):
+        # No report_root_remote parameter -- `wspy-testpoint aggregate` never accepted
+        # --report-root-remote (it only reads an already-selected run set, never clones); a caller
+        # passing one through here was a latent, never-hit bug, found live building
+        # scripts/publish_reference_matrix.py.
         captured = {}
 
         def fake_run(argv, capture_output, text, timeout):
@@ -1743,11 +1747,10 @@ class AggregateReferenceMatrixCellTest(unittest.TestCase):
         with patch("joblib.subprocess.run", side_effect=fake_run):
             joblib.aggregate_reference_matrix_cell(
                 "wspy-testpoint", "store.db", "phoronix", "openssl-sha256", "amd-395",
-                report_root_path="/custom/root", report_root_remote="https://example.org/x.git")
+                report_root_path="/custom/root")
         self.assertIn("--report-root", captured["argv"])
         self.assertIn("/custom/root", captured["argv"])
-        self.assertIn("--report-root-remote", captured["argv"])
-        self.assertIn("https://example.org/x.git", captured["argv"])
+        self.assertNotIn("--report-root-remote", captured["argv"])
 
 
 class ReadPhoronixTestDescriptionTest(unittest.TestCase):
