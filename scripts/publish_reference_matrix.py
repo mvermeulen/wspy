@@ -213,6 +213,11 @@ SUPPLEMENTARY_COLUMN_GROUPS = {
     "icache_miss_pct": "topdown", "icache_per_1000_inst": "topdown",
     "opcache_per_1000_inst": "topdown", "tlb_flush_per_1000_inst": "topdown",
     "itlb_miss_per1k": "topdown", "dtlb_miss_per1k": "topdown",
+    # L1 counterparts of the L2 itlb_miss_per1k/dtlb_miss_per1k pair above -- topdown.c's own
+    # "l1 iTLB miss"/"l1 dTLB miss" comment ("X.XXX L1 iTLB per 1000 inst") had no
+    # GENERIC_LABEL_NAME_OVERRIDES entry, so extract_derived_ratios() fell through to a plain
+    # slugify with no group assigned; found live (2026-08-08) sitting unclassified in "Other".
+    "l1_itlb_per_1000_inst": "topdown", "l1_dtlb_per_1000_inst": "topdown",
     "branch_mispredict_pct": "branch", "branches_per_1000_inst": "branch",
     "conditional_branches_per_1000_inst": "branch", "indirect_branches_per_1000_inst": "branch",
     "indirect_branch_mispredict_rate": "branch", "near_return_per_1000_inst": "branch",
@@ -227,36 +232,35 @@ SUPPLEMENTARY_COLUMN_GROUPS = {
 }
 
 
-# joblib.resolve_column_group() (and this module's own SUPPLEMENTARY_COLUMN_GROUPS above) return
-# four separate tokens for what's really one methodology to anyone not tracking which --topdown-*
-# CLI flag collected which column: the main L1 split ("topdown"/"topdown2", both print_topdown()),
-# the AMD-only backend deep-dive ("topdown-backend", print_topdown_be() -- l1_bound/l2_bound/...),
-# and the AMD-only frontend/op-cache deep-dive ("topdown-frontend"/"topdown-optlb", print_topdown_fe()/
-# print_topdown_op() -- icache/itlb1/opcache/dtlb1/...). Collapsed into one "topdown" group here so
-# they show up together in the plugin's Columns panel instead of splitting a single mental model
-# ("topdown") across four same-looking-but-not-quite-matching checkboxes.
-_TOPDOWN_GROUP_ALIASES = {"topdown2", "topdown-frontend", "topdown-backend", "topdown-optlb"}
-
-# "opcache" (joblib's own group token for the single cross-vendor "opcache miss" column,
-# print_cache()/print_opcache()) is too narrow to earn its own Columns-panel checkbox for one
-# metric -- author's own call (2026-08-07): fold it into "other" rather than give it standalone
-# billing. Distinct from _TOPDOWN_GROUP_ALIASES above (that's collapsing four *duplicate* tokens
-# for one methodology into one; this is demoting one *real, correctly-scoped* group for being too
-# small to bother with).
-_GROUPS_FOLDED_INTO_OTHER = {"opcache"}
+# joblib.resolve_column_group()/SUPPLEMENTARY_COLUMN_GROUPS above return a finer-grained group
+# token than the plugin's Columns panel should actually show as separate checkboxes -- this maps
+# each such token to the coarser one it should present as instead. Two different reasons a merge
+# ends up here, both author calls made live-testing the Columns panel (2026-08-07/08):
+#   - Genuine duplicates for one methodology, split only by which --topdown-* CLI flag collected
+#     which column: the main L1 split ("topdown"/"topdown2", both print_topdown()), the AMD-only
+#     backend deep-dive ("topdown-backend", print_topdown_be() -- l1_bound/l2_bound/...), and the
+#     AMD-only frontend/op-cache deep-dive ("topdown-frontend"/"topdown-optlb", print_topdown_fe()/
+#     print_topdown_op() -- icache/itlb1/opcache/dtlb1/...). One mental model ("topdown"), not four
+#     same-looking-but-not-quite-matching checkboxes.
+#   - A group too narrow to earn its own checkbox: "opcache" (joblib's own token for the single
+#     cross-vendor "opcache miss" column) folds into "other"; "cache3" (AMD-only "l3miss") folds
+#     into "cache2" (renamed "cache" here, since it's no longer just L2) since the author found L2
+#     and L3 cache miss rate useful to browse together rather than as two separate checkboxes.
+GROUP_ALIASES = {
+    "topdown2": "topdown", "topdown-frontend": "topdown", "topdown-backend": "topdown",
+    "topdown-optlb": "topdown",
+    "opcache": "other",
+    "cache2": "cache", "cache3": "cache",
+}
 
 
 def metric_col_group(metric):
     """The --counters/--system/--power group token (or a SUPPLEMENTARY_COLUMN_GROUPS bucket, or
     "other" as a last resort) for the data-col-group attribute -- what the plugin's per-group
-    "Columns" checkboxes filter on. See _TOPDOWN_GROUP_ALIASES/_GROUPS_FOLDED_INTO_OTHER above for
-    the merges applied on top of the raw group token."""
+    "Columns" checkboxes filter on. See GROUP_ALIASES above for the merges applied on top of the
+    raw group token."""
     group = joblib.resolve_column_group(metric) or SUPPLEMENTARY_COLUMN_GROUPS.get(metric, "other")
-    if group in _TOPDOWN_GROUP_ALIASES:
-        return "topdown"
-    if group in _GROUPS_FOLDED_INTO_OTHER:
-        return "other"
-    return group
+    return GROUP_ALIASES.get(group, group)
 
 
 # Priority order for the plugin's Columns panel -- fundamental/commonly-read groups first (ipc and
@@ -264,12 +268,18 @@ def metric_col_group(metric):
 # final catch-all. Anything not listed here (there shouldn't be any -- every joblib.ALL_GROUPS/
 # SUPPLEMENTARY_COLUMN_GROUPS token is covered) sorts just before "other" rather than disappearing.
 COLUMN_GROUP_ORDER = [
-    "ipc", "topdown", "branch", "dcache", "icache", "cache2", "cache3", "opcache", "tlb", "memory",
+    "ipc", "topdown", "branch", "dcache", "icache", "cache", "tlb", "memory",
     "process", "software", "float", "system", "power", "ibs", "gpu", "coverage", "other",
 ]
 
 
-_METRIC_DESC_BULLET_RE = re.compile(r'^-\s+((?:\*\*[^*]+\*\*,?\s*)+)—\s*(.*)$')
+# The optional "(?:[^*\n]*?:\s+)?" prefix tolerates a leading label like "AMD extras: " or
+# "ARM extras: " before the bold name(s) -- doc/METRICS.md's branch-prediction section uses exactly
+# that shape ("- AMD extras: **near_return**, **near_return_mispredicted**, ... -- ..."), which this
+# regex used to reject outright (requiring bold names to start immediately after "- "), silently
+# dropping tooltips for every name in those two bullets. Found live (2026-08-08): the reference
+# matrix's branch-prediction columns for those seven AMD/ARM raw counts had no tooltip at all.
+_METRIC_DESC_BULLET_RE = re.compile(r'^-\s+(?:[^*\n]*?:\s+)?((?:\*\*[^*]+\*\*,?\s*)+)—\s*(.*)$')
 _METRIC_DESC_TAG_RE = re.compile(r'^(\s*`\[[a-z-]+\]`[,\s]*)+')
 
 

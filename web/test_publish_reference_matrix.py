@@ -41,7 +41,10 @@ class MetricColGroupTest(unittest.TestCase):
         # ipc/l2miss/branch miss are all resolved by joblib.resolve_column_group() itself --
         # metric_col_group() must not shadow that with its own supplementary table.
         self.assertEqual(prm.metric_col_group("ipc"), "ipc")
-        self.assertEqual(prm.metric_col_group("l2miss"), "cache2")
+        # l2miss resolves to joblib's own "cache2" token, then GROUP_ALIASES merges it into "cache"
+        # alongside l3miss -- author's call (2026-08-08): L2/L3 cache are useful to browse together.
+        self.assertEqual(prm.metric_col_group("l2miss"), "cache")
+        self.assertEqual(prm.metric_col_group("l3miss"), "cache")
         self.assertEqual(prm.metric_col_group("branch miss"), "branch")
 
     def test_supplementary_table_covers_what_joblib_does_not(self):
@@ -80,6 +83,12 @@ class MetricColGroupTest(unittest.TestCase):
         # "opcache miss" column) isn't worth its own Columns-panel checkbox.
         self.assertEqual(prm.metric_col_group("opcache miss"), "other")
 
+    def test_l2_and_l3_cache_merged_into_one_group(self):
+        # Author's own call (2026-08-08): L2 and L3 cache miss rate are useful to browse together
+        # rather than as two separate single-metric-ish checkboxes.
+        self.assertEqual(prm.metric_col_group("l2miss"), prm.metric_col_group("l3miss"))
+        self.assertEqual(prm.metric_col_group("l2miss"), "cache")
+
     def test_wordpress_recovery_derived_rates_get_a_real_group(self):
         # These never appear as real local CSV columns -- they only exist via web/counter_text.py's
         # extract_derived_ratios() generic-slug fallback (per-1000-inst densities) or its
@@ -90,7 +99,8 @@ class MetricColGroupTest(unittest.TestCase):
             ("backend_pct", "topdown"), ("icache_per_1000_inst", "topdown"),
             ("itlb_miss_per1k", "topdown"), ("tlb_flush_per_1000_inst", "topdown"),
             ("branch_mispredict_pct", "branch"), ("branches_per_1000_inst", "branch"),
-            ("l2_miss_pct", "cache2"), ("l3_access_per_1000_inst", "cache3"),
+            ("l2_miss_pct", "cache"), ("l3_access_per_1000_inst", "cache"),
+            ("l1_itlb_per_1000_inst", "topdown"), ("l1_dtlb_per_1000_inst", "topdown"),
             ("avx_128_per_1000_inst", "float"), ("float_per_1000_inst", "float"),
             ("ibs_dc_miss_pct", "ibs"),
         ):
@@ -144,6 +154,19 @@ class LoadMetricDescriptionsSyntheticTest(unittest.TestCase):
         self.assertEqual(descs["l2_bound"], descs["l3_bound"])
         self.assertIn("cache-level stalls", descs["l1_bound"])
 
+    def test_labeled_multi_name_bullet_still_parses(self):
+        # doc/METRICS.md's branch-prediction section uses "- AMD extras: **name**, **name** -- ..."
+        # -- a leading "AMD extras: "/"ARM extras: " label before the bold names, which used to make
+        # the whole bullet unparseable (regex required bold names immediately after "- "), silently
+        # dropping tooltips for every name in these bullets. Found live 2026-08-08.
+        path = self._write(
+            "- AMD extras: **near_return**, **near_return_mispredicted** — `[raw]` raw counts.\n"
+        )
+        prm.load_metric_descriptions.cache_clear()
+        descs = prm.load_metric_descriptions(path)
+        self.assertEqual(descs["near_return"], descs["near_return_mispredicted"])
+        self.assertIn("raw counts", descs["near_return"])
+
     def test_wrapped_continuation_line_is_rejoined(self):
         path = self._write(
             "- **retire** — `[feature]` (`retire_pct`) retiring_slots / slots_no_contention * 100.\n"
@@ -186,6 +209,14 @@ class LoadMetricDescriptionsRealDocTest(unittest.TestCase):
 
     def test_known_metrics_present_with_nonempty_description(self):
         for name in ("ipc", "retire", "l2miss", "bandwidth", "context switches"):
+            self.assertIn(name, self.descs)
+            self.assertTrue(self.descs[name])
+
+    def test_amd_arm_branch_extras_present(self):
+        # These live in "- AMD extras: **name**, ... -- ..."/"- ARM extras: **name**, ... -- ..."
+        # bullets -- previously unparseable, silently dropping tooltips for all seven names.
+        for name in ("near_return", "near_return_mispredicted", "indirect_branch_mispredicted",
+                     "br_immed_retired", "br_return_retired", "br_pred", "br_mis_pred"):
             self.assertIn(name, self.descs)
             self.assertTrue(self.descs[name])
 

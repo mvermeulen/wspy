@@ -81,15 +81,15 @@ table.wspy-refmatrix tr.wspy-row-unchecked { display: none; }
 <script>
 (function () {
     // Friendly labels for the --counters/--system/--power group tokens publish_reference_matrix.py
-    // emits (joblib.py's ALL_GROUPS/"system"/"power" plus its own SUPPLEMENTARY_COLUMN_GROUPS,
-    // topdown/topdown2/topdown-frontend/topdown-backend/topdown-optlb pre-merged into one "topdown"
-    // token by metric_col_group() -- see that function's own comment) -- falls back to the raw token
-    // itself for anything this list hasn't caught up with yet, so a new group never disappears from
-    // the panel, it just shows up unprettified.
+    // emits (joblib.py's ALL_GROUPS/"system"/"power" plus its own SUPPLEMENTARY_COLUMN_GROUPS, with
+    // GROUP_ALIASES pre-merging topdown/topdown2/topdown-frontend/topdown-backend/topdown-optlb into
+    // "topdown", cache2/cache3 into "cache", and "opcache" into "other" -- see that dict's own
+    // comment) -- falls back to the raw token itself for anything this list hasn't caught up with
+    // yet, so a new group never disappears from the panel, it just shows up unprettified.
     var GROUP_LABELS = {
-        ipc: 'IPC', topdown: 'Topdown', branch: 'Branch prediction', cache2: 'L2 cache',
-        cache3: 'L3 cache', dcache: 'L1 dcache', icache: 'L1 icache', tlb: 'TLB',
-        memory: 'Memory bandwidth', opcache: 'Op-cache', software: 'Software counters',
+        ipc: 'IPC', topdown: 'Topdown', branch: 'Branch prediction', cache: 'L2/L3 cache',
+        dcache: 'L1 dcache', icache: 'L1 icache', tlb: 'TLB',
+        memory: 'Memory bandwidth', software: 'Software counters',
         float: 'Floating point', system: 'System', power: 'Power', process: 'Process/rusage',
         ibs: 'AMD IBS', gpu: 'GPU', coverage: 'Counter coverage', other: 'Other'
     };
