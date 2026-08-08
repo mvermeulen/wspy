@@ -1966,6 +1966,23 @@ class LinkPhoronixTestPointRunTest(unittest.TestCase):
         self.assertFalse(ok)
 
 
+class Cpu2026BenchmarksCatalogTest(unittest.TestCase):
+    """CPU2026_BENCHMARKS is a hand-maintained static catalog (display/grouping only, sourced from
+    spec.org's own overview page) -- these are regression guards against the specific gap found live
+    2026-08-08: 749.fotonik3d_r was missing entirely (its only sibling, 849.fotonik3d_s, was present),
+    so scripts/publish_reference_matrix.py's row_group_for_test() silently fell through to "other"
+    for every real cpu2026 reference-matrix row for that benchmark."""
+
+    def test_fotonik3d_r_present_as_fprate(self):
+        self.assertEqual(joblib.CPU2026_BENCHMARKS.get("749.fotonik3d_r"),
+                          {"suite": "fprate", "lang": "Fortran"})
+
+    def test_every_entry_has_a_recognized_suite_value(self):
+        valid = {"intrate", "intspeed", "fprate", "fpspeed"}
+        for bench, info in joblib.CPU2026_BENCHMARKS.items():
+            self.assertIn(info["suite"], valid, bench)
+
+
 class Cpu2026SuiteInstalledTest(unittest.TestCase):
     def test_true_when_shrc_present(self):
         with tempfile.TemporaryDirectory() as tmpdir:
