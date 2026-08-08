@@ -3081,6 +3081,7 @@ CPU2026_BENCHMARKS = {
     "736.ocio_r": {"suite": "fprate", "lang": "C++"},
     "737.gmsh_r": {"suite": "fprate", "lang": "C++, C"},
     "748.flightdm_r": {"suite": "fprate", "lang": "C++"},
+    "749.fotonik3d_r": {"suite": "fprate", "lang": "Fortran"},
     "765.roms_r": {"suite": "fprate", "lang": "Fortran"},
     "766.femflow_r": {"suite": "fprate", "lang": "C++"},
     "767.nest_r": {"suite": "fprate", "lang": "C++"},
