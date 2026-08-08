@@ -178,6 +178,12 @@ GENERIC_LABEL_NAME_OVERRIDES = {
     # print_icache()'s own "L1-icache miss" isn't in SIMPLE_METRIC_FEATURES at all today, so it's
     # deliberately left un-renamed below (nothing to align it to yet).
     "icache miss": "icache_miss_pct",
+    # print_topdown_op()'s AMD-only "opcache miss" line (--topdown-optlb group) -- unlike icache
+    # above, there's no separate store.c-promoted feature name for this one (doc/METRICS.md tags the
+    # real "opcache" CSV column [raw], never promoted into run_features), so its real name IS the
+    # bare CSV column name -- no GENERIC_LABEL_ALSO_CSV_COLUMN entry needed below the way icache
+    # needs one to additionally preserve its own real "_pct" feature name.
+    "opcache miss": "opcache",
     # print_l2cache(): ARM/Intel label this line "l2 miss"; AMD's own branch (a composite ratio
     # combining demand-miss and prefetch-miss sources, see topdown.c's own comment there) labels the
     # same ratio "l2 miss from l1" instead -- both comments carry the identical real l2miss value.
@@ -197,6 +203,23 @@ GENERIC_LABEL_NAME_OVERRIDES = {
     # aren't in SIMPLE_METRIC_FEATURES and are left un-renamed.
     "l2 iTLB miss": "itlb_miss_per1k",
     "l2 dTLB miss": "dtlb_miss_per1k",
+}
+
+# A GENERIC_LABEL_NAME_OVERRIDES entry gives one line's comment its real store.c feature name --
+# but "icache miss" needs a *second* name too: topdown.c's AMD-only print_topdown_fe() (--topdown-
+# optlb) has its own real CSV column literally called "icache" (icache_miss/icache_access*100,
+# topdown.c:2987), matching aggregate_reference_matrix_cell()'s local-store convention -- but the
+# *primary* (raw operand) value of the block's own separate line literally labeled "icache" is the
+# raw access count, not this percentage (topdown.c:2994's "icache <count> # X.XXX icache per 1000
+# inst" line, a different row from "icache miss" entirely). Without this, nothing ever overwrites
+# that wrong raw value under the bare "icache" name -- the same class of bug TOPDOWN_CSV_COLUMN_NAMES
+# above fixes for backend/frontend/retire/speculate, confirmed live against the same real report
+# (2026-08-07) doc/METRICS.md's own "don't be misled by the name match" warning already called out.
+# opcache doesn't need an entry here -- GENERIC_LABEL_NAME_OVERRIDES's "opcache miss" -> "opcache"
+# entry above already targets the bare CSV name directly, since (unlike icache_miss_pct) nothing
+# else needs a second, differently-named copy of that value.
+GENERIC_LABEL_ALSO_CSV_COLUMN = {
+    "icache miss": "icache",
 }
 
 # Same idea as GENERIC_LABEL_NAME_OVERRIDES above, but keyed by the *slugified description* instead
@@ -279,6 +302,9 @@ def extract_derived_ratios(records):
             name = GENERIC_SLUG_NAME_OVERRIDES.get(name, name)
             name = GENERIC_LABEL_NAME_OVERRIDES.get(metric, name)
             derived.append({"metric": name, "value": value, "is_percent": is_percent, "comment": None})
+            if metric in GENERIC_LABEL_ALSO_CSV_COLUMN:
+                derived.append({"metric": GENERIC_LABEL_ALSO_CSV_COLUMN[metric], "value": value,
+                                 "is_percent": is_percent, "comment": None})
     return derived
 
 

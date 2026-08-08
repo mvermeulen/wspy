@@ -192,6 +192,33 @@ class ExtractDerivedRatiosTest(unittest.TestCase):
             self.assertTrue(derived[name]["is_percent"])
             self.assertIsNone(derived[name]["comment"])
 
+    def test_icache_also_emitted_under_the_real_csv_column_name(self):
+        # Same class of bug as the topdown L1 case above, different mechanism: doc/METRICS.md's own
+        # "don't be misled by the name match" warning -- the real "icache" CSV column
+        # (icache_miss/icache_access*100, topdown.c print_topdown_fe()) is a percentage, but the
+        # block's own separate line literally labeled "icache" (not "icache miss") carries a
+        # completely different value as its primary operand (the raw access count). Confirmed live
+        # 2026-08-07 against a real reference-matrix page. icache_miss_pct (the archetype-facing
+        # name) must be unaffected.
+        records = counter_text.parse_counter_text(COUNTERS_TXT)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        self.assertEqual(derived["icache"]["value"], 8.4)
+        self.assertEqual(derived["icache"]["value"], derived["icache_miss_pct"]["value"])
+
+    def test_opcache_renamed_directly_to_its_real_csv_column_name(self):
+        # opcache has no separate archetype-facing "_pct" name to preserve (doc/METRICS.md tags the
+        # real "opcache" CSV column [raw], never promoted into store.c's run_features) -- unlike
+        # icache, GENERIC_LABEL_NAME_OVERRIDES can target the bare CSV name directly, with no second
+        # GENERIC_LABEL_ALSO_CSV_COLUMN entry needed.
+        text = ("##### pass  0 (mask 0x1) #####################\n"
+                "instructions         54412256231580 # 2.38 IPC\n"
+                "opcache              1234567         # 4.500 opcache per 1000 inst\n"
+                "opcache miss         45678            # 3.7% opcache miss rate\n")
+        records = counter_text.parse_counter_text(text)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        self.assertEqual(derived["opcache"]["value"], 3.7)
+        self.assertNotIn("opcache_miss_rate", derived)
+
     def test_topdown_l2_and_contention_take_first_percentage(self):
         records = counter_text.parse_counter_text(COUNTERS_TXT)
         derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
