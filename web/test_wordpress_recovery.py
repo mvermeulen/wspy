@@ -115,19 +115,17 @@ class RecoverMachineMetricsFromWordpressTest(unittest.TestCase):
         # this fix is additive, not a rename, so that consumer keeps working too.
         self.assertEqual(float(by_metric["backend_pct"]["mean"]), 24.4)
 
-    def test_icache_and_opcache_report_the_percentage_not_the_raw_access_count(self):
+    def test_icache_reports_the_percentage_not_the_raw_access_count(self):
         # Same class of bug as backend/frontend above, reported separately (2026-08-07) against the
-        # same real reference-matrix page after the backend/frontend fix landed: "icache" and
-        # "opcache" (AMD --topdown-optlb) still showed a raw access count instead of the real
-        # miss-rate percentage. doc/METRICS.md already documented this exact trap ("don't be misled
-        # by the name match") -- the block's own separate "icache"/"opcache" lines (not "icache
-        # miss"/"opcache miss") carry the raw count as their primary value.
+        # same real reference-matrix page after the backend/frontend fix landed: "icache" (AMD
+        # --topdown-optlb) still showed a raw access count instead of the real miss-rate percentage.
+        # doc/METRICS.md already documented this exact trap ("don't be misled by the name match") --
+        # the block's own separate "icache" line (not "icache miss") carries the raw count as its
+        # primary value.
         text = ("##### pass  0 (mask 0x1) #####################\n"
                 "instructions         54412256231580 # 2.38 IPC\n"
                 "icache               1196643001389   # 260.598 icache per 1000 inst\n"
-                "icache miss          1196643001389   # 8.4% icache miss rate\n"
-                "opcache              1234567         # 4.500 opcache per 1000 inst\n"
-                "opcache miss         45678            # 3.7% opcache miss rate\n")
+                "icache miss          1196643001389   # 8.4% icache miss rate\n")
 
         def fake_list_child_pages(site_url, username, app_password, parent):
             return [{"id": 101, "slug": "run-1", "date": "2026-08-01T00:00:00"}]
@@ -141,7 +139,38 @@ class RecoverMachineMetricsFromWordpressTest(unittest.TestCase):
         by_metric = {r["metric"]: r for r in rows}
         self.assertEqual(float(by_metric["icache"]["mean"]), 8.4)
         self.assertEqual(float(by_metric["icache_miss_pct"]["mean"]), 8.4)
-        self.assertEqual(float(by_metric["opcache"]["mean"]), 3.7)
+
+    def test_opcache_miss_reports_the_percentage_not_the_raw_access_count(self):
+        # Reported live (2026-08-07) after the icache fix above landed: "opcache miss" on a real
+        # reference-matrix page showed 1806064670420.0 (n=1)* -- reused here verbatim. Root cause
+        # was actually a mistake in an earlier version of *this* fix: "opcache"/"opcache miss" is a
+        # genuine same-label collision in wspy's own C code between print_topdown_op() (AMD-specific
+        # bare "opcache") and print_cache()/print_opcache() (cross-vendor "opcache miss") -- unlike
+        # icache, which has no such collision. Targeting the bare "opcache" name unconditionally
+        # (icache's own fix pattern) silently broke this, the more common, cross-vendor case.
+        text = ("##### pass  0 (mask 0x1) #####################\n"
+                "instructions         54412256231580 # 2.38 IPC\n"
+                "opcache              1234567          # 4.500 opcache per 1000 inst\n"
+                "opcache miss         1806064670420    # 3.70% opcache miss\n")
+
+        def fake_list_child_pages(site_url, username, app_password, parent):
+            return [{"id": 101, "slug": "run-1", "date": "2026-08-01T00:00:00"}]
+
+        with patch("server.wp_client.find_page", side_effect=self._walk_pages()), \
+             patch("server.wp_client.list_child_pages", side_effect=fake_list_child_pages), \
+             patch("server.wp_client.fetch_page_raw_content", return_value=preformatted_page(text)):
+            rows = server.recover_machine_metrics_from_wordpress(
+                FAKE_WP_CFG, "phoronix", "coremark", "default", "amd-395")
+
+        by_metric = {r["metric"]: r for r in rows}
+        self.assertEqual(float(by_metric["opcache miss"]["mean"]), 3.7)
+        # The bare "opcache" name is deliberately never *targeted* by the derived-ratio fix (the
+        # collision means there's no reliable value to put there) -- its own line's raw primary value
+        # still comes through untouched, same as "instructions"/"cpu-cycles" do. That's fine: it's an
+        # honest raw count, not a wrong one under a misleading name, and stays correctly classified
+        # as raw for the reference matrix's own grouping (metric_col_kind() in
+        # publish_reference_matrix.py, unaffected by this fix).
+        self.assertEqual(float(by_metric["opcache"]["mean"]), 1234567.0)
 
     def test_merges_counters_and_ibs_blocks_from_same_run(self):
         def fake_list_child_pages(site_url, username, app_password, parent):

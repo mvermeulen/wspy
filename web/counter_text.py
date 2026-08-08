@@ -33,15 +33,29 @@ def parse_counter_text(text):
     """Returns a list of {"metric", "value" (float), "is_percent" (bool), "comment" (str or None)}
     dicts, one per recognized line, in file order. Skips: blank lines; full-line comments
     (`# note: ...`); `topdown.c`'s `##### pass N (mask 0x..) #####...` section separators;
-    sub-section headers with no value of their own (e.g. `ibs_sample_data_src_breakdown (scheme:
-    ...):"); and any line whose trailing content isn't a plain (optionally `%`-suffixed) number (e.g.
-    "counter coverage     57/57 measured"). An indented sub-list under a header (`ibs.txt`'s
-    `data_src_breakdown`) parses like any other line -- its label just happens to have leading
-    whitespace, stripped like any other label."""
+    sub-section headers with no value of their own; any line whose trailing content isn't a plain
+    (optionally `%`-suffixed) number (e.g. "counter coverage     57/57 measured"); and the entire
+    indented sub-list under an `ibs_sample_data_src_breakdown (scheme: ...):` header -- unlike other
+    indented sub-lists (which parse like any other line, their label just happening to have leading
+    whitespace), this one is deliberately excluded: doc/METRICS.md's own design note says this
+    histogram is "never emitted as CSV -- cross-scheme category names aren't stable enough to be a
+    schema'd column," but this parser had no such exclusion, so entries like "DRAM"/
+    "MMIO/Config/PCI/APIC" were leaking through as if they were stable, comparable metric names
+    (found live in a real reference-matrix "Other" dump, 2026-08-07)."""
     records = []
+    in_data_src_breakdown = False
     for raw_line in text.splitlines():
         line = raw_line.strip()
-        if not line or line.startswith("#") or line.startswith("##### "):
+        if not line:
+            continue
+        if line.startswith("ibs_sample_data_src_breakdown"):
+            in_data_src_breakdown = True
+            continue
+        if in_data_src_breakdown:
+            if raw_line[:1].isspace():
+                continue  # still inside the indented breakdown block
+            in_data_src_breakdown = False  # a non-indented line ends it
+        if line.startswith("#") or line.startswith("##### "):
             continue
         m = _LINE_RE.match(line)
         if not m:
@@ -178,12 +192,23 @@ GENERIC_LABEL_NAME_OVERRIDES = {
     # print_icache()'s own "L1-icache miss" isn't in SIMPLE_METRIC_FEATURES at all today, so it's
     # deliberately left un-renamed below (nothing to align it to yet).
     "icache miss": "icache_miss_pct",
-    # print_topdown_op()'s AMD-only "opcache miss" line (--topdown-optlb group) -- unlike icache
-    # above, there's no separate store.c-promoted feature name for this one (doc/METRICS.md tags the
-    # real "opcache" CSV column [raw], never promoted into run_features), so its real name IS the
-    # bare CSV column name -- no GENERIC_LABEL_ALSO_CSV_COLUMN entry needed below the way icache
-    # needs one to additionally preserve its own real "_pct" feature name.
-    "opcache miss": "opcache",
+    # Unlike icache, "opcache"/"opcache miss" is a genuine *naming collision in wspy's own C code*,
+    # not just a text-parsing wrinkle: print_topdown_op() (AMD-only --topdown-optlb) and print_cache()
+    # via print_opcache() (cross-vendor --opcache/cache group, topdown.c:3389) both use the identical
+    # bare name "opcache" for their own, *different* real CSV columns ("opcache" vs "opcache miss"
+    # respectively) -- unlike every other print_cache() caller, which each get their own distinct
+    # prefixed name (print_icache()'s cross-vendor pair is "L1-icache"/"L1-icache miss", genuinely
+    # distinct from print_topdown_op()'s bare "icache"/"icache miss", so no collision there). A block
+    # with both groups collected has two indistinguishable "opcache miss" lines -- parse_counter_text()
+    # has no positional/pass-aware context to tell them apart. Rather than guess which one a given
+    # "opcache miss" line came from (found live 2026-08-07: guessing wrong here previously mapped the
+    # far-more-common cross-vendor case to the wrong name, silently breaking it -- a real bug), this
+    # targets the cross-vendor case's own name ("opcache miss", itself -- an identity mapping that
+    # overwrites its own line's wrong raw primary value with its own comment's correct percentage,
+    # same trick TOPDOWN_CSV_COLUMN_NAMES/GENERIC_LABEL_ALSO_CSV_COLUMN use elsewhere) and deliberately
+    # does *not* attempt the AMD-specific bare "opcache" name at all via this recovery path -- an
+    # unreliable value under a plausible-looking name is worse than no value.
+    "opcache miss": "opcache miss",
     # print_l2cache(): ARM/Intel label this line "l2 miss"; AMD's own branch (a composite ratio
     # combining demand-miss and prefetch-miss sources, see topdown.c's own comment there) labels the
     # same ratio "l2 miss from l1" instead -- both comments carry the identical real l2miss value.
@@ -215,11 +240,19 @@ GENERIC_LABEL_NAME_OVERRIDES = {
 # that wrong raw value under the bare "icache" name -- the same class of bug TOPDOWN_CSV_COLUMN_NAMES
 # above fixes for backend/frontend/retire/speculate, confirmed live against the same real report
 # (2026-08-07) doc/METRICS.md's own "don't be misled by the name match" warning already called out.
-# opcache doesn't need an entry here -- GENERIC_LABEL_NAME_OVERRIDES's "opcache miss" -> "opcache"
-# entry above already targets the bare CSV name directly, since (unlike icache_miss_pct) nothing
-# else needs a second, differently-named copy of that value.
+# opcache doesn't get an entry here -- see GENERIC_LABEL_NAME_OVERRIDES's "opcache miss" comment
+# above for why the AMD-specific bare "opcache" name is deliberately never targeted via this path at
+# all (a genuine same-label collision with the cross-vendor "opcache miss" CSV column, not just an
+# icache-style two-different-rows situation this table's own mechanism could safely resolve).
+#
+# "branch misses" (raw primary label, plural, print_branch()) is the same icache-style situation:
+# the real CSV column is "branch miss" (singular, no collision with any other function -- confirmed
+# only print_branch() ever emits that exact label), but nothing previously targeted it, so the
+# bare-name gap matched retire/speculate's own gap before TOPDOWN_CSV_COLUMN_NAMES: not a wrong
+# value under the bare name, just a *missing* one (found auditing a real "Other" dump, 2026-08-07).
 GENERIC_LABEL_ALSO_CSV_COLUMN = {
     "icache miss": "icache",
+    "branch misses": "branch miss",
 }
 
 # Same idea as GENERIC_LABEL_NAME_OVERRIDES above, but keyed by the *slugified description* instead
@@ -246,12 +279,26 @@ IBS_FEATURE_NAME_OVERRIDES = {
     "ibs_sample_remote_node_rate": "ibs_remote_node_pct",
 }
 
+# doc/METRICS.md documents this exact label quirk: rusage's real CSV column is "oublock"
+# (ru_oublock), but topdown.c's own human-mode PRINT_NORMAL text labels that same line "onblock"
+# instead. Found auditing a real reference-matrix "Other" dump (2026-08-07): the WordPress-recovery
+# path was keeping this value only under the mislabeled "onblock" name, matching nothing a local
+# wspy-store run would ever show under that name -- same underlying alignment problem
+# IBS_FEATURE_NAME_OVERRIDES fixes for a different primary-value case, kept as its own table since
+# it's not IBS-specific.
+PRIMARY_LABEL_OVERRIDES = {
+    "onblock": "oublock",
+}
+
 
 def canonical_metric_name(raw_metric_name):
-    """Maps a primary (not comment-derived) metric name -- currently just ibs.txt's sampling rates,
-    IBS_FEATURE_NAME_OVERRIDES above -- to its real store.c SIMPLE_METRIC_FEATURES name, the same
-    alignment GENERIC_LABEL_NAME_OVERRIDES/GENERIC_SLUG_NAME_OVERRIDES already give comment-derived
-    ratios. Anything not in the table is returned unchanged."""
+    """Maps a primary (not comment-derived) metric name -- ibs.txt's sampling rates
+    (IBS_FEATURE_NAME_OVERRIDES) and rusage's "onblock"/"oublock" label quirk
+    (PRIMARY_LABEL_OVERRIDES) -- to its real store.c/topdown.c CSV name, the same alignment
+    GENERIC_LABEL_NAME_OVERRIDES/GENERIC_SLUG_NAME_OVERRIDES already give comment-derived ratios.
+    Anything not in either table is returned unchanged."""
+    if raw_metric_name in PRIMARY_LABEL_OVERRIDES:
+        return PRIMARY_LABEL_OVERRIDES[raw_metric_name]
     return IBS_FEATURE_NAME_OVERRIDES.get(raw_metric_name, raw_metric_name)
 
 
