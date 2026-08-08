@@ -596,6 +596,11 @@ def main():
     ap.add_argument("--skip-wordpress-discovery", action="store_true",
                      help="skip the WordPress crawl (item 22) -- local wspy-store machines only, "
                           "much faster")
+    ap.add_argument("--skip-local-store", action="store_true",
+                     help="ignore local wspy-store data entirely -- every test point is sourced from "
+                          "WordPress recovery instead (normally local always wins per test point when "
+                          "both exist). For testing the WordPress-recovery path itself in isolation, "
+                          "without local data silently masking it.")
     ap.add_argument("--report-root", default=None, help="override the report-root path")
     ap.add_argument("--report-root-remote", default=report_root.DEFAULT_REPORT_ROOT_REMOTE,
                      help="report-root git remote, for clone-if-missing")
@@ -649,7 +654,7 @@ def main():
 
     for suite in suites:
         print("suite %s:" % suite, file=sys.stderr)
-        local_cells = local_cells_for_suite(report_root_path, suite)
+        local_cells = [] if args.skip_local_store else local_cells_for_suite(report_root_path, suite)
         wp_rows = wordpress_rows_for_suite(wp_cfg, suite, skip_discovery)
 
         machines = {c["machine"] for c in local_cells} | {r["machine"] for r in wp_rows}
