@@ -120,12 +120,29 @@ def parse_comment_ratio(comment):
 #
 # retiring/frontend/backend/speculation print TWO percentages, "27.6% (47.0%) ..." -- the first is
 # value/slots*100 (share of all pipeline slots, contention included), the SECOND, parenthetical one
-# is value/slots_no_contention*100, which is what the real retire_pct/frontend_pct/backend_pct/
-# speculate_pct CSV columns actually store (doc/METRICS.md's own documented wrinkle). Note the CSV
-# column is "speculate" but the printed label is "speculation".
+# is value/slots_no_contention*100 -- confirmed directly against topdown.c's PRINT_CSV branch
+# (print_topdown(), retiring_pct/frontend_pct/backend_pct/speculation_pct local variables), which
+# prints that exact second percentage as the CSV columns retire/frontend/backend/speculate
+# (%4.1f, no "_pct" suffix -- that suffix belongs to a *different* name: store.c's own
+# SIMPLE_METRIC_FEATURES table promotes those same CSV columns into the run_features table under
+# retire_pct/frontend_pct/backend_pct/speculate_pct, which is the name archetype.c's
+# run_snapshot_apply_feature() actually recognizes for `wspy-archetype --run-guest` scoring
+# (wspy-testpoint's collect_wordpress_archetype_scorecards()). Two real, different, legitimately-
+# needed names for the same value -- TOPDOWN_SECOND_PERCENT_LABELS below is the archetype-facing
+# one, TOPDOWN_CSV_COLUMN_NAMES is the reference-matrix-facing one (extract_derived_ratios() emits a
+# derived record under both). Getting this backwards was a real bug (found live, 2026-08-07):
+# recover_machine_metrics_from_wordpress() only ever emitted the "_pct" name, so a WordPress-
+# recovered machine's reference-matrix cell for "backend"/"frontend" silently fell back to the raw
+# primary value from the line's own operand (a giant accumulated slot count, not a percentage) --
+# local wspy-store runs never had that problem since their "backend"/"frontend" CSV columns were
+# never anything but the percentage in the first place. Note the CSV column is "speculate" but the
+# printed label is "speculation".
 TOPDOWN_SECOND_PERCENT_LABELS = {
     "retiring": "retire_pct", "frontend": "frontend_pct", "backend": "backend_pct",
     "speculation": "speculate_pct",
+}
+TOPDOWN_CSV_COLUMN_NAMES = {
+    "retiring": "retire", "frontend": "frontend", "backend": "backend", "speculation": "speculate",
 }
 # Their L2 children plus smt-contention print one bare percentage with no description text to
 # slugify a name from at all -- smt-contention's own comment ("29.2% ( 0.0%)") does have a second,
@@ -225,13 +242,16 @@ def extract_derived_ratios(records):
     Every returned record has comment=None (it IS the derived value, nothing further to attach).
 
     Three cases per record, checked in this order: (1) its metric label is one of
-    TOPDOWN_SECOND_PERCENT_LABELS -- take the second (parenthetical) percentage found in the comment;
-    (2) its label is one of TOPDOWN_FIRST_PERCENT_LABELS -- take the first; (3) otherwise, try
-    parse_comment_ratio()'s generic "<number>[%] <description>" parse, then apply
-    GENERIC_SLUG_NAME_OVERRIDES (by the parsed slug) and GENERIC_LABEL_NAME_OVERRIDES (by the line's
-    own label, which wins if both apply) -- item 24's audited name alignment for every generic-tier
-    case confirmed against store.c's real feature vocabulary. Never raises on an unexpected comment
-    shape -- skips it, same best-effort contract as parse_counter_text() itself."""
+    TOPDOWN_SECOND_PERCENT_LABELS -- take the second (parenthetical) percentage found in the
+    comment, and emit it under *both* that label's archetype-facing "_pct" name and its
+    TOPDOWN_CSV_COLUMN_NAMES reference-matrix-facing name (see that table's own comment for why
+    both are real, independently-needed names for the same value); (2) its label is one of
+    TOPDOWN_FIRST_PERCENT_LABELS -- take the first; (3) otherwise, try parse_comment_ratio()'s
+    generic "<number>[%] <description>" parse, then apply GENERIC_SLUG_NAME_OVERRIDES (by the parsed
+    slug) and GENERIC_LABEL_NAME_OVERRIDES (by the line's own label, which wins if both apply) --
+    item 24's audited name alignment for every generic-tier case confirmed against store.c's real
+    feature vocabulary. Never raises on an unexpected comment shape -- skips it, same best-effort
+    contract as parse_counter_text() itself."""
     derived = []
     for r in records:
         comment = r.get("comment")
@@ -241,8 +261,11 @@ def extract_derived_ratios(records):
         if metric in TOPDOWN_SECOND_PERCENT_LABELS:
             matches = _PERCENT_RE.findall(comment)
             if len(matches) >= 2:
+                value = float(matches[1])
                 derived.append({"metric": TOPDOWN_SECOND_PERCENT_LABELS[metric],
-                                 "value": float(matches[1]), "is_percent": True, "comment": None})
+                                 "value": value, "is_percent": True, "comment": None})
+                derived.append({"metric": TOPDOWN_CSV_COLUMN_NAMES[metric],
+                                 "value": value, "is_percent": True, "comment": None})
             continue
         if metric in TOPDOWN_FIRST_PERCENT_LABELS:
             matches = _PERCENT_RE.findall(comment)

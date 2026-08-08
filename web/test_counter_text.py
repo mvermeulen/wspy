@@ -173,6 +173,25 @@ class ExtractDerivedRatiosTest(unittest.TestCase):
         self.assertEqual(derived["backend_pct"]["value"], 24.4)   # no qualifier at all
         self.assertEqual(derived["speculate_pct"]["value"], 7.0)  # despite trailing " low"
 
+    def test_topdown_l1_also_emitted_under_the_real_csv_column_name(self):
+        # Found live 2026-08-07: recover_machine_metrics_from_wordpress() only ever got the
+        # "_pct"-suffixed name (needed for wspy-archetype --run-guest's run_snapshot_apply_feature(),
+        # which specifically looks for retire_pct/frontend_pct/backend_pct/speculate_pct) -- the
+        # reference matrix's own local-store convention uses the bare CSV column name instead
+        # (topdown.c's print_topdown() PRINT_CSV branch: retire/frontend/backend/speculate, no "_pct"
+        # suffix), so a WordPress-recovered "backend"/"frontend" cell fell back to that label's raw
+        # primary value (a giant slot count) instead of ever getting the percentage under that name.
+        # Both names must carry the identical value now.
+        records = counter_text.parse_counter_text(COUNTERS_TXT)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        self.assertEqual(derived["retire"]["value"], derived["retire_pct"]["value"])
+        self.assertEqual(derived["frontend"]["value"], derived["frontend_pct"]["value"])
+        self.assertEqual(derived["backend"]["value"], derived["backend_pct"]["value"])
+        self.assertEqual(derived["speculate"]["value"], derived["speculate_pct"]["value"])
+        for name in ("retire", "frontend", "backend", "speculate"):
+            self.assertTrue(derived[name]["is_percent"])
+            self.assertIsNone(derived[name]["comment"])
+
     def test_topdown_l2_and_contention_take_first_percentage(self):
         records = counter_text.parse_counter_text(COUNTERS_TXT)
         derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}

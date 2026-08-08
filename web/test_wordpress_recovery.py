@@ -36,6 +36,14 @@ COUNTERS_TXT = "elapsed              10.0\n##### pass  0 (mask 0x1) #####\ninstr
 COUNTERS_TXT_2 = "elapsed              20.0\n##### pass  0 (mask 0x1) #####\ninstructions         200\n"
 IBS_TXT = "ibs_sample_fetch_count     5\n"
 
+# A real topdown.c print_topdown() line shape, reused from web/test_counter_text.py's own fixture --
+# 31509439317734 is the raw accumulated backend-slot count (the line's primary value), 24.4 is the
+# real backend_pct/"backend" CSV-column percentage (the second, parenthetical comment number). Needs
+# a "##### pass N" line of its own, or classify_counter_text() won't recognize this block as
+# "counters" shape at all and recover_machine_metrics_from_wordpress() would skip it outright.
+TOPDOWN_COUNTERS_TXT = ("##### pass  0 (mask 0x1) #####\n"
+                         "backend              31509439317734 # 17.2% (24.4%)\n")
+
 
 class RecoverMachineMetricsFromWordpressTest(unittest.TestCase):
     def _walk_pages(self, machine_page_id=4):
@@ -82,6 +90,30 @@ class RecoverMachineMetricsFromWordpressTest(unittest.TestCase):
         self.assertEqual(by_metric["elapsed"]["max"], "20.0")
         self.assertEqual(float(by_metric["elapsed"]["mean"]), 15.0)
         self.assertEqual(by_metric["instructions"]["n"], "2")
+
+    def test_backend_reports_the_percentage_not_the_raw_slot_count(self):
+        # Found live 2026-08-07 against a real reference-matrix page: the "backend" row showed
+        # 95578418927389 (n=1)* -- a raw accumulated slot count, not the percentage local wspy-store
+        # runs always show under that same column. Root cause: recover_machine_metrics_from_wordpress()
+        # kept the line's raw primary value under the bare label "backend" (parse_counter_text()'s own
+        # output), and extract_derived_ratios() only ever emitted the correctly-scaled percentage under
+        # a *different* name ("backend_pct", needed separately for wspy-archetype --run-guest), so
+        # nothing ever overwrote the raw value under "backend" itself.
+        def fake_list_child_pages(site_url, username, app_password, parent):
+            return [{"id": 101, "slug": "run-1", "date": "2026-08-01T00:00:00"}]
+
+        with patch("server.wp_client.find_page", side_effect=self._walk_pages()), \
+             patch("server.wp_client.list_child_pages", side_effect=fake_list_child_pages), \
+             patch("server.wp_client.fetch_page_raw_content",
+                   return_value=preformatted_page(TOPDOWN_COUNTERS_TXT)):
+            rows = server.recover_machine_metrics_from_wordpress(
+                FAKE_WP_CFG, "phoronix", "coremark", "default", "amd-395")
+
+        by_metric = {r["metric"]: r for r in rows}
+        self.assertEqual(float(by_metric["backend"]["mean"]), 24.4)
+        # The "_pct" name wspy-archetype --run-guest needs must still carry the same correct value --
+        # this fix is additive, not a rename, so that consumer keeps working too.
+        self.assertEqual(float(by_metric["backend_pct"]["mean"]), 24.4)
 
     def test_merges_counters_and_ibs_blocks_from_same_run(self):
         def fake_list_child_pages(site_url, username, app_password, parent):
