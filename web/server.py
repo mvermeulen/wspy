@@ -2158,14 +2158,16 @@ def recover_machine_metrics_from_wordpress(wp_cfg, suite, test, test_point, mach
             # Item 24: the comment on each line carries the actually-comparable ratio (IPC, topdown
             # percentages, miss/branch rates) -- distinct metric names from the raw values above in
             # almost every case (e.g. "ipc" vs. "instructions"), so both coexist rather than one
-            # overwriting the other. One deliberate exception: TOPDOWN_CSV_COLUMN_NAMES' "frontend"/
-            # "backend" entries are the same bare name topdown.c's own CSV column already uses for
-            # this ratio (aggregate_reference_matrix_cell()'s local convention), so this second
-            # update() intentionally *does* overwrite those two raw primary values -- they were never
-            # independently meaningful under that name to begin with (a giant accumulated slot count,
-            # not the percentage every other "backend"/"frontend" in this codebase means; a real bug,
-            # found live 2026-08-07, when a WordPress-recovered machine's reference-matrix cell showed
-            # that raw count instead of the percentage local runs always showed there).
+            # overwriting the other. Deliberate exceptions: TOPDOWN_CSV_COLUMN_NAMES' "frontend"/
+            # "backend" entries, and GENERIC_LABEL_ALSO_CSV_COLUMN's "icache" entry (via
+            # GENERIC_LABEL_NAME_OVERRIDES, "opcache" too), are the same bare names topdown.c's own
+            # CSV columns already use for these ratios (aggregate_reference_matrix_cell()'s local
+            # convention), so this second update() intentionally *does* overwrite those raw primary
+            # values -- they were never independently meaningful under those names to begin with (a
+            # giant accumulated slot/access count, not the percentage every other "backend"/
+            # "frontend"/"icache"/"opcache" in this codebase means; a real bug, found live
+            # 2026-08-07, when a WordPress-recovered machine's reference-matrix cells showed that raw
+            # count instead of the percentage local runs always showed there).
             per_run_metrics.update(_first_value_per_metric(counter_text.extract_derived_ratios(block_records)))
         for metric, value in per_run_metrics.items():
             # Item 24's audit: a handful of primary (not comment-derived) values -- ibs.txt's own
