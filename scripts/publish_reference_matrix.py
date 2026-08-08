@@ -263,16 +263,36 @@ def metric_col_group(metric):
     return GROUP_ALIASES.get(group, group)
 
 
+# WordPress's own server-side sanitize_title() converts the "." in a cpu2026 bench identity
+# ("706.stockfish_r", scripts/publish_cpu2026_benchmarks.py's own submitted slug, matching
+# CPU2026_BENCHMARKS' real dot-form keys) into "-" when actually creating that benchmark's page
+# ("706-stockfish_r") -- confirmed live (2026-08-08) from a real publish log's own WordPress-crawl
+# output ("scanning cpu2026/881-neutron_s..."). joblib.discover_wordpress_matrix_rows() reads back
+# that literal WP slug as `test`, needed as-is for its own later find_page() lookups by that exact
+# slug (recover_machine_metrics_from_wordpress()'s WP-hierarchy walk) -- normalizing it there would
+# fix this lookup but break that one, since the real WP page genuinely only exists under the dash
+# form. So the fix lives narrowly here instead: only the benchmark's numeric-prefix separator is
+# ever affected (no cpu2026 benchmark name itself contains a hyphen), so reversing just that one
+# substitution as a fallback is precise, not a guess.
+_CPU2026_WP_SLUG_DASH_RE = re.compile(r"^(\d+)-")
+
+
 def row_group_for_test(test):
     """cpu2026's own benchmark-suite category (intrate/intspeed/fprate/fpspeed --
     joblib.CPU2026_BENCHMARKS, keyed by the exact bench name resolve_test_identity() already uses as
-    this row's `test` value) for the data-row-group attribute -- what the plugin's Rows panel groups
-    checkboxes by, the row-axis counterpart to metric_col_group() on the column axis. Returns None
-    for a Phoronix test (no such categorization exists) or an unrecognized cpu2026 bench (a future
-    benchmark this table hasn't caught up with yet) -- the plugin already falls back to a flat,
-    ungrouped row-checkbox list whenever fewer than two rows carry this attribute at all, so leaving
-    it off degrades gracefully rather than needing a placeholder value."""
-    return joblib.CPU2026_BENCHMARKS.get(test, {}).get("suite")
+    this row's `test` value for a local cell) for the data-row-group attribute -- what the plugin's
+    Rows panel groups checkboxes by, the row-axis counterpart to metric_col_group() on the column
+    axis. Falls back to _CPU2026_WP_SLUG_DASH_RE's dash-to-dot substitution when the direct lookup
+    misses -- see that regex's own comment for why a WordPress-recovered row's `test` needs it.
+    Returns None for a Phoronix test (no such categorization exists) or a genuinely unrecognized
+    cpu2026 bench (a future benchmark this table hasn't caught up with yet) -- the plugin already
+    falls back to a flat, ungrouped row-checkbox list whenever fewer than two rows carry this
+    attribute at all, so leaving it off degrades gracefully rather than needing a placeholder
+    value."""
+    info = joblib.CPU2026_BENCHMARKS.get(test)
+    if info is None:
+        info = joblib.CPU2026_BENCHMARKS.get(_CPU2026_WP_SLUG_DASH_RE.sub(r"\1.", test, count=1))
+    return (info or {}).get("suite")
 
 
 # Priority order for the plugin's Columns panel -- fundamental/commonly-read groups first (ipc and

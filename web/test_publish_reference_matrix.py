@@ -135,6 +135,23 @@ class RowGroupForTestTest(unittest.TestCase):
         # data-row-group when this returns something, so the plugin's flat-list fallback kicks in.
         self.assertIsNone(prm.row_group_for_test("some-phoronix-test"))
         self.assertIsNone(prm.row_group_for_test("999.not_a_real_benchmark_r"))
+        # A Phoronix test name that happens to start with digits-then-dash must not spuriously match
+        # the dash-form fallback below (e.g. "999-not_a_real_benchmark_r" reversed to "999.not_a_..."
+        # still isn't a real CPU2026_BENCHMARKS key, so this stays None too).
+        self.assertIsNone(prm.row_group_for_test("999-not_a_real_benchmark_r"))
+
+    def test_wordpress_recovered_dash_slug_still_matches(self):
+        # Found live 2026-08-08: WordPress's own sanitize_title() converts the "." in a cpu2026 bench
+        # identity into "-" when creating that benchmark's page (confirmed against a real publish
+        # log's own crawl output, e.g. "scanning cpu2026/881-neutron_s..."), so a WordPress-recovered
+        # row's `test` (joblib.discover_wordpress_matrix_rows()'s own WP-slug-derived value, needed
+        # as-is elsewhere for its own page lookups) never matched CPU2026_BENCHMARKS' dot-form keys
+        # directly -- every --skip-local-store cpu2026 row silently got no data-row-group at all.
+        for dash_slug, expected in (
+            ("706-stockfish_r", "intrate"), ("801-xz_s", "intspeed"),
+            ("881-neutron_s", "fpspeed"), ("803-sph_exa_s", "fpspeed"),
+        ):
+            self.assertEqual(prm.row_group_for_test(dash_slug), expected, dash_slug)
 
 
 class LoadMetricDescriptionsSyntheticTest(unittest.TestCase):
@@ -284,6 +301,17 @@ class BuildMachinePageTest(unittest.TestCase):
         _, wp_html = prm.build_machine_page("cpu2026", "amd-370-64gb", entries)
         self.assertIn('<tr data-row-group="intrate">', wp_html)
         self.assertIn('<tr data-row-group="intspeed">', wp_html)
+
+    def test_wordpress_recovered_cpu2026_rows_also_carry_data_row_group(self):
+        # entries[0] here is a WordPress-recovered row -- its `test` is the WP dash-slug form
+        # (build_machine_rows() passes wp_tps's own test identity through unchanged), not the local
+        # dot-form -- see row_group_for_test()'s own comment for why the lookup needs a fallback.
+        entries = [
+            ("881-neutron_s", "gcc_O3-base",
+             [{"metric": "ipc", "mean": 0.9, "n": 1, "verdict": None}], "wordpress"),
+        ]
+        _, wp_html = prm.build_machine_page("cpu2026", "amd-395-96gb", entries)
+        self.assertIn('<tr data-row-group="fpspeed">', wp_html)
 
     def test_phoronix_rows_carry_no_data_row_group(self):
         # No such categorization exists for Phoronix -- row_group_for_test() returns None, and the
