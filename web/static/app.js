@@ -1148,6 +1148,7 @@
         .filter(function (s) { return s; }) : [];
       var dryRun = byId("reference-publish-dry-run").checked;
       var skipDiscovery = byId("reference-publish-skip-discovery").checked;
+      var skipLocalStore = byId("reference-publish-skip-local-store").checked;
       var doPublish = byId("reference-publish-publish").checked;
       var force = byId("reference-publish-force").checked;
 
@@ -1161,7 +1162,8 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           suites: suites, machines: machines, dry_run: dryRun,
-          skip_wordpress_discovery: skipDiscovery, publish: doPublish, force: force,
+          skip_wordpress_discovery: skipDiscovery, skip_local_store: skipLocalStore,
+          publish: doPublish, force: force,
         }),
       })
         .then(function (resp) {

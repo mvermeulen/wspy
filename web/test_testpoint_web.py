@@ -128,6 +128,14 @@ class BuildReferencePublishArgvTest(unittest.TestCase):
         argv = server.build_reference_publish_argv(self.cfg, [], [], skip_wordpress_discovery=True)
         self.assertIn("--skip-wordpress-discovery", argv)
 
+    def test_skip_local_store_off_by_default(self):
+        argv = server.build_reference_publish_argv(self.cfg, [], [])
+        self.assertNotIn("--skip-local-store", argv)
+
+    def test_skip_local_store_when_requested(self):
+        argv = server.build_reference_publish_argv(self.cfg, [], [], skip_local_store=True)
+        self.assertIn("--skip-local-store", argv)
+
     def test_publish_off_by_default(self):
         argv = server.build_reference_publish_argv(self.cfg, [], [])
         self.assertNotIn("--publish", argv)

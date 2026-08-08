@@ -335,7 +335,7 @@ def build_testpoint_publish_argv(cfg, suite, benchmark, machine):
 
 
 def build_reference_publish_argv(cfg, suites, machines, skip_wordpress_discovery=False,
-                                  do_publish=False, force=False, dry_run=True):
+                                  skip_local_store=False, do_publish=False, force=False, dry_run=True):
     """argv for `scripts/publish_reference_matrix.py` (the Reference tab's "Publish reference
     matrix" button, closing INVESTIGATION.md 4.3's site-wide publishing pipeline item out to the web
     UI) -- pure, HTTP-free, so it's unit-testable without mocking threading/subprocess. Mirrors
@@ -347,7 +347,11 @@ def build_reference_publish_argv(cfg, suites, machines, skip_wordpress_discovery
     easier way to fat-finger a real publish than a deliberately-typed terminal command (no `--dry-run`
     to remember to type first), so the safe default belongs at this layer. suites/machines are both
     plain lists, empty meaning "no filter" (every suite/machine the script itself would default to),
-    matching the script's own `--suite`/`--machine` repeatable-flag semantics exactly."""
+    matching the script's own `--suite`/`--machine` repeatable-flag semantics exactly. skip_local_store
+    is the WordPress-recovery-path counterpart to skip_wordpress_discovery -- added for testing that
+    path in isolation (2026-08-08): local data normally wins per test point when both exist, so
+    verifying a WordPress-recovery fix otherwise means finding/using a machine with no local data at
+    all for the test point in question."""
     argv = [sys.executable, os.path.join(REPO_ROOT, "scripts", "publish_reference_matrix.py")]
     for s in suites:
         argv += ["--suite", s]
@@ -355,6 +359,8 @@ def build_reference_publish_argv(cfg, suites, machines, skip_wordpress_discovery
         argv += ["--machine", m]
     if skip_wordpress_discovery:
         argv.append("--skip-wordpress-discovery")
+    if skip_local_store:
+        argv.append("--skip-local-store")
     if do_publish:
         argv.append("--publish")
     if force:
@@ -3412,6 +3418,8 @@ def render_reference_publish_panel():
     (dry-run) -- touches nothing, including WordPress</label>
   <label class="chip"><input type="checkbox" id="reference-publish-skip-discovery"> Skip WordPress
     discovery (local wspy-store machines only, much faster)</label>
+  <label class="chip"><input type="checkbox" id="reference-publish-skip-local-store"> Skip local
+    wspy-store (WordPress-recovered data only -- for testing that path in isolation)</label>
   <label class="chip"><input type="checkbox" id="reference-publish-publish"> Publish immediately
     (default: leave as drafts)</label>
   <label class="chip"><input type="checkbox" id="reference-publish-force"> Overwrite even if a live
@@ -6298,6 +6306,7 @@ class Handler(BaseHTTPRequestHandler):
         argv = build_reference_publish_argv(
             cfg, suites, machines,
             skip_wordpress_discovery=bool(body.get("skip_wordpress_discovery")),
+            skip_local_store=bool(body.get("skip_local_store")),
             do_publish=bool(body.get("publish")),
             force=bool(body.get("force")),
             dry_run=bool(body.get("dry_run", True)),
