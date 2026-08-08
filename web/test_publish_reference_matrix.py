@@ -121,6 +121,22 @@ class MetricColGroupTest(unittest.TestCase):
             self.assertEqual(prm.metric_col_group(name), "other", name)
 
 
+class RowGroupForTestTest(unittest.TestCase):
+    def test_known_cpu2026_benchmarks_grouped_by_suite_category(self):
+        for bench, expected in (
+            ("706.stockfish_r", "intrate"), ("801.xz_s", "intspeed"),
+            ("709.cactus_r", "fprate"), ("800.pot3d_s", "fpspeed"),
+        ):
+            self.assertEqual(prm.row_group_for_test(bench), expected, bench)
+
+    def test_unrecognized_test_returns_none(self):
+        # Covers both a Phoronix test (no such categorization exists at all) and a future cpu2026
+        # benchmark this table hasn't caught up with yet -- build_machine_page() only emits
+        # data-row-group when this returns something, so the plugin's flat-list fallback kicks in.
+        self.assertIsNone(prm.row_group_for_test("some-phoronix-test"))
+        self.assertIsNone(prm.row_group_for_test("999.not_a_real_benchmark_r"))
+
+
 class LoadMetricDescriptionsSyntheticTest(unittest.TestCase):
     """Exact-match assertions against a small synthetic doc/METRICS.md-shaped file, so these don't
     depend on the real file's prose staying byte-identical."""
@@ -257,6 +273,29 @@ class BuildMachinePageTest(unittest.TestCase):
 
     def test_no_data_returns_none(self):
         self.assertEqual(prm.build_machine_page("cpu2026", "amd-370-64gb", []), (None, None))
+
+    def test_cpu2026_rows_carry_data_row_group(self):
+        entries = [
+            ("706.stockfish_r", "gcc_O3-base",
+             [{"metric": "ipc", "mean": 1.5, "n": 1, "verdict": "PASS"}], "local"),
+            ("801.xz_s", "gcc_O3-base",
+             [{"metric": "ipc", "mean": 1.2, "n": 1, "verdict": "PASS"}], "local"),
+        ]
+        _, wp_html = prm.build_machine_page("cpu2026", "amd-370-64gb", entries)
+        self.assertIn('<tr data-row-group="intrate">', wp_html)
+        self.assertIn('<tr data-row-group="intspeed">', wp_html)
+
+    def test_phoronix_rows_carry_no_data_row_group(self):
+        # No such categorization exists for Phoronix -- row_group_for_test() returns None, and the
+        # <tr> must come out exactly like it did before data-row-group existed at all (the plugin's
+        # own fallback to a flat row-checkbox list depends on this attribute being absent, not
+        # present-but-empty).
+        entries = [
+            ("coremark", "tp1", [{"metric": "ipc", "mean": 1.5, "n": 1, "verdict": "PASS"}], "local"),
+        ]
+        _, wp_html = prm.build_machine_page("phoronix", "amd-370-64gb", entries)
+        self.assertNotIn("data-row-group", wp_html)
+        self.assertIn("<tr><td>coremark / tp1</td>", wp_html)
 
 
 if __name__ == "__main__":

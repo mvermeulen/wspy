@@ -30,7 +30,13 @@
  *
  * Rows: one checkbox per row (test point), independent of and combined with the free-text search --
  * a row shows only if it matches the search text *and* its own checkbox is checked. "All"/"None"
- * buttons bulk-toggle the row checkboxes without touching the search box.
+ * buttons bulk-toggle the row checkboxes without touching the search box. When a row carries
+ * data-row-group (cpu2026's intrate/intspeed/fprate/fpspeed benchmark-suite category,
+ * publish_reference_matrix.py's row_group_for_test()) and at least two distinct categories are
+ * present, the Rows panel organizes into the same tri-state group-checkbox hierarchy the Columns
+ * panel uses -- pick a whole SPEC sub-suite (52 cpu2026 benchmarks across 4 categories) at once
+ * instead of 52 individual clicks. Falls back to the original flat list when nothing has
+ * data-row-group at all (every Phoronix page today).
  *
  * Tooltips: info-span text comes from doc/METRICS.md's own per-metric one-line descriptions (parsed
  * by publish_reference_matrix.py's load_metric_descriptions()) -- see applyTooltips() for why it
@@ -66,7 +72,7 @@ table.wspy-refmatrix { margin-top: 0.5em; }
 .wspy-refmatrix-toolbar details label { display: block; margin: 0.2em 0 0.2em 0.2em; }
 .wspy-refmatrix-toolbar details label.wspy-refmatrix-group-toggle { margin-top: 0.6em; }
 .wspy-refmatrix-toolbar details label.wspy-refmatrix-group-toggle:first-of-type { margin-top: 0.2em; }
-.wspy-refmatrix-toolbar details label.wspy-refmatrix-col-toggle { margin-left: 1.4em; }
+.wspy-refmatrix-toolbar details label.wspy-refmatrix-child-toggle { margin-left: 1.4em; }
 .wspy-refmatrix-row-buttons { margin: 0.3em 0 0.3em 0.2em; }
 .wspy-refmatrix-row-buttons button {
     font-size: 0.85em; margin-right: 0.4em; padding: 0.1em 0.5em; cursor: pointer;
@@ -136,12 +142,74 @@ table.wspy-refmatrix tr.wspy-row-unchecked { display: none; }
         });
     }
 
+    // Renders one tri-state group checkbox (all-checked/all-unchecked/indeterminate) plus one
+    // labeled child checkbox per item into `container` -- shared by buildColumnPanel (items = the
+    // columns in one data-col-group) and buildRowPanel (items = the rows in one data-row-group)
+    // below, since both need the identical checking/unchecking-the-group-toggles-every-child,
+    // checking/unchecking-a-child-updates-the-group tri-state mechanics. `itemLabel(item)` returns
+    // one child's own display text, `applyFn(item, visible)` does the actual show/hide for one item,
+    // `startChecked` is this group's initial state (every child starts there too). Returns the
+    // child checkboxes, so a caller building an "All"/"None" button pair across several groups can
+    // collect them all into one flat array.
+    function buildTriStateGroup(container, groupLabelText, items, itemLabel, applyFn, startChecked) {
+        var groupLabel = document.createElement('label');
+        groupLabel.className = 'wspy-refmatrix-group-toggle';
+        var groupCb = document.createElement('input');
+        groupCb.type = 'checkbox';
+        groupCb.checked = startChecked;
+        groupLabel.appendChild(groupCb);
+        var groupText = document.createElement('strong');
+        groupText.textContent = groupLabelText + ' (' + items.length + ')';
+        groupLabel.appendChild(groupText);
+        container.appendChild(groupLabel);
+
+        var childCheckboxes = items.map(function (item) {
+            applyFn(item, startChecked);
+
+            var label = document.createElement('label');
+            label.className = 'wspy-refmatrix-child-toggle';
+            var cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = startChecked;
+            cb.addEventListener('change', function () {
+                applyFn(item, cb.checked);
+                var checkedCount = childCheckboxes.filter(function (x) { return x.checked; }).length;
+                groupCb.checked = checkedCount > 0;
+                groupCb.indeterminate = checkedCount > 0 && checkedCount < childCheckboxes.length;
+            });
+            label.appendChild(cb);
+            label.appendChild(document.createTextNode(' ' + itemLabel(item)));
+            container.appendChild(label);
+            return cb;
+        });
+
+        groupCb.addEventListener('change', function () {
+            // Capture the target once -- each child's own "change" handler above recomputes and
+            // overwrites groupCb.checked/indeterminate from the partial checked count as it fires,
+            // so re-reading groupCb.checked live on every loop iteration (instead of this captured
+            // snapshot) meant a sibling's handler could flip it back mid-loop: unchecking a
+            // fully-checked group only ever cleared the first child before this fix, since
+            // checkedCount stayed > 0 for every iteration except the last.
+            var target = groupCb.checked;
+            childCheckboxes.forEach(function (cb) {
+                cb.checked = target;
+                cb.dispatchEvent(new Event('change'));
+            });
+            // Children's handlers already leave the right value in the all-same-target case, but
+            // pin it explicitly rather than trust the last child's handler to have been the final
+            // write.
+            groupCb.checked = target;
+            groupCb.indeterminate = false;
+        });
+
+        return childCheckboxes;
+    }
+
     // One checkbox per individual metric column (addresses "can't filter columns one by one"),
-    // organized under a per-group header checkbox that's a standard tri-state
-    // all-checked/all-unchecked/indeterminate toggle for its own columns -- checking/unchecking the
-    // group checkbox sets every column in it together; checking/unchecking an individual column
-    // updates its own group checkbox's checked/indeterminate state to match, but never touches any
-    // other group.
+    // organized under a per-group header checkbox via buildTriStateGroup() above -- checking/
+    // unchecking the group checkbox sets every column in it together; checking/unchecking an
+    // individual column updates its own group checkbox's checked/indeterminate state to match, but
+    // never touches any other group.
     function buildColumnPanel(toolbar, table) {
         var headRow = table.tHead && table.tHead.rows[0];
         if (!headRow) {
@@ -174,61 +242,41 @@ table.wspy-refmatrix tr.wspy-row-unchecked { display: none; }
         groupNames.forEach(function (g) {
             var cols = byGroup[g];
             var startChecked = cols.some(function (c) { return c.kind !== 'raw'; });
-
-            var groupLabel = document.createElement('label');
-            groupLabel.className = 'wspy-refmatrix-group-toggle';
-            var groupCb = document.createElement('input');
-            groupCb.type = 'checkbox';
-            groupCb.checked = startChecked;
-            groupLabel.appendChild(groupCb);
-            var groupText = document.createElement('strong');
-            groupText.textContent = GROUP_LABELS[g] || g;
-            groupLabel.appendChild(groupText);
-            details.appendChild(groupLabel);
-
-            var colCheckboxes = cols.map(function (c) {
-                setColumnVisible(table, c.colIndex, startChecked);
-
-                var label = document.createElement('label');
-                label.className = 'wspy-refmatrix-col-toggle';
-                var cb = document.createElement('input');
-                cb.type = 'checkbox';
-                cb.checked = startChecked;
-                cb.addEventListener('change', function () {
-                    setColumnVisible(table, c.colIndex, cb.checked);
-                    var checkedCount = colCheckboxes.filter(function (x) { return x.checked; }).length;
-                    groupCb.checked = checkedCount > 0;
-                    groupCb.indeterminate = checkedCount > 0 && checkedCount < colCheckboxes.length;
-                });
-                label.appendChild(cb);
-                label.appendChild(document.createTextNode(' ' + c.metric));
-                details.appendChild(label);
-                return cb;
-            });
-
-            groupCb.addEventListener('change', function () {
-                // Capture the target once -- each child's own "change" handler above recomputes
-                // and overwrites groupCb.checked/indeterminate from the partial checked count as
-                // it fires, so re-reading groupCb.checked live on every loop iteration (instead of
-                // this captured snapshot) meant a sibling's handler could flip it back mid-loop:
-                // unchecking a fully-checked group only ever cleared the first child before this
-                // fix, since checkedCount stayed > 0 for every iteration except the last.
-                var target = groupCb.checked;
-                colCheckboxes.forEach(function (cb) {
-                    cb.checked = target;
-                    cb.dispatchEvent(new Event('change'));
-                });
-                // Children's handlers already leave the right value in the all-same-target case,
-                // but pin it explicitly rather than trust the last child's handler to have been
-                // the final write.
-                groupCb.checked = target;
-                groupCb.indeterminate = false;
-            });
+            buildTriStateGroup(
+                details, GROUP_LABELS[g] || g, cols,
+                function (c) { return c.metric; },
+                function (c, visible) { setColumnVisible(table, c.colIndex, visible); },
+                startChecked
+            );
         });
 
         toolbar.appendChild(details);
     }
 
+    // Friendly labels for cpu2026's own benchmark-suite categories (joblib.py's CPU2026_BENCHMARKS,
+    // via publish_reference_matrix.py's row_group_for_test() -- the data-row-group attribute).
+    // Falls back to the raw token for anything not listed, same convention GROUP_LABELS uses.
+    var ROW_GROUP_LABELS = {
+        intrate: 'SPECrate Integer', intspeed: 'SPECspeed Integer',
+        fprate: 'SPECrate Floating Point', fpspeed: 'SPECspeed Floating Point'
+    };
+    var ROW_GROUP_ORDER = ['intrate', 'intspeed', 'fprate', 'fpspeed'];
+
+    function rowLabelText(row) {
+        return row.cells.length ? row.cells[0].textContent.trim() : row.textContent.trim();
+    }
+
+    function setRowVisible(row, visible) {
+        row.classList.toggle('wspy-row-unchecked', !visible);
+    }
+
+    // Groups rows by data-row-group (e.g. cpu2026's intrate/intspeed/fprate/fpspeed) the same way
+    // buildColumnPanel groups columns, via the shared buildTriStateGroup() helper -- one group
+    // checkbox per category, one child checkbox per test point underneath it. Falls back to the
+    // original flat, ungrouped list whenever fewer than two distinct buckets exist (a Phoronix page,
+    // which has no such categorization at all; a cpu2026 page with everything in one category; or
+    // any table too small to be worth a hierarchy), so this never regresses a page with nothing to
+    // group by.
     function buildRowPanel(toolbar, table) {
         var tbody = table.tBodies[0];
         if (!tbody || tbody.rows.length < 2) {
@@ -252,25 +300,47 @@ table.wspy-refmatrix tr.wspy-row-unchecked { display: none; }
         buttons.appendChild(noneBtn);
         details.appendChild(buttons);
 
-        var checkboxes = [];
+        var byGroup = {};
+        var ungrouped = [];
         Array.prototype.forEach.call(tbody.rows, function (row) {
-            var rowLabel = row.cells.length ? row.cells[0].textContent.trim() : row.textContent.trim();
-
-            var label = document.createElement('label');
-            var cb = document.createElement('input');
-            cb.type = 'checkbox';
-            cb.checked = true;
-            cb.addEventListener('change', function () {
-                row.classList.toggle('wspy-row-unchecked', !cb.checked);
-            });
-            label.appendChild(cb);
-            label.appendChild(document.createTextNode(' ' + rowLabel));
-            details.appendChild(label);
-            checkboxes.push(cb);
+            var g = row.getAttribute('data-row-group');
+            (g ? (byGroup[g] || (byGroup[g] = [])) : ungrouped).push(row);
+        });
+        var groupNames = Object.keys(byGroup).sort(function (a, b) {
+            var ai = ROW_GROUP_ORDER.indexOf(a), bi = ROW_GROUP_ORDER.indexOf(b);
+            if (ai === -1) ai = ROW_GROUP_ORDER.length;
+            if (bi === -1) bi = ROW_GROUP_ORDER.length;
+            return ai !== bi ? ai - bi : a.localeCompare(b);
         });
 
+        var allCheckboxes = [];
+        if (groupNames.length + (ungrouped.length ? 1 : 0) >= 2) {
+            groupNames.forEach(function (g) {
+                var cbs = buildTriStateGroup(
+                    details, ROW_GROUP_LABELS[g] || g, byGroup[g], rowLabelText, setRowVisible, true);
+                allCheckboxes = allCheckboxes.concat(cbs);
+            });
+            if (ungrouped.length) {
+                var cbs = buildTriStateGroup(
+                    details, 'Other', ungrouped, rowLabelText, setRowVisible, true);
+                allCheckboxes = allCheckboxes.concat(cbs);
+            }
+        } else {
+            Array.prototype.forEach.call(tbody.rows, function (row) {
+                var label = document.createElement('label');
+                var cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.checked = true;
+                cb.addEventListener('change', function () { setRowVisible(row, cb.checked); });
+                label.appendChild(cb);
+                label.appendChild(document.createTextNode(' ' + rowLabelText(row)));
+                details.appendChild(label);
+                allCheckboxes.push(cb);
+            });
+        }
+
         function setAll(checked) {
-            checkboxes.forEach(function (cb) {
+            allCheckboxes.forEach(function (cb) {
                 cb.checked = checked;
                 cb.dispatchEvent(new Event('change'));
             });

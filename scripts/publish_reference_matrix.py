@@ -263,6 +263,18 @@ def metric_col_group(metric):
     return GROUP_ALIASES.get(group, group)
 
 
+def row_group_for_test(test):
+    """cpu2026's own benchmark-suite category (intrate/intspeed/fprate/fpspeed --
+    joblib.CPU2026_BENCHMARKS, keyed by the exact bench name resolve_test_identity() already uses as
+    this row's `test` value) for the data-row-group attribute -- what the plugin's Rows panel groups
+    checkboxes by, the row-axis counterpart to metric_col_group() on the column axis. Returns None
+    for a Phoronix test (no such categorization exists) or an unrecognized cpu2026 bench (a future
+    benchmark this table hasn't caught up with yet) -- the plugin already falls back to a flat,
+    ungrouped row-checkbox list whenever fewer than two rows carry this attribute at all, so leaving
+    it off degrades gracefully rather than needing a placeholder value."""
+    return joblib.CPU2026_BENCHMARKS.get(test, {}).get("suite")
+
+
 # Priority order for the plugin's Columns panel -- fundamental/commonly-read groups first (ipc and
 # topdown are what most people reach for first), niche/vendor-specific ones last, "other" always the
 # final catch-all. Anything not listed here (there shouldn't be any -- every joblib.ALL_GROUPS/
@@ -417,7 +429,9 @@ def build_machine_page(suite, machine, entries):
         cells_html = "".join(
             '<td data-col-kind="%s" data-col-group="%s">%s</td>' % (kind, group, html.escape(c))
             for c, kind, group in zip(cells, kinds, groups))
-        body_rows_html.append("<tr><td>%s</td>%s</tr>" % (html.escape(label), cells_html))
+        row_group = row_group_for_test(test)
+        row_attr = ' data-row-group="%s"' % row_group if row_group else ""
+        body_rows_html.append("<tr%s><td>%s</td>%s</tr>" % (row_attr, html.escape(label), cells_html))
 
     md_lines.append("")
     if has_wp:
@@ -489,8 +503,10 @@ def build_suite_index(report_root_path, suite, local_cells, wp_rows, by_machine_
         for (test, test_point), by_machine in sorted(rows_by_tp.items()):
             machines_text = ", ".join("%s (%s)" % (m, s) for m, s in sorted(by_machine.items()))
             md_lines.append("| %s | %s | %s |" % (test, test_point, machines_text))
-            tp_rows_html.append("<tr><td>%s</td><td>%s</td><td>%s</td></tr>" % (
-                html.escape(test), html.escape(test_point), html.escape(machines_text)))
+            row_group = row_group_for_test(test)
+            row_attr = ' data-row-group="%s"' % row_group if row_group else ""
+            tp_rows_html.append("<tr%s><td>%s</td><td>%s</td><td>%s</td></tr>" % (
+                row_attr, html.escape(test), html.escape(test_point), html.escape(machines_text)))
     else:
         md_lines.append("No test points yet.")
 
