@@ -99,12 +99,26 @@ class ParseCounterTextTest(unittest.TestCase):
         self.assertEqual(rate["value"], 1.8)
         self.assertEqual(rate["comment"], "of 111 branch-retiring ops")
 
-    def test_subsection_header_skipped_but_children_parsed(self):
+    def test_data_src_breakdown_header_and_children_both_skipped(self):
+        # Fixed 2026-08-07: this indented sub-list used to parse like any other line, leaking
+        # "DRAM"/"Local L3 or other L1/L2 in CCX"/etc. through as if they were stable, comparable
+        # metric names -- doc/METRICS.md's own design note says this histogram is "never emitted as
+        # CSV -- cross-scheme category names aren't stable enough to be a schema'd column," found
+        # live in a real reference-matrix "Other" dump. Both the header and every indented row under
+        # it must now be excluded.
         records = counter_text.parse_counter_text(IBS_TXT)
         metrics = {r["metric"]: r for r in records}
         self.assertNotIn("ibs_sample_data_src_breakdown (scheme: zen4_ibs_extensions)", metrics)
-        self.assertEqual(metrics["Local L3 or other L1/L2 in CCX"]["value"], 1.4)
-        self.assertEqual(metrics["DRAM"]["value"], 58.7)
+        self.assertNotIn("Local L3 or other L1/L2 in CCX", metrics)
+        self.assertNotIn("DRAM", metrics)
+
+    def test_line_after_data_src_breakdown_parses_normally(self):
+        # The exclusion must end as soon as a non-indented line appears -- it shouldn't swallow
+        # everything for the rest of the block.
+        text = IBS_TXT + "ibs_sample_lost      0\n"
+        records = counter_text.parse_counter_text(text)
+        metrics = {r["metric"]: r for r in records}
+        self.assertEqual(metrics["ibs_sample_lost"]["value"], 0.0)
 
     def test_full_line_comment_skipped(self):
         records = counter_text.parse_counter_text(IBS_TXT)
@@ -205,19 +219,42 @@ class ExtractDerivedRatiosTest(unittest.TestCase):
         self.assertEqual(derived["icache"]["value"], 8.4)
         self.assertEqual(derived["icache"]["value"], derived["icache_miss_pct"]["value"])
 
-    def test_opcache_renamed_directly_to_its_real_csv_column_name(self):
-        # opcache has no separate archetype-facing "_pct" name to preserve (doc/METRICS.md tags the
-        # real "opcache" CSV column [raw], never promoted into store.c's run_features) -- unlike
-        # icache, GENERIC_LABEL_NAME_OVERRIDES can target the bare CSV name directly, with no second
-        # GENERIC_LABEL_ALSO_CSV_COLUMN entry needed.
+    def test_opcache_miss_overwrites_its_own_raw_primary_value(self):
+        # "opcache"/"opcache miss" is a genuine same-label collision between two different real CSV
+        # columns in wspy's own C code (print_topdown_op()'s AMD-specific bare "opcache" vs.
+        # print_cache()/print_opcache()'s cross-vendor "opcache miss") -- unlike icache, which has no
+        # such collision (the cross-vendor pair is "L1-icache"/"L1-icache miss", a different string).
+        # Found live 2026-08-07: an earlier version of this fix targeted the bare "opcache" name
+        # unconditionally, which silently broke the (more common) cross-vendor case. The correct,
+        # unambiguous fix targets "opcache miss" itself -- an identity mapping that overwrites that
+        # line's own wrong raw primary value with its own comment's correct percentage.
         text = ("##### pass  0 (mask 0x1) #####################\n"
                 "instructions         54412256231580 # 2.38 IPC\n"
                 "opcache              1234567         # 4.500 opcache per 1000 inst\n"
-                "opcache miss         45678            # 3.7% opcache miss rate\n")
+                "opcache miss         45678            # 3.70% opcache miss\n")  # print_cache()'s
+        # own exact comment shape (no " rate" suffix, unlike the AMD-specific line's own wording).
         records = counter_text.parse_counter_text(text)
         derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
-        self.assertEqual(derived["opcache"]["value"], 3.7)
-        self.assertNotIn("opcache_miss_rate", derived)
+        self.assertEqual(derived["opcache miss"]["value"], 3.7)
+        self.assertNotIn("opcache", derived)  # deliberately never populated via this path
+
+    def test_opcache_collision_still_yields_a_correct_percentage_not_the_raw_count(self):
+        # If both groups are collected together, the block has two indistinguishable "opcache miss"
+        # lines -- parse_counter_text() can't tell them apart from label text alone. This doesn't
+        # assert *which* one wins (that's inherently ambiguous), only that the result is some real
+        # percentage, never the multi-million-scale raw primary value either line's own operand
+        # carries -- the actual bug reported live (a raw count of 1806064670420.0 showing up under
+        # "opcache miss").
+        text = ("##### pass  0 (mask 0x1) #####################\n"
+                "instructions         54412256231580 # 2.38 IPC\n"
+                "opcache              1234567         # 4.500 opcache per 1000 inst\n"
+                "opcache miss         1806064670420   # 3.70% opcache miss\n"
+                "##### pass  1 (mask 0x2) #####################\n"
+                "opcache              9876543         # 6.100 opcache per 1000 inst\n"
+                "opcache miss         55667788         # 1.20% opcache miss rate\n")
+        records = counter_text.parse_counter_text(text)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        self.assertIn(derived["opcache miss"]["value"], (3.7, 1.2))
 
     def test_topdown_l2_and_contention_take_first_percentage(self):
         records = counter_text.parse_counter_text(COUNTERS_TXT)
@@ -252,6 +289,9 @@ class ExtractDerivedRatiosTest(unittest.TestCase):
         # (run_snapshot_apply_feature() only recognizes this exact name) -- confirmed this was
         # previously silently dropped as "branch_miss", an unrecognized name, before this fix.
         self.assertEqual(derived["branch_mispredict_pct"]["value"], 2.65)
+        # "branch miss" (singular, no "es") is the real CSV column name -- must carry the identical
+        # value alongside branch_mispredict_pct, same additive pattern as icache/topdown L1.
+        self.assertEqual(derived["branch miss"]["value"], 2.65)
         for old_name in ("l1_dcache_miss", "icache_miss_rate", "l2_miss", "branch_miss",
                           "l2_itlb_per_1000_inst", "l2_dtlb_per_1000_inst"):
             self.assertNotIn(old_name, derived)
@@ -294,6 +334,12 @@ class CanonicalMetricNameTest(unittest.TestCase):
                           "ibs_dc_l2tlb_miss_pct")
         self.assertEqual(counter_text.canonical_metric_name("ibs_sample_remote_node_rate"),
                           "ibs_remote_node_pct")
+
+    def test_onblock_renamed_to_real_rusage_column_name(self):
+        # topdown.c's own human-mode label for this rusage field reads "onblock", but the real CSV
+        # column (and store.c feature) is "oublock" (ru_oublock) -- doc/METRICS.md documents this
+        # quirk explicitly. Found live 2026-08-07 auditing a real reference-matrix "Other" dump.
+        self.assertEqual(counter_text.canonical_metric_name("onblock"), "oublock")
 
     def test_unmapped_name_returned_unchanged(self):
         self.assertEqual(counter_text.canonical_metric_name("ibs_sample_fetch_count"),

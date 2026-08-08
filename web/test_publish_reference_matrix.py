@@ -75,6 +75,41 @@ class MetricColGroupTest(unittest.TestCase):
         unlisted = produced - set(prm.COLUMN_GROUP_ORDER)
         self.assertEqual(unlisted, set(), "groups missing from COLUMN_GROUP_ORDER: %s" % unlisted)
 
+    def test_opcache_group_folded_into_other(self):
+        # Author's own call (2026-08-07): a single-metric "opcache" group (just the cross-vendor
+        # "opcache miss" column) isn't worth its own Columns-panel checkbox.
+        self.assertEqual(prm.metric_col_group("opcache miss"), "other")
+
+    def test_wordpress_recovery_derived_rates_get_a_real_group(self):
+        # These never appear as real local CSV columns -- they only exist via web/counter_text.py's
+        # extract_derived_ratios() generic-slug fallback (per-1000-inst densities) or its
+        # archetype-facing "_pct" names -- but they're genuine comparable ratios, found auditing a
+        # real reference-matrix "Other" dump that used to swallow all of them (2026-08-07).
+        for name, expected_group in (
+            ("ghz", "ipc"), ("ipc_mean", "ipc"),
+            ("backend_pct", "topdown"), ("icache_per_1000_inst", "topdown"),
+            ("itlb_miss_per1k", "topdown"), ("tlb_flush_per_1000_inst", "topdown"),
+            ("branch_mispredict_pct", "branch"), ("branches_per_1000_inst", "branch"),
+            ("l2_miss_pct", "cache2"), ("l3_access_per_1000_inst", "cache3"),
+            ("avx_128_per_1000_inst", "float"), ("float_per_1000_inst", "float"),
+            ("ibs_dc_miss_pct", "ibs"),
+        ):
+            self.assertEqual(prm.metric_col_group(name), expected_group, name)
+            self.assertEqual(prm.metric_col_kind(name), "ratio", name)
+
+    def test_wordpress_recovery_raw_leaks_default_hidden(self):
+        # Every one of these is a real primary value web/counter_text.py's parse_counter_text()
+        # keeps under a line's own on-screen label, never a real local CSV column -- the line's
+        # actually-comparable ratio already has its own correctly-classified name elsewhere. Found
+        # auditing a real reference-matrix "Other" dump (2026-08-07): with no RAW_COUNT_METRICS
+        # entry, these defaulted to "ratio" (visible), so "Other" never defaulted hidden.
+        for name in ("instructions", "cpu-cycles", "slots", "retiring", "speculation",
+                     "smt-contention", "branch misses", "icache miss", "l3 miss",
+                     "l1 iTLB miss", "l2 dTLB miss", "-- ucode", "-- latency",
+                     "float 128", "float scalar"):
+            self.assertEqual(prm.metric_col_kind(name), "raw", name)
+            self.assertEqual(prm.metric_col_group(name), "other", name)
+
 
 class LoadMetricDescriptionsSyntheticTest(unittest.TestCase):
     """Exact-match assertions against a small synthetic doc/METRICS.md-shaped file, so these don't

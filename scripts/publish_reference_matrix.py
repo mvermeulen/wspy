@@ -120,6 +120,23 @@ RAW_COUNT_METRICS = {
     "gpu_vram_used", "gpu_vram_total", "nv_vram_used_mb", "nv_vram_total_mb",
     # counter coverage -- running tallies, not a workload characteristic
     "counters_measured", "counters_requested",
+    # WordPress-recovery-only raw primary values (web/counter_text.py's parse_counter_text()) --
+    # never real local CSV columns at all, just the on-screen operand of a human-text line whose
+    # *comment* carries the actually-comparable ratio under a different name (already classified
+    # above/below). Found auditing a real reference-matrix "Other" dump (2026-08-07): with no
+    # RAW_COUNT_METRICS entry, these defaulted to "ratio" (visible), which meant the mostly-raw
+    # "Other" group never defaulted hidden the way every other all-raw group does.
+    "instructions", "cpu-cycles", "slots", "retiring", "speculation", "smt-contention",
+    "near return", "branches", "branch misses", "conditional", "indirect", "indirect mispredict",
+    "l1 iTLB miss", "l1 dTLB miss", "l2 iTLB miss", "l2 dTLB miss", "tlb flush",
+    "l2 hit from l1", "l2 hit from l2 pf", "l2 miss from l1", "l3 access", "l3 miss",
+    "l3 hit from l2 pf", "l3 miss from l2 pf", "icache miss",
+    "float 128", "float 256", "float 512", "float MMX", "float scalar",
+    "-- ucode", "-- fastpath", "-- latency", "-- bandwidth", "-- cpu", "-- memory",
+    "-- branch mispredict", "-- pipeline restart",
+    # Unconfirmed exact provenance (some other comment's bare unit-word slug, most likely) but
+    # clearly not a real named metric either way -- same "raw and uninteresting" treatment.
+    "seconds", "mb",
 }
 
 
@@ -184,6 +201,29 @@ SUPPLEMENTARY_COLUMN_GROUPS = {
     "nv_vram_total_mb": "gpu",
     # counter coverage -- measurement quality, not a workload characteristic
     "counters_measured": "coverage", "counters_requested": "coverage",
+
+    # WordPress-recovery-only derived ratios/rates (web/counter_text.py's extract_derived_ratios()
+    # generic-slug fallback, or its archetype-facing "_pct" names) -- never real local CSV columns,
+    # but genuine comparable ratios all the same, so they get a real group instead of falling
+    # through to "other" alongside the raw leftovers above. Found auditing a real reference-matrix
+    # "Other" dump (2026-08-07), which is why grouping these was the whole point of that exercise.
+    "ghz": "ipc", "ipc_mean": "ipc",
+    "backend_pct": "topdown", "frontend_pct": "topdown", "retire_pct": "topdown",
+    "speculate_pct": "topdown", "smt_contention_pct": "topdown",
+    "icache_miss_pct": "topdown", "icache_per_1000_inst": "topdown",
+    "opcache_per_1000_inst": "topdown", "tlb_flush_per_1000_inst": "topdown",
+    "itlb_miss_per1k": "topdown", "dtlb_miss_per1k": "topdown",
+    "branch_mispredict_pct": "branch", "branches_per_1000_inst": "branch",
+    "conditional_branches_per_1000_inst": "branch", "indirect_branches_per_1000_inst": "branch",
+    "indirect_branch_mispredict_rate": "branch", "near_return_per_1000_inst": "branch",
+    "near_return_mispredict_rate": "branch",
+    "l2_miss_pct": "cache2", "l2_access_per_1000_inst": "cache2",
+    "l3_access_per_1000_inst": "cache3",
+    "avx_128_per_1000_inst": "float", "avx_256_per_1000_inst": "float",
+    "avx_512_per_1000_inst": "float", "mmx_per_1000_inst": "float",
+    "scalar_per_1000_inst": "float", "float_per_1000_inst": "float",
+    "ibs_dc_miss_pct": "ibs", "ibs_dc_l1tlb_miss_pct": "ibs", "ibs_dc_l2tlb_miss_pct": "ibs",
+    "ibs_dram_pct": "ibs", "ibs_remote_node_pct": "ibs",
 }
 
 
@@ -197,14 +237,26 @@ SUPPLEMENTARY_COLUMN_GROUPS = {
 # ("topdown") across four same-looking-but-not-quite-matching checkboxes.
 _TOPDOWN_GROUP_ALIASES = {"topdown2", "topdown-frontend", "topdown-backend", "topdown-optlb"}
 
+# "opcache" (joblib's own group token for the single cross-vendor "opcache miss" column,
+# print_cache()/print_opcache()) is too narrow to earn its own Columns-panel checkbox for one
+# metric -- author's own call (2026-08-07): fold it into "other" rather than give it standalone
+# billing. Distinct from _TOPDOWN_GROUP_ALIASES above (that's collapsing four *duplicate* tokens
+# for one methodology into one; this is demoting one *real, correctly-scoped* group for being too
+# small to bother with).
+_GROUPS_FOLDED_INTO_OTHER = {"opcache"}
+
 
 def metric_col_group(metric):
     """The --counters/--system/--power group token (or a SUPPLEMENTARY_COLUMN_GROUPS bucket, or
     "other" as a last resort) for the data-col-group attribute -- what the plugin's per-group
-    "Columns" checkboxes filter on. See _TOPDOWN_GROUP_ALIASES above for the one merge applied on
-    top of the raw group token."""
+    "Columns" checkboxes filter on. See _TOPDOWN_GROUP_ALIASES/_GROUPS_FOLDED_INTO_OTHER above for
+    the merges applied on top of the raw group token."""
     group = joblib.resolve_column_group(metric) or SUPPLEMENTARY_COLUMN_GROUPS.get(metric, "other")
-    return "topdown" if group in _TOPDOWN_GROUP_ALIASES else group
+    if group in _TOPDOWN_GROUP_ALIASES:
+        return "topdown"
+    if group in _GROUPS_FOLDED_INTO_OTHER:
+        return "other"
+    return group
 
 
 # Priority order for the plugin's Columns panel -- fundamental/commonly-read groups first (ipc and
