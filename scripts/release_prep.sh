@@ -159,32 +159,43 @@ if [ "$HAVE_GH" -eq 0 ]; then
 elif [ -z "$SINCE_TAG" ]; then
   echo "  (skipped: no prior tag found to compare against)"
 else
-  # Exact git ancestry (git log <tag>..HEAD --merges), not a gh --search
-  # date filter -- date-based search is imprecise at same-day tag/PR
-  # boundaries (confirmed live: v4.1.1's own tagged commit's author-date
-  # collided with its own PR's merge time, so a ">=" date search
-  # double-counted it as "since v4.1.1" when it's actually v4.1.1's own
-  # content). PR numbers straight from the standard GitHub merge-commit
-  # message format are unambiguous.
-  pr_numbers=$(git log "${SINCE_TAG}..HEAD" --merges --format='%s' | grep -oE '#[0-9]+' | grep -oE '[0-9]+' || true)
+  # Commit-reachability match (a PR's own mergeCommit.oid, from `gh pr list`,
+  # checked against `git rev-list <tag>..HEAD`), not a merge-commit-subject
+  # grep -- this repo doesn't merge every PR the same way: most produce a
+  # real two-parent merge commit (subject "Merge pull request #N ..."), but
+  # several were squash- or rebase-merged instead, landing as one ordinary
+  # commit with no "#N" anywhere in git log at all. A `--merges`-only scan
+  # silently missed exactly those (confirmed live: PRs #162/#163/#170/#171/
+  # #172/#180/#181 were absent from this phase's own output *and* from the
+  # release-notes draft phase 6 built from it, until this was rewritten) --
+  # reachability doesn't care which merge strategy was used, so it can't
+  # have that blind spot. Not a `gh --search` date filter either, for the
+  # unrelated, still-valid reason the old comment already covered: date-
+  # based search is imprecise at same-day tag/PR boundaries (v4.1.1's own
+  # tagged commit's author-date once collided with its own PR's merge time).
+  since_shas_file=$(mktemp /tmp/wspy-release-prep-shas.XXXXXX)
+  git rev-list "${SINCE_TAG}..HEAD" > "$since_shas_file"
   target_label=""
   if [ -n "$VERSION" ]; then
     target_label="v$(echo "$VERSION" | cut -d. -f1-2)"
   fi
-  if [ -z "$pr_numbers" ]; then
-    echo "  no merge commits found since $SINCE_TAG"
+  if [ ! -s "$since_shas_file" ]; then
+    echo "  no commits found since $SINCE_TAG"
+    rm -f "$since_shas_file"
   else
     all_prs_json=$(gh pr list --state merged --base master --limit 300 \
-      --json number,title,labels 2>/dev/null || echo "[]")
+      --json number,title,labels,mergeCommit 2>/dev/null || echo "[]")
     missing_count=0
     matched_prs_json=$(python3 -c "
 import json,sys
-wanted = set(int(x) for x in sys.argv[1].split())
+with open(sys.argv[1]) as f:
+    reachable = set(f.read().split())
 prs = json.load(sys.stdin)
-matched = [p for p in prs if p['number'] in wanted]
+matched = [p for p in prs if p.get('mergeCommit') and p['mergeCommit']['oid'] in reachable]
 matched.sort(key=lambda p: p['number'], reverse=True)
 print(json.dumps(matched))
-" "$pr_numbers" <<< "$all_prs_json")
+" "$since_shas_file" <<< "$all_prs_json")
+    rm -f "$since_shas_file"
     while IFS=$'\t' read -r num title has_label; do
       [ -z "$num" ] && continue
       if [ -z "$target_label" ]; then
@@ -228,11 +239,10 @@ for pr in json.load(sys.stdin):
     elif [ -z "$target_label" ]; then
       echo "  (pass --version to check against a specific release label)"
     fi
-    pr_count=$(echo "$pr_numbers" | wc -l)
-    matched_count=$(echo "$matched_prs_json" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")
-    if [ "$pr_count" != "$matched_count" ]; then
-      echo "  WARN: $pr_count merge commit(s) found via git log, but only $matched_count matched via" \
-           "gh pr list -- increase --limit above or check for a PR outside the fetched window"
+    fetched_count=$(echo "$all_prs_json" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")
+    if [ "$fetched_count" -ge 300 ]; then
+      echo "  WARN: gh pr list returned $fetched_count PRs, at or above this script's own --limit 300 --" \
+           "some merged PRs may be missing from this audit; increase --limit above"
     fi
   fi
 fi
