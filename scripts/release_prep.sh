@@ -48,11 +48,12 @@ usage() {
   cat <<EOF
 Usage: $SCRIPT_NAME --version X.Y[.Z] [options]
 
-Runs the release-prep checklist: pre-flight checks, a merged-PR/label
-audit, a version bump, a stale-version-reference grep, the full test
-matrix, a release-notes draft, doc bookkeeping reminders, and finally the
-exact tag/push/publish commands to run by hand -- this script never runs
-those three itself.
+Runs the release-prep checklist: pre-flight checks (including a review of
+outstanding open issues, not just open PRs), a merged-PR/label audit, a
+version bump, a stale-version-reference grep, the full test matrix, a
+release-notes draft, doc bookkeeping reminders, and finally the exact
+tag/push/publish commands to run by hand -- this script never runs those
+three itself.
 
 Options:
   --version X.Y[.Z]   new wspy version (required for the version-bump and
@@ -138,6 +139,11 @@ fi
 if [ "$HAVE_GH" -eq 1 ]; then
   open_count=$(gh pr list --state open --base master --json number --jq 'length' 2>/dev/null || echo "?")
   echo "  $open_count open PR(s) against master -- review whether any should be included before tagging"
+  issue_count=$(gh issue list --state open --json number --jq 'length' 2>/dev/null || echo "?")
+  echo "  $issue_count open issue(s) -- review whether any should block, or be mentioned in, this release:"
+  gh issue list --state open --limit 100 --json number,title,labels,createdAt \
+    --jq 'sort_by(.createdAt) | reverse | .[] | "    #\(.number) \(.title)" + (if (.labels|length)>0 then " [" + ([.labels[].name] | join(",")) + "]" else "" end)' \
+    2>/dev/null || echo "    (issue list unavailable)"
 else
   echo "  (skipped: gh not available/authenticated)"
 fi

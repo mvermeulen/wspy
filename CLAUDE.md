@@ -53,8 +53,8 @@ C codebase rather than a polished library.
   `fatal error`/crash) except `--passes`' documented incompatibility checks, which must fail.
 - `tests/doc_version_check.sh` — grep-based doc/version drift check (`*_SCHEMA_VERSION` mentions vs. real
   `#define`s; every `Makefile` binary mentioned in `README.md` and vice versa). No build required.
-- `scripts/release_prep.sh` — release-prep checklist (branch/clean checks, merged-PR audit, version bump,
-  stale-version grep, full test matrix, release-notes draft). Never runs public/hard-to-reverse steps
+- `scripts/release_prep.sh` — release-prep checklist (branch/clean checks, open-issue review, merged-PR
+  audit, version bump, stale-version grep, full test matrix, release-notes draft). Never runs public/hard-to-reverse steps
   itself (`git tag`/`push`, `gh release create` are print-only).
 - `scripts/estimate_tree_timeout.py` — estimates a Phoronix workload's run time to size `wspy-run`'s
   `--tree` pass timeout; prints seconds and exits 0, or prints nothing and exits 1 (caller falls back to 3600).
