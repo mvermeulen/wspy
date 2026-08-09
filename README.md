@@ -134,6 +134,11 @@ Some of the more commonly used options:
     ever reading the whole-subtree aggregate — every process whose comm/cmdline matches gets its
     own attach, discovered live as it execs. Surfaces as a `target_counters` array on both the
     per-process and per-comm-rollup entries in `proctree --json`'s output
+  * `--symbol-sample` / `--symbol-sample-event=<event>` (requires `--target`) - attach a
+    `PERF_SAMPLE_IP` sampling counter (default event `cycles`; `event` ∈ `cycles`/`instructions`/
+    `cache-misses`/`branch-misses`) to each `--target`-matched process and record its raw sampled
+    instruction pointers as `target_samples`/`target_maps` in `proctree --json`'s output — resolve
+    them to routine/symbol names with `wspy-symbolize` (below)
 * System-wide metrics
   * `--system` / `-s` - report load average, CPU time (`/proc/stat`), network (`/proc/net/dev`),
     per-block-device disk I/O (`/sys/block/<dev>/stat`), and memory pressure (`/proc/meminfo`)
@@ -328,11 +333,21 @@ reports each workload's status:
 
 A workload's name is matched as a substring against each run-index record's command line.
 
+`--phoronix-option-combos` reports each matching workload's full Phoronix option-matrix size
+upfront (the product of every `<TestSettings>/<Option>`'s `<Menu>` entry count in its
+`test-definition.xml`) as an `option_combinations` column/bracketed suffix, so a large option
+space is visible before a long batch-run sweep discovers it partway through —
+`combo_has_freeform`/`combo_ambiguous` flag a lower-bound or disagreeing count rather than
+silently guessing. Scans `--phoronix-profiles-dir` (default `$HOME/.phoronix-test-suite/
+test-profiles`), the same directory `--unavailable-deps` reads; both may be given together.
+
 ```
 ./wspy-ledger --run-index results/index.jsonl workloads.txt
 ./wspy-ledger --run-index results/index.jsonl --csv workloads.txt   # machine-readable
 ./wspy-ledger --run-index results/index.jsonl --strict workloads.txt  # nonzero exit if
                                                                         # anything's outstanding
+./wspy-ledger --run-index results/index.jsonl --phoronix-option-combos workloads.txt
+                                                                        # option-matrix size per workload
 ```
 
 `workloads.txt` is one workload name per line; append a tab-separated `unsupported` or
@@ -481,6 +496,13 @@ run collected with `--tree --tree-io-wait --tree-schedstat` (or `--tree-futex`),
 priority over cache/TLB/IBS corroboration: `blocked` (heavy futex/io-wait — the CPU was waiting on the
 kernel, not stalled) and `oversubscribed` (heavy scheduler run-delay — runnable but not given the CPU),
 since a "memory-bound" topdown read on either of those isn't a genuine hardware stall to begin with.
+On AMD hosts, a `"corroborated"` `memory_attribution` also gets a `memory_attribution_locus` —
+*which* cache level the stall concentrates in (`l1`/`l2-l3`/`dram`/`remote-numa`, plus a
+`tlb-cofire` tag), decomposed from `--ibs-sample`'s per-sample hit-outcome tags where available
+and falling back to plain cache-miss-rate signals otherwise (`memory_attribution_locus_reasons`
+names which tier/signal decided it) — the AMD-only equivalent of what Intel/ARM's
+`--topdown-backend` L1/L2/L3/DRAM stall-cycle chain already answers directly.
+
 `--nearest` ranks other runs by similarity to one target run, using a coverage-aware
 distance over whichever `run_features` both runs actually have `measured` (z-score-standardized,
 root-*mean*-square over the shared feature set, so a pair sharing fewer features isn't penalized
@@ -489,11 +511,18 @@ same distance and prints a profile card per cluster (member list plus the featur
 sits furthest from the population mean); a cluster's centroid averages each dimension only over
 the members that actually measured it, since members can have different `run_features` coverage.
 
+`--run-guest <json-file>` scores the same axes as `--run`, but from a flat, caller-supplied
+`{"feature_name": value, ...}` JSON object instead of a database lookup — no `--db`/store needed
+at all. Meant for scoring a run this host's own store has never seen (e.g. `wspy-testpoint`
+scoring a machine recovered only from its already-published WordPress pages); an unrecognized key
+is ignored, and a partial feature set still scores whatever axes it can.
+
 ```
 ./wspy-archetype --db store.db                          # score every run, one row per run
 ./wspy-archetype --db store.db --run somehost:2026...    # detailed single-run scorecard
 ./wspy-archetype --db store.db --nearest somehost:2026... --k 5   # 5 most-similar runs
 ./wspy-archetype --db store.db --kmeans 4                # 4 cluster profile cards
+./wspy-archetype --run-guest features.json               # score a JSON feature object, no store
 ```
 
 See `./wspy-archetype --help` for the full option list.
@@ -532,26 +561,39 @@ See `./wspy-bundle --help` for the full option list.
 
 ## wspy-publish: WordPress + report-root publishing
 
-`wspy-publish` is the connectivity layer for `INVESTIGATION.md`'s 4.3 "static-site publishing
-pipeline" item: authenticates to a WordPress site via an Application Password (`web/wp_client.py`,
-stdlib `urllib` only) and to a local clone of the `doc/REPORT_HIERARCHY.md` report-root git repo.
-`configure` interactively writes credentials to `~/.config/wspy/publish.json` (mode 600, via
-`getpass` so the Application Password never touches shell history); `test-connection` proves both
-connections — WordPress auth + required-capability check, a lookup pass over the hierarchy's
-existing top-level pages, one throwaway draft page, and a clone-or-verify plus one local (never
-auto-pushed) commit against the report-root repo; `publish-page` is the draft-first publish flow
-for a single WP page (by `--page-id`, or `--slug`/`--parent-id` to find-or-create) — create/update
-it as a draft, verify the response has an `id`/`link`, and only flip it to `status=publish` with
-an explicit `--publish` flag, so a pipeline that dies mid-run leaves an inspectable draft rather
-than a half-written live page; `upload-media` uploads a file's raw bytes to the WordPress media
-library (`--alt-text`/`--title`/`--caption`, `--set-featured-on <page-id>` to attach it to a
-page) — attachments have no draft state, so the upload itself is the only step, live immediately.
-`publish-page --from-rundir <dir>` generates page content straight from a run directory's curated
-blocks (`curation.json`) via `web/server.py`'s own `render_export_wordpress()` — the same renderer
-the web UI's export tab uses — pre-uploading every `depth=full` image block to the WP media
-library first and substituting the resulting URLs in place of the local server's own `/files/...`
-links (`--base-url` still needed for non-image "full file" reference links, since only images get
-uploaded here):
+`wspy-publish` is the connectivity/publishing layer for `doc/REPORT_HIERARCHY.md`'s report
+hierarchy: authenticates to a WordPress site via an Application Password (`web/wp_client.py`,
+stdlib `urllib` only) and to a local clone of the report-root git repo. `configure` interactively
+writes credentials to `~/.config/wspy/publish.json` (mode 600, via `getpass` so the Application
+Password never touches shell history); `test-connection` proves both connections — WordPress auth
++ required-capability check, a lookup pass over the hierarchy's existing top-level pages, one
+throwaway draft page, and a clone-or-verify plus one local (never auto-pushed) commit against the
+report-root repo; `upload-media` uploads a file's raw bytes to the WordPress media library
+(`--alt-text`/`--title`/`--caption`, `--set-featured-on <page-id>` to attach it to a page) —
+attachments have no draft state, so the upload itself is the only step, live immediately.
+
+Two page-publishing subcommands, for two different shapes of page: `publish-page` is the
+draft-first flow for a single, standalone WP page (by `--page-id`, or `--slug`/`--parent-id` to
+find-or-create) — create/update it as a draft, verify the response has an `id`/`link`, and only
+flip it to `status=publish` with an explicit `--publish` flag, so a pipeline that dies mid-run
+leaves an inspectable draft rather than a half-written live page; `--from-rundir <dir>` generates
+its content straight from a run directory's curated blocks (`curation.json`) via
+`web/server.py`'s own `render_export_wordpress()` — the same renderer the web UI's export tab
+uses — pre-uploading every `depth=full` image block to the WP media library first and
+substituting the resulting URLs in place of the local server's own `/files/...` links
+(`--base-url` still needed for non-image "full file" reference links, since only images get
+uploaded here). `publish-path` is the hierarchy-aware counterpart: given a full top-down path of
+`--level SLUG TITLE` pairs (`doc/REPORT_HIERARCHY.md`'s nested-Pages levels — suite/test/
+test-point/machine/run), it walks and auto-creates any missing parent stub along the way and
+publishes real content only on the leaf; this is what every suite/machine/test-point publishing
+script (`scripts/publish_cpu2026_benchmarks.py`, `scripts/publish_phoronix_pages.py`,
+`scripts/publish_machine_page.py`, `scripts/publish_reference_matrix.py`) builds on.
+`publish-path` refuses to silently clobber a page a human has hand-edited in wp-admin since wspy
+last wrote it — a content fingerprint recorded at publish time
+(`~/.config/wspy/publish_state.json`) is checked before any overwrite, raising a drift error
+instead; `--force` bypasses the check. (`publish-page` stays a deliberately simple primitive with
+no drift check of its own — for a single standalone page, not part of the hierarchy, the caller is
+assumed to know what they're overwriting.)
 
 ```
 ./wspy-publish configure
@@ -561,11 +603,14 @@ uploaded here):
 ./wspy-publish upload-media --file chart.png --alt-text "topdown breakdown" --set-featured-on 123
 ./wspy-publish publish-page --slug my-report --title "My Report" --parent-id 17 \
     --from-rundir web/runs/demo/coremark/some-run-id --base-url http://127.0.0.1:8765/files/x
+./wspy-publish publish-path --level cpu2026 CPU2026 --level 706.stockfish_r 706.stockfish_r \
+    --content-file benchmark.html --publish
+./wspy-publish publish-path --level cpu2026 CPU2026 --level 706.stockfish_r 706.stockfish_r \
+    --content-file benchmark.html --publish --force   # overwrite despite a detected hand-edit
 ```
 
-The create-or-update merge logic for a page a human has since hand-edited, and writing into
-`doc/REPORT_HIERARCHY.md`'s actual hierarchy levels, are future work — see `INVESTIGATION.md`'s
-Tier 3 item 2.
+See `./wspy-publish --help`/`./wspy-publish publish-page --help`/`./wspy-publish publish-path --help`
+for the full option lists.
 
 ## wspy-testpoint: run selection, aggregation, and README rendering for a test point
 
@@ -590,7 +635,10 @@ clone-or-verify git plumbing `wspy-publish` uses (`web/report_root.py`):
 
 `--hostname` (default: this machine's own hostname) is the actual value runs are filtered by;
 `--machine` is only the human-assigned report-root path segment (`doc/REPORT_HIERARCHY.md`'s
-`<vendor>-<short-model>` convention) — no mapping between the two is assumed.
+`<vendor>-<short-model>` convention) — no mapping between the two is assumed. Every subcommand
+below shares `--suite`/`--benchmark`/`--machine`/`--report-root` plus `--phoronix-dest-root`/
+`--cpu2026-dest-root` (each suite's own materialized-test-point root, needed to resolve which
+report-root path this test point maps to; defaults match `web/server.py`'s own).
 
 `wspy-testpoint aggregate` turns a resolved `stats-pool` run set into real statistics, via
 `wspy-summary --run-id <hostname>:<run_id>` (one per run, not `--command`/`--hostname` — those can't
@@ -624,11 +672,21 @@ a single run's own scorecard could ever show:
 ./wspy-testpoint render --suite phoronix --benchmark compress-7zip-default --machine amd-395 --dry-run
 ```
 
-This is the full run-selection/aggregation/rendering pipeline of `INVESTIGATION.md`'s test-point README
-deep-dive (Tier 3 item 5, pieces 1-4, plus the archetype stability fast-follow) — pulling specific
-artifacts from `supplementary` runs (today only listed by name/reason) remains the one open follow-up.
-See `./wspy-testpoint select-runs --help`/`./wspy-testpoint aggregate --help`/
-`./wspy-testpoint render --help` for the full option lists.
+`wspy-testpoint characterize` is a read-only counterpart to `render`'s own "Workload
+characterization" section: prints the same stats-pool + WordPress-recovered-peer archetype
+scorecards as one JSON object, with no report-root write/commit at all — used by the web
+Reference tab's live pages, which import `wspy-testpoint` but can't be imported back by it:
+
+```
+./wspy-testpoint characterize --suite phoronix --benchmark compress-7zip-default --machine amd-395
+```
+
+This is the full run-selection/aggregation/rendering pipeline behind
+`doc/INVESTIGATION_ARCHIVE.md`'s "wspy-testpoint: run selection, aggregation, and curated README
+rendering for a test point" write-up — pulling specific artifacts from `supplementary` runs (today
+only listed by name/reason) remains the one open follow-up. See
+`./wspy-testpoint select-runs --help`/`./wspy-testpoint aggregate --help`/
+`./wspy-testpoint render --help`/`./wspy-testpoint characterize --help` for the full option lists.
 
 ## wspy-symbolize: address-to-symbol resolution for --symbol-sample profiling
 
@@ -710,22 +768,47 @@ local-only default). See `./wspy-analyze --help` for the full option list.
 
 ## Web launcher and report browser
 
-`web/server.py` is a stdlib-only Python web UI (no dependency, no build step) for launching runs
-(a preset dropdown or a configuration checklist, either way showing the exact command line about
-to run), browsing/curating/exporting reports, comparing runs side by side (with an optional
-annotation layer), searching run history, viewing/diffing process trees interactively, running
-`wspy-validate`/`wspy-store`/`wspy-summary`/`wspy-core-report`/`wspy --capabilities`/`--preflight`
-without leaving the browser, and (Phoronix tab) decomposing an OpenBenchmarking result/suite into
-single-test-point suites via the same logic `wspy-phoronix-import` uses. A curated report's Export
-tab (WordPress format) also has a "Publish to WordPress" button once `wspy-publish configure` has
-been run — same draft-first pipeline as `wspy-publish publish-page --from-rundir` (images uploaded
-to WordPress's media library, content generated from `curation.json`), just reachable without a
-terminal; the Application Password itself is never entered through this web form, only read from
-the config that `configure`'s `getpass` prompt already wrote. A report page also has a "Publish
-test-point report" card (Tier 3 item 7) that runs `wspy-testpoint select-runs` + `render` for the
-*whole test point* that run belongs to and commits the result into the configured report-root — a
-web-UI wrapper over the same pipeline `wspy-testpoint`'s own CLI runs, streamed live the same way a
-launched workload's own log is.
+`web/server.py` is a stdlib-only Python web UI (no dependency, no build step), organized as
+tabbed launcher pages plus a per-run report page:
+
+* **Run** — a preset dropdown or a full configuration checklist, either way showing the exact
+  command line about to run before it runs; a "Queue instead of running it now" checkbox hands the
+  same job off to `wspy-queue` instead.
+* **Validate** / **Store & Summary** — run `wspy-validate`/`wspy-store`/`wspy-summary`/
+  `wspy-core-report` against a discovered or pasted file/database without leaving the browser.
+* **Discovery** — `wspy --capabilities`/`--preflight`, no workload needed.
+* **Phoronix** — decomposes an OpenBenchmarking result/installed suite into single-test-point
+  suites (same logic as `wspy-phoronix-import`), a grouped/filterable inventory of what's already
+  materialized, and a "Use in Run tab" prefill button per test point.
+* **CPU2026** — the SPEC CPU2026 counterpart: discovers installed benchmarks/configs under a
+  configurable `$SPECDIR`, tracks per-host install paths so a shared checkout works across
+  multiple SPEC hosts, and offers **Build**/**Use in Run tab** actions per benchmark×config.
+* **Reference** — a benchmark reference matrix, computed on demand (no separate database): one row
+  per materialized test point, one column per machine, with run counts and WordPress
+  publish-status badges. Clicking a row opens a cross-machine metric-comparison detail page
+  (verdict-driven warning highlighting, drill-down links to each machine's individual runs,
+  archetype characterization badges per column); a "by machine" view slices the same data the
+  other way (one machine's test points as rows). A machine with no local `wspy-store` presence can
+  still contribute a column, recovered directly from its own already-published WordPress pages
+  (real local data always wins when both exist, recovered cells marked distinctly); a "Discover
+  from WordPress" button per suite finds published test points with no local trace at all. A
+  "Publish reference matrix" button runs `scripts/publish_reference_matrix.py`'s site-wide static
+  publish (dry-run checked by default).
+
+The report page (one per run) has a curation studio (reorderable per-block/whole-report commentary,
+inclusion depth) and export to WordPress/self-contained HTML/Markdown; a process-tree viewer/diff
+page with a hot-process table, per-node `--target` counters, and a "▶ profile" drill-down that
+resolves `--symbol-sample` data to real symbol names inline (no separate `wspy-symbolize` step); an
+interactive timeline viewer for `--interval` CSVs (phase-shaded, synchronized-zoom small-multiple
+charts); one-click "Generate characterization badge"/"Generate similarity panel" buttons
+(`wspy-archetype --run`/`--nearest` output written as curatable artifacts); and AI narrative
+analysis via `wspy-analyze`. Three publish buttons, each reachable without a terminal once
+`wspy-publish configure` has been run (the Application Password itself is never entered through
+these forms, only read from that config): "Publish to WordPress" (the single run, same pipeline as
+`wspy-publish publish-page --from-rundir`), "Publish test-point report" (runs `wspy-testpoint
+select-runs` + `render` for the *whole test point* this run belongs to), and, on the Reference tab,
+"Publish reference matrix" above. `/history` is a searchable run browser; `/compare` puts two or
+more runs side by side with an optional annotation layer.
 
 ```
 python3 web/server.py                  # serves http://127.0.0.1:8765/ by default

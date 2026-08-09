@@ -590,6 +590,22 @@ above, for human/agent consumption.
   (needs `--tree-futex`/`--tree-io-wait`; `unavailable` without `--tree` at all, the common case).
 - **sched_rundelay_pct** (`wspy-archetype` input, `store.c`) — `[feature]` `rundelay_seconds /
   elapsed_seconds * 100`, scanned from `--tree`'s raw `schedstat` lines (needs `--tree-schedstat`).
+- **env_score** (`wspy-summary`) — `[human-only]`/`[categorical]` (not a `run_features` row, printed as
+  a column on every `wspy-summary`/`--check-regression` bucket row) — unweighted fraction of 8 tracked
+  `run_environment` fields (`virt_role`, `hypervisor_vendor`, `microcode_version`, `bios_vendor`/
+  `bios_version`/`bios_date`, `cpu_governor`, `memory_total_kb`) that agreed across a bucket's
+  contributing runs; `memory_total_kb` counts as agreeing within 5% (routine firmware/DIMM jitter),
+  every other field is exact match, and a field only counts once mutually comparable across every
+  contributing run (`hypervisor_vendor` self-excludes on bare-metal runs). A bucket with zero
+  comparable fields gets an explicit no-data sentinel rather than a fabricated 0%/100% — absence of
+  provenance data is not evidence of a mismatch. `--min-env-score` (default 0.8) is the threshold below
+  which the bucket's **mixed-env** verdict reason fires, the scored extension of 4.2's exact-match
+  `mixed-pmu` check onto `run_environment`'s fuller provenance surface.
+- **drift_pct** (`wspy-summary --phase-topdown`) — `[human-only]`/`[categorical]` (not a `run_features`
+  row, printed per topdown column in `--phase-topdown`'s output) — the largest phase-to-phase swing in
+  that column's mean across the run's observed `warmup`/`steady`/`degraded` phases; blank (never
+  fabricated) for a column with data in only one observed phase. The trailing note names the single
+  largest drifter across every topdown column in the run.
 
 Source: `provenance.c`, one-shot per-run capture, JSON in the manifest, promoted into SQLite by
 `store.c:enrich_from_manifest()`. Every field degrades independently (`available=0` + a reason string)

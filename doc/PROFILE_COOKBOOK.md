@@ -130,11 +130,38 @@ exactly the mechanism behind the `noisy` verdict example above, where one run's 
 (IPC dropped to 0.6 against a steady ~1.8) dragged that run's own `retire` average down relative to
 its peers.
 
+### Reading `--phase-topdown` output
+
+`wspy-summary --phase-topdown <hostname>:<run_id>` answers the question the paragraph above raises
+directly for one run's own topdown columns, instead of leaving you to eyeball a CSV diff: does this
+column's value genuinely *shift* between phases, and by how much. Real captured example (a real
+compute-then-pointer-chase run, `--topdown --interval 1`, two phases actually observed — `warmup` and
+`steady`, no `degraded` transition this particular run):
+
+```
+metric    warmup       steady       degraded   drift_pct
+retire    12.87(n=3)   8.94(n=5)    -          3.93
+backend   83.33(n=3)   90.82(n=5)   -          7.49
+wspy-summary: largest phase drift: backend (7.49 pts, between warmup and steady)
+```
+
+Each cell is that column's own mean *within* the named phase, with its own tick count `n` — a phase
+this run never reached (here, `degraded`) prints `-`, never a fabricated 0 or an extrapolated value.
+`drift_pct` is the largest phase-to-phase swing for that column specifically; the trailing note names
+the single largest drifter across every topdown column in the run — here, `backend` swinging 7.49
+points between `warmup` and `steady` is the biggest single shift, even though `retire` also moved.
+
+**What to do**: a large `drift_pct` on a column that matters to your investigation (e.g. `backend` for
+a suspected memory-bound workload) means the run's own topdown read isn't uniform across its
+lifetime — the single aggregate number `wspy-summary`'s normal bucket view reports can hide a
+`warmup`-phase read that looks nothing like the `steady`-phase one it's actually averaged together
+with. A run collected without phase data (aggregate, `--per-core`, or no `--interval`) degrades to an
+explicit notice rather than an empty table — `--phase-topdown` needs `--interval` plus IPC counters
+plus phase detection all active on the original run, same gating `phase.c` itself uses.
+
 ## Reading comparability signals
 
-Two real, shipped comparability mechanisms exist today — there is no single composite "comparability
-score" yet (that's still a 4.3 backlog item, "Machine/environment comparability scoring," broader
-than either of these):
+Three real, shipped comparability mechanisms, from coarsest to most detailed:
 
 - **`mixed-pmu`** (see above) — exact-match on `(cpu_vendor, counters_requested, counters_measured)`,
   catching the case where a same-named column was computed from genuinely different hardware or a
@@ -145,14 +172,37 @@ than either of these):
   by an environment difference rather than the workload itself — e.g. `wspy-summary --group-by
   cpu_governor --metric ipc` splits a mixed `performance`/`powersave`-governor dataset into its own
   buckets instead of averaging across a difference that has nothing to do with the code being measured.
+- **`env_score`/`mixed-env`** — a single composite comparability *score*, every bucket, every time
+  (no `--group-by` needed to notice it): the fraction of 8 tracked `provenance.c` fields (`virt_role`,
+  `hypervisor_vendor`, `microcode_version`, `bios_vendor`/`bios_version`/`bios_date`, `cpu_governor`,
+  `memory_total_kb`) that agreed across a bucket's contributing runs. Real captured example (4 runs of
+  one workload, same command, deliberately varied environment provenance — one re-run with a flipped
+  governor, one collected inside a VM on different hardware):
 
-**What's not here yet**: a report doesn't currently score "how comparable are these two environments"
-as a single number or verdict — you have to know to reach for `--group-by` yourself. If a future
-`wspy-summary` version adds that scoring, this section is the place it'll be documented.
+  ```
+  group    metric   n      mean  ...  env_score  ...  verdict
+  phasey   backend  4   88.0125  ...          0  ...  WARN:mixed-env
+  ```
+
+  `env_score=0` here because every tracked field disagreed somewhere across the 4 runs (the VM run
+  alone differs on `virt_role`/`hypervisor_vendor`/`bios_*`/`memory_total_kb`; the governor-flip run
+  differs on `cpu_governor`). `--min-env-score` (default 0.8) is the threshold below which `mixed-env`
+  fires — a single disagreeing field among otherwise-identical runs (e.g. just the governor flip, no
+  VM run) stays *above* 0.8 and the bucket still passes; it takes several fields disagreeing, or one
+  run from genuinely different hardware, to actually trip it. A bucket with zero mutually-comparable
+  fields (no `run_environment` data collected at all) gets an explicit no-data sentinel (`-`), never a
+  fabricated 0 or 100 — absence of provenance data is not evidence of a mismatch either way.
+
+  **What to do**: `mixed-env` firing doesn't by itself say *which* field is the outlier — cross-reference
+  `--group-by cpu_governor`/`--group-by virt_role` (or query `run_environment` directly) to find it, the
+  same way `mixed-pmu`'s "what to do" above points at `--group-by cpu_vendor`. `--check-regression`
+  reports the same `env_score` on its baseline row too, for the identical reason: a flagged
+  `above`/`below` deviation is far less trustworthy if the baseline it's compared against turns out to
+  be `mixed-env` itself.
 
 ## Reading the archetype scorecard
 
-`wspy-archetype` (`wspy-store`'s `run_features` → four classified axes) is the closest thing to a
+`wspy-archetype` (`wspy-store`'s `run_features` → five classified axes) is the closest thing to a
 "workload profile" this toolset produces today. Real captured output (bulk mode, one row per run):
 
 ```
@@ -174,12 +224,48 @@ cookbook-host  run1    /bin/cookbook_workload   compute-bound      memory-bound 
   the fraction of `phase.c`-classified `steady` ticks (see "Reading phase output" above) — `phased`
   here reflects that this run's own interval data included a real `warmup`→`steady`→`degraded`→
   `steady` sequence, not a clean, uniformly `steady` run throughout.
+- **`memory_attribution`** (needs no extra flags beyond topdown — strengthened by `--dcache`/
+  `--cache2`/`--cache3`/`--tlb`/`--ibs-sample`/`--tree-io-wait`/`--tree-schedstat`) — a fifth axis,
+  separate from the four above: cross-references `resource_dominance`'s own `backend_pct` against
+  every independently-measured cache/TLB/IBS signal the run collected, rather than trusting a
+  "memory-bound" topdown read on its own. Real captured example (a real pointer-chase workload,
+  `--topdown --dcache --cache2`):
 
-**What to do**: treat the 4 axes as independent supporting tags around the one headline
-classification (`resource_dominance`), not a single combined label — a `compute-bound` /
-`imbalanced` / `branch-heavy` / `erratic` run and a `compute-bound` / `balanced-parallel` /
-`straight-line` / `steady` run are both "compute-bound," but they're very different workloads, and
-the axes are what tell you that apart.
+  ```
+  resource_dominance=memory-bound
+  resource_dominance_pct=80.90
+  memory_attribution=uncorroborated
+  memory_attribution_reasons=checked:dcache_miss_pct,checked:l2_miss_pct,checked:smt_contention_pct
+  ```
+
+  `backend_pct=80.9%` clears the significance floor easily, but every signal that was actually
+  *collected* to corroborate it (`dcache_miss_pct=8.76%`, `l2_miss_pct=0.56%`) sat below the elevated
+  threshold — genuinely interesting information a raw topdown read can't surface on its own: either
+  the real bottleneck here is something none of the collected signals capture (this workload's
+  dependent-load pointer chase is latency-, not miss-rate-, dominated at these array sizes), or the
+  signal set collected this run just isn't the discriminating one. **What to do**: `uncorroborated`
+  is not "wrong" or "ignore this run" — it's a prompt to either collect a more targeted signal
+  (`--ibs-sample` for a real per-sample memory-data-source breakdown, if this is AMD hardware) or to
+  treat the "memory-bound" read as provisional rather than settled. Two more outcomes
+  (`blocked`/`oversubscribed`) take priority over this cache/TLB/IBS corroboration check entirely,
+  for a run collected with `--tree-io-wait`/`--tree-schedstat`/`--tree-futex`: a "memory-bound"
+  topdown read on a phase that was actually blocked on the kernel or just not scheduled isn't a
+  genuine hardware stall to begin with, so asking whether cache counters "corroborate" it would be
+  the wrong question.
+
+  On AMD hosts, a `corroborated` result additionally gets **`memory_attribution_locus`** —
+  *which* cache level the stall concentrates in (`l1`/`l2-l3`/`dram`/`remote-numa`, plus a
+  `tlb-cofire` co-firing tag), from `--ibs-sample`'s per-sample hit-outcome tags where available,
+  falling back to plain miss-rate signals otherwise (`memory_attribution_locus_reasons` names which
+  tier/signal decided it, always prefixed `tier=ibs-sample`/`tier=cache-counter` so the two
+  precision levels are never mistaken for each other) — the AMD/IBS-side answer to a question
+  Intel/ARM's `--topdown-backend` L1/L2/L3/DRAM stall-cycle chain already answers directly.
+
+**What to do**: treat the 4 supporting axes (and `memory_attribution`, when it applies) as
+independent tags around the one headline classification (`resource_dominance`), not a single
+combined label — a `compute-bound` / `imbalanced` / `branch-heavy` / `erratic` run and a
+`compute-bound` / `balanced-parallel` / `straight-line` / `steady` run are both "compute-bound," but
+they're very different workloads, and the axes are what tell you that apart.
 
 ## Nearest-neighbor search and clustering (`--nearest`, `--kmeans`)
 
