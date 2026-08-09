@@ -64,6 +64,8 @@ import wp_client  # noqa: E402 -- WordPress REST client, for the "Publish to Wor
                    # why it lives in its own module rather than here
 import counter_text  # noqa: E402 -- parses counters.txt/ibs.txt human-text output, INVESTIGATION.md
                       # 4.3 item 21
+import report_root  # noqa: E402 -- git-backed report-root client, shared with wspy-publish/wspy-testpoint;
+                     # resolve_report_root_for_web()'s DEFAULT_REPORT_ROOT fallback needs it
 
 REPO_ROOT = joblib.REPO_ROOT
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
