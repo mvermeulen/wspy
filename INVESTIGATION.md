@@ -6,16 +6,15 @@ a single release. Past releases are recorded only as terse pointer lists (below)
 live in `README.md`/`CLAUDE.md`/`doc/METRICS.md`, and the design write-ups/validation narratives behind
 every decision live in `doc/INVESTIGATION_ARCHIVE.md` — this document doesn't restate either.
 
-Status (2026-08-09): **4.0, 4.1, 4.2, and 4.3 are all fully shipped** (v4.2 tagged and published as a
-GitHub release, `wspy-release-notes.4.2.md` as its body; `wspy-release-notes.4.3.md` is the drafted
-body for the still-untagged v4.3 — see `scripts/release_prep.sh`). Nothing remains in the open backlog
-blocking the v4.3 tag; tagging/publishing (`git tag`/`git push`/`gh release create`) is a manual step
-this document doesn't track. The open backlog (below) is sorted into three buckets: **"4.4 priorities"**
-(three named goals — ease-of-use/one-click web UI flows, GPU support, and Phoronix suite build-out),
-**"4.5 priorities"** (lower priority, still wanted, loosely grouped by topic), and **"Deferred
-indefinitely"** (explicitly not planned for any numbered release; revisit only on a concrete trigger). A
-fresh "`<N>` release closure" bucket gets added back once a cycle's own priorities empty out and it's
-time to prep that tag — see `scripts/release_prep.sh`'s own checklist for what that housekeeping covers.
+Status (2026-08-09): **4.0, 4.1, 4.2, and 4.3 are all tagged and released** (v4.2 and v4.3 both
+published as GitHub releases, `wspy-release-notes.4.2.md`/`wspy-release-notes.4.3.md` as their
+bodies — see `scripts/release_prep.sh`). **4.4 is next.** The open backlog (below) is sorted into
+three buckets: **"4.4 priorities"** (three named goals — ease-of-use/one-click web UI flows, GPU
+support, and Phoronix suite build-out), **"4.5 priorities"** (lower priority, still wanted, loosely
+grouped by topic), and **"Deferred indefinitely"** (explicitly not planned for any numbered release;
+revisit only on a concrete trigger). A fresh "`<N>` release closure" bucket gets added back once a
+cycle's own priorities empty out and it's time to prep that tag — see `scripts/release_prep.sh`'s own
+checklist for what that housekeeping covers.
 
 ## Purpose
 This document captures ideas for improvements focused on making benchmark collection, organization,
@@ -115,9 +114,8 @@ file/tool, `doc/ARTIFACT_CONTRACT.md` for the manifest/run-index/CSV schema cont
 - Release engineering: `scripts/release_prep.sh` outstanding-open-issue review, `doc/CONTRIBUTOR_GUIDE.md`.
 
 Release-prep housekeeping is folded into the list above. `scripts/release_prep.sh --version 4.3`'s full
-checklist has run clean; `wspy-release-notes.4.3.md` is the drafted GitHub release body. Tagging/
-publishing (`git tag`/`git push`/`gh release create`) is the one step this document doesn't track —
-those commands are always run by hand, never by the script.
+checklist ran clean; `wspy-release-notes.4.3.md` is the published GitHub release body. v4.3 is tagged
+and released.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
