@@ -1,4 +1,4 @@
-wspy 4.3 is the second-largest release yet (89 merged PRs). It closes out the clustering/nearest-
+wspy 4.3 is the second-largest release yet (96 merged PRs). It closes out the clustering/nearest-
 neighbor, topdown/attribution, and publishing/reporting-expansion work planned for this cycle, plus a
 substantial amount of tooling that grew organically out of actually publishing real reports against a
 real WordPress site: a benchmark reference matrix that works even for machines with no local database
@@ -74,33 +74,43 @@ turned up six confirmed hardware bugs, all now fixed:
   OpenBenchmarking result or installed/exported suite into minimal single-test-point suites, with
   grouped inventory, per-test README generation, and version-mismatch/filter UI.
 - Smaller fixes: linking queued Phoronix runs back into their test-point directory (#145), a
-  `--foreground` timeout fix to prevent orphaned background processes (#151).
+  `--foreground` timeout fix to prevent orphaned background processes (#151), resolving
+  `local/<identity>` suite names before checking Phoronix install status (#171).
 
 ## CPU2026 web tab
 - **CPU2026 workload-suite tab** (#161) — discovery/registration/build-triggering for SPEC CPU2026
   benchmarks, structurally simpler than the Phoronix tab since a benchmark+config already exist
-  locally once installed.
+  locally once installed. Base/peak configs of the same benchmark now register and build
+  independently instead of colliding, and a confirm-gated **Unregister** button removes an
+  accidentally-registered benchmark×config without ever touching real run data (#162).
 - Per-host `specdir` tracking (#200) so a shared repo checkout works correctly across multiple SPEC
   install hosts; an `shrc`-sourcing-order fix (#179); a missing benchmark added to the static catalog
   (#224).
 
 ## Process-tree and profiling depth
+- **Tree-viewer cumulative time + hot-process table** (#163) — makes it easier to narrow to the
+  processes where a run's user/system time actually went.
 - **`--target=comm=<name>[,cmdline=<substr>]`** (#164–#167) — PID-targeted counter attachment: a
-  second, dedicated counter group on just the matching process, surfaced in the tree viewer's
-  hot-process table and per-node detail, plus a full counter-group selector on the Run tab (which also
-  fixed a dead "software counters" checkbox that had never actually worked).
+  second, dedicated counter group on just the matching process, surfaced per-node in that same tree
+  viewer, plus a full counter-group selector on the Run tab (which also fixed a dead "software
+  counters" checkbox that had never actually worked; #168 trims/collapses the picker further).
 - **`--symbol-sample`/`wspy-symbolize`** (#169) — routine/symbol-level profiling scoped to
   `--target`-matched processes, via a generalized `perf_ring.c` shared with IBS sampling; a
   tree-viewer "▶ profile" drill-down resolves samples against `addr2line`.
-- Tree-viewer trims/collapses (#168) for a more readable counter-group picker.
+- Tree-viewer oversized-JSON handling (#170) — a real ~100K-process kernel-build capture's `--json`
+  export exceeded what a browser could reliably `fetch()`/`JSON.parse()`; now degrades to the
+  process-count/summary view with the interactive tree omitted, instead of a confusing client-side
+  parse failure.
 
 ## `wspy-analyze`
 - Fixed a "thinking" model (`gpt-oss:20b`) silently producing empty output from context-window
-  exhaustion, plus new pre-computed report artifacts and a "default curation" button, later made
-  configurable via `web/default_curation.conf` (#178).
+  exhaustion, plus new pre-computed report artifacts and a first "default curation" button (#178),
+  made configurable via `web/default_curation.conf` in a follow-up once a real 20-artifact run
+  showed the original kind-based policy picked the wrong ~half of them (#180).
 - Output is now real Markdown (`.md`, a new stdlib `markdown_lite.py` converter) instead of
   HTML-escaped `<pre>` text, reaching both the report page and WordPress export as native Gutenberg
-  blocks.
+  blocks; also fixed a composite preset (e.g. `zen4plus-deep`) never actually triggering its own
+  process-tree view generation (#181).
 - AMD IBS counting-mode CSV data (#182) and `on_cpu`'s already-a-percentage meaning (#203) now reach
   the AI prompt, fixing two real narrative misreadings caught on published reports.
 
@@ -120,7 +130,7 @@ turned up six confirmed hardware bugs, all now fixed:
   through to identity resolution (#196); the button's Machine field now pre-fills from config (#195).
 
 ## WordPress publishing
-- **REST publishing primitives** (#173–#177) — `web/wp_client.py`/`wspy-publish`: page
+- **REST publishing primitives** (#172–#177) — `web/wp_client.py`/`wspy-publish`: page
   create/update/draft/publish, media upload, Gutenberg-block content reuse.
 - **Hierarchy-aware `publish_page_at_path()`** — walks/auto-creates parent stubs, used for cpu2026
   (#188) and Phoronix (#189) level-3/4 benchmark pages, machine catalog pages (#191), and the
@@ -151,5 +161,5 @@ turned up six confirmed hardware bugs, all now fixed:
   field/store schema bump without breaking CSV shape, doc drift, or schema-migration checks.
 
 ---
-89 merged PRs since v4.2. See `INVESTIGATION.md`'s "What shipped in 4.3" for the complete pointer list
+96 merged PRs since v4.2. See `INVESTIGATION.md`'s "What shipped in 4.3" for the complete pointer list
 and `doc/INVESTIGATION_ARCHIVE.md` for full design/validation detail on every item above.
