@@ -568,8 +568,8 @@ above, for human/agent consumption.
      not a new threshold. Coarser than the IBS tier: a miss *rate* per cache level, not per-sample
      hierarchy-position tag data.
 
-  See `INVESTIGATION.md`'s "Shipped since 4.2" write-up ("IBS-derived memory-path bottleneck
-  decomposition") for the full design rationale.
+  See `doc/INVESTIGATION_ARCHIVE.md`'s "IBS-derived memory-path bottleneck decomposition" write-up
+  for the full design rationale.
 - **memory_attribution_locus_reasons** (`wspy-archetype`) — `[human-only]`/`[categorical]` (not a
   `run_features` row, only ever printed alongside `memory_attribution_locus` in `wspy-archetype`'s own
   CSV/human/`--run` output) — comma-joined trace of which precision tier and signal(s) produced the
