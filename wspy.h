@@ -8,7 +8,7 @@
 #include "cpu_info.h"
 
 #define WSPY_VERSION_MAJOR 4
-#define WSPY_VERSION_MINOR 2
+#define WSPY_VERSION_MINOR 3
 // Point release, bumped for a correctness-only fix that doesn't warrant a
 // MINOR bump (no new feature/flag) but is significant enough that the
 // binary's own --version output should distinguish it from plain 4.1 --
