@@ -11,10 +11,12 @@
 #define WSPY_VERSION_MINOR 3
 // Point release, bumped for a correctness-only fix that doesn't warrant a
 // MINOR bump (no new feature/flag) but is significant enough that the
-// binary's own --version output should distinguish it from plain 4.1 --
-// see the "raw event .config left unparsed for non-default --passes
-// groups" fix. 0 for a release with no patch-level fix yet.
-#define WSPY_VERSION_PATCH 0
+// binary's own --version output should distinguish it from the prior
+// release -- 4.1.1 was the "raw event .config left unparsed for
+// non-default --passes groups" fix; 4.3.1 is the web launcher's missing
+// `report_root` import (PR #226). 0 for a release with no patch-level fix
+// yet.
+#define WSPY_VERSION_PATCH 1
 
 extern FILE *outfile;
 
