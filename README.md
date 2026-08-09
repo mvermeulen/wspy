@@ -83,6 +83,13 @@ Some of the more commonly used options:
     output files produced)
   * `--run-index <file>` - append a compact JSON Lines record for this run to a shared file,
     so tooling can query "all runs" by scanning one file
+  * **`<file>`'s parent directory must already exist for both flags** - wspy does not create it.
+    A missing directory is a `warning: unable to open manifest file: ...`/`unable to open run
+    index file: ...` on stderr, not a hard failure: the workload still runs, counters are still
+    measured, wspy still exits 0, and only that one artifact is silently dropped. This surfaces
+    two steps downstream as `wspy-store` reporting `0 record(s)` ingested or `wspy-archetype
+    --run <host:id>` reporting "no run found," with no mention of the real cause — worth checking
+    first if either of those happens unexpectedly in a scripted pipeline.
   * `--exit-with-child` - exit with the launched command's own exit status (or 128+signal),
     instead of wspy's default of always exiting 0 regardless of the child
   * `--preset-name <name>`, `--config-name <name>`, `--config-option <k>=<v>` - metadata-only;
@@ -245,6 +252,14 @@ into the unified per-run directory layout above when `--suite`/`--benchmark` are
 `wspy` invocation — the latter is metadata only (no effect on what a pass does), useful for tagging
 a run with context `wspy-summary --group-by-option` can later query on.
 
+`--run-id <id>` names the run *directory* (`<outdir>/<suite>/<benchmark>/<run-id>/`) — it is **not**
+the same identifier as any individual pass's own `run_id` inside its `--run-index` record; each
+`wspy` process invoked by a pass computes its own independently. If you need to look a specific
+pass up later (e.g. `wspy-archetype --run <hostname>:<run_id>`), read that pass's actual `run_id`
+back off the `--run-index` file after the run, rather than assuming it matches whatever you passed
+to `--run-id` here — see `doc/ARTIFACT_CONTRACT.md`'s "Unified output layout" section for the full
+distinction.
+
 ## wspy-sweep: comparison matrix mode
 
 `wspy-sweep` cross-products one wspy-controllable axis (`--affinity`, covering SMT on/off,
@@ -340,6 +355,14 @@ manifest (host fields) and CSV (metric values) when those files are still readab
                                                                                 # any malformed/
                                                                                 # collided record
 ```
+
+**`--csv` on the original `wspy` run is required for anything downstream that reads
+`metric_values`/`run_features`** (`wspy-archetype`, `wspy-summary`) — not just a nice-to-have output
+format choice. A pass run without `--csv` still gets its manifest enriched, but `wspy-store`'s
+summary line reports `0 metric-set(s) ingested, 1 skipped` (easy to miss in a scripted pipeline)
+and every `run_features` row lands `coverage=unavailable`, so `wspy-archetype` then correctly but
+silently reports `resource_dominance=unknown` even though the counters were genuinely measured and
+printed in the run's human-readable output.
 
 See `./wspy-store --help` for the full option list.
 
