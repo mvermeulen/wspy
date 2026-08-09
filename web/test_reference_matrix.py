@@ -109,6 +109,33 @@ class RenderReferenceDiscoverPanelTest(unittest.TestCase):
         self.assertIn("reference-discover-result", html_out)
 
 
+class ResolveReportRootForWebTest(unittest.TestCase):
+    """Regression coverage for the NameError crash fixed alongside this test: server.py called
+    report_root.DEFAULT_REPORT_ROOT here without ever importing the report_root module. Every other
+    test in this file passes an explicit cfg["report_root"], which never touches that fallback
+    branch -- these are the ones that would have caught it, since they exercise the exact cfg shape
+    a plain `python3 web/server.py` (no --report-root flag) startup produces."""
+
+    def test_default_cfg_no_wordpress_config_falls_back_without_crashing(self):
+        # cfg with no "report_root" key at all is what main()'s default startup builds when
+        # --report-root wasn't passed; wp_client.load_config() returning None is what happens with
+        # no ~/.config/wspy/publish.json -- together, the exact state that crashed with
+        # "NameError: name 'report_root' is not defined" before this fix.
+        with patch("server.wp_client.load_config", return_value=None):
+            result = server.resolve_report_root_for_web({})
+        self.assertEqual(result, server.report_root.DEFAULT_REPORT_ROOT)
+
+    def test_cfg_report_root_takes_priority(self):
+        with patch("server.wp_client.load_config", return_value=None):
+            result = server.resolve_report_root_for_web({"report_root": "/explicit/path"})
+        self.assertEqual(result, "/explicit/path")
+
+    def test_wp_configured_report_root_used_when_cfg_missing(self):
+        with patch("server.wp_client.load_config", return_value={"report_root": "/wp/configured/path"}):
+            result = server.resolve_report_root_for_web({})
+        self.assertEqual(result, "/wp/configured/path")
+
+
 class RenderReferenceTabTest(unittest.TestCase):
     def test_no_cells_shows_placeholder(self):
         with tempfile.TemporaryDirectory() as tmpdir:
