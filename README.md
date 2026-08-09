@@ -725,6 +725,9 @@ See `./web/server.py --help` for the full option list.
   produce: canonical name, exact derivation, source function, whether/how it reaches the SQLite
   store, and (where it's genuinely meaningful) a high/low rule of thumb — read by both people and
   AI agents summarizing wspy output, and the working list for deciding what belongs in the database
+* `doc/CONTRIBUTOR_GUIDE.md` - walkthrough for adding a new collector/metric/manifest-or-run-index
+  field/store schema bump without breaking CSV shape, doc drift, or schema-migration checks along
+  the way; expands `CLAUDE.md`'s "Common edits" section scenario by scenario
 * `scripts/setup_perf.sh` - checks/adjusts `nmi_watchdog` and `perf_event_paranoid` for running
   perf counters as a non-root user, and checks/grants `CAP_PERFMON` on the `wspy` binary for
   `--power` (re-run after rebuilding — the grant is a file capability, not a sysctl)

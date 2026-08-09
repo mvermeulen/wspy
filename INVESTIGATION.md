@@ -1732,12 +1732,12 @@ motivation and per-syscall design rationale. What remains open from this track:
 
 ## 4.3 release closure
 4.3's originally-scoped tiers (clustering/nearest-neighbor, topdown/attribution, publishing/reporting
-expansion) are all fully shipped — see "Shipped since 4.2" for every write-up. Nothing in the open
-backlog blocks tagging this release; what's left is housekeeping before cutting the tag.
+expansion) are all fully shipped — see "Shipped since 4.2" for every write-up. The one housekeeping item
+(contributor guide for adding a collector/metric/schema bump safely — `doc/CONTRIBUTOR_GUIDE.md`, plus a
+pointer from `CLAUDE.md`'s "Common edits" section and `README.md`'s "Other contents") is now also done.
+Nothing remains in the open backlog blocking tagging this release.
 
-1. Contributor guide for adding a collector/metric/schema bump safely.
-
-Once this lands (or is explicitly skipped), run `scripts/release_prep.sh`'s checklist and fold "Shipped
+Once `scripts/release_prep.sh`'s checklist has been run, fold "Shipped
 since 4.2" into a proper "What shipped in 4.3" section per this doc's own convention (see "How to use
 this document" above).
 

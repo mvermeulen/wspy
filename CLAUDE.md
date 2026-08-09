@@ -8,7 +8,9 @@ For design history/rationale/validation narratives, see `INVESTIGATION.md` (acti
 step-by-step tutorial for onboarding a new benchmark suite, end to end through the whole toolchain),
 `doc/METRICS.md` (every metric's name/derivation/source-function/database status),
 `doc/REPORT_HIERARCHY.md` (directory convention for curated `*.md` workload reports — root/suite/test/
-test-point/machine levels; convention only as of 4.3, not yet wired to any tool), and
+test-point/machine levels; convention only as of 4.3, not yet wired to any tool),
+`doc/CONTRIBUTOR_GUIDE.md` (walkthrough for adding a collector/metric/schema bump safely — this file's
+own "Common edits" section below, expanded), and
 `git log`/`git blame`. This file covers *current*
 mechanism/behavior only.
 
@@ -199,6 +201,9 @@ value row must be emitted **unconditionally** — gating it behind a counter-val
 vendor/group applicability) means a permission-denied run silently drops columns the header still claims.
 
 ## Common edits
+
+See `doc/CONTRIBUTOR_GUIDE.md` for the walkthrough version of this section — same steps, with the *why*
+and exact gotchas spelled out per scenario.
 
 - **New raw perf counter:** add an entry to `intel_raw_events[]`/`amd_raw_events[]` in `topdown.c`
   (`event=...,umask=...` + a `COUNTER_*` mask from `wspy.h`, adding a bit if needed); `setup_raw_events()`
