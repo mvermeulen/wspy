@@ -6,15 +6,15 @@ a single release. Past releases are recorded only as terse pointer lists (below)
 live in `README.md`/`CLAUDE.md`/`doc/METRICS.md`, and the design write-ups/validation narratives behind
 every decision live in `doc/INVESTIGATION_ARCHIVE.md` — this document doesn't restate either.
 
-Status (2026-08-09): **4.0, 4.1, 4.2, and 4.3 are all tagged and released** (v4.2 and v4.3 both
-published as GitHub releases, `wspy-release-notes.4.2.md`/`wspy-release-notes.4.3.md` as their
-bodies — see `scripts/release_prep.sh`). **4.4 is next.** The open backlog (below) is sorted into
-three buckets: **"4.4 priorities"** (three named goals — ease-of-use/one-click web UI flows, GPU
-support, and Phoronix suite build-out), **"4.5 priorities"** (lower priority, still wanted, loosely
-grouped by topic), and **"Deferred indefinitely"** (explicitly not planned for any numbered release;
-revisit only on a concrete trigger). A fresh "`<N>` release closure" bucket gets added back once a
-cycle's own priorities empty out and it's time to prep that tag — see `scripts/release_prep.sh`'s own
-checklist for what that housekeeping covers.
+Status (2026-08-09): **4.0, 4.1, 4.2, 4.3, and 4.3.1 are all tagged and released** (v4.2 and v4.3
+published as GitHub releases with `wspy-release-notes.4.2.md`/`wspy-release-notes.4.3.md` as their
+bodies, v4.3.1's release body written directly — see `scripts/release_prep.sh`). **4.4 is next.** The
+open backlog (below) is sorted into three buckets: **"4.4 priorities"** (three named goals —
+ease-of-use/one-click web UI flows, GPU support, and Phoronix suite build-out), **"4.5 priorities"**
+(lower priority, still wanted, loosely grouped by topic), and **"Deferred indefinitely"** (explicitly
+not planned for any numbered release; revisit only on a concrete trigger). A fresh "`<N>` release
+closure" bucket gets added back once a cycle's own priorities empty out and it's time to prep that
+tag — see `scripts/release_prep.sh`'s own checklist for what that housekeeping covers.
 
 ## Purpose
 This document captures ideas for improvements focused on making benchmark collection, organization,
@@ -116,6 +116,15 @@ file/tool, `doc/ARTIFACT_CONTRACT.md` for the manifest/run-index/CSV schema cont
 Release-prep housekeeping is folded into the list above. `scripts/release_prep.sh --version 4.3`'s full
 checklist ran clean; `wspy-release-notes.4.3.md` is the published GitHub release body. v4.3 is tagged
 and released.
+
+## What shipped in 4.3.1
+- Correctness fix: `web/server.py` never imported the `report_root` module, crashing every default
+  `python3 web/server.py` startup (no `--report-root` flag) on first page load — `NameError: name
+  'report_root' is not defined` (#226). Regression test: `ResolveReportRootForWebTest` in
+  `web/test_reference_matrix.py`.
+
+`scripts/release_prep.sh --version 4.3.1`'s full checklist ran clean. v4.3.1 is tagged and released;
+its GitHub release body is the notes at `https://github.com/mvermeulen/wspy/releases/tag/v4.3.1`.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
