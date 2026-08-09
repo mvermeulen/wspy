@@ -782,7 +782,10 @@ tabbed launcher pages plus a per-run report page:
   materialized, and a "Use in Run tab" prefill button per test point.
 * **CPU2026** — the SPEC CPU2026 counterpart: discovers installed benchmarks/configs under a
   configurable `$SPECDIR`, tracks per-host install paths so a shared checkout works across
-  multiple SPEC hosts, and offers **Build**/**Use in Run tab** actions per benchmark×config.
+  multiple SPEC hosts, and offers **Build**/**Use in Run tab**/**Unregister** actions per
+  benchmark×config (base/peak tracked independently; unregistering only removes the
+  registration — `source.json`/`README.md`/`runs/` symlinks — never the real run data a
+  `runs/` symlink points at).
 * **Reference** — a benchmark reference matrix, computed on demand (no separate database): one row
   per materialized test point, one column per machine, with run counts and WordPress
   publish-status badges. Clicking a row opens a cross-machine metric-comparison detail page
