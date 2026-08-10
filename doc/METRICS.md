@@ -269,7 +269,7 @@ Source: `topdown.c:print_memory()`. CSV column: `bandwidth` (MB/s), assumes a 64
 
 Source: `topdown.c:print_float()`. CSV column: `float`.
 
-- **float** — `[feature]`? not currently in `SIMPLE_METRIC_FEATURES` — candidate.
+- **float** — `[feature]` (`float_pct`, `SIMPLE_METRIC_FEATURES`, issue #227).
   `(fp_ret_fops_AVX512 + fp_ret_fops_AVX256 + fp_ret_fops_AVX128 + fp_ret_fops_MMX + fp_ret_fops_scalar) /
   instructions * 100`. Human mode also breaks out each SIMD width as "per 1000 inst".
 
@@ -644,8 +644,11 @@ concrete candidate for a future normalized table, parallel to `run_environment`.
   their respective `print_*` functions (see `CLAUDE.md`'s CSV-column pitfalls before doing so).
   `on_cpu` in particular seems like an obvious `run_features` candidate once it has a CSV home.
   Per-1000-inst density annotations (branches, cache accesses, etc.) are the same story.
-- `float` (AMD FP-op density) is `[raw]` but not yet in `SIMPLE_METRIC_FEATURES` — no `float_pct`
-  feature exists today.
+- `float` (AMD FP-op density) is now `float_pct` in `SIMPLE_METRIC_FEATURES` (issue #227). The
+  reference-matrix corpus (SPEC CPU2026 by-machine pages) showed a clean intrate-vs-fprate split with no
+  overlap, but only on one machine at n=1 per test — a `SIMPLE_AXES` `vectorization_density` archetype
+  axis with real thresholds is still waiting on more machines/compilers/repeat runs before committing to
+  boundaries, per `archetype.c`'s own extension note.
 - Cgroup fields have no store table at all yet (see above) — `nr_throttled`/`throttled_usec` in
   particular seems worth a `run_features` entry (e.g. `throttled_pct = throttled_usec / (elapsed*1e6)`)
   since it directly explains anomalous runtime_stability/backend_pct results.
