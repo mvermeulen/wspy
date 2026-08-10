@@ -37,7 +37,7 @@
  * (wspy.h) is versioned separately from MANIFEST_SCHEMA_VERSION. Recorded
  * on every run_features row so a later reader can tell which rule set
  * produced a given value. */
-#define FEATURE_SET_VERSION "1.5"
+#define FEATURE_SET_VERSION "1.6"
 
 /* Noise floor for active_core_count (below): a --per-core core averaging
  * at or under this IPC is treated as not meaningfully participating in the
@@ -955,6 +955,20 @@ static const struct simple_metric_feature SIMPLE_METRIC_FEATURES[] = {
    * axis corroborates against whichever one(s) a run actually collected). */
   { "itlb_generic_miss_pct", "iTLB miss" },
   { "dtlb_generic_miss_pct", "dTLB miss" },
+  /* AMD-only FP-op density (topdown.c:print_float()) -- issue #227's
+   * compiler-flag-miner gap: resource_dominance=memory-bound alone can't
+   * tell an integer memory-bound workload (hash tables, graph traversal)
+   * from a genuinely FP-heavy one, which is exactly what vector-width
+   * tuning flags care about. Promoted from doc/METRICS.md's "Known gaps"
+   * list now that the by-machine reference-matrix corpus (SPEC CPU2026
+   * intrate vs fprate, amd-395-96gb) shows a clean bimodal split with no
+   * overlap -- intrate benchmarks 0.6-5.6%, fprate benchmarks 14.5-34.0%,
+   * corroborated on a second machine (amd-370-64gb) for the tests it has
+   * so far. Still single-machine/n=1/one-compiler-config data, so this is
+   * the feature plumbing only -- a SIMPLE_AXES vectorization_density axis
+   * with real thresholds is left for once more machines/compilers/n>1 runs
+   * are in (archetype.c's own header already sketches the extension). */
+  { "float_pct",             "float" },
 };
 #define NUM_SIMPLE_METRIC_FEATURES \
   (int)(sizeof(SIMPLE_METRIC_FEATURES)/sizeof(SIMPLE_METRIC_FEATURES[0]))
