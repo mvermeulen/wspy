@@ -126,6 +126,19 @@ and released.
 `scripts/release_prep.sh --version 4.3.1`'s full checklist ran clean. v4.3.1 is tagged and released;
 its GitHub release body is the notes at `https://github.com/mvermeulen/wspy/releases/tag/v4.3.1`.
 
+## Shipped since 4.3.1
+Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-prep time.
+
+- `float_pct` `run_features` promotion (`store.c`'s `SIMPLE_METRIC_FEATURES`, `FEATURE_SET_VERSION`
+  1.5→1.6): filed as #227 from a `compiler-flag-miner` design discussion (its GCC vector-width flag
+  catalog couldn't distinguish an integer memory-bound workload from a genuinely FP-heavy one using
+  `resource_dominance`/`memory_attribution` alone). The `float` metric (AMD-only FP-op density,
+  `topdown.c:print_float()`) already reached `metric_values` as `[raw]`; this is just the promotion to
+  a normalized per-run feature, justified by a reference-matrix data review (SPEC CPU2026 by-machine
+  pages, cross-checked against `workload/cpu2026/spec_benchmarks.json`'s intrate/fprate ground truth)
+  showing a clean bimodal split with no overlap between the two categories. See "Known gaps" below for
+  what that review wasn't enough to justify yet.
+
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
 blockers — just don't assume these are confirmed:
@@ -138,6 +151,13 @@ blockers — just don't assume these are confirmed:
   limitation (the kernel never finishes scheduling the counter onto real hardware before a very
   short-lived child exits), not a wspy bug. Essentially absent on realistic (>0.3s) workloads; no fix
   planned. Root-cause investigation archived in `doc/INVESTIGATION_ARCHIVE.md`.
+- **`vectorization_density` archetype axis thresholds not yet set (#227):** `float_pct` (above) is now a
+  `run_features` value, and `archetype.c`'s header comment already sketches the one-`SIMPLE_AXES`-entry
+  extension path, but the reference-matrix data behind its promotion is single-machine, `n=1` per test,
+  one compiler config (`gcc_o3-base`) — a clean intrate/fprate separation (≈0.6–5.6% vs. ≈14.5–34.0%,
+  zero overlap, corroborated on a second machine for the tests it has so far), but too thin to commit to
+  `low`/`moderate`/`high` boundaries yet, per this doc's own no-thresholds-without-real-data rule. Revisit
+  once more machines/compiler configs/repeat runs are in the reference-matrix corpus.
 
 ## Track deep-dives
 Reasoning that doesn't fit a single backlog line, for tracks with genuinely open work. Deep-dives for
