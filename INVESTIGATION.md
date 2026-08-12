@@ -482,7 +482,21 @@ these block or distract from 4.4/4.5 scoping.
   `--tree`/`--tree-open` — real value (`ptrace`'s stop-the-world cost skews I/O-heavy/fork-heavy
   measurements, see the Critical-path deep-dive below) but a genuine architecture change with no
   immediate forcing function. Revisit if the observer-effect problem becomes a concrete blocker on a
-  specific workload rather than a standing theoretical caveat.
+  specific workload rather than a standing theoretical caveat. **Already tried once, in `archive/
+  wspy2.0/`:** that codebase had a selectable `--processtree-engine ftrace|ptrace|ptrace2|tracecmd`
+  (`config.c`), and its `ftrace.c` engine is exactly this idea — enabled `sched_process_{fork,exec,exit}`
+  tracepoints via `/sys/kernel/debug/tracing`, hand-parsed `trace_pipe` text lines. It was dropped in
+  favor of `ptrace` because raw `ftrace` has no pause: nothing stops the exiting task between the kernel
+  writing its trace record and the task actually being reaped, so under load the tree-builder's
+  `/proc/<pid>/*` reads sometimes lost the race entirely (the process was already gone by the time the
+  consumer got around to it) — worse than a staleness problem, a data-loss one, and it produced visibly
+  inaccurate trees. `ptrace`'s `PTRACE_EVENT_EXIT` stop fixed this by construction: the tracee can't
+  proceed to actually die until the tracer resumes it, so the read and the process's death can never
+  race. This is why any future replacement of the exit-time snapshot (not the per-syscall stepping —
+  see the syscall-argument-vs-timing distinction in the deep-dive) needs a synchronous in-kernel
+  mechanism (e.g. a kprobe/fentry eBPF program snapshotting task state before returning), not just a
+  different notification transport (`perf_event_open` tracepoints included) — swapping `ftrace`'s
+  `trace_pipe` for a perf ring buffer would have made the loss less frequent, not eliminated it.
 - **Optional deep trace analysis** (Perfetto-compatible export of tree+topdown+interval timelines) —
   depends entirely on the low-overhead tracing backend above; deferred alongside it.
 - **Temporal drift detection** (cluster movement across versions/configs/machines) — needs far more
