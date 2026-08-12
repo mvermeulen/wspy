@@ -1041,6 +1041,119 @@
     });
   }
 
+  // Report page's "AI vision analysis" card (render_vision_card() in
+  // server.py, INVESTIGATION.md's vision deep-dive): same SSE-streamed
+  // model-discovery-chips shape as wireAnalyzeForm() above, just against
+  // the vision-* element ids and /api/vision-analyze/... endpoint, and a
+  // plot <select> instead of a prompt-template one -- the discover-models
+  // button passes {vision_only: true} so /api/discovery/ollama-models
+  // filters to models wspy-analyze --image mode can actually use.
+  function wireVisionAnalyzeForm() {
+    var runButton = byId("vision-run");
+    var logEl = byId("vision-log");
+    var resultEl = byId("vision-result");
+    if (!runButton || !logEl || !resultEl) return;
+
+    var discoverButton = byId("vision-discover-models");
+    var chipsEl = byId("vision-model-chips");
+    if (discoverButton && chipsEl) {
+      discoverButton.addEventListener("click", function () {
+        discoverButton.disabled = true;
+        chipsEl.textContent = "discovering…";
+        fetch("/api/discovery/ollama-models", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ vision_only: true }),
+        })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            discoverButton.disabled = false;
+            if (data.error || !data.models || !data.models.length) {
+              chipsEl.textContent = data.error ||
+                "no vision-capable models found -- is Ollama running, and does it have a "
+                + "vision-capable model pulled?";
+              return;
+            }
+            chipsEl.innerHTML = data.models.map(function (m) {
+              return '<button type="button" class="add-model-chip" data-model="'
+                + escapeHtml(m) + '">+ ' + escapeHtml(m) + "</button>";
+            }).join("");
+            chipsEl.querySelectorAll(".add-model-chip").forEach(function (chip) {
+              chip.addEventListener("click", function () {
+                var input = byId("vision-models");
+                if (!input) return;
+                var names = input.value.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+                if (names.indexOf(chip.dataset.model) === -1) names.push(chip.dataset.model);
+                input.value = names.join(", ");
+              });
+            });
+          })
+          .catch(function (err) {
+            discoverButton.disabled = false;
+            chipsEl.textContent = "Error: " + err.message;
+          });
+      });
+    }
+
+    runButton.addEventListener("click", function () {
+      var allModels = getChecked("vision-all-models");
+      var models = (getValue("vision-models") || "").split(",")
+        .map(function (s) { return s.trim(); }).filter(Boolean);
+      var image = getValue("vision-image") || "";
+      // No client-side "at least one model" gate, same reasoning as
+      // wireAnalyzeForm() -- wspy-analyze's own --default-vision-model
+      // fallback applies, and any failure (model or image) surfaces in the
+      // streamed log below.
+      runButton.disabled = true;
+      resultEl.textContent = "";
+      logEl.hidden = false;
+      logEl.textContent = "";
+
+      fetch(runButton.dataset.visionUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          image: image,
+          models: models,
+          all_models: allModels,
+          critique: getChecked("vision-critique"),
+        }),
+      })
+        .then(function (resp) {
+          return resp.json().then(function (data) {
+            if (!resp.ok) throw new Error(data.error || ("HTTP " + resp.status));
+            return data;
+          });
+        })
+        .then(function (data) {
+          var es = new EventSource(data.events_url);
+          es.addEventListener("log", function (ev) {
+            logEl.textContent += JSON.parse(ev.data) + "\n";
+            logEl.scrollTop = logEl.scrollHeight;
+          });
+          es.addEventListener("done", function (ev) {
+            var payload = JSON.parse(ev.data);
+            es.close();
+            runButton.disabled = false;
+            if (payload.status === "done") {
+              resultEl.innerHTML = "Done. Reload this page, or open the "
+                + '<a href="' + escapeHtml(data.studio_url) + '">curation studio</a> '
+                + "to add the analysis as a block.";
+            } else {
+              resultEl.textContent = "Finished with errors -- see output above.";
+            }
+          });
+          es.onerror = function () {
+            runButton.disabled = false;
+          };
+        })
+        .catch(function (err) {
+          runButton.disabled = false;
+          resultEl.textContent = "Error: " + err.message;
+        });
+    });
+  }
+
   // Report page's "Publish test-point report" button (render_testpoint_card()
   // in server.py, Tier 3 item 7): same SSE-streamed shape as wireAnalyzeForm()
   // above (log lines relayed over an EventSource, a "done" event flips the
@@ -1794,6 +1907,7 @@
   wireStoreTab();
   wireDiscoveryTab();
   wireAnalyzeForm();
+  wireVisionAnalyzeForm();
   wireTestpointPublishButton();
   wireReferenceDiscoverButtons();
   wireReferencePublishButton();
