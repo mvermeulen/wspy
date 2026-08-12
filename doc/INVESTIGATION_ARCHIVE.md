@@ -422,6 +422,87 @@ Shape: a new top-level `wspy-analyze` script (Python stdlib, `chmod +x`, no fram
 API is plain JSON over `urllib.request`, no third-party dependency needed), CLI-first per the "CLI-first
 model stays primary" stance — a web-UI wrapper is a natural follow-up, not part of the first slice.
 
+### Vision-based topdown-chart analysis: live model comparison and design (shipped)
+Motivation: `wspy-plot` already renders a run's topdown breakdown as a PNG
+(`plots/<stem>.topdown.png`), but nothing narrated it — a human had to eyeball phase transitions and
+bottleneck shifts themselves. Several locally installed Ollama models are vision-capable, so the
+narrative-analysis idiom above (deterministic-numbers-in, prose-out, never the model deriving a
+classification) was extended to the chart image. Investigated 2026-08-12 against a real
+`amdtopdown.topdown.png` on a live box (AMD Ryzen AI MAX+ 395 "Strix Halo" iGPU, `gfx1151`) with
+several installed models before any code was written — the comparison below directly shaped the design.
+
+**Live model comparison** (same image, same markdown-structure prompt, across model families):
+- `gemma4:26b` and `qwen3.5:35b` gave the most trustworthy reads — right phase count, transition timing
+  within a few seconds of the real chart; `gemma4:26b` specifically also caught a genuine non-obvious
+  extreme point (a brief high-retire spike at the very start of the run) that smaller models missed.
+- `qwen3-vl:8b` (explicitly vision-tagged architecture) was decent but mislabeled one clearly
+  frontend-bound phase as "neither" bottleneck — a real classification error, not just imprecision.
+- `translategemma:4b` finished fastest but was least reliable: one phase row's own retire-rate number
+  contradicted that same row's prose description, and it missed the chart's single largest backend spike.
+- `qwen3.5:9b` never completed at all (killed after 25+ minutes), reproduced identically under both the
+  system's default Vulkan backend and a throwaway ROCm-backed `ollama serve` instance — a model-specific
+  problem, not a backend one (`qwen3-vl:8b`, a different architecture, completed normally on the same box).
+- **Every vision-capable model tested got `--no-mmproj-offload`** (CPU-bound image encoding) from
+  Ollama's scheduler on this iGPU, regardless of model family or backend (Vulkan and ROCm both) —
+  confirmed via the live `llama-server` invocation's own argv, matching a known open Ollama issue
+  (`Gemma4-12b CPU offload even though sufficient VRAM`, ollama/ollama#16617). `llama-server
+  --mmproj-offload` is a real upstream flag defaulting to *enabled*, so this is Ollama's scheduler
+  actively opting out on iGPU/unified-memory hardware, not a hard capability gap — forcing it back on
+  (bypassing Ollama, driving the bundled `llama-server` binary directly) was confirmed technically
+  possible but not attempted: a documented Vulkan-specific quality-degradation bug for offloaded mmproj
+  exists (ollama/ollama#13108) that ROCm may or may not share, and the risk/reward wasn't worth chasing
+  for this feature.
+
+**Design decisions, all shipped** (`wspy-analyze --image`):
+1. **Extended `wspy-analyze`, no new tool.** `--image <relpath-under-rundir>` (bare `--image` auto-
+   discovers a single `plots/*.topdown.png`, else an explicit path is required) reuses the existing
+   Ollama-calling machinery (streaming per-chunk-idle timeout, `<model>-if-installed` default pattern,
+   `--critique`) with its own `DEFAULT_VISION_MODEL_IF_PRESENT = "gemma4:26b"` — the empirically stronger
+   of the two "good" models above, applied only when `--image` is given.
+2. **Grounded in real numbers, not pixel-reading, same as the text path.** The live comparison shows
+   vision models get specific quantitative claims wrong even when the overall narrative is sound.
+   `summarize_csv()` (previously wired only to IBS CSVs) is reused against the topdown CSV that produced
+   the plot, and its per-column min/max/mean/stddev table is fed alongside the image in a new
+   `prompts/vision_topdown.tmpl` (own `VISION_TOPDOWN_TEMPLATE_VERSION`) — with an explicit rule mirroring
+   `perf_analysis2.tmpl`'s "Strict Telemetry Fidelity": use the image for shape/phase-transition
+   description, defer to the numeric table for any specific percentage. Verified live: `gemma4:26b`'s
+   real output correctly stated "`frontend` has the highest mean value... at 37.8519%" — quoting the
+   actual computed number, not an eyeballed one.
+3. **Output naming**, `aivision.<image-stem>.<model-slug>.md` (plus `aiprompt.vision.<image-stem>.md`
+   and, with `--critique`, `aiprompt.critique.vision.<image-stem>.<model-slug>.md`) — a distinct
+   `aivision.` prefix from `aianalysis.` (not reused) so a curator can tell "narrated numbers" and
+   "narrated chart" apart at a glance, and the image stem is part of the name since a run can have more
+   than one plot. A small `AIVISION_RE`/`ai_artifact_label()` addition in `web/joblib.py` mirrors
+   `AIANALYSIS_RE` exactly, so `collect_run_files()`/the curation studio pick the output up automatically
+   — no `curation.json` schema change needed, confirmed live (added a real vision-analysis block through
+   the studio UI, `ai_generated: true` and the "AI-generated" badge rode through unchanged).
+4. **Vision-only model discovery** via `--vision-only` (on `--list-models`, and always implied by
+   `--image` mode's own `--all-models`/default resolution) reuses Ollama's `/api/tags` per-model
+   `"capabilities"` array (confirmed live to include `"vision"`) — no new API call shape needed.
+5. **Web UI**: `render_vision_card()` mirrors `render_analyze_card()` (opt-in model discovery, SSE-
+   streamed progress, "+ add" curation candidate once done), with a plot `<select>` instead of a
+   prompt-template one, and its own `POST /api/vision-analyze/<suite>/<benchmark>/<run_id>`. Reuses
+   `execute_analyze()` unchanged (it only ever shells out to whatever argv it's given) but through a
+   **separate `VISION_RUNS` registry**, not `ANALYZE_RUNS` — resolved in favor of separation because a
+   human could plausibly trigger the text-narrative and vision-chart analysis for the same run in close
+   succession, which `ANALYZE_RUNS`'s own "never overwrites" guarantee would not survive if they shared
+   a key. Verified live end-to-end: report page renders the card, a real run streams through SSE, and
+   the result becomes a correctly labeled curation candidate.
+6. **Testing**: `test_ai_analyze.sh` gained `--image` structural coverage (auto-discovery, explicit path,
+   ambiguous/missing-plot errors, `--compare-rundir` mutual exclusion, grounding-table presence) plus a
+   separately-gated live vision-model call, needing a real (if trivial) decodable PNG fixture — a
+   placeholder good enough for `--dry-run` got a live 400 Bad Request from Ollama's own image decoder,
+   caught live against `qwen3-vl:8b` while writing this test. Built with stdlib `zlib`/`struct` rather
+   than adding a Pillow dependency.
+
+**How the pre-implementation open questions actually resolved:** whether `--model`/`--default-model`
+stay shared between text and vision modes — shared `--model`, but a separate `--default-vision-model`;
+whether reusing `ANALYZE_RUNS` was safe — no, gave `--image` mode its own `VISION_RUNS` registry (item 5
+above); whether the default `--timeout` needed a larger value for vision mode — no change needed, since
+`ollama_generate()`'s existing per-chunk-idle design (not a whole-call timeout) already tolerates a
+slow-but-progressing vision generation; the test suite's own live vision call simply passes a longer
+`--timeout` for headroom, not because the mechanism required it.
+
 ### Critical-path / synchronization-latency: full candidate rationale (shipped)
 This is the original motivation and per-syscall design-fork reasoning that led to all six shipped
 syscall-latency flags (`--tree-futex`, `--tree-io-wait`, `--tree-connect`, `--tree-nanosleep`,

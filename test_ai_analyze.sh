@@ -116,6 +116,29 @@ time,ibs_fetch,ibs_op
 1.0,7000,8000
 EOF
 
+# --image mode fixtures (INVESTIGATION.md's "Vision-based topdown-chart
+# analysis deep-dive"): a real, if trivial, decodable PNG -- --dry-run
+# itself never decodes it (base64'd and shipped to Ollama as opaque bytes,
+# so a handful of fake bytes would pass every structural check below just
+# as well), but the live-call section does send it to a real Ollama
+# daemon, which rejects a non-decodable file with its own 400 Bad Request
+# before ever reaching the model (confirmed live). Built with stdlib
+# zlib/struct rather than a placeholder, so one fixture covers both
+# sections without adding a PIL/Pillow dependency to a test that otherwise
+# needs none.
+mkdir -p "$RUNDIR/plots"
+python3 -c '
+import struct, zlib
+def chunk(tag, data):
+    return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
+sig = b"\x89PNG\r\n\x1a\n"
+ihdr = chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))  # 1x1, 8-bit, RGB
+idat = chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00"))  # filter byte + one RGB pixel
+iend = chunk(b"IEND", b"")
+with open("'"$RUNDIR"'/plots/amdtopdown.topdown.png", "wb") as f:
+    f.write(sig + ihdr + idat + iend)
+'
+
 echo ""
 echo "=== Testing wspy-analyze --dry-run (prompt rendering, no Ollama needed) ==="
 OUT="$(./wspy-analyze --rundir "$RUNDIR" --dry-run 2>&1)"
@@ -187,6 +210,56 @@ echo "$OUT" | grep -q "default model 'definitely-not-a-real-model:latest' is not
     echo "FAIL: expected error message mentioning the unavailable default model"; exit 1; }
 echo "--default-model not-installed fallback OK"
 
+echo ""
+echo "=== Testing --image auto-discovery + dry-run (vision deep-dive) ==="
+OUT="$(./wspy-analyze --rundir "$RUNDIR" --image --dry-run 2>&1)"
+echo "$OUT" | grep -q "VISION_TOPDOWN_TEMPLATE_VERSION" || {
+    echo "FAIL: vision template version marker missing"; exit 1; }
+echo "$OUT" | grep -q "command: sleep 1" || { echo "FAIL: workload command missing from vision prompt"; exit 1; }
+echo "$OUT" | grep -q "### amdtopdown.csv" || {
+    echo "FAIL: numeric grounding table (source CSV summary) missing from vision prompt"; exit 1; }
+echo "$OUT" | grep -qE '\| retire \| 2 \| 58.1 \| 62.3 \| 60.2 \|' || {
+    echo "FAIL: grounding table stats wrong or missing for retire column"; exit 1; }
+[ -f "$RUNDIR/aiprompt.vision.amdtopdown.topdown.md" ] || {
+    echo "FAIL: aiprompt.vision.amdtopdown.topdown.md not written"; exit 1; }
+echo "--image auto-discovery dry-run OK"
+
+echo ""
+echo "=== Testing --image with an explicit path ==="
+OUT="$(./wspy-analyze --rundir "$RUNDIR" --image plots/amdtopdown.topdown.png --dry-run 2>&1)"
+echo "$OUT" | grep -q "VISION_TOPDOWN_TEMPLATE_VERSION" || {
+    echo "FAIL: explicit --image path did not render the vision template"; exit 1; }
+echo "--image explicit-path dry-run OK"
+
+echo ""
+echo "=== Testing --image auto-discovery error paths ==="
+BAREDIR2="$WORKDIR/bare-no-plots"
+mkdir -p "$BAREDIR2"
+if OUT="$(./wspy-analyze --rundir "$BAREDIR2" --image --dry-run 2>&1)"; then
+    echo "FAIL: expected a nonzero exit with no plots/*.topdown.png present"; exit 1
+fi
+echo "$OUT" | grep -q "auto-discovery found no plots" || {
+    echo "FAIL: expected 'found no plots' error with no plots present"; exit 1; }
+
+mkdir -p "$RUNDIR/plots"
+cp "$RUNDIR/plots/amdtopdown.topdown.png" "$RUNDIR/plots/second.topdown.png"
+if OUT="$(./wspy-analyze --rundir "$RUNDIR" --image --dry-run 2>&1)"; then
+    echo "FAIL: expected a nonzero exit with more than one plots/*.topdown.png present"; exit 1
+fi
+echo "$OUT" | grep -q "auto-discovery found more than one plots" || {
+    echo "FAIL: expected 'found more than one' error with two topdown plots present"; exit 1; }
+rm "$RUNDIR/plots/second.topdown.png"
+echo "--image auto-discovery error paths OK"
+
+echo ""
+echo "=== Testing --image / --compare-rundir mutual exclusion ==="
+if OUT="$(./wspy-analyze --rundir "$RUNDIR" --image --compare-rundir "$RUNDIR_B" --dry-run 2>&1)"; then
+    echo "FAIL: expected a nonzero exit combining --image and --compare-rundir"; exit 1
+fi
+echo "$OUT" | grep -q "mutually exclusive" || {
+    echo "FAIL: expected a mutual-exclusion error combining --image and --compare-rundir"; exit 1; }
+echo "--image/--compare-rundir mutual exclusion OK"
+
 if ! command -v ollama >/dev/null 2>&1; then
     echo ""
     echo "=== ollama not on PATH -- skipping live-call section ==="
@@ -247,6 +320,40 @@ echo "=== Testing a real Ollama call against $MODEL (comparative mode) ==="
 COMPARE_ANALYSIS="$RUNDIR/aianalysis.compare.manual-sleep-test-run-2.$SLUG.md"
 [ -s "$COMPARE_ANALYSIS" ] || { echo "FAIL: $COMPARE_ANALYSIS missing or empty"; exit 1; }
 echo "comparative live call OK ($(wc -c < "$COMPARE_ANALYSIS") bytes from $MODEL)"
+
+# --image mode's live-call section is separately gated (own model pick,
+# skips independently of the text-mode section above): a text-only model
+# can't do this task at all, so the same $MODEL picked above is very
+# possibly not usable here, and vice versa. Uses a longer --timeout than
+# the text-mode calls above -- this codebase's own live comparison
+# (INVESTIGATION.md's vision deep-dive) found multi-minute vision calls
+# normal on CPU-bound-mmproj hardware, not exceptional; ollama_generate()'s
+# per-chunk-idle timeout still bounds a genuinely stuck model (confirmed
+# live against exactly that failure mode), it just needs more slack than a
+# text call before declaring one.
+VISION_MODEL="$(python3 -c '
+import json, urllib.request
+try:
+    with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=5) as r:
+        models = json.load(r).get("models", [])
+except Exception:
+    models = []
+models = [m for m in models if "vision" in m.get("capabilities", [])]
+if models:
+    print(min(models, key=lambda m: m.get("size", 0))["name"])
+')"
+if [ -z "$VISION_MODEL" ]; then
+    echo ""
+    echo "=== no vision-capable models installed -- skipping --image live-call section ==="
+else
+    echo ""
+    echo "=== Testing a real Ollama call against $VISION_MODEL (--image mode) ==="
+    ./wspy-analyze --rundir "$RUNDIR" --image --model "$VISION_MODEL" --timeout 240
+    VISION_SLUG="$(printf '%s' "$VISION_MODEL" | tr -c 'A-Za-z0-9._-' '_')"
+    VISION_ANALYSIS="$RUNDIR/aivision.amdtopdown.topdown.$VISION_SLUG.md"
+    [ -s "$VISION_ANALYSIS" ] || { echo "FAIL: $VISION_ANALYSIS missing or empty"; exit 1; }
+    echo "--image live call OK ($(wc -c < "$VISION_ANALYSIS") bytes from $VISION_MODEL)"
+fi
 
 echo ""
 echo "=== All tests completed successfully ==="

@@ -164,6 +164,17 @@ RUNS_LOCK = threading.Lock()
 ANALYZE_RUNS = {}
 ANALYZE_RUNS_LOCK = threading.Lock()
 
+# Same idiom again, for the report page's "AI vision analysis" card
+# (wspy-analyze --image, see render_vision_card()/_start_vision_analyze()
+# below; INVESTIGATION.md's "Vision-based topdown-chart analysis
+# deep-dive") -- kept apart from ANALYZE_RUNS rather than reused, since a
+# human could plausibly click both the text-narrative and the vision-chart
+# analysis buttons for the same run in close succession, and ANALYZE_RUNS's
+# own "never overwrites" comment above is exactly the property a second,
+# unrelated analysis kind sharing the same key would violate.
+VISION_RUNS = {}
+VISION_RUNS_LOCK = threading.Lock()
+
 # Third registry, same idiom, for the CPU2026 tab's Build action
 # (joblib.execute_cpu2026_build()): a build isn't a wspy run at all (no
 # report directory, no manifest), so it gets its own keying rather than
@@ -4195,6 +4206,60 @@ def render_analyze_card(suite, benchmark, run_id):
 """
 
 
+def render_vision_card(rundir, suite, benchmark, run_id):
+    """Report-page "AI vision analysis" card (INVESTIGATION.md's
+    "Vision-based topdown-chart analysis deep-dive"): triggers wspy-analyze
+    --image against this run directory, same shape as render_analyze_card()
+    above (opt-in live model discovery, SSE-streamed progress, "+ add"
+    curation candidate once done) but with an image picker instead of a
+    prompt-template picker, defaulting to "(auto-discover)" -- wspy-analyze
+    --image's own bare-flag auto-discovery, which only succeeds when exactly
+    one plots/*.topdown.png exists, else the streamed log shows its
+    ambiguity/absence error same as any other wspy-analyze failure.
+    wireVisionAnalyzeForm() in app.js is the client-side counterpart."""
+    vision_url = f"/api/vision-analyze/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    plot_pngs = list_plot_pngs(rundir)
+    if plot_pngs:
+        options = ['<option value="">(auto-discover a single plots/*.topdown.png)</option>'] + [
+            f'<option value="{html.escape(p)}">{html.escape(p)}</option>' for p in plot_pngs]
+        image_picker = f'<select id="vision-image">{"".join(options)}</select>'
+    else:
+        image_picker = ('<p class="muted">No <code>plots/*.png</code> found in this run directory -- '
+                         'run <code>wspy-plot</code> first.</p>')
+    return f"""
+<h2>AI vision analysis</h2>
+<p class="muted">Runs <code>wspy-analyze --image</code> against one of this run's topdown plots via a
+   locally running Ollama vision-capable model -- narration of the chart's shape/phase transitions,
+   grounded in a real numeric summary of the same data (not a re-derived verdict, and not the model's
+   own reading of the chart's pixels for any specific percentage). Output lands back in this run
+   directory as <code>aivision.&lt;image-stem&gt;.&lt;model&gt;.md</code> and shows up as an "+ add"
+   candidate in the curation studio once this finishes (reload the page).</p>
+<form id="vision-analyze-form">
+  <div class="row">
+    <label>Plot to analyze {image_picker}</label>
+  </div>
+  <div class="row" style="margin-top: 0.5rem;">
+    <label>Model(s) <span class="muted">(comma-separated Ollama model names -- leave blank to use
+      wspy-analyze's own default vision model if it's installed, e.g. gemma4:26b)</span>
+      <input type="text" id="vision-models" placeholder="e.g. qwen3.5:35b (blank = default model)">
+    </label>
+    <button type="button" id="vision-discover-models">Discover installed vision models</button>
+  </div>
+  <div id="vision-model-chips" class="add-buttons"></div>
+  <div class="chips">
+    <label class="chip"><input type="checkbox" id="vision-all-models"> query every installed
+      vision-capable model (--all-models)</label>
+    <label class="chip"><input type="checkbox" id="vision-critique"> also ask for prompt critique
+      (--critique)</label>
+  </div>
+  <button type="button" id="vision-run" data-vision-url="{html.escape(vision_url)}">Run AI vision
+    analysis</button>
+  <pre id="vision-log" class="live-output" hidden></pre>
+  <div id="vision-result"></div>
+</form>
+"""
+
+
 def render_testpoint_card(suite, benchmark, run_id):
     """Report-page "Publish test-point report" card (Tier 3 item 7, doc/REPORT_HIERARCHY.md): resolves
     run roles (wspy-testpoint select-runs) and renders/commits a curated README.md (wspy-testpoint
@@ -4656,6 +4721,7 @@ def render_fixed_report(rundir, suite, benchmark, run_id):
         parts.append(render_proctree_card(suite, benchmark, run_id))
 
     parts.append(render_analyze_card(suite, benchmark, run_id))
+    parts.append(render_vision_card(rundir, suite, benchmark, run_id))
     parts.append(render_testpoint_card(suite, benchmark, run_id))
 
     raw = ["<h2>Artifacts</h2><ul class=\"artifacts\">"]
@@ -4740,6 +4806,7 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
         parts.append(render_proctree_card(suite, benchmark, run_id))
 
     parts.append(render_analyze_card(suite, benchmark, run_id))
+    parts.append(render_vision_card(rundir, suite, benchmark, run_id))
     parts.append(render_testpoint_card(suite, benchmark, run_id))
 
     accounted_for = {RUN_MANIFEST_NAME}
@@ -5460,6 +5527,11 @@ class Handler(BaseHTTPRequestHandler):
             self._stream_events(*m.groups(), registry=ANALYZE_RUNS, lock=ANALYZE_RUNS_LOCK)
             return
 
+        m = re.match(r"^/api/vision-analyze/([^/]+)/([^/]+)/([^/]+)/events$", path)
+        if m:
+            self._stream_events(*m.groups(), registry=VISION_RUNS, lock=VISION_RUNS_LOCK)
+            return
+
         m = re.match(r"^/api/cpu2026/build/([^/]+)/([^/]+)/([^/]+)/events$", path)
         if m:
             self._stream_events(*m.groups(), registry=CPU2026_BUILDS, lock=CPU2026_BUILDS_LOCK,
@@ -5582,6 +5654,21 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "invalid JSON body"})
                 return
             self._start_analyze(cfg, suite, benchmark, run_id, body)
+            return
+
+        m = re.match(r"^/api/vision-analyze/([^/]+)/([^/]+)/([^/]+)$", parsed.path)
+        if m:
+            suite, benchmark, run_id = m.groups()
+            if not all(valid_segment(x) for x in (suite, benchmark, run_id)):
+                self._send(400, "invalid path")
+                return
+            length = int(self.headers.get("Content-Length", "0"))
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "invalid JSON body"})
+                return
+            self._start_vision_analyze(cfg, suite, benchmark, run_id, body)
             return
 
         m = re.match(r"^/api/testpoint-publish/([^/]+)/([^/]+)/([^/]+)$", parsed.path)
@@ -6236,6 +6323,55 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(202, {
             "suite": suite, "benchmark": benchmark, "run_id": run_id,
             "events_url": f"/api/analyze/{suite}/{benchmark}/{run_id}/events",
+            "report_url": f"/report/{suite}/{benchmark}/{run_id}",
+            "studio_url": f"/studio/{suite}/{benchmark}/{run_id}",
+            "command": shell_preview(argv),
+        })
+
+    def _start_vision_analyze(self, cfg, suite, benchmark, run_id, body):
+        """Report page's "AI vision analysis" button (render_vision_card()):
+        runs wspy-analyze --image against an existing run directory, same
+        subprocess/SSE-relay shape as _start_analyze() above (reuses
+        execute_analyze() unchanged -- it only ever shells out to whatever
+        argv it's given, nothing text-mode-specific), but through the
+        separate VISION_RUNS registry (see that registry's own comment) and
+        wspy-analyze's own --default-vision-model/--image machinery instead
+        of --default-model. image is the plots/-relative path the picker
+        selected, or "" for --image's own bare-flag auto-discovery."""
+        rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+        if not os.path.isdir(rundir):
+            self._send_json(404, {"error": "no such report"})
+            return
+
+        image = (body.get("image") or "").strip()
+        models = [m.strip() for m in (body.get("models") or [])
+                  if isinstance(m, str) and m.strip()]
+        all_models = bool(body.get("all_models"))
+        critique = bool(body.get("critique"))
+
+        argv = [cfg["wspy_analyze_bin"], "--rundir", rundir, "--image"]
+        if image:
+            argv.append(image)
+        for m in models:
+            argv += ["--model", m]
+        if all_models:
+            argv.append("--all-models")
+        if critique:
+            argv.append("--critique")
+
+        key = run_key(suite, benchmark, run_id)
+        state = RunState(rundir)
+        with VISION_RUNS_LOCK:
+            VISION_RUNS[key] = state
+
+        t = threading.Thread(target=execute_analyze, args=(
+            state, argv, suite, benchmark, run_id,
+        ), daemon=True)
+        t.start()
+
+        self._send_json(202, {
+            "suite": suite, "benchmark": benchmark, "run_id": run_id,
+            "events_url": f"/api/vision-analyze/{suite}/{benchmark}/{run_id}/events",
             "report_url": f"/report/{suite}/{benchmark}/{run_id}",
             "studio_url": f"/studio/{suite}/{benchmark}/{run_id}",
             "command": shell_preview(argv),
@@ -6918,17 +7054,22 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def _discovery_ollama_models(self, cfg, body):
-        """Backs the report page's "Discover installed models" button
-        (render_analyze_card()): runs `wspy-analyze --list-models`, which
-        just queries Ollama's /api/tags and prints one model name per line
-        -- bounded like the rest of the Discovery-tab family (unlike an
-        actual analysis run, listing models is quick), so this stays
-        synchronous via run_sync() rather than the SSE path _start_analyze()
-        uses."""
+        """Backs the report page's "Discover installed models" button on
+        both render_analyze_card() and render_vision_card(): runs
+        `wspy-analyze --list-models`, which just queries Ollama's /api/tags
+        and prints one model name per line -- bounded like the rest of the
+        Discovery-tab family (unlike an actual analysis run, listing models
+        is quick), so this stays synchronous via run_sync() rather than the
+        SSE path _start_analyze()/_start_vision_analyze() use. vision_only
+        (render_vision_card()'s own discover button sets this) adds
+        --vision-only, reusing the identical /api/tags call Ollama-side but
+        filtered to models wspy-analyze --image mode can actually use."""
         argv = [cfg["wspy_analyze_bin"], "--list-models"]
         host = (body.get("ollama_host") or "").strip()
         if host:
             argv += ["--ollama-host", host]
+        if body.get("vision_only"):
+            argv.append("--vision-only")
         rc, output, timed_out = run_sync(argv, cwd=REPO_ROOT, timeout=30)
         models = [line.strip() for line in output.splitlines() if line.strip()] if rc == 0 else []
         self._send_json(200, {"command": shell_preview(argv), "exit_code": rc,

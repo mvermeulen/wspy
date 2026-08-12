@@ -235,12 +235,26 @@ def read_run_manifest(run_manifest_path):
 AIANALYSIS_RE = re.compile(r"^aianalysis\.(.+)\.(?:txt|md)$")
 AIPROMPT_CRITIQUE_RE = re.compile(r"^aiprompt\.critique\.(.+)\.(?:txt|md)$")
 
+# wspy-analyze --image mode's own output naming (INVESTIGATION.md's
+# "Vision-based topdown-chart analysis deep-dive") -- a distinct "aivision."
+# prefix rather than reusing "aianalysis.", so a curator can tell "narrated
+# numbers" and "narrated chart" apart at a glance rather than overloading
+# one convention two different ways. Each filename carries both the
+# analyzed image's stem and the model slug (e.g.
+# "aivision.amdtopdown.topdown.gemma4-26b.md") -- the greedy first group
+# backtracks to swallow everything up to the last remaining ".<model>." in
+# the filename, so it works whether the image stem itself contains dots
+# (wspy-plot's own "<csv-stem>.<template>.png" naming always does) or not.
+AIVISION_RE = re.compile(r"^aivision\.(.+)\.(.+)\.(?:txt|md)$")
+AIPROMPT_VISION_RE = re.compile(r"^aiprompt\.vision\.(.+)\.(?:txt|md)$")
+AIPROMPT_CRITIQUE_VISION_RE = re.compile(r"^aiprompt\.critique\.vision\.(.+)\.(.+)\.(?:txt|md)$")
+
 # wspy-analyze wrote these as .txt through 4.3; it writes .md now (the
 # content was always markdown-flavored prose -- gpt-oss:20b et al. write
 # markdown by default, primed by the prompt template's own markdown
 # headers -- .md just makes that honest, and lets the report/export
 # renderers convert it to real HTML instead of dumping it verbatim into a
-# <pre>). Both regexes above match either extension so an old run's .txt
+# <pre>). Every regex above matches either extension so an old run's .txt
 # narrative keeps being recognized/labeled/curated exactly as before --
 # guess_kind() is what decides the actual rendering treatment (only ".md"
 # gets kind="markdown"; old ".txt" files stay kind="text", still readable,
@@ -251,15 +265,33 @@ def ai_artifact_label(filename):
     """Friendly (label, ai_generated) for one of wspy-analyze's own output
     files, or None if filename isn't one -- so collect_run_files() below can
     offer something more useful than the bare filename, and so a block built
-    from actual model output (aianalysis.*/aiprompt.critique.*, not the
-    deterministically-rendered aiprompt.txt/.md itself) carries an
+    from actual model output (aianalysis.*/aiprompt.critique.*/aivision.*,
+    not a deterministically-rendered aiprompt*.md itself) carries an
     AI-generated marker from the moment it's added. See INVESTIGATION.md's
-    Ollama deep-dive, design decision #7."""
+    Ollama deep-dive, design decision #7, and the vision deep-dive.
+
+    The "vision" regexes are checked before their plain-text counterparts:
+    "aiprompt.critique.vision.X.Y.md" would otherwise also match
+    AIPROMPT_CRITIQUE_RE's own (.+) (its literal "aiprompt.critique." prefix
+    is a strict subset of the vision one's), misreading "vision.X" as if it
+    were a plain model slug -- AIVISION_RE itself has no such collision
+    (different literal prefix from AIANALYSIS_RE), order doesn't matter
+    there, but is kept consistent anyway."""
     if filename in ("aiprompt.txt", "aiprompt.md"):
         return "AI analysis: rendered prompt", False
+    m = AIPROMPT_VISION_RE.match(filename)
+    if m:
+        return f"AI vision analysis: rendered prompt (image: {m.group(1)})", False
+    m = AIPROMPT_CRITIQUE_VISION_RE.match(filename)
+    if m:
+        return (f"AI vision analysis: prompt critique (image: {m.group(1)}, "
+                 f"model: {m.group(2)})", True)
     m = AIPROMPT_CRITIQUE_RE.match(filename)
     if m:
         return f"AI analysis: prompt critique (model: {m.group(1)})", True
+    m = AIVISION_RE.match(filename)
+    if m:
+        return f"AI vision analysis (image: {m.group(1)}, model: {m.group(2)})", True
     m = AIANALYSIS_RE.match(filename)
     if m:
         return f"AI narrative analysis (model: {m.group(1)})", True

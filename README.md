@@ -759,12 +759,21 @@ running Ollama daemon; `--dry-run` renders and prints the prompt without calling
 ./wspy-analyze --rundir results/.../<run-id-a> --compare-rundir results/.../<run-id-b>
                                                                       # what changed between two runs
 ./wspy-analyze --list-models                                        # list installed Ollama models
+./wspy-analyze --rundir results/.../<run-id> --image                # narrate plots/*.topdown.png instead
 ```
 
 `--critique` also asks each model to suggest improvements to the prompt template itself.
 `--redact-command` omits the workload's literal command line, for use with a non-default
 `--ollama-host` (pointing analysis at a remote host is a real exfiltration surface unlike the
 local-only default). See `./wspy-analyze --help` for the full option list.
+
+`--image` (bare, or with an explicit `plots/`-relative path) switches to narrating a `wspy-plot` chart
+image via a vision-capable Ollama model instead of the run's text counter output — grounded in a real
+numeric summary of the same CSV data (not the model's own reading of the chart's pixels for any
+specific percentage), defaulting to `gemma4:26b`. Writes `aiprompt.vision.<image-stem>.md` and
+`aivision.<image-stem>.<model-slug>.md`, picked up by the report page/curation studio the same way the
+text narrative already is. See INVESTIGATION.md's "Vision-based topdown-chart analysis deep-dive" for
+the design and a live model comparison.
 
 ## Web launcher and report browser
 

@@ -138,6 +138,12 @@ Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-
   pages, cross-checked against `workload/cpu2026/spec_benchmarks.json`'s intrate/fprate ground truth)
   showing a clean bimodal split with no overlap between the two categories. See "Known gaps" below for
   what that review wasn't enough to justify yet.
+- Vision-based topdown-chart analysis: `wspy-analyze --image` narrates a run's `plots/*.topdown.png`
+  via a vision-capable Ollama model (default `gemma4:26b`), grounded in a real numeric summary of the
+  same CSV data rather than the model's own pixel-reading. CLI and web UI both, wired into the curation
+  studio (new `aivision.*`/`AIVISION_RE` naming) the same way the existing text narrative already is.
+  See `doc/INVESTIGATION_ARCHIVE.md`'s "Vision-based topdown-chart analysis: live model comparison and
+  design" for the live model comparison behind the design and how its open questions resolved.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
@@ -162,11 +168,11 @@ blockers — just don't assume these are confirmed:
 ## Track deep-dives
 Reasoning that doesn't fit a single backlog line, for tracks with genuinely open work. Deep-dives for
 work that's since fully shipped (blocking I/O, schedstat, vmsize, connect/wait/poll/nanosleep, power,
-the LLM narrative-analysis design, the full critical-path-instrumentation candidate rationale,
-repeatability policy/confidence metadata, comparison matrix mode, and symbol-level profiling) have moved
-to `doc/INVESTIGATION_ARCHIVE.md`. The Zen5/IBS and Topdown deep-dives below have also each been trimmed
-to just their one remaining open thread — the confirmed-platform-behavior background that fed their
-now-shipped items moved to the archive too.
+the LLM narrative-analysis design, the vision-based topdown-chart analysis design, the full
+critical-path-instrumentation candidate rationale, repeatability policy/confidence metadata, comparison
+matrix mode, and symbol-level profiling) have moved to `doc/INVESTIGATION_ARCHIVE.md`. The Zen5/IBS and
+Topdown deep-dives below have also each been trimmed to just their one remaining open thread — the
+confirmed-platform-behavior background that fed their now-shipped items moved to the archive too.
 
 ### Zen5/IBS deep-dive
 The confirmed-platform-behavior background that fed 4.2's "Zen-family preset packs"/"PMU-capability-
