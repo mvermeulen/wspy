@@ -346,16 +346,15 @@ the page indicating order or which are "normally do this" vs. optional; and per-
 `--hostname`+`--command` vs. `--hostname`+`--run-id`, depending which tool) have drifted apart tool by
 tool despite resolving near-identical shapes underneath.
 
-1. Preset/Configuration/Option vocabulary refactor — remaining scope after the `wspy-run`/web-UI
-   profile-vocabulary slice shipped (see "Shipped since 4.3.1"): unify the web UI's own
-   checklist-driven argv builder (`build_configuration_passes()`, `web/joblib.py`) onto the same
-   `profiles/*.conf`/`*.spec` data `wspy-run` now reads, rather than its own independent
-   configuration/option model; extend `wspy.c`'s own flat CLI flag list toward the same vocabulary
-   (today only exposed read-only, via `wspy --list-groups`); and revisit `PROFILE_PLOTTABLE_COLUMNS`
-   (still hand-maintained — not mechanically derivable from flags without asking real wspy about its
-   own CSV headers) and the 3 ARM-only counter groups (`arm-dcache-mem`/`arm-icache-tlb`/
-   `arm-mem-align-tlb`) not yet exposed in the web checklist. See the "Preset / Configuration /
-   Option hierarchy deep-dive" below for the full reasoning.
+1. Preset/Configuration/Option vocabulary refactor — unify the web UI's own checklist-driven argv
+   builder (`build_configuration_passes()`, `web/joblib.py`) onto the same `profiles/*.conf`/`*.spec`
+   data `wspy-run` reads, rather than its own independent configuration/option model, and extend
+   `wspy.c`'s own flat CLI flag list toward the same vocabulary (today only exposed read-only, via
+   `wspy --list-groups`). Also revisit `PROFILE_PLOTTABLE_COLUMNS` (still hand-maintained — not
+   mechanically derivable from flags without asking real wspy about its own CSV headers) and the 3
+   ARM-only counter groups (`arm-dcache-mem`/`arm-icache-tlb`/`arm-mem-align-tlb`) not yet exposed in
+   the web checklist. See the "Preset / Configuration / Option hierarchy deep-dive" below for the
+   full reasoning.
 2. One-click end-to-end pipeline. Today a human runs `wspy-run`, then separately has to already know to
    run `wspy-store`'s ingest, `wspy-testpoint select-runs`, `wspy-testpoint render`, and a publish step —
    each its own command or its own web-UI button, in an order nowhere written down for a CLI-only user.
