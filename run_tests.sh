@@ -855,6 +855,18 @@ if ! ./tests/capability_matrix.sh; then
     exit 1
 fi
 
+# Counter-group vocabulary drift check (INVESTIGATION.md's 4.4(a) "Preset/
+# Configuration/Option vocabulary refactor" item): web/joblib.py's
+# ALL_GROUPS is a hand-maintained Python copy of multipass.c's
+# multipass_group_names[] -- this asserts it hasn't silently drifted out of
+# sync. Static text/binary-probe check, not build-variant-dependent -- run
+# once here, same idiom as doc_version_check.sh below.
+echo "Testing counter-group vocabulary drift check..."
+if ! ./tests/group_vocab_check.sh; then
+    echo "FAIL: counter-group vocabulary drift check failed"
+    exit 1
+fi
+
 # wspy-queue/job-file smoke tests (INVESTIGATION.md's "What shipped in
 # 4.1", "Deployment/hosting design note"): fake wspy/wspy-run/wspy-plot/wspy-store binaries, so
 # this needs no build/GPU axis and no root/perf access -- run once here

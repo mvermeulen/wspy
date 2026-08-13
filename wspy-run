@@ -12,6 +12,11 @@ SCRIPT_NAME=$(basename "$0")
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 WSPY="${WSPY:-$SCRIPT_DIR/wspy}"
+# Where builtin-profile definitions live (INVESTIGATION.md's 4.4(a)
+# "Preset/Configuration/Option vocabulary refactor" item) -- resolved
+# relative to this script the same way scripts/estimate_tree_timeout.py is
+# below, so wspy-run works the same regardless of cwd.
+PROFILES_DIR="${SCRIPT_DIR}/profiles"
 # Fixed staging path scripts/pts_hooks/{pre,post}_test_run.sh write to, if
 # Phoronix Test Suite's result_notifier module hooks are registered on this
 # host (scripts/setup_phoronix_hooks.sh) -- must match those scripts' own
@@ -41,7 +46,24 @@ CONFIG_OPTIONS=()
 
 declare -A PASS_EXT PASS_OUTFILE PASS_MANIFEST PASS_IS_TREE PASS_STATUS PASS_PTSLOG
 
-BUILTIN_PROFILES=(quick deep-cpu deep-cpu-intel deep-gpu tree-heavy ibs-basic ibs-memory-deep ibs-sample gpu-compute zen-portable zen4plus-deep)
+# Every named profile wspy-run knows how to run, derived from
+# profiles/*.conf (plain pass-list profiles) and profiles/*.spec (composite
+# profiles that expand to other builtin profiles, e.g.
+# zen-portable/zen4plus-deep) rather than hand-listed here -- a new profile
+# is picked up automatically by adding a file under profiles/, no code
+# change needed in this script (INVESTIGATION.md's 4.4(a) "Preset/
+# Configuration/Option vocabulary refactor" item; see load_builtin_profile()
+# below for how each file kind is loaded). Sorted so --list's order is
+# stable regardless of directory iteration order.
+declare -a BUILTIN_PROFILES=()
+if [ -d "$PROFILES_DIR" ]; then
+  shopt -s nullglob
+  for f in "$PROFILES_DIR"/*.conf "$PROFILES_DIR"/*.spec; do
+    BUILTIN_PROFILES+=("$(basename "${f%.*}")")
+  done
+  shopt -u nullglob
+  mapfile -t BUILTIN_PROFILES < <(printf '%s\n' "${BUILTIN_PROFILES[@]}" | sort -u)
+fi
 
 usage(){
   cat <<EOF
@@ -226,185 +248,108 @@ declare -a PASS_NAMES
 declare -a PASS_FLAGS
 declare -a PASS_TIMEOUTS
 
+# Reads a profiles/<name>.conf file: the exact same grammar -c's own
+# config-file format uses (load_config_file() below) -- "<pass-name>
+# <wspy-flags...>" per non-comment, non-blank line -- plus one addition
+# only builtin-profile files get: literal ${OUTDIR}/${PREFIX} tokens in a
+# flags string are substituted with this invocation's real
+# $OUTDIR/$PREFIX (the only two variables any profile file actually uses,
+# both for a --tree <path> argument -- see tree-heavy.conf/gpu-compute.conf
+# under profiles/). Kept as its own function rather than a parameter on
+# load_config_file() so a user's own -c file keeps taking its flags fully
+# literally, unchanged -- see that function's own docs.
+load_profile_conf_file(){
+  local file="$1"
+  PASS_NAMES=()
+  PASS_FLAGS=()
+  PASS_TIMEOUTS=()
+  local line name flags
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -z "$line" ] && continue
+    case "$line" in
+      \#*) continue ;;
+    esac
+    name="${line%% *}"
+    flags="${line#* }"
+    if [ "$name" = "$line" ]; then
+      echo "$SCRIPT_NAME: profile file $file: line missing flags: $line" >&2
+      exit 1
+    fi
+    flags="${flags//\$\{OUTDIR\}/$OUTDIR}"
+    flags="${flags//\$\{PREFIX\}/$PREFIX}"
+    PASS_NAMES+=("$name")
+    PASS_FLAGS+=("$flags")
+    PASS_TIMEOUTS+=("")
+  done < "$file"
+  if [ ${#PASS_NAMES[@]} -eq 0 ]; then
+    echo "$SCRIPT_NAME: profile file $file has no passes" >&2
+    exit 1
+  fi
+}
+
+# Reads a profiles/<name>.spec file: its one non-comment, non-blank line is
+# the same comma-separated builtin-profile spec load_profiles() below
+# already accepts (e.g. "quick,ibs-basic") -- prints it to stdout for the
+# caller to capture.
+load_profile_spec_file(){
+  local file="$1" line
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -z "$line" ] && continue
+    case "$line" in
+      \#*) continue ;;
+    esac
+    printf '%s' "$line"
+    return 0
+  done < "$file"
+  echo "$SCRIPT_NAME: profile spec file $file has no spec line" >&2
+  exit 1
+}
+
+# Loads one named builtin profile into PASS_NAMES/PASS_FLAGS/PASS_TIMEOUTS,
+# from profiles/<name>.conf (a plain pass list) or profiles/<name>.spec (a
+# composite that expands to other builtin profiles via load_profiles()
+# below) -- see profiles/*.conf and profiles/*.spec for the actual profile
+# definitions and their design rationale (INVESTIGATION.md's 4.4(a)
+# "Preset/Configuration/Option vocabulary refactor" item; this function
+# used to be a hardcoded bash `case` arm per profile).
 load_builtin_profile(){
   local profile="$1"
-  PASS_TIMEOUTS=()
-  case "$profile" in
-    quick)
-      PASS_NAMES=(run)
-      PASS_FLAGS=("--counters=ipc --system --rusage")
-      ;;
-    deep-cpu)
-      # The five non-interval counter passes this profile used to run as
-      # five separate wspy invocations (software_branch, ipc_topdown,
-      # l2_float, frontend, opcache) now collapse onto one native --passes
-      # invocation (wspy.c's run_multipass(), INVESTIGATION.md's 4.1
-      # Tier 1 "Native multi-pass counter execution" item) -- wspy itself
-      # bin-packs them into however many hardware-PMU-fitting sub-passes are
-      # needed and merges the result into one CSV/manifest record, instead
-      # of wspy-run gluing five separate output files together after the
-      # fact. systemtime/amdtopdown stay separate: --passes has no defined
-      # merge semantics for --interval's periodic ticks (each pass is a
-      # separately-timed re-execution of the workload), so those two keep
-      # their own wspy invocation same as before. No --csv here (matching
-      # the five passes it replaces) -- human-readable output still flows
-      # into summary.txt alongside systemtime/amdtopdown's own output.
-      # cache3 (L3 hit/miss) and memory (local/remote data-cache-refill
-      # locality) were audited in and added here: cache3 uses AMD's L3
-      # uncore PMU budget (excluded from preflight's general-purpose slot
-      # count, so it's effectively free); memory's raw events carry their
-      # own requires=/sys/devices/system/node/node1 gate (topdown.c) so on
-      # a single-NUMA-node host (most client/APU parts) the group is a real
-      # zero-cost skip rather than a pass spent measuring a number that can
-      # only ever read as "100% local". --power rides along on systemtime
-      # (not the --passes sweep, which fatals against --power -- it's a
-      # separate system-wide RAPL PMU with no multi-pass merge semantics,
-      # same reasoning as IBS) rather than amdtopdown: systemtime already
-      # opens zero hardware counters, so --power is a genuinely free
-      # addition there, and it lands pkg_watts/pkg_joules in the same CSV
-      # as cpu/freq -- exactly what wspy-plot's power-vs-utilization/
-      # power-vs-frequency dual-axis templates pair it against.
-      PASS_NAMES=(systemtime counters amdtopdown)
-      PASS_FLAGS=(
-        "--csv --interval 1 --no-rusage --no-software --system --no-ipc --power"
-        "--passes=software,branch,ipc,topdown2,cache2,cache3,memory,float,topdown-frontend,topdown-optlb"
-        "--csv --interval 1 --counters=topdown --no-rusage --no-software --no-ipc"
-      )
-      ;;
-    deep-cpu-intel)
-      PASS_NAMES=(software_branch topdown ipc_l2 backend)
-      PASS_FLAGS=(
-        "--rusage --counters=software,branch --no-ipc"
-        "--counters=topdown2 --no-rusage --no-software --no-ipc"
-        "--counters=ipc,cache2 --no-rusage --no-software"
-        "--no-ipc --no-rusage --counters=topdown-backend"
-      )
-      ;;
-    deep-gpu)
-      # deep-cpu's CPU sweep, collapsed onto --passes the same way -- see the
-      # comment there -- plus the two GPU interval passes, which (like
-      # systemtime/amdtopdown) stay their own wspy invocation since --passes
-      # doesn't cover --interval. systemtime carries --power for the same
-      # reason deep-cpu's does (see that profile's own comment): it already
-      # opens zero hardware counters, so --power is a free addition there,
-      # landing pkg_watts/pkg_joules in the same CSV as cpu/freq for
-      # wspy-plot's power-vs-utilization/power-vs-frequency templates --
-      # this was a pre-existing asymmetry between the two profiles, not a
-      # deliberate omission (INVESTIGATION.md's "4.2 -- remaining work").
-      PASS_NAMES=(systemtime counters amdtopdown gpu_busy gpu_metrics)
-      PASS_FLAGS=(
-        "--csv --interval 1 --no-rusage --no-software --system --no-ipc --power"
-        "--passes=software,branch,ipc,topdown2,cache2,cache3,memory,float,topdown-frontend,topdown-optlb"
-        "--csv --interval 1 --counters=topdown --no-rusage --no-software --no-ipc"
-        "--csv --interval 1 --gpu-busy --no-ipc --no-rusage --no-software"
-        "--csv --interval 1 --gpu-metrics --no-ipc --no-rusage --no-software"
-      )
-      ;;
-    tree-heavy)
-      PASS_NAMES=(tree)
-      PASS_FLAGS=("--tree ${OUTDIR}/${PREFIX}process.tree.txt --tree-cmdline --counters=software --no-ipc")
-      # workload/*/run_test.sh used to wrap only this one $WSPY invocation in
-      # `timeout 3600`, never the others -- not because ptrace tracing runs
-      # slower, but because losing a key ptrace event for a traced process
-      # can leave wspy hung waiting to clean up; the timeout is a hang
-      # backstop, not primarily a data-volume cap. The counter passes' own
-      # output stays small regardless of runtime, so they were (and still
-      # are here) left unbounded -- a slow workload is fine to just wait out
-      # for those. This pass's own timeout is left unset here -- sized after
-      # the profile/config is fully loaded, from an actual per-workload
-      # estimate when one can be derived, falling back to this same 3600s
-      # constant otherwise (see estimate_tree_pass_timeouts() below).
-      ;;
-    ibs-basic)
-      PASS_NAMES=(ibs)
-      PASS_FLAGS=("--csv --interval 1 --ibs-basic --no-ipc")
-      ;;
-    ibs-memory-deep)
-      PASS_NAMES=(ibs)
-      PASS_FLAGS=("--csv --interval 1 --ibs-memory-deep --no-ipc")
-      ;;
-    ibs-sample)
-      # --ibs-sample is IBS *sampling* mode (ibs_sample.h), distinct from
-      # ibs-basic/ibs-memory-deep's counting mode above -- it decodes each
-      # sample's IbsOpData2 memory-data-source field into a named cache/DRAM
-      # hierarchy breakdown (which level a load actually resolved from), not
-      # just a filtered/unfiltered sample count. Two reasons this pass omits
-      # flags the counting-mode ones above use: no --interval, since
-      # ibs_sample.c only drains its ring buffer once at end-of-run --
-      # combined with --interval every periodic row reads 0 and only the
-      # final row is populated, so --interval buys nothing here and would
-      # just be misleading; no --csv, since the named per-level breakdown
-      # (print_ibs_sample_data_src_breakdown()) only prints in human-readable
-      # output -- CSV mode only carries two scheme-independent numeric
-      # columns (dram_rate/remote_node_rate), not the full named table. No
-      # --csv also means run_pass() gives this pass a .txt output file.
-      PASS_NAMES=(ibs)
-      PASS_FLAGS=("--ibs-sample --no-ipc")
-      ;;
-    gpu-compute)
-      # For a GPU-bound/latency-driven workload (a game renderer, a Vulkan
-      # compute kernel host loop like ollama's) the deep-cpu/deep-gpu shape
-      # of "one wspy invocation per instrumentation category" is actively
-      # misleading: each category re-executes the whole workload separately,
-      # so a game's Vulkan-then-software-render phase split (or a model's
-      # prompt-processing-then-decode phase split) lands at different
-      # wall-clock offsets in each category's own CSV, and can't be
-      # correlated tick-for-tick. This profile instead runs everything in
-      # ONE wspy invocation/one execution of the workload: process/syscall
-      # latency tracing (futex/io-wait/connect/wait/poll/nanosleep -- the
-      # same subset the web launcher's checklist already found useful for a
-      # host thread that mostly blocks on GPU completion rather than
-      # computing), system-wide CPU/load/network, package power, both GPU
-      # backends (AMD sysfs busy/temp/activity/power/freq + NVIDIA NVML
-      # busy/VRAM -- harmless no-ops if a build/host lacks one), and topdown
-      # to confirm (or rule out) the host CPU itself as a bottleneck -- all
-      # on one --interval 1 time series so every column lines up against
-      # the same clock. Needs an AMDGPU=1/NVIDIA=1 build to get real GPU
-      # data; wspy itself just warns and continues otherwise.
-      PASS_NAMES=(gpu_compute)
-      PASS_FLAGS=(
-        "--tree ${OUTDIR}/${PREFIX}process.tree.txt --tree-futex --tree-io-wait --tree-connect --tree-wait --tree-poll --tree-nanosleep --system --power --gpu-busy --gpu-metrics --gpu-nvidia --counters=topdown --no-ipc --interval 1 --csv"
-      )
-      ;;
-    zen-portable)
-      # Composed from two already-tested profiles (INVESTIGATION.md's 4.2
-      # Tier 1, "Zen-family preset packs" item) rather than duplicating
-      # their flag strings by hand -- load_profiles() (below) already does
-      # exactly this concatenation for a user-supplied comma list, so this
-      # just calls it with a fixed spec instead of inventing a second
-      # composition mechanism. See usage() above for the "why these two,
-      # why not --power/l3missonly" rationale.
-      load_profiles "quick,ibs-basic"
-      return
-      ;;
-    zen4plus-deep)
-      load_profiles "deep-cpu,ibs-sample,tree-heavy"
-      # ibs-sample's own rusage-on default (elapsed/utime/stime/nvcsw/...) is
-      # right for standalone use, but this composition's "counters" pass
-      # (deep-cpu's --passes sweep) already captures the same block --
+  local conf_file="${PROFILES_DIR}/${profile}.conf"
+  local spec_file="${PROFILES_DIR}/${profile}.spec"
+  if [ -f "$conf_file" ]; then
+    load_profile_conf_file "$conf_file"
+    return
+  fi
+  if [ -f "$spec_file" ]; then
+    local spec
+    spec=$(load_profile_spec_file "$spec_file")
+    load_profiles "$spec"
+    if [ "$profile" = "zen4plus-deep" ]; then
+      # ibs-sample.conf's own rusage-on default (elapsed/utime/stime/nvcsw/
+      # ...) is right for standalone use, but this composition's "counters"
+      # pass (deep-cpu's --passes sweep) already captures the same block --
       # appending --no-rusage here only for zen4plus-deep's own "ibs" pass
       # avoids duplicating it in ibs.txt, without changing the standalone
       # ibs-sample profile. Found by name, not position, in case
-      # load_profiles' pass order ever changes.
+      # load_profiles' pass order ever changes. Kept as a small named
+      # special-case (one profile, one line) rather than a general
+      # per-pass-flag-append mechanism in the .spec file format -- see
+      # zen4plus-deep.spec's own comment.
       local i
       for i in "${!PASS_NAMES[@]}"; do
         if [ "${PASS_NAMES[$i]}" = "ibs" ]; then
           PASS_FLAGS[$i]="${PASS_FLAGS[$i]} --no-rusage"
         fi
       done
-      return
-      ;;
-    *)
-      echo "$SCRIPT_NAME: unknown profile: $profile (try --list)" >&2
-      exit 1
-      ;;
-  esac
-  # Pad PASS_TIMEOUTS to PASS_NAMES' length for profiles above that didn't set
-  # per-pass timeouts (i.e. all of them except tree-heavy) -- "" means no timeout.
-  local i
-  for ((i=${#PASS_TIMEOUTS[@]}; i<${#PASS_NAMES[@]}; i++)); do
-    PASS_TIMEOUTS[i]=""
-  done
+    fi
+    return
+  fi
+  echo "$SCRIPT_NAME: unknown profile: $profile (try --list)" >&2
+  exit 1
 }
 
 load_config_file(){

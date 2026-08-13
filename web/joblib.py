@@ -652,7 +652,17 @@ def _capture_pts_hooks_log(emit, rundir, name):
 # vocabulary multipass.c's multipass_group_names[] uses for --passes=<list>
 # (which --counters=<list> itself reuses), so the same list drives the
 # plain-flags, --counters=-based, and --passes-bin-packed branches below
-# without a second table to keep in sync.
+# without a second table to keep in sync. Still a separately-typed Python
+# copy of multipass_group_names[] rather than a live query of it (querying
+# would turn a plain module-level constant into a runtime dependency on a
+# built wspy binary being present on every import -- out of scope for
+# INVESTIGATION.md's 4.4(a) "Preset/Configuration/Option vocabulary
+# refactor" item, see its plan notes) -- tests/group_vocab_check.sh instead
+# asserts every name here is a subset of `wspy --list-groups`'s real output,
+# so the two can't silently drift apart undetected. Deliberately NOT a full
+# equality check: multipass_group_names[] has 3 ARM-only entries
+# (arm-dcache-mem/arm-icache-tlb/arm-mem-align-tlb) this checklist doesn't
+# expose yet -- a real, separate, not-yet-scoped web-UI gap, not drift.
 ALL_GROUPS = [
     ("ipc", True),
     ("topdown", False),
@@ -3626,19 +3636,46 @@ def run_store_ingest_besteffort(emit, cfg, run_index_path):
 
 
 # wspy-run's zen-portable/zen4plus-deep are themselves composed from other
-# builtin profiles via wspy-run's own load_profiles() (hand-derived here,
-# not otherwise discoverable from Python without parsing wspy-run's bash) --
-# the web launcher only ever submits the single top-level preset name
-# ("zen4plus-deep"), never wspy-run's own expanded "deep-cpu,ibs-sample,
-# tree-heavy" comma list. Lives here (not just server.py, which also uses
-# it for its own IBS/power probe tables) because execute_profile_run() below
-# needs it too: its own tree-heavy/gpu-compute detection was checking the
-# raw, unexpanded profile string, so a composite preset's embedded tree pass
-# never triggered the process-tree-views post-processing step below.
-COMPOSITE_PRESET_PROFILES = {
-    "zen-portable": ("quick", "ibs-basic"),
-    "zen4plus-deep": ("deep-cpu", "ibs-sample", "tree-heavy"),
-}
+# builtin profiles via wspy-run's own load_profiles() -- the web launcher
+# only ever submits the single top-level preset name ("zen4plus-deep"),
+# never wspy-run's own expanded "deep-cpu,ibs-sample,tree-heavy" comma
+# list. Lives here (not just server.py, which also uses it for its own
+# IBS/power probe tables) because execute_profile_run() below needs it too:
+# its own tree-heavy/gpu-compute detection was checking the raw, unexpanded
+# profile string, so a composite preset's embedded tree pass never
+# triggered the process-tree-views post-processing step below.
+#
+# Read from profiles/*.spec (repo root, under REPO_ROOT) rather than
+# hand-derived here -- each composite profile's one-line comma spec is the
+# same file wspy-run's own load_builtin_profile() reads (INVESTIGATION.md's
+# 4.4(a) "Preset/Configuration/Option vocabulary refactor" item), so this
+# dict can no longer drift out of sync with wspy-run's own composition the
+# way a hand-copied version could.
+def _load_composite_preset_profiles():
+    result = {}
+    spec_dir = os.path.join(REPO_ROOT, "profiles")
+    try:
+        names = sorted(os.listdir(spec_dir))
+    except OSError:
+        return result
+    for fname in names:
+        if not fname.endswith(".spec"):
+            continue
+        preset = fname[: -len(".spec")]
+        try:
+            with open(os.path.join(spec_dir, fname), "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    result[preset] = tuple(p.strip() for p in line.split(",") if p.strip())
+                    break
+        except OSError:
+            continue
+    return result
+
+
+COMPOSITE_PRESET_PROFILES = _load_composite_preset_profiles()
 
 
 def expand_preset_names(preset):

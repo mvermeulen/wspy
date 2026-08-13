@@ -62,6 +62,7 @@ int versionflag = 0;
 int capabilitiesflag = 0;
 int preflightflag = 0;
 int listaffinityflag = 0;
+int listgroupsflag = 0;
 int helpflag = 0;
 /* Set once, at the top of parse_options(), before the individual
  * counter-group flags below get a chance to fire -- a plain "was
@@ -117,7 +118,7 @@ static int config_provenance_options_cap = 0;
 
 FILE *treefile = NULL;
 FILE *outfile = NULL;
-unsigned int counter_mask = COUNTER_IPC;
+unsigned int counter_mask = COUNTER_DEFAULT_MASK;
 
 int num_procs;
 int clocks_per_second;
@@ -326,6 +327,10 @@ int parse_options(int argc,char *const argv[]){
     { "target", required_argument, 0, 100 },
     { "symbol-sample", no_argument, 0, 101 },
     { "symbol-sample-event", required_argument, 0, 102 },
+    // 103: next free getopt_long val after --symbol-sample-event's 102 --
+    // see doc/INVESTIGATION_ARCHIVE.md's "Non-obvious implementation traps"
+    // for why a collision here silently misroutes an unrelated flag.
+    { "list-groups", no_argument, 0, 103 },
     { "verbose", no_argument, 0, 32 },
     { "arm-dcache-mem", no_argument, 0, 73 },
     { "no-arm-dcache-mem", no_argument, 0, 74 },
@@ -695,6 +700,9 @@ int parse_options(int argc,char *const argv[]){
     case 72: // --list-affinity
       listaffinityflag = 1;
       break;
+    case 103: // --list-groups
+      listgroupsflag = 1;
+      break;
     case 31: // --tree
       if ((treefile = fopen(optarg,"w")) == NULL){
 	warning("unable to open tree file: %s, ignored\n",optarg);
@@ -819,6 +827,9 @@ int parse_options(int argc,char *const argv[]){
   }
   if (listaffinityflag){
     return 5; // no workload command needed, and no privileges either -- pure sysfs discovery
+  }
+  if (listgroupsflag){
+    return 7; // no workload command needed, and no privileges either -- pure static-table dump
   }
   if (optind >= argc){
     warning("missing command after options\n");
@@ -981,6 +992,20 @@ static int run_affinity_report_probe(void){
   }
   affinity_topology_discover();
   affinity_print_report(outfile);
+
+  if (oflag) fclose(outfile);
+  return 0;
+}
+
+// Standalone counter-group vocabulary listing (wspy --list-groups): the
+// --counters=<list>/--passes=<list> token vocabulary (multipass.c's
+// multipass_group_names[]), made machine-readable for other front ends
+// (wspy-run, the web launcher) to query instead of hand-copying the name
+// list (INVESTIGATION.md's 4.4(a) "Preset/Configuration/Option vocabulary
+// refactor" item). Pure static-table dump -- no privileges, no hardware
+// probing, same standing as --list-affinity.
+static int run_group_list_probe(void){
+  multipass_print_group_list(outfile);
 
   if (oflag) fclose(outfile);
   return 0;
@@ -1351,6 +1376,7 @@ static void print_full_usage(FILE *out,const char *prog){
 	  "\t--capabilities            - probe available counters for this host/kernel and exit\n"
 	  "\t--preflight               - check counter-fit for the given flags and exit\n"
 	  "\t--list-affinity           - list core/thread/L3-domain/core-type topology and exit\n"
+	  "\t--list-groups             - list --counters=/--passes= group names and exit\n"
 	  "\n"
 	  "Run control:\n"
 	  "\t--affinity=<spec>         - pin the workload to selected CPUs: all (default),\n"
@@ -1539,6 +1565,9 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   }
   if (i == 5){
     return run_affinity_report_probe();
+  }
+  if (i == 7){
+    return run_group_list_probe();
   }
   if (i){
     // A real usage error (bad flag, missing command) -- short and to the

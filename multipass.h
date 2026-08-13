@@ -23,6 +23,8 @@
 #ifndef _WSPY_MULTIPASS_H
 #define _WSPY_MULTIPASS_H 1
 
+#include <stdio.h>
+
 /* One --passes=<name> token and the COUNTER_* bit it maps to. */
 struct multipass_group_name {
   const char *name;
@@ -42,6 +44,16 @@ extern const int multipass_n_group_names;
 /* Looks up a --passes=<name> token against multipass_group_names[].
  * Returns 1 and sets *bit_out on a match, 0 (bit_out untouched) otherwise. */
 int multipass_lookup_group_name(const char *name,unsigned int *bit_out);
+
+/* wspy --list-groups: prints multipass_group_names[] one per line, name
+ * plus whether it's on by default (COUNTER_DEFAULT_MASK, wspy.h) -- the
+ * same --counters=<list>/--passes=<list> token vocabulary, made machine-
+ * readable so other front ends (wspy-run, the web launcher) can query it
+ * instead of hand-copying the name list (INVESTIGATION.md's 4.4(a) "Preset/
+ * Configuration/Option vocabulary refactor" item). No privileges/hardware
+ * probing needed -- pure static-table dump, same standing as
+ * --list-affinity. */
+void multipass_print_group_list(FILE *out);
 
 /* pass_mask[0] is the "primary" pass: run_multipass() (wspy.c) sources the
  * merged CSV/manifest's base rusage/elapsed/exit-status fields from it,

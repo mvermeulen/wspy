@@ -144,6 +144,20 @@ Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-
   studio (new `aivision.*`/`AIVISION_RE` naming) the same way the existing text narrative already is.
   See `doc/INVESTIGATION_ARCHIVE.md`'s "Vision-based topdown-chart analysis: live model comparison and
   design" for the live model comparison behind the design and how its open questions resolved.
+- `wspy-run` builtin-profile vocabulary refactor (4.4(a) item 1, first slice): the 11 builtin profiles
+  (`quick` through `zen4plus-deep`) moved from a hardcoded bash `case` statement
+  (`PASS_NAMES`/`PASS_FLAGS` arrays) to data files under `profiles/*.conf` (plain pass lists, reusing
+  `wspy-run`'s existing `-c <file>` grammar) and `profiles/*.spec` (composites) — `BUILTIN_PROFILES` is
+  now discovered from the file set rather than hand-listed a second time. `web/joblib.py`'s
+  `COMPOSITE_PRESET_PROFILES` now reads the same `*.spec` files instead of hand-mirroring `wspy-run`'s
+  composition (a real, audit-found drift risk — see 4.4(a)'s own intro). New `wspy --list-groups`
+  (`multipass.c`) makes the `--counters=`/`--passes=` group-name vocabulary machine-readable;
+  `tests/group_vocab_check.sh` checks `web/joblib.py`'s `ALL_GROUPS` against it so that duplication
+  can't silently drift either. `--list`/`--dry-run` output is unchanged (verified byte-identical per
+  profile) except `--list`'s own enumeration order, now alphabetical (file-glob-derived) rather than
+  hand-authored. Remaining scope (the web UI's own checklist/argv engine, `wspy.c`'s CLI flags,
+  `PROFILE_PLOTTABLE_COLUMNS`, ARM group exposure) stays open under item 1 above — this was
+  deliberately scoped as the mechanically-safe slice, not the full three-way unification.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
@@ -332,12 +346,16 @@ the page indicating order or which are "normally do this" vs. optional; and per-
 `--hostname`+`--command` vs. `--hostname`+`--run-id`, depending which tool) have drifted apart tool by
 tool despite resolving near-identical shapes underneath.
 
-1. Preset/Configuration/Option vocabulary refactor — unify the CLI's flat flag list, `wspy-run`'s
-   hardcoded `PASS_NAMES`/`PASS_FLAGS` bash arrays, and the web UI's own preset/configuration/option
-   model (shipped 4.1) onto one declarative vocabulary, so all three describe the same thing the same
-   way instead of each inventing its own mental model. Promoted from "open question" (below, previously
-   "not yet") to active scope — see the "Preset / Configuration / Option hierarchy deep-dive" below for
-   the full reasoning.
+1. Preset/Configuration/Option vocabulary refactor — remaining scope after the `wspy-run`/web-UI
+   profile-vocabulary slice shipped (see "Shipped since 4.3.1"): unify the web UI's own
+   checklist-driven argv builder (`build_configuration_passes()`, `web/joblib.py`) onto the same
+   `profiles/*.conf`/`*.spec` data `wspy-run` now reads, rather than its own independent
+   configuration/option model; extend `wspy.c`'s own flat CLI flag list toward the same vocabulary
+   (today only exposed read-only, via `wspy --list-groups`); and revisit `PROFILE_PLOTTABLE_COLUMNS`
+   (still hand-maintained — not mechanically derivable from flags without asking real wspy about its
+   own CSV headers) and the 3 ARM-only counter groups (`arm-dcache-mem`/`arm-icache-tlb`/
+   `arm-mem-align-tlb`) not yet exposed in the web checklist. See the "Preset / Configuration /
+   Option hierarchy deep-dive" below for the full reasoning.
 2. One-click end-to-end pipeline. Today a human runs `wspy-run`, then separately has to already know to
    run `wspy-store`'s ingest, `wspy-testpoint select-runs`, `wspy-testpoint render`, and a publish step —
    each its own command or its own web-UI button, in an order nowhere written down for a CLI-only user.
