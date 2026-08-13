@@ -240,12 +240,16 @@ Builtin profiles: `quick` (one fast IPC+system pass), `deep-cpu` (the multi-pass
 used for topdown characterization), `deep-cpu-intel` (the shorter Intel-only equivalent — Intel
 lacks `deep-cpu`'s AMD-specific opcache/frontend/L3 groups), `deep-gpu` (`deep-cpu` plus GPU
 busy/metrics passes), `tree-heavy` (a single `--tree` pass with full command-line capture, capped
-at a run-time-estimated timeout, 3600s floor), `ibs-basic`/`ibs-memory-deep` (single-pass AMD IBS
-collection, see the IBS flags above), `gpu-compute` (tree tracing + system + power + both GPU
-backends + topdown on one shared `--interval` timeline, for GPU-bound workloads a
+at a run-time-estimated timeout, 3600s floor), `ibs-basic`/`ibs-memory-deep`/`ibs-sample`
+(single-pass AMD IBS collection — counting mode for the first two, sampling mode with a named
+cache/DRAM breakdown for the third, see the IBS flags above), `gpu-compute` (tree tracing + system
++ power + both GPU backends + topdown on one shared `--interval` timeline, for GPU-bound workloads a
 separate-pass-per-category profile can't correlate tick-for-tick), and the Zen-family preset packs
 `zen-portable` (`quick`+`ibs-basic`, warning-free across the whole Zen family) and `zen4plus-deep`
-(`deep-cpu`+`ibs-memory-deep`, assumes Family 19h+). `-c <file>` loads a custom pass list instead
+(`deep-cpu`+`ibs-sample`+`tree-heavy`, assumes Family 19h+). Builtin profiles are data, not code —
+`quick`/`deep-cpu`/etc. are `profiles/*.conf` files (the exact `<pass-name> <wspy-flags...>` grammar
+below), and `zen-portable`/`zen4plus-deep` are `profiles/*.spec` composites; adding a profile means
+adding a file, not editing this script. `-c <file>` loads a custom pass list instead
 (`<pass-name> <wspy-flags...>` per line), and
 a comma-separated profile list (e.g. `deep-cpu,tree-heavy`) composes more than one builtin
 profile's passes into a single invocation — see `./wspy-run --help` for the full option list and

@@ -47,6 +47,15 @@ int multipass_lookup_group_name(const char *name,unsigned int *bit_out){
   return 0;
 }
 
+void multipass_print_group_list(FILE *out){
+  int i;
+
+  for (i = 0; i < multipass_n_group_names; i++){
+    fprintf(out,"%-18s %s\n",multipass_group_names[i].name,
+	    (multipass_group_names[i].bit & COUNTER_DEFAULT_MASK) ? "default-on" : "default-off");
+  }
+}
+
 struct multipass_plan multipass_plan_build(unsigned int requested_mask){
   struct multipass_plan plan;
   unsigned int current_mask = 0;

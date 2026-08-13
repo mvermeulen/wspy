@@ -108,6 +108,11 @@ extern int clocks_per_second;
 extern struct timespec start_time,finish_time;
 
 #define COUNTER_IPC         0x1
+/* What counter_mask starts as before any flag is parsed (wspy.c). Named so
+ * the "which groups are on by default" fact has exactly one source --
+ * multipass.c's multipass_print_group_list() (wspy --list-groups) reads
+ * this same macro rather than hardcoding COUNTER_IPC a second time. */
+#define COUNTER_DEFAULT_MASK COUNTER_IPC
 #define COUNTER_TOPDOWN     0x2
 #define COUNTER_TOPDOWN2    0x4
 #define COUNTER_TOPDOWN_FE  0x8
