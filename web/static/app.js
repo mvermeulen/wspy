@@ -7,7 +7,8 @@
   // endpoint is always the single source of truth for what will run.
   var GROUP_NAMES = ["ipc", "topdown", "topdown2", "topdown-frontend", "topdown-backend",
     "topdown-optlb", "branch", "cache1", "cache2", "cache3", "dcache", "icache",
-    "tlb", "memory", "opcache", "software", "float"];
+    "tlb", "memory", "opcache", "software", "float",
+    "arm-dcache-mem", "arm-icache-tlb", "arm-mem-align-tlb"];
 
   function byId(id) { return document.getElementById(id); }
   function getChecked(id) { var el = byId(id); return !!(el && el.checked); }

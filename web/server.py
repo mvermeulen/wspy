@@ -2518,7 +2518,7 @@ def render_group_checkboxes(id_prefix, checked_by_default=(), names=GROUP_NAMES)
 # instead of the full ALL_GROUPS/GROUP_NAMES vocabulary render_group_checkboxes()
 # defaults to -- ipc/topdown/software cover the common cases (throughput,
 # pipeline-bottleneck breakdown, page faults/context switches) without
-# overwhelming a tree-focused workflow with the full ~16-entry counter-group
+# overwhelming a tree-focused workflow with the full ~20-entry counter-group
 # list the top-level "Performance counters" card still offers. The backend
 # (counter_group_flags(), the tree pass builder in joblib.py) is unchanged --
 # this only narrows what the UI offers, not what --tree-target/--counters can
