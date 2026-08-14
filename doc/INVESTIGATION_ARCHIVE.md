@@ -530,6 +530,48 @@ separately-noticed defect in the *first* vision-analysis default-curation integr
 multi-template work introduced, but fixing it here (once there was more than one plot in play) made the
 "chart, then its own narration, never grouped away from it" rule impossible to defer any longer.
 
+**Update — vision-only discovery no longer trusts `/api/tags` alone (shipped, 2026-08-13):** item 4
+above's "confirmed live to include `vision`" claim did not generalize. A user report plus a live check
+against a real Ollama server on this exact host found `gemma4:26b` — the model item 4's own live
+comparison had picked as `DEFAULT_VISION_MODEL_IF_PRESENT` — missing `"vision"` from its `/api/tags`
+capabilities entry, while `/api/show`'s per-model detail call for that same model correctly reported it
+(and `/api/generate` with an attached image worked against it directly). `gemma4:12b`'s `/api/tags`
+entry, tested on the same host, reported `"vision"` correctly, so the unreliability is real but not
+uniform across models — `/api/tags`'s capabilities array can't be trusted as the sole source for this
+filter. Symptom was silent, not an error: `--list-models --vision-only` (the web UI's "Discover
+installed vision models" button) and the `--default-vision-model` installed/vision-capable check
+(`wspy-analyze:1068-1083`) both filter through this same array, so a genuinely installed, genuinely
+vision-capable model just never appeared — while an explicit `--model gemma4:26b` bypassed the filtered
+list entirely (`wspy-analyze:1058`, `models = list(args.model)`) and worked, which is what made this
+diagnosable rather than just "the model doesn't work." Fixed by `ollama_model_is_vision_capable()`: a
+`/api/tags` "yes" is still trusted outright (no extra request), but a `/api/tags` "no" now gets one
+confirming `/api/show` call (a fast per-model metadata fetch, ~10ms live, not a model load) before being
+treated as authoritative — same "never guess" posture as everywhere else in this feature, applied to the
+capability check itself this time rather than to plot/template resolution.
+
+**Update — `--image` mode gets its own, larger default `--timeout` (shipped, 2026-08-13):** the same bug
+report that led to the update above also reported a batch of three checked plots (topdown, power-vs-
+frequency, system-cpu) where the first two narrated successfully and the third failed for every model
+tried with "could not reach Ollama... timed out." Captured live via `journalctl -u ollama`, on the same
+host used for the update above: a real `/api/generate` call was aborted client-side at exactly the
+2-minute mark (`[GIN] ... 500 | 2m0s | POST "/api/generate"`, immediately followed server-side by
+`cancel task` with no error of its own — Ollama was still working, the client just gave up), and the very
+next `--image` request in the same log needed a cold model load (~33s) plus CPU-bound image-encoder
+processing (Ollama's scheduler disabling mmproj GPU offload with `reason=shared-memory-gpu`, the same
+iGPU/unified-memory quirk item 4 above already found) that alone took 38s — 70+ seconds of prefill with
+*zero* bytes streamed back, before generation ever started. `ollama_generate()`'s per-chunk-idle-timeout
+design (already documented as tolerating a slow-but-progressing generation of any length) turns out to
+only cover the generation phase — it can't help during prefill, since nothing streams then at all, so the
+whole of a slow model-load-plus-image-encode has to fit inside one `--timeout` window. A comparable
+`--image` call given more headroom completed successfully after 6m36s total, confirming this is a timeout
+choice, not a hung server. Fixed with `DEFAULT_VISION_TIMEOUT_SECONDS = 300`, applied only when `--image`
+is given and `--timeout` isn't passed explicitly (a `default=None` sentinel resolved once, right after
+`argparse.parse_args()`, rather than a plain argparse default, so an explicit `--timeout` still always
+wins). Text-mode calls are unaffected — `DEFAULT_TIMEOUT_SECONDS` stays 120, since they have no
+equivalent image-encoding prefill cost. `test_ai_analyze.sh`'s own `--image` live-call section, which
+previously hardcoded `--timeout 240` for the same "vision calls need more slack" reason, now relies on
+this default directly instead of overriding it with a now-smaller number.
+
 ### Critical-path / synchronization-latency: full candidate rationale (shipped)
 This is the original motivation and per-syscall design-fork reasoning that led to all six shipped
 syscall-latency flags (`--tree-futex`, `--tree-io-wait`, `--tree-connect`, `--tree-nanosleep`,
