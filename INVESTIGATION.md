@@ -155,9 +155,9 @@ Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-
   `tests/group_vocab_check.sh` checks `web/joblib.py`'s `ALL_GROUPS` against it so that duplication
   can't silently drift either. `--list`/`--dry-run` output is unchanged (verified byte-identical per
   profile) except `--list`'s own enumeration order, now alphabetical (file-glob-derived) rather than
-  hand-authored. Remaining scope (the web UI's own checklist/argv engine, `wspy.c`'s CLI flags,
-  `PROFILE_PLOTTABLE_COLUMNS`) stays open under item 1 above — this was deliberately scoped as the
-  mechanically-safe slice, not the full three-way unification.
+  hand-authored. Remaining scope (the web UI's own checklist/argv engine) stays open under item 1
+  above — this was deliberately scoped as the mechanically-safe slice, not the full three-way
+  unification.
 - `wspy-run` builtin-profile vocabulary refactor (4.4(a) item 1, ARM group exposure slice): the 3
   ARM-only counter groups (`arm-dcache-mem`/`arm-icache-tlb`/`arm-mem-align-tlb`) are now real
   `web/joblib.py` `ALL_GROUPS` entries, so the web checklist's "Performance counters"/preflight cards can
@@ -405,13 +405,13 @@ the page indicating order or which are "normally do this" vs. optional; and per-
 `--hostname`+`--command` vs. `--hostname`+`--run-id`, depending which tool) have drifted apart tool by
 tool despite resolving near-identical shapes underneath.
 
-1. Preset/Configuration/Option vocabulary refactor — unify the web UI's own checklist-driven argv
-   builder (`build_configuration_passes()`, `web/joblib.py`) onto the same `profiles/*.conf`/`*.spec`
-   data `wspy-run` reads, rather than its own independent configuration/option model, and extend
-   `wspy.c`'s own flat CLI flag list toward the same vocabulary (today only exposed read-only, via
-   `wspy --list-groups`). Also revisit `PROFILE_PLOTTABLE_COLUMNS` (still hand-maintained — not
-   mechanically derivable from flags without asking real wspy about its own CSV headers). See the
-   "Preset / Configuration / Option hierarchy deep-dive" below for the full reasoning.
+1. Preset/Configuration/Option vocabulary refactor — remaining scope: unify the web UI's own
+   checklist-driven argv builder (`build_configuration_passes()`, `web/joblib.py`) onto the same
+   `profiles/*.conf`/`*.spec` data `wspy-run` reads, rather than its own independent configuration/
+   option model. (The builtin-profile-vocabulary slice, the ARM group-exposure slice, `wspy.c`'s
+   `--list-columns` probe, and mechanizing `PROFILE_PLOTTABLE_COLUMNS` off it have all shipped — see
+   "Shipped since 4.3.1" above.) See the "Preset / Configuration / Option hierarchy deep-dive" below
+   for the full reasoning.
 2. One-click end-to-end pipeline. Today a human runs `wspy-run`, then separately has to already know to
    run `wspy-store`'s ingest, `wspy-testpoint select-runs`, `wspy-testpoint render`, and a publish step —
    each its own command or its own web-UI button, in an order nowhere written down for a CLI-only user.
