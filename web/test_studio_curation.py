@@ -95,6 +95,25 @@ class BuildDefaultCurationBlocksTest(unittest.TestCase):
         self.assertNotIn("aiprompt.txt", source_files)
         self.assertNotIn("aiprompt.critique.gpt-oss_20b.txt", source_files)
 
+    def test_includes_vision_analysis_but_not_its_prompt_or_critique(self):
+        # Mirrors test_includes_command_txt_and_narrative_analysis_but_not_
+        # critique_or_prompt above, for wspy-analyze --image's "aivision."
+        # naming (INVESTIGATION.md's "Vision-based topdown-chart analysis").
+        self._write_manifest([{"name": "quick", "output": "quick.txt", "manifest": None, "status": "ok"}])
+        for name in ("quick.txt", "aivision.amdtopdown.topdown.gemma4-26b.md",
+                     "aiprompt.vision.amdtopdown.topdown.md",
+                     "aiprompt.critique.vision.amdtopdown.topdown.gemma4-26b.md"):
+            _touch(os.path.join(self.tmpdir, name))
+
+        blocks = server.build_default_curation_blocks(self.tmpdir)
+        source_files = {b["source_file"] for b in blocks}
+        self.assertIn("aivision.amdtopdown.topdown.gemma4-26b.md", source_files)
+        self.assertNotIn("aiprompt.vision.amdtopdown.topdown.md", source_files)
+        self.assertNotIn("aiprompt.critique.vision.amdtopdown.topdown.gemma4-26b.md", source_files)
+        vision_block = next(b for b in blocks
+                             if b["source_file"] == "aivision.amdtopdown.topdown.gemma4-26b.md")
+        self.assertTrue(vision_block["ai_generated"])
+
     def test_excludes_summary_txt_and_run_manifest(self):
         self._write_manifest([{"name": "quick", "output": "quick.txt", "manifest": None, "status": "ok"}])
         for name in ("quick.txt", "summary.txt", "launch.log"):

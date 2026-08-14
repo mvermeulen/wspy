@@ -4028,7 +4028,17 @@ def build_default_curation_blocks(rundir):
         if filename in handled:
             continue
         label, ai_generated = ai_artifact_label(filename) or (None, False)
-        if label and label.startswith("AI narrative analysis"):
+        # "AI vision analysis (" (with the open paren) rather than a bare
+        # "AI vision analysis" prefix -- ai_artifact_label() also uses that
+        # same leading phrase for the rendered-prompt ("AI vision analysis:
+        # rendered prompt ...") and critique ("AI vision analysis: prompt
+        # critique ...") variants, which aren't curation-worthy on their own
+        # (same reasoning default_curation.conf's own aiprompt.vision.*/
+        # aiprompt.critique.vision.* exclusions document) -- only the real
+        # per-image model output ever reaches the "(image: ..., model: ...)"
+        # shape this checks for.
+        if label and (label.startswith("AI narrative analysis") or
+                      label.startswith("AI vision analysis (")):
             add(filename)
     for filename in sorted(by_filename):
         if filename.startswith(PLOTS_DIR_NAME + "/"):
