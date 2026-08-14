@@ -414,6 +414,150 @@ class BuildConfigurationPassesTest(unittest.TestCase):
         self.assertEqual(joblib.build_configuration_passes("/tmp/rundir", checklist), [])
 
 
+class LoadProfileConfPassesTest(unittest.TestCase):
+    """Against the real profiles/*.conf files -- same posture as
+    ExpandPresetNamesTest above, which reads the real profiles/*.spec files
+    rather than fixtures, since these are checked-in, stable repo data."""
+
+    def test_quick_has_one_pass_no_interval(self):
+        passes = joblib._load_profile_conf_passes("quick")
+        self.assertEqual(len(passes), 1)
+        self.assertNotIn("--interval", passes[0])
+
+    def test_deep_cpu_has_two_interval_passes_and_one_passes_sweep(self):
+        passes = joblib._load_profile_conf_passes("deep-cpu")
+        interval_passes = [p for p in passes if "--interval" in p]
+        non_interval = [p for p in passes if "--interval" not in p]
+        self.assertEqual(len(interval_passes), 2)  # systemtime, amdtopdown
+        self.assertEqual(len(non_interval), 1)  # counters (--passes=... sweep)
+        self.assertTrue(any(t.startswith("--passes=") for t in non_interval[0]))
+
+    def test_unknown_profile_returns_empty(self):
+        self.assertEqual(joblib._load_profile_conf_passes("not-a-real-profile"), [])
+
+    def test_composite_spec_file_returns_empty(self):
+        # zen-portable has a .spec file, not a .conf file -- this function
+        # only reads .conf files; profile_plottable_columns() below is what
+        # calls expand_preset_names() first to resolve a composite down to
+        # its constituent .conf-backed names before ever reaching here.
+        self.assertEqual(joblib._load_profile_conf_passes("zen-portable"), [])
+
+
+class WspyListColumnsTest(unittest.TestCase):
+    def test_parses_header_from_stdout(self):
+        def fake_run(argv, cwd, capture_output, text, timeout):
+            self.assertIn("--list-columns", argv)
+            return subprocess.CompletedProcess(argv, 0, stdout="a,b,c,\n", stderr="warning: noise\n")
+
+        with patch("joblib.subprocess.run", side_effect=fake_run):
+            cols = joblib._wspy_list_columns("/fake/wspy", ["--counters=topdown"])
+        self.assertEqual(cols, {"a", "b", "c"})
+
+    def test_ignores_blank_trailing_lines(self):
+        # stderr diagnostics never reach this (subprocess.run separates the
+        # streams) but a trailing blank line on stdout itself is real and
+        # must be skipped in favor of the last non-blank line.
+        def fake_run(argv, cwd, capture_output, text, timeout):
+            return subprocess.CompletedProcess(argv, 0, stdout="time,ipc,\n\n", stderr="")
+
+        with patch("joblib.subprocess.run", side_effect=fake_run):
+            cols = joblib._wspy_list_columns("/fake/wspy", [])
+        self.assertEqual(cols, {"time", "ipc"})
+
+    def test_empty_set_on_nonzero_exit(self):
+        def fake_run(argv, cwd, capture_output, text, timeout):
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="error")
+
+        with patch("joblib.subprocess.run", side_effect=fake_run):
+            cols = joblib._wspy_list_columns("/fake/wspy", [])
+        self.assertEqual(cols, set())
+
+    def test_empty_set_on_missing_binary(self):
+        with patch("joblib.subprocess.run", side_effect=OSError("no such file")):
+            cols = joblib._wspy_list_columns("/does/not/exist", [])
+        self.assertEqual(cols, set())
+
+    def test_empty_set_on_timeout(self):
+        with patch("joblib.subprocess.run",
+                    side_effect=subprocess.TimeoutExpired(cmd="wspy", timeout=30)):
+            cols = joblib._wspy_list_columns("/fake/wspy", [])
+        self.assertEqual(cols, set())
+
+
+class ProfilePlottableColumnsTest(unittest.TestCase):
+    def test_only_interval_passes_are_queried(self):
+        calls = []
+
+        def fake_run(argv, cwd, capture_output, text, timeout):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout="x,\n", stderr="")
+
+        with patch("joblib.subprocess.run", side_effect=fake_run):
+            # deep-cpu.conf has 3 passes: systemtime (--interval), counters
+            # (--passes=..., no --interval), amdtopdown (--interval) -- only
+            # the two --interval ones should ever reach --list-columns.
+            cols = joblib.profile_plottable_columns("/fake/wspy/1", "deep-cpu")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(cols, {"x"})
+
+    def test_composite_expands_before_querying(self):
+        def fake_run(argv, cwd, capture_output, text, timeout):
+            return subprocess.CompletedProcess(argv, 0, stdout="ibs_fetch,ibs_op,\n", stderr="")
+
+        with patch("joblib.subprocess.run", side_effect=fake_run):
+            # zen-portable = quick,ibs-basic -- quick has no --interval pass,
+            # ibs-basic's does, so only ibs-basic's columns should surface.
+            cols = joblib.profile_plottable_columns("/fake/wspy/2", "zen-portable")
+        self.assertEqual(cols, {"ibs_fetch", "ibs_op"})
+
+    def test_result_is_cached_per_wspy_bin_and_token(self):
+        calls = []
+
+        def fake_run(argv, cwd, capture_output, text, timeout):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout="ibs_fetch,\n", stderr="")
+
+        with patch("joblib.subprocess.run", side_effect=fake_run):
+            joblib.profile_plottable_columns("/fake/wspy/3", "ibs-basic")
+            n_after_first = len(calls)
+            joblib.profile_plottable_columns("/fake/wspy/3", "ibs-basic")
+        self.assertEqual(len(calls), n_after_first)  # second call served from cache, no new subprocess
+
+    def test_no_conf_file_returns_empty(self):
+        self.assertEqual(joblib.profile_plottable_columns("/fake/wspy/4", "not-a-real-profile"), set())
+
+
+class BuildSupplementaryPlotPassesTest(unittest.TestCase):
+    def test_no_custom_plots_returns_empty(self):
+        passes, notes = joblib.build_supplementary_plot_passes(
+            "/tmp/rundir", "deep-cpu", [], "/fake/wspy/5")
+        self.assertEqual(passes, [])
+        self.assertEqual(notes, [])
+
+    def test_covered_column_produces_no_supplementary_pass(self):
+        def fake_run(argv, cwd, capture_output, text, timeout):
+            return subprocess.CompletedProcess(argv, 0, stdout="retire,frontend,\n", stderr="")
+
+        custom_plots = [{"name": "myplot", "columns": ["retire"]}]
+        with patch("joblib.subprocess.run", side_effect=fake_run):
+            passes, notes = joblib.build_supplementary_plot_passes(
+                "/tmp/rundir", "deep-cpu", custom_plots, "/fake/wspy/6")
+        self.assertEqual(passes, [])
+        self.assertEqual(notes, [])
+
+    def test_missing_column_adds_supplementary_pass(self):
+        def fake_run(argv, cwd, capture_output, text, timeout):
+            return subprocess.CompletedProcess(argv, 0, stdout="retire,\n", stderr="")
+
+        custom_plots = [{"name": "myplot", "columns": ["l2miss"]}]
+        with patch("joblib.subprocess.run", side_effect=fake_run):
+            passes, notes = joblib.build_supplementary_plot_passes(
+                "/tmp/rundir", "deep-cpu", custom_plots, "/fake/wspy/7")
+        self.assertEqual(len(passes), 1)
+        self.assertTrue(passes[0]["name"].startswith("plotdata-"))
+        self.assertTrue(any("l2miss" in n for n in notes))
+
+
 class ConfigOptionsTest(unittest.TestCase):
     def test_skips_enabled_and_none_and_empty(self):
         options = joblib._config_options({"enabled": True, "groups": None, "csv": ""})

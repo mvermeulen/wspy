@@ -167,7 +167,7 @@ Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-
   raw-event CSV columns these 3 groups produce, so a custom plot asking for one of them now correctly
   auto-enables its group (`autofit_checklist_for_custom_plots()`/`build_supplementary_plot_passes()`)
   instead of silently warning. Remaining scope (the web UI's own checklist/argv engine unification onto
-  `profiles/*.conf`/`*.spec`, `wspy.c`'s CLI flags, `PROFILE_PLOTTABLE_COLUMNS`) stays open under item 1.
+  `profiles/*.conf`/`*.spec`) stays open under item 1.
 - Default curation: AI vision analysis output (`aivision.*.md`) is now included by the Studio's "Apply
   default curation" button when present, mirroring the existing narrative-analysis treatment —
   previously only `ai_artifact_label()`'s "AI narrative analysis" labels were swept into the fallback
@@ -194,6 +194,29 @@ Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-
   if every one succeeded. `default_curation.conf` places each plot's own `aivision.*` block immediately
   after that plot (previously the vision-analysis section was grouped near the top, ahead of every plot
   it might narrate) — general policy now, not just for topdown.
+- `wspy --list-columns` + mechanized `PROFILE_PLOTTABLE_COLUMNS` (4.4(a) item 1, "extend `wspy.c`'s CLI
+  flags"/"revisit `PROFILE_PLOTTABLE_COLUMNS`" slice): new standalone probe, `wspy --list-columns
+  [<flags>]` (`wspy.c`, same "no separate workload launch" standing as `--capabilities`/`--preflight`/
+  `--list-groups`) — prints the CSV header the given flag combination would produce and exits, by falling
+  through the exact single-pass/`--passes` group-construction and header-printing code a real run uses
+  (an early return right after each path's own CSV-header block, not a second hand-maintained copy of
+  it) rather than dispatching to its own probe function the way the other three do. `web/joblib.py`'s
+  hand-maintained `PROFILE_PLOTTABLE_COLUMNS` table (used by `build_supplementary_plot_passes()` to know
+  which columns a preset's own passes already cover) is replaced by `profile_plottable_columns()`, a
+  lazy, memoized query against this new flag: reads a builtin profile's `profiles/*.conf` (expanding
+  `*.spec` composites via the already-shipped `expand_preset_names()`), finds its `--interval` pass(es),
+  and asks the real `wspy --list-columns` what CSV header they produce — real per-host device names
+  (`net enp2s0`, `disk nvme0n1 ...`) come back as literal columns, so the old `"net *"`/`"disk *"`
+  wildcard special-case in `build_supplementary_plot_passes()` is gone too. Deliberately *not* a
+  module-level constant computed at import time, unlike `ALL_GROUPS` — `joblib.py`'s own docstring
+  requires importing it to never need a built `wspy` binary on PATH, so the query is cached per
+  `(wspy_bin, profile token)` the first time it's actually needed instead, with an empty-set degrade on
+  any subprocess failure (missing binary, non-zero exit, timeout) matching the old table's own
+  "absent entry" default. Found and fixed a real, live drift bug in the process: the old hand-authored
+  table claimed `ibs-basic`/`zen-portable` had zero plottable columns, when `ibs-basic.conf`'s pass has
+  run `--interval 1 --csv` (producing `ibs_fetch`/`ibs_op`) all along — exactly the class of silent
+  drift this item called out as the reason to mechanize it. Remaining scope under item 1: the web UI's
+  own checklist/argv engine unification onto `profiles/*.conf`/`*.spec`.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release

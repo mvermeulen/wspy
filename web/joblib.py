@@ -918,56 +918,116 @@ def autofit_checklist_for_custom_plots(checklist, custom_plots):
     return checklist, notes
 
 
-# Best-effort column coverage per BUILTIN_PROFILES entry -- which CSV
-# columns actually land in a *time-series* (--interval) CSV wspy-plot can
-# chart at all, derived by hand from wspy-run's own load_builtin_profile()
-# PASS_FLAGS. A convenience hint, not the enforcement point; wspy-run's own
-# PASS_FLAGS remain authoritative, so keep this in sync by hand if a builtin
-# profile's passes change. Most profiles' passes never use --interval at all
-# (multi-pass/aggregate/no-CSV), so they produce nothing wspy-plot can chart
-# regardless of which counter groups they collect -- only deep-cpu/deep-gpu
-# have any --interval passes today. build_supplementary_plot_passes() below
-# uses this table to find what a preset's own passes are missing, not just to
-# warn about it.
-PROFILE_PLOTTABLE_COLUMNS = {
-    "quick": set(),
-    # systemtime now also collects --power (wspy-run's load_builtin_profile()),
-    # so pkg_joules/pkg_watts land in the same CSV as cpu/freq -- POWER_COLUMN_NAMES
-    # here, not just SYSTEM_COLUMN_NAMES, since --power is its own checklist card
-    # (see resolve_column_group()'s "power" sentinel above), not a system_mask bit.
-    "deep-cpu": SYSTEM_COLUMN_NAMES | POWER_COLUMN_NAMES | {"net *", "disk *",
-                 "retire", "frontend", "backend", "speculate", "confidence", "sanity"},
-    "deep-cpu-intel": set(),
-    # systemtime now also collects --power, matching deep-cpu's own systemtime
-    # pass (a pre-existing asymmetry between the two profiles, fixed --
-    # INVESTIGATION.md's "What shipped in 4.2"), so POWER_COLUMN_NAMES
-    # belongs here too now.
-    "deep-gpu": SYSTEM_COLUMN_NAMES | POWER_COLUMN_NAMES | {"net *", "disk *",
-                 "retire", "frontend", "backend", "speculate", "confidence", "sanity",
-                 "gpu_busy", "gpu_temp", "gpu_activity", "gpu_power", "gpu_freq"},
-    "tree-heavy": set(),
-    "ibs-basic": set(),
-    "ibs-memory-deep": set(),
-    # gpu-compute's single pass already runs on --interval 1 (wspy-run's
-    # load_builtin_profile()), unlike quick/tree-heavy/ibs-* above -- so
-    # unlike those, an absent/empty entry here would be wrong, not just
-    # unhelpful: build_supplementary_plot_passes() would wrongly conclude
-    # none of its columns are plottable and spin up a redundant duplicate
-    # pass collecting data gpu-compute's own pass already produces.
-    "gpu-compute": SYSTEM_COLUMN_NAMES | POWER_COLUMN_NAMES | {
-                 "net *", "disk *", "retire", "frontend", "backend", "speculate", "confidence", "sanity",
-                 "gpu_busy", "gpu_temp", "gpu_activity", "gpu_power", "gpu_freq",
-                 "nv_gpu_busy", "nv_vram_used_mb", "nv_vram_total_mb"},
-}
+# Column coverage per BUILTIN_PROFILES entry -- which CSV columns actually
+# land in a *time-series* (--interval) CSV wspy-plot can chart at all.
+# INVESTIGATION.md's 4.4(a) "Preset/Configuration/Option vocabulary refactor"
+# item explicitly called this out as "not mechanically derivable from flags
+# without asking real wspy about its own CSV headers" -- so, unlike
+# ALL_GROUPS above (a plain module-level constant, deliberately kept that way
+# so importing this module never needs a built wspy binary on PATH), this is
+# a lazy, memoized *query*: _load_profile_conf_passes() reads a builtin
+# profile's own profiles/<name>.conf (the same file wspy-run's own
+# load_profile_conf_file() reads -- see wspy-run's own comment on that
+# function), finds its --interval pass(es), and asks the real `wspy
+# --list-columns <those flags>` (wspy.c, same item) what CSV header they'd
+# produce. Real per-host device names (net/disk) come back as literal column
+# names this way, not a "net *"/"disk *" wildcard a hand-authored table had
+# to invent to cover every possible host -- so build_supplementary_plot_
+# passes() below no longer needs that wildcard special case either. Only
+# queried the first time a given (wspy_bin, profile token) pair is actually
+# needed, and cached for the rest of this process's lifetime -- deterministic
+# for one wspy binary, so no invalidation logic is needed.
+_PROFILE_PLOTTABLE_COLUMNS_CACHE = {}
 
 
-def build_supplementary_plot_passes(rundir, profile_spec, custom_plots):
+def _load_profile_conf_passes(profile_name):
+    """Reads profiles/<profile_name>.conf -- the plain "<pass-name>
+    <wspy-flags...>" grammar wspy-run's own load_profile_conf_file() reads
+    (profiles/*.conf's own header comments document it) -- into a list of
+    per-pass flag-token lists. Returns [] for a composite (*.spec) profile or
+    any name with no matching .conf file; expand_preset_names() (below,
+    later in this module) is what resolves a composite down to its
+    constituent .conf-backed profile names before this is ever called on
+    them. ${OUTDIR}/${PREFIX} tokens (only ever used inside a --tree <path>
+    argument, per profiles/*.conf's own documentation -- never inside an
+    --interval pass, the only kind this feeds to --list-columns below) are
+    substituted with an empty string rather than a real path, since nothing
+    downstream reads that path back."""
+    conf_path = os.path.join(REPO_ROOT, "profiles", f"{profile_name}.conf")
+    passes = []
+    try:
+        with open(conf_path, "r") as f:
+            lines = f.readlines()
+    except OSError:
+        return passes
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        flags = parts[1].replace("${OUTDIR}", "").replace("${PREFIX}", "")
+        passes.append(shlex.split(flags))
+    return passes
+
+
+def _wspy_list_columns(wspy_bin, flag_tokens):
+    """Runs `wspy_bin --list-columns <flag_tokens>` and returns the set of
+    CSV column names it reports, or an empty set on any failure (binary
+    missing, non-zero exit, timeout, unparseable output) -- the same
+    best-effort degradation every other subprocess-probing helper in this
+    module uses; a detection failure here just means
+    build_supplementary_plot_passes() below treats those columns as
+    uncovered, the same conservative default an absent/empty hand-authored
+    table entry used to mean."""
+    argv = [wspy_bin, "--list-columns"] + flag_tokens
+    try:
+        proc = subprocess.run(argv, cwd=REPO_ROOT, capture_output=True,
+                               text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    if proc.returncode != 0:
+        return set()
+    # --list-columns' own diagnostics (permission-denied counter opens,
+    # preflight warnings, ...) go to stderr -- stdout is exactly the one CSV
+    # header line, trailing-comma-terminated per CLAUDE.md's own CSV
+    # convention, plus the trailing newline print_metrics() et al always add.
+    header_line = ""
+    for out_line in reversed(proc.stdout.splitlines()):
+        if out_line.strip():
+            header_line = out_line.strip()
+            break
+    return {col for col in header_line.split(",") if col}
+
+
+def profile_plottable_columns(wspy_bin, profile_token):
+    """The query-backed replacement for a single PROFILE_PLOTTABLE_COLUMNS
+    entry (see the module comment above): every CSV column profile_token's
+    own --interval pass(es) would produce, unioned across every builtin
+    profile a composite token expands to (expand_preset_names(), defined
+    later in this module -- forward reference is fine, this is only ever
+    called after the whole module has finished importing)."""
+    cache_key = (wspy_bin, profile_token)
+    if cache_key in _PROFILE_PLOTTABLE_COLUMNS_CACHE:
+        return _PROFILE_PLOTTABLE_COLUMNS_CACHE[cache_key]
+    columns = set()
+    for name in expand_preset_names(profile_token):
+        for flag_tokens in _load_profile_conf_passes(name):
+            if not any(t == "--interval" or t.startswith("--interval=") for t in flag_tokens):
+                continue
+            columns |= _wspy_list_columns(wspy_bin, flag_tokens)
+    _PROFILE_PLOTTABLE_COLUMNS_CACHE[cache_key] = columns
+    return columns
+
+
+def build_supplementary_plot_passes(rundir, profile_spec, custom_plots, wspy_bin):
     """Preset-mode counterpart to autofit_checklist_for_custom_plots(): a
     preset's own wspy-run passes stay atomic (the deep-dive's own rule --
     never decomposed or edited), but a custom plot asking for column(s) none
-    of the preset's passes will ever produce (per PROFILE_PLOTTABLE_COLUMNS)
-    would otherwise just warn and leave wspy-plot with no time series to
-    chart. Instead, resolve exactly the missing column(s) the same way
+    of the preset's passes will ever produce (per profile_plottable_columns()
+    above) would otherwise just warn and leave wspy-plot with no time series
+    to chart. Instead, resolve exactly the missing column(s) the same way
     autofit_checklist_for_custom_plots() would (against an empty checklist,
     so nothing the preset already covers is duplicated), and turn the result
     into one or two extra, ordinary `wspy` passes -- named with a
@@ -978,20 +1038,23 @@ def build_supplementary_plot_passes(rundir, profile_spec, custom_plots):
     render_wspy_run_report()'s "Other artifacts" listing) picks them up with
     no further plumbing. profile_spec may comma-compose more than one
     builtin profile (wspy-run's own convention), so coverage is the union
-    across every token. Returns (passes, notes) -- passes is empty (with a
-    plain per-column warning note, same wording as before) when a missing
-    column doesn't resolve to any known group; notes is empty entirely if
-    every requested column is already covered or custom_plots is empty."""
+    across every token. wspy_bin is the real wspy binary profile_plottable_
+    columns() queries -- callers already have cfg["wspy_bin"] at hand.
+    Returns (passes, notes) -- passes is empty (with a plain per-column
+    warning note, same wording as before) when a missing column doesn't
+    resolve to any known group; notes is empty entirely if every requested
+    column is already covered or custom_plots is empty."""
     if not custom_plots:
         return [], []
     covered = set()
     for token in (profile_spec or "").split(","):
-        covered |= PROFILE_PLOTTABLE_COLUMNS.get(token.strip(), set())
+        token = token.strip()
+        if token:
+            covered |= profile_plottable_columns(wspy_bin, token)
     missing = set()
     for cp in custom_plots:
         for c in cp.get("columns", []):
-            if not (c in covered or (c.startswith("net ") and "net *" in covered) or
-                    (c.startswith("disk ") and "disk *" in covered)):
+            if c not in covered:
                 missing.add(c)
     if not missing:
         return [], []
