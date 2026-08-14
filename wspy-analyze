@@ -16,7 +16,8 @@ numbers.
 
 Stdlib-only (matches wspy-queue/web/joblib.py's "thin client, no
 dependency" convention) -- talks to Ollama's HTTP API directly
-(POST /api/generate, GET /api/tags), no ollama Python package required.
+(POST /api/generate, GET /api/tags, POST /api/show for vision-capability
+confirmation), no ollama Python package required.
 
 Inputs (from a run directory produced by wspy-run's unified --suite/
 --benchmark layout, or a bare wspy --manifest run):
@@ -128,6 +129,25 @@ VISION_TEMPLATE_BY_PLOT_TEMPLATE = {
 }
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_TIMEOUT_SECONDS = 120
+# --image mode's own default, applied only when --timeout isn't given
+# explicitly (see main()'s sentinel-default resolution). Confirmed live
+# 2026-08-13 that vision-mode prefill alone -- a cold model load plus
+# CPU-bound vision-encoder image processing (Ollama's scheduler disabled
+# mmproj GPU offload with reason=shared-memory-gpu, the same iGPU/unified-
+# memory quirk doc/INVESTIGATION_ARCHIVE.md's vision deep-dive already
+# found) -- can take 70+ seconds before a single token streams back,
+# comfortably eating the whole of DEFAULT_TIMEOUT_SECONDS before
+# ollama_generate()'s per-chunk-idle design ever gets a chance to help: that
+# design only protects against a stall *during* generation, since Ollama
+# sends nothing at all while it's still loading the model or encoding the
+# image. Caught live: a real /api/generate call was aborted client-side by
+# wspy-analyze's own 120s default exactly at the 2-minute mark (Ollama's own
+# access log shows a clean "500 | 2m0s" with no server-side error at all --
+# the model was still working, the client just gave up waiting), while a
+# comparable --image call given more headroom completed successfully after
+# 6m36s total. Text-mode calls have no equivalent image-encoding prefill
+# cost, so DEFAULT_TIMEOUT_SECONDS itself is unchanged for them.
+DEFAULT_VISION_TIMEOUT_SECONDS = 300
 # Ollama commonly loads a model with a runtime context window (4096 tokens,
 # confirmed live 2026-08-01 against a loaded gpt-oss:20b's own llama-server
 # process args) far below what the model itself supports (131072 for
@@ -686,18 +706,50 @@ def run_dir_slug(rundir, run_manifest):
     return slugify(os.path.basename(os.path.normpath(rundir)))
 
 
+def ollama_model_is_vision_capable(host, timeout, model_entry):
+    """/api/tags' own per-model "capabilities" array is the fast path (no
+    extra request) and is trusted outright when it already says "vision" --
+    but confirmed live against a real Ollama server (2026-08-13) to be
+    unreliable in the other direction: gemma4:26b, a genuinely
+    vision-capable model (confirmed via /api/generate with an attached
+    image, and via /api/show's own "capabilities"), was missing "vision"
+    from this exact /api/tags response on the same host/Ollama version
+    where gemma4:12b's /api/tags entry reported it correctly. So a
+    /api/tags "no" only gets one confirming /api/show call (full per-model
+    detail, not a load) before being treated as authoritative, rather than
+    silently dropping an installed vision-capable model from discovery/
+    default-model resolution -- never guess "not vision-capable" from the
+    cheaper endpoint alone when a more authoritative one is one fast call
+    away."""
+    if "vision" in model_entry.get("capabilities", []):
+        return True
+    name = model_entry.get("name")
+    if not name:
+        return False
+    try:
+        req = urllib.request.Request(
+            host.rstrip("/") + "/api/show",
+            data=json.dumps({"name": name}).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            show_data = json.load(resp)
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return False
+    return "vision" in show_data.get("capabilities", [])
+
+
 def ollama_list_models(host, timeout, vision_only=False):
-    """vision_only reuses /api/tags' own per-model "capabilities" array
-    (confirmed live to include "vision" for a vision-capable model -- no
-    separate /api/show call needed) to filter the list down to models
-    --image mode can actually use, for both --list-models --vision-only and
-    --image mode's own --all-models/--default-vision-model resolution."""
+    """vision_only filters the list down to models --image mode can
+    actually use, for both --list-models --vision-only and --image mode's
+    own --all-models/--default-vision-model resolution -- see
+    ollama_model_is_vision_capable() for why this isn't a plain /api/tags
+    "capabilities" filter."""
     req = urllib.request.Request(host.rstrip("/") + "/api/tags")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = json.load(resp)
     models = data.get("models", [])
     if vision_only:
-        models = [m for m in models if "vision" in m.get("capabilities", [])]
+        models = [m for m in models if ollama_model_is_vision_capable(host, timeout, m)]
     return [m["name"] for m in models]
 
 
@@ -903,11 +955,10 @@ def main():
                           "treatment as --default-model")
     ap.add_argument("--vision-only", action="store_true",
                      help="restrict --list-models / --image mode's --all-models to models "
-                          "Ollama's own /api/tags reports as vision-capable (--image mode "
-                          "always applies this filter for --all-models regardless of this "
-                          "flag, since a non-vision model cannot do the task; this flag lets "
-                          "--list-models preview the same filter standalone, e.g. for a web "
-                          "UI model picker)")
+                          "confirmed vision-capable (--image mode always applies this filter "
+                          "for --all-models regardless of this flag, since a non-vision model "
+                          "cannot do the task; this flag lets --list-models preview the same "
+                          "filter standalone, e.g. for a web UI model picker)")
     ap.add_argument("--list-models", action="store_true",
                      help="print every model 'ollama list' (via /api/tags) reports installed, "
                           "one per line, and exit -- no --rundir needed. Lets a caller (e.g. "
@@ -933,8 +984,11 @@ def main():
     ap.add_argument("--critique", action="store_true",
                      help="after each model's analysis, ask it to critique the prompt "
                           "template itself; writes aiprompt.critique.<model>.md")
-    ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS,
-                     help="per-request timeout in seconds (default: %(default)s)")
+    ap.add_argument("--timeout", type=float, default=None,
+                     help="per-request timeout in seconds (default: %d, or %d in --image mode -- "
+                          "see DEFAULT_VISION_TIMEOUT_SECONDS's own comment for why vision calls "
+                          "need more headroom before the first streamed token)" % (
+                              DEFAULT_TIMEOUT_SECONDS, DEFAULT_VISION_TIMEOUT_SECONDS))
     ap.add_argument("--num-ctx", type=int, default=DEFAULT_NUM_CTX,
                      help="Ollama context window in tokens (default: %(default)s) -- Ollama's own "
                           "runtime default is often much smaller (4096, confirmed live), which a "
@@ -949,6 +1003,13 @@ def main():
     ap.add_argument("--dry-run", action="store_true",
                      help="render the prompt and print it, but don't call Ollama at all")
     args = ap.parse_args()
+    # --timeout's own default depends on --image mode (DEFAULT_VISION_TIMEOUT_SECONDS's
+    # comment) -- resolved here, once, rather than a plain argparse default, so an
+    # explicit --timeout always wins and everything downstream (including the
+    # --list-models early-return below) just reads args.timeout as a plain number.
+    vision_mode = args.image is not None
+    if args.timeout is None:
+        args.timeout = DEFAULT_VISION_TIMEOUT_SECONDS if vision_mode else DEFAULT_TIMEOUT_SECONDS
 
     if args.list_models:
         try:
@@ -967,7 +1028,6 @@ def main():
     if not os.path.isdir(rundir):
         ap.error("--rundir %r is not a directory" % args.rundir)
 
-    vision_mode = args.image is not None
     if vision_mode and args.compare_rundir:
         ap.error("--image and --compare-rundir are mutually exclusive")
 

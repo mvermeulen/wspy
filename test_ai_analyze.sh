@@ -373,13 +373,17 @@ echo "comparative live call OK ($(wc -c < "$COMPARE_ANALYSIS") bytes from $MODEL
 # --image mode's live-call section is separately gated (own model pick,
 # skips independently of the text-mode section above): a text-only model
 # can't do this task at all, so the same $MODEL picked above is very
-# possibly not usable here, and vice versa. Uses a longer --timeout than
-# the text-mode calls above -- this codebase's own live comparison
+# possibly not usable here, and vice versa. No explicit --timeout here --
+# --image mode now defaults to DEFAULT_VISION_TIMEOUT_SECONDS on its own
+# (see that constant's comment): this codebase's own live comparison
 # (INVESTIGATION.md's vision deep-dive) found multi-minute vision calls
-# normal on CPU-bound-mmproj hardware, not exceptional; ollama_generate()'s
-# per-chunk-idle timeout still bounds a genuinely stuck model (confirmed
-# live against exactly that failure mode), it just needs more slack than a
-# text call before declaring one.
+# normal on CPU-bound-mmproj hardware, not exceptional, and a cold model
+# load plus image-encoding prefill alone (confirmed live) can burn 70+
+# seconds before generation even starts, before ollama_generate()'s
+# per-chunk-idle timeout ever gets a chance to help. That per-chunk design
+# still bounds a genuinely stuck model once generation is under way
+# (confirmed live against exactly that failure mode) -- it's only the
+# pre-generation prefill window that needed its own, larger, default.
 VISION_MODEL="$(python3 -c '
 import json, urllib.request
 try:
@@ -397,7 +401,7 @@ if [ -z "$VISION_MODEL" ]; then
 else
     echo ""
     echo "=== Testing a real Ollama call against $VISION_MODEL (--image mode) ==="
-    ./wspy-analyze --rundir "$RUNDIR" --image --model "$VISION_MODEL" --timeout 240
+    ./wspy-analyze --rundir "$RUNDIR" --image --model "$VISION_MODEL"
     VISION_SLUG="$(printf '%s' "$VISION_MODEL" | tr -c 'A-Za-z0-9._-' '_')"
     VISION_ANALYSIS="$RUNDIR/aivision.amdtopdown.topdown.$VISION_SLUG.md"
     [ -s "$VISION_ANALYSIS" ] || { echo "FAIL: $VISION_ANALYSIS missing or empty"; exit 1; }
