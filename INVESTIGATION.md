@@ -156,8 +156,18 @@ Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-
   can't silently drift either. `--list`/`--dry-run` output is unchanged (verified byte-identical per
   profile) except `--list`'s own enumeration order, now alphabetical (file-glob-derived) rather than
   hand-authored. Remaining scope (the web UI's own checklist/argv engine, `wspy.c`'s CLI flags,
-  `PROFILE_PLOTTABLE_COLUMNS`, ARM group exposure) stays open under item 1 above — this was
-  deliberately scoped as the mechanically-safe slice, not the full three-way unification.
+  `PROFILE_PLOTTABLE_COLUMNS`) stays open under item 1 above — this was deliberately scoped as the
+  mechanically-safe slice, not the full three-way unification.
+- `wspy-run` builtin-profile vocabulary refactor (4.4(a) item 1, ARM group exposure slice): the 3
+  ARM-only counter groups (`arm-dcache-mem`/`arm-icache-tlb`/`arm-mem-align-tlb`) are now real
+  `web/joblib.py` `ALL_GROUPS` entries, so the web checklist's "Performance counters"/preflight cards can
+  select them like any other group — `ALL_GROUPS` is now a full mirror of `multipass.c`'s
+  `multipass_group_names[]` rather than missing this one carve-out (`tests/group_vocab_check.sh` stays a
+  subset check on principle, not because this gap is still open). `COLUMN_TO_GROUP` also gained the 11
+  raw-event CSV columns these 3 groups produce, so a custom plot asking for one of them now correctly
+  auto-enables its group (`autofit_checklist_for_custom_plots()`/`build_supplementary_plot_passes()`)
+  instead of silently warning. Remaining scope (the web UI's own checklist/argv engine unification onto
+  `profiles/*.conf`/`*.spec`, `wspy.c`'s CLI flags, `PROFILE_PLOTTABLE_COLUMNS`) stays open under item 1.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release

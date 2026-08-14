@@ -12,10 +12,12 @@
 # it asserts every name in ALL_GROUPS is a real group `wspy --list-groups`
 # actually knows about.
 #
-# Deliberately a subset check, not equality: multipass_group_names[] has 3
-# ARM-only entries (arm-dcache-mem/arm-icache-tlb/arm-mem-align-tlb) the
-# web checklist doesn't expose yet -- a real, separate, not-yet-scoped
-# web-UI gap, not drift this check should flag.
+# Deliberately a subset check, not equality, on principle -- a future new
+# group can land on the C side before its web-UI exposure is scoped without
+# tripping this check. As of the 4.4(a) "ARM group exposure" slice,
+# ALL_GROUPS is in fact a full mirror of multipass_group_names[] (it used
+# to be missing the 3 ARM-only entries -- arm-dcache-mem/arm-icache-tlb/
+# arm-mem-align-tlb -- see git history for that prior gap).
 #
 # Usage: ./tests/group_vocab_check.sh (run from repo root; needs a built
 # ./wspy and python3).

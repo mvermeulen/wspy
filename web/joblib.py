@@ -659,10 +659,13 @@ def _capture_pts_hooks_log(emit, rundir, name):
 # INVESTIGATION.md's 4.4(a) "Preset/Configuration/Option vocabulary
 # refactor" item, see its plan notes) -- tests/group_vocab_check.sh instead
 # asserts every name here is a subset of `wspy --list-groups`'s real output,
-# so the two can't silently drift apart undetected. Deliberately NOT a full
-# equality check: multipass_group_names[] has 3 ARM-only entries
-# (arm-dcache-mem/arm-icache-tlb/arm-mem-align-tlb) this checklist doesn't
-# expose yet -- a real, separate, not-yet-scoped web-UI gap, not drift.
+# so the two can't silently drift apart undetected. A subset check rather
+# than equality on principle (a future new group added on the C side
+# shouldn't have to land in the same commit as its web-UI exposure) -- as of
+# the 4.4(a) "ARM group exposure" slice this list is in fact a full mirror
+# of multipass_group_names[] (the 3 ARM-only entries -- arm-dcache-mem/
+# arm-icache-tlb/arm-mem-align-tlb -- used to be the one real, tracked gap
+# between the two; see git history for the prior state).
 ALL_GROUPS = [
     ("ipc", True),
     ("topdown", False),
@@ -681,6 +684,9 @@ ALL_GROUPS = [
     ("opcache", False),
     ("software", False),
     ("float", False),
+    ("arm-dcache-mem", False),
+    ("arm-icache-tlb", False),
+    ("arm-mem-align-tlb", False),
 ]
 GROUP_NAMES = [name for name, _ in ALL_GROUPS]
 GROUP_NAME_SET = set(GROUP_NAMES)
@@ -752,6 +758,16 @@ COLUMN_TO_GROUP = {
     "context switches": "software", "cpu migrations": "software",
     "major page faults": "software", "minor page faults": "software",
     "alignment faults": "software", "emulation faults": "software",
+    # ARM-only raw event groups (topdown.c's arm_raw_events[]/
+    # print_arm_{dcache_mem,icache_tlb,mem_align_tlb}() -- "instructions" is
+    # each group's own per-1000-inst denominator, never emitted as a CSV
+    # column itself, so it has no entry here).
+    "l1d_cache_refill": "arm-dcache-mem", "l1d_tlb_refill": "arm-dcache-mem",
+    "l2d_cache_refill": "arm-dcache-mem", "l2d_tlb_refill": "arm-dcache-mem",
+    "l1i_cache_refill": "arm-icache-tlb", "l1i_tlb_refill": "arm-icache-tlb",
+    "l2i_tlb_refill": "arm-icache-tlb",
+    "dtlb_walk": "arm-mem-align-tlb", "itlb_walk": "arm-mem-align-tlb",
+    "ld_align_lat": "arm-mem-align-tlb", "st_align_lat": "arm-mem-align-tlb",
 }
 # --system's own columns (system.c) -- not an ALL_GROUPS/counter_mask entry,
 # so resolve_column_group() reports these via the "system" sentinel instead,

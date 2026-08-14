@@ -235,6 +235,16 @@ class BuildConfigurationPassesTest(unittest.TestCase):
         self.assertEqual(len(passes), 1)
         self.assertIn("--counters=software", passes[0]["flags"])
 
+    def test_counters_arm_group_selectable(self):
+        # 4.4(a) "ARM group exposure" slice: the 3 ARM-only groups
+        # (arm-dcache-mem/arm-icache-tlb/arm-mem-align-tlb) are now real
+        # ALL_GROUPS entries, selectable through the same checklist path as
+        # any other group.
+        checklist = {"counters": {"enabled": True, "groups": ["arm-dcache-mem"]}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        self.assertIn("--counters=arm-dcache-mem", passes[0]["flags"])
+
     def test_tree_default_has_no_counter_groups(self):
         # A bare "tree" pass (no groups selected) is tree-structure-only --
         # --no-ipc for wspy's own default-on ipc group, no --counters=<list>
@@ -532,6 +542,17 @@ class ResolveColumnGroupTest(unittest.TestCase):
 
     def test_unrecognized_column(self):
         self.assertIsNone(joblib.resolve_column_group("not_a_real_column"))
+
+    def test_arm_columns(self):
+        # 4.4(a) "ARM group exposure" slice -- topdown.c's
+        # arm_raw_events[]/print_arm_{dcache_mem,icache_tlb,mem_align_tlb}()
+        # CSV column names, resolved to their ALL_GROUPS entry.
+        for col in ("l1d_cache_refill", "l1d_tlb_refill", "l2d_cache_refill", "l2d_tlb_refill"):
+            self.assertEqual(joblib.resolve_column_group(col), "arm-dcache-mem")
+        for col in ("l1i_cache_refill", "l1i_tlb_refill", "l2i_tlb_refill"):
+            self.assertEqual(joblib.resolve_column_group(col), "arm-icache-tlb")
+        for col in ("dtlb_walk", "itlb_walk", "ld_align_lat", "st_align_lat"):
+            self.assertEqual(joblib.resolve_column_group(col), "arm-mem-align-tlb")
 
 
 class AutofitChecklistForCustomPlotsTest(unittest.TestCase):
