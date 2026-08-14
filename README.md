@@ -774,10 +774,15 @@ local-only default). See `./wspy-analyze --help` for the full option list.
 `--image` (bare, or with an explicit `plots/`-relative path) switches to narrating a `wspy-plot` chart
 image via a vision-capable Ollama model instead of the run's text counter output — grounded in a real
 numeric summary of the same CSV data (not the model's own reading of the chart's pixels for any
-specific percentage), defaulting to `gemma4:26b`. Writes `aiprompt.vision.<image-stem>.md` and
-`aivision.<image-stem>.<model-slug>.md`, picked up by the report page/curation studio the same way the
-text narrative already is. See INVESTIGATION.md's "Vision-based topdown-chart analysis deep-dive" for
-the design and a live model comparison.
+specific percentage), defaulting to `gemma4:26b`. Which prompt template is used depends on which
+`wspy-plot` template produced the image (topdown/system-cpu/power-vs-frequency currently registered,
+each with wording tailored to that chart's own series — see `VISION_TEMPLATE_BY_PLOT_TEMPLATE`); bare
+`--image` (no path) only ever auto-discovers a topdown plot, so an explicit path is required for the
+others. Writes `aiprompt.vision.<image-stem>.md` and `aivision.<image-stem>.<model-slug>.md`, picked up
+by the report page/curation studio the same way the text narrative already is — the report page's "AI
+vision analysis" card offers one checkbox per registered plot actually present and runs all checked
+ones in one click, sharing whichever model(s) are selected. See INVESTIGATION.md's "Vision-based
+topdown-chart analysis deep-dive" for the design and a live model comparison.
 
 ## Web launcher and report browser
 

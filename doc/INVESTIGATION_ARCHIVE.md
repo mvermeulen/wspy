@@ -503,6 +503,33 @@ above); whether the default `--timeout` needed a larger value for vision mode �
 slow-but-progressing vision generation; the test suite's own live vision call simply passes a longer
 `--timeout` for headroom, not because the mechanism required it.
 
+**Update — per-plot-type templates + multi-select web UI (shipped, see INVESTIGATION.md's "Shipped
+since 4.3.1" for the terse summary):** the design above shipped with exactly one registered plot type
+(topdown) and one hardcoded template constant (`DEFAULT_VISION_TEMPLATE`). Extending to a second and
+third chart type (a reference-matrix review of a real CoreMark report's own plots — see that review's
+own reasoning for why `system-cpu`/`power-vs-frequency` were picked over the other candidates: real,
+distinct visual "shape" stories a numeric table alone loses, vs. `memory-pressure`'s flat lines on a
+CPU-bound benchmark or `temp-vs-utilization`'s redundancy with charts already covered) surfaced that a
+single hardcoded template constant doesn't generalize — a topdown-worded prompt pointed at a CPU-
+utilization chart would prime the model with the wrong series names and framing entirely. Resolved by:
+a `(plot-template-name, human-label)` registry (`joblib.VISION_PLOT_KINDS`) shared between wspy-analyze
+(which derives each `prompts/vision_<name>.tmpl` path from it mechanically — hyphens become underscores,
+no hand-maintained filename map) and the web UI (whose checkboxes are exactly this list, filtered to
+whichever of those plots actually exist in a given run); an unregistered plot template is a hard
+`ap.error()`, not a guess at which existing template's wording is "close enough" — same "never guess"
+posture `resolve_vision_image()`'s own auto-discovery ambiguity/absence handling already established.
+The web card's single plot `<select>` became one checkbox per registered-and-present plot (still one
+launch button, one shared model selection) specifically because the whole point of registering more than
+one chart type was to make "narrate all of them for this run" a single click, not three separate button
+presses each re-typing the same model name — `execute_multi_vision_analyze()` runs the checked plots as
+separate `wspy-analyze --image` subprocess invocations, sequentially, relayed into the one SSE log a
+single-image analysis used to get on its own. `default_curation.conf`'s vision-analysis placement moved
+from one block grouped near the top (ahead of every plot, including the ones it narrated) to each plot's
+own `aivision.*` entry immediately following that plot — the original placement was a pre-existing,
+separately-noticed defect in the *first* vision-analysis default-curation integration, not something this
+multi-template work introduced, but fixing it here (once there was more than one plot in play) made the
+"chart, then its own narration, never grouped away from it" rule impossible to defer any longer.
+
 ### Critical-path / synchronization-latency: full candidate rationale (shipped)
 This is the original motivation and per-syscall design-fork reasoning that led to all six shipped
 syscall-latency flags (`--tree-futex`, `--tree-io-wait`, `--tree-connect`, `--tree-nanosleep`,

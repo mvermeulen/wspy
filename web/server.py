@@ -91,6 +91,7 @@ from joblib import (  # noqa: E402,F401
     ARCHETYPE_SIMILAR_NAME,
     build_reproducibility_bundle, BUNDLE_MANIFEST_NAME,
     COMPOSITE_PRESET_PROFILES, expand_preset_names, run_proctree_besteffort,
+    VISION_PLOT_KINDS,
 )
 
 # The one fixed configuration item 6 knows about -- matches wspy-run's
@@ -317,6 +318,65 @@ def execute_analyze(state, argv, suite, benchmark, run_id):
     rc = proc.wait()
     emit(f"[wspy-analyze exited {rc}]")
     state.finish("done" if rc == 0 else "error", f"/report/{suite}/{benchmark}/{run_id}")
+
+
+def build_vision_analyze_argvs(wspy_analyze_bin, rundir, images, models, all_models, critique):
+    """Pure argv-list builder for _start_vision_analyze(): one wspy-analyze
+    --image <image> invocation per entry in images, each carrying the same
+    models/all_models/critique selection -- unit-testable without mocking
+    threading/subprocess, same reasoning as build_testpoint_publish_argv()
+    below. images is assumed already validated non-empty by the caller."""
+    argvs = []
+    for image in images:
+        argv = [wspy_analyze_bin, "--rundir", rundir, "--image", image]
+        for m in models:
+            argv += ["--model", m]
+        if all_models:
+            argv.append("--all-models")
+        if critique:
+            argv.append("--critique")
+        argvs.append(argv)
+    return argvs
+
+
+def execute_multi_vision_analyze(state, argv_list, suite, benchmark, run_id):
+    """Sequential counterpart to execute_analyze() for the "AI vision
+    analysis" card's checkbox-per-plot selection (render_vision_card()):
+    runs each argv in argv_list (build_vision_analyze_argvs()) back to back
+    as its own wspy-analyze subprocess, relaying all of their output through
+    the one shared RunState/SSE stream a single-image analysis used to get
+    on its own -- one launch button, one combined log. A separator line
+    between images (only emitted when there's more than one) keeps the log
+    readable; a launch failure or nonzero exit on one image doesn't stop the
+    rest of the batch from running, but does mark the overall result
+    "error" rather than "done", so a human scanning the report page's status
+    notices a partial failure without having to re-open the log."""
+    def emit(line):
+        state.append(line)
+
+    overall_ok = True
+    for i, argv in enumerate(argv_list):
+        if len(argv_list) > 1:
+            emit(f"--- image {i + 1}/{len(argv_list)} ---")
+        emit("$ " + shell_preview(argv))
+        try:
+            proc = subprocess.Popen(argv, cwd=REPO_ROOT,
+                                     stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT,
+                                     text=True, bufsize=1)
+        except OSError as e:
+            emit(f"[error] failed to launch wspy-analyze ({argv[0]}): {e}")
+            overall_ok = False
+            continue
+
+        for line in proc.stdout:
+            emit(line.rstrip("\n"))
+        rc = proc.wait()
+        emit(f"[wspy-analyze exited {rc}]")
+        if rc != 0:
+            overall_ok = False
+
+    state.finish("done" if overall_ok else "error", f"/report/{suite}/{benchmark}/{run_id}")
 
 
 def build_testpoint_publish_argv(cfg, suite, benchmark, machine):
@@ -4217,36 +4277,62 @@ def render_analyze_card(suite, benchmark, run_id):
 
 
 def render_vision_card(rundir, suite, benchmark, run_id):
-    """Report-page "AI vision analysis" card (INVESTIGATION.md's
-    "Vision-based topdown-chart analysis deep-dive"): triggers wspy-analyze
-    --image against this run directory, same shape as render_analyze_card()
-    above (opt-in live model discovery, SSE-streamed progress, "+ add"
-    curation candidate once done) but with an image picker instead of a
-    prompt-template picker, defaulting to "(auto-discover)" -- wspy-analyze
-    --image's own bare-flag auto-discovery, which only succeeds when exactly
-    one plots/*.topdown.png exists, else the streamed log shows its
-    ambiguity/absence error same as any other wspy-analyze failure.
-    wireVisionAnalyzeForm() in app.js is the client-side counterpart."""
+    """Report-page "AI vision analysis" card (INVESTIGATION.md's "Vision-based
+    topdown-chart analysis deep-dive", plus its multi-plot-template follow-on):
+    triggers one or more wspy-analyze --image invocations against this run
+    directory -- one launch button, one shared model selection, but a
+    checkbox per vision-analysis-enabled plot actually present (from
+    joblib.VISION_PLOT_KINDS, the same vocabulary wspy-analyze's own
+    VISION_TEMPLATE_BY_PLOT_TEMPLATE resolves a prompt template from, so this
+    checklist can never offer a plot type wspy-analyze has no template for).
+    Matched by plot-template suffix (".<name>.png"), not a fixed filename --
+    a run's CSV-stem prefix varies by which wspy-run pass/profile produced
+    it (e.g. "amdtopdown.topdown.png" vs. a "counters.topdown.png"), same
+    "match by template identity, not literal filename" convention
+    resolve_vision_image()'s own auto-discovery already uses. More than one
+    match for the same kind (an unusual run with two passes each producing
+    that chart) gets one checkbox per match rather than picking one for the
+    caller -- same "never guess" posture as everywhere else in this feature.
+    wireVisionAnalyzeForm() in app.js is the client-side counterpart, and
+    sends every checked box's plot path in one POST -- execute_multi_vision_
+    analyze() runs them as separate wspy-analyze invocations in the same SSE
+    stream, sharing whatever model(s)/--critique/--all-models this card's
+    other fields select."""
     vision_url = f"/api/vision-analyze/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
     plot_pngs = list_plot_pngs(rundir)
-    if plot_pngs:
-        options = ['<option value="">(auto-discover a single plots/*.topdown.png)</option>'] + [
-            f'<option value="{html.escape(p)}">{html.escape(p)}</option>' for p in plot_pngs]
-        image_picker = f'<select id="vision-image">{"".join(options)}</select>'
+    checkboxes = []
+    for suffix, label in VISION_PLOT_KINDS:
+        matches = [p for p in plot_pngs if p.endswith(f".{suffix}.png")]
+        for p in matches:
+            # topdown is the one kind this feature originally shipped with
+            # (and the one --image's own bare-flag auto-discovery still
+            # targets) -- default-checked so a user who doesn't touch this
+            # card at all gets the same one-click behavior as before this
+            # checkbox UI existed; the two newer kinds are opt-in.
+            checked = " checked" if suffix == "topdown" else ""
+            checkboxes.append(
+                f'<label class="chip"><input type="checkbox" class="vision-plot-checkbox" '
+                f'value="{html.escape(p)}"{checked}> {html.escape(label)} '
+                f'(<code>{html.escape(p)}</code>)</label>')
+    if checkboxes:
+        image_picker = f'<div class="chips">{"".join(checkboxes)}</div>'
     else:
-        image_picker = ('<p class="muted">No <code>plots/*.png</code> found in this run directory -- '
-                         'run <code>wspy-plot</code> first.</p>')
+        image_picker = ('<p class="muted">No vision-analysis-enabled plot '
+                         f'({", ".join(html.escape(label) for _s, label in VISION_PLOT_KINDS)}) '
+                         'found in this run directory -- run <code>wspy-plot</code> first.</p>')
     return f"""
 <h2>AI vision analysis</h2>
-<p class="muted">Runs <code>wspy-analyze --image</code> against one of this run's topdown plots via a
-   locally running Ollama vision-capable model -- narration of the chart's shape/phase transitions,
+<p class="muted">Runs <code>wspy-analyze --image</code> against one or more of this run's plots via a
+   locally running Ollama vision-capable model -- narration of each chart's shape/phase transitions,
    grounded in a real numeric summary of the same data (not a re-derived verdict, and not the model's
-   own reading of the chart's pixels for any specific percentage). Output lands back in this run
-   directory as <code>aivision.&lt;image-stem&gt;.&lt;model&gt;.md</code> and shows up as an "+ add"
-   candidate in the curation studio once this finishes (reload the page).</p>
+   own reading of the chart's pixels for any specific number). Output lands back in this run
+   directory as <code>aivision.&lt;image-stem&gt;.&lt;model&gt;.md</code>, one file per checked plot,
+   and each shows up as its own "+ add" candidate in the curation studio once this finishes (reload
+   the page).</p>
 <form id="vision-analyze-form">
   <div class="row">
-    <label>Plot to analyze {image_picker}</label>
+    <label>Plots to analyze</label>
+    {image_picker}
   </div>
   <div class="row" style="margin-top: 0.5rem;">
     <label>Model(s) <span class="muted">(comma-separated Ollama model names -- leave blank to use
@@ -6340,42 +6426,39 @@ class Handler(BaseHTTPRequestHandler):
 
     def _start_vision_analyze(self, cfg, suite, benchmark, run_id, body):
         """Report page's "AI vision analysis" button (render_vision_card()):
-        runs wspy-analyze --image against an existing run directory, same
-        subprocess/SSE-relay shape as _start_analyze() above (reuses
-        execute_analyze() unchanged -- it only ever shells out to whatever
-        argv it's given, nothing text-mode-specific), but through the
-        separate VISION_RUNS registry (see that registry's own comment) and
-        wspy-analyze's own --default-vision-model/--image machinery instead
-        of --default-model. image is the plots/-relative path the picker
-        selected, or "" for --image's own bare-flag auto-discovery."""
+        runs one wspy-analyze --image invocation per checked plot against an
+        existing run directory, in the same VISION_RUNS SSE stream (see that
+        registry's own comment), sharing whatever model(s)/--all-models/
+        --critique selection this card's other fields carry. images is the
+        list of plots/-relative paths the checkboxes selected -- always
+        explicit paths now (no bare-auto-discover sentinel here; the
+        checkboxes only ever offer plots wspy-analyze can already resolve a
+        template for, see render_vision_card())."""
         rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
         if not os.path.isdir(rundir):
             self._send_json(404, {"error": "no such report"})
             return
 
-        image = (body.get("image") or "").strip()
+        images = [i.strip() for i in (body.get("images") or [])
+                  if isinstance(i, str) and i.strip()]
+        if not images:
+            self._send_json(400, {"error": "select at least one plot to analyze"})
+            return
         models = [m.strip() for m in (body.get("models") or [])
                   if isinstance(m, str) and m.strip()]
         all_models = bool(body.get("all_models"))
         critique = bool(body.get("critique"))
 
-        argv = [cfg["wspy_analyze_bin"], "--rundir", rundir, "--image"]
-        if image:
-            argv.append(image)
-        for m in models:
-            argv += ["--model", m]
-        if all_models:
-            argv.append("--all-models")
-        if critique:
-            argv.append("--critique")
+        argv_list = build_vision_analyze_argvs(cfg["wspy_analyze_bin"], rundir, images,
+                                                models, all_models, critique)
 
         key = run_key(suite, benchmark, run_id)
         state = RunState(rundir)
         with VISION_RUNS_LOCK:
             VISION_RUNS[key] = state
 
-        t = threading.Thread(target=execute_analyze, args=(
-            state, argv, suite, benchmark, run_id,
+        t = threading.Thread(target=execute_multi_vision_analyze, args=(
+            state, argv_list, suite, benchmark, run_id,
         ), daemon=True)
         t.start()
 
@@ -6384,7 +6467,7 @@ class Handler(BaseHTTPRequestHandler):
             "events_url": f"/api/vision-analyze/{suite}/{benchmark}/{run_id}/events",
             "report_url": f"/report/{suite}/{benchmark}/{run_id}",
             "studio_url": f"/studio/{suite}/{benchmark}/{run_id}",
-            "command": shell_preview(argv),
+            "commands": [shell_preview(a) for a in argv_list],
         })
 
     def _start_testpoint_publish(self, cfg, suite, benchmark, run_id, body):

@@ -69,16 +69,21 @@ plain single-run analysis of run A:
   - aiprompt.critique.compare.<run-b-slug>.<model-slug>.md  (only with --critique)
 
 --image mode (INVESTIGATION.md's "Vision-based topdown-chart analysis deep-dive"):
-narrates a wspy-plot PNG (plots/<stem>.topdown.png) via a vision-capable Ollama
-model instead of analyzing the run's text counter output. The image is fed
-alongside a real numeric summary (min/max/mean/stddev per column, via
-summarize_csv()) of the CSV that produced the plot -- narration of the visual
-shape/phase transitions, but any specific percentage the model states is
-expected to come from that table, not from reading pixels off the chart
-(this codebase's own live model comparison found pixel-read percentages
-measurably less reliable than the real computed numbers already available).
-Bare --image auto-discovers the run's plots/*.topdown.png (only when exactly
-one exists); pass an explicit path (relative to --rundir) otherwise. Outputs,
+narrates a wspy-plot PNG (e.g. plots/<stem>.topdown.png, plots/<stem>.system-cpu.png,
+plots/<stem>.power-vs-frequency.png -- see VISION_TEMPLATE_BY_PLOT_TEMPLATE for the
+full, currently-registered list) via a vision-capable Ollama model instead of
+analyzing the run's text counter output; which prompt template applies is
+resolved from the image's own wspy-plot template name, each with wording
+tailored to that chart's series/axes. The image is fed alongside a real
+numeric summary (min/max/mean/stddev per column, via summarize_csv()) of the
+CSV that produced the plot -- narration of the visual shape/phase transitions,
+but any specific number the model states is expected to come from that table,
+not from reading pixels off the chart (this codebase's own live model
+comparison found pixel-read percentages measurably less reliable than the
+real computed numbers already available). Bare --image auto-discovers the
+run's plots/*.topdown.png (only when exactly one exists); pass an explicit
+path (relative to --rundir) otherwise -- required for every other registered
+plot type, since auto-discovery only ever considers topdown. Outputs,
 namespaced by the image's own stem so more than one plot per run never
 collides:
   - aiprompt.vision.<image-stem>.md
@@ -105,12 +110,22 @@ import joblib  # noqa: E402 -- reuses COLUMN_TO_GROUP/resolve_column_group/list_
 DEFAULT_TEMPLATE = os.path.join(SCRIPT_DIR, "prompts", "perf_analysis2.tmpl")
 DEFAULT_COMPARE_TEMPLATE = os.path.join(SCRIPT_DIR, "prompts", "perf_compare.tmpl")
 # --image mode (INVESTIGATION.md's "Vision-based topdown-chart analysis
-# deep-dive"): a separate template from DEFAULT_TEMPLATE since the task is
-# different in kind, not just content -- narrating an image's visual shape
-# plus a numeric grounding table, not narrating an already-rendered text
-# report. See that deep-dive for the live model comparison behind this file's
-# design (grounding-in-real-numbers rule, output naming, model default).
-DEFAULT_VISION_TEMPLATE = os.path.join(SCRIPT_DIR, "prompts", "vision_topdown.tmpl")
+# deep-dive"): a separate template family from DEFAULT_TEMPLATE since the
+# task is different in kind, not just content -- narrating an image's visual
+# shape plus a numeric grounding table, not narrating an already-rendered
+# text report. See that deep-dive for the live model comparison behind this
+# file's design (grounding-in-real-numbers rule, output naming, model
+# default). Unlike DEFAULT_TEMPLATE/DEFAULT_COMPARE_TEMPLATE there's no
+# single default here -- which template applies depends on which wspy-plot
+# template produced the image (a topdown chart and a power/frequency chart
+# need different series names and a different "what does this chart mean"
+# framing), resolved by default_vision_template_path() below from
+# joblib.VISION_PLOT_KINDS (shared with web/server.py's "AI vision
+# analysis" card so the two vocabularies can't drift).
+VISION_TEMPLATE_BY_PLOT_TEMPLATE = {
+    name: os.path.join(SCRIPT_DIR, "prompts", "vision_%s.tmpl" % name.replace("-", "_"))
+    for name, _label in joblib.VISION_PLOT_KINDS
+}
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_TIMEOUT_SECONDS = 120
 # Ollama commonly loads a model with a runtime context window (4096 tokens,
@@ -392,31 +407,62 @@ def encode_image_base64(path):
         return base64.b64encode(f.read()).decode("ascii")
 
 
-def source_csv_for_plot(rundir, image_relpath):
-    """Given a wspy-plot output path relative to rundir (e.g.
-    "plots/amdtopdown.topdown.png"), returns the absolute path to the CSV
-    that produced it, via plot.c's own "<out_dir>/<csv-stem>.<template>.png"
-    naming (process_csv() in plot.c -- template names never contain a dot,
-    e.g. "topdown"/"topdown-detail"/"power-vs-topdown", so the *last* dot
-    before the extension always separates the CSV stem from the template
-    name). Returns None if no such CSV exists in rundir -- the plot may have
-    been generated elsewhere, or the CSV since moved/deleted; callers degrade
-    gracefully rather than treating this as fatal, same idiom
-    run_wspy_validate() above already uses for a missing wspy-validate binary."""
+def split_plot_stem(image_relpath):
+    """Splits a wspy-plot output path relative to rundir (e.g.
+    "plots/amdtopdown.topdown.png") into (csv_stem, template_name), via
+    plot.c's own "<out_dir>/<csv-stem>.<template>.png" naming (process_csv()
+    in plot.c -- template names never contain a dot, e.g. "topdown"/
+    "topdown-detail"/"power-vs-topdown", so the *last* dot before the
+    extension always separates the CSV stem from the template name)."""
     stem_and_template = os.path.splitext(os.path.basename(image_relpath))[0]
-    stem = stem_and_template.rsplit(".", 1)[0]
+    csv_stem, _, template_name = stem_and_template.rpartition(".")
+    return csv_stem, template_name
+
+
+def source_csv_for_plot(rundir, image_relpath):
+    """Returns the absolute path to the CSV that produced image_relpath (see
+    split_plot_stem()), or None if no such CSV exists in rundir -- the plot
+    may have been generated elsewhere, or the CSV since moved/deleted;
+    callers degrade gracefully rather than treating this as fatal, same
+    idiom run_wspy_validate() above already uses for a missing wspy-validate
+    binary."""
+    stem, _template_name = split_plot_stem(image_relpath)
     candidate = os.path.join(rundir, stem + ".csv")
     return candidate if os.path.isfile(candidate) else None
+
+
+def default_vision_template_path(image_relpath, ap):
+    """Resolves which prompts/vision_*.tmpl file --image mode should use by
+    default for image_relpath, from VISION_TEMPLATE_BY_PLOT_TEMPLATE (keyed
+    by the plot's own template name -- see split_plot_stem()). A plot
+    template with no registered vision prompt is a hard ap.error() (same
+    "never guess" treatment resolve_vision_image()'s own auto-discovery
+    ambiguity/absence already gets) rather than a silent fallback to some
+    other template's mismatched wording -- pass --prompt-template explicitly
+    to analyze an unregistered plot type anyway."""
+    _stem, template_name = split_plot_stem(image_relpath)
+    template_path = VISION_TEMPLATE_BY_PLOT_TEMPLATE.get(template_name)
+    if not template_path:
+        ap.error(
+            "--image %r: no default vision prompt template for wspy-plot template %r -- "
+            "pass --prompt-template explicitly, or add prompts/vision_%s.tmpl and register it "
+            "in joblib.VISION_PLOT_KINDS (currently supported: %s)" % (
+                image_relpath, template_name, template_name.replace("-", "_"),
+                ", ".join(sorted(VISION_TEMPLATE_BY_PLOT_TEMPLATE)) or "(none)"))
+    return template_path
 
 
 def resolve_vision_image(rundir, image_arg, ap):
     """image_arg is "auto" (--image given with no value, argparse's nargs='?'
     const) or an explicit relpath. Returns the relpath (relative to rundir,
     matching --image's own documented argument shape) to use. Auto-discovery
-    only ever considers *.topdown.png (not topdown-detail/power-vs-topdown --
-    the "topdown" template is what this feature/its prompt was designed
-    against); ambiguity or absence is a hard ap.error(), same "never guess"
-    treatment --default-model's own installed-check already follows."""
+    only ever considers *.topdown.png -- topdown was this feature's original
+    (and still most common) target, so it's the one case worth guessing a
+    single unambiguous match for; every other registered plot type (see
+    VISION_TEMPLATE_BY_PLOT_TEMPLATE/default_vision_template_path()) needs
+    an explicit RELPATH. Ambiguity or absence is a hard ap.error(), same
+    "never guess" treatment --default-model's own installed-check already
+    follows."""
     if image_arg != "auto":
         full = os.path.join(rundir, image_arg)
         if not os.path.isfile(full):
@@ -447,10 +493,15 @@ def load_template(path):
         text = f.read()
     # Whichever version marker is present (PERF_ANALYSIS_TEMPLATE_VERSION for a
     # single-run text template, PERF_COMPARE_TEMPLATE_VERSION for a
-    # comparative one, VISION_TOPDOWN_TEMPLATE_VERSION for --image mode)
-    # identifies which kind of template this is, so callers don't need to
-    # pass the marker name in themselves.
-    m = re.search(r"^(?:PERF_(?:ANALYSIS|COMPARE)|VISION_TOPDOWN)_TEMPLATE_VERSION\s*=\s*(\S+)",
+    # comparative one, VISION_<NAME>_TEMPLATE_VERSION -- e.g.
+    # VISION_TOPDOWN_TEMPLATE_VERSION, VISION_SYSTEM_CPU_TEMPLATE_VERSION --
+    # for one of --image mode's per-plot-type templates) identifies which
+    # kind of template this is, so callers don't need to pass the marker
+    # name in themselves. The VISION_ half of the pattern is deliberately
+    # generic (any VISION_<NAME>_TEMPLATE_VERSION) rather than one literal
+    # alternative per template, so a new prompts/vision_*.tmpl added later
+    # doesn't also need an edit here.
+    m = re.search(r"^(?:PERF_(?:ANALYSIS|COMPARE)|VISION_[A-Z0-9_]+)_TEMPLATE_VERSION\s*=\s*(\S+)",
                   text, re.MULTILINE)
     version = m.group(1) if m else "(unversioned)"
     return text, version
@@ -839,8 +890,12 @@ def main():
                           "counter output. RELPATH is relative to --rundir, e.g. "
                           "plots/amdtopdown.topdown.png. Bare --image (no value) "
                           "auto-discovers the run's plots/*.topdown.png -- only if exactly "
-                          "one exists, else an explicit RELPATH is required. Incompatible "
-                          "with --compare-rundir.")
+                          "one exists, else an explicit RELPATH is required. The prompt "
+                          "template used depends on which wspy-plot template produced "
+                          "RELPATH (see --prompt-template's own help and "
+                          "VISION_TEMPLATE_BY_PLOT_TEMPLATE); currently: " +
+                          ", ".join(sorted(VISION_TEMPLATE_BY_PLOT_TEMPLATE)) +
+                          ". Incompatible with --compare-rundir.")
     ap.add_argument("--default-vision-model", default=DEFAULT_VISION_MODEL_IF_PRESENT,
                      help="model to use in --image mode when neither --model nor "
                           "--all-models is given, IF it's actually installed and "
@@ -863,8 +918,11 @@ def main():
                           "non-default/remote host sends run data off this machine -- see "
                           "--redact-command.")
     ap.add_argument("--prompt-template", default=None,
-                     help="prompt template file (default: prompts/perf_analysis2.tmpl, or "
-                          "prompts/perf_compare.tmpl when --compare-rundir is given)")
+                     help="prompt template file (default: prompts/perf_analysis2.tmpl; "
+                          "prompts/perf_compare.tmpl when --compare-rundir is given; in "
+                          "--image mode, whichever prompts/vision_*.tmpl "
+                          "VISION_TEMPLATE_BY_PLOT_TEMPLATE registers for RELPATH's own "
+                          "wspy-plot template -- see --image's own help)")
     ap.add_argument("--wspy-validate", default=os.path.join(SCRIPT_DIR, "wspy-validate"),
                      help="wspy-validate binary to run against this run's per-pass "
                           "manifests (default: %(default)s)")
@@ -936,7 +994,7 @@ def main():
             csv_summary_text = ("(no source CSV found alongside this plot -- numeric "
                                  "grounding unavailable, narration is image-only)")
 
-        template_path = args.prompt_template or DEFAULT_VISION_TEMPLATE
+        template_path = args.prompt_template or default_vision_template_path(image_relpath, ap)
         template_text, template_version = load_template(template_path)
         prompt = render_vision_prompt(template_text, workload_text, validation_text,
                                        csv_summary_text)

@@ -260,6 +260,26 @@ AIPROMPT_CRITIQUE_VISION_RE = re.compile(r"^aiprompt\.critique\.vision\.(.+)\.(.
 # gets kind="markdown"; old ".txt" files stay kind="text", still readable,
 # just not reformatted).
 
+# wspy-plot template names (plot.c's own struct plot_template.name, the part
+# of a plot's own "<csv-stem>.<template>.png" naming after the last dot --
+# see wspy-analyze's source_csv_for_plot()/split_plot_stem()) that have a
+# dedicated wspy-analyze --image vision-analysis prompt template. Shared
+# between wspy-analyze (which derives prompts/vision_<name-with-underscores>.
+# tmpl from this same list -- see its own VISION_TEMPLATE_BY_PLOT_TEMPLATE)
+# and web/server.py's "AI vision analysis" card (whose plot checkboxes are
+# exactly this list, one per matching plot actually present in the run), so
+# the two vocabularies can't drift the way a hand-duplicated list would --
+# same "single vocabulary, not independently reinvented per tool" reasoning
+# as ALL_GROUPS above. label is the human-facing name shown in the
+# checkbox -- matches plot.c's own template title text for the same
+# template, so the checklist uses the same vocabulary a reader already
+# knows from the plot's own chart title. Order here is checkbox order.
+VISION_PLOT_KINDS = [
+    ("topdown", "Topdown Breakdown"),
+    ("system-cpu", "System CPU Time"),
+    ("power-vs-frequency", "Package Power vs. CPU Frequency"),
+]
+
 
 def ai_artifact_label(filename):
     """Friendly (label, ai_generated) for one of wspy-analyze's own output
