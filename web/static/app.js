@@ -1046,9 +1046,13 @@
   // server.py, INVESTIGATION.md's vision deep-dive): same SSE-streamed
   // model-discovery-chips shape as wireAnalyzeForm() above, just against
   // the vision-* element ids and /api/vision-analyze/... endpoint, and a
-  // plot <select> instead of a prompt-template one -- the discover-models
-  // button passes {vision_only: true} so /api/discovery/ollama-models
-  // filters to models wspy-analyze --image mode can actually use.
+  // checkbox per vision-analysis-enabled plot instead of a prompt-template
+  // picker -- every checked box's plot path is sent in one POST (images:
+  // [...]) and analyzed with the same shared model selection, one at a
+  // time, in one combined log (execute_multi_vision_analyze() in
+  // server.py). The discover-models button passes {vision_only: true} so
+  // /api/discovery/ollama-models filters to models wspy-analyze --image
+  // mode can actually use.
   function wireVisionAnalyzeForm() {
     var runButton = byId("vision-run");
     var logEl = byId("vision-log");
@@ -1100,11 +1104,19 @@
       var allModels = getChecked("vision-all-models");
       var models = (getValue("vision-models") || "").split(",")
         .map(function (s) { return s.trim(); }).filter(Boolean);
-      var image = getValue("vision-image") || "";
-      // No client-side "at least one model" gate, same reasoning as
-      // wireAnalyzeForm() -- wspy-analyze's own --default-vision-model
-      // fallback applies, and any failure (model or image) surfaces in the
-      // streamed log below.
+      var images = Array.prototype.map.call(
+        document.querySelectorAll(".vision-plot-checkbox:checked"),
+        function (el) { return el.value; }
+      );
+      // Unlike models (wspy-analyze's own --default-vision-model fallback
+      // applies to a blank field), there's no server-side default for
+      // "which plot(s)" -- an empty selection genuinely means "nothing to
+      // do", so this gets its own client-side gate rather than surfacing as
+      // a streamed-log error after the button's already been clicked.
+      if (!images.length) {
+        resultEl.textContent = "Select at least one plot to analyze.";
+        return;
+      }
       runButton.disabled = true;
       resultEl.textContent = "";
       logEl.hidden = false;
@@ -1114,7 +1126,7 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          image: image,
+          images: images,
           models: models,
           all_models: allModels,
           critique: getChecked("vision-critique"),

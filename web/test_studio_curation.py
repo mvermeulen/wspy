@@ -95,6 +95,53 @@ class BuildDefaultCurationBlocksTest(unittest.TestCase):
         self.assertNotIn("aiprompt.txt", source_files)
         self.assertNotIn("aiprompt.critique.gpt-oss_20b.txt", source_files)
 
+    def test_includes_vision_analysis_but_not_its_prompt_or_critique(self):
+        # Mirrors test_includes_command_txt_and_narrative_analysis_but_not_
+        # critique_or_prompt above, for wspy-analyze --image's "aivision."
+        # naming (INVESTIGATION.md's "Vision-based topdown-chart analysis").
+        self._write_manifest([{"name": "quick", "output": "quick.txt", "manifest": None, "status": "ok"}])
+        for name in ("quick.txt", "aivision.amdtopdown.topdown.gemma4-26b.md",
+                     "aiprompt.vision.amdtopdown.topdown.md",
+                     "aiprompt.critique.vision.amdtopdown.topdown.gemma4-26b.md"):
+            _touch(os.path.join(self.tmpdir, name))
+
+        blocks = server.build_default_curation_blocks(self.tmpdir)
+        source_files = {b["source_file"] for b in blocks}
+        self.assertIn("aivision.amdtopdown.topdown.gemma4-26b.md", source_files)
+        self.assertNotIn("aiprompt.vision.amdtopdown.topdown.md", source_files)
+        self.assertNotIn("aiprompt.critique.vision.amdtopdown.topdown.gemma4-26b.md", source_files)
+        vision_block = next(b for b in blocks
+                             if b["source_file"] == "aivision.amdtopdown.topdown.gemma4-26b.md")
+        self.assertTrue(vision_block["ai_generated"])
+
+    def test_vision_analysis_ordered_immediately_after_its_own_plot(self):
+        # The real shipped default_curation.conf places each plot's own
+        # aivision.*.md block right after that plot, for every plot with a
+        # dedicated vision prompt template (topdown/system-cpu/
+        # power-vs-frequency) -- a reader should see the chart, then its
+        # narration, never the reverse and never grouped away from the
+        # chart it narrates.
+        self._write_manifest([{"name": "quick", "output": "quick.txt", "manifest": None, "status": "ok"}])
+        _touch(os.path.join(self.tmpdir, "quick.txt"))
+        os.mkdir(os.path.join(self.tmpdir, "plots"))
+        pairs = [
+            ("plots/systemtime.system-cpu.png", "aivision.systemtime.system-cpu.gemma4-26b.md"),
+            ("plots/amdtopdown.topdown.png", "aivision.amdtopdown.topdown.gemma4-26b.md"),
+            ("plots/systemtime.power-vs-frequency.png",
+             "aivision.systemtime.power-vs-frequency.gemma4-26b.md"),
+        ]
+        for png, aivision in pairs:
+            _touch(os.path.join(self.tmpdir, png))
+            _touch(os.path.join(self.tmpdir, aivision))
+
+        blocks = server.build_default_curation_blocks(self.tmpdir)
+        source_files = [b["source_file"] for b in blocks]
+        for png, aivision in pairs:
+            self.assertIn(png, source_files)
+            self.assertIn(aivision, source_files)
+            self.assertLess(source_files.index(png), source_files.index(aivision),
+                             f"{aivision} must come immediately after {png}, not before/elsewhere")
+
     def test_excludes_summary_txt_and_run_manifest(self):
         self._write_manifest([{"name": "quick", "output": "quick.txt", "manifest": None, "status": "ok"}])
         for name in ("quick.txt", "summary.txt", "launch.log"):

@@ -116,6 +116,17 @@ time,ibs_fetch,ibs_op
 1.0,7000,8000
 EOF
 
+# systemtime.csv (system-cpu / power-vs-frequency vision-template
+# fixtures below): a plausible short duty-cycle so a real (non-dry-run)
+# call would have something to narrate, though the structural --dry-run
+# checks below only need the header + a couple of rows to exercise
+# summarize_csv()'s grounding table.
+cat > "$RUNDIR/systemtime.csv" <<'EOF'
+time,cpu,idle,iowait,irq,freq,pkg_watts
+0.0,95.00,5.00,0.00,0.00,3600,80.0
+1.0,10.00,90.00,0.00,0.00,1200,10.0
+EOF
+
 # --image mode fixtures (INVESTIGATION.md's "Vision-based topdown-chart
 # analysis deep-dive"): a real, if trivial, decodable PNG -- --dry-run
 # itself never decodes it (base64'd and shipped to Ollama as opaque bytes,
@@ -125,7 +136,9 @@ EOF
 # before ever reaching the model (confirmed live). Built with stdlib
 # zlib/struct rather than a placeholder, so one fixture covers both
 # sections without adding a PIL/Pillow dependency to a test that otherwise
-# needs none.
+# needs none. One PNG per registered vision-template plot type (topdown/
+# system-cpu/power-vs-frequency), plus one with an unregistered template
+# name for the "no default template" error-path test below.
 mkdir -p "$RUNDIR/plots"
 python3 -c '
 import struct, zlib
@@ -135,8 +148,11 @@ sig = b"\x89PNG\r\n\x1a\n"
 ihdr = chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))  # 1x1, 8-bit, RGB
 idat = chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00"))  # filter byte + one RGB pixel
 iend = chunk(b"IEND", b"")
-with open("'"$RUNDIR"'/plots/amdtopdown.topdown.png", "wb") as f:
-    f.write(sig + ihdr + idat + iend)
+png = sig + ihdr + idat + iend
+for name in ("amdtopdown.topdown.png", "systemtime.system-cpu.png",
+             "systemtime.power-vs-frequency.png", "systemtime.some-unregistered-template.png"):
+    with open("'"$RUNDIR"'/plots/" + name, "wb") as f:
+        f.write(png)
 '
 
 echo ""
@@ -230,6 +246,39 @@ OUT="$(./wspy-analyze --rundir "$RUNDIR" --image plots/amdtopdown.topdown.png --
 echo "$OUT" | grep -q "VISION_TOPDOWN_TEMPLATE_VERSION" || {
     echo "FAIL: explicit --image path did not render the vision template"; exit 1; }
 echo "--image explicit-path dry-run OK"
+
+echo ""
+echo "=== Testing --image against a system-cpu plot (per-plot-template default) ==="
+OUT="$(./wspy-analyze --rundir "$RUNDIR" --image plots/systemtime.system-cpu.png --dry-run 2>&1)"
+echo "$OUT" | grep -q "VISION_SYSTEM_CPU_TEMPLATE_VERSION" || {
+    echo "FAIL: system-cpu plot did not resolve the system-cpu vision template"; exit 1; }
+echo "$OUT" | grep -q "### systemtime.csv" || {
+    echo "FAIL: numeric grounding table (source CSV summary) missing for system-cpu image"; exit 1; }
+echo "$OUT" | grep -qE '\| cpu \| 2 \| 10 \| 95 \| 52.5 \|' || {
+    echo "FAIL: grounding table stats wrong or missing for cpu column"; exit 1; }
+[ -f "$RUNDIR/aiprompt.vision.systemtime.system-cpu.md" ] || {
+    echo "FAIL: aiprompt.vision.systemtime.system-cpu.md not written"; exit 1; }
+echo "system-cpu vision template OK"
+
+echo ""
+echo "=== Testing --image against a power-vs-frequency plot (per-plot-template default) ==="
+OUT="$(./wspy-analyze --rundir "$RUNDIR" --image plots/systemtime.power-vs-frequency.png --dry-run 2>&1)"
+echo "$OUT" | grep -q "VISION_POWER_VS_FREQUENCY_TEMPLATE_VERSION" || {
+    echo "FAIL: power-vs-frequency plot did not resolve the power-vs-frequency vision template"; exit 1; }
+echo "$OUT" | grep -q "### systemtime.csv" || {
+    echo "FAIL: numeric grounding table (source CSV summary) missing for power-vs-frequency image"; exit 1; }
+[ -f "$RUNDIR/aiprompt.vision.systemtime.power-vs-frequency.md" ] || {
+    echo "FAIL: aiprompt.vision.systemtime.power-vs-frequency.md not written"; exit 1; }
+echo "power-vs-frequency vision template OK"
+
+echo ""
+echo "=== Testing --image against a plot with no registered vision template ==="
+if OUT="$(./wspy-analyze --rundir "$RUNDIR" --image plots/systemtime.some-unregistered-template.png --dry-run 2>&1)"; then
+    echo "FAIL: expected a nonzero exit for an unregistered plot template"; exit 1
+fi
+echo "$OUT" | grep -q "no default vision prompt template for wspy-plot template 'some-unregistered-template'" || {
+    echo "FAIL: expected error message naming the unregistered plot template"; exit 1; }
+echo "unregistered plot template error path OK"
 
 echo ""
 echo "=== Testing --image auto-discovery error paths ==="

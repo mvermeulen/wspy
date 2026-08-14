@@ -168,6 +168,32 @@ Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-
   auto-enables its group (`autofit_checklist_for_custom_plots()`/`build_supplementary_plot_passes()`)
   instead of silently warning. Remaining scope (the web UI's own checklist/argv engine unification onto
   `profiles/*.conf`/`*.spec`, `wspy.c`'s CLI flags, `PROFILE_PLOTTABLE_COLUMNS`) stays open under item 1.
+- Default curation: AI vision analysis output (`aivision.*.md`) is now included by the Studio's "Apply
+  default curation" button when present, mirroring the existing narrative-analysis treatment —
+  previously only `ai_artifact_label()`'s "AI narrative analysis" labels were swept into the fallback
+  pass, so `wspy-analyze --image` output was silently skipped even when it existed in the run directory.
+  `default_curation.conf` gained an "AI vision analysis" section (rendered-prompt/critique variants
+  documented-excluded, same as narrative's); `build_default_curation_blocks()`'s fallback sweep now also
+  matches the `"AI vision analysis ("` label prefix (the real per-image model output specifically, not
+  its rendered-prompt/critique siblings, which share the same leading phrase).
+- Vision analysis: per-plot-type prompt templates + multi-select web UI. `wspy-analyze --image` used to
+  always render `prompts/vision_topdown.tmpl` regardless of which plot it was pointed at — fine for
+  topdown (the only registered type), wrong wording for any other chart. Now
+  `VISION_TEMPLATE_BY_PLOT_TEMPLATE` resolves a dedicated template from the image's own wspy-plot
+  template name (`joblib.VISION_PLOT_KINDS`, shared with the web UI so the two vocabularies can't drift);
+  two new templates registered — `prompts/vision_system_cpu.tmpl` (CPU busy/idle duty-cycle phases) and
+  `prompts/vision_power_vs_frequency.tmpl` (power/frequency coupling, plateaus, wobble during
+  transitions) — alongside the original `vision_topdown.tmpl`. An unregistered plot template is a hard
+  `ap.error()` (never a silent fallback to mismatched wording); `load_template()`'s version-marker regex
+  generalized from one hardcoded `VISION_TOPDOWN_TEMPLATE_VERSION` alternative to any
+  `VISION_<NAME>_TEMPLATE_VERSION`, so a future template needs no matching code edit. The report page's
+  "AI vision analysis" card replaced its single plot `<select>` with one checkbox per registered plot
+  actually present in the run (topdown checked by default for continuity, the two new ones opt-in), still
+  one launch button and one shared model selection — `execute_multi_vision_analyze()` runs each checked
+  plot as its own `wspy-analyze --image` invocation, sequentially, in one combined SSE log, "done" only
+  if every one succeeded. `default_curation.conf` places each plot's own `aivision.*` block immediately
+  after that plot (previously the vision-analysis section was grouped near the top, ahead of every plot
+  it might narrate) — general policy now, not just for topdown.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
