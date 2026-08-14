@@ -137,7 +137,7 @@ BUILTIN_PROFILES = ("quick", "zen4plus-deep", "deep-cpu", "deep-gpu",
 # file's own ibs_probes_for_request()/power_probes_for_request() below.
 #
 # ALL_GROUPS/counter_group_flags/COLUMN_TO_GROUP/resolve_column_group/
-# autofit_checklist_for_custom_plots/PROFILE_PLOTTABLE_COLUMNS/
+# autofit_checklist_for_custom_plots/profile_plottable_columns/
 # build_supplementary_plot_passes/parse_optional_int/build_configuration_passes/
 # build_pass_argv (item 9's checklist -> wspy-argv machinery, see joblib.py's
 # own docstring for the full "Item 9" design rationale) now live in
@@ -1160,9 +1160,11 @@ POWER_EACCES_HINT = (
 
 
 # Preset names whose own wspy-run passes open --power (hand-derived from
-# load_builtin_profile() in wspy-run, same "not otherwise discoverable from
-# Python without parsing wspy-run's bash" reasoning as PROFILE_PLOTTABLE_COLUMNS
-# above). deep-cpu's systemtime pass carries --power (see wspy-run's own
+# load_builtin_profile() in wspy-run -- unlike joblib.py's
+# profile_plottable_columns(), a preset's own flag choices, as opposed to
+# the CSV columns those flags produce, aren't something a `wspy --list-*`
+# probe can answer, so this table stays hand-maintained). deep-cpu's
+# systemtime pass carries --power (see wspy-run's own
 # comment there: "--power rides along on systemtime... since systemtime
 # already opens zero hardware counters, --power is a genuinely free
 # addition"), and gpu-compute's single pass does too. deep-gpu's systemtime
@@ -1275,9 +1277,9 @@ GPU_BUILD_UNSUPPORTED_RE = re.compile(
     r"GPU support not built \(rebuild with (AMDGPU=1|NVIDIA=1)\): (\S+) ignored")
 
 # Preset name -> the --gpu-* flags its own wspy-run passes use (hand-derived
-# from load_builtin_profile(), same reasoning as POWER_PRESET_NAMES/
-# PROFILE_PLOTTABLE_COLUMNS above -- a preset's own flags aren't otherwise
-# discoverable from Python without parsing wspy-run's bash). deep-gpu's
+# from load_builtin_profile(), same reasoning as POWER_PRESET_NAMES above --
+# a preset's own flag choices aren't otherwise discoverable from Python
+# without parsing wspy-run's bash). deep-gpu's
 # gpu_busy/gpu_metrics passes use the AMD sysfs backend only; gpu-compute's
 # single pass uses AMD sysfs + NVML both.
 PRESET_GPU_FLAGS = {
@@ -6290,7 +6292,8 @@ class Handler(BaseHTTPRequestHandler):
                                              run_id, profile, workload_argv,
                                              run_index_path=run_index_path,
                                              affinity=affinity)
-        supp_passes, preset_notes = build_supplementary_plot_passes(rundir, profile, custom_plots)
+        supp_passes, preset_notes = build_supplementary_plot_passes(rundir, profile, custom_plots,
+                                                                      cfg["wspy_bin"])
 
         t = threading.Thread(target=execute_profile_run, args=(
             state, cfg, rundir, suite, benchmark, run_id, profile, workload_argv,
@@ -6585,7 +6588,8 @@ class Handler(BaseHTTPRequestHandler):
             argv = build_wspy_run_argv(cfg["wspy_run_bin"], cfg["wspy_bin"], cfg["output_root"],
                                         suite, benchmark, run_id, preset, workload_argv,
                                         run_index_path=run_index_path, affinity=affinity)
-            supp_passes, preset_notes = build_supplementary_plot_passes(rundir, preset, custom_plots)
+            supp_passes, preset_notes = build_supplementary_plot_passes(rundir, preset, custom_plots,
+                                                                          cfg["wspy_bin"])
             lines = [shell_preview(argv)]
             for p in supp_passes:
                 pargv, _outfile, _manifest_path = build_pass_argv(cfg["wspy_bin"], rundir, p,

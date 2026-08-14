@@ -63,6 +63,7 @@ int capabilitiesflag = 0;
 int preflightflag = 0;
 int listaffinityflag = 0;
 int listgroupsflag = 0;
+int listcolumnsflag = 0;
 int helpflag = 0;
 /* Set once, at the top of parse_options(), before the individual
  * counter-group flags below get a chance to fire -- a plain "was
@@ -327,10 +328,15 @@ int parse_options(int argc,char *const argv[]){
     { "target", required_argument, 0, 100 },
     { "symbol-sample", no_argument, 0, 101 },
     { "symbol-sample-event", required_argument, 0, 102 },
-    // 103: next free getopt_long val after --symbol-sample-event's 102 --
+    // 103/106: next free getopt_long vals after --symbol-sample-event's 102 --
     // see doc/INVESTIGATION_ARCHIVE.md's "Non-obvious implementation traps"
-    // for why a collision here silently misroutes an unrelated flag.
+    // for why a collision here silently misroutes an unrelated flag. 104/105
+    // are skipped: they collide with the short-opt chars 'h'/'i' in the
+    // getopt_long() short-opts string below ("+abcio:hrstv") -- the exact
+    // collision class that trap writeup warns about. Next free val after 106
+    // is 107.
     { "list-groups", no_argument, 0, 103 },
+    { "list-columns", no_argument, 0, 106 },
     { "verbose", no_argument, 0, 32 },
     { "arm-dcache-mem", no_argument, 0, 73 },
     { "no-arm-dcache-mem", no_argument, 0, 74 },
@@ -703,6 +709,9 @@ int parse_options(int argc,char *const argv[]){
     case 103: // --list-groups
       listgroupsflag = 1;
       break;
+    case 106: // --list-columns
+      listcolumnsflag = 1;
+      break;
     case 31: // --tree
       if ((treefile = fopen(optarg,"w")) == NULL){
 	warning("unable to open tree file: %s, ignored\n",optarg);
@@ -830,6 +839,21 @@ int parse_options(int argc,char *const argv[]){
   }
   if (listgroupsflag){
     return 7; // no workload command needed, and no privileges either -- pure static-table dump
+  }
+  if (listcolumnsflag){
+    // --list-columns: prints the CSV header this exact flag combination
+    // would produce, then exits -- no workload command needed. Unlike the
+    // probes above, this one deliberately does *not* dispatch to its own
+    // standalone function: it needs every other counter/system/gpu/power/
+    // --passes flag already parsed above to have taken final effect, then
+    // falls through main()'s own single-pass/--passes header-construction
+    // code (the exact code a real run uses) rather than a second,
+    // hand-maintained copy of it -- see main()'s "i == 8" handling and the
+    // early-return right after each path's own CSV header block. Forcing
+    // csvflag on here means the header always prints even if the caller
+    // forgot --csv; there's nothing else for --list-columns to report.
+    csvflag = 1;
+    return 8;
   }
   if (optind >= argc){
     warning("missing command after options\n");
@@ -1258,6 +1282,15 @@ static int run_multipass(char *const envp[]){
     fprintf(outfile,"\n");
   }
 
+  // --list-columns (see parse_options()'s "return 8" and main()'s "i == 8"
+  // handling): the header above is exactly what it was asked for -- stop
+  // before Phase C, which needs a live command_line_argv this no-workload
+  // probe never populated.
+  if (listcolumnsflag){
+    if (oflag) fclose(outfile);
+    return 0;
+  }
+
   // Phase C: execute each pass in turn -- the only part that needs a live
   // child.
   for (p = 0; p < plan.npasses; p++){
@@ -1377,6 +1410,10 @@ static void print_full_usage(FILE *out,const char *prog){
 	  "\t--preflight               - check counter-fit for the given flags and exit\n"
 	  "\t--list-affinity           - list core/thread/L3-domain/core-type topology and exit\n"
 	  "\t--list-groups             - list --counters=/--passes= group names and exit\n"
+	  "\t--list-columns            - print the CSV header this flag combination would\n"
+	  "\t                            produce (combine with --counters=/--system/--interval/\n"
+	  "\t                            --per-core/--power/--gpu-*/--passes=/etc.) and exit;\n"
+	  "\t                            implies --csv\n"
 	  "\n"
 	  "Run control:\n"
 	  "\t--affinity=<spec>         - pin the workload to selected CPUs: all (default),\n"
@@ -1569,7 +1606,13 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   if (i == 7){
     return run_group_list_probe();
   }
-  if (i){
+  // i == 8 (--list-columns) intentionally falls through instead of
+  // dispatching to its own standalone probe function -- see parse_options()'s
+  // own comment on its "return 8" for why: it needs to run the exact same
+  // single-pass/--passes group-construction and CSV-header code a real run
+  // uses, with an early return right after each path's own header block
+  // (below, and in run_multipass()) standing in for the workload launch.
+  if (i && i != 8){
     // A real usage error (bad flag, missing command) -- short and to the
     // point, not the full reference (that's what --help is for). Kept out
     // of print_full_usage() itself since this path always exits nonzero
@@ -1909,6 +1952,16 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     print_metrics(cpu_info->systemwide_counters,PRINT_CSV_HEADER);
     print_counter_coverage(PRINT_CSV_HEADER);
     fprintf(outfile,"\n");
+  }
+
+  // --list-columns (see parse_options()'s "return 8", main()'s "i == 8"
+  // handling, and run_multipass()'s own matching early return above): the
+  // header above is exactly what it was asked for -- stop before the child
+  // ever launches, which command_line_argv (empty -- this is a no-workload
+  // probe) couldn't support anyway.
+  if (listcolumnsflag){
+    if (oflag) fclose(outfile);
+    return 0;
   }
 
   // let the child start after two seconds

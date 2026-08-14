@@ -366,6 +366,43 @@ assert_csv_columns_match "per-core-freq" --no-ipc --per-core --per-core-freq --t
 assert_csv_columns_match "per-core-power" --no-ipc --per-core --power
 
 echo ""
+echo "=== --list-columns matches the real run's own CSV header (vendor-neutral) ==="
+# --list-columns' whole reason to exist (INVESTIGATION.md's 4.4(a) "Preset/
+# Configuration/Option vocabulary refactor" item) is "the same header a real
+# run would print, without paying for one" -- wspy.c falls it through the
+# exact single-pass/--passes group-construction and header-printing code a
+# real run uses (an early return right after each path's own CSV-header
+# block) rather than a second, hand-maintained copy of that logic, so this
+# is the direct regression test for that invariant not drifting -- across
+# both the single-pass and --passes code paths, each of which has its own
+# early-return.
+assert_list_columns_matches_real_header() {
+  local label="$1"; shift
+  CHECKS=$((CHECKS + 1))
+  local probe real
+  probe=$("$WSPY" --list-columns "$@" 2>/dev/null)
+  real=$("$WSPY" --csv "$@" -- /bin/true 2>/dev/null | head -1)
+  if [ -z "$real" ] || [ "$probe" != "$real" ]; then
+    fail "list-columns matches real header [$label]: flags='$*'
+  --list-columns: $probe
+  real run:       $real"
+  else
+    echo "  list-columns matches real header [$label]: OK"
+  fi
+}
+assert_list_columns_matches_real_header "default-ipc"
+assert_list_columns_matches_real_header "no-ipc" --no-ipc
+assert_list_columns_matches_real_header "topdown" --no-ipc --topdown
+assert_list_columns_matches_real_header "counters-multi" --counters=topdown,branch
+assert_list_columns_matches_real_header "system" --no-ipc --system
+assert_list_columns_matches_real_header "per-core-topdown" --no-ipc --per-core --topdown
+# The --passes path (run_multipass()) builds its CSV header in a separate
+# code block from the single-pass path above (wspy.c's own Phase B), with
+# its own matching --list-columns early return -- exercised here so a future
+# edit to one path can't silently stop matching the other.
+assert_list_columns_matches_real_header "passes" --passes=topdown,branch,cache2
+
+echo ""
 echo "=== CSV interval periodic-row column-count contract (vendor-neutral) ==="
 # assert_csv_interval_rows_match checks EVERY row of a multi-tick --interval
 # run against the header's column count, not just the header and the final

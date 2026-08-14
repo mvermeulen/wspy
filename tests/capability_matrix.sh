@@ -327,6 +327,9 @@ CSV_OUT=$(mktemp /tmp/wspy_capmatrix_out.XXXXXX)
 trap 'rm -f "$TREE_OUT" "$MANIFEST_OUT" "$RUNINDEX_OUT" "$CSV_OUT"' EXIT
 run_bundle "manifest-and-run-index" 0 --no-ipc --csv -o "$CSV_OUT" --manifest "$MANIFEST_OUT" --run-index "$RUNINDEX_OUT" -- /bin/true
 run_bundle "capabilities" 0 --capabilities -- /bin/true
+run_bundle "list-columns"          0 --list-columns -- /bin/true
+run_bundle "list-columns-topdown"  0 --list-columns --counters=topdown --per-core --interval 1 -- /bin/true
+run_bundle "list-columns-passes"   0 --list-columns --passes=topdown,branch,cache2 -- /bin/true
 
 echo ""
 echo "=== Core/thread affinity control (--affinity, --list-affinity) ==="

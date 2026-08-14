@@ -191,7 +191,8 @@ def process_job(running_path, cfg, dirs):
 
     if job["mode"] == "preset":
         profile = job["profile"]
-        supp_passes, preset_notes = joblib.build_supplementary_plot_passes(rundir, profile, custom_plots)
+        supp_passes, preset_notes = joblib.build_supplementary_plot_passes(rundir, profile, custom_plots,
+                                                                            cfg["wspy_bin"])
         joblib.execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
                                     workload_argv, run_index_path, store_ingest,
                                     custom_plots, only_custom, preset_notes, supp_passes, manifest_on,

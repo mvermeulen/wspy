@@ -69,6 +69,12 @@ Some of the more commonly used options:
   drop (or, if it's the cause, stopping the NMI watchdog) when they won't. No root needed, and no
   workload command either -- this is also run automatically (silently, unless something doesn't
   fit) before every real run.
+* `--list-groups` - list the `--counters=`/`--passes=` group-name vocabulary and exit
+* `--list-columns [<flags>]` - print the CSV header the given flags would produce (combine with
+  `--counters=`/`--system`/`--interval`/`--per-core`/`--power`/`--gpu-*`/`--passes=`/etc.) and
+  exit; implies `--csv`. No workload command needed -- lets other tooling ask "what columns would
+  this flag combination produce" without parsing wspy's own source (`web/joblib.py`'s
+  `profile_plottable_columns()` is the first caller).
 
 * Output
   * `-o <file>` - send output to a file instead of stdout
