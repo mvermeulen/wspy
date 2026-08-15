@@ -91,7 +91,7 @@ from joblib import (  # noqa: E402,F401
     ARCHETYPE_SIMILAR_NAME,
     build_reproducibility_bundle, BUNDLE_MANIFEST_NAME,
     COMPOSITE_PRESET_PROFILES, expand_preset_names, run_proctree_besteffort,
-    VISION_PLOT_KINDS,
+    VISION_PLOT_KINDS, TREE_TXT_NAME, find_combined_timeline_csv,
 )
 
 # The one fixed configuration item 6 knows about -- matches wspy-run's
@@ -99,8 +99,7 @@ from joblib import (  # noqa: E402,F401
 WSPY_FIXED_ARGS = ["--csv", "--interval", "1", "--counters=topdown",
                     "--no-rusage", "--no-software", "--no-ipc"]
 # CSV_NAME/MANIFEST_NAME/PNG_NAME/LOG_NAME/RUN_MANIFEST_NAME/SUMMARY_NAME/
-# CURATION_NAME/NAME_RE/PROFILE_TOKEN_RE come from joblib.py (import block above).
-TREE_TXT_NAME = "process.tree.txt"  # fixed filename every --tree pass writes (joblib.py)
+# CURATION_NAME/NAME_RE/PROFILE_TOKEN_RE/TREE_TXT_NAME come from joblib.py (import block above).
 TREE_SUMMARY_TXT_NAME = "process.tree.summary.txt"  # best-effort text view joblib.py derives alongside it
 # proctree --json output above this size (bytes) is rejected rather than shipped to the browser --
 # a -j-parallel kernel build can fork tens of thousands of short-lived processes, and a resulting
@@ -2704,6 +2703,15 @@ def render_run_tab(prefill, cfg):
             <label class="group-check"><input type="checkbox" id="tree_vmsize"{chk(chk_default('tree', 'vmsize', False))}> record peak RSS + anon/file/shmem RSS + swap <code>--tree-vmsize</code></label>
           </div>
           <label>Timeout seconds <input type="text" id="tree_timeout" value="{val('tree', 'timeout_secs')}" placeholder="(none)"></label>
+          <label>Interval seconds <input type="text" id="tree_interval" value="{val('tree', 'interval_secs')}" placeholder="(tree only, no timeline)"></label>
+          <p class="muted">Set this (and check at least one performance-counter group above) to also
+             collect periodic <code>--interval</code> samples in this exact pass, alongside the process
+             tree. Because the tree and the counters then come from the same <code>wspy</code>
+             invocation, they share one clock -- once the run finishes, the report page's process-tree
+             view gets a "Tree + timeline (combined)" link showing both together. Leave blank for a
+             plain tree-only pass (the previous default behavior, unchanged). The separate "Performance
+             counters" card below always starts a second, independently-clocked pass, so checking boxes
+             there instead can never produce that combined link.</p>
           <label>PID-targeted counter attachment
             <input type="text" id="tree_target" value="{val('tree', 'target')}" placeholder="(none, e.g. comm=python3,cmdline=train.py)">
           </label>
@@ -4829,7 +4837,13 @@ def render_fixed_report(rundir, suite, benchmark, run_id):
 
     if os.path.isfile(os.path.join(rundir, TREE_TXT_NAME)):
         tree_url = f"/tree-viewer/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
-        parts.append(f'<p><a href="{tree_url}">Interactive tree viewer</a></p>')
+        timeline_link = ""
+        combined_csv = find_combined_timeline_csv(rundir, None)
+        if combined_csv:
+            timeline_url = (f"/timeline-viewer/{_urlescape(suite)}/{_urlescape(benchmark)}/"
+                             f"{_urlescape(run_id)}/{_urlescape(combined_csv)}")
+            timeline_link = f' &middot; <a href="{timeline_url}">Tree + timeline (combined)</a>'
+        parts.append(f'<p><a href="{tree_url}">Interactive tree viewer</a>{timeline_link}</p>')
         parts.append(render_proctree_card(suite, benchmark, run_id))
 
     parts.append(render_analyze_card(suite, benchmark, run_id))
@@ -4914,7 +4928,13 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
 
     if os.path.isfile(os.path.join(rundir, TREE_TXT_NAME)):
         tree_url = f"/tree-viewer/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
-        parts.append(f'<p><a href="{tree_url}">Interactive tree viewer</a></p>')
+        timeline_link = ""
+        combined_csv = find_combined_timeline_csv(rundir, run_manifest)
+        if combined_csv:
+            timeline_url = (f"/timeline-viewer/{_urlescape(suite)}/{_urlescape(benchmark)}/"
+                             f"{_urlescape(run_id)}/{_urlescape(combined_csv)}")
+            timeline_link = f' &middot; <a href="{timeline_url}">Tree + timeline (combined)</a>'
+        parts.append(f'<p><a href="{tree_url}">Interactive tree viewer</a>{timeline_link}</p>')
         parts.append(render_proctree_card(suite, benchmark, run_id))
 
     parts.append(render_analyze_card(suite, benchmark, run_id))
@@ -5345,6 +5365,41 @@ def render_interval_viewer(suite, benchmark, run_id, filename):
     return page(f"timeline: {benchmark}/{run_id}", body)
 
 
+def render_timeline_viewer(suite, benchmark, run_id, filename):
+    """Combined process-tree + --interval-timeline view: renders the tree as swimlanes
+    (fork->exit spans) under the same shared time axis as the percentage-metric chart
+    (topdown/GPU), so a reader can correlate a phase shift with which process was running.
+    Only ever linked to when joblib.find_combined_timeline_csv() found a pass whose own wspy
+    manifest recorded both --tree and --interval -- i.e. filename's CSV and this run's
+    process.tree.txt share one clock origin (see that function's docstring). Same thin-HTML-shell
+    shape as render_tree_viewer()/render_interval_viewer(): the actual rendering happens in
+    timeline_viewer.js, which fetches both of those viewers' own existing JSON APIs (no new
+    endpoint needed) rather than duplicating tree-parsing or CSV-parsing server-side."""
+    tree_json_url = f"/api/tree-json/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    interval_json_url = (f"/api/interval-json/{_urlescape(suite)}/{_urlescape(benchmark)}/"
+                          f"{_urlescape(run_id)}/{_urlescape(filename)}")
+    interval_url = (f"/interval-viewer/{_urlescape(suite)}/{_urlescape(benchmark)}/"
+                     f"{_urlescape(run_id)}/{_urlescape(filename)}")
+    tree_url = f"/tree-viewer/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    report_url = f"/report/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    body = f"""
+<section class="panel">
+  <h1>Timeline: {html.escape(suite)} / {html.escape(benchmark)} / {html.escape(run_id)}
+  <span class="muted">({html.escape(filename)})</span></h1>
+  <p><a href="{report_url}">Back to report</a>
+  &middot; <a href="{tree_url}">Tree only</a>
+  &middot; <a href="{interval_url}">Full timeline (all columns)</a></p>
+  <p class="muted">Process tree and topdown/GPU timeline shown together because this pass ran
+  <code>--tree</code> and <code>--interval</code> in the same invocation, so they share one clock.</p>
+  <div id="tlv-controls"></div>
+  <div id="tlv-root"><p class="muted">Loading...</p></div>
+</section>
+<script>window.TLV_CONFIG = {json.dumps({"treeJsonUrl": tree_json_url, "intervalJsonUrl": interval_json_url})};</script>
+<script src="/static/timeline_viewer.js"></script>
+"""
+    return page(f"timeline: {benchmark}/{run_id}", body)
+
+
 # ---------------------------------------------------------------------------
 # HTTP handler
 # ---------------------------------------------------------------------------
@@ -5511,6 +5566,28 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, f"no --interval CSV at {filename!r} in this run directory")
                 return
             self._send(200, render_interval_viewer(suite, benchmark, run_id, filename))
+            return
+
+        m = re.match(r"^/timeline-viewer/([^/]+)/([^/]+)/([^/]+)/(.+)$", path)
+        if m:
+            suite, benchmark, run_id, filename = m.groups()
+            if (not all(valid_segment(x) for x in (suite, benchmark, run_id))
+                    or not valid_relpath(filename)):
+                self._send(400, "invalid path")
+                return
+            rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
+            run_manifest = read_run_manifest(os.path.join(rundir, RUN_MANIFEST_NAME))
+            eligible = find_combined_timeline_csv(rundir, run_manifest)
+            # Must be the exact pass find_combined_timeline_csv() itself picked, not merely
+            # "some --interval CSV in this directory" -- a tree pass and an interval pass from
+            # different wspy invocations don't share a clock (see that function's docstring), so
+            # this guards against a hand-edited URL pairing two artifacts that were never meant to
+            # be shown together, not just a missing-file 404.
+            if eligible is None or filename != eligible:
+                self._send(404, "no matching process tree / --interval CSV pair "
+                                 "(same-invocation --tree + --interval) in this run directory")
+                return
+            self._send(200, render_timeline_viewer(suite, benchmark, run_id, filename))
             return
 
         m = re.match(r"^/studio/([^/]+)/([^/]+)/([^/]+)$", path)
