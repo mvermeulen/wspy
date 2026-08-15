@@ -8,6 +8,20 @@ WSPY_PLOT=${WSPY_PLOT:="/home/mev/source/wspy/wspy-plot"}
 PROCTREE=${PROCTREE:="/home/mev/source/wspy/proctree"}
 OUTROOT=${OUTROOT:="."}
 
+# ITERATIONS overrides how many times phoronix-test-suite repeats each test
+# (its own default is a dynamic run count, commonly 3, that can grow further
+# to satisfy its result-deviation checks). batch-run takes no CLI flag for
+# this -- it's controlled by exporting FORCE_TIMES_TO_RUN into the
+# phoronix-test-suite process's environment (pts-core/objects/pts_env.php),
+# which $WSPY_RUN/wspy simply inherit down to the exec'd workload. Left unset
+# by default so normal sweeps keep PTS's own statistically-motivated repeat
+# count; set ITERATIONS=1 for a single run when the goal is exploring a
+# --tree pass's process hierarchy, where 3 near-identical copies of the same
+# subtree just make browsing slower without adding anything to look at.
+if [ -n "${ITERATIONS:-}" ]; then
+    export FORCE_TIMES_TO_RUN="$ITERATIONS"
+fi
+
 # One directory for this run: <OUTROOT>/phoronix/<TESTNAME>/<RUN_ID>, via
 # wspy-run's unified output layout (INVESTIGATION_4.0.md "Run artifact
 # foundation"). Computed here, not left to wspy-run's own default, so the

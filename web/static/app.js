@@ -349,6 +349,7 @@
       custom_plots: buildCustomPlots(),
       only_custom: getChecked("only_custom"),
       affinity: getAffinitySpec(),
+      single_iteration: getChecked("toggle_single_iteration"),
     };
     fetch("/api/preview", {
       method: "POST",
@@ -420,6 +421,7 @@
           custom_plots: buildCustomPlots(),
           only_custom: getChecked("only_custom"),
           affinity: getAffinitySpec(),
+          single_iteration: getChecked("toggle_single_iteration"),
           phoronix_test_point: getValue("phoronix_test_point"),
         };
         fetch("/api/enqueue-job", {
@@ -461,6 +463,7 @@
           custom_plots: buildCustomPlots(),
           only_custom: getChecked("only_custom"),
           affinity: getAffinitySpec(),
+          single_iteration: getChecked("toggle_single_iteration"),
         };
       } else {
         endpoint = "/api/run-custom";
@@ -475,6 +478,7 @@
           custom_plots: buildCustomPlots(),
           only_custom: getChecked("only_custom"),
           affinity: getAffinitySpec(),
+          single_iteration: getChecked("toggle_single_iteration"),
         };
       }
 
