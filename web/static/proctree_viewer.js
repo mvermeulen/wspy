@@ -21,6 +21,25 @@
  * codebase's own real runs produce, but a future improvement for truly
  * enormous trees would be deferring child-DOM construction until a node is
  * actually expanded.
+ *
+ * Single-tree mode also has a second rendering of the exact same fetched
+ * data: a "Timeline" view (state.viewMode, renderTimelineView() and
+ * everything below it) alongside the default "Tree" hierarchy view. Unlike
+ * web/static/timeline_viewer.js's combined tree+timeline page, this mode has
+ * no --interval dependency at all -- the x-axis is each process's own
+ * start/finish (already in every --tree run's JSON, no other flag needed),
+ * not a periodic sample tick, so it works on any --tree run whatsoever, not
+ * just the narrow same-invocation --tree+--interval combination that page
+ * requires. Where a --target-matched process resolves to the topdown
+ * 4-category breakdown (computeDisplayCounters() below), its bar is colored
+ * by its own Retiring % (good/warn/bad, this app's existing verdict-bucket
+ * convention) instead of the plain comm-based categorical color every other
+ * bar gets -- promoting --target's per-process counters from a tooltip
+ * afterthought (all this view's data already got in the tree hierarchy view)
+ * to the actual visual encoding, since a lifetime-total is exactly as
+ * meaningful as a single color for the process's whole bar, unlike a real
+ * time series it can't offer without --target being extended to sample on
+ * ticks -- see INVESTIGATION.md for that still-open follow-on.
  */
 (function () {
   "use strict";
@@ -68,13 +87,29 @@
   // expanded by default (see EXPAND_TIME_SHARE's use in renderNode()).
   var EXPAND_TIME_SHARE = 0.05;
 
-  var state = { search: "", columns: {}, showDeltas: false, minSharePercent: 0 };
+  var state = { search: "", columns: {}, showDeltas: false, minSharePercent: 0, viewMode: "tree" };
 
   // Single-tree mode only: sum of every node's utime+stime in the fetched
   // tree, set once by computeCumulative() before first render. Used as the
   // 100% baseline for each node's cumulative-time share (row display, the
   // auto-expand threshold, and the "hide branches under N%" filter).
   var totalCumSeconds = 0;
+
+  // Timeline view mode only (see this file's own top-of-file comment):
+  // [min,max] wall-clock extent across every node's start/finish in the
+  // fetched tree, set once by renderSingle() before first render.
+  // timelineFullDomain never changes after that; timelineXDomain is the
+  // current, possibly zoomed, window -- same fullDomain/xDomain split
+  // web/static/timeline_viewer.js uses for the identical reason (a "reset
+  // zoom" button needs to remember the un-zoomed extent).
+  var timelineFullDomain = null;
+  var timelineXDomain = null;
+  var totalWallSpan = 0;
+  // Last controls-rendering inputs, so the view-mode toggle (which lives
+  // inside renderControlsSingle()'s own output) can re-render the controls
+  // panel on click without renderSingle() needing to re-run.
+  var lastAvailableColumns = [];
+  var lastSingleData = null;
 
   // --target=comm=<name>[,cmdline=<substr>] per-node columns (item 10,
   // INVESTIGATION.md): the distinct "group.label" keys found anywhere in the
@@ -145,6 +180,13 @@
     return v === null || v === undefined || v === "" ? "—" : String(v);
   }
 
+  // Timeline mode's SVG is sized off container.clientWidth at render time (renderTimelineView()
+  // below), so a window resize needs an explicit re-render to pick up the new width -- tree mode has
+  // no such dependency (plain DOM flow layout), so this only fires when it'd actually matter.
+  window.addEventListener("resize", debounce(function () {
+    if (state.viewMode === "timeline") rerender();
+  }, 150));
+
   fetch(cfg.jsonUrl)
     .then(function (r) { return r.json(); })
     .then(function (resp) {
@@ -173,6 +215,11 @@
 
     totalCumSeconds = computeCumulative(data.tree);
 
+    var extent = computeWallExtent(data.tree);
+    totalWallSpan = Math.max(0, extent.max - extent.min);
+    timelineFullDomain = [extent.min, extent.max > extent.min ? extent.max : extent.min + 1];
+    timelineXDomain = timelineFullDomain.slice();
+
     var available = COLUMN_DEFS.filter(function (c) {
       return c.always || detectColumn(data.tree, c.key);
     });
@@ -182,8 +229,23 @@
     collectTargetCounterKeysFromTree(data.tree, {}, targetColumnKeys);
     targetColumnKeys.forEach(function (key) { state.columns[key] = false; });
 
+    lastAvailableColumns = available;
+    lastSingleData = data;
     renderControlsSingle(available, data);
     renderTree(data.tree, null, []);
+  }
+
+  // Timeline view mode's own 100% baseline (recursive, not just the root's own start/finish, in
+  // case a future collector ever nested something outside the root's own recorded span -- matches
+  // web/static/timeline_viewer.js's computeTreeExtent()'s identical caution).
+  function computeWallExtent(node) {
+    var min = node.start, max = node.finish;
+    (node.children || []).forEach(function (c) {
+      var e = computeWallExtent(c);
+      if (e.min < min) min = e.min;
+      if (e.max > max) max = e.max;
+    });
+    return { min: min, max: max };
   }
 
   // Server (web/server.py's _api_tree_json) drops the "tree" key and sets
@@ -227,8 +289,15 @@
 
     if (data.tree_omitted) return;
 
+    controlsEl.appendChild(makeViewModeToggle());
     controlsEl.appendChild(makeSearchInput());
     controlsEl.appendChild(makeMinShareInput());
+
+    // The per-node column toggles below annotate tree-mode's inline row text -- they don't apply
+    // the same way to timeline mode, which always shows a bar's full duration + target_counters in
+    // its hover tooltip regardless of these checkboxes (see showTimelineTooltip()), so they're
+    // hidden rather than left as dead controls.
+    if (state.viewMode === "timeline") return;
 
     available.forEach(function (c) {
       controlsEl.appendChild(makeColumnToggle(c.key, c.label));
@@ -239,6 +308,29 @@
     targetColumnKeys.forEach(function (key) {
       controlsEl.appendChild(makeColumnToggle(key, key));
     });
+  }
+
+  // Single-tree mode's "Tree" (default, existing hierarchy view) vs "Timeline" (this file's own
+  // top-of-file comment) switch. Re-renders both the controls panel (some controls are tree-mode-
+  // only, see renderControlsSingle() above) and the main view on click.
+  function makeViewModeToggle() {
+    var wrap = document.createElement("div");
+    wrap.className = "ptv-mode-toggle";
+    [["tree", "Tree"], ["timeline", "Timeline"]].forEach(function (pair) {
+      var mode = pair[0], label = pair[1];
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = label;
+      btn.className = "ptv-mode-btn" + (state.viewMode === mode ? " ptv-mode-btn-active" : "");
+      btn.addEventListener("click", function () {
+        if (state.viewMode === mode) return;
+        state.viewMode = mode;
+        renderControlsSingle(lastAvailableColumns, lastSingleData);
+        rerender();
+      });
+      wrap.appendChild(btn);
+    });
+    return wrap;
   }
 
   function makeColumnToggle(key, label) {
@@ -285,7 +377,12 @@
       rerender();
     });
     label.appendChild(input);
-    label.appendChild(document.createTextNode("% of total CPU time"));
+    // Same number, different denominator per mode -- tree mode ranks by cumulative CPU time
+    // (utime+stime), timeline mode by each process's own wall-clock span (what actually determines
+    // whether a bar is even visible at the chart's time scale); the label always names which one is
+    // currently in effect rather than leaving that implicit.
+    label.appendChild(document.createTextNode(
+        state.viewMode === "timeline" ? "% of the run's wall-clock span" : "% of total CPU time"));
     return label;
   }
 
@@ -507,10 +604,309 @@
     if (!lastRenderArgs) return;
     rootEl.innerHTML = "";
     if (lastRenderArgs.diffMetrics) {
+      // diffMetrics is always an array (possibly empty, never undefined) in diff mode -- see
+      // renderDiff() below -- so this branch, not state.viewMode, is what actually distinguishes
+      // diff mode; the Tree/Timeline toggle is single-tree-mode-only (renderControlsDiff() never
+      // renders it) and has no effect here regardless of its current value.
       rootEl.appendChild(renderDiffNode(lastRenderArgs.tree, 0));
+    } else if (state.viewMode === "timeline") {
+      renderTimelineView(lastRenderArgs.tree);
     } else {
       rootEl.appendChild(renderNode(lastRenderArgs.tree, 0));
     }
+  }
+
+  // ---- timeline view mode (single-tree mode only; see this file's own top-of-file comment) ----
+
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  var TIMELINE_MARGIN = { top: 6, right: 16, bottom: 6, left: 190 }; // wide left gutter for labels
+  var TIMELINE_ROW_HEIGHT = 18;
+  // Hard cap on rendered rows, independent of what the min-share threshold computes to -- a
+  // fork-heavy workload (hundreds of children starting/exiting within the same millisecond, e.g. a
+  // parallel build) makes every duration tie at effectively the same value, degenerating a
+  // percentile-based threshold to 0% and filtering nothing; same real bug (and same fix: an
+  // unconditional cap keeping the longest-duration rows, ties broken by original depth-first order
+  // since Array.prototype.sort is stable) timeline_viewer.js's own MAX_RENDERED_LANES already hit
+  // and fixed -- ported here rather than re-derived.
+  var TIMELINE_MAX_LANES = 150;
+
+  var timelineTooltipEl = null;
+
+  function svgEl(tag, attrs) {
+    var el = document.createElementNS(SVG_NS, tag);
+    for (var k in attrs) {
+      if (Object.prototype.hasOwnProperty.call(attrs, k)) el.setAttribute(k, attrs[k]);
+    }
+    return el;
+  }
+
+  function debounce(fn, ms) {
+    var timer = null;
+    return function () { clearTimeout(timer); timer = setTimeout(fn, ms); };
+  }
+
+  function flattenAll(node, depth, out) {
+    out.push({ node: node, depth: depth });
+    (node.children || []).forEach(function (c) { flattenAll(c, depth + 1, out); });
+  }
+
+  function seriesColorTL(index) { return "var(--series-" + ((index % 8) + 1) + ")"; }
+
+  function commColorIndexTL(comm, seen) {
+    if (!Object.prototype.hasOwnProperty.call(seen, comm)) seen[comm] = Object.keys(seen).length;
+    return seen[comm];
+  }
+
+  // Good/warn/bad verdict-bucket coloring (this app's existing convention, --good/--warn/--bad,
+  // already used for phase bands elsewhere) by a --target-matched process's own Retiring % --
+  // computeDisplayCounters() above already collapses topdown's raw counters into this self-
+  // normalizing 4-category breakdown for the tree hierarchy view's per-node columns; reused as-is
+  // here, just promoted from a toggleable text column to the bar's actual fill color. Returns null
+  // (fall back to the plain comm-based categorical color) for anything that isn't a --target-matched
+  // topdown group -- there's no universal "higher is better" direction for an arbitrary raw counter
+  // (ipc, software page faults, ...) the way there is for topdown's own categories.
+  function retiringColorFor(node) {
+    var retiring = computeDisplayCounters(node.target_counters).filter(function (e) {
+      return e.group === "topdown" && e.label === "Retiring";
+    })[0];
+    if (!retiring) return null;
+    if (retiring.value >= 50) return "var(--good)";
+    if (retiring.value >= 25) return "var(--warn)";
+    return "var(--bad)";
+  }
+
+  // minSpan/search/cap filtering, independent of the current (possibly zoomed) timelineXDomain --
+  // same reasoning timeline_viewer.js's own computeLaneRows()/drawSwimlane() split gives: keeping
+  // this independent of zoom means row colors/identity stay stable as the user zooms, only which
+  // rows are actually visible (renderTimelineView()'s own xDomain-overlap filter) changes.
+  function computeTimelineRows(root) {
+    var all = [];
+    flattenAll(root, 0, all);
+    var minSpan = totalWallSpan * (state.minSharePercent / 100);
+    var search = state.search;
+    var filtered = all.filter(function (r) {
+      return (r.node.finish - r.node.start) >= minSpan && (!search || subtreeMatches(r.node, search));
+    });
+    var capped = filtered.length > TIMELINE_MAX_LANES;
+    if (capped) {
+      var byDuration = filtered.slice().sort(function (a, b) {
+        return (b.node.finish - b.node.start) - (a.node.finish - a.node.start);
+      }).slice(0, TIMELINE_MAX_LANES);
+      var keepPids = {};
+      byDuration.forEach(function (r) { keepPids[r.node.pid] = true; });
+      filtered = filtered.filter(function (r) { return keepPids[r.node.pid]; });
+    }
+    var seenComm = {};
+    var rows = filtered.map(function (r) {
+      var counterColor = retiringColorFor(r.node);
+      var color = counterColor || seriesColorTL(commColorIndexTL(r.node.comm || ("pid " + r.node.pid), seenComm));
+      return { node: r.node, depth: r.depth, color: color, coloredByCounter: !!counterColor };
+    });
+    return { rows: rows, total: all.length, capped: capped };
+  }
+
+  function xScaleTL(width) {
+    var span = (timelineXDomain[1] - timelineXDomain[0]) || 1;
+    var plotWidth = width - TIMELINE_MARGIN.left - TIMELINE_MARGIN.right;
+    return function (t) { return TIMELINE_MARGIN.left + (t - timelineXDomain[0]) / span * plotWidth; };
+  }
+
+  function clientXToTimeTL(svg, width, clientX) {
+    var rect = svg.getBoundingClientRect();
+    var scaleX = rect.width ? (width / rect.width) : 1;
+    var svgX = (clientX - rect.left) * scaleX;
+    var plotWidth = width - TIMELINE_MARGIN.left - TIMELINE_MARGIN.right;
+    return timelineXDomain[0] + (svgX - TIMELINE_MARGIN.left) / (plotWidth || 1) * (timelineXDomain[1] - timelineXDomain[0]);
+  }
+
+  function ensureTimelineTooltip() {
+    if (!timelineTooltipEl) {
+      timelineTooltipEl = document.createElement("div");
+      timelineTooltipEl.className = "itv-tooltip";
+      timelineTooltipEl.style.display = "none";
+      document.body.appendChild(timelineTooltipEl);
+    }
+    return timelineTooltipEl;
+  }
+
+  function hideTimelineTooltip() {
+    if (timelineTooltipEl) timelineTooltipEl.style.display = "none";
+  }
+
+  function addTooltipRow(tip, name, value) {
+    var row = document.createElement("div");
+    row.className = "itv-tooltip-row";
+    var val = document.createElement("span");
+    val.className = "itv-tooltip-value";
+    val.textContent = value;
+    var label = document.createElement("span");
+    label.className = "itv-tooltip-name";
+    label.textContent = name;
+    row.appendChild(val);
+    row.appendChild(label);
+    tip.appendChild(row);
+  }
+
+  // Full duration + every --target counter (via computeDisplayCounters()'s already-normalized
+  // ratio/percent collapse, the same values the tree hierarchy view's own per-node column toggles
+  // show) -- always shown regardless of state.columns, since this view has no per-column toggles of
+  // its own (see renderControlsSingle()'s own comment on why).
+  function showTimelineTooltip(node, clientX, clientY) {
+    var tip = ensureTimelineTooltip();
+    tip.innerHTML = "";
+    var title = document.createElement("div");
+    title.className = "itv-tooltip-time";
+    title.textContent = (node.comm || "?") + " (pid " + node.pid + ", ppid " + node.ppid + ")";
+    tip.appendChild(title);
+    addTooltipRow(tip, "start", fmtSeconds(node.start) + "s");
+    addTooltipRow(tip, "finish", fmtSeconds(node.finish) + "s");
+    addTooltipRow(tip, "duration", fmtSeconds(node.finish - node.start) + "s");
+    computeDisplayCounters(node.target_counters).forEach(function (e) {
+      addTooltipRow(tip, e.group + "." + e.label, formatTargetCounterValue(e));
+    });
+    tip.style.display = "";
+    tip.style.left = (clientX + 14) + "px";
+    tip.style.top = (clientY + 14) + "px";
+  }
+
+  function wireTimelineInteractions(svg, xs, width, height, crosshair, zoomBand, rows) {
+    var dragStartTime = null;
+    svg.addEventListener("mousemove", function (ev) {
+      var t = clientXToTimeTL(svg, width, ev.clientX);
+      if (dragStartTime !== null) {
+        var x0 = xs(dragStartTime), x1 = xs(t);
+        zoomBand.setAttribute("x", Math.min(x0, x1));
+        zoomBand.setAttribute("width", Math.abs(x1 - x0));
+        zoomBand.style.display = "";
+        return;
+      }
+      var x = xs(t);
+      crosshair.setAttribute("x1", x);
+      crosshair.setAttribute("x2", x);
+      crosshair.style.display = "";
+      var rect = svg.getBoundingClientRect();
+      var scaleY = rect.height ? (height / rect.height) : 1;
+      var svgY = (ev.clientY - rect.top) * scaleY;
+      var rowIndex = Math.floor((svgY - TIMELINE_MARGIN.top) / TIMELINE_ROW_HEIGHT);
+      var row = rows[rowIndex];
+      if (!row || t < row.node.start || t > row.node.finish) { hideTimelineTooltip(); return; }
+      showTimelineTooltip(row.node, ev.clientX, ev.clientY);
+    });
+    svg.addEventListener("mouseleave", function () {
+      crosshair.style.display = "none";
+      zoomBand.style.display = "none";
+      hideTimelineTooltip();
+      dragStartTime = null;
+    });
+    svg.addEventListener("mousedown", function (ev) {
+      dragStartTime = clientXToTimeTL(svg, width, ev.clientX);
+    });
+    svg.addEventListener("mouseup", function (ev) {
+      if (dragStartTime === null) return;
+      var dragEndTime = clientXToTimeTL(svg, width, ev.clientX);
+      zoomBand.style.display = "none";
+      var span = timelineXDomain[1] - timelineXDomain[0];
+      if (Math.abs(dragEndTime - dragStartTime) > span * 0.01) {
+        timelineXDomain = [Math.min(dragStartTime, dragEndTime), Math.max(dragStartTime, dragEndTime)];
+        dragStartTime = null;
+        rerender();
+        return;
+      }
+      dragStartTime = null;
+    });
+  }
+
+  function renderTimelineView(root) {
+    var result = computeTimelineRows(root);
+    // Threshold/search/cap-filtered rows (computeTimelineRows(), independent of zoom) further
+    // restricted to whatever overlaps the current (possibly zoomed) window -- so zooming in actually
+    // shrinks the row list to what's relevant instead of leaving out-of-window rows' labels taking
+    // up vertical space with no visible bar.
+    var rows = result.rows.filter(function (r) {
+      return r.node.finish >= timelineXDomain[0] && r.node.start <= timelineXDomain[1];
+    });
+
+    var note = document.createElement("p");
+    note.className = "tlv-swimlane-note";
+    note.textContent = "showing " + result.rows.length + " of " + result.total + " processes" +
+        (state.minSharePercent > 0 ? " (own span ≥ " + state.minSharePercent + "% of run)" : "") +
+        (result.capped ? " -- capped at the " + TIMELINE_MAX_LANES + " longest-running; raise the " +
+            "threshold above to narrow further" : "");
+    rootEl.appendChild(note);
+
+    if (timelineXDomain[0] !== timelineFullDomain[0] || timelineXDomain[1] !== timelineFullDomain[1]) {
+      var resetBtn = document.createElement("button");
+      resetBtn.type = "button";
+      resetBtn.textContent = "Reset zoom";
+      resetBtn.addEventListener("click", function () {
+        timelineXDomain = timelineFullDomain.slice();
+        rerender();
+      });
+      rootEl.appendChild(resetBtn);
+    }
+
+    var container = document.createElement("div");
+    rootEl.appendChild(container);
+
+    var width = container.clientWidth || rootEl.clientWidth || 800;
+    var height = TIMELINE_MARGIN.top + TIMELINE_MARGIN.bottom + Math.max(1, rows.length) * TIMELINE_ROW_HEIGHT;
+    var svg = svgEl("svg", { class: "tlv-swimlane-svg", viewBox: "0 0 " + width + " " + height });
+    var xs = xScaleTL(width);
+
+    if (!rows.length) {
+      var msg = svgEl("text", { class: "tlv-lane-label-muted", x: TIMELINE_MARGIN.left, y: TIMELINE_MARGIN.top + 12 });
+      msg.textContent = "no processes at this threshold/search/zoom";
+      svg.appendChild(msg);
+    }
+
+    rows.forEach(function (row, i) {
+      var y = TIMELINE_MARGIN.top + i * TIMELINE_ROW_HEIGHT;
+      var node = row.node;
+      var x0 = xs(Math.max(node.start, timelineXDomain[0]));
+      var x1 = xs(Math.min(node.finish, timelineXDomain[1]));
+      if (x1 > x0) {
+        svg.appendChild(svgEl("rect", {
+          class: "tlv-bar" + (row.coloredByCounter ? " tlv-bar-target" : ""),
+          x: x0, y: y + 2, width: Math.max(1, x1 - x0), height: TIMELINE_ROW_HEIGHT - 5, fill: row.color,
+        }));
+      }
+      var indent = TIMELINE_MARGIN.left - 6 - Math.min(row.depth, 12) * 8;
+      var label = svgEl("text", {
+        class: "tlv-lane-label" + (nodeSelfMatches(node, state.search) && state.search ? " ptv-match" : ""),
+        x: Math.max(4, indent), y: y + TIMELINE_ROW_HEIGHT - 6, "text-anchor": "end",
+      });
+      var name = (node.comm || "?") + " (" + node.pid + ")";
+      label.textContent = name.length > 26 ? name.slice(0, 25) + "…" : name;
+      svg.appendChild(label);
+    });
+
+    svg.appendChild(svgEl("line", {
+      class: "itv-axis-line", x1: TIMELINE_MARGIN.left, x2: TIMELINE_MARGIN.left,
+      y1: TIMELINE_MARGIN.top, y2: height - TIMELINE_MARGIN.bottom,
+    }));
+
+    var overlay = svgEl("rect", {
+      x: TIMELINE_MARGIN.left, y: TIMELINE_MARGIN.top,
+      width: Math.max(0, width - TIMELINE_MARGIN.left - TIMELINE_MARGIN.right),
+      height: Math.max(0, height - TIMELINE_MARGIN.top - TIMELINE_MARGIN.bottom), fill: "transparent",
+    });
+    svg.appendChild(overlay);
+    var crosshair = svgEl("line", {
+      class: "itv-crosshair", x1: 0, x2: 0, y1: TIMELINE_MARGIN.top, y2: height - TIMELINE_MARGIN.bottom,
+    });
+    crosshair.style.display = "none";
+    svg.appendChild(crosshair);
+    var zoomBand = svgEl("rect", {
+      class: "itv-zoom-band", x: 0, y: TIMELINE_MARGIN.top, width: 0,
+      height: Math.max(0, height - TIMELINE_MARGIN.top - TIMELINE_MARGIN.bottom),
+    });
+    zoomBand.style.display = "none";
+    svg.appendChild(zoomBand);
+
+    container.innerHTML = "";
+    container.appendChild(svg);
+
+    wireTimelineInteractions(svg, xs, width, height, crosshair, zoomBand, rows);
   }
 
   function nodeSelfMatches(node, search) {
