@@ -3951,10 +3951,29 @@ def expand_preset_names(preset):
     return names
 
 
+def phoronix_single_iteration_env(single_iteration):
+    """Popen's env= for a workload-launching pass: None (inherit the server
+    process's own environment untouched) unless single_iteration is set, in
+    which case FORCE_TIMES_TO_RUN=1 is added -- the same env var
+    workload/phoronix/run_test.sh's own ITERATIONS support exports, read by
+    phoronix-test-suite itself (pts-core/objects/pts_env.php) to force
+    exactly one run of each test instead of its normal dynamic (often 3+)
+    repeat count. Harmless to set for a non-phoronix workload -- nothing
+    else reads this env var -- so callers don't need to detect phoronix
+    first; parse_phoronix_test_names() is used purely for the Run tab's
+    advisory preview note, not to gate this."""
+    if not single_iteration:
+        return None
+    env = os.environ.copy()
+    env["FORCE_TIMES_TO_RUN"] = "1"
+    return env
+
+
 def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
                          workload_argv, run_index_path=None, store_ingest=False,
                          custom_plots=None, only_custom=False, preset_notes=None,
-                         supp_passes=None, manifest_on=False, affinity=None):
+                         supp_passes=None, manifest_on=False, affinity=None,
+                         single_iteration=False):
     """Item 7: invoke wspy-run itself (rather than wspy directly) for one of
     its builtin profiles, then -- mirroring workload/phoronix/run_test.sh's
     own hand-written pattern -- best-effort run wspy-plot (item 12) over the
@@ -3976,7 +3995,14 @@ def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
     modified, so the preset itself stays atomic. A supplementary pass
     failing doesn't fail the run (same degrade-don't-fail idiom as the
     wspy-plot step below); its CSV/manifest just won't exist for wspy-plot
-    or the report to find."""
+    or the report to find.
+
+    single_iteration sets FORCE_TIMES_TO_RUN=1 (see
+    phoronix_single_iteration_env()) in the environment of both wspy-run
+    itself and any supp_passes below, so a phoronix-test-suite workload runs
+    exactly once instead of its normal repeat count -- most useful paired
+    with a --tree pass, where 3 near-identical copies of the same subtree
+    just add noise to browse."""
     log_path = os.path.join(rundir, LOG_NAME)
     logf = open(log_path, "w")
 
@@ -3988,6 +4014,8 @@ def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
     for note in (preset_notes or []):
         emit(f"[note] {note}")
 
+    run_env = phoronix_single_iteration_env(single_iteration)
+
     wspy_run_argv = build_wspy_run_argv(cfg["wspy_run_bin"], cfg["wspy_bin"],
                                          cfg["output_root"], suite, benchmark,
                                          run_id, profile, workload_argv,
@@ -3995,7 +4023,7 @@ def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
                                          affinity=affinity)
     emit("$ " + shell_preview(wspy_run_argv))
     try:
-        proc = subprocess.Popen(wspy_run_argv, cwd=REPO_ROOT,
+        proc = subprocess.Popen(wspy_run_argv, cwd=REPO_ROOT, env=run_env,
                                  stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT,
                                  text=True, bufsize=1)
@@ -4020,7 +4048,7 @@ def execute_profile_run(state, cfg, rundir, suite, benchmark, run_id, profile,
         emit(f"[{p['name']}] $ " + shell_preview(full_argv))
         _archive_stale_pts_hooks_log(emit)
         try:
-            supp_proc = subprocess.Popen(full_argv, cwd=REPO_ROOT,
+            supp_proc = subprocess.Popen(full_argv, cwd=REPO_ROOT, env=run_env,
                                           stdout=subprocess.PIPE,
                                           stderr=subprocess.STDOUT,
                                           text=True, bufsize=1)
@@ -4126,7 +4154,7 @@ def write_custom_run_summary(rundir, pass_records):
 def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_argv,
                         checklist, manifest_on, run_index_path, store_ingest,
                         custom_plots=None, only_custom=False, autofit_notes=None,
-                        affinity=None):
+                        affinity=None, single_iteration=False):
     """Item 9's "customized away from a preset" path: runs each enabled
     configuration (see build_configuration_passes()) as its own sequential
     wspy invocation into this run directory -- the direct-command-lines
@@ -4138,7 +4166,9 @@ def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_ar
     checklist has already been through autofit_checklist_for_custom_plots()
     by the caller -- autofit_notes is only threaded through here to surface
     what was auto-enabled in the live log, not to redo the autofit (that
-    would find nothing left to change)."""
+    would find nothing left to change). single_iteration is
+    phoronix_single_iteration_env() applied to each pass below, same as
+    execute_profile_run()'s own."""
     log_path = os.path.join(rundir, LOG_NAME)
     logf = open(log_path, "w")
 
@@ -4158,6 +4188,8 @@ def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_ar
         state.finish("error", None)
         return
 
+    run_env = phoronix_single_iteration_env(single_iteration)
+
     pass_records = []
     any_failed = False
     for p in passes:
@@ -4170,7 +4202,7 @@ def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_ar
         emit(f"[{p['name']}] $ " + shell_preview(full_argv))
         _archive_stale_pts_hooks_log(emit)
         try:
-            proc = subprocess.Popen(full_argv, cwd=REPO_ROOT,
+            proc = subprocess.Popen(full_argv, cwd=REPO_ROOT, env=run_env,
                                      stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT,
                                      text=True, bufsize=1)
@@ -4257,7 +4289,7 @@ def execute_custom_run(state, cfg, rundir, suite, benchmark, run_id, workload_ar
 # one definition of what a valid job looks like.
 # ---------------------------------------------------------------------------
 
-JOB_SCHEMA_VERSION = "1.1.0"
+JOB_SCHEMA_VERSION = "1.2.0"
 JOB_STATES = ("pending", "running", "done", "failed")
 
 
@@ -4288,7 +4320,7 @@ def resolve_toggles(cfg, toggles):
 
 def build_job(workload_argv, suite, benchmark, mode, profile=None, checklist=None,
               custom_plots=None, only_custom=False, toggles=None, run_id=None, notes=None,
-              affinity=None, phoronix_test_point=None):
+              affinity=None, phoronix_test_point=None, single_iteration=False):
     """Builds a portable job document. mode is "preset" (profile is a
     wspy-run BUILTIN_PROFILES spec, e.g. "deep-cpu,tree-heavy") or "custom"
     (checklist is the same object build_configuration_passes() consumes).
@@ -4314,7 +4346,9 @@ def build_job(workload_argv, suite, benchmark, mode, profile=None, checklist=Non
     server.py's Handler._phoronix_test_point_identity() computes it and
     wspy-queue's process_job() re-resolves it under the *processing*
     machine's own workload/phoronix/ before calling
-    link_phoronix_test_point_run()."""
+    link_phoronix_test_point_run(). single_iteration (schema 1.2.0, additive)
+    is threaded straight into execute_profile_run()/execute_custom_run() at
+    process time -- see phoronix_single_iteration_env()."""
     toggles = toggles or {}
     return {
         "job_schema_version": JOB_SCHEMA_VERSION,
@@ -4336,6 +4370,7 @@ def build_job(workload_argv, suite, benchmark, mode, profile=None, checklist=Non
         },
         "affinity": affinity or None,
         "phoronix_test_point": phoronix_test_point or None,
+        "single_iteration": bool(single_iteration),
         "notes": notes or "",
     }
 
@@ -4395,5 +4430,9 @@ def validate_job(job):
     phoronix_test_point = job.get("phoronix_test_point")
     if phoronix_test_point is not None and not isinstance(phoronix_test_point, str):
         errors.append("phoronix_test_point, if given, must be a string")
+
+    single_iteration = job.get("single_iteration")
+    if single_iteration is not None and not isinstance(single_iteration, bool):
+        errors.append("single_iteration, if given, must be a boolean")
 
     return errors

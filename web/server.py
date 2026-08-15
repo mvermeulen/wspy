@@ -2874,7 +2874,13 @@ def render_run_tab(prefill, cfg):
       <label class="chip"><input type="checkbox" id="toggle_manifest" checked> Write manifest</label>
       <label class="chip"><input type="checkbox" id="toggle_run_index" checked> Append to run index</label>
       <label class="chip"><input type="checkbox" id="toggle_store_ingest" checked> Ingest into store after run</label>
+      <label class="chip"><input type="checkbox" id="toggle_single_iteration"> Single iteration</label>
     </div>
+    <p class="muted">"Single iteration" only affects a <code>phoronix-test-suite</code> workload -- it
+       forces <code>FORCE_TIMES_TO_RUN=1</code> in the launched process's environment so PTS runs each
+       test once instead of its normal (often 3+) repeat count. Handy paired with a process-tree pass,
+       where 3 near-identical copies of the same subtree just make browsing slower without adding
+       anything to look at.</p>
 
     <label class="inline-check">
       <input type="checkbox" id="queue_job">
@@ -6198,6 +6204,24 @@ class Handler(BaseHTTPRequestHandler):
         return resolve_toggles(cfg, body.get("toggles"))
 
     @staticmethod
+    def _single_iteration_note(single_iteration, workload_str):
+        """Advisory-only text for the preview's "notes" list when the "Single
+        iteration" chip is checked -- the actual FORCE_TIMES_TO_RUN=1 override
+        (joblib.phoronix_single_iteration_env()) never shows up in an argv
+        preview line since it's an env var, not a flag, so this is the only
+        place a user seeing the preview learns it'll apply. Also flags the
+        no-op case (checked but the workload doesn't look like a
+        phoronix-test-suite command) rather than silently doing nothing.
+        Returns None when the chip is unchecked."""
+        if not single_iteration:
+            return None
+        if joblib.parse_phoronix_test_names(workload_str):
+            return ("Single iteration checked: FORCE_TIMES_TO_RUN=1 will be set for this run, "
+                    "so phoronix-test-suite runs each test once instead of its normal repeat count.")
+        return ("Single iteration checked, but this workload doesn't look like a "
+                "phoronix-test-suite command -- it has no effect here.")
+
+    @staticmethod
     def _parse_custom_plots(body):
         """The Run tab's "Custom plots" section (item 12's wspy-plot --plot/
         --only-custom exposed in the UI): validates body["custom_plots"] (a
@@ -6364,6 +6388,7 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             self._send_json(400, err)
             return
+        single_iteration = bool(body.get("single_iteration"))
 
         rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
         if os.path.exists(rundir):
@@ -6389,7 +6414,7 @@ class Handler(BaseHTTPRequestHandler):
         t = threading.Thread(target=execute_profile_run, args=(
             state, cfg, rundir, suite, benchmark, run_id, profile, workload_argv,
             run_index_path, store_ingest, custom_plots, only_custom, preset_notes,
-            supp_passes, manifest_on, affinity,
+            supp_passes, manifest_on, affinity, single_iteration,
         ), daemon=True)
         t.start()
 
@@ -6419,6 +6444,7 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             self._send_json(400, err)
             return
+        single_iteration = bool(body.get("single_iteration"))
         checklist, autofit_notes = autofit_checklist_for_custom_plots(checklist, custom_plots)
 
         rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
@@ -6453,7 +6479,7 @@ class Handler(BaseHTTPRequestHandler):
         t = threading.Thread(target=execute_custom_run, args=(
             state, cfg, rundir, suite, benchmark, run_id, workload_argv,
             checklist, manifest_on, run_index_path, store_ingest,
-            custom_plots, only_custom, autofit_notes, affinity,
+            custom_plots, only_custom, autofit_notes, affinity, single_iteration,
         ), daemon=True)
         t.start()
 
@@ -6668,6 +6694,8 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             self._send_json(400, err)
             return
+        single_iteration = bool(body.get("single_iteration"))
+        single_iteration_note = self._single_iteration_note(single_iteration, workload_str)
         rundir = os.path.join(cfg["output_root"], suite, benchmark, run_id)
         plot_argv = build_plot_argv(cfg["wspy_plot_bin"], rundir, custom_plots, only_custom)
 
@@ -6681,6 +6709,9 @@ class Handler(BaseHTTPRequestHandler):
                                         run_index_path=run_index_path, affinity=affinity)
             supp_passes, preset_notes = build_supplementary_plot_passes(rundir, preset, custom_plots,
                                                                           cfg["wspy_bin"])
+            preset_notes = list(preset_notes)
+            if single_iteration_note:
+                preset_notes.append(single_iteration_note)
             lines = [shell_preview(argv)]
             for p in supp_passes:
                 pargv, _outfile, _manifest_path = build_pass_argv(cfg["wspy_bin"], rundir, p,
@@ -6727,6 +6758,8 @@ class Handler(BaseHTTPRequestHandler):
             notes.append("wspy-plot will run afterward, best-effort, matching every CSV this run "
                           "produces against the shared plot templates (see CLAUDE.md's plot.c entry) "
                           "and writing whatever fires into plots/.")
+        if single_iteration_note:
+            notes.append(single_iteration_note)
         self._send_json(200, {"mode": "custom", "lines": lines, "notes": notes,
                                "resolved_checklist": checklist})
 
@@ -6774,6 +6807,7 @@ class Handler(BaseHTTPRequestHandler):
         toggles = body.get("toggles") or {}
         notes = (body.get("notes") or "").strip()
         phoronix_test_point = self._phoronix_test_point_identity(body)
+        single_iteration = bool(body.get("single_iteration"))
 
         preset = (body.get("preset") or "").strip()
         if preset:
@@ -6783,7 +6817,8 @@ class Handler(BaseHTTPRequestHandler):
             job = joblib.build_job(workload_argv, suite, benchmark, "preset", profile=preset,
                                     custom_plots=custom_plots, only_custom=only_custom,
                                     toggles=toggles, run_id=run_id, notes=notes, affinity=affinity,
-                                    phoronix_test_point=phoronix_test_point)
+                                    phoronix_test_point=phoronix_test_point,
+                                    single_iteration=single_iteration)
         else:
             checklist = body.get("checklist") or {}
             # Placeholder rundir: build_configuration_passes() only ever uses
@@ -6798,7 +6833,8 @@ class Handler(BaseHTTPRequestHandler):
             job = joblib.build_job(workload_argv, suite, benchmark, "custom", checklist=checklist,
                                     custom_plots=custom_plots, only_custom=only_custom,
                                     toggles=toggles, run_id=run_id, notes=notes, affinity=affinity,
-                                    phoronix_test_point=phoronix_test_point)
+                                    phoronix_test_point=phoronix_test_point,
+                                    single_iteration=single_iteration)
 
         errors = joblib.validate_job(job)
         if errors:
