@@ -474,6 +474,111 @@ motivation and per-syscall design rationale. What remains open from this track:
   tracing alternative to `ptrace` that would fix it is also in "Deferred indefinitely" above, not
   actively planned.
 
+### Installed-test-profile materialization deep-dive
+Investigated 2026-08-15 against real data on this host (54 installed tests under
+`~/.phoronix-test-suite/installed-tests/pts/`, plus the `workload/phoronix/*` suites already
+materialized here via the existing composite.xml/OpenBenchmarking import path) — feeds 4.4(c)'s
+"Materialize test points directly from installed/downloaded PTS test profiles" item above.
+
+**The gap.** `materialize_phoronix_test_point()` (`web/joblib.py`) and `wspy-phoronix-import` already
+turn a Phoronix XML source into one single-test-point suite per (test, option-combination) — but every
+source they accept (an installed suite-definition.xml, an OpenBenchmarking result export, a cached
+composite.xml) is *evidence a specific combination was already run*. There's no path from "I have
+`pts/llama-cpp` installed" straight to "here are the option combinations I can materialize," short of
+first driving the test through `phoronix-test-suite run`'s own interactive/batch menu (or its
+BATCH_MODE env-var equivalent) to produce a composite.xml to import — a real round trip a human
+shouldn't need just to get a pick-list. Two pieces of prior art already exist and should stay the
+source of truth for how test-definition.xml's option shape is read, rather than re-deriving it a third
+way:
+- `wspy-ledger --phoronix-option-combos` (ledger.c, "What shipped in 4.3") already statically parses
+  `<TestSettings>/<Option>/<Menu>/<Entry>` for a *count* (product across `<Option>` blocks; a
+  free-form, non-`<Menu>` option is excluded and the count flagged as a lower bound) — the new
+  discovery code should agree with this exclusion rule rather than diverge from it.
+- `_phoronix_test_definition_path()`/`_phoronix_menu_entries()` (`web/joblib.py`, added for
+  `repin_phoronix_test_point()`'s menu-validation step) already resolve a `test_id` to its
+  `test-definition.xml` and read its `<Menu><Entry>` list — but flatten across every `<Option>` into one
+  list, which is fine for repin's single-arguments-string validation but loses the per-axis grouping
+  this needs; extending it to return `[(display_name, identifier, arg_prefix, arg_postfix, [(name,
+  value), ...]), ...]` per `<Option>` (order-preserved) covers both callers.
+
+**Confirmed real profile shapes** (read directly from `test-definition.xml` on this host, not assumed):
+zero-`<Option>` fixed tests (`coremark`, `aobench` — exactly one implicit point, "default"),
+single-`<Option>` tests, and multi-`<Option>` tests where a naive cross product explodes fast:
+Blender's `Blend File` (6 entries) × `Compute` (6, including `CUDA`/`OptiX`/`HIP`/`METAL`/`ONEAPI`) =
+36; llama.cpp's `Backend` (5, including `CUDA`/`ROCM`/`SYCL`/`VULKAN`) × `Model` (8 downloaded
+`.gguf` files) × `Test` (4 prompt/generation sizes) = 160. Auto-expanding either is exactly the
+"combinatorial blow-up nobody asked for" the user framing this item called out.
+
+**Confirmed Arguments/Description composition rule** — read back from `workload/phoronix/llama-cpp/*`,
+`workload/phoronix/blender/*`, and `workload/phoronix/openvino/*`'s already-materialized `source.json`
+files (all produced by a real PTS batch run + import, so this is observed behavior, not guessed):
+- `Arguments` = each selected `<Option>`'s `<ArgumentPrefix>` + chosen `<Entry><Value>` +
+  `<ArgumentPostfix>` (prefix/postfix omitted when absent), concatenated in document order, one space
+  between options. E.g. Blender's `Compute=CPU-Only` + `Blend File=BMW27` →
+  `-b ../bmw27_gpu.blend -x 1 -F JPEG -f 1 -- --cycles-device CPU` (note: `<Option>` order in the XML
+  puts `Blend File` first even though `Compute` is discussed second above).
+- `<TestSettings><Default><Arguments>` (e.g. Blender's `-noaudio --enable-autoexec`) is **not** part of
+  this string — it's applied separately at execution time regardless of which option combination is
+  picked, confirmed by its absence from every materialized point's `Arguments`. A composer function must
+  not fold it in.
+- `Description` = each selected option's `<DisplayName>: <Entry><Name>`, joined by `" - "` in the same
+  order — e.g. `"Backend: CPU BLAS - Model: DeepSeek-R1-Distill-Llama-8B-Q8_0 - Test: Prompt Processing
+  512"`. This is also what `repin_phoronix_test_point()`'s `_PHORONIX_ARGUMENTS_DESCRIPTION_RE` already
+  parses back out for its own single-axis case — a multi-axis composer and that regex need to agree on
+  the format, not just the single-axis case.
+- `<Execute><Description>` must be present (any non-empty text) or a real PTS install batch-runs every
+  menu entry regardless of `<Arguments>` — `_build_phoronix_suite_xml()`'s existing comment already
+  documents this trap; a multi-axis composer inherits the same requirement, just building both strings
+  from the axis picks instead of one.
+
+**Design:**
+1. **Discovery** enumerates `installed-tests/<namespace>/<name>-<version>/` (what `phoronix-test-suite`
+   has actually *built*, not just downloaded — the same distinction
+   `list_installed_phoronix_test_versions()` already draws against `test-profiles/`), resolves each to
+   its `test-definition.xml`, and classifies by axis count.
+2. **Zero axes:** one implicit point, materialize directly (same as an empty-Arguments call today) —
+   no picker needed.
+3. **One axis:** every entry is independently a complete, standalone configuration — list all N as
+   flat candidates with a "materialize all" convenience action. This is the "single option/choice"
+   case the item's own framing calls straightforward, and it's still just N independent calls into the
+   existing `materialize_phoronix_test_point()`, no new materialization code needed once composition is
+   axis-aware.
+4. **Two or more axes:** never auto-expand the product (the same count `--phoronix-option-combos`
+   already reports). Present a per-axis checklist instead; a submission is one or more explicit tuples
+   (one value chosen per axis per tuple), each composed into an `Arguments`/`Description` pair via the
+   rule above and materialized individually. A picker that only allows building explicit tuples — never
+   a "select all values on every axis" shortcut that's secretly the cross product — is what keeps this
+   from silently becoming case 4's blow-up with extra steps.
+5. **GPU/backend axis flagging.** Heuristic keyword match against an axis's `DisplayName`/`Identifier`
+   (`compute`, `backend`, `device`, `gpu`, `api`, `platform`) and independently against entry
+   `Name`/`Value` text (`CUDA`, `OptiX`, `HIP`, `ROCm`, `Vulkan`, `SYCL`, `oneAPI`, `Metal`, `OpenCL`) —
+   either match flags the axis. A flagged axis starts with nothing pre-selected and a visible badge;
+   it's never defaulted or bulk-selected the way a plain non-flagged axis's "materialize all" can be.
+   `check_gpu_build()` (`web/server.py`, already used by the Run tab's GPU checklist) answers a related
+   but distinct question — whether *wspy's own build* can measure GPU counters during the run — and is
+   worth surfacing alongside as a second badge, but doesn't answer whether the *workload's* chosen
+   backend (e.g. a CUDA runtime for Blender's `Compute=CUDA`) can actually execute; that's a separate,
+   harder question this design deliberately doesn't try to answer authoritatively (see next point).
+6. **Best-effort "looks buildable" hint, never a filter.** Cross-reference each entry's `Value` text
+   against the installed test's own `installed-tests/<name>-<version>/` directory listing — confirmed
+   useful live: this host's `llama-cpp-2.5.0` directory contains `llama.cpp-BLAS`/`llama.cpp-ROCM`/
+   `llama.cpp-SYCL`/`llama.cpp-VULKAN` binaries (no `llama.cpp-CUDA` — that backend's build was skipped
+   or failed on this host) and every downloaded `.gguf` model file, so a substring match against either
+   set is a real, checkable signal for *this* test. It's still per-test undocumented PTS install-script
+   behavior with no cross-test guarantee, so treat a match as "confirmed built" and a non-match as
+   "unconfirmed" (badge only) rather than hiding unmatched entries — a heuristic false negative must
+   never make a real option unreachable.
+7. **CLI equivalent**, for parity with the web picker and to keep `wspy-phoronix-import` scriptable:
+   `--from-installed <test_id> --option <identifier>=<value> [--option ...]` materializes exactly one
+   tuple per invocation (composing Arguments/Description the same way); a `--all-single-axis` convenience
+   flag covers case 3 only. Deliberately no flag that expands a whole matrix in one call — the discipline
+   belongs to the tool, not to hoping nobody passes `--all-axes`.
+
+This is additive: the existing suite-XML/composite.xml/OpenBenchmarking-URL import sources
+(`wspy-phoronix-import`'s current modes) stay exactly as-is for reproducing an already-published or
+already-run result. This is a third, proactive source for building candidate points *before* ever
+running anything through PTS.
+
 ## 4.4 priorities
 Goal: refocus away from adding more analysis surface and toward (a) making the large amount of
 functionality already shipped easier to actually use, (b) GPU support parity with the CPU side, and
@@ -578,6 +683,17 @@ tool despite resolving near-identical shapes underneath.
     what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
     across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
     point, launched by a human clicking Run) exists today.
+14. Materialize test points directly from installed/downloaded PTS test profiles, with no prior PTS
+    run/import round-trip. Today's only materialization paths (`wspy-phoronix-import`, "What shipped in
+    4.3") both require *evidence a specific option combination already ran* (an installed
+    suite-definition.xml or a composite.xml result) — there's no path from "this test profile is
+    installed" straight to "candidate test points a human can pick from" without first driving it
+    through PTS's own interactive/batch menu once. See the "Installed-test-profile materialization
+    deep-dive" below for the full design: zero/single-option profiles materialize directly or as a flat
+    pick-list, multi-option profiles get an explicit per-axis picker (never an auto-expanded cross
+    product), and GPU/backend-shaped axes are flagged for explicit confirmation rather than defaulted.
+    Web UI: a third Phoronix-tab source alongside the existing installed-suite/OpenBenchmarking-URL
+    import sources.
 
 ## 4.5 priorities
 Goal: lower priority than 4.4 but still real, wanted work — pick up once 4.4's three focus areas are
