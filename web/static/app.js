@@ -1597,6 +1597,15 @@
               if (select) select.remove();
               btn.remove();
             }
+            // Test/version got re-pinned fine, but the Arguments a version
+            // bump can rename right along with it (see joblib.repin_
+            // phoronix_test_point()'s docstring) couldn't be auto-fixed --
+            // still needs a human, so surface it rather than going quiet.
+            if (res.data.arguments_status === "stale" && repinErrorEl) {
+              repinErrorEl.hidden = false;
+              repinErrorEl.textContent = "Re-pinned, but this test point's Arguments no longer match any "
+                + "menu option in the new version and couldn't be auto-corrected -- check suite-definition.xml by hand.";
+            }
           })
           .catch(function (err) {
             btn.disabled = false;

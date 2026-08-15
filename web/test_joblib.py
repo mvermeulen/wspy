@@ -2053,13 +2053,33 @@ class ListInstalledPhoronixTestVersionsTest(unittest.TestCase):
             self.assertEqual(versions, ["1.6.0"])
 
 
+def _write_phoronix_test_definition(user_data_dir, namespace, name, menu_entries):
+    """Test helper: writes a minimal test-profiles/<namespace>/<name>/
+    test-definition.xml with one <TestSettings><Option><Menu><Entry> per
+    (entry_name, value) pair in menu_entries -- enough for
+    joblib._phoronix_menu_entries() to parse."""
+    import xml.etree.ElementTree as ET
+    root = ET.Element("PhoronixTestSuite")
+    settings = ET.SubElement(ET.SubElement(root, "TestSettings"), "Option")
+    menu = ET.SubElement(settings, "Menu")
+    for entry_name, value in menu_entries:
+        entry = ET.SubElement(menu, "Entry")
+        ET.SubElement(entry, "Name").text = entry_name
+        ET.SubElement(entry, "Value").text = value
+    out_dir = os.path.join(user_data_dir, "test-profiles", namespace, name)
+    os.makedirs(out_dir, exist_ok=True)
+    ET.ElementTree(root).write(os.path.join(out_dir, "test-definition.xml"))
+
+
 class RepinPhoronixTestPointTest(unittest.TestCase):
     def test_rewrites_suite_xml_and_source_json(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             point = {"test_id": "pts/build-linux-kernel-1.17.1", "arguments": "defconfig"}
             info = joblib.materialize_phoronix_test_point(point, tmpdir, "file", "/tmp/src.xml", installed=False)
 
-            result = joblib.repin_phoronix_test_point(info["dir"], "1.18.0")
+            # Isolated user_data_dir with no test-profiles/ at all -- nothing
+            # to validate Arguments against, so "arguments_status" is omitted.
+            result = joblib.repin_phoronix_test_point(info["dir"], "1.18.0", user_data_dir=tmpdir)
             self.assertEqual(result, {
                 "old_test_id": "pts/build-linux-kernel-1.17.1",
                 "new_test_id": "pts/build-linux-kernel-1.18.0",
@@ -2082,7 +2102,7 @@ class RepinPhoronixTestPointTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             point = {"test_id": "system/selenium-1.0.47", "arguments": ""}
             info = joblib.materialize_phoronix_test_point(point, tmpdir, "file", "/tmp/src.xml")
-            result = joblib.repin_phoronix_test_point(info["dir"], "1.0.50")
+            result = joblib.repin_phoronix_test_point(info["dir"], "1.0.50", user_data_dir=tmpdir)
             self.assertEqual(result["new_test_id"], "system/selenium-1.0.50")
 
     def test_repins_across_namespaces_when_installed_in_different_namespace(self):
@@ -2098,6 +2118,72 @@ class RepinPhoronixTestPointTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaises(FileNotFoundError):
                 joblib.repin_phoronix_test_point(tmpdir, "1.0.0")
+
+    def test_arguments_still_valid_are_verified_not_rewritten(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            point = {"test_id": "pts/openfoam-1.2.0", "arguments": "incompressibleFluid/drivaerFastback/ -m S",
+                     "description": "Input: drivaerFastback, Small Mesh Size - Mesh Time"}
+            info = joblib.materialize_phoronix_test_point(point, tmpdir, "file", "/tmp/src.xml")
+            _write_phoronix_test_definition(tmpdir, "pts", "openfoam-1.3.0", [
+                ("drivaerFastback, Small Mesh Size", "incompressibleFluid/drivaerFastback/ -m S"),
+            ])
+
+            result = joblib.repin_phoronix_test_point(info["dir"], "1.3.0", user_data_dir=tmpdir)
+            self.assertEqual(result["arguments_status"], "verified")
+            self.assertNotIn("new_arguments", result)
+
+            import xml.etree.ElementTree as ET
+            root = ET.parse(os.path.join(info["dir"], "suite-definition.xml")).getroot()
+            self.assertEqual(root.find("Execute/Arguments").text, "incompressibleFluid/drivaerFastback/ -m S")
+
+    def test_stale_arguments_rewritten_via_description_match(self):
+        # Reproduces the real 2026-08-15 OpenFOAM 1.2.0 -> 1.3.0 case: the
+        # drivaerFastback tutorial path was renamed out from under a
+        # suite-definition.xml that only had its <Test> version bumped.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            point = {"test_id": "pts/openfoam-1.2.0", "arguments": "incompressible/simpleFoam/drivaerFastback/ -m S",
+                     "description": "Input: drivaerFastback, Small Mesh Size - Mesh Time"}
+            info = joblib.materialize_phoronix_test_point(point, tmpdir, "file", "/tmp/src.xml")
+            _write_phoronix_test_definition(tmpdir, "pts", "openfoam-1.3.0", [
+                ("motorBike", "incompressibleFluid/motorBike/"),
+                ("drivaerFastback, Small Mesh Size", "incompressibleFluid/drivaerFastback/ -m S"),
+            ])
+
+            result = joblib.repin_phoronix_test_point(info["dir"], "1.3.0", user_data_dir=tmpdir)
+            self.assertEqual(result["arguments_status"], "updated")
+            self.assertEqual(result["old_arguments"], "incompressible/simpleFoam/drivaerFastback/ -m S")
+            self.assertEqual(result["new_arguments"], "incompressibleFluid/drivaerFastback/ -m S")
+
+            import xml.etree.ElementTree as ET
+            root = ET.parse(os.path.join(info["dir"], "suite-definition.xml")).getroot()
+            self.assertEqual(root.find("Execute/Arguments").text, "incompressibleFluid/drivaerFastback/ -m S")
+
+            with open(os.path.join(info["dir"], "source.json")) as f:
+                source = json.load(f)
+            self.assertEqual(source["previous_arguments"], "incompressible/simpleFoam/drivaerFastback/ -m S")
+            self.assertEqual(source["arguments"], "incompressibleFluid/drivaerFastback/ -m S")
+
+    def test_stale_arguments_with_no_description_match_left_untouched_and_flagged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            point = {"test_id": "pts/openfoam-1.2.0", "arguments": "incompressible/simpleFoam/drivaerFastback/ -m S",
+                     "description": "Input: some other option - Mesh Time"}
+            info = joblib.materialize_phoronix_test_point(point, tmpdir, "file", "/tmp/src.xml")
+            _write_phoronix_test_definition(tmpdir, "pts", "openfoam-1.3.0", [
+                ("drivaerFastback, Small Mesh Size", "incompressibleFluid/drivaerFastback/ -m S"),
+            ])
+
+            result = joblib.repin_phoronix_test_point(info["dir"], "1.3.0", user_data_dir=tmpdir)
+            self.assertEqual(result["arguments_status"], "stale")
+            self.assertNotIn("new_arguments", result)
+
+            import xml.etree.ElementTree as ET
+            root = ET.parse(os.path.join(info["dir"], "suite-definition.xml")).getroot()
+            # Left as-is -- still broken, but not silently guessed at.
+            self.assertEqual(root.find("Execute/Arguments").text, "incompressible/simpleFoam/drivaerFastback/ -m S")
+
+            with open(os.path.join(info["dir"], "source.json")) as f:
+                source = json.load(f)
+            self.assertNotIn("previous_arguments", source)
 
 
 class LinkPhoronixTestPointRunTest(unittest.TestCase):

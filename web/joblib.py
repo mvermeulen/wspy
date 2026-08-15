@@ -2546,6 +2546,43 @@ def materialize_phoronix_test_point(point, dest_root, source_kind, source_ref, i
     return result
 
 
+def _phoronix_test_definition_path(test_id, user_data_dir=None):
+    """Path to <namespace>/<name>/test-definition.xml under test-profiles/
+    for a full test_id (e.g. "pts/openfoam-1.3.0"), or None if it isn't
+    downloaded/cached on this host. Unlike installed-tests/ (which only
+    exists once a test is built), test-profiles/ is populated as soon as a
+    test is downloaded, so this can resolve even for a version that isn't
+    installed yet -- callers that need "installed" should check
+    list_installed_phoronix_test_versions() separately."""
+    namespace, _, name = test_id.partition("/")
+    if not name:
+        namespace, name = "pts", namespace
+    path = os.path.join(user_data_dir or phoronix_user_data_dir(), "test-profiles", namespace, name,
+                         "test-definition.xml")
+    return path if os.path.isfile(path) else None
+
+
+def _phoronix_menu_entries(test_definition_path):
+    """Flattened [(entry_name, entry_value), ...] across every
+    <TestSettings><Option><Menu><Entry> in a test-definition.xml --
+    the valid <Execute><Arguments> values for that test profile version.
+    [] if the file has no menu (a fixed test with no options) or fails to
+    parse."""
+    try:
+        tree = ET.parse(test_definition_path)
+    except (ET.ParseError, OSError):
+        return []
+    entries = []
+    for entry in tree.getroot().findall("./TestSettings/Option/Menu/Entry"):
+        name_el, value_el = entry.find("Name"), entry.find("Value")
+        entries.append(((name_el.text or "").strip() if name_el is not None else "",
+                         (value_el.text or "").strip() if value_el is not None else ""))
+    return entries
+
+
+_PHORONIX_ARGUMENTS_DESCRIPTION_RE = re.compile(r"^Input:\s*(.+?)\s+-\s+")
+
+
 def repin_phoronix_test_point(test_point_dir, new_version, user_data_dir=None):
     """Rewrites <test_point_dir>/suite-definition.xml's <Execute><Test> to
     point at new_version instead of whatever version it was originally
@@ -2571,12 +2608,36 @@ def repin_phoronix_test_point(test_point_dir, new_version, user_data_dir=None):
     "installed": True are set, since a re-pin is only ever offered for a
     version this host has confirmed installed.
 
-    Returns {"old_test_id", "new_test_id", "dir"}, or raises FileNotFoundError
-    if suite-definition.xml/source.json are missing, or ValueError if the
-    XML has no <Execute><Test> to rewrite -- both indicate test_point_dir
-    isn't actually a materialized test point, which callers are expected to
-    have already validated (e.g. via resolve_phoronix_test_point_dir())
-    before ever getting here."""
+    Also validates <Execute><Arguments> against the new version's own
+    test-definition.xml menu -- a version bump can rename/restructure the
+    argument itself (confirmed live 2026-08-15: OpenFOAM 1.2.0 -> 1.3.0
+    renamed its drivaerFastback tutorial path from
+    "incompressible/simpleFoam/drivaerFastback/" to
+    "incompressibleFluid/drivaerFastback/", so a suite re-pinned to
+    pts/openfoam-1.3.0 kept running the old, now-nonexistent path and
+    failing at run time). If the current Arguments string is no longer one
+    of the new version's valid menu values, this looks up the menu entry
+    whose Name matches <Execute><Description>'s "Input: <Name> - ..."
+    prefix (the same Name materialize_phoronix_test_point() sourced
+    Description from) and rewrites Arguments to that entry's Value.
+    Reported in the return dict as "arguments_status":
+      - omitted entirely when Arguments is empty, or the new version's
+        test-definition.xml isn't downloaded/cached on this host (nothing
+        to validate against)
+      - "verified" when the existing Arguments is still a valid menu value
+      - "updated" when it was stale and got rewritten (old/new values also
+        included, and source.json gets a matching "previous_arguments")
+      - "stale" when it was stale but no Description-matched replacement
+        could be found -- left untouched, since guessing wrong would be
+        worse than leaving the old (already-broken) value for a human to
+        fix by hand
+
+    Returns {"old_test_id", "new_test_id", "dir", ...}, or raises
+    FileNotFoundError if suite-definition.xml/source.json are missing, or
+    ValueError if the XML has no <Execute><Test> to rewrite -- both
+    indicate test_point_dir isn't actually a materialized test point, which
+    callers are expected to have already validated (e.g. via
+    resolve_phoronix_test_point_dir()) before ever getting here."""
     suite_path = os.path.join(test_point_dir, "suite-definition.xml")
     source_path = os.path.join(test_point_dir, "source.json")
     tree = ET.parse(suite_path)
@@ -2610,6 +2671,33 @@ def repin_phoronix_test_point(test_point_dir, new_version, user_data_dir=None):
     new_test_id = f"{namespace}/{bare_name}-{new_version}" if namespace else f"{bare_name}-{new_version}"
 
     test_el.text = new_test_id
+
+    args_el = tree.find("./Execute/Arguments")
+    old_arguments = (args_el.text or "").strip() if args_el is not None else ""
+    result = {"old_test_id": old_test_id, "new_test_id": new_test_id, "dir": test_point_dir}
+    new_arguments = old_arguments
+    if old_arguments:
+        desc_el = tree.find("./Execute/Description")
+        description = (desc_el.text or "").strip() if desc_el is not None else ""
+        menu_path = _phoronix_test_definition_path(new_test_id, user_data_dir)
+        entries = _phoronix_menu_entries(menu_path) if menu_path else []
+        if entries:
+            if old_arguments in {value for _, value in entries if value}:
+                result["arguments_status"] = "verified"
+            else:
+                m = _PHORONIX_ARGUMENTS_DESCRIPTION_RE.match(description)
+                wanted_name = m.group(1).strip() if m else None
+                replacement = next((value for name, value in entries if value and wanted_name and name == wanted_name),
+                                    None)
+                if replacement:
+                    new_arguments = replacement
+                    args_el.text = new_arguments
+                    result["arguments_status"] = "updated"
+                    result["old_arguments"] = old_arguments
+                    result["new_arguments"] = new_arguments
+                else:
+                    result["arguments_status"] = "stale"
+
     with open(suite_path, "wb") as f:
         f.write(b'<?xml version="1.0"?>\n' + ET.tostring(tree.getroot(), encoding="utf-8") + b"\n")
 
@@ -2619,11 +2707,14 @@ def repin_phoronix_test_point(test_point_dir, new_version, user_data_dir=None):
     source["test_id"] = new_test_id
     source["installed"] = True
     source["repinned_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if result.get("arguments_status") == "updated":
+        source["previous_arguments"] = old_arguments
+        source["arguments"] = new_arguments
     with open(source_path, "w") as f:
         json.dump(source, f, indent=2)
         f.write("\n")
 
-    return {"old_test_id": old_test_id, "new_test_id": new_test_id, "dir": test_point_dir}
+    return result
 
 
 _PHORONIX_README_DETAIL_FIELDS = [
