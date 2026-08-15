@@ -226,6 +226,19 @@ Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-
   (`web/server.py`) now treats the live scan as authoritative whenever it has any signal for that bare
   test name — exact match shows "yes" outright, a real mismatch keeps the badge + Re-pin — and only falls
   back to the stale flag when nothing of that test name is installed at all.
+- Correctness fix (#240): `repin_phoronix_test_point()` only ever rewrote `<Execute><Test>` on a
+  version re-pin, never `<Execute><Arguments>` — but a version bump can rename the argument itself.
+  Confirmed live against the same `workload/phoronix/openfoam/` test point #239 above used: OpenFOAM
+  1.2.0 → 1.3.0 renamed the drivaerFastback tutorial path from `incompressible/simpleFoam/
+  drivaerFastback/` to `incompressibleFluid/drivaerFastback/`, so a suite re-pinned to
+  `pts/openfoam-1.3.0` kept the old, now-nonexistent path and failed at run time even though the
+  version-mismatch badge was clear. `repin_phoronix_test_point()` (`web/joblib.py`) now checks the new
+  version's own `test-definition.xml` menu after rewriting `<Test>`: a still-valid `Arguments` is left
+  alone (`"verified"`); a stale one is rewritten to the menu entry whose `Name` matches
+  `<Execute><Description>`'s `"Input: <Name> - ..."` prefix, if one matches (`"updated"`, old/new
+  values recorded, `source.json` gets `previous_arguments`); otherwise it's left untouched rather than
+  guessed at (`"stale"`) and `web/static/app.js`'s repin button now surfaces that as a warning instead
+  of reporting silent success.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
