@@ -1428,14 +1428,23 @@ class MaterializePhoronixTestPointTest(unittest.TestCase):
             # element must never be empty/missing when Arguments is set.
             self.assertEqual(execute.find("Description").text, "quad-mesh")
 
-    def test_no_arguments_omits_arguments_and_description_elements(self):
+    def test_no_arguments_omits_arguments_but_synthesizes_description(self):
+        # Regression: a test point imported with both Arguments and
+        # Description empty (e.g. a composite that never pinned an option
+        # for this test) used to leave <Execute><Description> out entirely,
+        # which is exactly the "no non-empty Description" condition that
+        # makes a real PTS install batch-run every option in the test's
+        # menu -- confirmed live 2026-08-15 against a build-linux-kernel
+        # test point imported this way. <Description> must always be
+        # present and non-empty even when there's nothing real to carry
+        # over, so it falls back to the literal "default".
         with tempfile.TemporaryDirectory() as tmpdir:
             point = {"test_id": "pts/compress-7zip", "arguments": ""}
             joblib.materialize_phoronix_test_point(point, tmpdir, "file", "/tmp/src.xml")
             import xml.etree.ElementTree as ET
             root = ET.parse(os.path.join(tmpdir, "compress-7zip", "default", "suite-definition.xml")).getroot()
             self.assertIsNone(root.find("Execute/Arguments"))
-            self.assertIsNone(root.find("Execute/Description"))
+            self.assertEqual(root.find("Execute/Description").text, "default")
 
     def test_no_arguments_with_description_includes_description_element(self):
         with tempfile.TemporaryDirectory() as tmpdir:
