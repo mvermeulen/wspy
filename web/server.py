@@ -3083,10 +3083,19 @@ def render_phoronix_inventory_groups(dest_root):
                     for r in p["runs"])
             else:
                 runs_html = '<span class="muted">none yet</span>'
-            installed_text = {True: "yes", False: "no"}.get(p.get("installed"), "?")
             pinned_version = joblib.phoronix_pinned_version(p["test_id"])
             repin_html = ""
-            if pinned_version and installed_versions and pinned_version not in installed_versions:
+            if pinned_version and installed_versions and pinned_version in installed_versions:
+                # The live installed-tests scan confirms the exact pinned version
+                # is present -- trust that over the per-point "installed" flag,
+                # which is only a stale snapshot from materialize time
+                # (list_materialized_phoronix_test_points()'s own docstring) and
+                # can go on saying "no" long after a later `phoronix-test-suite
+                # install` made it true, leaving a point that's actually runnable
+                # dead-ended at a flat "not installed" with no next action.
+                installed_text = "yes"
+            elif pinned_version and installed_versions and pinned_version not in installed_versions:
+                installed_text = "no"
                 other_versions = installed_versions
                 mismatch_title = (f'pinned v{pinned_version} is not installed, but v'
                                    f'{", v".join(other_versions)} {"is" if len(other_versions) == 1 else "are"} '
@@ -3103,6 +3112,11 @@ def render_phoronix_inventory_groups(dest_root):
                                f'leaves other test points alone; a re-pin only ever moves forward to an '
                                f'installed version, never automatic">Re-pin</button>'
                                )
+            else:
+                # No live signal either way (nothing of this bare test name is
+                # installed at all, or the test_id has no parseable version
+                # suffix to compare) -- fall back to the materialize-time snapshot.
+                installed_text = {True: "yes", False: "no"}.get(p.get("installed"), "?")
             rows.append(
                 f'<tr data-phoronix-options="{html.escape(p["options_slug"].lower())}">'
                 f'<td>{html.escape(p["options_slug"])}</td>'
