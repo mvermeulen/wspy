@@ -276,6 +276,24 @@ Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-
   second one; blank leaves the previous tree-only behavior unchanged. Verified against the real running
   server via `/api/run-custom` end to end (both the combined case and the still-plain-tree-only
   regression case), not just by inspection.
+- Tree viewer's own "Timeline" view mode (`proctree_viewer.js`, `/tree-viewer/...`, single-tree mode
+  only): a second rendering of the exact same `/api/tree-json` data as swimlanes by process
+  start/finish, alongside the existing default "Tree" hierarchy rendering — no server-side change at
+  all. Distinct from the combined tree+timeline viewer above in one load-bearing way: it has no
+  `--interval` dependency whatsoever, since the x-axis is each process's own start/finish (present in
+  every `--tree` run) rather than a periodic sample tick — works on any `--tree` run, not just the
+  narrow same-invocation `--tree`+`--interval` combination that page requires. A `--target`-matched
+  process whose counters resolve to the topdown 4-category breakdown (`computeDisplayCounters()`,
+  already used by the tree hierarchy view's own per-node columns) is colored by its own Retiring %
+  (good/warn/bad, this app's existing verdict-bucket convention) instead of the plain comm-based
+  categorical color everything else gets — promoting `--target`'s per-process counters from a
+  hover-tooltip afterthought to the actual visual encoding. Ported (not re-derived) the row-count hard
+  cap (`TIMELINE_MAX_LANES`, 150) from the combined viewer's own fix above, same fork-heavy-workload
+  reasoning. Verified via a hand-rolled DOM/event shim against real captured `/api/tree-json` responses
+  from a real `--target=comm=sleep` run (confirmed matched processes render `--bad`-colored per their
+  actual ~9.5% Retiring reading) and a real 203-process tree (confirmed the 150-row cap holds, and
+  switching modes back and forth doesn't change the tree-mode row count) — no browser available this
+  session.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
