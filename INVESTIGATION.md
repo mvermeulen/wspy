@@ -306,6 +306,16 @@ Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-
   in an argv preview line (including a no-op warning when checked against a non-phoronix workload);
   queued jobs carry a `single_iteration` field (`JOB_SCHEMA_VERSION` 1.1.0 → 1.2.0, additive), and
   `wspy-queue add --single-iteration` gives the CLI the same knob.
+- Correctness fix (#244): `_build_phoronix_suite_xml()` (`web/joblib.py`) already fell back to the
+  `arguments` string for `<Execute><Description>` when the source XML had no real `Description`, but a
+  test point imported with *both* fields empty (no option ever pinned for that test) still produced an
+  empty `<Description>` element. A real PTS install treats "no non-empty Description" as license to
+  batch-run every option in the test's menu rather than just the imported one, so this silently turned a
+  single-option import into a much bigger, unintended run. Fixed by falling back to the literal
+  `"default"` when both `description` and `arguments` are empty. Confirmed live 2026-08-15: imported a
+  `build-linux-kernel` test point with both fields empty and ran it through the web queue — `launch.log`
+  showed `Test 1 of 1` against `[default]` only across all three passes (counters, tree, timeout
+  estimator), exit code 0 throughout, where the unpatched code would have re-run the full option menu.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
