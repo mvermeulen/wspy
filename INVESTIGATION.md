@@ -217,6 +217,15 @@ Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-
   run `--interval 1 --csv` (producing `ibs_fetch`/`ibs_op`) all along — exactly the class of silent
   drift this item called out as the reason to mechanize it. Remaining scope under item 1: the web UI's
   own checklist/argv engine unification onto `profiles/*.conf`/`*.spec`.
+- Correctness fix (#239): the Phoronix tab's inventory Installed column trusted a per-point `installed`
+  flag frozen into `source.json` at materialize time, even though `list_installed_phoronix_test_versions()`
+  (added for the version-mismatch/Re-pin badge) already had a live answer available. A point pinned to a
+  version that *was* actually installed could still show a flat "no" with no Re-pin option if it had been
+  materialized before that install happened — confirmed live against `workload/phoronix/openfoam/`'s two
+  test points (pinned `1.2.0`/`1.3.0`, only `1.3.0` installed). `render_phoronix_inventory_groups()`
+  (`web/server.py`) now treats the live scan as authoritative whenever it has any signal for that bare
+  test name — exact match shows "yes" outright, a real mismatch keeps the badge + Re-pin — and only falls
+  back to the stale flag when nothing of that test name is installed at all.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
