@@ -637,7 +637,11 @@ these block or distract from 4.4/4.5 scoping.
   different notification transport (`perf_event_open` tracepoints included) — swapping `ftrace`'s
   `trace_pipe` for a perf ring buffer would have made the loss less frequent, not eliminated it.
 - **Optional deep trace analysis** (Perfetto-compatible export of tree+topdown+interval timelines) —
-  depends entirely on the low-overhead tracing backend above; deferred alongside it.
+  depends entirely on the low-overhead tracing backend above; deferred alongside it. Not superseded by
+  the combined tree+timeline swimlane viewer under "Shipped since 4.3.1" above — that's a lighter,
+  hand-rolled-SVG in-browser view scoped to one same-invocation `--tree`+`--interval` pass at a time,
+  with no export format and no dependency on replacing `ptrace`; this item is still about the heavier
+  Perfetto-format export once a real low-overhead collector exists.
 - **Temporal drift detection** (cluster movement across versions/configs/machines) — needs far more
   historical run accumulation across the shipped clustering work than exists today to be meaningful;
   revisit once that history actually exists.
