@@ -239,6 +239,43 @@ Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-
   values recorded, `source.json` gets `previous_arguments`); otherwise it's left untouched rather than
   guessed at (`"stale"`) and `web/static/app.js`'s repin button now surfaces that as a warning instead
   of reporting silent success.
+- Combined process-tree + `--interval`-timeline viewer: `web/static/timeline_viewer.js`,
+  `/timeline-viewer/<suite>/<benchmark>/<run_id>/<filename>`. Renders the process tree as swimlanes
+  (fork→exit horizontal spans, DFS-flattened, colored by `comm`) under the same shared time axis as a
+  percentage-metric chart (topdown/GPU columns only — the full-column interval viewer stays linked
+  for everything else), so a reader can correlate a phase shift against which process was running.
+  The load-bearing fact making this safe: `--tree` events and `--interval` CSV rows both derive from
+  `topdown.c`'s single module-global `start_time`, so they only share one clock when produced by the
+  *same* wspy invocation — a `--tree` pass and a separate `--interval` pass in the same `wspy-run`
+  profile are two independent child-process launches with two independent clocks and must never be
+  plotted together. New `joblib.find_combined_timeline_csv()`/`pass_manifest_wants_combined_timeline()`
+  detect this from each pass's own wspy manifest (`options.tree`/`options.interval_seconds`, not
+  structured configuration provenance, which doesn't record raw flags) — the report page only ever
+  links to the combined view when a qualifying pass exists (e.g. `gpu-compute.conf`'s single pass,
+  which already runs both together), and the route itself re-checks the same gate against a
+  hand-edited URL rather than trusting the filename alone. No new JSON endpoint — reuses
+  `/api/tree-json`/`/api/interval-json` in parallel. Row count is capped (`MAX_RENDERED_LANES`, 150)
+  as a hard backstop independent of the min-duration filter, since a fork-heavy workload (hundreds of
+  children starting/exiting within the same millisecond, e.g. a parallel build) makes the
+  percentile-based default threshold degenerate to 0% — caught by an end-to-end smoke test against a
+  real 203-process `wspy --tree --interval` run before landing, not just by inspection. Per-process
+  topdown data reuses `--target`'s existing tree-JSON `target_counters` (a one-shot lifetime-total
+  read at that process's exit, not a real time series yet — see `doc/INVESTIGATION_ARCHIVE.md`'s
+  eventual Perfetto-export item for what a genuine per-process-over-time overlay would need). Verified
+  against the real running server end to end (real `wspy --tree --interval` output, both small and
+  203-process trees, report-page link wiring, 404 on a mismatched-pass URL); no browser available this
+  session, so hover/zoom/tooltip interactions were exercised via a hand-rolled DOM/event shim driving
+  the actual shipped JS file against real captured API responses, not just read by eye. Follow-up found
+  during review: the Run tab's checklist path (as opposed to picking a builtin preset like
+  `gpu-compute`) could never actually reach this feature — its "process tree" and "performance
+  counters" checklist sections always become two separate, independently-clocked `wspy` invocations, so
+  checking both boxes silently produced two passes that could never satisfy the same-invocation gate
+  above, with no explanation on the page. Fixed by adding an "Interval seconds" field directly to the
+  "Process tree" checklist card (`build_configuration_passes()`, `web/joblib.py`) — set alongside a
+  counter group there, it folds `--interval <n> --csv` into that same tree pass rather than starting a
+  second one; blank leaves the previous tree-only behavior unchanged. Verified against the real running
+  server via `/api/run-custom` end to end (both the combined case and the still-plain-tree-only
+  regression case), not just by inspection.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
