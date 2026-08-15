@@ -294,6 +294,18 @@ Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-
   actual ~9.5% Retiring reading) and a real 203-process tree (confirmed the 150-row cap holds, and
   switching modes back and forth doesn't change the tree-mode row count) — no browser available this
   session.
+- Phoronix single-iteration option (#243): `workload/phoronix/run_test.sh` gained an `ITERATIONS`
+  env var (e.g. `ITERATIONS=1 TESTNAME=coremark ./run_test.sh`), exporting phoronix-test-suite's own
+  `FORCE_TIMES_TO_RUN` (`pts-core/objects/pts_env.php`) so `batch-run` executes each test exactly that
+  many times instead of PTS's normal dynamic repeat count (often 3+) — `batch-run` itself takes no CLI
+  flag for this, only an env var. Most useful as `ITERATIONS=1` paired with a `--tree` pass, where 3
+  near-identical copies of the same subtree just add noise to browse. Wired the same override through
+  the web launcher as a Run tab "Single iteration" checkbox: `joblib.phoronix_single_iteration_env()`
+  is applied to every `Popen` that launches the workload in both `execute_profile_run()`/
+  `execute_custom_run()`; the live preview surfaces an advisory note since an env var never shows up
+  in an argv preview line (including a no-op warning when checked against a non-phoronix workload);
+  queued jobs carry a `single_iteration` field (`JOB_SCHEMA_VERSION` 1.1.0 → 1.2.0, additive), and
+  `wspy-queue add --single-iteration` gives the CLI the same knob.
 
 ## Known gaps (still open)
 Real-hardware/real-scale validation this project's hand-testing hasn't covered yet. Not release
