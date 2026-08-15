@@ -757,3 +757,28 @@ tr.ptv-profile-unresolved td { color: var(--muted); font-style: italic; }
 .itv-tooltip-row { display: flex; align-items: center; gap: 0.35rem; white-space: nowrap; }
 .itv-tooltip-value { font-weight: 600; }
 .itv-tooltip-name { color: var(--muted); }
+
+/* Combined tree + timeline viewer: web/static/timeline_viewer.js. Reuses most .itv- classes above
+ * (percentage chart, crosshair, zoom band, tooltip -- identical shape) for its own shared 0-100%
+ * chart; .tlv- is only for the new swimlane-specific pieces. */
+#tlv-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.tlv-minshare-input { width: 4rem; }
+.tlv-swimlane-title { font-size: 0.8rem; color: var(--muted); margin: 0.5rem 0 0.15rem 0; }
+.tlv-swimlane-note { font-size: 0.78rem; color: var(--muted); margin: 0 0 0.4rem 0; }
+.tlv-swimlane-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  cursor: crosshair;
+  user-select: none;
+}
+.tlv-lane-label { fill: var(--fg); font-size: 10px; }
+.tlv-lane-label-muted { fill: var(--muted); font-size: 10px; }
+.tlv-bar { stroke: none; }
+.tlv-bar-target { stroke: var(--accent); stroke-width: 1.5; }

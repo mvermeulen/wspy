@@ -256,6 +256,36 @@ class BuildConfigurationPassesTest(unittest.TestCase):
         self.assertIn("--no-ipc", flags)
         self.assertFalse(any(f.startswith("--counters=") for f in flags))
 
+    def test_tree_default_has_no_interval_or_csv(self):
+        # Plain tree-only pass, unchanged default behavior: no --interval, no --csv, so
+        # find_combined_timeline_csv() correctly finds nothing eligible for this pass.
+        checklist = {"tree": {"enabled": True}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        self.assertNotIn("--interval", passes[0]["flags"])
+        self.assertNotIn("--csv", passes[0]["flags"])
+        self.assertFalse(passes[0]["csv"])
+
+    def test_tree_interval_secs_adds_interval_and_csv(self):
+        # The only checklist path that can produce a pass eligible for the combined
+        # tree+timeline view (find_combined_timeline_csv()) -- --tree and --interval from the
+        # same wspy invocation. csv is implied, not a separate checkbox (see
+        # build_configuration_passes()'s own comment on why).
+        checklist = {"tree": {"enabled": True, "groups": ["topdown"], "interval_secs": "1"}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertEqual(len(passes), 1)
+        flags = passes[0]["flags"]
+        idx = flags.index("--interval")
+        self.assertEqual(flags[idx + 1], "1")
+        self.assertIn("--csv", flags)
+        self.assertTrue(passes[0]["csv"])
+
+    def test_tree_interval_secs_blank_leaves_default_behavior(self):
+        checklist = {"tree": {"enabled": True, "interval_secs": ""}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        self.assertNotIn("--interval", passes[0]["flags"])
+        self.assertFalse(passes[0]["csv"])
+
     def test_tree_groups_selects_counters_and_keeps_ipc_when_checked(self):
         # Same counter_group_flags() helper "counters" uses -- selecting ipc
         # suppresses --no-ipc, selecting software emits --counters=software.
@@ -284,6 +314,14 @@ class BuildConfigurationPassesTest(unittest.TestCase):
         passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
         restored = joblib.checklist_section_from_options("tree", passes[0]["options"])
         self.assertEqual(sorted(restored["groups"]), ["ipc", "software"])
+
+    def test_tree_interval_secs_round_trips_through_config_options(self):
+        # "Customize & run again" (item 17) needs this to come back exactly, or a rerun of a
+        # combined tree+timeline pass would silently drop back to tree-only.
+        checklist = {"tree": {"enabled": True, "groups": ["topdown"], "interval_secs": "1"}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        restored = joblib.checklist_section_from_options("tree", passes[0]["options"])
+        self.assertEqual(restored["interval_secs"], "1")
 
     # --symbol-sample/--symbol-sample-event (item 9's Run-tab drill-down,
     # INVESTIGATION.md's "Symbol-level profiling deep-dive") -- mirrors the
@@ -2739,6 +2777,106 @@ class ParseIntervalCsvTest(unittest.TestCase):
             result = joblib.parse_interval_csv(path, max_rows=100)
             self.assertFalse(result["decimated"])
             self.assertEqual(len(result["series"]["time"]), 2)
+
+
+class PassManifestWantsCombinedTimelineTest(unittest.TestCase):
+    def test_true_when_tree_and_interval_both_set(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "gpu_compute.manifest.json")
+            with open(path, "w") as f:
+                json.dump({"options": {"tree": True, "interval_seconds": 1}}, f)
+            self.assertTrue(joblib.pass_manifest_wants_combined_timeline(path))
+
+    def test_false_when_tree_only(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "tree.manifest.json")
+            with open(path, "w") as f:
+                json.dump({"options": {"tree": True, "interval_seconds": 0}}, f)
+            self.assertFalse(joblib.pass_manifest_wants_combined_timeline(path))
+
+    def test_false_when_interval_only(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "sweep.manifest.json")
+            with open(path, "w") as f:
+                json.dump({"options": {"tree": False, "interval_seconds": 1}}, f)
+            self.assertFalse(joblib.pass_manifest_wants_combined_timeline(path))
+
+    def test_false_for_missing_file(self):
+        self.assertFalse(joblib.pass_manifest_wants_combined_timeline("/does/not/exist.json"))
+
+    def test_false_for_malformed_json(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "bad.manifest.json")
+            with open(path, "w") as f:
+                f.write("{not json")
+            self.assertFalse(joblib.pass_manifest_wants_combined_timeline(path))
+
+
+class FindCombinedTimelineCsvTest(unittest.TestCase):
+    """find_combined_timeline_csv() -- the same-pass gate timeline_viewer.js's report-page link
+    depends on. Covers both report shapes (item 6 fixed-config, item 7 wspy-run unified layout)."""
+
+    def test_fixed_config_eligible(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            open(os.path.join(tmpdir, joblib.TREE_TXT_NAME), "w").close()
+            with open(os.path.join(tmpdir, joblib.CSV_NAME), "w") as f:
+                f.write("time,retire\n1,20.0\n")
+            with open(os.path.join(tmpdir, joblib.MANIFEST_NAME), "w") as f:
+                json.dump({"options": {"tree": True, "interval_seconds": 1}}, f)
+            self.assertEqual(joblib.find_combined_timeline_csv(tmpdir, None), joblib.CSV_NAME)
+
+    def test_fixed_config_ineligible_without_tree_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, joblib.CSV_NAME), "w") as f:
+                f.write("time,retire\n1,20.0\n")
+            with open(os.path.join(tmpdir, joblib.MANIFEST_NAME), "w") as f:
+                json.dump({"options": {"tree": True, "interval_seconds": 1}}, f)
+            self.assertIsNone(joblib.find_combined_timeline_csv(tmpdir, None))
+
+    def test_fixed_config_ineligible_when_manifest_lacks_interval(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            open(os.path.join(tmpdir, joblib.TREE_TXT_NAME), "w").close()
+            with open(os.path.join(tmpdir, joblib.CSV_NAME), "w") as f:
+                f.write("time,retire\n1,20.0\n")
+            with open(os.path.join(tmpdir, joblib.MANIFEST_NAME), "w") as f:
+                json.dump({"options": {"tree": True, "interval_seconds": 0}}, f)
+            self.assertIsNone(joblib.find_combined_timeline_csv(tmpdir, None))
+
+    def test_wspy_run_picks_the_combined_pass_not_a_different_one(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            open(os.path.join(tmpdir, joblib.TREE_TXT_NAME), "w").close()
+            # "sweep" pass: --interval CSV from a *different* wspy invocation -- must not be paired
+            # with the tree file even though both live in this run directory.
+            with open(os.path.join(tmpdir, "sweep.csv"), "w") as f:
+                f.write("time,retire\n1,20.0\n")
+            with open(os.path.join(tmpdir, "sweep.manifest.json"), "w") as f:
+                json.dump({"options": {"tree": False, "interval_seconds": 1}}, f)
+            # "gpu_compute" pass: the one invocation that actually ran --tree and --interval together.
+            with open(os.path.join(tmpdir, "gpu_compute.csv"), "w") as f:
+                f.write("time,retire\n1,30.0\n")
+            with open(os.path.join(tmpdir, "gpu_compute.manifest.json"), "w") as f:
+                json.dump({"options": {"tree": True, "interval_seconds": 1}}, f)
+            run_manifest = {"passes": [
+                {"name": "sweep", "output": "sweep.csv", "manifest": "sweep.manifest.json"},
+                {"name": "gpu_compute", "output": "gpu_compute.csv", "manifest": "gpu_compute.manifest.json"},
+            ]}
+            self.assertEqual(joblib.find_combined_timeline_csv(tmpdir, run_manifest), "gpu_compute.csv")
+
+    def test_wspy_run_none_eligible(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            open(os.path.join(tmpdir, joblib.TREE_TXT_NAME), "w").close()
+            with open(os.path.join(tmpdir, "sweep.csv"), "w") as f:
+                f.write("time,retire\n1,20.0\n")
+            with open(os.path.join(tmpdir, "sweep.manifest.json"), "w") as f:
+                json.dump({"options": {"tree": False, "interval_seconds": 1}}, f)
+            run_manifest = {"passes": [
+                {"name": "sweep", "output": "sweep.csv", "manifest": "sweep.manifest.json"},
+            ]}
+            self.assertIsNone(joblib.find_combined_timeline_csv(tmpdir, run_manifest))
+
+    def test_no_tree_file_at_all(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertIsNone(joblib.find_combined_timeline_csv(tmpdir, {"passes": []}))
 
 
 class CollectRunFilesTest(unittest.TestCase):

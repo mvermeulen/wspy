@@ -109,6 +109,11 @@ CSV_NAME = "amdtopdown.csv"
 MANIFEST_NAME = "amdtopdown.manifest.json"
 PNG_NAME = "amdtopdown.png"
 
+# Fixed filename every --tree pass writes, regardless of report shape (item 6 fixed-config or item
+# 7 wspy-run) -- shared here (moved from server.py) so find_combined_timeline_csv() below can use it
+# without server.py needing to pass it in.
+TREE_TXT_NAME = "process.tree.txt"
+
 # The curation studio's own per-run state file (server.py's curation studio) --
 # named here too since collect_run_files() below must never offer it as a
 # candidate artifact (it's studio-owned metadata, not a run artifact).
@@ -409,6 +414,62 @@ def parse_interval_csv(path, max_rows=INTERVAL_VIEWER_MAX_ROWS):
         "row_count": row_count,
         "decimated": decimated,
     }
+
+
+def pass_manifest_wants_combined_timeline(pass_manifest_path):
+    """True if the *wspy* manifest.json at pass_manifest_path (as opposed to wspy-run's own
+    run-level manifest.json, RUN_MANIFEST_NAME) recorded both --tree and --interval for that
+    invocation. Both flags together mean this pass's process.tree.txt and its --interval CSV were
+    produced by the exact same wspy invocation, hence share one clock origin (topdown.c's single
+    module-global start_time, set once before the child launches) -- the load-bearing fact that
+    makes it safe to plot the tree and the CSV on one shared timeline (web/static/timeline_viewer.js).
+    A --tree pass and a separate --interval pass in the same wspy-run profile are two independent
+    child-process launches with two independent clocks and must NOT be paired this way, even though
+    both artifacts can land in the same run directory. Malformed/unreadable manifest reads as False,
+    same degrade-quietly convention as read_manifest_config_provenance()."""
+    try:
+        with open(pass_manifest_path) as f:
+            m = json.load(f)
+        options = m.get("options") or {}
+        return bool(options.get("tree")) and int(options.get("interval_seconds") or 0) > 0
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def find_combined_timeline_csv(rundir, run_manifest):
+    """Returns the CSV filename (relative to rundir, as used by the /interval-viewer and
+    /api/interval-json URLs) of the single pass eligible for the combined tree+timeline view
+    (timeline_viewer.js), or None if this run has no such pass. run_manifest is wspy-run's own
+    run-level manifest (read_run_manifest()'s return value) for a unified-layout run, or None for
+    an item-6 fixed-config run (CSV_NAME/MANIFEST_NAME at rundir's top level, a single "pass" by
+    construction). Requires: process.tree.txt present, that pass's own CSV present with a "time"
+    column, and pass_manifest_wants_combined_timeline() true for that pass's own wspy manifest --
+    see that function's docstring for why the last check matters. Only the first qualifying pass is
+    returned if more than one somehow qualifies (not expected by convention -- process.tree.txt is a
+    single fixed filename every --tree pass writes, so a profile with two --tree passes would already
+    have one silently overwrite the other's tree file)."""
+    if not os.path.isfile(os.path.join(rundir, TREE_TXT_NAME)):
+        return None
+    if run_manifest is None:
+        csv_path = os.path.join(rundir, CSV_NAME)
+        manifest_path = os.path.join(rundir, MANIFEST_NAME)
+        if (os.path.isfile(csv_path) and csv_has_time_column(csv_path)
+                and os.path.isfile(manifest_path)
+                and pass_manifest_wants_combined_timeline(manifest_path)):
+            return CSV_NAME
+        return None
+    for p in run_manifest.get("passes", []):
+        output = p.get("output")
+        pass_manifest = p.get("manifest")
+        if not output or not pass_manifest:
+            continue
+        csv_path = os.path.join(rundir, output)
+        manifest_path = os.path.join(rundir, pass_manifest)
+        if (os.path.isfile(csv_path) and csv_has_time_column(csv_path)
+                and os.path.isfile(manifest_path)
+                and pass_manifest_wants_combined_timeline(manifest_path)):
+            return output
+    return None
 
 
 def collect_run_files(rundir):
@@ -1299,10 +1360,21 @@ def build_configuration_passes(rundir, checklist):
             event = (tree.get("symbol_sample_event") or "").strip()
             if event:
                 flags.append(f"--symbol-sample-event={event}")
+        # Interval seconds (optional): the only way this checklist can produce a pass eligible for
+        # the combined tree+timeline view (find_combined_timeline_csv()/timeline_viewer.js) -- that
+        # view requires --tree and --interval from the *same* wspy invocation, and the separate
+        # "counters"/"system" sections below always start their own, independently-clocked pass, so
+        # checking boxes there instead can never satisfy it. CSV is implied (not a separate
+        # checkbox like the "counters" card's own csv toggle) since --interval with no --csv here
+        # would only produce a human-readable periodic dump nothing downstream reads -- the entire
+        # point of offering this field is the combined-viewer CSV.
+        tree_interval = parse_optional_int(tree.get("interval_secs"), 1, 3600)
+        if tree_interval is not None:
+            flags += ["--interval", str(tree_interval), "--csv"]
         timeout = parse_optional_int(tree.get("timeout_secs"), 1, 86400)
         passes.append({"name": "tree", "category": "process-tree",
                         "options": _config_options(tree),
-                        "flags": flags, "csv": False, "timeout": timeout})
+                        "flags": flags, "csv": tree_interval is not None, "timeout": timeout})
 
     counters = checklist.get("counters") or {}
     if counters.get("enabled"):
