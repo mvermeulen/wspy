@@ -2553,11 +2553,14 @@ def _build_phoronix_suite_xml(identity, test_id, arguments, source_ref, descript
     # <Arguments>defconfig</Arguments> was present). This applies equally
     # when <Arguments> is empty (e.g. default option): without <Description>,
     # PTS batch-mode runs every option menu entry. The *content* doesn't
-    # matter to PTS, only presence -- fall back to the arguments string
-    # itself when the source XML had no real Description to carry over.
-    desc = description or arguments
-    if desc:
-        ET.SubElement(execute, "Description").text = desc
+    # matter to PTS, only presence -- fall back to the arguments string,
+    # and if that's also empty (a test point imported with no option ever
+    # pinned in the source), fall back to "default" so <Description> is
+    # never empty -- confirmed live 2026-08-15 against a build-linux-kernel
+    # test point imported with both Arguments and Description empty: the
+    # description-or-arguments fallback still produced an empty string and
+    # PTS ran every menu option again.
+    ET.SubElement(execute, "Description").text = description or arguments or "default"
     ET.indent(root, space="  ")
     return b'<?xml version="1.0"?>\n' + ET.tostring(root, encoding="utf-8") + b"\n"
 
