@@ -597,6 +597,25 @@ p.compare-overview {
   background: var(--bg);
   color: var(--fg);
 }
+/* Single-tree mode's Tree/Timeline view-mode switch (proctree_viewer.js's own top-of-file comment). */
+.ptv-mode-toggle {
+  display: inline-flex;
+  gap: 0.25rem;
+}
+.ptv-mode-btn {
+  padding: 0.2rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.ptv-mode-btn-active {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
 #ptv-root {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.85rem;
