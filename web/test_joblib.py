@@ -1894,7 +1894,8 @@ class ResolveTestIdentityTest(unittest.TestCase):
             point = {"test_id": "pts/openssl-1.0.0", "arguments": "-evp sha256"}
             info = joblib.materialize_phoronix_test_point(point, dest, "file", "/tmp/src.xml")
 
-            test, test_point, warning = joblib.resolve_test_identity("phoronix", info["identity"], dest)
+            test, test_point, warning = joblib.resolve_test_identity(
+                "phoronix", info["identity"], {"phoronix": dest})
             self.assertEqual(test, info["bare_name"])
             self.assertEqual(test_point, info["options_slug"])
             self.assertIsNone(warning)
@@ -1902,23 +1903,24 @@ class ResolveTestIdentityTest(unittest.TestCase):
     def test_unmatched_phoronix_identity_falls_back_with_warning(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             dest = os.path.join(tmpdir, "dest")
-            test, test_point, warning = joblib.resolve_test_identity("phoronix", "openssl-sha256", dest)
+            test, test_point, warning = joblib.resolve_test_identity(
+                "phoronix", "openssl-sha256", {"phoronix": dest})
             self.assertEqual(test, "openssl-sha256")
             self.assertEqual(test_point, "default")
             self.assertIsNotNone(warning)
 
     def test_non_phoronix_suite_always_falls_back_with_no_warning(self):
         test, test_point, warning = joblib.resolve_test_identity(
-            "some-other-suite", "some-benchmark", "/does/not/matter")
+            "some-other-suite", "some-benchmark", {"phoronix": "/does/not/matter"})
         self.assertEqual(test, "some-benchmark")
         self.assertEqual(test_point, "default")
         self.assertIsNone(warning)
 
     def test_cpu2026_falls_back_with_no_warning_when_dest_root_not_given(self):
-        # cpu2026_dest_root defaults to None -- existing callers (e.g. wspy-testpoint) that never
-        # pass it keep their exact prior behavior, no cpu2026-specific matching attempted at all.
+        # No "cpu2026" key in dest_roots -- existing callers (e.g. wspy-testpoint) that never
+        # populate it keep their exact prior behavior, no cpu2026-specific matching attempted at all.
         test, test_point, warning = joblib.resolve_test_identity(
-            "cpu2026", "706.stockfish_r-gcc_O3-base", "/does/not/matter")
+            "cpu2026", "706.stockfish_r-gcc_O3-base", {"phoronix": "/does/not/matter"})
         self.assertEqual(test, "706.stockfish_r-gcc_O3-base")
         self.assertEqual(test_point, "default")
         self.assertIsNone(warning)
@@ -1929,7 +1931,7 @@ class ResolveTestIdentityTest(unittest.TestCase):
             info = joblib.register_cpu2026_point(dest, "/opt/cpu2026", "706.stockfish_r", "gcc_O3")
 
             test, test_point, warning = joblib.resolve_test_identity(
-                "cpu2026", info["identity"], "/does/not/matter", dest)
+                "cpu2026", info["identity"], {"phoronix": "/does/not/matter", "cpu2026": dest})
             self.assertEqual(test, "706.stockfish_r")
             self.assertEqual(test_point, "gcc_O3-base")
             self.assertIsNone(warning)
@@ -1938,7 +1940,7 @@ class ResolveTestIdentityTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             dest = os.path.join(tmpdir, "dest")
             test, test_point, warning = joblib.resolve_test_identity(
-                "cpu2026", "706.stockfish_r-gcc_O3-base", "/does/not/matter", dest)
+                "cpu2026", "706.stockfish_r-gcc_O3-base", {"phoronix": "/does/not/matter", "cpu2026": dest})
             self.assertEqual(test, "706.stockfish_r-gcc_O3-base")
             self.assertEqual(test_point, "default")
             self.assertIsNotNone(warning)
@@ -1973,7 +1975,7 @@ class EnumerateReferenceMatrixCellsTest(unittest.TestCase):
             report_root_path = os.path.join(tmpdir, "report-root")
             os.makedirs(report_root_path)
 
-            cells = joblib.enumerate_reference_matrix_cells(report_root_path, phoronix_dest, None)
+            cells = joblib.enumerate_reference_matrix_cells(report_root_path, {"phoronix": phoronix_dest})
             self.assertEqual(cells, [])
 
     def test_one_cell_per_machine_with_runs_json(self):
@@ -1989,7 +1991,7 @@ class EnumerateReferenceMatrixCellsTest(unittest.TestCase):
                 with open(os.path.join(machine_dir, "runs.json"), "w") as f:
                     f.write("{}")
 
-            cells = joblib.enumerate_reference_matrix_cells(report_root_path, phoronix_dest, None)
+            cells = joblib.enumerate_reference_matrix_cells(report_root_path, {"phoronix": phoronix_dest})
             self.assertEqual([c["machine"] for c in cells], ["amd-370-64gb", "amd-395"])  # sorted
             for c in cells:
                 self.assertEqual(c["suite"], "phoronix")
@@ -2007,7 +2009,7 @@ class EnumerateReferenceMatrixCellsTest(unittest.TestCase):
                                         info["options_slug"], "amd-395")
             os.makedirs(machine_dir)  # no runs.json written
 
-            cells = joblib.enumerate_reference_matrix_cells(report_root_path, phoronix_dest, None)
+            cells = joblib.enumerate_reference_matrix_cells(report_root_path, {"phoronix": phoronix_dest})
             self.assertEqual(cells, [])
 
     def test_cpu2026_test_point_uses_tag_tune_as_test_point(self):
@@ -2021,7 +2023,7 @@ class EnumerateReferenceMatrixCellsTest(unittest.TestCase):
             with open(os.path.join(machine_dir, "runs.json"), "w") as f:
                 f.write("{}")
 
-            cells = joblib.enumerate_reference_matrix_cells(report_root_path, None, cpu2026_dest)
+            cells = joblib.enumerate_reference_matrix_cells(report_root_path, {"cpu2026": cpu2026_dest})
             self.assertEqual(len(cells), 1)
             self.assertEqual(cells[0], {"suite": "cpu2026", "test": "706.stockfish_r",
                                          "test_point": "gcc_O3-base", "machine": "amd-395",
@@ -2029,7 +2031,7 @@ class EnumerateReferenceMatrixCellsTest(unittest.TestCase):
 
     def test_no_dest_roots_given_returns_empty(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            self.assertEqual(joblib.enumerate_reference_matrix_cells(tmpdir, None, None), [])
+            self.assertEqual(joblib.enumerate_reference_matrix_cells(tmpdir, {}), [])
 
 
 class CountStatsPoolRunsTest(unittest.TestCase):

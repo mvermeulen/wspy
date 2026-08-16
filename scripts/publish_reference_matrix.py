@@ -372,8 +372,7 @@ def resolve_report_root(args):
 
 
 def local_cells_for_suite(report_root_path, suite):
-    all_cells = joblib.enumerate_reference_matrix_cells(
-        report_root_path, web_export.PHORONIX_DEST_ROOT, web_export.CPU2026_DEST_ROOT)
+    all_cells = joblib.enumerate_reference_matrix_cells(report_root_path, web_export.dest_roots())
     return [c for c in all_cells if c["suite"] == suite]
 
 

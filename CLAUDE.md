@@ -204,6 +204,32 @@ comma-terminated** (a bare `fprintf` with no trailing comma silently fuses into 
 value row must be emitted **unconditionally** — gating it behind a counter-value check (rather than only
 vendor/group applicability) means a permission-denied run silently drops columns the header still claims.
 
+**Run identity conventions:** a "run" is identified three different ways across this codebase, each for
+a real, load-bearing reason — documented once here (INVESTIGATION.md 4.4(a) "CLI flag/identity
+consistency pass") rather than re-derived per tool:
+
+1. **Directory-level run-id** — the `<run-id>` path segment `wspy-run` assigns once per invocation
+   (`<outdir>/<suite>/<benchmark>/<run-id>/`, `wspy-run`'s own `RUN_ID`). Identifies one *session*, which
+   can span several passes (e.g. a `counters` pass and a `tree` pass), each its own separate `wspy`
+   process.
+2. **Store/run-index run_id** — a *different* value, generated independently by each individual `wspy`
+   process at its own start time (`run_index.c`'s `format_run_id()`), unique only per `(hostname,
+   run_id)` (`store.c`'s own upsert key). A `wspy-run` session with N passes produces N of these, not
+   one — a directory-level run-id from (1) is never itself a store run_id, so code that has a run
+   *directory* and needs its store row(s) must expand one into the other
+   (`wspy-testpoint`'s `resolve_store_pass_rows()`), never assume equality. `wspy-summary --run-id
+   <hostname>:<run_id>` filters on this value, exactly, and is the only reliable way to select one
+   specific run when a redo shares identical command text with the run it's redoing (see next point) —
+   this is what `wspy-testpoint aggregate` uses to turn a resolved stats-pool run set into statistics.
+3. **`--hostname`/`--command` matching** — substring or exact-text filtering (`wspy-store` queries, the
+   web UI's run-history search) built for a human browsing/searching, not for disambiguating a specific
+   run. It cannot tell a redo of a bad run apart from the run it's redoing when both share identical
+   command text and hostname — the single most common reason (2)'s exact form exists at all. Fine for
+   "find candidate runs to look at," wrong for "aggregate exactly these runs and no others."
+
+Net: prefer (2) (or (1), expanded to its (2) rows) whenever a specific, unambiguous run set matters;
+(3) is a browsing/search convenience only.
+
 ## Common edits
 
 See `doc/CONTRIBUTOR_GUIDE.md` for the walkthrough version of this section — same steps, with the *why*

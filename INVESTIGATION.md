@@ -129,6 +129,36 @@ its GitHub release body is the notes at `https://github.com/mvermeulen/wspy/rele
 ## Shipped since 4.3.1
 Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-prep time.
 
+- CLI flag/identity consistency pass — closing the item out entirely (both audit findings addressed).
+  (1) Dest-root flags: `web/joblib.py` gains a `TEST_POINT_SUITES` registry (`{"phoronix": {list, find,
+  split}, "cpu2026": {...}}`) that `resolve_test_identity()`/`enumerate_reference_matrix_cells()` now
+  dispatch through instead of a suite-specific if/elif ladder, and both now take one generic
+  `dest_roots` `{suite: path}` dict in place of one positional `<suite>_dest_root` parameter per
+  suite — a third suite is one new registry entry, not a new function parameter plus a new elif branch
+  in every caller. `wspy-testpoint` gains a repeatable `--dest-root SUITE=PATH` CLI flag as the matching
+  extension point; `--phoronix-dest-root`/`--cpu2026-dest-root` are kept exactly as they are (already
+  documented in README.md, already covered by `tests/testpoint_smoke.sh`'s PR #196 regression test) as
+  convenience shorthands for `--dest-root phoronix=PATH`/`--dest-root cpu2026=PATH`, merged into the
+  same dict by a new `resolve_dest_roots()` (`--dest-root` wins on conflict, being the more specific,
+  later-parsed form). `web/server.py`'s own `PHORONIX_DEST_ROOT`/`CPU2026_DEST_ROOT` constants now
+  source from `joblib.DEFAULT_DEST_ROOTS` (previously an independent, duplicate REPO_ROOT-relative
+  computation) — its own dest_roots() dict-builder is a function, not a cached module-level dict,
+  since `test_reference_matrix.py`'s existing `patch("server.PHORONIX_DEST_ROOT", ...)` convention
+  only takes effect on a name lookup made *after* the patch applies. (2) Run-identity conventions:
+  CLAUDE.md gains a "Run identity conventions" subsection documenting, once, the three ways a run gets
+  identified across this codebase and why each exists — `wspy-run`'s own directory-level `run-id`
+  (one per session, can span several passes) vs. the store/run-index `run_id` each individual `wspy`
+  process generates independently at its own start time (`run_index.c`'s `format_run_id()`, unique per
+  `(hostname, run_id)`, the value `wspy-summary --run-id <hostname>:<run_id>` filters on, and the only
+  reliable way to disambiguate a redo from what it's redoing) vs. `--hostname`/`--command` substring
+  matching (browsing/search convenience only, already documented in `summary.c`/`wspy-testpoint`'s own
+  docstrings but never before cross-referenced from one place a user would actually find it).
+  README.md's `wspy-testpoint` section now points to CLAUDE.md's new subsection instead of only
+  restating the rationale locally. New `tests/testpoint_smoke.sh` regression coverage proving
+  `--dest-root phoronix=PATH` resolves identically to `--phoronix-dest-root` against a second
+  report-root (so it can't pass by coincidentally reusing the first test's already-written runs.json);
+  `web/test_joblib.py`'s existing `ResolveTestIdentityTest`/`EnumerateReferenceMatrixCellsTest` suites
+  updated to the new dict-taking signatures, all passing unchanged in behavior.
 - One-click end-to-end pipeline — the → *published* leg, closing the item out entirely (both slices
   now shipped; see the ingest-chaining slice entry below). The report page's "Publish test-point
   report" button gains an opt-in "also push the report-root to its remote once committed" checkbox
@@ -894,37 +924,27 @@ have accumulated roughly ten independent manual-trigger actions (generate proces
 narrative analysis, characterization badge, similarity panel, apply default curation, add freeform
 curation block, export, publish to WordPress, publish test-point report, publish reference matrix,
 discover from WordPress), each its own card added the moment its capability shipped, with nothing on
-the page indicating order or which are "normally do this" vs. optional; and per-suite flags
-(`--phoronix-dest-root`/`--cpu2026-dest-root`) and run-identity conventions (`--run-id` alone vs.
-`--hostname`+`--command` vs. `--hostname`+`--run-id`, depending which tool) have drifted apart tool by
-tool despite resolving near-identical shapes underneath.
+the page indicating order or which are "normally do this" vs. optional.
 
-1. CLI flag/identity consistency pass. Two concrete inconsistencies found in the 2026-08-07 audit: (1)
-   `--phoronix-dest-root`/`--cpu2026-dest-root` are separate flags even though both suites resolve
-   through the identical `find_materialized_*_test_point()` shape — every future suite added this way
-   means another bespoke flag pair rather than one generic mechanism; (2) a run is identified three
-   different ways depending which tool you're using, for a real reason (`wspy-summary`'s own rationale:
-   two runs can share identical command+hostname when one is a redo of the other) but with that rule
-   undocumented as a single cross-tool convention anywhere a user would find it before hitting the
-   surprise. Audit and, where safe, unify; where a difference is load-bearing, document it once in one
-   place rather than re-deriving it per tool.
+All 4.4(a) items from that audit have now shipped — see "Shipped since 4.3.1" below for the most
+recent one (CLI flag/identity consistency pass).
 
 **4.4(b) — GPU support:**
 
-2. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
+1. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
    heavier, optional trace-rich profile, same "default vs debug profile" pattern as IBS.
-3. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds on
+2. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds on
    4.2's GPU fusion layer (`gpu_fusion.c`, `--gpu-metrics`) for consistent per-metric data.
-4. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`, extended
+3. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`, extended
    once GPU runs feed the same index.
-5. Intel `i915` GPU PMU — an Intel-native busy/frequency alternative to the current AMD-sysfs/NVML-only
+4. Intel `i915` GPU PMU — an Intel-native busy/frequency alternative to the current AMD-sysfs/NVML-only
    GPU support, `perf_event_open()`-based rather than a vendor SMI/sysfs scrape. See the Intel hybrid /
    counter-grouping deep-dive for detail (the rest of that deep-dive's counter wishlist is non-GPU,
    tracked in 4.5).
 
 **4.4(c) — Phoronix suite build-out:**
 
-6. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
+5. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
    CSVs into per-test-case/per-trial datasets by correlating run manifests with PTS results,
    composite.xml, and log timestamps. See
    [phoronix_hook_investigation.md](file:///home/mev/source/wspy/doc/phoronix_hook_investigation.md)
@@ -934,12 +954,12 @@ tool despite resolving near-identical shapes underneath.
    `doc/INVESTIGATION_ARCHIVE.md`'s "Phoronix `result_notifier` hook capture" write-up. **Still open:**
    teaching `wspy-phoronix-segment.py` to prefer `pts_hooks.log` over composite.xml/log-timestamp
    correlation, and the segmentation tool itself.
-7. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
+6. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
    (`web/joblib.py`/`wspy-phoronix-import`/web launcher's Phoronix tab — see "What shipped in 4.3" for
    what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
    across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
    point, launched by a human clicking Run) exists today.
-8. Materialize test points directly from installed/downloaded PTS test profiles, with no prior PTS
+7. Materialize test points directly from installed/downloaded PTS test profiles, with no prior PTS
    run/import round-trip. Today's only materialization paths (`wspy-phoronix-import`, "What shipped in
    4.3") both require *evidence a specific option combination already ran* (an installed
    suite-definition.xml or a composite.xml result) — there's no path from "this test profile is

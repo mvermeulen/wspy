@@ -3098,56 +3098,59 @@ def parse_summary_csv(text):
     return [dict(zip(header, row)) for row in rows[1:] if len(row) == len(header)]
 
 
-def resolve_test_identity(suite, benchmark, phoronix_dest_root, cpu2026_dest_root=None):
-    """Returns (test, test_point, warning_or_None). For suite "phoronix", `benchmark` (wspy-run's own
-    naming) already equals a materialized test point's "identity" (bare_name-options_slug,
-    materialize_phoronix_test_point() above) -- split it back into (bare_name, options_slug) via
-    find_materialized_phoronix_test_point(), rather than re-deriving it some other way. For suite
-    "cpu2026", `benchmark` similarly equals a registered point's "identity" (bench-tag-tune,
-    list_materialized_cpu2026_points() above) when cpu2026_dest_root is given -- split back into
-    (bench, "tag-tune") via find_materialized_cpu2026_point(). cpu2026_dest_root defaults to None
-    (rather than a real default path the way phoronix_dest_root doesn't) so existing callers that
-    never resolve cpu2026 identities (e.g. wspy-testpoint, which only handles Phoronix today) keep
-    their exact prior behavior without having to pass anything new. Any other suite, a phoronix
-    benchmark that doesn't match any materialized point, or a cpu2026 benchmark with no
-    cpu2026_dest_root given/no match, falls back to test=benchmark, test_point="default" per
-    doc/REPORT_HIERARCHY.md's own convention for suites with no option axis -- degrade, don't fail,
-    same idiom used throughout this codebase."""
-    if suite == "phoronix":
-        entry = find_materialized_phoronix_test_point(phoronix_dest_root, benchmark)
+def resolve_test_identity(suite, benchmark, dest_roots):
+    """Returns (test, test_point, warning_or_None). `dest_roots` is a {suite: materialized-dest-root}
+    dict (typically DEFAULT_DEST_ROOTS, or a caller's CLI-provided override of it) -- a single generic
+    parameter in place of one bespoke `<suite>_dest_root` parameter per suite, so a third suite needs
+    no new parameter here and no new elif branch below, only a new TEST_POINT_SUITES entry. A suite
+    missing from `dest_roots` (or mapped to a falsy path) behaves exactly as if it were never given at
+    all, so an existing caller that only ever populates dest_roots={"phoronix": ...} keeps its exact
+    prior behavior for every other suite without having to pass anything new.
+
+    For suite "phoronix", `benchmark` (wspy-run's own naming) already equals a materialized test
+    point's "identity" (bare_name-options_slug, materialize_phoronix_test_point() above) -- split it
+    back into (bare_name, options_slug) via TEST_POINT_SUITES["phoronix"]["find"], rather than
+    re-deriving it some other way. For suite "cpu2026", `benchmark` similarly equals a registered
+    point's "identity" (bench-tag-tune, list_materialized_cpu2026_points() above) -- split back into
+    (bench, "tag-tune") via TEST_POINT_SUITES["cpu2026"]["find"]. Any other suite, or a benchmark that
+    doesn't match any materialized point under its suite's dest_root, falls back to test=benchmark,
+    test_point="default" per doc/REPORT_HIERARCHY.md's own convention for suites with no option axis
+    -- degrade, don't fail, same idiom used throughout this codebase."""
+    resolver = TEST_POINT_SUITES.get(suite)
+    dest_root = (dest_roots or {}).get(suite)
+    if resolver and dest_root:
+        entry = resolver["find"](dest_root, benchmark)
         if entry:
-            return entry["bare_name"], entry["options_slug"], None
+            test, test_point = resolver["split"](entry)
+            return test, test_point, None
         return benchmark, "default", (
-            "no materialized Phoronix test point found with identity %r under %r -- "
-            "falling back to test=%r, test_point=\"default\"" % (benchmark, phoronix_dest_root, benchmark))
-    if suite == "cpu2026" and cpu2026_dest_root:
-        entry = find_materialized_cpu2026_point(cpu2026_dest_root, benchmark)
-        if entry:
-            return entry["bench"], f"{entry['tag']}-{entry['tune']}", None
-        return benchmark, "default", (
-            "no materialized cpu2026 benchmark point found with identity %r under %r -- "
-            "falling back to test=%r, test_point=\"default\"" % (benchmark, cpu2026_dest_root, benchmark))
+            "no materialized %s test point found with identity %r under %r -- "
+            "falling back to test=%r, test_point=\"default\"" % (suite, benchmark, dest_root, benchmark))
     return benchmark, "default", None
 
 
-def enumerate_reference_matrix_cells(report_root_path, phoronix_dest_root, cpu2026_dest_root):
+def enumerate_reference_matrix_cells(report_root_path, dest_roots):
     """INVESTIGATION.md 4.3 Tier 3 item 5's reference-matrix database row/column enumeration: every
-    (suite, test, test_point, machine) combination that has both a materialized test point (Phoronix
-    or cpu2026 -- resolve_test_identity()'s own two suites) and an already-written
+    (suite, test, test_point, machine) combination that has both a materialized test point (any suite
+    registered in TEST_POINT_SUITES) and an already-written
     <report-root>/<suite>/<test>/<test_point>/<machine>/runs.json (wspy-testpoint select-runs). A
     materialized test point with no runs.json yet for a given machine contributes no cell for that
     machine -- there is nothing to aggregate -- matching item 5's design choice to reuse
     wspy-testpoint's already-curated stats-pool role selection rather than re-deriving a run set
-    directly from the store. Returns a list of {suite, test, test_point, machine, benchmark} dicts
-    (benchmark is the --benchmark identity a caller needs for `wspy-testpoint aggregate`/`render`),
-    sorted by (suite, test, test_point, machine)."""
+    directly from the store. `dest_roots` is a {suite: dest-root} dict, same convention as
+    resolve_test_identity() -- a suite missing from it (or mapped to a falsy path) contributes no
+    points, same as before this took one dest_root argument per suite. Returns a list of
+    {suite, test, test_point, machine, benchmark} dicts (benchmark is the --benchmark identity a
+    caller needs for `wspy-testpoint aggregate`/`render`), sorted by (suite, test, test_point,
+    machine)."""
     points = []
-    if phoronix_dest_root:
-        points += [("phoronix", e["identity"], e["bare_name"], e["options_slug"])
-                   for e in list_materialized_phoronix_test_points(phoronix_dest_root)]
-    if cpu2026_dest_root:
-        points += [("cpu2026", e["identity"], e["bench"], f"{e['tag']}-{e['tune']}")
-                   for e in list_materialized_cpu2026_points(cpu2026_dest_root)]
+    for suite, resolver in TEST_POINT_SUITES.items():
+        dest_root = (dest_roots or {}).get(suite)
+        if not dest_root:
+            continue
+        for e in resolver["list"](dest_root):
+            test, test_point = resolver["split"](e)
+            points.append((suite, e["identity"], test, test_point))
 
     cells = []
     for suite, identity, test, test_point in points:
@@ -3718,6 +3721,39 @@ def find_materialized_cpu2026_point(dest_root, identity):
         if entry["identity"] == identity:
             return entry
     return None
+
+
+# INVESTIGATION.md 4.4(a) "CLI flag/identity consistency pass": the dispatch table
+# resolve_test_identity()/enumerate_reference_matrix_cells() key off, instead of a suite-specific
+# if/elif ladder in each. Phoronix and cpu2026 materialize test points into differently-shaped
+# directory trees with different metadata (list_materialized_phoronix_test_points()'s "installed" vs.
+# list_materialized_cpu2026_points()'s "specdir"/"built"/"hosts") -- that part is genuinely
+# suite-specific and not worth forcing into one shape. What *is* identical across both is the outer
+# contract: given a dest_root and an "identity" string, find the matching materialized entry and
+# split it back into (test, test_point); this table is that contract made explicit so a third suite
+# is one new entry here (plus its own list_materialized_*()/find_materialized_*() pair) rather than a
+# new dest_root function parameter, a new bespoke --foo-dest-root CLI flag, and a new elif branch in
+# every caller. Placed after both suites' find_materialized_*() functions since a module-level dict
+# literal is evaluated at import time, top-to-bottom -- referencing a not-yet-defined function here
+# would be a NameError, unlike referencing this dict *by name* from inside a function body below,
+# which only resolves at call time (after the whole module has finished loading).
+TEST_POINT_SUITES = {
+    "phoronix": {
+        "list": list_materialized_phoronix_test_points,
+        "find": find_materialized_phoronix_test_point,
+        "split": lambda entry: (entry["bare_name"], entry["options_slug"]),
+    },
+    "cpu2026": {
+        "list": list_materialized_cpu2026_points,
+        "find": find_materialized_cpu2026_point,
+        "split": lambda entry: (entry["bench"], "%s-%s" % (entry["tag"], entry["tune"])),
+    },
+}
+
+DEFAULT_DEST_ROOTS = {
+    "phoronix": os.path.join(REPO_ROOT, "workload", "phoronix"),
+    "cpu2026": os.path.join(REPO_ROOT, "workload", "cpu2026"),
+}
 
 
 def cpu2026_test_point_wp_content(entry):

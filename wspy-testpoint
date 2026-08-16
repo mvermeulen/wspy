@@ -69,9 +69,6 @@ import report_root  # noqa: E402 -- shared report-root git plumbing, extracted f
 RUNS_JSON_NAME = "runs.json"
 RUNS_JSON_SCHEMA_VERSION = "1.0"
 ROLES = ("stats-pool", "supplementary", "excluded")
-DEFAULT_PHORONIX_DEST_ROOT = os.path.join(joblib.REPO_ROOT, "workload", "phoronix")
-DEFAULT_CPU2026_DEST_ROOT = os.path.join(joblib.REPO_ROOT, "workload", "cpu2026")  # matches web/server.py's
-                                                                                    # own CPU2026_DEST_ROOT
 DEFAULT_OUTPUT_ROOT = os.path.join(SCRIPT_DIR, "web", "runs")  # matches web/server.py's own default
 DEFAULT_STORE_DB = os.path.join(DEFAULT_OUTPUT_ROOT, "store.db")  # matches web/server.py's own default
 SECTIONS_DIR_NAME = "sections"
@@ -105,15 +102,14 @@ def resolve_test_point_paths(args):
     """Returns (report_root_path, test, test_point, runs_json_path) -- the resolution both
     select-runs and aggregate need to find one test point's persisted runs.json, factored out so
     the two subcommands can't drift into slightly different path-construction logic for the same
-    file. Passes --cpu2026-dest-root through to resolve_test_identity() same as --phoronix-dest-root
-    always has -- omitting it (as this call did until now) silently falls through to the generic
-    test=benchmark,test_point="default" fallback for every cpu2026 identity, since that fallback is
-    resolve_test_identity()'s documented behavior for a cpu2026 benchmark with no dest_root given at
-    all, not just one with no matching registered point (this is what PR #193 fixed for web/server.py's
-    single-run publish path; wspy-testpoint's own CLI never got the same follow-up)."""
+    file. Passes resolve_dest_roots(args)'s merged {suite: dest_root} dict through to
+    resolve_test_identity() -- omitting a suite from it (as this call did for cpu2026 until PR #193/
+    #196) silently falls through to the generic test=benchmark,test_point="default" fallback for every
+    identity in that suite, since that fallback is resolve_test_identity()'s documented behavior for a
+    suite with no dest_root given at all, not just one with no matching registered point."""
     report_root_path = os.path.abspath(resolve_report_root(args))
     test, test_point, warning = joblib.resolve_test_identity(
-        args.suite, args.benchmark, args.phoronix_dest_root, args.cpu2026_dest_root)
+        args.suite, args.benchmark, resolve_dest_roots(args))
     if warning:
         print("wspy-testpoint: warning: %s" % warning, file=sys.stderr)
     test_point_dir = os.path.join(report_root_path, args.suite, test, test_point, args.machine)
@@ -794,10 +790,17 @@ def cmd_characterize(args):
 
 
 def add_test_point_args(parser):
-    """--suite/--benchmark/--machine/--report-root/--phoronix-dest-root/--cpu2026-dest-root -- shared
-    by every subcommand that needs to resolve a test point's report-root path
+    """--suite/--benchmark/--machine/--report-root/--phoronix-dest-root/--cpu2026-dest-root/
+    --dest-root -- shared by every subcommand that needs to resolve a test point's report-root path
     (resolve_test_point_paths()), factored out so select-runs and aggregate can't drift into slightly
-    different flag definitions for the same inputs."""
+    different flag definitions for the same inputs. --phoronix-dest-root/--cpu2026-dest-root are kept
+    as-is (rather than removed) since they're already documented in README.md and exercised by
+    tests/testpoint_smoke.sh's own regression coverage for PR #196 -- INVESTIGATION.md 4.4(a)'s "CLI
+    flag/identity consistency pass" adds the generic --dest-root SUITE=PATH alongside them (repeatable,
+    resolve_dest_roots() below merges all three forms into one {suite: dest_root} dict) as the
+    extension point a *third* suite plugs into, rather than growing this function a new bespoke flag
+    per suite forever -- see web/joblib.py's TEST_POINT_SUITES for the matching registry on the
+    resolution side."""
     parser.add_argument("--suite", required=True, help="suite name, e.g. phoronix, cpu2026")
     parser.add_argument("--benchmark", required=True,
                          help="benchmark name (wspy-run's own naming) -- for phoronix, this is a "
@@ -809,10 +812,39 @@ def add_test_point_args(parser):
     parser.add_argument("--report-root", default=None,
                          help="report-root git clone path (default: wspy-publish's configured "
                               "report_root, else %s)" % report_root.DEFAULT_REPORT_ROOT)
-    parser.add_argument("--phoronix-dest-root", default=DEFAULT_PHORONIX_DEST_ROOT,
-                         help="materialized Phoronix test-point directory (default: %(default)s)")
-    parser.add_argument("--cpu2026-dest-root", default=DEFAULT_CPU2026_DEST_ROOT,
-                         help="materialized cpu2026 benchmark-point directory (default: %(default)s)")
+    parser.add_argument("--phoronix-dest-root", default=None,
+                         help="materialized Phoronix test-point directory (default: %s) -- shorthand "
+                              "for --dest-root phoronix=PATH" % joblib.DEFAULT_DEST_ROOTS["phoronix"])
+    parser.add_argument("--cpu2026-dest-root", default=None,
+                         help="materialized cpu2026 benchmark-point directory (default: %s) -- shorthand "
+                              "for --dest-root cpu2026=PATH" % joblib.DEFAULT_DEST_ROOTS["cpu2026"])
+    parser.add_argument("--dest-root", action="append", default=[], metavar="SUITE=PATH",
+                         help="materialized-test-point directory for an arbitrary suite (repeatable), "
+                              "e.g. --dest-root phoronix=/other/path -- the generic form of "
+                              "--phoronix-dest-root/--cpu2026-dest-root above; a new suite beyond "
+                              "phoronix/cpu2026 is only ever reachable this way")
+
+
+def resolve_dest_roots(args):
+    """Merges joblib.DEFAULT_DEST_ROOTS with any --phoronix-dest-root/--cpu2026-dest-root overrides
+    and repeatable --dest-root SUITE=PATH entries (in that precedence order -- --dest-root wins,
+    since it's the more specific, later-parsed override for the same suite) into the one
+    {suite: dest_root} dict resolve_test_identity()/enumerate_reference_matrix_cells() actually take.
+    The single place all three input forms funnel through, so a new suite only ever needs
+    --dest-root plus a web/joblib.py TEST_POINT_SUITES entry, never new merge logic here too."""
+    dest_roots = dict(joblib.DEFAULT_DEST_ROOTS)
+    if args.phoronix_dest_root:
+        dest_roots["phoronix"] = args.phoronix_dest_root
+    if args.cpu2026_dest_root:
+        dest_roots["cpu2026"] = args.cpu2026_dest_root
+    for entry in args.dest_root:
+        if "=" not in entry:
+            print("wspy-testpoint: warning: ignoring malformed --dest-root %r (want SUITE=PATH)" % entry,
+                  file=sys.stderr)
+            continue
+        suite, path = entry.split("=", 1)
+        dest_roots[suite] = path
+    return dest_roots
 
 
 def main():
