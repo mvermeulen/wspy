@@ -970,6 +970,31 @@ recent one (CLI flag/identity consistency pass).
    product), and GPU/backend-shaped axes are flagged for explicit confirmation rather than defaulted.
    Web UI: a third Phoronix-tab source alongside the existing installed-suite/OpenBenchmarking-URL
    import sources.
+8. Published-article/chart-URL-seeded test-point discovery. Depends on item 7 above for its multi-axis
+   case — start that first. A published Phoronix article's individual chart-result URLs (e.g.
+   `phoronix.com/benchmark/result/<article-slug>/<chart-slug>.svgz`, right-click "open in new tab" on
+   any chart in an article) each identify one (test, option-combination) the article ran, in a
+   human-readable slug — but the article page itself is not fetchable server-side (confirmed live:
+   `phoronix.com` returns a Cloudflare bot-challenge/403 to a direct request, the same posture
+   `fetch_openbenchmarking_suite_xml()`'s own docstring already documents for `openbenchmarking.org`),
+   so there's no way to auto-fetch the article's real result XML from a pasted URL the way `--result`
+   does for an openbenchmarking.org link. Design: (a) accept one or more pasted chart URLs (paste-box,
+   web UI and/or CLI), parse each into a bare test name (the slug's leading segment, e.g.
+   `flexible-io-tester`) plus an options-slug hint (the rest, e.g. `rand-read-io_uring-no-4kb`); (b)
+   resolve the bare name against installed/known local test profiles by matching their own `<Title>`
+   (slugified the same way `slugify_phoronix_arguments()` already does elsewhere in this codebase —
+   not proven byte-identical to Phoronix's own chart-naming scheme, so this is a best-effort match,
+   never a guaranteed one); (c) a zero/single-axis match materializes directly, no guessing involved;
+   a multi-axis match generates every candidate tuple's `Description` string (item 7's composer),
+   slugifies each, and ranks by similarity to the pasted options-slug hint — surfaced as ranked
+   suggestions for a human to confirm with one click, never auto-picked, same "never auto-expand/
+   bulk-select" posture item 7 already established; (d) a test with no local profile match at all (not
+   installed, or a title match too weak to trust) surfaces as "unresolved — install `phoronix-test-suite
+   install <test>` first" rather than silently dropping it. Steps 3-5 of the original framing (installed/
+   already-run indicators, an "open in Run tab" action for not-yet-run points, and these test points
+   showing up in the same Phoronix-tab inventory as everything else) need no new code at all — they're
+   `list_materialized_phoronix_test_points()`, the existing Run-tab action, and
+   `materialize_phoronix_test_point()` respectively, all already shared by every other import source.
 
 ## 4.5 priorities
 Goal: lower priority than 4.4 but still real, wanted work — pick up once 4.4's three focus areas are
