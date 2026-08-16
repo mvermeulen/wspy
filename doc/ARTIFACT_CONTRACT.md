@@ -200,7 +200,11 @@ Field notes:
   metadata flags rather than derived from `counter_mask`/`aflag`/etc. `preset`/`configuration` are
   `null` and `options` is `[]` for a plain direct `wspy` invocation with none of those flags given --
   this is the common case, not a gap. `options` is an array of `{ "name": ..., "value": ... }` pairs
-  in launcher vocabulary (e.g. `"groups"`/`"topdown,cache2"`, `"interval_secs"`/`"1"`), a different
+  in launcher vocabulary (e.g. `"groups"`/`"topdown,cache2"`, `"interval_secs"`/`"1"`) -- every
+  `wspy-run`-launched pass also always carries a `"pass_flags_hash"` entry (item 6 Phase B,
+  INVESTIGATION.md 4.4(a) "Detect and resume interrupted wspy-run profiles": a hash of that pass's
+  own flags + `--affinity` + the workload argv, compared against a later `wspy-run --resume`
+  invocation's own recomputed hash to decide whether that pass can be skipped) -- a different
   and lower-level thing than the flat `options` block below (`counter_mask` as a hex bitmask) --
   read both together to answer "how was this run launched" (`configuration_provenance`) vs. "what did
   it actually collect" (`options`/`counter_coverage`). See `wspy-run`'s `run_pass()` and
@@ -850,11 +854,15 @@ own `--manifest` output next to it) is a small, unversioned-by-C-header JSON obj
 }
 ```
 
-- `passes[].status` is `"ok"` or `"wspy-error"` — this is `wspy-run`'s own per-pass launch status
-  (did `wspy` itself run and exit 0), the same distinction `wspy-run`'s own stdout already makes
-  (`[name] done` vs. `[name] wspy error`). It is **not** the workload command's exit status — that
-  lives in the pass's own `--manifest` file's `exit_status` (see "Manifest" above), one file open
-  away via `passes[].manifest`.
+- `passes[].status` is `"ok"`, `"wspy-error"`, or `"skipped"` — this is `wspy-run`'s own per-pass
+  launch status (did `wspy` itself run and exit 0), the same distinction `wspy-run`'s own stdout
+  already makes (`[name] done` vs. `[name] wspy error`). It is **not** the workload command's exit
+  status — that lives in the pass's own `--manifest` file's `exit_status` (see "Manifest" above),
+  one file open away via `passes[].manifest`. `"skipped"` is `wspy-run --resume`'s own status
+  (item 6 Phase B, INVESTIGATION.md 4.4(a)): this pass wasn't invoked at all on this run because an
+  earlier, interrupted attempt already completed it cleanly with the exact same configuration —
+  its `output`/`manifest` files are that earlier attempt's, unchanged. Treated the same as `"ok"`
+  by every reader of overall run status (`run_status_from_passes()`, `web/server.py`).
 - `passes[].manifest` is `null` for a pass that ran without `--manifest-dir` (not the default when
   `--suite`/`--benchmark` are given, but possible if a config file or future option disables it).
 - `layout_version` describes this document's own shape, following the same MAJOR/MINOR/PATCH

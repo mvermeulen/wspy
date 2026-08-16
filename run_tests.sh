@@ -877,6 +877,15 @@ if ! ./tests/wspy_queue_smoke.sh; then
     exit 1
 fi
 
+# wspy-run --resume smoke tests (item 6 Phase B, INVESTIGATION.md 4.4(a) "Detect and resume
+# interrupted wspy-run profiles"): same fake-wspy-binary approach as wspy_queue_smoke.sh above,
+# so this also needs no build/GPU axis and no root/perf access -- run once here.
+echo "Testing wspy-run --resume smoke tests..."
+if ! ./tests/wspy_run_resume_smoke.sh; then
+    echo "FAIL: wspy-run --resume smoke tests failed"
+    exit 1
+fi
+
 # wspy-testpoint run role-assignment smoke tests (INVESTIGATION.md's
 # "Test-point-level curated performance-summary README deep-dive"): fake run/manifest fixtures and a
 # local bare git repo standing in for the report-root remote, so this needs no network access and no

@@ -240,6 +240,12 @@ command lines every time (see `workload/*/run_test.sh` for what that used to loo
 # own output. Composing two builtin profiles with a comma runs both in the same run directory.
 ./wspy-run --suite phoronix --benchmark coremark -o results --run-index results/phoronix/index.jsonl \
     deep-cpu,tree-heavy -- phoronix-test-suite batch-run coremark
+
+# Resume an interrupted unified-layout run (e.g. after a host crash mid-batch): re-derives
+# --suite/--benchmark/--run-id from the existing run directory, skips any pass that already
+# completed cleanly with this exact configuration, and only reruns the rest.
+./wspy-run --resume results/phoronix/coremark/20260816T020617 deep-cpu,tree-heavy -- \
+    phoronix-test-suite batch-run coremark
 ```
 
 Builtin profiles: `quick` (one fast IPC+system pass), `deep-cpu` (the multi-pass AMD counter sweep
