@@ -3577,6 +3577,72 @@ def copy_phoronix_test_point_to_local_suite(test_point_dir, identity, user_data_
     return dest_path
 
 
+def unregister_phoronix_test_point(dest_root, test_point_dir, ledger_bin="wspy-ledger",
+                                    ledger_list_path=None, cwd=None, remove_from_ledger=True,
+                                    user_data_dir=None):
+    """Removes a materialized dest_root/<bare_name>/<options_slug>/ test point -- the Phoronix
+    counterpart to unregister_cpu2026_point(), needed since a point that's never actually going to
+    get run (no Steam account for a game test, a benchmark this host can't build, a materialize-all
+    convenience result nobody wanted after all) previously had no way back out once created.
+
+    Only removes the registration: suite-definition.xml/source.json/the runs/ symlinks that point at
+    real run directories elsewhere under output_root/phoronix/ (the actual run data a symlink targets
+    is never touched, so this is safe even for a point with recorded runs -- same rule
+    unregister_cpu2026_point() follows), the test-suites/local/<identity>/ copy
+    copy_phoronix_test_point_to_local_suite() may have made (best-effort -- a point never used via
+    "Use in Run tab" never had one, that's not an error), and (unless remove_from_ledger=False) the
+    matching `wspy-ledger --remove <identity>` line, since Phoronix points (unlike cpu2026's) are
+    optionally tracked in a wspy-ledger backlog list that has no other way to drop an entry.
+
+    Re-validates test_point_dir the same "don't trust client-supplied paths" way
+    resolve_phoronix_test_point_dir() does (this is a delete, so the check is load-bearing here, not
+    just defensive) rather than assuming the caller already resolved it -- deliberately calls that
+    function itself instead of duplicating its logic, so the two never drift apart on what counts as
+    a real materialized test point.
+
+    Additionally cleans up a now-empty <bare_name>/ directory (including its own README.md, shared
+    across every options_slug under it, if this was the last one) so an unregister doesn't leave an
+    empty shell behind -- same idiom unregister_cpu2026_point() uses one level further down its own
+    three-level layout.
+
+    Returns None if test_point_dir didn't resolve to a real materialized point (nothing removed);
+    otherwise {"identity": str, "ledger": add_phoronix_test_point_to_ledger()'s own return shape or
+    None if remove_from_ledger was False, "local_suite_removed": bool}."""
+    real_dir = resolve_phoronix_test_point_dir(dest_root, test_point_dir)
+    if not real_dir:
+        return None
+
+    options_slug = os.path.basename(real_dir)
+    bare_dir = os.path.dirname(real_dir)
+    bare_name = os.path.basename(bare_dir)
+    identity = f"{bare_name}-{options_slug}"
+
+    local_suite_dir = os.path.join(user_data_dir or phoronix_user_data_dir(), "test-suites", "local", identity)
+    local_suite_removed = os.path.isdir(local_suite_dir)
+    if local_suite_removed:
+        shutil.rmtree(local_suite_dir)
+
+    shutil.rmtree(real_dir)
+
+    if os.path.isdir(bare_dir):
+        remaining = os.listdir(bare_dir)
+        if remaining in ([], ["README.md"]):
+            readme_path = os.path.join(bare_dir, "README.md")
+            if os.path.isfile(readme_path):
+                os.remove(readme_path)
+            os.rmdir(bare_dir)
+
+    ledger_result = None
+    if remove_from_ledger:
+        list_path = ledger_list_path or os.path.join(dest_root, "backlog.txt")
+        argv = [ledger_bin, "--remove", identity, "--list", list_path]
+        rc, output, timed_out = run_sync(argv, cwd=cwd, timeout=15)
+        ledger_result = {"command": shell_preview(argv), "exit_code": rc,
+                          "output": (output or "").strip(), "timed_out": timed_out}
+
+    return {"identity": identity, "ledger": ledger_result, "local_suite_removed": local_suite_removed}
+
+
 def link_phoronix_test_point_run(test_point_dir, run_id, rundir):
     """Best-effort: symlinks <test_point_dir>/runs/<run_id> -> rundir (an
     absolute path), so a run launched against a materialized test point is

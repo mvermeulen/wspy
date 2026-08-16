@@ -59,6 +59,21 @@ mutually exclusive:
                            badges, never a filter) and exit -- no
                            materialization, use before --from-installed
                            to see valid --option values.
+  --unregister <dir-or-identity>  remove a materialized test point --
+                           either its directory (as --list-materialized
+                           --json's "dir" field gives) or its bare
+                           identity string ("<test>-<options>", as
+                           --list-materialized's own TEST/OPTIONS columns
+                           combine). Only removes the registration
+                           (suite-definition.xml/source.json/the runs/
+                           symlinks, any test-suites/local/ copy, and the
+                           wspy-ledger backlog line unless --no-ledger) --
+                           real run data a runs/ symlink points at is
+                           never touched, so this is safe even for a
+                           point with recorded runs. For a point that's
+                           never actually going to run (no Steam account
+                           for a game test, a benchmark this host can't
+                           build, ...).
 
 All the actual parsing/materialization/wspy-ledger-integration logic lives
 in web/joblib.py (import_phoronix_test_points() and friends), shared with
@@ -233,6 +248,10 @@ def main():
     src.add_argument("--list-options", metavar="TEST_ID",
                       help="list TEST_ID's option axes/entries (with GPU/backend and 'looks "
                            "buildable' hints) and exit -- no source needed, use before --from-installed")
+    src.add_argument("--unregister", metavar="DIR-OR-IDENTITY",
+                      help="remove a materialized test point (its directory, or its bare "
+                           "'<test>-<options>' identity string) -- only the registration, real run "
+                           "data is untouched; safe even with recorded runs")
     ap.add_argument("--option", action="append", default=[], metavar="IDENTIFIER=ENTRY-NAME",
                      help="one axis choice for --from-installed (repeatable, one per axis); "
                           "ENTRY-NAME must match --list-options' NAME column exactly, not its VALUE")
@@ -284,6 +303,34 @@ def main():
             print(json.dumps(axes, indent=2))
         else:
             print_options_table(args.list_options, axes)
+        return 0
+
+    if args.unregister:
+        ref = args.unregister
+        test_point_dir = ref if os.path.isdir(ref) else None
+        if test_point_dir is None:
+            entry = joblib.find_materialized_phoronix_test_point(args.dest, ref)
+            test_point_dir = entry["dir"] if entry else None
+        if not test_point_dir:
+            print(f"wspy-phoronix-import: no materialized test point matches {ref!r} as a directory "
+                  f"or an identity under {args.dest!r}", file=sys.stderr)
+            return 2
+        result = joblib.unregister_phoronix_test_point(
+            args.dest, test_point_dir, ledger_bin=args.ledger_bin, ledger_list_path=args.ledger_list,
+            remove_from_ledger=not args.no_ledger)
+        if result is None:
+            print(f"wspy-phoronix-import: {test_point_dir!r} is not a materialized test point directory",
+                  file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            print(f"wspy-phoronix-import: unregistered {result['identity']}", file=sys.stderr)
+            if result["local_suite_removed"]:
+                print("wspy-phoronix-import: also removed its test-suites/local/ copy", file=sys.stderr)
+            if result["ledger"] and result["ledger"]["exit_code"] != 0:
+                print(f"wspy-phoronix-import: warning: wspy-ledger --remove failed "
+                      f"(exit {result['ledger']['exit_code']}): {result['ledger']['output']}", file=sys.stderr)
         return 0
 
     if args.from_installed:

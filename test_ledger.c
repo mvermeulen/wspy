@@ -488,6 +488,65 @@ static void test_count_option_combinations(void){
   printf("PASS: count_option_combinations\n");
 }
 
+static void test_add_and_remove_from_list(void){
+  const char *path = "/tmp/test_ledger_addremove.txt";
+  char *buf;
+  long size;
+
+  printf("Testing add_to_list/remove_from_list...\n");
+
+  remove(path);
+  assert(add_to_list(path,"foo") == 0);
+  assert(add_to_list(path,"bar") == 0);
+  assert(add_to_list(path,"foo") == 0); /* already present -- still success, not duplicated */
+  assert(list_contains_name(path,"foo") == 1);
+  assert(list_contains_name(path,"bar") == 1);
+
+  buf = read_whole_file(path,&size);
+  assert(buf != NULL);
+  assert(!strcmp(buf,"foo\nbar\n")); /* the already-present --add really didn't duplicate the line */
+  free(buf);
+
+  /* A comment line and a tab-separated status/note line -- remove_from_list() must preserve both
+   * verbatim for lines it keeps, and must match the --remove target's *name field only* (ignoring
+   * status/note), the same rule list_contains_name() already uses for --add's own dedup check. */
+  {
+    FILE *fp = fopen(path,"a");
+    assert(fp != NULL);
+    fputs("# a comment line\n",fp);
+    fputs("baz\tunsupported\tno steam account\n",fp);
+    fclose(fp);
+  }
+
+  assert(remove_from_list(path,"bar") == 0);
+  assert(list_contains_name(path,"bar") == 0);
+  assert(list_contains_name(path,"foo") == 1); /* untouched */
+
+  buf = read_whole_file(path,&size);
+  assert(buf != NULL);
+  assert(!strcmp(buf,"foo\n# a comment line\nbaz\tunsupported\tno steam account\n"));
+  free(buf);
+
+  assert(remove_from_list(path,"baz") == 0); /* matches on the name field, ignoring status/note */
+  assert(list_contains_name(path,"baz") == 0);
+
+  buf = read_whole_file(path,&size);
+  assert(buf != NULL);
+  assert(!strcmp(buf,"foo\n# a comment line\n"));
+  free(buf);
+
+  assert(remove_from_list(path,"nope") == 0); /* not present -- still a normal (0) exit */
+  buf = read_whole_file(path,&size);
+  assert(buf != NULL);
+  assert(!strcmp(buf,"foo\n# a comment line\n")); /* unchanged */
+  free(buf);
+
+  assert(remove_from_list("/tmp/test_ledger_addremove_missing.txt","foo") == 0); /* missing file, not an error */
+
+  remove(path);
+  printf("PASS: add_to_list/remove_from_list\n");
+}
+
 static void test_load_unavailable_deps(void){
   const char *path = "/tmp/test_ledger_deps.txt";
   char tags[MAX_UNAVAILABLE_TAGS][MAX_DEP_TAG];
@@ -714,6 +773,7 @@ static void test_scan_phoronix_option_combinations(void){
 int main(void){
   test_parse_ledger_line();
   test_load_workload_list();
+  test_add_and_remove_from_list();
   test_process_run_index_file();
   test_annotation_overrides_inference();
   test_malformed_record_skipped();

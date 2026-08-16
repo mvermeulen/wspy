@@ -2675,6 +2675,115 @@ class ImportPhoronixInstalledPointsTest(unittest.TestCase):
             self.assertIsNotNone(result["error"])
 
 
+def _make_fake_ledger(tmpdir, name="fake-wspy-ledger"):
+    """Same fake-wspy-ledger shell-script convention ImportPhoronixTestPointsTest already
+    established -- echoes its own argv and exits 0, standing in for the real C binary."""
+    path = os.path.join(tmpdir, name)
+    with open(path, "w") as f:
+        f.write("#!/bin/sh\necho \"fake-ledger: $@\"\nexit 0\n")
+    os.chmod(path, 0o755)
+    return path
+
+
+class UnregisterPhoronixTestPointTest(unittest.TestCase):
+    def _materialize(self, dest):
+        point = {"test_id": "pts/build-linux-kernel-1.17.1", "arguments": "defconfig"}
+        return joblib.materialize_phoronix_test_point(point, dest, "file", "/tmp/src.xml")
+
+    def test_removes_point_dir_and_bare_name_dir_when_last_one(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            info = self._materialize(dest)
+            bare_dir = os.path.dirname(info["dir"])
+            self.assertTrue(os.path.isdir(bare_dir))
+
+            result = joblib.unregister_phoronix_test_point(dest, info["dir"], remove_from_ledger=False)
+            self.assertIsNotNone(result)
+            self.assertEqual(result["identity"], info["identity"])
+            self.assertIsNone(result["ledger"])
+            self.assertFalse(result["local_suite_removed"])
+            self.assertFalse(os.path.isdir(info["dir"]))
+            self.assertFalse(os.path.isdir(bare_dir))  # last options_slug under it -- cleaned up too
+
+    def test_keeps_bare_name_dir_when_another_options_slug_remains(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            info1 = self._materialize(dest)
+            point2 = {"test_id": "pts/build-linux-kernel-1.17.1", "arguments": "allmodconfig"}
+            info2 = joblib.materialize_phoronix_test_point(point2, dest, "file", "/tmp/src.xml")
+            bare_dir = os.path.dirname(info1["dir"])
+
+            joblib.unregister_phoronix_test_point(dest, info1["dir"], remove_from_ledger=False)
+            self.assertFalse(os.path.isdir(info1["dir"]))
+            self.assertTrue(os.path.isdir(bare_dir))  # info2's options_slug is still there
+            self.assertTrue(os.path.isdir(info2["dir"]))
+
+    def test_never_touches_run_data_only_the_runs_symlink(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            info = self._materialize(dest)
+            rundir = os.path.join(tmpdir, "output", "phoronix", "x", "run1")
+            os.makedirs(rundir)
+            with open(os.path.join(rundir, "counters.csv"), "w") as f:
+                f.write("data\n")
+            joblib.link_phoronix_test_point_run(info["dir"], "run1", rundir)
+
+            joblib.unregister_phoronix_test_point(dest, info["dir"], remove_from_ledger=False)
+            self.assertFalse(os.path.isdir(info["dir"]))
+            self.assertTrue(os.path.isfile(os.path.join(rundir, "counters.csv")))  # untouched
+
+    def test_removes_local_suite_copy_when_present(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            user_data_dir = os.path.join(tmpdir, "userdata")
+            info = self._materialize(dest)
+            joblib.copy_phoronix_test_point_to_local_suite(info["dir"], info["identity"],
+                                                             user_data_dir=user_data_dir)
+            local_suite_dir = os.path.join(user_data_dir, "test-suites", "local", info["identity"])
+            self.assertTrue(os.path.isdir(local_suite_dir))
+
+            result = joblib.unregister_phoronix_test_point(
+                dest, info["dir"], remove_from_ledger=False, user_data_dir=user_data_dir)
+            self.assertTrue(result["local_suite_removed"])
+            self.assertFalse(os.path.isdir(local_suite_dir))
+
+    def test_no_local_suite_copy_reports_false_not_an_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            info = self._materialize(dest)
+            result = joblib.unregister_phoronix_test_point(
+                dest, info["dir"], remove_from_ledger=False, user_data_dir=os.path.join(tmpdir, "userdata"))
+            self.assertFalse(result["local_suite_removed"])
+
+    def test_removes_from_ledger_via_real_subprocess_call(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            info = self._materialize(dest)
+            fake_ledger = _make_fake_ledger(tmpdir)
+            result = joblib.unregister_phoronix_test_point(dest, info["dir"], ledger_bin=fake_ledger)
+            self.assertIsNotNone(result["ledger"])
+            self.assertEqual(result["ledger"]["exit_code"], 0)
+            self.assertIn("--remove", result["ledger"]["command"])
+            self.assertIn(info["identity"], result["ledger"]["command"])
+
+    def test_unresolvable_dir_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            os.makedirs(dest)
+            self.assertIsNone(joblib.unregister_phoronix_test_point(dest, os.path.join(tmpdir, "not-a-point")))
+
+    def test_dir_outside_dest_root_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            other = os.path.join(tmpdir, "other", "bare", "opts")
+            os.makedirs(other)
+            with open(os.path.join(other, "suite-definition.xml"), "w") as f:
+                f.write("<x/>")
+            os.makedirs(dest)
+            self.assertIsNone(joblib.unregister_phoronix_test_point(dest, other))
+            self.assertTrue(os.path.isdir(other))  # definitely not touched
+
+
 class LinkPhoronixTestPointRunTest(unittest.TestCase):
     def test_creates_symlink_to_rundir(self):
         with tempfile.TemporaryDirectory() as tmpdir:

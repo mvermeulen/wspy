@@ -129,6 +129,53 @@ its GitHub release body is the notes at `https://github.com/mvermeulen/wspy/rele
 ## Shipped since 4.3.1
 Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-prep time.
 
+- Phoronix test-point removal. Every materialization path (`--result`/`--file`/`--installed-suite`/
+  `--from-installed`, plus the web UI's identical sources) had no way back out once a point existed
+  — the cpu2026 side already had `unregister_cpu2026_point()`, Phoronix had nothing, so a point
+  that's never actually going to get run (no Steam account for a game test, a benchmark this host
+  can't build, a `--all-single-axis` result nobody wanted after all) sat there forever with only a
+  manual `rm -rf` and hand-edited `backlog.txt` as the workaround. Two layers:
+  1. **`wspy-ledger` gains `--remove <name> --list <file>`** (`ledger.c`), the counterpart to the
+     existing `--add` (mutually exclusive with it). Rewrites the workload list with every line whose
+     name field (ignoring any tab-separated status/note columns, same match rule
+     `list_contains_name()`'s own `--add`-dedup check already uses) equals `<name>` dropped, every
+     other line — comments included — written back verbatim. A missing list file or an unmatched
+     name are both a normal (0) exit, not an error; picked an unused `getopt_long` `val` (`'R'`,
+     checked against every other `val` in this binary's own `long_options[]` first — see
+     `doc/INVESTIGATION_ARCHIVE.md`'s "getopt_long val collisions" trap write-up) rather than
+     guessing a spare-looking number.
+  2. **`joblib.unregister_phoronix_test_point()`** — the Phoronix counterpart to
+     `unregister_cpu2026_point()`, but three things wider since Phoronix points have more attached
+     state than cpu2026's: removes the materialized directory (and a now-empty parent `<bare_name>/`
+     dir, README included, same as cpu2026's own cleanup), any `test-suites/local/<identity>/` copy
+     `copy_phoronix_test_point_to_local_suite()` made ("Use in Run tab"), and (best-effort, via the
+     new `wspy-ledger --remove`) the backlog entry — never the real run data a `runs/` symlink points
+     at. Re-validates the target through `resolve_phoronix_test_point_dir()` itself rather than
+     trusting a pre-validated caller, same "delete path, belt-and-suspenders" posture
+     `unregister_cpu2026_point()` already established. New `wspy-phoronix-import --unregister
+     <dir-or-identity>` (accepts either a path or the plain `<test>-<options>` identity string,
+     resolved via `find_materialized_phoronix_test_point()`) and a new "Unregister" button per row in
+     the web Phoronix tab's inventory (`/api/phoronix/unregister`), both following the exact
+     confirm-then-remove-then-drop-the-row shape `_cpu2026_unregister()`/`.cpu2026-unregister` already
+     established.
+
+  Caught and fixed a real mistake made while live-testing this against the real system rather than
+  an isolated fixture: the first manual CLI smoke test forgot to override `PTS_USER_PATH`, so it
+  deleted a real, pre-existing `~/.phoronix-test-suite/test-suites/local/coremark-default/` "Use in
+  Run tab" copy from this host's own prior usage (not something created during this session) instead
+  of a scratch one — caught immediately by checking `git status`/directory listings before and after
+  rather than assuming success, confirmed the real materialized test point under `workload/phoronix/`
+  itself was untouched (it was, since that half of the test used an isolated `--dest`), and restored
+  the deleted copy via a second call to the same `copy_phoronix_test_point_to_local_suite()` the "Use
+  in Run tab" button itself calls (fully regenerable — it's a derived copy of the real
+  `suite-definition.xml`, not source data). Every following manual verification used `PTS_USER_PATH`
+  (or, for the web UI, a throwaway test id materialized fresh and then removed) instead. New test
+  coverage at both layers: `test_ledger.c`'s `test_add_and_remove_from_list` (comment lines,
+  tab-separated status/note lines, and the name-only match rule, all against real file I/O, no
+  mocking) and `web/test_joblib.py`'s `UnregisterPhoronixTestPointTest` (8 cases: parent-dir cleanup
+  both ways, run-data-never-touched, local-suite-copy removal both ways, a real fake-binary ledger
+  subprocess call, and both invalid-path rejections) plus a jsdom session driving the real inventory
+  table through confirm-accepted/confirm-rejected/confirm-message-content/server-error/success paths.
 - Installed-test-profile materialization deep-dive — CLI/core-mechanism half (the web UI picker
   shipped as the following slice). New `web/joblib.py` functions, all grounded in real cached test-definition.xml
   files read directly off this host (svt-av1, npb, llama-cpp) rather than assumed: `phoronix_test_axes()`

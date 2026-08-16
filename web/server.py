@@ -3386,7 +3386,11 @@ def render_phoronix_inventory_groups(dest_root):
                 f'<td>{html.escape(p["options_slug"])}</td>'
                 f'<td>{installed_text}</td><td>{runs_html}</td>'
                 f'<td><button type="button" class="phoronix-use-in-run" '
-                f'data-dir="{html.escape(p["dir"])}">Use in Run tab</button> {repin_html}</td></tr>'
+                f'data-dir="{html.escape(p["dir"])}">Use in Run tab</button> {repin_html} '
+                f'<button type="button" class="phoronix-unregister" '
+                f'data-dir="{html.escape(p["dir"])}" data-bare-name="{html.escape(g["bare_name"])}" '
+                f'data-options-slug="{html.escape(p["options_slug"])}" '
+                f'data-runs="{len(p["runs"])}">Unregister</button></td></tr>'
             )
 
         blocks.append(
@@ -3489,6 +3493,7 @@ def render_phoronix_tab(cfg):
   </div>
   <p id="phoronix-use-in-run-error" class="muted" hidden></p>
   <p id="phoronix-repin-error" class="muted" hidden></p>
+  <p id="phoronix-unregister-error" class="muted" hidden></p>
 </section>
 """
 
@@ -6506,6 +6511,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/phoronix/materialize-installed": self._phoronix_materialize_installed,
             "/api/phoronix/use-in-run": self._phoronix_use_in_run,
             "/api/phoronix/repin": self._phoronix_repin,
+            "/api/phoronix/unregister": self._phoronix_unregister,
             "/api/cpu2026/register": self._cpu2026_register,
             "/api/cpu2026/unregister": self._cpu2026_unregister,
             "/api/cpu2026/build": self._cpu2026_build,
@@ -7813,6 +7819,26 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": str(e)})
             return
         self._send_json(200, result)
+
+    def _phoronix_unregister(self, cfg, body):
+        """Backs the Phoronix tab inventory's per-row "Unregister" button: removes a materialized
+        test point via joblib.unregister_phoronix_test_point() -- only the registration
+        (suite-definition.xml/source.json/the runs/ symlinks, the test-suites/local/ copy if one was
+        made, and the wspy-ledger backlog line if it was registered there) is deleted, never the real
+        run data a runs/ symlink points at, so this is safe to use even on a point with recorded
+        runs -- same posture _cpu2026_unregister() already established. Re-validates dir server-side
+        via resolve_phoronix_test_point_dir() first (same as Use-in-Run-tab/Re-pin above), before
+        unregister_phoronix_test_point() re-checks it again itself (delete path, belt-and-suspenders
+        here, same as cpu2026's own)."""
+        dest = os.path.join(REPO_ROOT, "workload", "phoronix")
+        test_point_dir = joblib.resolve_phoronix_test_point_dir(dest, (body.get("dir") or "").strip())
+        if not test_point_dir:
+            self._send_json(400, {"error": "not a materialized test point directory"})
+            return
+        result = joblib.unregister_phoronix_test_point(dest, test_point_dir, ledger_bin=cfg["wspy_ledger_bin"],
+                                                         cwd=REPO_ROOT)
+        self._send_json(200, {"status": "removed", "identity": result["identity"],
+                               "ledger": result["ledger"], "local_suite_removed": result["local_suite_removed"]})
 
     def _cpu2026_register(self, cfg, body):
         """Backs the CPU2026 tab's "Register" button: pairs a benchmark

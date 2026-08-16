@@ -275,6 +275,63 @@ static int add_to_list(const char *path,const char *name){
   return 0;
 }
 
+/* Removes every line whose name field (parse_ledger_line()'s own exact-match rule, ignoring any
+ * status/note columns -- the same comparison list_contains_name() uses) equals `name` from the
+ * workload list at `path`, rewriting the file with those lines dropped and every other line kept
+ * verbatim. INVESTIGATION.md's "Phoronix test-point removal" -- the counterpart to --add, needed
+ * since a materialized-but-never-going-to-run test point (no Steam account for a game test, a
+ * benchmark this host can't build, ...) previously had no way back out of the ledger once added.
+ * A missing file is reported, not an error -- nothing to remove is still success. Runs
+ * parse_ledger_line() against a per-line scratch copy rather than the line pointers split_lines()
+ * returns, since that function mutates its argument in place (inserting NULs at the tab/'#'
+ * positions) and a kept line must be written back with its original text, comment and all, not the
+ * truncated/parsed remnant. A blank line in the original file is not written back (split_lines()
+ * already drops blank lines before this function ever sees them) -- a harmless formatting
+ * normalization on rewrite, not a data-loss risk, since blank lines carry no information
+ * load_workload_list()/parse_ledger_line() don't already skip on read. Returns a process exit code
+ * (0 whether or not anything actually matched; 2 on a usage/IO error), matching add_to_list(). */
+static int remove_from_list(const char *path,const char *name){
+  long size;
+  char *buf,*scratch;
+  char **lines;
+  int nlines,i,removed = 0;
+  FILE *fp;
+
+  if (!*name){
+    fprintf(stderr,"wspy-ledger: --remove requires a non-empty workload name\n");
+    return 2;
+  }
+  buf = read_whole_file(path,&size);
+  if (!buf){
+    printf("wspy-ledger: %s does not exist, nothing to remove\n",path);
+    return 0;
+  }
+  lines = split_lines(buf,&nlines);
+  scratch = malloc((size_t)size + 1);
+  fp = fopen(path,"w");
+  if (!fp){
+    fprintf(stderr,"wspy-ledger: unable to open %s for writing: %s\n",path,strerror(errno));
+    free(lines); free(buf); free(scratch);
+    return 2;
+  }
+  for (i = 0; i < nlines; i++){
+    char *pname,*pstatus,*pnote;
+    strcpy(scratch,lines[i]);
+    if (parse_ledger_line(scratch,&pname,&pstatus,&pnote) && *pname && !strcmp(pname,name)){
+      removed = 1;
+      continue;
+    }
+    fprintf(fp,"%s\n",lines[i]);
+  }
+  fclose(fp);
+  free(lines);
+  free(buf);
+  free(scratch);
+  if (removed) printf("wspy-ledger: removed '%s' from %s\n",name,path);
+  else printf("wspy-ledger: '%s' not found in %s, nothing removed\n",name,path);
+  return 0;
+}
+
 static struct ledger_entry *load_workload_list(const char *path,int *count_out){
   long size;
   char *buf;
@@ -903,7 +960,9 @@ static void usage(const char *prog){
     "                      the stale-run detail note from the ones printed\n"
     "  -s, --strict        exit non-zero if any workload is skipped or needs-tool-support\n"
     "  --add <name>        append <name> to the workload list instead of reporting\n"
-    "  --list <file>       workload list to use/append to (default: %s)\n"
+    "  --remove <name>     remove <name> from the workload list instead of reporting\n"
+    "                      (mutually exclusive with --add)\n"
+    "  --list <file>       workload list to use/append to/remove from (default: %s)\n"
     "  --unavailable-deps <file>\n"
     "                      tags known unavailable on this host (see above)\n"
     "  --phoronix-profiles-dir <dir>\n"
@@ -927,6 +986,7 @@ int main(int argc,char **argv){
   int nrun_index = 0;
   const char *workload_list_path;
   const char *add_name = NULL;
+  const char *remove_name = NULL;
   const char *list_path = DEFAULT_LIST_PATH;
   const char *unavailable_deps_path = NULL;
   const char *phoronix_profiles_dir = NULL;
@@ -940,6 +1000,7 @@ int main(int argc,char **argv){
     { "quiet",                 no_argument,       0, 'q' },
     { "strict",                no_argument,       0, 's' },
     { "add",                   required_argument, 0, 'a' },
+    { "remove",                required_argument, 0, 'R' },
     { "list",                  required_argument, 0, 'l' },
     { "unavailable-deps",      required_argument, 0, 'u' },
     { "phoronix-profiles-dir", required_argument, 0, 'p' },
@@ -961,6 +1022,7 @@ int main(int argc,char **argv){
     case 'q': quiet = 1; break;
     case 's': strict = 1; break;
     case 'a': add_name = optarg; break;
+    case 'R': remove_name = optarg; break;
     case 'l': list_path = optarg; break;
     case 'u': unavailable_deps_path = optarg; break;
     case 'p': phoronix_profiles_dir = optarg; break;
@@ -969,7 +1031,12 @@ int main(int argc,char **argv){
     default: usage(argv[0]); return 2;
     }
   }
+  if (add_name && remove_name){
+    fprintf(stderr,"wspy-ledger: --add and --remove are mutually exclusive\n");
+    return 2;
+  }
   if (add_name) return add_to_list(list_path,add_name);
+  if (remove_name) return remove_from_list(list_path,remove_name);
   if (nrun_index == 0){
     fprintf(stderr,"wspy-ledger: at least one --run-index <file> is required\n\n");
     usage(argv[0]);
