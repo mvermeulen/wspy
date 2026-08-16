@@ -50,6 +50,42 @@ binary (`sudo setcap cap_perfmon+ep`); re-run it after rebuilding, since the gra
 that exact binary file. `./cpu_info` and `wspy --capabilities`/`--preflight` need no privileges
 at all.
 
+## Quickstart
+
+The rest of this README documents all 16 tools each in their own section, with no suggested order —
+this is the shortest real path from a fresh checkout to a viewable report, one command per step:
+
+```
+make                                                       # build wspy + friends (GPU/library
+                                                            #  prerequisites: see Building above)
+sudo ./wspy-run --suite demo --benchmark hello -o web/runs \
+    --run-index web/runs/index.jsonl quick -- sleep 2      # one run, unified <suite>/<benchmark>/
+                                                            #  <run-id> layout (needs root/perf
+                                                            #  access -- see above, or
+                                                            #  scripts/setup_perf.sh for a non-sudo
+                                                            #  alternative)
+python3 web/server.py                                      # open http://127.0.0.1:8765/ -- the run
+                                                            #  from above already shows up under
+                                                            #  "Recent reports" (web/server.py's own
+                                                            #  default --output-root is web/runs, so
+                                                            #  no extra flag is needed to find it)
+```
+
+That's "run it, see it" — three commands, no flags to look up beyond what's above. From there:
+
+- **Queryable/summarized across many runs, not just one:** `quick`'s single pass is human-readable
+  only (no `--csv`, see the `wspy-store` section below for why that specifically matters) — pick a
+  `--csv`-producing profile instead (e.g. `deep-cpu`, or `-c` a custom pass list) once you want
+  `./wspy-store --db web/runs/store.db --run-index web/runs/index.jsonl` and `./wspy-summary --db
+  web/runs/store.db` to have real metric rows to work with, rather than `0 metric-set(s) ingested`.
+- **Published (WordPress):** once `./wspy-publish configure` has real site credentials, either the
+  report page's own "Publish to WordPress" button or `wspy-publish publish-page --from-rundir` posts
+  that run there directly — see `wspy-publish` below.
+- Everything above has a much larger surface behind it (comparison sweeps, IBS/GPU counters,
+  cross-machine test-point aggregation, curation/export, a job queue for unattended batches, ...) —
+  jump to whichever tool's own section below covers it, or run `./<tool> --help` for its exact current
+  flags.
+
 ## Usage
 
 ```
