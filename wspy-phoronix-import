@@ -253,22 +253,20 @@ def expand_from_url_args(values):
     blank lines ignored, same convention ledger.c's --unavailable-deps files use), or "-" for stdin.
     Covers both ways a human pasting chart URLs actually wants to work: a few inline
     `--from-url <url>` flags, or a whole pasted/saved batch in one go -- without needing two separate
-    flags whose combination argparse's mutually-exclusive --source group would have to special-case."""
-    urls = []
+    flags whose combination argparse's mutually-exclusive --source group would have to special-case.
+    The per-line filtering/dedup itself is joblib.dedupe_url_lines() -- shared with the web Phoronix
+    tab's own URL paste-box, so the two never drift on what counts as a usable pasted line; only the
+    file/stdin *reading* here is CLI-only."""
+    lines = []
     for value in values:
         if value == "-":
-            lines = sys.stdin.read().splitlines()
+            lines.extend(sys.stdin.read().splitlines())
         elif os.path.isfile(value):
             with open(value) as f:
-                lines = f.read().splitlines()
+                lines.extend(f.read().splitlines())
         else:
-            lines = [value]
-        for line in lines:
-            line = line.strip()
-            if line and not line.startswith("#"):
-                urls.append(line)
-    seen = set()
-    return [u for u in urls if not (u in seen or seen.add(u))]
+            lines.append(value)
+    return joblib.dedupe_url_lines("\n".join(lines))
 
 
 def print_url_resolution_report(reports):

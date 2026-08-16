@@ -2709,6 +2709,20 @@ class ParsePhoronixChartUrlTest(unittest.TestCase):
         self.assertIsNone(joblib.parse_phoronix_chart_url(None))
 
 
+class DedupeUrlLinesTest(unittest.TestCase):
+    def test_strips_blank_lines_and_comments(self):
+        text = "url1\n\n# a comment\n  url2  \n"
+        self.assertEqual(joblib.dedupe_url_lines(text), ["url1", "url2"])
+
+    def test_dedupes_preserving_first_occurrence_order(self):
+        text = "url2\nurl1\nurl2\nurl1\n"
+        self.assertEqual(joblib.dedupe_url_lines(text), ["url2", "url1"])
+
+    def test_empty_text_returns_empty_list(self):
+        self.assertEqual(joblib.dedupe_url_lines(""), [])
+        self.assertEqual(joblib.dedupe_url_lines(None), [])
+
+
 class ListKnownPhoronixTestTitlesTest(unittest.TestCase):
     def test_lists_titles_across_namespaces_and_versions(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2836,6 +2850,33 @@ class ResolvePhoronixChartUrlTest(unittest.TestCase):
     def test_unrecognized_url_short_circuits(self):
         result = joblib.resolve_phoronix_chart_url("https://example.com/nope")
         self.assertEqual(result, {"status": "unrecognized-url", "url": "https://example.com/nope"})
+
+    def test_title_match_tie_prefers_newest_version(self):
+        # Regression: confirmed live against this host's real downloaded profiles -- hpcg-1.1.1/
+        # 1.2.1/1.3.0 are all downloaded, all titled identically ("High Performance Conjugate
+        # Gradient"), and the *oldest* (1.1.1, which sorts first alphabetically -- exactly what a
+        # bare longest-match-wins comparison with no tie-breaker silently fell back to) has zero
+        # option axes at all in its older schema, so a real chart slug
+        # "high-performance-conjugate-gradient-144-144-144-60" resolved to that stale version and
+        # produced empty choices ("default") instead of the real xyz=144 144 144/time=60 the newer
+        # 1.3.0 profile's real axes would compose. Older version written first so directory-listing
+        # order alone can't accidentally produce the right answer.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            title = "High Performance Conjugate Gradient"
+            _write_phoronix_test_definition_axes(tmpdir, "pts", "hpcg-1.1.1", [], title=title)  # zero axes
+            xyz_axis = {"display_name": "X Y Z", "identifier": "xyz",
+                        "entries": [("104 104 104", "--nx=104 --ny=104 --nz=104"),
+                                    ("144 144 144", "--nx=144 --ny=144 --nz=144")]}
+            rt_axis = {"display_name": "RT", "identifier": "time", "arg_prefix": "--rt=",
+                       "entries": [("60", "60"), ("1800", "1800")]}
+            _write_phoronix_test_definition_axes(tmpdir, "pts", "hpcg-1.3.0", [xyz_axis, rt_axis], title=title)
+
+            url = ("https://www.phoronix.com/benchmark/result/some-article/"
+                   "high-performance-conjugate-gradient-144-144-144-60.svgz")
+            result = joblib.resolve_phoronix_chart_url(url, user_data_dir=tmpdir)
+            self.assertEqual(result["test_id"], "pts/hpcg-1.3.0")  # not the stale "pts/hpcg-1.1.1"
+            self.assertEqual(result["choices"], {"xyz": "144 144 144", "time": "60"})
+            self.assertEqual(result["unresolved_axes"], [])
 
 
 class UnregisterPhoronixTestPointTest(unittest.TestCase):

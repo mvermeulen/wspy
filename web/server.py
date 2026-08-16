@@ -3315,6 +3315,25 @@ def render_discovery_tab():
 """
 
 
+def enrich_phoronix_axes(test_id, axes):
+    """phoronix_test_axes_for_test_id()'s own axes, plus per-entry GPU-flag/buildable-hint badges --
+    the shared enrichment step behind both the "Installed test profile" source's "Discover options"
+    (_phoronix_installed_options()) and the "From article URL(s)" source's "Resolve URLs"
+    (_phoronix_resolve_urls()), so a picker rendered from either source uses the exact same badge
+    logic/shape client-side (one renderPhoronixOptionsPicker()-equivalent function, not two)."""
+    installed_basenames = joblib.phoronix_installed_test_file_basenames(test_id)
+    enriched = []
+    for axis in axes:
+        entries = [{"name": name, "value": value,
+                    "buildable": joblib.phoronix_entry_looks_buildable(value, installed_basenames)}
+                   for name, value in axis["entries"]]
+        enriched.append({
+            "display_name": axis["display_name"], "identifier": axis["identifier"],
+            "gpu_flagged": joblib.phoronix_axis_is_gpu_flagged(axis), "entries": entries,
+        })
+    return enriched
+
+
 def render_phoronix_inventory_groups(dest_root):
     points = joblib.list_materialized_phoronix_test_points(dest_root)
     groups = joblib.group_materialized_phoronix_points_by_test(points)
@@ -3446,6 +3465,7 @@ def render_phoronix_tab(cfg):
     <label class="chip"><input type="radio" name="phoronix-source" value="file"> XML file on disk</label>
     <label class="chip"><input type="radio" name="phoronix-source" value="installed"> Installed suite</label>
     <label class="chip"><input type="radio" name="phoronix-source" value="from-installed"> Installed test profile (no prior run)</label>
+    <label class="chip"><input type="radio" name="phoronix-source" value="from-url"> From article URL(s)</label>
   </div>
 
   <label id="phoronix-result-row">Result URL or ID
@@ -3469,6 +3489,22 @@ def render_phoronix_tab(cfg):
     <button type="button" id="phoronix-discover-options">Discover options</button>
     <p id="phoronix-options-error" class="muted" hidden></p>
     <div id="phoronix-options-picker"></div>
+  </div>
+  <div id="phoronix-from-url-row" hidden>
+    <p class="config-label">Seeds candidate test points straight from a published Phoronix article's
+       own chart-result URLs &mdash; right-click "open in new tab" on any chart to get one
+       (INVESTIGATION.md's "Published-article/chart-URL-seeded test-point discovery"). The article
+       page itself isn't fetchable here (Phoronix blocks automated fetches), so each URL's own slug
+       is matched against locally known test profiles, then per axis independently against that
+       test's real option entries &mdash; never a guess: an axis with no confident match asks you to
+       finish it below rather than picking one.</p>
+    <label>Chart URLs (one per line)
+      <textarea id="phoronix-from-url-urls" rows="4"
+                placeholder="https://www.phoronix.com/benchmark/result/&lt;article-slug&gt;/&lt;chart-slug&gt;.svgz"></textarea>
+    </label>
+    <button type="button" id="phoronix-resolve-urls">Resolve URLs</button>
+    <p id="phoronix-resolve-urls-error" class="muted" hidden></p>
+    <div id="phoronix-url-results"></div>
   </div>
 
   <label>Destination root
@@ -6508,6 +6544,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/discovery/ollama-models": self._discovery_ollama_models,
             "/api/phoronix/materialize": self._phoronix_materialize,
             "/api/phoronix/installed-options": self._phoronix_installed_options,
+            "/api/phoronix/resolve-urls": self._phoronix_resolve_urls,
+            "/api/phoronix/materialize-from-urls": self._phoronix_materialize_from_urls,
             "/api/phoronix/materialize-installed": self._phoronix_materialize_installed,
             "/api/phoronix/use-in-run": self._phoronix_use_in_run,
             "/api/phoronix/repin": self._phoronix_repin,
@@ -7693,17 +7731,32 @@ class Handler(BaseHTTPRequestHandler):
         if error:
             self._send_json(400, {"error": error})
             return
-        installed_basenames = joblib.phoronix_installed_test_file_basenames(test_id)
-        enriched_axes = []
-        for axis in axes:
-            entries = [{"name": name, "value": value,
-                        "buildable": joblib.phoronix_entry_looks_buildable(value, installed_basenames)}
-                       for name, value in axis["entries"]]
-            enriched_axes.append({
-                "display_name": axis["display_name"], "identifier": axis["identifier"],
-                "gpu_flagged": joblib.phoronix_axis_is_gpu_flagged(axis), "entries": entries,
-            })
-        self._send_json(200, {"test_id": test_id, "axes": enriched_axes})
+        self._send_json(200, {"test_id": test_id, "axes": enrich_phoronix_axes(test_id, axes)})
+
+    def _phoronix_resolve_urls(self, cfg, body):
+        """Backs the Phoronix tab's "From article URL(s)" source's "Resolve URLs" button
+        (INVESTIGATION.md's "Published-article/chart-URL-seeded test-point discovery"): splits/dedupes
+        the pasted textarea content (joblib.dedupe_url_lines(), shared with wspy-phoronix-import
+        --from-url's own line filtering) and resolves each line (joblib.resolve_phoronix_chart_url()).
+        A "resolved" result also gets its full axes enriched the same way _phoronix_installed_options()
+        does (enrich_phoronix_axes()) -- not just the unresolved ones -- so the client can render the
+        exact same per-axis picker fieldsets for whichever axes still need a human pick, GPU-flag/
+        buildable-hint badges included, without a second round trip. Read-only, no privileges needed,
+        no materialization here -- that's the shared Materialize button below, same "resolve first,
+        human confirms, then materialize" two-step the Installed-test-profile source already
+        established, not resolve_phoronix_chart_url() calling anything itself."""
+        urls = joblib.dedupe_url_lines(body.get("urls_text") or "")
+        if not urls:
+            self._send_json(400, {"error": "no URLs found in the pasted text"})
+            return
+        results = []
+        for url in urls:
+            result = joblib.resolve_phoronix_chart_url(url)
+            if result["status"] == "resolved":
+                axes, error = joblib.phoronix_test_axes_for_test_id(result["test_id"])
+                result["axes"] = enrich_phoronix_axes(result["test_id"], axes) if not error else []
+            results.append(result)
+        self._send_json(200, {"results": results})
 
     def _phoronix_materialize_installed(self, cfg, body):
         """Backs the Phoronix tab's "Installed test profile" source's "Materialize" click:
@@ -7751,6 +7804,53 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"source_kind": "installed-test-profile", "source_ref": f"installed:{test_id}",
                                "dest": dest, "dry_run": dry_run, "points": result["points"],
                                "readmes": [result["readme"]] if result.get("readme") else []})
+
+    def _phoronix_materialize_from_urls(self, cfg, body):
+        """Backs the "From article URL(s)" source's Materialize click: `groups` is a list of
+        {test_id, choice_sets} pairs, one per distinct test the resolved (and now human-completed)
+        URLs matched -- built client-side from /api/phoronix/resolve-urls' own results plus whatever
+        the human picked for any leftover unresolved axes. Loops
+        joblib.import_phoronix_installed_points() once per group (same per-test_id batching
+        wspy-phoronix-import --from-url's own CLI handler already does, since several chart URLs from
+        one article commonly resolve to the same test) and combines every group's points/readmes into
+        one response -- deliberately the same shape _phoronix_materialize_installed() already returns,
+        so the tab's existing result-table rendering needs no source-specific branch here either."""
+        groups = body.get("groups")
+        if not isinstance(groups, list) or not groups:
+            self._send_json(400, {"error": "groups must be a non-empty list"})
+            return
+        dest = (body.get("dest") or "").strip() or os.path.join(REPO_ROOT, "workload/phoronix")
+        ledger_list = (body.get("ledger_list") or "").strip() or None
+        dry_run = bool(body.get("dry_run"))
+        add_to_ledger = not body.get("no_ledger")
+        check_installed = not body.get("no_check_installed")
+
+        all_points, all_readmes = [], []
+        for group in groups:
+            test_id = (group.get("test_id") or "").strip()
+            choice_sets = group.get("choice_sets")
+            if not test_id or not isinstance(choice_sets, list) or not choice_sets:
+                self._send_json(400, {"error": f"malformed group: {group!r}"})
+                return
+            try:
+                result = joblib.import_phoronix_installed_points(
+                    test_id, choice_sets, dest, phoronix_bin=cfg["phoronix_bin"],
+                    ledger_bin=cfg["wspy_ledger_bin"], ledger_list_path=ledger_list, cwd=REPO_ROOT,
+                    dry_run=dry_run, check_installed=check_installed, add_to_ledger=add_to_ledger)
+            except (KeyError, ValueError) as e:
+                # Same e.args[0]-for-KeyError fix as _phoronix_materialize_installed() -- see that
+                # handler's own comment for why str(e) alone would double-quote the message.
+                message = e.args[0] if isinstance(e, KeyError) and e.args else str(e)
+                self._send_json(400, {"error": f"{test_id}: {message}"})
+                return
+            if result["error"]:
+                self._send_json(400, {"error": result["error"]})
+                return
+            all_points.extend(result["points"])
+            if result.get("readme"):
+                all_readmes.append(result["readme"])
+        self._send_json(200, {"source_kind": "installed-test-profile", "source_ref": "from-url",
+                               "dest": dest, "dry_run": dry_run, "points": all_points, "readmes": all_readmes})
 
     def _phoronix_use_in_run(self, cfg, body):
         """Backs the Phoronix tab inventory's "Use in Run tab" button:
