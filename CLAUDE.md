@@ -10,7 +10,11 @@ step-by-step tutorial for onboarding a new benchmark suite, end to end through t
 `doc/REPORT_HIERARCHY.md` (directory convention for curated `*.md` workload reports — root/suite/test/
 test-point/machine levels; convention only as of 4.3, not yet wired to any tool),
 `doc/CONTRIBUTOR_GUIDE.md` (walkthrough for adding a collector/metric/schema bump safely — this file's
-own "Common edits" section below, expanded), and
+own "Common edits" section below, expanded),
+`doc/PHORONIX_INSTALL_FIXES.md` (recurring Phoronix Test Suite test-profile install failures on this
+system's bleeding-edge toolchain — GCC 15/CMake 4/Python 3.14/Boost 1.90 — and the `install.sh` patch
+shape that fixes each pattern; unrelated to `wspy` itself, since these are fixes to PTS's own
+downloaded test-profiles, not this repo's code), and
 `git log`/`git blame`. This file covers *current*
 mechanism/behavior only.
 
