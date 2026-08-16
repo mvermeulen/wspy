@@ -4065,7 +4065,16 @@ def render_index(cfg, prefill):
         "</tbody></table>"
         '<button type="submit">Compare selected</button> '
         '<button type="submit" formaction="/tree-diff">Tree diff selected</button>'
-        "</form>" if rows else "<p class=\"muted\">No runs yet.</p>"
+        "</form>" if rows else
+        # First-run hint (item 3, 4.4(a) "Quickstart guide / guided onboarding path"): mirrors
+        # README.md's own Quickstart section's 3-command loop, for the case where this is the very
+        # first thing a new checkout's reader tries -- an empty table alone gives no clue whether
+        # that's expected (nothing run yet) or a misconfigured --output-root.
+        '<p class="muted">No runs yet. Fill in the Run tab above and click Run, or from a terminal:</p>'
+        '<pre>sudo ./wspy-run --suite demo --benchmark hello -o web/runs \\\n'
+        '    --run-index web/runs/index.jsonl quick -- sleep 2</pre>'
+        '<p class="muted">then reload this page -- see README.md\'s own Quickstart section for the '
+        "full walkthrough (viewing, ingesting into a queryable store, publishing).</p>"
     )
     pending_job_count = len(list_jobs(cfg["jobs_dir"], states=("pending", "running")))
     jobs_pending_note = f" ({pending_job_count} pending/running)" if pending_job_count else ""

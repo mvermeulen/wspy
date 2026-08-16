@@ -129,6 +129,24 @@ its GitHub release body is the notes at `https://github.com/mvermeulen/wspy/rele
 ## Shipped since 4.3.1
 Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-prep time.
 
+- Quickstart guide / guided onboarding path. New "Quickstart" section in `README.md` (right after
+  "Building", before the 16-tools-each-in-their-own-section "Usage" reference material begins): a
+  verified, copy-pasteable three-command loop (`make` → `sudo ./wspy-run --suite demo --benchmark
+  hello -o web/runs --run-index web/runs/index.jsonl quick -- sleep 2` → `python3 web/server.py`)
+  taking a fresh checkout from nothing to a viewable report page, followed by short pointers (not a
+  full second walkthrough) to the next real steps: `wspy-store`/`wspy-summary` for queryable/
+  summarized-across-many-runs data (with the exact `wspy-store` caveat this needed — `quick`'s pass
+  has no `--csv`, so ingesting it alone shows `0 metric-set(s) ingested`, confirmed live), and
+  `wspy-publish` for actually posting to WordPress. Same sequence surfaced as a first-run hint in the
+  web UI too: `render_index()`'s "Recent reports" table, previously a bare "No runs yet." with no clue
+  whether that's expected or a misconfigured `--output-root`, now shows the same command plus a
+  README pointer whenever `discover_reports()` finds nothing — gone again the moment a real run
+  exists. Verified end-to-end against a real running server (the exact quickstart commands run for
+  real, not just read: build already done, a real `wspy-run` invocation, the resulting run showing up
+  under "Recent reports" and its `/report` page loading correctly, `wspy-store` producing the exact
+  "0 metric-set(s) ingested, 1 skipped" line the README's own caveat describes) plus new
+  `web/test_quickstart_hint.py` (3 tests, one of which drives the real `wspy-run --dry-run` to guard
+  against the hint's own command drifting from what `wspy-run` actually accepts).
 - Report-page guided flow / progress indicator. A lightweight Run/Curate/Characterize/Publish
   summary (`render_progress_indicator()`, `web/server.py`) now sits at the top of all three report
   shapes (`render_wspy_run_report()`, `render_fixed_report()`, `render_incomplete_run_report()`),
@@ -839,28 +857,22 @@ tool despite resolving near-identical shapes underneath.
    undocumented as a single cross-tool convention anywhere a user would find it before hitting the
    surprise. Audit and, where safe, unify; where a difference is load-bearing, document it once in one
    place rather than re-deriving it per tool.
-3. Quickstart guide / guided onboarding path. `README.md` documents all 16 CLI tools each in their own
-   section with no suggested order — a new checkout or new machine has to infer the
-   run→store→summarize→publish sequence from first principles. Add a single "benchmark X, get a
-   published report" walkthrough near the top of `README.md`, and consider surfacing the same sequence
-   as a first-run hint in the web UI.
-
 **4.4(b) — GPU support:**
 
-4. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
+3. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
    heavier, optional trace-rich profile, same "default vs debug profile" pattern as IBS.
-5. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds on
+4. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds on
    4.2's GPU fusion layer (`gpu_fusion.c`, `--gpu-metrics`) for consistent per-metric data.
-6. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`, extended
+5. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`, extended
    once GPU runs feed the same index.
-7. Intel `i915` GPU PMU — an Intel-native busy/frequency alternative to the current AMD-sysfs/NVML-only
+6. Intel `i915` GPU PMU — an Intel-native busy/frequency alternative to the current AMD-sysfs/NVML-only
    GPU support, `perf_event_open()`-based rather than a vendor SMI/sysfs scrape. See the Intel hybrid /
    counter-grouping deep-dive for detail (the rest of that deep-dive's counter wishlist is non-GPU,
    tracked in 4.5).
 
 **4.4(c) — Phoronix suite build-out:**
 
-8. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
+7. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
    CSVs into per-test-case/per-trial datasets by correlating run manifests with PTS results,
    composite.xml, and log timestamps. See
    [phoronix_hook_investigation.md](file:///home/mev/source/wspy/doc/phoronix_hook_investigation.md)
@@ -870,22 +882,22 @@ tool despite resolving near-identical shapes underneath.
    `doc/INVESTIGATION_ARCHIVE.md`'s "Phoronix `result_notifier` hook capture" write-up. **Still open:**
    teaching `wspy-phoronix-segment.py` to prefer `pts_hooks.log` over composite.xml/log-timestamp
    correlation, and the segmentation tool itself.
-9. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
+8. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
    (`web/joblib.py`/`wspy-phoronix-import`/web launcher's Phoronix tab — see "What shipped in 4.3" for
    what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
    across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
    point, launched by a human clicking Run) exists today.
-10. Materialize test points directly from installed/downloaded PTS test profiles, with no prior PTS
-    run/import round-trip. Today's only materialization paths (`wspy-phoronix-import`, "What shipped in
-    4.3") both require *evidence a specific option combination already ran* (an installed
-    suite-definition.xml or a composite.xml result) — there's no path from "this test profile is
-    installed" straight to "candidate test points a human can pick from" without first driving it
-    through PTS's own interactive/batch menu once. See the "Installed-test-profile materialization
-    deep-dive" below for the full design: zero/single-option profiles materialize directly or as a flat
-    pick-list, multi-option profiles get an explicit per-axis picker (never an auto-expanded cross
-    product), and GPU/backend-shaped axes are flagged for explicit confirmation rather than defaulted.
-    Web UI: a third Phoronix-tab source alongside the existing installed-suite/OpenBenchmarking-URL
-    import sources.
+9. Materialize test points directly from installed/downloaded PTS test profiles, with no prior PTS
+   run/import round-trip. Today's only materialization paths (`wspy-phoronix-import`, "What shipped in
+   4.3") both require *evidence a specific option combination already ran* (an installed
+   suite-definition.xml or a composite.xml result) — there's no path from "this test profile is
+   installed" straight to "candidate test points a human can pick from" without first driving it
+   through PTS's own interactive/batch menu once. See the "Installed-test-profile materialization
+   deep-dive" below for the full design: zero/single-option profiles materialize directly or as a flat
+   pick-list, multi-option profiles get an explicit per-axis picker (never an auto-expanded cross
+   product), and GPU/backend-shaped axes are flagged for explicit confirmation rather than defaulted.
+   Web UI: a third Phoronix-tab source alongside the existing installed-suite/OpenBenchmarking-URL
+   import sources.
 
 ## 4.5 priorities
 Goal: lower priority than 4.4 but still real, wanted work — pick up once 4.4's three focus areas are
