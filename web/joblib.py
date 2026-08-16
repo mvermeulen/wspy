@@ -48,6 +48,7 @@ Four groups of things live here:
 """
 import copy
 import csv
+import glob
 import hashlib
 import html
 import io
@@ -1189,7 +1190,7 @@ def parse_optional_int(value, lo, hi):
     return n
 
 
-def _config_options(section):
+def config_options(section):
     """Turns one checklist category's raw sub-dict (e.g. checklist["counters"])
     into the launcher-vocabulary (name,value) pairs recorded via wspy's
     --config-option (INVESTIGATION.md's "What shipped in 4.1", structured
@@ -1232,7 +1233,7 @@ CATEGORY_TO_CHECKLIST_KEY = {
 }
 
 # Which of a checklist section's own option keys are booleans (recorded as
-# the literal strings "true"/"false" by _config_options() above) rather than
+# the literal strings "true"/"false" by config_options() above) rather than
 # plain text/list values -- needed to parse a manifest's recorded
 # configuration_provenance.options back into the same {enabled, ...} shape
 # buildChecklist() (web/static/app.js) produces client-side. "groups"
@@ -1252,13 +1253,13 @@ _BOOL_OPTION_KEYS = {
 
 
 def checklist_section_from_options(checklist_key, options):
-    """Reverse of _config_options(): turns one pass's recorded
+    """Reverse of config_options(): turns one pass's recorded
     configuration_provenance.options (name/value string pairs, as written by
     manifest.c's write_config_provenance()) back into that checklist
     category's sub-dict, in the same shape build_configuration_passes()
     consumes and buildChecklist() (app.js) produces. "enabled" is implied
     (the pass exists, so its configuration was on) -- not itself an
-    option name recorded in provenance, see _config_options()'s own
+    option name recorded in provenance, see config_options()'s own
     "enabled" skip."""
     section = {"enabled": True}
     bool_keys = _BOOL_OPTION_KEYS.get(checklist_key, set())
@@ -1390,7 +1391,7 @@ def build_configuration_passes(rundir, checklist):
             flags += ["--interval", str(tree_interval), "--csv"]
         timeout = parse_optional_int(tree.get("timeout_secs"), 1, 86400)
         passes.append({"name": "tree", "category": "process-tree",
-                        "options": _config_options(tree),
+                        "options": config_options(tree),
                         "flags": flags, "csv": tree_interval is not None, "timeout": timeout})
 
     counters = checklist.get("counters") or {}
@@ -1445,7 +1446,7 @@ def build_configuration_passes(rundir, checklist):
             name = "amdtopdown" if (interval is not None and csv and selected == {"topdown"}
                                      and not power_wanted) else "counters"
             passes.append({"name": name, "category": "performance-counters",
-                            "options": _config_options(counters),
+                            "options": config_options(counters),
                             "flags": flags, "csv": csv, "timeout": None})
 
     system = checklist.get("system") or {}
@@ -1465,7 +1466,7 @@ def build_configuration_passes(rundir, checklist):
         # never used once power's folded in, same as "amdtopdown" above.
         name = "systemtime" if (interval is not None and csv and not power_wanted) else "system"
         passes.append({"name": name, "category": "system-metrics",
-                        "options": _config_options(system),
+                        "options": config_options(system),
                         "flags": flags, "csv": csv, "timeout": None})
 
     gpu = checklist.get("gpu") or {}
@@ -1488,7 +1489,7 @@ def build_configuration_passes(rundir, checklist):
             if csv:
                 flags.append("--csv")
             passes.append({"name": "gpu", "category": "gpu-metrics",
-                            "options": _config_options(gpu),
+                            "options": config_options(gpu),
                             "flags": flags, "csv": csv, "timeout": None})
 
     ibs = checklist.get("ibs") or {}
@@ -1511,7 +1512,7 @@ def build_configuration_passes(rundir, checklist):
         if csv:
             flags.append("--csv")
         passes.append({"name": "ibs", "category": "ibs",
-                        "options": _config_options(ibs),
+                        "options": config_options(ibs),
                         "flags": flags, "csv": csv, "timeout": None})
 
     return passes
@@ -4338,6 +4339,71 @@ def make_job_id():
     now = datetime.now(timezone.utc)
     ms = now.microsecond // 1000
     return f"job-{now.strftime('%Y%m%dT%H%M%S')}.{ms:03d}-{secrets.token_hex(4)}"
+
+
+# Moved here from wspy-queue (item 6, INVESTIGATION.md 4.4(a) "Job-browsing view in the web UI")
+# so web/server.py's own Jobs tab can locate/read/write job files the exact same way wspy-queue
+# itself does, rather than a second, independently-drifting copy of "which directory is a job's
+# state" and "how to atomically rewrite a job file" -- wspy-queue now imports these from here
+# instead of defining its own.
+def state_dir(jobs_dir, state):
+    return os.path.join(jobs_dir, state)
+
+
+def ensure_jobs_dirs(jobs_dir):
+    for state in JOB_STATES:
+        os.makedirs(state_dir(jobs_dir, state), exist_ok=True)
+
+
+def job_path(jobs_dir, state, job_id):
+    return os.path.join(state_dir(jobs_dir, state), f"{job_id}.json")
+
+
+def find_job_file(jobs_dir, job_id):
+    """Searches every state directory for <job_id>.json -- a job's state is
+    which directory it's currently in, not a field inside the file, so
+    locating one by id means checking all four."""
+    for state in JOB_STATES:
+        p = job_path(jobs_dir, state, job_id)
+        if os.path.isfile(p):
+            return state, p
+    return None, None
+
+
+def load_job(path):
+    with open(path) as f:
+        return json.load(f)
+
+
+def save_job(path, job):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(job, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def list_jobs(jobs_dir, states=None):
+    """Every job across states (default: all of JOB_STATES, in that pending/running/done/failed
+    order; pass a subset to narrow), each as {"state", "job_id", "job", "path", "error"} -- "job"
+    is None and "error" is a message for a file that doesn't parse as JSON (a job file may have
+    been hand-edited, same tolerance wspy-queue's own `list` subcommand already has). Sorted
+    newest-first by created_at (falling back to the job_id's own timestamp prefix, make_job_id(),
+    for an unreadable file with no created_at to sort by) -- shared by wspy-queue's `list`
+    subcommand and web/server.py's Jobs tab, so the two present jobs in the same order."""
+    rows = []
+    for state in (states or JOB_STATES):
+        for path in sorted(glob.glob(os.path.join(state_dir(jobs_dir, state), "*.json"))):
+            job_id = os.path.splitext(os.path.basename(path))[0]
+            try:
+                job = load_job(path)
+                error = None
+            except (OSError, ValueError) as e:
+                job, error = None, str(e)
+            rows.append({"state": state, "job_id": (job or {}).get("job_id", job_id),
+                         "job": job, "path": path, "error": error})
+    rows.sort(key=lambda r: (r["job"] or {}).get("created_at") or r["job_id"], reverse=True)
+    return rows
 
 
 def resolve_toggles(cfg, toggles):

@@ -559,7 +559,10 @@ A job file can be copied verbatim to another machine with wspy checked out and p
 ./wspy-queue requeue <job-id>          # a failed job stays failed until requeued
 ```
 
-See `./wspy-queue --help` for the full subcommand/option list.
+See `./wspy-queue --help` for the full subcommand/option list. The web launcher's own `/jobs` page
+(linked from the homepage) is a read-only browser over the same job files — list across all four
+states (with a state filter), drill into one job's full configuration and, once it's finished, a
+link straight to its `/report` page; requeuing/processing stays a `wspy-queue` job.
 
 ## wspy-bundle: reproducibility bundle export
 
@@ -841,7 +844,10 @@ these forms, only read from that config): "Publish to WordPress" (the single run
 `wspy-publish publish-page --from-rundir`), "Publish test-point report" (runs `wspy-testpoint
 select-runs` + `render` for the *whole test point* this run belongs to), and, on the Reference tab,
 "Publish reference matrix" above. `/history` is a searchable run browser; `/compare` puts two or
-more runs side by side with an optional annotation layer.
+more runs side by side with an optional annotation layer; `/jobs` browses the `wspy-queue` job
+files this server (or `wspy-queue add`) has written, across their pending/running/done/failed
+lifecycle, with each job's configuration shown the same human-readable way a finished run's own
+provenance is.
 
 ```
 python3 web/server.py                  # serves http://127.0.0.1:8765/ by default

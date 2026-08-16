@@ -57,49 +57,16 @@ from datetime import datetime, timezone
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(SCRIPT_DIR, "web"))
 import joblib  # noqa: E402
+# state_dir/ensure_jobs_dirs/job_path/find_job_file/load_job/save_job moved to joblib.py (item 6,
+# INVESTIGATION.md 4.4(a) "Job-browsing view in the web UI") so web/server.py's own Jobs tab
+# locates/reads/writes job files the exact same way this tool does.
+from joblib import state_dir, ensure_jobs_dirs, job_path, find_job_file, load_job, save_job  # noqa: E402
 
 STATES = joblib.JOB_STATES  # ("pending", "running", "done", "failed")
 
 
 def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-
-
-def state_dir(jobs_dir, state):
-    return os.path.join(jobs_dir, state)
-
-
-def ensure_jobs_dirs(jobs_dir):
-    for state in STATES:
-        os.makedirs(state_dir(jobs_dir, state), exist_ok=True)
-
-
-def job_path(jobs_dir, state, job_id):
-    return os.path.join(state_dir(jobs_dir, state), f"{job_id}.json")
-
-
-def find_job_file(jobs_dir, job_id):
-    """Searches every state directory for <job_id>.json -- a job's state is
-    which directory it's currently in, not a field inside the file, so
-    locating one by id means checking all four."""
-    for state in STATES:
-        p = job_path(jobs_dir, state, job_id)
-        if os.path.isfile(p):
-            return state, p
-    return None, None
-
-
-def load_job(path):
-    with open(path) as f:
-        return json.load(f)
-
-
-def save_job(path, job):
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(job, f, indent=2)
-        f.write("\n")
-    os.replace(tmp, path)
 
 
 def list_pending_job_files(jobs_dir):

@@ -92,6 +92,7 @@ from joblib import (  # noqa: E402,F401
     build_reproducibility_bundle, BUNDLE_MANIFEST_NAME,
     COMPOSITE_PRESET_PROFILES, expand_preset_names, run_proctree_besteffort,
     VISION_PLOT_KINDS, TREE_TXT_NAME, find_combined_timeline_csv,
+    JOB_STATES, list_jobs, find_job_file, load_job, config_options,
 )
 
 # The one fixed configuration item 6 knows about -- matches wspy-run's
@@ -1660,6 +1661,46 @@ def format_config_provenance(cp):
     if opts:
         bits.append("options=" + ", ".join(f"{n}={v}" for n, v in opts if n))
     return "; ".join(bits) if bits else None
+
+
+# Reverse of joblib.CATEGORY_TO_CHECKLIST_KEY, minus "power" -- "power" is a checkbox nested
+# inside the "counters"/"system" sections (build_configuration_passes()'s own docstring), not a
+# real top-level checklist key a job's own "checklist" dict would ever carry.
+_CHECKLIST_KEY_TO_CATEGORY = {v: k for k, v in joblib.CATEGORY_TO_CHECKLIST_KEY.items() if v != "power"}
+# tree/counters/system/gpu/ibs -- same dispatch order build_configuration_passes() itself uses.
+_CHECKLIST_SECTION_ORDER = ("tree", "counters", "system", "gpu", "ibs")
+
+
+def format_job_configuration(job):
+    """Human-readable configuration summary for a queued job (item 6, INVESTIGATION.md 4.4(a)
+    "Job-browsing view in the web UI" -- "bundle in sharing structured configuration provenance
+    with the job format"): reuses format_config_provenance() above, the same one-liner a
+    completed run's per-pass configuration_provenance already renders with, rather than a second,
+    job-specific formatting convention. mode="preset" maps directly to {"preset": profile} (one
+    line). mode="custom" has no single configuration -- a checklist can enable several sections at
+    once, each becoming its own wspy pass -- so this returns one line per *enabled* section, in
+    build_configuration_passes()'s own tree/counters/system/gpu/ibs order, via the same category
+    name (_CHECKLIST_KEY_TO_CATEGORY) and the same config_options() options list
+    build_configuration_passes() already threads onto each pass's own configuration_provenance --
+    not a re-derivation, the literal same values a run launched from this job would record.
+    Returns [] for a checklist with nothing enabled (mirrors build_configuration_passes()'s own
+    "nothing to run" silence rather than fabricating an empty line)."""
+    if job.get("mode") == "preset":
+        profile = job.get("profile")
+        return [format_config_provenance({"preset": profile, "configuration": None, "options": []})] \
+            if profile else []
+    lines = []
+    checklist = job.get("checklist") or {}
+    for key in _CHECKLIST_SECTION_ORDER:
+        section = checklist.get(key)
+        if not isinstance(section, dict) or not section.get("enabled"):
+            continue
+        category = _CHECKLIST_KEY_TO_CATEGORY.get(key, key)
+        line = format_config_provenance({"preset": None, "configuration": category,
+                                          "options": config_options(section)})
+        if line:
+            lines.append(line)
+    return lines
 
 
 def guess_content_type(filename):
@@ -3956,6 +3997,8 @@ def render_index(cfg, prefill):
         '<button type="submit" formaction="/tree-diff">Tree diff selected</button>'
         "</form>" if rows else "<p class=\"muted\">No runs yet.</p>"
     )
+    pending_job_count = len(list_jobs(cfg["jobs_dir"], states=("pending", "running")))
+    jobs_pending_note = f" ({pending_job_count} pending/running)" if pending_job_count else ""
 
     # Normally the Run tab is what a page load lands on; a report page's
     # "Compare cores" link (core_report_csv query param, do_GET() above)
@@ -3990,7 +4033,8 @@ def render_index(cfg, prefill):
 <section class="panel">
   <h2>Recent reports</h2>
   {reports_html}
-  <p><a href="/history">Browse &amp; search all runs &rarr;</a></p>
+  <p><a href="/history">Browse &amp; search all runs &rarr;</a>
+     &middot; <a href="/jobs">Browse queued jobs{jobs_pending_note} &rarr;</a></p>
 </section>
 <script src="/static/app.js"></script>
 """
@@ -4124,6 +4168,181 @@ def render_history(cfg, qs):
 </section>
 """
     return page("wspy run history", body)
+
+
+# Reuses the existing .status-{ok,failed,warn,unknown} palette (style.css) rather than adding a
+# job-state-specific set -- "done" is a success color, "failed" the existing failure color,
+# "running" the existing in-progress/warn color, "pending" the existing neutral/muted color.
+_JOB_STATE_CSS_CLASS = {"pending": "status-unknown", "running": "status-warn",
+                         "done": "status-ok", "failed": "status-failed"}
+
+
+def _job_result_cell(job):
+    """The "result" column's cell content for one job row -- a link to the finished run's own
+    /report page for a successful (or partially-successful-but-recorded) job, the failure message
+    for a failed one, or a plain dash for a job with no result yet (pending/running)."""
+    result = job.get("result")
+    if not result:
+        return '<span class="muted">&mdash;</span>'
+    status = result.get("status")
+    if status == "done" and result.get("run_id"):
+        url = (f"/report/{_urlescape(job.get('suite', ''))}/{_urlescape(job.get('benchmark', ''))}"
+               f"/{_urlescape(result['run_id'])}")
+        return f'<a href="{url}">{html.escape(result["run_id"])}</a>'
+    error = result.get("error") or status or "failed"
+    shown = error if len(error) <= 60 else error[:60] + "…"
+    return f'<span class="status-failed" title="{html.escape(error)}">{html.escape(shown)}</span>'
+
+
+def render_jobs(cfg, qs):
+    """Item 6 (INVESTIGATION.md 4.4(a), "Job-browsing view in the web UI"): a queued job
+    (`wspy-queue add`, or the Run tab's "Queue instead of running it now" checkbox) was visible
+    before this only via `wspy-queue list`/`show`, not from the web UI at all. This is that same
+    view, over the same <jobs-dir>/<state>/<job-id>.json files, via joblib.list_jobs() -- shared
+    with wspy-queue's own scan so the two front ends never disagree about what a job is or where
+    to find one. Read-only browsing only (no requeue/delete from here yet) -- `wspy-queue requeue`
+    remains the way to act on a job, same as `wspy-queue run` remains the only way to process one
+    (see joblib.py's "Job files" section for why execution deliberately never happens from this
+    server)."""
+    state_filter = (qs.get("state", [""])[0] or "").strip()
+    states = (state_filter,) if state_filter in JOB_STATES else None
+    rows = list_jobs(cfg["jobs_dir"], states=states)
+
+    state_options = "".join(
+        f'<option value="{v}"{" selected" if v == state_filter else ""}>{l}</option>'
+        for v, l in (("", "any"),) + tuple((s, s) for s in JOB_STATES)
+    )
+    filter_form = f"""
+<form method="get" action="/jobs" class="history-filters">
+  <div class="row">
+    <label>State<br><select name="state">{state_options}</select></label>
+  </div>
+  <button type="submit">Filter</button>
+  <a href="/jobs">Clear filter</a>
+</form>
+"""
+
+    table_rows = []
+    for r in rows:
+        job, error = r["job"], r["error"]
+        job_url = f'/jobs/{_urlescape(r["job_id"])}'
+        if error:
+            table_rows.append(
+                "<tr>"
+                f'<td>{html.escape(r["state"])}</td>'
+                f'<td><a href="{job_url}">{html.escape(r["job_id"])}</a></td>'
+                f'<td colspan="4" class="status-failed">unreadable: {html.escape(error)}</td>'
+                "</tr>")
+            continue
+        workload_str = " ".join(job.get("workload") or [])
+        shown = workload_str if len(workload_str) <= 60 else workload_str[:60] + "…"
+        ident = f'{html.escape(job.get("suite") or "?")}/{html.escape(job.get("benchmark") or "?")}'
+        table_rows.append(
+            "<tr>"
+            f'<td><span class="{_JOB_STATE_CSS_CLASS.get(r["state"], "")}">'
+            f'{html.escape(r["state"])}</span></td>'
+            f'<td><a href="{job_url}">{html.escape(r["job_id"])}</a></td>'
+            f'<td>{html.escape(job.get("mode") or "?")}</td>'
+            f"<td>{ident}</td>"
+            f'<td><code title="{html.escape(workload_str)}">{html.escape(shown)}</code></td>'
+            f'<td>{html.escape(job.get("created_at") or "?")}</td>'
+            f"<td>{_job_result_cell(job)}</td>"
+            "</tr>")
+
+    table_html = (
+        '<table class="reports"><thead><tr><th>state</th><th>job</th><th>mode</th>'
+        "<th>suite/benchmark</th><th>workload</th><th>created_at</th><th>result</th>"
+        "</tr></thead><tbody>" + "".join(table_rows) + "</tbody></table>"
+    ) if table_rows else '<p class="muted">No jobs match this filter.</p>'
+
+    body = f"""
+<section class="panel">
+  <h1>Jobs</h1>
+  <p class="config-label">Every job under <code>{html.escape(cfg["jobs_dir"])}</code> ("Queue
+     instead of running it now" on the Run tab, or <code>wspy-queue add</code>) across its
+     pending/running/done/failed lifecycle -- browsing only; use <code>wspy-queue run</code> (this
+     machine, cron, or after copying the job file elsewhere) to actually process one, and
+     <code>wspy-queue requeue &lt;job-id&gt;</code> to retry a failed job.</p>
+  {filter_form}
+  {table_html}
+  <p><a href="/">Back to launcher</a></p>
+</section>
+"""
+    return page("wspy jobs", body)
+
+
+def render_job_detail(cfg, job_id):
+    """One job's full detail (item 6): the human-readable configuration summary
+    (format_job_configuration(), sharing format_config_provenance() with every completed run's
+    own per-pass display -- the "bundle in sharing structured configuration provenance with the
+    job format" half of the item), every other job field, and the raw JSON underneath for
+    anything this page doesn't otherwise surface -- same completeness `wspy-queue show` already
+    gives on the CLI. None if no such job exists in any state directory."""
+    state, path = find_job_file(cfg["jobs_dir"], job_id)
+    if not path:
+        return None
+    try:
+        job = load_job(path)
+    except (OSError, ValueError) as e:
+        body = (f'<section class="panel"><h1>Job: {html.escape(job_id)}</h1>'
+                 f'<p class="status-failed">Could not read this job file: {html.escape(str(e))}</p>'
+                 f'<p><a href="/jobs">Back to jobs</a></p></section>')
+        return page(f"wspy job: {job_id}", body)
+
+    parts = [f"<h1>Job: {html.escape(job_id)}</h1>",
+             f'<p>State: <span class="{_JOB_STATE_CSS_CLASS.get(state, "")}">'
+             f'{html.escape(state)}</span>'
+             f' &middot; created {html.escape(job.get("created_at") or "?")}'
+             f' &middot; mode {html.escape(job.get("mode") or "?")}</p>']
+
+    workload_str = shlex.join(job.get("workload") or [])
+    if workload_str:
+        parts.append(f"<p>Workload: <code>{html.escape(workload_str)}</code></p>")
+    parts.append(f'<p>Suite/benchmark: <code>{html.escape(job.get("suite") or "?")}/'
+                 f'{html.escape(job.get("benchmark") or "?")}</code>'
+                 + (f' &middot; run_id: <code>{html.escape(job["run_id"])}</code>'
+                    if job.get("run_id") else "") + "</p>")
+
+    config_lines = format_job_configuration(job)
+    if config_lines:
+        parts.append("<h2>Configuration</h2><ul>" +
+                      "".join(f"<li><code>{html.escape(line)}</code></li>" for line in config_lines) +
+                      "</ul>")
+    else:
+        parts.append('<p class="muted">No configuration recorded (or nothing enabled).</p>')
+
+    # Each bit is escaped individually, then joined with a literal (already-safe) separator --
+    # avoids double-escaping the separator itself the way escaping the whole joined string would.
+    detail_bits = []
+    toggles = job.get("toggles") or {}
+    if toggles:
+        detail_bits.append("toggles: " + ", ".join(f"{k}={str(v).lower()}" for k, v in toggles.items()))
+    if job.get("affinity"):
+        detail_bits.append(f'affinity: {job["affinity"]}')
+    if job.get("custom_plots"):
+        detail_bits.append(f'custom plots: {len(job["custom_plots"])}'
+                            + (" (only custom)" if job.get("only_custom") else ""))
+    if job.get("single_iteration"):
+        detail_bits.append("single iteration")
+    if job.get("phoronix_test_point"):
+        detail_bits.append(f'Phoronix test point: {job["phoronix_test_point"]}')
+    if detail_bits:
+        parts.append(f'<p class="muted">{" &middot; ".join(html.escape(b) for b in detail_bits)}</p>')
+    if job.get("notes"):
+        parts.append(f"<p>Notes: {html.escape(job['notes'])}</p>")
+
+    result = job.get("result")
+    if result:
+        parts.append("<h2>Result</h2>")
+        parts.append(f"<p>{_job_result_cell(job)} &middot; finished "
+                     f'{html.escape(result.get("finished_at") or "?")}</p>')
+
+    parts.append("<h2>Raw job document</h2>"
+                 f"<pre>{html.escape(json.dumps(job, indent=2))}</pre>")
+    parts.append('<p><a href="/jobs">Back to jobs</a></p>')
+
+    body = "<section class=\"panel\">" + "".join(parts) + "</section>"
+    return page(f"wspy job: {job_id}", body)
 
 
 DEFAULT_CURATION_CONFIG_NAME = "default_curation.conf"
@@ -5858,6 +6077,23 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/history":
             self._send(200, render_history(cfg, qs))
+            return
+
+        if path == "/jobs":
+            self._send(200, render_jobs(cfg, qs))
+            return
+
+        m = re.match(r"^/jobs/([^/]+)$", path)
+        if m:
+            job_id = m.group(1)
+            if not valid_segment(job_id):
+                self._send(400, "invalid job id")
+                return
+            out = render_job_detail(cfg, job_id)
+            if out is None:
+                self._send(404, "no such job")
+            else:
+                self._send(200, out)
             return
 
         if path == "/tree-diff":

@@ -100,6 +100,64 @@ class ValidateJobTest(unittest.TestCase):
         self.assertEqual(joblib.validate_job(job), [])
 
 
+class ListJobsTest(unittest.TestCase):
+    """Item 6 (INVESTIGATION.md 4.4(a), "Job-browsing view in the web UI"): list_jobs() is the
+    shared scan both wspy-queue's own `list` subcommand's rewrite path and web/server.py's Jobs
+    tab use, so no third, independently-drifting implementation of "walk every state dir"."""
+
+    def _write(self, jobs_dir, state, job):
+        joblib.ensure_jobs_dirs(jobs_dir)
+        path = joblib.job_path(jobs_dir, state, job["job_id"])
+        joblib.save_job(path, job)
+        return path
+
+    def test_empty_jobs_dir_is_empty_list(self):
+        with tempfile.TemporaryDirectory() as jobs_dir:
+            self.assertEqual(joblib.list_jobs(jobs_dir), [])
+
+    def test_finds_jobs_across_every_state(self):
+        with tempfile.TemporaryDirectory() as jobs_dir:
+            job_a = joblib.build_job(["sleep", "1"], "manual", "a", "preset", profile="quick")
+            job_b = joblib.build_job(["sleep", "2"], "manual", "b", "preset", profile="quick")
+            self._write(jobs_dir, "pending", job_a)
+            self._write(jobs_dir, "done", job_b)
+            rows = joblib.list_jobs(jobs_dir)
+            self.assertEqual({r["job_id"] for r in rows}, {job_a["job_id"], job_b["job_id"]})
+            self.assertEqual({r["state"] for r in rows}, {"pending", "done"})
+
+    def test_sorted_newest_first_by_created_at(self):
+        with tempfile.TemporaryDirectory() as jobs_dir:
+            older = joblib.build_job(["sleep", "1"], "manual", "a", "preset", profile="quick")
+            older["created_at"] = "2026-08-15T00:00:00.000Z"
+            newer = joblib.build_job(["sleep", "1"], "manual", "b", "preset", profile="quick")
+            newer["created_at"] = "2026-08-16T00:00:00.000Z"
+            self._write(jobs_dir, "pending", older)
+            self._write(jobs_dir, "pending", newer)
+            rows = joblib.list_jobs(jobs_dir)
+            self.assertEqual([r["job_id"] for r in rows], [newer["job_id"], older["job_id"]])
+
+    def test_states_param_narrows_the_scan(self):
+        with tempfile.TemporaryDirectory() as jobs_dir:
+            job_a = joblib.build_job(["sleep", "1"], "manual", "a", "preset", profile="quick")
+            job_b = joblib.build_job(["sleep", "2"], "manual", "b", "preset", profile="quick")
+            self._write(jobs_dir, "pending", job_a)
+            self._write(jobs_dir, "done", job_b)
+            rows = joblib.list_jobs(jobs_dir, states=("pending",))
+            self.assertEqual([r["job_id"] for r in rows], [job_a["job_id"]])
+
+    def test_unreadable_job_file_reports_an_error_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as jobs_dir:
+            joblib.ensure_jobs_dirs(jobs_dir)
+            path = joblib.job_path(jobs_dir, "pending", "job-broken")
+            with open(path, "w") as f:
+                f.write("{not valid json")
+            rows = joblib.list_jobs(jobs_dir)
+            self.assertEqual(len(rows), 1)
+            self.assertIsNone(rows[0]["job"])
+            self.assertIsNotNone(rows[0]["error"])
+            self.assertEqual(rows[0]["job_id"], "job-broken")
+
+
 class ResolveTogglesTest(unittest.TestCase):
     def test_defaults_all_on(self):
         cfg = {"run_index_file": "/tmp/run_index.jsonl"}
@@ -684,11 +742,11 @@ class BuildSupplementaryPlotPassesTest(unittest.TestCase):
 
 class ConfigOptionsTest(unittest.TestCase):
     def test_skips_enabled_and_none_and_empty(self):
-        options = joblib._config_options({"enabled": True, "groups": None, "csv": ""})
+        options = joblib.config_options({"enabled": True, "groups": None, "csv": ""})
         self.assertEqual(options, [])
 
     def test_stringifies_and_joins_list_values(self):
-        options = dict(joblib._config_options(
+        options = dict(joblib.config_options(
             {"enabled": True, "groups": ["topdown", "branch"], "interval_secs": 1, "csv": True}))
         self.assertEqual(options["groups"], "topdown,branch")
         self.assertEqual(options["interval_secs"], "1")
@@ -863,7 +921,7 @@ class ChecklistFromProvenanceTest(unittest.TestCase):
     side of structured configuration provenance -- turning a run's
     recorded configuration_provenance back into checklist state a report's
     "Customize & run again" link can restore. checklist_section_from_options()
-    round-trips against build_configuration_passes()'s own _config_options()
+    round-trips against build_configuration_passes()'s own config_options()
     output below, not a hand-written fixture, so a future checklist field
     added to one side is caught here if the other isn't updated to match."""
 
