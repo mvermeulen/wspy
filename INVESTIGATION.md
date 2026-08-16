@@ -163,8 +163,8 @@ Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-
   no web-UI "resume" button -- a reasonable fast-follow once this mechanism has seen real use, not
   bundled into this slice.
 - Detect and resume interrupted `wspy-run` profiles (item 6), Phase A — surface incompleteness
-  (Phase B, actually resuming, remains open): `generate_manifest()` (`wspy-run`) only writes the
-  run-level `manifest.json` after every pass finishes, so a mid-loop crash (the motivating case: a
+  (Phase B, actually resuming, shipped separately above): `generate_manifest()` (`wspy-run`) only
+  writes the run-level `manifest.json` after every pass finishes, so a mid-loop crash (the motivating case: a
   real host crash mid-batch) leaves per-pass `*.manifest.json` artifacts with no top-level manifest
   to tie them together — and, until now, `/report` silently mis-rendered such a directory as if it
   were an item-6 fixed-config single-pass report (`render_fixed_report()`, which only ever looks for
