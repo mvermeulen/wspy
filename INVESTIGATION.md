@@ -703,6 +703,7 @@ tool despite resolving near-identical shapes underneath.
    itself. Bundle in sharing structured configuration provenance with the job format (`web/joblib.py`'s
    job schema and `manifest.h`'s `configuration_provenance` are designed to be close in shape but aren't
    wired together yet).
+
 **4.4(b) — GPU support:**
 
 8. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
