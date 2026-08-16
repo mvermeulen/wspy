@@ -7,8 +7,14 @@ deep-dive") so a second tool -- wspy-testpoint's run role-assignment persistence
 clone-or-verify logic without duplicating it. Kept separate from web/wp_client.py: that module is
 WordPress-specific, this one is plain git/filesystem with no WP dependency at all.
 
-Commits made through run_git() are always local only -- nothing in this module ever pushes, since a
-push is a shared/visible action that deserves an explicit human decision every time, not automation.
+Commits made through commit_paths() are always local only. push_report_root() (INVESTIGATION.md
+4.4(a) "One-click end-to-end pipeline", the -> published leg) is the one deliberate exception -- and
+even that stays consistent with the rule's own reasoning ("a push is a shared/visible action that
+deserves an explicit human decision every time, not automation"): it's reachable only through a
+separate, explicitly-opted-into web-UI action (the report page's "Publish test-point report" card's
+own "push to remote" checkbox, unchecked by default), never bundled into the automatic
+ingest/select-runs/render chain, and defaults to git's own --dry-run so even that explicit opt-in
+previews what would be pushed before a second, separate confirmation actually posts anything.
 """
 import os
 import subprocess
@@ -66,3 +72,24 @@ def commit_paths(report_root_path, rel_paths, message):
         return False, "git commit failed in %s: %s" % (report_root_path, err)
     rc, sha, _ = run_git(["rev-parse", "--short", "HEAD"], cwd=report_root_path)
     return True, "committed %d file(s) as %s (local only -- not pushed)" % (len(rel_paths), sha)
+
+
+def push_report_root(report_root_path, dry_run=True):
+    """Pushes report_root_path's current branch to its configured remote -- see this module's own
+    top-of-file comment for why this, unlike every other function here, is allowed to touch the
+    remote at all, and under what conditions. dry_run (default True) runs `git push --dry-run`
+    instead of a real push -- git's own real dry-run, not a hand-rolled preview, so what it reports
+    (commit range, branch names) is exactly what a real push would do, not an approximation of it.
+    A plain `git push` with no explicit remote/refspec relies on the clone's own tracking branch
+    (set up by `git clone`/`git push -u` normally, true for every report-root this module itself
+    creates via ensure_report_root()) -- if a report-root was set up some other way with no
+    tracking branch configured, git's own error message explains that rather than this function
+    guessing at a remote/branch to force. Returns (ok, message) -- message is git's own combined
+    stdout+stderr (git push's real, human-readable summary -- commit range, or "Everything
+    up-to-date" -- goes to stderr even on success, so neither stream alone reliably has it)."""
+    args = ["push", "--dry-run"] if dry_run else ["push"]
+    rc, out, err = run_git(args, cwd=report_root_path)
+    combined = "\n".join(s for s in (out, err) if s)
+    if rc != 0:
+        return False, combined or "git push failed in %s (exit %d)" % (report_root_path, rc)
+    return True, combined or ("dry-run: nothing to push" if dry_run else "push completed")

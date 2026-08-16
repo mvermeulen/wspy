@@ -511,7 +511,8 @@ def resolve_report_root_for_web(cfg):
     return report_root.DEFAULT_REPORT_ROOT
 
 
-def execute_testpoint_publish(state, cfg, run_index_path, select_runs_argv, render_argv):
+def execute_testpoint_publish(state, cfg, run_index_path, select_runs_argv, render_argv,
+                               push=False, push_dry_run=True):
     """Runs ingest, then select-runs, then render, as one background pipeline (the report page's
     "Publish test-point report" button, Tier 3 item 7 / INVESTIGATION.md 4.4(a) "One-click
     end-to-end pipeline"), mirroring execute_analyze()'s subprocess/SSE-relay shape exactly. The
@@ -526,9 +527,19 @@ def execute_testpoint_publish(state, cfg, run_index_path, select_runs_argv, rend
     itself failed. render only runs if select-runs succeeded -- a role-assignment failure (e.g. no
     runs found for this suite/benchmark/hostname) means there is nothing coherent for render to
     aggregate, so running it anyway would just produce a second, more confusing failure on top of the
-    first. All three commands' own output already explains what happened (git commit summaries,
-    warnings about runs missing from the store, etc.) -- this function only relays it, never
-    reinterprets it."""
+    first.
+
+    push (default False) is the -> published leg, the last piece of the "one-click pipeline" item:
+    only attempted at all if select-runs and render both succeeded, and only if a human explicitly
+    opted into it (the report page's own "push to remote" checkbox, unchecked by default) -- never
+    bundled into the chain silently. push_dry_run (default True) runs `git push --dry-run` instead
+    of a real push even then, so pushing for real needs the human to have made *two* separate,
+    explicit choices (check "push", then also uncheck "preview"), not one. See
+    report_root.push_report_root()'s own docstring for the full reasoning; this function just calls
+    it and relays its result the same way it relays every subprocess's output.
+
+    All commands' own output already explains what happened (git commit summaries, warnings about
+    runs missing from the store, etc.) -- this function only relays it, never reinterprets it."""
     def emit(line):
         state.append(line)
 
@@ -555,7 +566,22 @@ def execute_testpoint_publish(state, cfg, run_index_path, select_runs_argv, rend
         state.finish("error", None)
         return
     rc = run_one(render_argv)
-    state.finish("done" if rc == 0 else "error", None)
+    if rc != 0:
+        state.finish("error", None)
+        return
+
+    if push:
+        report_root_path = resolve_report_root_for_web(cfg)
+        emit(f"$ git -C {report_root_path} push" + (" --dry-run" if push_dry_run else ""))
+        ok, message = report_root.push_report_root(report_root_path, dry_run=push_dry_run)
+        for line in message.splitlines():
+            emit(line)
+        if not ok:
+            state.finish("error", None)
+            return
+        emit("[dry-run: nothing was actually pushed]" if push_dry_run else "[pushed]")
+
+    state.finish("done", None)
 
 
 # run_store_ingest_besteffort/execute_profile_run/write_custom_run_manifest/
@@ -4813,14 +4839,22 @@ def render_testpoint_card(suite, benchmark, run_id):
    <strong>whole test point</strong> this run belongs to -- every <code>stats-pool</code> run sharing
    <code>{html.escape(suite)}/{html.escape(benchmark)}</code> on the machine below, not just this one
    run -- then commits it locally into the configured report-root (see
-   <code>doc/REPORT_HIERARCHY.md</code>; this never pushes automatically). Safe to click repeatedly:
-   a human's role overrides and any hand-edited commentary in the resulting report survive a later
-   re-run.</p>
+   <code>doc/REPORT_HIERARCHY.md</code>). Safe to click repeatedly: a human's role overrides and any
+   hand-edited commentary in the resulting report survive a later re-run. If you curate AI narrative/
+   vision analysis on individual run pages, do that first -- this only picks up whatever's already
+   curated at the point you click, not anything added afterward.</p>
 <form id="testpoint-publish-form">
   <label>Machine slug <span class="muted">(e.g. amd-395 -- doc/REPORT_HIERARCHY.md's
     &lt;vendor&gt;-&lt;short-model&gt; convention)</span>
     <input type="text" id="testpoint-publish-machine" value="{html.escape(machine_default)}" required>
   </label>
+  <div class="chips">
+    <label class="chip"><input type="checkbox" id="testpoint-publish-push"> also push the
+      report-root to its remote once committed (default: local commit only, same as before)</label>
+    <label class="chip"><input type="checkbox" id="testpoint-publish-push-dry-run" checked> Preview
+      the push (dry-run) -- shows what would be pushed, pushes nothing (only applies if the box
+      above is checked)</label>
+  </div>
   <button type="button" id="testpoint-publish-run"
     data-testpoint-url="{html.escape(url)}">Publish test-point report</button>
   <pre id="testpoint-publish-log" class="live-output" hidden></pre>
@@ -7126,6 +7160,11 @@ class Handler(BaseHTTPRequestHandler):
 
         select_runs_argv, render_argv = build_testpoint_publish_argv(cfg, suite, benchmark, machine)
         run_index_path = cfg.get("run_index_file")
+        # push (default False) and push_dry_run (default True) are the -> published leg's own two
+        # separate, explicit opt-ins -- see execute_testpoint_publish()'s own docstring for why both
+        # default to the safe side rather than either one alone.
+        push = bool(body.get("push"))
+        push_dry_run = body.get("push_dry_run", True) is not False
 
         key = run_key(suite, benchmark, run_id)
         state = RunState(rundir)
@@ -7133,7 +7172,7 @@ class Handler(BaseHTTPRequestHandler):
             TESTPOINT_RUNS[key] = state
 
         t = threading.Thread(target=execute_testpoint_publish, args=(
-            state, cfg, run_index_path, select_runs_argv, render_argv,
+            state, cfg, run_index_path, select_runs_argv, render_argv, push, push_dry_run,
         ), daemon=True)
         t.start()
 
@@ -7141,6 +7180,9 @@ class Handler(BaseHTTPRequestHandler):
         # showing a wspy-store command that step will never actually run would be misleading.
         preview = ([shell_preview(build_store_ingest_argv(cfg, run_index_path))] if run_index_path else []) \
             + [shell_preview(select_runs_argv), shell_preview(render_argv)]
+        if push:
+            report_root_path = resolve_report_root_for_web(cfg)
+            preview.append(f"git -C {report_root_path} push" + (" --dry-run" if push_dry_run else ""))
         self._send_json(202, {
             "suite": suite, "benchmark": benchmark, "run_id": run_id,
             "events_url": f"/api/testpoint-publish/{suite}/{benchmark}/{run_id}/events",
