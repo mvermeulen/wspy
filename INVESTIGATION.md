@@ -129,6 +129,29 @@ its GitHub release body is the notes at `https://github.com/mvermeulen/wspy/rele
 ## Shipped since 4.3.1
 Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-prep time.
 
+- Report-page guided flow / progress indicator. A lightweight Run/Curate/Characterize/Publish
+  summary (`render_progress_indicator()`, `web/server.py`) now sits at the top of all three report
+  shapes (`render_wspy_run_report()`, `render_fixed_report()`, `render_incomplete_run_report()`),
+  above the ~10 existing cards/buttons, so a reader sees "where in the workflow is this run" at a
+  glance instead of discovering that stack only by scrolling. Presentation/sequencing only, per the
+  item's own scope note — no action gets merged or reordered, every stage reuses state a caller
+  already has or a cheap local check: **Run** from the run status each report shape already
+  computes (`ok`/`skipped` → done, `failed` → failed, `incomplete` → incomplete, matching the
+  `.status-*` palette item 6's job-state badges already established); **Curate** from
+  `curation.json` content (new `_curation_has_content()`, factored out of `render_curated_section()`
+  so both ask the identical question — "not started"/"started" (has the file but nothing included
+  yet)/"curated"); **Characterize** from whether `archetype_badge.md`/`archetype_similar.md` exist
+  in the run directory. **Publish** deliberately never makes a live WordPress call to check
+  "already published" — that lookup is real, slower, and network/credential-dependent (this
+  codebase already has one, `resolve_reference_matrix_row_publish_status()`, for the reference-matrix
+  page a human navigates to deliberately), inappropriate to run unconditionally on every single
+  report page view. Instead it shows only whether publishing is set up at all (one local
+  `wp_client.load_config()` file read) — "actually published, and where" stays the export/publish
+  cards' own job, which already show it live once a human clicks in. Verified against a real running
+  server with five synthetic run fixtures (complete/uncurated, complete/curated-with-badge,
+  workload-exit-nonzero, legacy fixed-config shape, interrupted/incomplete) covering every stage
+  combination including a fake WordPress config proving the Publish check never calls
+  `wp_client.find_page()`/`list_child_pages()`; plus new `web/test_progress_indicator.py` (17 tests).
 - Preset/Configuration/Option vocabulary refactor — closing slice, item now fully shipped and
   removed from the open 4.4(a) list. Two threads closed it out:
   - **Client-side `data-key` wiring.** The checklist's 15 pure 1:1 checkbox-to-flag options
@@ -807,11 +830,7 @@ tool despite resolving near-identical shapes underneath.
    `scripts/publish_reference_matrix.py`'s web button already applies ("Preview (dry-run)" checked by
    default). Web UI first — it already has every piece as a background-thread/SSE card; a CLI wrapper is
    a natural follow-on once the sequencing is settled, not a prerequisite.
-2. Report-page guided flow / progress indicator. Add a lightweight checklist/progress view (Run done /
-   Curate — / Characterize — / Publish —) framing the report/studio page's ~10 existing cards as one
-   flow rather than an unordered stack discovered by scrolling. Doesn't require merging the actions
-   mechanically (the item above covers that) — presentation/sequencing only.
-3. CLI flag/identity consistency pass. Two concrete inconsistencies found in the 2026-08-07 audit: (1)
+2. CLI flag/identity consistency pass. Two concrete inconsistencies found in the 2026-08-07 audit: (1)
    `--phoronix-dest-root`/`--cpu2026-dest-root` are separate flags even though both suites resolve
    through the identical `find_materialized_*_test_point()` shape — every future suite added this way
    means another bespoke flag pair rather than one generic mechanism; (2) a run is identified three
@@ -820,7 +839,7 @@ tool despite resolving near-identical shapes underneath.
    undocumented as a single cross-tool convention anywhere a user would find it before hitting the
    surprise. Audit and, where safe, unify; where a difference is load-bearing, document it once in one
    place rather than re-deriving it per tool.
-4. Quickstart guide / guided onboarding path. `README.md` documents all 16 CLI tools each in their own
+3. Quickstart guide / guided onboarding path. `README.md` documents all 16 CLI tools each in their own
    section with no suggested order — a new checkout or new machine has to infer the
    run→store→summarize→publish sequence from first principles. Add a single "benchmark X, get a
    published report" walkthrough near the top of `README.md`, and consider surfacing the same sequence
@@ -828,20 +847,20 @@ tool despite resolving near-identical shapes underneath.
 
 **4.4(b) — GPU support:**
 
-5. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
+4. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
    heavier, optional trace-rich profile, same "default vs debug profile" pattern as IBS.
-6. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds on
+5. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds on
    4.2's GPU fusion layer (`gpu_fusion.c`, `--gpu-metrics`) for consistent per-metric data.
-7. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`, extended
+6. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`, extended
    once GPU runs feed the same index.
-8. Intel `i915` GPU PMU — an Intel-native busy/frequency alternative to the current AMD-sysfs/NVML-only
+7. Intel `i915` GPU PMU — an Intel-native busy/frequency alternative to the current AMD-sysfs/NVML-only
    GPU support, `perf_event_open()`-based rather than a vendor SMI/sysfs scrape. See the Intel hybrid /
    counter-grouping deep-dive for detail (the rest of that deep-dive's counter wishlist is non-GPU,
    tracked in 4.5).
 
 **4.4(c) — Phoronix suite build-out:**
 
-9. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
+8. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
    CSVs into per-test-case/per-trial datasets by correlating run manifests with PTS results,
    composite.xml, and log timestamps. See
    [phoronix_hook_investigation.md](file:///home/mev/source/wspy/doc/phoronix_hook_investigation.md)
@@ -851,12 +870,12 @@ tool despite resolving near-identical shapes underneath.
    `doc/INVESTIGATION_ARCHIVE.md`'s "Phoronix `result_notifier` hook capture" write-up. **Still open:**
    teaching `wspy-phoronix-segment.py` to prefer `pts_hooks.log` over composite.xml/log-timestamp
    correlation, and the segmentation tool itself.
-10. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
-    (`web/joblib.py`/`wspy-phoronix-import`/web launcher's Phoronix tab — see "What shipped in 4.3" for
-    what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
-    across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
-    point, launched by a human clicking Run) exists today.
-11. Materialize test points directly from installed/downloaded PTS test profiles, with no prior PTS
+9. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
+   (`web/joblib.py`/`wspy-phoronix-import`/web launcher's Phoronix tab — see "What shipped in 4.3" for
+   what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
+   across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
+   point, launched by a human clicking Run) exists today.
+10. Materialize test points directly from installed/downloaded PTS test profiles, with no prior PTS
     run/import round-trip. Today's only materialization paths (`wspy-phoronix-import`, "What shipped in
     4.3") both require *evidence a specific option combination already ran* (an installed
     suite-definition.xml or a composite.xml result) — there's no path from "this test profile is

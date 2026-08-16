@@ -127,6 +127,21 @@ input[type="text"], input[type="date"], select {
 .status-incomplete { color: #9a6700; font-weight: 600; }
 .status-unknown { color: var(--muted); }
 
+/* Report-page progress indicator (item 2, 4.4(a) "Report-page guided flow / progress indicator"):
+ * render_progress_indicator(), web/server.py. Reuses the .status-* palette above per stage. */
+.progress-indicator {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  list-style: none;
+  margin: 0 0 0.75rem 0;
+  padding: 0.5rem 0.75rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.progress-stage { white-space: nowrap; }
+
 .button-row { display: flex; gap: 0.5rem; align-items: center; margin: 0.75rem 0; }
 
 .check-results {
