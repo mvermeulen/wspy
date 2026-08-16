@@ -1080,8 +1080,10 @@ motivation and per-syscall design rationale. What remains open from this track:
 ### Installed-test-profile materialization deep-dive
 Investigated 2026-08-15 against real data on this host (54 installed tests under
 `~/.phoronix-test-suite/installed-tests/pts/`, plus the `workload/phoronix/*` suites already
-materialized here via the existing composite.xml/OpenBenchmarking import path) — feeds 4.4(c)'s
-"Materialize test points directly from installed/downloaded PTS test profiles" item above.
+materialized here via the existing composite.xml/OpenBenchmarking import path) — fed 4.4(c)'s
+"Materialize test points directly from installed/downloaded PTS test profiles" item, which has since
+shipped in full (both halves — see "Shipped since 4.3.1" above); this design write-up stays as the
+record of how it was arrived at.
 
 **The gap.** `materialize_phoronix_test_point()` (`web/joblib.py`) and `wspy-phoronix-import` already
 turn a Phoronix XML source into one single-test-point suite per (test, option-combination) — but every
@@ -1339,11 +1341,12 @@ and the `wspy-run` declarative-profile refactor (promoted to 4.4(a) above) — r
   (CLI flags, `--counters=` group names, web UI panels), since today's single vocabulary can feel
   AMD-centric on Intel hardware?** Raised 2026-07-22 off a real Intel Coremark run where several
   requested groups (`opcache`, `memory`) silently produced zero columns. Recommendation: no — don't fork
-  the vocabulary. The Preset/Configuration/Option deep-dive (now active 4.4(a) scope) already commits to
-  one vocabulary shared by the CLI/`wspy-run`/web UI specifically so none of them invents its own mental
-  model, and forking by vendor would double that surface while also making `wspy-summary`/`wspy-plot`'s
-  cross-run comparisons harder, since those already lean on shared column *identity* across vendors. The
-  actual problem is **coverage, not naming**: `intel_raw_events[]` has zero entries for
+  the vocabulary. The Preset/Configuration/Option deep-dive (its 4.4(a) scope has since shipped in full)
+  already commits to one vocabulary shared by the CLI/`wspy-run`/web UI specifically so none of them
+  invents its own mental model, and forking by vendor would double that surface while also making
+  `wspy-summary`/`wspy-plot`'s cross-run comparisons harder, since those already lean on shared column
+  *identity* across vendors. The actual problem is **coverage, not naming**: `intel_raw_events[]` has
+  zero entries for
   `COUNTER_OPCACHE`/`COUNTER_MEMORY` today, so those group names are silent no-ops on Intel with no
   warning — tracked as 4.5's Intel counter expansion item above. A follow-up worth scoping alongside that
   work: making coverage/capability reporting explicit about "not implemented on this vendor" vs.
