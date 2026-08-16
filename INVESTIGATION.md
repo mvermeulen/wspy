@@ -129,6 +129,37 @@ its GitHub release body is the notes at `https://github.com/mvermeulen/wspy/rele
 ## Shipped since 4.3.1
 Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-prep time.
 
+- One-click end-to-end pipeline — the → *published* leg, closing the item out entirely (both slices
+  now shipped; see the ingest-chaining slice entry below). The report page's "Publish test-point
+  report" button gains an opt-in "also push the report-root to its remote once committed" checkbox
+  (unchecked by default — today's exact behavior, local commit only, is unchanged unless a human
+  explicitly opts in) plus its own nested "Preview the push (dry-run)" checkbox, checked by default
+  even once push is opted into — two separate, explicit choices needed before anything is actually
+  pushed, not one, satisfying the "requires an explicit user confirmation before anything gets
+  posted" bar this item was built to. New `report_root.push_report_root()` runs real `git push`
+  (or `git push --dry-run` for the preview — git's own real dry-run, not a hand-rolled
+  approximation, so what it reports is exactly what a real push would do) against the resolved
+  report-root; `execute_testpoint_publish()` only reaches it after select-runs *and* render both
+  succeed, and the initial POST response's own command preview (already showing the ingest/
+  select-runs/render commands) now includes the push command too when requested, before the
+  pipeline even starts. Explicitly scoped to git-push only, not a WordPress-post of the report-root's
+  rendered content — no bridge from "test-point README.md committed in the report-root" to "posted
+  as a WordPress page" exists anywhere in this codebase today (the existing WordPress-publish
+  surfaces are both differently-scoped: a single run's own curated content via `wspy-publish
+  publish-page --from-rundir`, or the whole reference matrix via `scripts/publish_reference_matrix.py`)
+  — building that bridge would be a substantially larger, separate undertaking, not a natural
+  extension of this button, so it's left out rather than half-built. `report_root.py`'s own
+  top-of-file comment (previously an unqualified "nothing in this module ever pushes") is updated to
+  describe this one deliberate, explicitly-gated exception without weakening its own reasoning: still
+  never automatic, never a side effect of any other flow (not wired into `wspy-queue` or any
+  scheduled path), reachable only through this one explicit web-UI action. Verified against a real
+  running server with fake `wspy-store`/`wspy-testpoint` binaries and a real local bare git repo
+  standing in for the remote (no network access needed): confirmed the remote's ref is unchanged
+  after the default (push unchecked) case and the dry-run case, and confirmed it actually advances to
+  match the local commit after a real push — by SHA comparison, not just reading command output. Plus
+  new `web/test_report_root.py` (6 tests, entirely against real git operations, not mocks — including
+  a dedicated regression test pinning that calling `push_report_root()` with no `dry_run` argument at
+  all defaults to the safe, non-pushing behavior).
 - One-click end-to-end pipeline — ingest-chaining slice (item's own text: "a human runs `wspy-run`,
   then separately has to already know to run `wspy-store`'s ingest, `wspy-testpoint select-runs`,
   `wspy-testpoint render`, and a publish step"). The report page's existing "Publish test-point
@@ -868,19 +899,7 @@ the page indicating order or which are "normally do this" vs. optional; and per-
 `--hostname`+`--command` vs. `--hostname`+`--run-id`, depending which tool) have drifted apart tool by
 tool despite resolving near-identical shapes underneath.
 
-1. One-click end-to-end pipeline — remaining scope: the report page's existing "Publish test-point
-   report" button now chains ingested → selected → rendered into one action (the ingest-chaining slice
-   shipped — see "Shipped since 4.3.1" above), but that button's own render step still only *commits
-   locally* into the configured report-root, by deliberate, already-established design (see
-   `render_testpoint_card()`'s own comment: "this never pushes automatically" — a real, hard-to-reverse,
-   outward-facing action left as a separate, explicit step on purpose, not an oversight this item
-   should silently fold in). Remaining scope is genuinely the → *published* leg only: chaining an actual
-   git-push-the-report-root-remote and/or WordPress-post step onto the same button, gated behind a
-   dry-run/preview toggle before anything outward-facing happens — mirroring the caution
-   `scripts/publish_reference_matrix.py`'s web button already applies ("Preview (dry-run)" checked by
-   default) for exactly this reason. A CLI wrapper for the whole chain is a natural follow-on once the
-   web-UI sequencing is settled, not a prerequisite.
-2. CLI flag/identity consistency pass. Two concrete inconsistencies found in the 2026-08-07 audit: (1)
+1. CLI flag/identity consistency pass. Two concrete inconsistencies found in the 2026-08-07 audit: (1)
    `--phoronix-dest-root`/`--cpu2026-dest-root` are separate flags even though both suites resolve
    through the identical `find_materialized_*_test_point()` shape — every future suite added this way
    means another bespoke flag pair rather than one generic mechanism; (2) a run is identified three
@@ -889,22 +908,23 @@ tool despite resolving near-identical shapes underneath.
    undocumented as a single cross-tool convention anywhere a user would find it before hitting the
    surprise. Audit and, where safe, unify; where a difference is load-bearing, document it once in one
    place rather than re-deriving it per tool.
+
 **4.4(b) — GPU support:**
 
-3. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
+2. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
    heavier, optional trace-rich profile, same "default vs debug profile" pattern as IBS.
-4. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds on
+3. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds on
    4.2's GPU fusion layer (`gpu_fusion.c`, `--gpu-metrics`) for consistent per-metric data.
-5. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`, extended
+4. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`, extended
    once GPU runs feed the same index.
-6. Intel `i915` GPU PMU — an Intel-native busy/frequency alternative to the current AMD-sysfs/NVML-only
+5. Intel `i915` GPU PMU — an Intel-native busy/frequency alternative to the current AMD-sysfs/NVML-only
    GPU support, `perf_event_open()`-based rather than a vendor SMI/sysfs scrape. See the Intel hybrid /
    counter-grouping deep-dive for detail (the rest of that deep-dive's counter wishlist is non-GPU,
    tracked in 4.5).
 
 **4.4(c) — Phoronix suite build-out:**
 
-7. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
+6. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
    CSVs into per-test-case/per-trial datasets by correlating run manifests with PTS results,
    composite.xml, and log timestamps. See
    [phoronix_hook_investigation.md](file:///home/mev/source/wspy/doc/phoronix_hook_investigation.md)
@@ -914,12 +934,12 @@ tool despite resolving near-identical shapes underneath.
    `doc/INVESTIGATION_ARCHIVE.md`'s "Phoronix `result_notifier` hook capture" write-up. **Still open:**
    teaching `wspy-phoronix-segment.py` to prefer `pts_hooks.log` over composite.xml/log-timestamp
    correlation, and the segmentation tool itself.
-8. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
+7. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
    (`web/joblib.py`/`wspy-phoronix-import`/web launcher's Phoronix tab — see "What shipped in 4.3" for
    what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
    across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
    point, launched by a human clicking Run) exists today.
-9. Materialize test points directly from installed/downloaded PTS test profiles, with no prior PTS
+8. Materialize test points directly from installed/downloaded PTS test profiles, with no prior PTS
    run/import round-trip. Today's only materialization paths (`wspy-phoronix-import`, "What shipped in
    4.3") both require *evidence a specific option combination already ran* (an installed
    suite-definition.xml or a composite.xml result) — there's no path from "this test profile is

@@ -1345,6 +1345,8 @@
     var logEl = byId("testpoint-publish-log");
     var resultEl = byId("testpoint-publish-result");
     var machineEl = byId("testpoint-publish-machine");
+    var pushEl = byId("testpoint-publish-push");
+    var pushDryRunEl = byId("testpoint-publish-push-dry-run");
     if (!runButton || !logEl || !resultEl || !machineEl) return;
 
     runButton.addEventListener("click", function () {
@@ -1353,6 +1355,12 @@
         resultEl.textContent = "Machine slug is required.";
         return;
       }
+      // push/pushDryRun (INVESTIGATION.md 4.4(a) "One-click end-to-end pipeline", the -> published
+      // leg): push defaults false (opt-in), pushDryRun defaults true even once push is opted into --
+      // two separate, explicit choices needed before anything is actually pushed, matching
+      // execute_testpoint_publish()'s own server-side default-safe posture.
+      var push = !!(pushEl && pushEl.checked);
+      var pushDryRun = !pushDryRunEl || pushDryRunEl.checked;
       runButton.disabled = true;
       resultEl.textContent = "";
       logEl.hidden = false;
@@ -1361,7 +1369,7 @@
       fetch(runButton.dataset.testpointUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ machine: machine }),
+        body: JSON.stringify({ machine: machine, push: push, push_dry_run: pushDryRun }),
       })
         .then(function (resp) {
           return resp.json().then(function (data) {
@@ -1379,9 +1387,19 @@
             var payload = JSON.parse(ev.data);
             es.close();
             runButton.disabled = false;
-            resultEl.textContent = payload.status === "done"
-              ? "Done -- see output above for what was committed (local commit only, never pushed)."
-              : "Finished with errors -- see output above.";
+            if (payload.status !== "done") {
+              resultEl.textContent = "Finished with errors -- see output above.";
+            } else if (!push) {
+              resultEl.textContent = "Done -- see output above for what was committed "
+                + "(local commit only, never pushed).";
+            } else if (pushDryRun) {
+              resultEl.textContent = "Done -- committed locally; push was previewed only "
+                + "(dry-run), nothing was actually pushed. Uncheck \"Preview the push\" and run "
+                + "again to push for real.";
+            } else {
+              resultEl.textContent = "Done -- committed locally and pushed to the remote -- "
+                + "see output above.";
+            }
           });
           es.onerror = function () {
             runButton.disabled = false;
