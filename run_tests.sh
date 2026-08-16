@@ -886,6 +886,26 @@ if ! ./tests/wspy_run_resume_smoke.sh; then
     exit 1
 fi
 
+# wspy-sweep smoke tests (INVESTIGATION.md 4.2 Tier 2 "Comparison matrix mode"): same fake-wspy-run-
+# binary approach as wspy_queue_smoke.sh above, so this also needs no build/GPU axis and no root/perf
+# access -- run once here. wspy-sweep had no automated coverage at all before this.
+echo "Testing wspy-sweep smoke tests..."
+if ! ./tests/wspy_sweep_smoke.sh; then
+    echo "FAIL: wspy-sweep smoke tests failed"
+    exit 1
+fi
+
+# wspy-phoronix-batch smoke tests (INVESTIGATION.md 4.4(c) "wspy-run-profile-driven batchable
+# equivalent of the single-test-point Phoronix suite flow"): real materialized test-point fixtures,
+# isolated via PTS_USER_PATH (never the real ~/.phoronix-test-suite), a real wspy-sweep --dry-run
+# integration check plus a fake wspy-sweep for the full local-suite-copy/link-back path -- run once
+# here, same idiom as wspy_sweep_smoke.sh above.
+echo "Testing wspy-phoronix-batch smoke tests..."
+if ! ./tests/phoronix_batch_smoke.sh; then
+    echo "FAIL: wspy-phoronix-batch smoke tests failed"
+    exit 1
+fi
+
 # wspy-testpoint run role-assignment smoke tests (INVESTIGATION.md's
 # "Test-point-level curated performance-summary README deep-dive"): fake run/manifest fixtures and a
 # local bare git repo standing in for the report-root remote, so this needs no network access and no

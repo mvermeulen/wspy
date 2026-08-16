@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""
+wspy-phoronix-batch -- runs many already-materialized Phoronix test points non-interactively/
+scriptably in one invocation (INVESTIGATION.md 4.4(c) "wspy-run-profile-driven batchable equivalent
+of the single-test-point Phoronix suite flow"). Until now the only way to actually run a materialized
+test point (`workload/phoronix/<test>/<options>/`, `wspy-phoronix-import`'s own output) was the web
+launcher's Phoronix tab "Use in Run tab" button, one point at a time, launched by a human clicking Run
+-- this is that same preparation step (`web/joblib.py`'s `copy_phoronix_test_point_to_local_suite()`),
+applied to many points in one non-interactive call.
+
+Doesn't reimplement execution: builds a `wspy-sweep` spec (this tool's own `workloads[]` list, one
+entry per test point, each `command` a `phoronix-test-suite batch-run local/<identity>` invocation)
+and delegates to `wspy-sweep --spec` for the actual cross-product/dry-run/failure-tracking/
+store-ingest loop -- the same "a saved profile or -c file" driving each point's own instrumentation
+passes the backlog item's own text calls for is exactly `wspy-sweep`'s own `--profile`/`--config`
+(`-c`) duality, passed straight through. After a real (non-dry-run) sweep, reads `wspy-sweep`'s own
+`--summary-out` JSON to learn each point's real `run_id`/`rundir` and symlinks it back into that test
+point's own directory (`web/joblib.py`'s `link_phoronix_test_point_run()`) -- the same "browsable as a
+subdirectory of the test point" convenience "Use in Run tab" already gives a single manually-launched
+run, restored here for a whole batch.
+
+Three ways to pick which points to run, same shape wspy-phoronix-import's own multi-source flags use:
+
+    wspy-phoronix-batch --point svt-av1-preset-8 --point coremark-default --profile deep-cpu
+    wspy-phoronix-batch --points-file points.txt -c my-passes.conf
+    wspy-phoronix-batch --all --profile quick --dry-run
+
+`--points-file` is one identity per line ('#' comments and blank lines ignored, same convention
+`ledger.c`'s `--unavailable-deps` files and `wspy-phoronix-import --from-url`'s file form both use).
+`--all` batches every point currently materialized under `--dest`. All three degrade the same way for
+an identity that doesn't resolve to a real materialized point: skipped with a warning, never fatal for
+the rest of the batch -- matching this codebase's "degrade, don't fail" convention throughout.
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(SCRIPT_DIR, "web"))
+import joblib  # noqa: E402 -- reuses find_materialized_phoronix_test_point() and friends
+
+DEFAULT_DEST = "workload/phoronix"
+
+
+def fatal(msg):
+    print(f"wspy-phoronix-batch: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def parse_tags(tags):
+    parsed = {}
+    for t in tags:
+        if "=" not in t:
+            fatal(f"--tag expects <k>=<v>, got {t!r}")
+        k, v = t.split("=", 1)
+        parsed[k] = v
+    return parsed
+
+
+def load_points_file(path):
+    """One identity per line, '#' comments and blank lines ignored -- same convention
+    wspy-phoronix-import --from-url's own file-list form uses (both ultimately mirror
+    ledger.c's --unavailable-deps file grammar)."""
+    identities = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                identities.append(line)
+    return identities
+
+
+def resolve_points(args):
+    """Returns (points, unresolved) -- `points` a list of list_materialized_phoronix_test_points()-
+    shaped entries (needs at least "identity"/"dir"), `unresolved` the identity strings given
+    (via --point/--points-file) that didn't resolve to a real materialized point under --dest.
+    --all bypasses identity resolution entirely (it already enumerates real materialized points), so
+    it can never itself produce an unresolved entry."""
+    if args.all:
+        return joblib.list_materialized_phoronix_test_points(args.dest), []
+
+    identities = list(args.point)
+    if args.points_file:
+        identities += load_points_file(args.points_file)
+    seen = set()
+    identities = [i for i in identities if not (i in seen or seen.add(i))]
+
+    points, unresolved = [], []
+    for identity in identities:
+        entry = joblib.find_materialized_phoronix_test_point(args.dest, identity)
+        if entry:
+            points.append(entry)
+        else:
+            unresolved.append(identity)
+    return points, unresolved
+
+
+def build_sweep_spec(args, points):
+    """One wspy-sweep workload per point: `phoronix-test-suite batch-run local/<identity>`, the exact
+    command "Use in Run tab" already prefills for a single manually-launched point
+    (joblib.copy_phoronix_test_point_to_local_suite()'s own docstring). "profile"/"config_file" is
+    whichever of --profile/--config this call got -- wspy-sweep's own load_spec_from_args() already
+    enforces exactly one of the two, so no duplicate validation here."""
+    return {
+        "suite": args.suite,
+        "workloads": [{"name": p["identity"], "command": ["phoronix-test-suite", "batch-run",
+                                                            f"local/{p['identity']}"]}
+                       for p in points],
+        "axes": {"affinity": [v.strip() for v in args.affinity.split(",") if v.strip()]} if args.affinity else {},
+        "profile": args.profile,
+        "config_file": args.config,
+        "tags": parse_tags(args.tag),
+    }
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Run many already-materialized Phoronix test points non-interactively, via "
+                    "wspy-sweep, without a human clicking Run once per point.",
+        formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--point", action="append", default=[], metavar="IDENTITY",
+                      help="a materialized test point's identity (repeatable) -- as shown by "
+                           "wspy-phoronix-import --list-materialized")
+    src.add_argument("--points-file", metavar="FILE",
+                      help="a file with one test-point identity per line")
+    src.add_argument("--all", action="store_true",
+                      help="batch every test point currently materialized under --dest")
+    ap.add_argument("--dest", default=DEFAULT_DEST,
+                     help=f"materialized test-point root (default: {DEFAULT_DEST})")
+    ap.add_argument("--suite", default="phoronix",
+                     help="suite name for the unified output layout (default: phoronix, matching "
+                          "the existing single-point 'Use in Run tab' flow)")
+    ap.add_argument("--profile", help="wspy-run profile/preset for every point's own instrumentation "
+                                       "passes (mutually exclusive with --config)")
+    ap.add_argument("-c", "--config", help="wspy-run -c/--config pass-list file for every point's own "
+                                            "instrumentation passes (mutually exclusive with --profile)")
+    ap.add_argument("--affinity", help="comma-separated --affinity spec values, cross-producted "
+                                        "against every point (optional, passed through to wspy-sweep)")
+    ap.add_argument("--tag", action="append", default=[], metavar="K=V",
+                     help="uniform --config-option context tag, repeatable, applied to every point")
+    ap.add_argument("-o", "--outroot", default=".", help="output root directory (default: .)")
+    ap.add_argument("--run-index", help="shared run-index file (default: <outroot>/run-index.jsonl)")
+    ap.add_argument("--no-store-ingest", action="store_true", help="skip the post-batch wspy-store ingest step")
+    ap.add_argument("--no-link-back", action="store_true",
+                     help="skip symlinking each run back into its test point's own runs/ directory")
+    ap.add_argument("--dry-run", action="store_true",
+                     help="show which points/commands would run without launching anything")
+    ap.add_argument("--wspy-sweep-bin", default=os.path.join(SCRIPT_DIR, "wspy-sweep"))
+    args = ap.parse_args()
+
+    points, unresolved = resolve_points(args)
+    for identity in unresolved:
+        print(f"wspy-phoronix-batch: no materialized test point matching {identity!r} under "
+              f"{args.dest!r} -- skipping", file=sys.stderr)
+    if not points:
+        print("wspy-phoronix-batch: no materialized test points to run", file=sys.stderr)
+        return 2
+
+    print(f"wspy-phoronix-batch: {len(points)} test point(s): " +
+          ", ".join(p["identity"] for p in points), file=sys.stderr)
+    if not args.dry_run:
+        for p in points:
+            joblib.copy_phoronix_test_point_to_local_suite(p["dir"], p["identity"])
+
+    spec = build_sweep_spec(args, points)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec_path = os.path.join(tmpdir, "spec.json")
+        with open(spec_path, "w") as f:
+            json.dump(spec, f, indent=2)
+        summary_path = os.path.join(tmpdir, "summary.json")
+
+        argv = [args.wspy_sweep_bin, "--spec", spec_path, "-o", args.outroot]
+        if args.run_index:
+            argv += ["--run-index", args.run_index]
+        if args.no_store_ingest:
+            argv += ["--no-store-ingest"]
+        if args.dry_run:
+            argv += ["--dry-run"]
+        else:
+            argv += ["--summary-out", summary_path]
+
+        rc = subprocess.run(argv).returncode
+
+        if not args.dry_run and not args.no_link_back and os.path.isfile(summary_path):
+            with open(summary_path) as f:
+                summary = json.load(f)
+            by_identity = {p["identity"]: p for p in points}
+            for entry in summary:
+                point = by_identity.get(entry["workload_name"])
+                if not point:
+                    continue
+                if joblib.link_phoronix_test_point_run(point["dir"], entry["run_id"], entry["rundir"]):
+                    print(f"wspy-phoronix-batch: linked {point['identity']} -> "
+                          f"{point['dir']}/runs/{entry['run_id']}", file=sys.stderr)
+
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

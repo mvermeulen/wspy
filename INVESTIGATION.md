@@ -129,6 +129,53 @@ its GitHub release body is the notes at `https://github.com/mvermeulen/wspy/rele
 ## Shipped since 4.3.1
 Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-prep time.
 
+- `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow,
+  closing 4.4(c) out entirely. New top-level `wspy-phoronix-batch` runs many already-materialized
+  test points (`workload/phoronix/<test>/<options>/`) non-interactively in one call — until now the
+  only way to actually run a materialized point was the web launcher's Phoronix tab "Use in Run tab"
+  button, one point at a time, by a human clicking Run. Three ways to pick which points to run
+  (`--point <identity>`, repeatable; `--points-file <file>`, one identity per line, `#`-comments/
+  blanks ignored; `--all`, every point materialized under `--dest`), with an identity that doesn't
+  resolve skipped with a warning rather than aborting the whole batch. Deliberately doesn't
+  reimplement execution: builds a `wspy-sweep --spec` (one `workloads[]` entry per point, each
+  command a `phoronix-test-suite batch-run local/<identity>` — the same command "Use in Run tab"
+  already prefills for a single manually-launched point) and delegates to `wspy-sweep` itself for the
+  actual cross-product/dry-run/failure-tracking/store-ingest loop, mirroring
+  `wspy-phoronix-import`'s own precedent of being a thin CLI wrapper around shared logic rather than
+  duplicating an execution loop.
+
+  Getting there required two small `wspy-sweep` extensions, both real, well-justified gaps rather
+  than scope creep for this item: (1) `wspy-sweep`'s own module docstring already claimed to mirror
+  `wspy-run`'s own builtin-profile-vs-`-c`-file duality, but only the `"profile"` half was actually
+  implemented — a real, confirmed gap, now closed with a `"config_file"` spec key and `-c`/`--config`
+  CLI flag, backward-compatible with every existing `"profile"`-only usage; (2)
+  `wspy-phoronix-batch` needs to learn each batched point's own `run_id`/`rundir` afterward, to
+  symlink it back into that point's own `runs/` directory the way "Use in Run tab" already does for
+  a single manually-launched run — rather than duplicating `wspy-sweep`'s internal run_id-generation
+  logic or fragile stdout-scraping, `wspy-sweep` gained a clean `--summary-out <file>` flag that
+  writes a JSON list of `{cell_id, workload_name, run_id, rundir, exit_code}` after a real
+  (non-dry-run) sweep (never written on `--dry-run`, since nothing real happened); `cell_run_id()`
+  was factored out as a shared helper to keep the id actually used and the id reported in sync by
+  construction.
+
+  Also closed a real, pre-existing test-coverage gap found while trusting `wspy-sweep` as a new
+  dependency: it had zero automated tests before this. New `tests/wspy_sweep_smoke.sh` (12
+  scenarios: quick-form `--profile`/`--config` dry-runs, mutual-exclusivity rejection both directions
+  and both invocation shapes, the `--affinity` cross-product verified against a fake `wspy-run`'s own
+  recorded argv, spec-file `"profile"`/`"config_file"` real invocations, `--summary-out` shape
+  verification, `--summary-out` correctly absent on `--dry-run`, and failing-cell reporting that
+  still runs every remaining cell) and new `tests/phoronix_batch_smoke.sh` (8 scenarios against real
+  materialized test points via `joblib.materialize_phoronix_test_point()`, isolated via
+  `PTS_USER_PATH`: unknown-identity skip, `--dry-run` never touching `test-suites/local/`, `--all`
+  vs. `--point` scoping, `--points-file` comment/blank handling, a real `wspy-sweep --dry-run`
+  integration check proving the two tools' spec-JSON interface actually matches rather than just
+  that a fake stand-in accepts it, a real batch against a fake `wspy-sweep` verifying local-suite
+  copy + `--summary-out` consumption + `runs/` symlink-back, and `--no-link-back` skipping that last
+  step), both wired into `run_tests.sh`. Found and fixed a real bug in the new sweep smoke test
+  itself along the way (not in `wspy-sweep`): a bash line consisting only of variable assignments
+  before an `if` (`if WSPY_RUN_FAIL_ON=TRIGGER_FAIL OUT="$(...)"; then`) doesn't export that variable
+  into the command substitution's subshell, so the induced-failure scenario never actually failed
+  until rewritten as an explicit `export`/`unset` pair around the `if` block.
 - Phoronix-specific telemetry segmentation, closing the item out entirely — the real segmentation
   tool (`doc/phoronix_hook_investigation.md`'s own "nothing yet consumes `pts_hooks.log`" was the
   actual remainder). New top-level `wspy-phoronix-segment` (mirroring `wspy-phoronix-import`'s own
@@ -1170,11 +1217,8 @@ recent one (CLI flag/identity consistency pass).
 
 **4.4(c) — Phoronix suite build-out:**
 
-5. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
-   (`web/joblib.py`/`wspy-phoronix-import`/web launcher's Phoronix tab — see "What shipped in 4.3" for
-   what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
-   across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
-   point, launched by a human clicking Run) exists today.
+All 4.4(c) items have now shipped — see "Shipped since 4.3.1" below for the most recent one
+(`wspy-phoronix-batch`).
 
 ## 4.5 priorities
 Goal: lower priority than 4.4 but still real, wanted work — pick up once 4.4's three focus areas are
