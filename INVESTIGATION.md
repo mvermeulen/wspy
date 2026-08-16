@@ -129,6 +129,39 @@ its GitHub release body is the notes at `https://github.com/mvermeulen/wspy/rele
 ## Shipped since 4.3.1
 Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-prep time.
 
+- Detect and resume interrupted `wspy-run` profiles (item 6), Phase B — resume, skipping completed
+  passes (item now fully shipped, both phases; see the Phase A entry below). New `wspy-run --resume
+  <existing-run-dir>` flag: derives `--suite`/`--benchmark`/`--run-id`/`--outdir` from the resumed
+  directory's own unified-layout path (rejects an explicit `--suite`/`--benchmark`/`--run-id`/
+  `--prefix` alongside it, and a directory that already has a top-level `manifest.json` -- nothing
+  to resume), then runs the given profile/config exactly as a fresh invocation would, except each
+  pass is skipped when it already has a clean-exit manifest recording the *exact* configuration this
+  invocation would run now. Exact-match via a new `pass_flags_hash` (`compute_pass_flags_hash()`,
+  `wspy-run`) -- a hash of that pass's own flags + `--affinity` + the workload argv (deliberately
+  *not* `--config-option`'s own caller-supplied metadata tags, which "never affect what a pass
+  actually does" per that flag's own `--help` text) -- now recorded via
+  `--config-option pass_flags_hash=<hash>` on *every* pass, not just resumed ones, so a later
+  `--resume` always has something on disk to compare against even for a run that completes normally
+  the first time. The actual JSON comparison (`exit_status` clean *and* `pass_flags_hash` match)
+  lives in new `scripts/pass_resume_check.py` rather than hand-rolled bash JSON parsing -- same
+  "shell out to python3 for anything that needs a real parse" posture `estimate_tree_timeout.py`
+  already established for this script; `python3` unavailable degrades to "always rerun", never
+  blocking a run over a missing capability. A skipped pass gets a new `PASS_STATUS` value,
+  `"skipped"` (`doc/ARTIFACT_CONTRACT.md`'s `passes[].status` enum updated), treated identically to
+  `"ok"` by `run_status_from_passes()` (`web/server.py`) and the report page's per-pass status
+  styling -- a resumed run isn't a failure just because some passes weren't re-executed. Never
+  resumes a pass that was itself interrupted mid-execution: no manifest at all (`--manifest` is the
+  last thing a wspy invocation writes) falls straight through to a real rerun, covered by the same
+  missing-manifest path as any other skip-ineligible pass, no separate check needed. Verified via a
+  new `tests/wspy_run_resume_smoke.sh` (14 checks, wired into `run_tests.sh` alongside
+  `wspy_queue_smoke.sh`, same fake-`wspy`-binary approach, no build/GPU axis or root/perf access
+  needed) covering: full skip on an identical resume, full rerun on a changed workload command
+  (hash mismatch), mixed skip+rerun when only one pass has its own manifest, `--dry-run --resume`
+  reporting skip decisions without touching the filesystem, and rejection of an already-finished
+  directory -- plus `scripts/test_pass_resume_check.py` (9 tests) and
+  `RunStatusFromPassesTest` (`web/test_incomplete_run.py`, 5 tests). Deliberately CLI-only for now,
+  no web-UI "resume" button -- a reasonable fast-follow once this mechanism has seen real use, not
+  bundled into this slice.
 - Detect and resume interrupted `wspy-run` profiles (item 6), Phase A — surface incompleteness
   (Phase B, actually resuming, remains open): `generate_manifest()` (`wspy-run`) only writes the
   run-level `manifest.json` after every pass finishes, so a mid-loop crash (the motivating case: a
@@ -743,20 +776,7 @@ tool despite resolving near-identical shapes underneath.
    run→store→summarize→publish sequence from first principles. Add a single "benchmark X, get a
    published report" walkthrough near the top of `README.md`, and consider surfacing the same sequence
    as a first-run hint in the web UI.
-6. Detect and resume interrupted `wspy-run` profiles (raised after a real host crash mid-batch, twice,
-   with no way to tell from a report that the run never finished, or to resume without redoing completed
-   passes). Two phases, second depends on first — **Phase A has shipped, see "Shipped since 4.3.1"
-   above; remaining scope is Phase B:**
-   - **Phase B — resume, skipping completed passes.** `wspy-run --resume <existing-run-dir>` reuses the
-     existing `RUNROOT`/`RUN_ID`; for each pass, skip re-running only if its own manifest exists with a
-     clean exit *and* its recorded configuration exactly matches what this invocation would run now
-     (exact-match, via a new `--config-option pass_flags_hash=<hash>` provenance field) — never resumes a
-     pass that was itself interrupted mid-execution. Phase A's `detect_incomplete_wspy_run()`
-     (`web/server.py`) already computes `completed_passes`/`preset` from the same on-disk evidence
-     Phase B would need to decide what to skip — reuse it rather than re-deriving.
-   - Distinct from `wspy-queue`'s job lifecycle and from 4.5's much heavier config-first experiment
-     system.
-7. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead of
+6. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead of
    running it now" checkbox) is visible today only via `wspy-queue list`/`show`, not from the web UI
    itself. Bundle in sharing structured configuration provenance with the job format (`web/joblib.py`'s
    job schema and `manifest.h`'s `configuration_provenance` are designed to be close in shape but aren't
@@ -764,20 +784,20 @@ tool despite resolving near-identical shapes underneath.
 
 **4.4(b) — GPU support:**
 
-8. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
+7. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
    heavier, optional trace-rich profile, same "default vs debug profile" pattern as IBS.
-9. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds on
+8. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds on
    4.2's GPU fusion layer (`gpu_fusion.c`, `--gpu-metrics`) for consistent per-metric data.
-10. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`, extended
-    once GPU runs feed the same index.
-11. Intel `i915` GPU PMU — an Intel-native busy/frequency alternative to the current AMD-sysfs/NVML-only
+9. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`, extended
+   once GPU runs feed the same index.
+10. Intel `i915` GPU PMU — an Intel-native busy/frequency alternative to the current AMD-sysfs/NVML-only
     GPU support, `perf_event_open()`-based rather than a vendor SMI/sysfs scrape. See the Intel hybrid /
     counter-grouping deep-dive for detail (the rest of that deep-dive's counter wishlist is non-GPU,
     tracked in 4.5).
 
 **4.4(c) — Phoronix suite build-out:**
 
-12. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
+11. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
     CSVs into per-test-case/per-trial datasets by correlating run manifests with PTS results,
     composite.xml, and log timestamps. See
     [phoronix_hook_investigation.md](file:///home/mev/source/wspy/doc/phoronix_hook_investigation.md)
@@ -787,12 +807,12 @@ tool despite resolving near-identical shapes underneath.
     `doc/INVESTIGATION_ARCHIVE.md`'s "Phoronix `result_notifier` hook capture" write-up. **Still open:**
     teaching `wspy-phoronix-segment.py` to prefer `pts_hooks.log` over composite.xml/log-timestamp
     correlation, and the segmentation tool itself.
-13. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
+12. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
     (`web/joblib.py`/`wspy-phoronix-import`/web launcher's Phoronix tab — see "What shipped in 4.3" for
     what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
     across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
     point, launched by a human clicking Run) exists today.
-14. Materialize test points directly from installed/downloaded PTS test profiles, with no prior PTS
+13. Materialize test points directly from installed/downloaded PTS test profiles, with no prior PTS
     run/import round-trip. Today's only materialization paths (`wspy-phoronix-import`, "What shipped in
     4.3") both require *evidence a specific option combination already ran* (an installed
     suite-definition.xml or a composite.xml result) — there's no path from "this test profile is

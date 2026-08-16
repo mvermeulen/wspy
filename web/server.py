@@ -695,9 +695,13 @@ def run_status_from_exit_status(exit_status):
 
 
 def run_status_from_passes(passes):
+    # "skipped" (item 6 Phase B, wspy-run --resume) means this pass was already confirmed
+    # cleanly-completed by an earlier, interrupted attempt and deliberately not rerun -- not a
+    # failure, and not distinguishable from "ok" at this granularity, so it counts the same way
+    # towards the overall run status.
     if not passes:
         return "unknown"
-    return "ok" if all(p.get("status") == "ok" for p in passes) else "failed"
+    return "ok" if all(p.get("status") in ("ok", "skipped") for p in passes) else "failed"
 
 
 def find_representative_host_manifest(rundir, run_manifest):
@@ -5109,7 +5113,7 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
         output = p.get("output")
         pass_manifest = p.get("manifest")
         status = p.get("status", "?")
-        status_class = "" if status == "ok" else ' class="muted"'
+        status_class = "" if status in ("ok", "skipped") else ' class="muted"'
         raw.append(f"<li><strong>{html.escape(name)}</strong> "
                    f"<span{status_class}>[{html.escape(status)}]</span><br>")
         if output:

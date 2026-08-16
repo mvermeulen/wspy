@@ -43,6 +43,7 @@ UNIFIED=0
 RUNROOT=""
 AFFINITY=""
 CONFIG_OPTIONS=()
+RESUME_DIR=""
 
 declare -A PASS_EXT PASS_OUTFILE PASS_MANIFEST PASS_IS_TREE PASS_STATUS PASS_PTSLOG
 
@@ -180,6 +181,19 @@ Options:
                             provenance, queryable later via wspy-summary
                             --group-by-option <k>. Never affects what a pass
                             actually does.
+  --resume <run-dir>        Resume an interrupted unified-layout run directory (item 6 Phase B,
+                            INVESTIGATION.md 4.4(a) "Detect and resume interrupted wspy-run
+                            profiles") instead of starting a new one -- --suite/--benchmark/
+                            --run-id are derived from <run-dir> itself (an existing
+                            <outdir>/<suite>/<benchmark>/<run-id>/ directory with no top-level
+                            manifest.json yet -- see the web report's own "incomplete run"
+                            detection) and must not be passed separately. The profile/config and
+                            workload command are given exactly as they would be for a fresh
+                            invocation of the same run; each pass is skipped only if it already
+                            has its own manifest recording a clean exit *and* the exact same
+                            configuration (flags + --affinity + workload argv) this invocation
+                            would run now -- never a pass that was itself interrupted
+                            mid-execution (no manifest at all means it never finished).
   --list                   List builtin profiles and their passes, then exit
   --dry-run                Print the wspy command for each pass without running it
   -h, --help                Show this help
@@ -241,6 +255,8 @@ Examples:
   $SCRIPT_NAME -o results/503.bwaves --run-index results/index.jsonl deep-cpu -- \\
       runcpu --config mev-aocc.cfg --action=validate --tune base 503.bwaves_r
   $SCRIPT_NAME --dry-run -c my-passes.conf -- sleep 1
+  $SCRIPT_NAME --resume results/cpu2026/803.bzip2_s/20260816T020617 deep-cpu -- \\
+      runcpu --config mev-aocc.cfg --action=validate --tune base 803.bzip2_s
 EOF
 }
 
@@ -467,6 +483,22 @@ estimate_tree_pass_timeouts(){
   done
 }
 
+# --resume (item 6 Phase B): a hash of everything that determines one pass's actual behavior --
+# its own flags, --affinity (a real placement decision), and the workload argv -- deliberately
+# NOT --config-option's own CONFIG_OPTIONS (metadata-only tags that "never affect what a pass
+# actually does" per that flag's own --help text above, so a resume with a different tag value
+# but otherwise-identical behavior should still be free to skip). Recorded via
+# --config-option pass_flags_hash=<hash> on *every* run_pass() call, not just when --resume is
+# in play, so a later --resume invocation always has something on disk to compare against, even
+# for a run that completes normally on its first attempt. sha256sum truncated to 16 hex chars --
+# a manifest field for exact-match comparison, not a security boundary, so collision resistance
+# at full width buys nothing here.
+compute_pass_flags_hash(){
+  local flags="$1"
+  { printf '%s\n' "$flags"; printf '%s\n' "$AFFINITY"; printf '%s\x1f' "${WORKLOAD[@]}"; } \
+    | sha256sum | cut -c1-16
+}
+
 run_pass(){
   local name="$1" flags="$2" timeout_secs="${3:-}"
   local ext="txt"
@@ -515,6 +547,9 @@ run_pass(){
     cmd+=(--preset-name "$PROFILE")
   fi
   cmd+=(--config-name "$name")
+  local pass_hash
+  pass_hash="$(compute_pass_flags_hash "$flags")"
+  cmd+=(--config-option "pass_flags_hash=${pass_hash}")
   cmd+=(-- "${WORKLOAD[@]}")
 
   PASS_EXT["$name"]="$ext"
@@ -525,6 +560,21 @@ run_pass(){
     *" --tree "*) PASS_IS_TREE["$name"]=1 ;;
     *) PASS_IS_TREE["$name"]=0 ;;
   esac
+
+  # --resume (item 6 Phase B): skip this pass entirely if it already completed, cleanly, with
+  # this exact configuration. Never a pass that was itself interrupted mid-execution -- no
+  # manifest at all (--manifest is the last thing a wspy invocation writes) falls straight
+  # through to a real rerun below, same as pass_resume_check.py's own missing-manifest case.
+  # python3 unavailable degrades to "always rerun" -- never blocks a run over a missing
+  # capability, same posture estimate_tree_pass_timeouts() above already established. Checked
+  # before the DRY_RUN branch so --dry-run --resume also reports what would actually happen.
+  if [ -n "$RESUME_DIR" ] && [ -n "$manifest_file" ] && [ -f "$manifest_file" ] \
+     && command -v python3 >/dev/null 2>&1 \
+     && python3 "${SCRIPT_DIR}/scripts/pass_resume_check.py" "$manifest_file" "$pass_hash"; then
+    echo "[$name] skipping -- already completed with this exact configuration (--resume)" >&2
+    PASS_STATUS["$name"]="skipped"
+    return 0
+  fi
 
   if [ "$DRY_RUN" -eq 1 ]; then
     printf '[%s] ' "$name"
@@ -709,6 +759,9 @@ while [ $# -gt 0 ]; do
     --config-option)
       [ $# -ge 2 ] || { echo "$SCRIPT_NAME: $1 requires an argument" >&2; exit 1; }
       CONFIG_OPTIONS+=("$2"); shift 2 ;;
+    --resume)
+      [ $# -ge 2 ] || { echo "$SCRIPT_NAME: $1 requires an argument" >&2; exit 1; }
+      RESUME_DIR="$2"; shift 2 ;;
     --list)
       LIST_ONLY=1; shift ;;
     --dry-run)
@@ -746,6 +799,34 @@ fi
 if [ ${#WORKLOAD[@]} -eq 0 ]; then
   echo "$SCRIPT_NAME: missing workload command after --" >&2
   exit 1
+fi
+
+# --resume (item 6 Phase B): derive --suite/--benchmark/--run-id/--outdir from the resumed
+# directory's own unified-layout path (<outdir>/<suite>/<benchmark>/<run-id>/, the only shape
+# this scenario ever applies to -- item 6's whole premise is a --suite/--benchmark run) rather
+# than requiring the caller to pass all four separately and keep them consistent by hand.
+if [ -n "$RESUME_DIR" ]; then
+  if [ -n "$SUITE" ] || [ -n "$BENCHMARK" ] || [ -n "$RUN_ID" ]; then
+    echo "$SCRIPT_NAME: --resume derives --suite/--benchmark/--run-id from the resumed directory itself; don't pass them separately" >&2
+    exit 1
+  fi
+  if [ -n "$PREFIX" ]; then
+    echo "$SCRIPT_NAME: --resume cannot be combined with --prefix" >&2
+    exit 1
+  fi
+  if [ ! -d "$RESUME_DIR" ]; then
+    echo "$SCRIPT_NAME: --resume directory does not exist: $RESUME_DIR" >&2
+    exit 1
+  fi
+  if [ -f "${RESUME_DIR%/}/manifest.json" ]; then
+    echo "$SCRIPT_NAME: --resume directory already has a top-level manifest.json -- this run already finished, nothing to resume: $RESUME_DIR" >&2
+    exit 1
+  fi
+  RESUME_DIR="$(cd "$RESUME_DIR" && pwd)"  # canonicalize so the basename/dirname walk below is reliable
+  RUN_ID="$(basename "$RESUME_DIR")"
+  BENCHMARK="$(basename "$(dirname "$RESUME_DIR")")"
+  SUITE="$(basename "$(dirname "$(dirname "$RESUME_DIR")")")"
+  OUTDIR="$(dirname "$(dirname "$(dirname "$RESUME_DIR")")")"
 fi
 
 if [ -n "$SUITE" ] || [ -n "$BENCHMARK" ]; then

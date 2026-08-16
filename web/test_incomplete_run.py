@@ -39,6 +39,31 @@ def write_pass_manifest(rundir, name, preset=None, configuration=None, argv=None
         json.dump(doc, f)
 
 
+class RunStatusFromPassesTest(unittest.TestCase):
+    """Item 6 Phase B: a resumed run's "skipped" passes (wspy-run --resume) must count the same
+    as "ok" towards the overall run status, not read as a failure just because they weren't
+    re-executed."""
+
+    def test_all_ok_is_ok(self):
+        self.assertEqual(server.run_status_from_passes([{"status": "ok"}, {"status": "ok"}]), "ok")
+
+    def test_mix_of_ok_and_skipped_is_ok(self):
+        self.assertEqual(
+            server.run_status_from_passes([{"status": "ok"}, {"status": "skipped"}]), "ok")
+
+    def test_all_skipped_is_ok(self):
+        self.assertEqual(
+            server.run_status_from_passes([{"status": "skipped"}, {"status": "skipped"}]), "ok")
+
+    def test_any_wspy_error_is_failed_even_with_skipped_passes(self):
+        self.assertEqual(
+            server.run_status_from_passes([{"status": "skipped"}, {"status": "wspy-error"}]),
+            "failed")
+
+    def test_empty_is_unknown(self):
+        self.assertEqual(server.run_status_from_passes([]), "unknown")
+
+
 class DetectIncompleteWspyRunTest(unittest.TestCase):
     def test_empty_directory_returns_none(self):
         with tempfile.TemporaryDirectory() as rundir:
