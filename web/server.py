@@ -1951,14 +1951,24 @@ def render_block_content(rundir, base_url, block):
     return f'<pre>{html.escape(text)}</pre>'
 
 
+def _curation_has_content(curation):
+    """True if a loaded curation.json (load_curation()'s return, possibly None) has anything
+    render_curated_section() below would actually render -- at least one non-"none"-depth block, or
+    a non-empty overview note. Factored out so render_progress_indicator()'s "Curate" stage check
+    (item 2, "Report-page guided flow / progress indicator") can ask the same yes/no question
+    cheaply, without rendering every included block's full content just to throw it away."""
+    if not curation:
+        return False
+    included = any(b.get("depth", "none") != "none" for b in curation.get("blocks", []))
+    return included or bool(curation.get("overview_note"))
+
+
 def render_curated_section(rundir, base_url, suite, benchmark, run_id):
     curation = load_curation(rundir)
-    if not curation:
+    if not _curation_has_content(curation):
         return ""
     included = [b for b in curation.get("blocks", []) if b.get("depth", "none") != "none"]
     overview_note = curation.get("overview_note", "")
-    if not included and not overview_note:
-        return ""
     parts = ["<h2>Curated view</h2>"]
     if overview_note:
         parts.append(f'<p class="overview-note">{html.escape(overview_note)}</p>')
@@ -1973,6 +1983,66 @@ def render_curated_section(rundir, base_url, suite, benchmark, run_id):
         parts.append(render_block_content(rundir, base_url, b))
         parts.append("</div>")
     return "".join(parts)
+
+
+# Run/Curate/Characterize/Publish stage label+CSS-class, keyed by each stage's own local check
+# below -- reuses the existing .status-{ok,warn,unknown,failed,incomplete} palette (style.css)
+# rather than a progress-indicator-specific one, same precedent item 6's job-state badges set.
+_PROGRESS_RUN_STAGE = {
+    "ok": ("done", "status-ok"), "skipped": ("done", "status-ok"),
+    "failed": ("failed", "status-failed"), "incomplete": ("incomplete", "status-incomplete"),
+    "unknown": ("unknown", "status-unknown"),
+}
+
+
+def render_progress_indicator(rundir, suite, benchmark, run_id, run_status):
+    """Item 2 (4.4(a), "Report-page guided flow / progress indicator"): a lightweight
+    Run/Curate/Characterize/Publish summary at the top of every report shape, so a reader sees
+    "where in the workflow is this run" at a glance instead of discovering the ~10 existing
+    cards/buttons below only by scrolling. Presentation/sequencing only, per the item's own scope
+    note -- every stage reuses state a caller already has (run_status) or a cheap local check
+    (curation.json content, characterization-badge file presence, WordPress credentials
+    configured), never anything newly expensive to compute.
+
+    Deliberately never makes a live WordPress call to check "already published" -- that's a real,
+    slower, network/credential-dependent lookup this codebase already has
+    (resolve_reference_matrix_row_publish_status(), for the reference-matrix page a human
+    navigates to deliberately), inappropriate to run unconditionally on every single report page
+    view. The Publish stage instead shows only whether publishing is set up at all (one local file
+    read via wp_client.load_config()) -- "actually published, and where" stays the export/publish
+    cards' own job below, which already show it live once a human clicks in."""
+    run_label, run_class = _PROGRESS_RUN_STAGE.get(run_status, ("unknown", "status-unknown"))
+
+    curation = load_curation(rundir)
+    if _curation_has_content(curation):
+        curate_label, curate_class = "curated", "status-ok"
+    elif curation:
+        curate_label, curate_class = "started", "status-warn"
+    else:
+        curate_label, curate_class = "not started", "status-unknown"
+
+    has_characterization = (os.path.isfile(os.path.join(rundir, ARCHETYPE_BADGE_NAME))
+                             or os.path.isfile(os.path.join(rundir, ARCHETYPE_SIMILAR_NAME)))
+    char_label, char_class = (("generated", "status-ok") if has_characterization
+                               else ("not generated", "status-unknown"))
+
+    publish_label, publish_class = (("configured", "status-warn") if wp_client.load_config()
+                                     else ("not configured", "status-unknown"))
+
+    studio_url = f"/studio/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    stages = [
+        ("Run", run_label, run_class, None),
+        ("Curate", curate_label, curate_class, studio_url),
+        ("Characterize", char_label, char_class, studio_url),
+        ("Publish", publish_label, publish_class, studio_url),
+    ]
+    items = "".join(
+        f'<li class="progress-stage">{html.escape(name)}: '
+        f'<span class="{cls}">{html.escape(label)}</span>'
+        + (f' <a href="{url}">&rarr;</a>' if url else "") + "</li>"
+        for name, label, cls, url in stages
+    )
+    return f'<ul class="progress-indicator">{items}</ul>'
 
 
 # ---------------------------------------------------------------------------
@@ -5145,8 +5215,11 @@ def render_fixed_report(rundir, suite, benchmark, run_id):
     # is picked up automatically instead of needing this function touched.
     config_provenance = read_manifest_config_provenance(manifest_path)
     rerun_preset, rerun_checklist = checklist_from_pass_provenance([config_provenance])
+    host_manifest = read_json_file(manifest_path)
+    run_status = run_status_from_exit_status(host_manifest.get("exit_status") if host_manifest else None)
 
-    parts = [f"<h1>Report: {html.escape(suite)} / {html.escape(benchmark)} / {html.escape(run_id)}</h1>"]
+    parts = [f"<h1>Report: {html.escape(suite)} / {html.escape(benchmark)} / {html.escape(run_id)}</h1>",
+             render_progress_indicator(rundir, suite, benchmark, run_id, run_status)]
 
     if workload_str:
         parts.append(f"<p>Workload: <code>{html.escape(workload_str)}</code></p>")
@@ -5219,9 +5292,9 @@ def render_incomplete_run_report(rundir, suite, benchmark, run_id, incomplete):
     thinner than render_wspy_run_report()'s own per-pass card treatment -- there's no run-level
     manifest to drive a rich per-pass listing (which output file/manifest/pts_hooks_log belongs to
     which pass, by name), so this reuses collect_run_files()'s own generic raw-file listing (already
-    exercised by render_fixed_report() below) rather than inventing a second, narrower one. Phase B
-    (wspy-run --resume, INVESTIGATION.md item 6's remaining scope) is what turns this from a dead end
-    into an actionable "finish what's left" flow; for now this is read-only surfacing."""
+    exercised by render_fixed_report() below) rather than inventing a second, narrower one.
+    `wspy-run --resume` (INVESTIGATION.md's "Detect and resume interrupted wspy-run profiles",
+    Phase B) is the actionable "finish what's left" flow; this page is read-only surfacing."""
     base = f"/files/{suite}/{benchmark}/{run_id}"
     completed = incomplete["completed_passes"]
     total = incomplete["expected_total"]
@@ -5232,6 +5305,7 @@ def render_incomplete_run_report(rundir, suite, benchmark, run_id, incomplete):
     preset_note = f' (preset &ldquo;{html.escape(incomplete["preset"])}&rdquo;)' if incomplete["preset"] else ""
 
     parts = [f"<h1>Report: {html.escape(suite)} / {html.escape(benchmark)} / {html.escape(run_id)}</h1>",
+             render_progress_indicator(rundir, suite, benchmark, run_id, "incomplete"),
              f'<p class="config-label status-incomplete">&#9888; Incomplete run &mdash; {progress}'
              f'{preset_note}. No top-level manifest.json was ever written, meaning the wspy-run '
              f'invocation that produced this directory never reached its final pass -- most likely '
@@ -5290,6 +5364,8 @@ def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
     rerun_preset, rerun_checklist = checklist_from_pass_provenance(pass_provenance)
 
     parts = [f"<h1>Report: {html.escape(suite)} / {html.escape(benchmark)} / {html.escape(run_id)}</h1>",
+             render_progress_indicator(rundir, suite, benchmark, run_id,
+                                        run_status_from_passes(passes)),
              '<p class="muted">Produced by the wspy-run profile launcher (item 7) or the Run tab\'s '
              'configuration checklist (item 9).</p>']
 
