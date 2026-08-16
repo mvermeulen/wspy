@@ -813,12 +813,30 @@ that expands a whole multi-axis matrix in one call — e.g. llama.cpp's real Bac
 axes multiply to 160 combinations on this host — picking only the tuples actually wanted is the
 point, not something a convenience flag should quietly do instead.
 
+A fifth method, `--from-url <url-or-file-or-->`, seeds candidate points straight from a *published*
+Phoronix article instead of anything installed here yet: right-click "open in new tab" on any chart
+in an article to get its own result URL (e.g.
+`phoronix.com/benchmark/result/<article-slug>/<chart-slug>.svgz`), paste one or more (repeatable, or
+a file/`-` for stdin — handles pasting many at once from a multi-benchmark article). The article page
+itself isn't fetchable server-side (Cloudflare blocks it, same posture `--result` already documents
+for openbenchmarking.org), so each URL's own slug is matched against locally known test profiles'
+titles, then resolved **per axis independently** against that test's real option entries — never the
+full cross product, and never a guess: an axis with no confident match is reported, not picked, for
+completing by hand with `--option`. Only a fully-resolved URL materializes automatically:
+
+```
+./wspy-phoronix-import --from-url https://www.phoronix.com/benchmark/result/some-article/svt-av1-preset-8-bosphorus-1080p.png
+./wspy-phoronix-import --from-url urls.txt --dry-run    # a whole pasted/saved batch, one per line
+```
+
 Re-running against the same source is additive: an already-materialized `<test>/<options>/`
 directory is left untouched and reported as `exists` rather than overwritten. Materializing itself
 doesn't copy anything into `~/.phoronix-test-suite/test-suites/local/`, run anything, or install
 anything; the INSTALLED column (from `phoronix-test-suite info`) just flags which points still need
 `phoronix-test-suite install` run by hand. The web launcher's Phoronix tab drives the identical
-logic (all four source methods, including "Installed test profile" — pick a test ID, click
+logic for the first four source methods (`--from-url` is CLI-only for now, see INVESTIGATION.md's
+"Published-article/chart-URL-seeded test-point discovery" for the still-open web UI half), including
+"Installed test profile" — pick a test ID, click
 "Discover options" to render its zero/single/multi-axis picker with the same GPU-flag/
 buildable-hint badges `--list-options` shows, then Materialize) and additionally shows an inventory
 of already-materialized test points with a "Use in Run tab" button per point — it copies that

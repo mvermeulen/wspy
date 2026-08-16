@@ -3234,6 +3234,173 @@ def import_phoronix_installed_points(test_id, choice_sets, dest_root,
     return {"points": out_points, "readme": readme, "error": None}
 
 
+_PHORONIX_CHART_URL_RE = re.compile(r"phoronix\.com/benchmark/result/(?P<article>[^/]+)/(?P<chart>[^/.]+)\.\w+$")
+
+
+def parse_phoronix_chart_url(url):
+    """Parses a published Phoronix article's chart-result URL (e.g.
+    "https://www.phoronix.com/benchmark/result/<article-slug>/<chart-slug>.svgz" -- right-click "open
+    in new tab" on any chart in an article) into {"article_slug", "chart_slug"}, or None if `url`
+    doesn't look like one at all. Deliberately doesn't try to split chart_slug into a "test name" part
+    and an "options" part here -- there's no reliable position-based split rule (a test's own title
+    can be one word or several, e.g. "Blender" vs "Flexible IO Tester"); resolve_phoronix_chart_url()
+    below does that by matching the *whole* slug against real local test-profile titles instead."""
+    m = _PHORONIX_CHART_URL_RE.search((url or "").strip())
+    if not m:
+        return None
+    return {"article_slug": m.group("article"), "chart_slug": m.group("chart")}
+
+
+def list_known_phoronix_test_titles(user_data_dir=None):
+    """{"<namespace>/<name>-<version>": title} for every test-profiles/<namespace>/<name>-<version>/
+    test-definition.xml downloaded/cached on this host -- not just built/installed; test-profiles/ is
+    populated as soon as a test is *downloaded*, the same scope _phoronix_test_definition_path()
+    already resolves against. Used by resolve_phoronix_chart_url() to match a pasted chart URL's slug
+    against real local profiles by their <TestInformation><Title> text, since that's what Phoronix's
+    own chart-naming slugifies from -- not the test_id/Identifier, which is often a different, terser
+    string (e.g. test_id "pts/fio", title "Flexible IO Tester")."""
+    base = user_data_dir or phoronix_user_data_dir()
+    profiles_root = os.path.join(base, "test-profiles")
+    titles = {}
+    if not os.path.isdir(profiles_root):
+        return titles
+    for namespace in sorted(os.listdir(profiles_root)):
+        ns_dir = os.path.join(profiles_root, namespace)
+        if not os.path.isdir(ns_dir):
+            continue
+        for name in sorted(os.listdir(ns_dir)):
+            def_path = os.path.join(ns_dir, name, "test-definition.xml")
+            if not os.path.isfile(def_path):
+                continue
+            try:
+                tree = ET.parse(def_path)
+            except (ET.ParseError, OSError):
+                continue
+            title_el = tree.getroot().find("./TestInformation/Title")
+            title = (title_el.text or "").strip() if title_el is not None else ""
+            if title:
+                titles[f"{namespace}/{name}"] = title
+    return titles
+
+
+def _phoronix_slug_containment_score(text, hint_slug):
+    """Longest-substring-containment score for one candidate text (an axis entry's Name, or a test's
+    own Title) against hint_slug (already slugify_phoronix_arguments()-normalized) -- both sides are
+    normalized the same way before comparing, so formatting differences alone (case, punctuation,
+    underscore-vs-dash) never cost a match: FIO's real "IO_uring" Name slugifies to "io-uring",
+    matching a chart slug's own "...io-uring..." fragment even though the raw text used an underscore.
+    Returns len(candidate_slug) if it appears as a substring of hint_slug, else 0 -- 0 for empty/
+    all-punctuation text too (slugify_phoronix_arguments("") is "default", which must never spuriously
+    "match" a hint_slug that happens to contain the literal word "default"). The score itself (not
+    just a bool) is what lets a caller pick the *longest* match among several candidates as the more
+    specific, higher-confidence signal, rather than the first one that happens to hit.
+
+    Deliberately Name only, never an entry's Value -- confirmed live as a real false positive against
+    FIO's real profile, not a hypothetical: Value "read" (Sequential Read's terse internal argument
+    code) substring-matched a chart slug fragment "rand-read" that actually meant *Random* Read, since
+    "read" alone is generic enough to coincidentally appear inside many other words/phrases, while the
+    genuinely correct entry ("Random Read", Value "randread") scored zero on both its own Name and
+    Value texts (neither survives the "rand-read" vs "random read"/"randread" abbreviation mismatch)
+    -- so Value-matching didn't just fail to help there, it confidently picked the *wrong* entry
+    instead of correctly leaving the axis unresolved. Name is also the structurally right text to
+    match against regardless of that one bug: a chart's own on-page caption (which its URL slug is
+    presumably derived from, standard web practice) is composed from Name text
+    (materialize_phoronix_installed_point()'s own "Confirmed Arguments/Description composition rule"
+    -- Description = "<DisplayName>: <Entry Name>"), never from the raw argument Value, so Value was
+    always the wrong signal to trust here, not just an occasionally-noisy extra one."""
+    if not text:
+        return 0
+    slug = slugify_phoronix_arguments(text)
+    if not slug or slug == "default":
+        return 0
+    return len(slug) if slug in hint_slug else 0
+
+
+def resolve_phoronix_axes_from_slug(axes, options_hint):
+    """Per-axis substring matching against a pasted chart URL's options-slug hint --
+    INVESTIGATION.md 4.4(c) item 7's design (c): for each axis *independently* (never the full cross
+    product -- see that item's own reasoning about why, e.g. FIO's Type x Engine x Direct x Block
+    Size axes multiplying fast), scores every entry's slugified Name (_phoronix_slug_containment_score()
+    -- Name only, see its own docstring for the real false positive that ruled out also trying Value)
+    against options_hint, picks the longest match as that axis's winner. Returns (choices, unresolved)
+    -- choices is a {identifier: entry_name} dict covering only the axes with a confident winner
+    (compose_phoronix_axis_choice()'s own `choices` shape, but *partial*: a caller must check
+    `unresolved` is empty before treating `choices` as materializable as-is), unresolved is the list
+    of axis identifiers with no matching entry at all -- left for a human to complete by hand via the
+    same picker materialize_phoronix_installed_point() already offers (pre-filled with whatever
+    `choices` already resolved), never guessed. A real limitation, not a bug: Phoronix's own
+    chart-slug generation sometimes abbreviates words differently than a test's real Menu Entry Name
+    text (e.g. chart slug fragment "rand-read" vs Name "Random Read") -- when that happens the axis
+    correctly comes back unresolved rather than guessing wrong."""
+    options_hint = slugify_phoronix_arguments(options_hint or "")
+    choices = {}
+    unresolved = []
+    for axis in axes:
+        best_name, best_score = None, 0
+        for name, _value in axis["entries"]:
+            score = _phoronix_slug_containment_score(name, options_hint)
+            if score > best_score:
+                best_name, best_score = name, score
+        if best_name:
+            choices[axis["identifier"]] = best_name
+        else:
+            unresolved.append(axis["identifier"])
+    return choices, unresolved
+
+
+def resolve_phoronix_chart_url(url, user_data_dir=None):
+    """Top-level resolver for INVESTIGATION.md 4.4(c) item 7 ("Published-article/chart-URL-seeded
+    test-point discovery"): parses a pasted Phoronix chart-result URL, matches its slug against every
+    locally known test profile's own title (list_known_phoronix_test_titles()) via longest-prefix
+    match -- the most specific title that still prefixes the chart slug wins, so a short generic
+    title (e.g. a hypothetical test titled just "IO") doesn't shadow a longer, more specific one that
+    also matches -- then resolves the remaining slug text per axis
+    (resolve_phoronix_axes_from_slug()) against the matched test's real option axes. Never
+    materializes anything itself -- purely a resolution/scoring step, matching this module's existing
+    find_*/resolve_* naming convention (materialize_* functions are the only ones that write
+    anything).
+
+    Returns a dict, always with "url"/"status"; status is one of:
+      "unrecognized-url" -- url doesn't look like a phoronix.com chart-result URL at all.
+      "unresolved" -- article_slug/chart_slug parsed fine, but no locally known test profile's title
+          prefixes the chart slug (not downloaded/installed on this host, or a title too different
+          from the slug to trust) -- "chart_slug" carries the raw text for a human to act on by hand
+          (e.g. `phoronix-test-suite download <guess>` once they've identified the real test).
+      "resolved" -- a test matched; "test_id"/"choices"/"unresolved_axes" are set. `choices` is
+          compose_phoronix_axis_choice()'s own partial-or-complete shape; `unresolved_axes` lists any
+          axis identifiers with no confident per-axis match (empty means `choices` is directly
+          materializable via materialize_phoronix_installed_point()/import_phoronix_installed_points();
+          non-empty means route to the same axis picker those already offer, pre-filled with `choices`,
+          rather than guessing the rest)."""
+    parsed = parse_phoronix_chart_url(url)
+    if not parsed:
+        return {"status": "unrecognized-url", "url": url}
+    article_slug, chart_slug = parsed["article_slug"], parsed["chart_slug"]
+    hint_slug = slugify_phoronix_arguments(chart_slug)
+
+    best_test_id, best_title_slug = None, ""
+    for test_id, title in list_known_phoronix_test_titles(user_data_dir).items():
+        title_slug = slugify_phoronix_arguments(title)
+        if not title_slug or title_slug == "default":
+            continue
+        if (hint_slug == title_slug or hint_slug.startswith(title_slug + "-")) and \
+                len(title_slug) > len(best_title_slug):
+            best_test_id, best_title_slug = test_id, title_slug
+
+    if not best_test_id:
+        return {"status": "unresolved", "url": url, "article_slug": article_slug, "chart_slug": chart_slug}
+
+    axes, error = phoronix_test_axes_for_test_id(best_test_id, user_data_dir)
+    if error:
+        return {"status": "unresolved", "url": url, "article_slug": article_slug, "chart_slug": chart_slug,
+                "test_id": best_test_id, "error": error}
+
+    remaining_hint = hint_slug[len(best_title_slug):].lstrip("-")
+    choices, unresolved_axes = resolve_phoronix_axes_from_slug(axes, remaining_hint)
+    return {"status": "resolved", "url": url, "article_slug": article_slug, "chart_slug": chart_slug,
+            "test_id": best_test_id, "choices": choices, "unresolved_axes": unresolved_axes}
+
+
 def list_materialized_phoronix_test_points(dest_root):
     """Inventory of already-materialized test points under dest_root/<test>/
     <options>/ -- backs the Phoronix tab's inventory table and

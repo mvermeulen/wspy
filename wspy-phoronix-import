@@ -74,6 +74,27 @@ mutually exclusive:
                            never actually going to run (no Steam account
                            for a game test, a benchmark this host can't
                            build, ...).
+  --from-url <url-or-file-or-->  a published Phoronix article's own
+                           chart-result URL(s) -- right-click "open in
+                           new tab" on any chart in an article, e.g.
+                           https://www.phoronix.com/benchmark/result/
+                           <article-slug>/<chart-slug>.svgz -- repeatable,
+                           or a file with one URL per line, or "-" for
+                           stdin. The article page itself is not fetchable
+                           server-side (Cloudflare blocks it, same as
+                           openbenchmarking.org), so each URL's own slug is
+                           matched against locally known test profiles'
+                           titles, then per axis independently against
+                           that test's real option entries -- never the
+                           full cross product, and never a guess: an axis
+                           with no confident match is reported, not
+                           picked, for a human to finish by hand with
+                           --option. Only a fully-resolved URL
+                           materializes automatically. See
+                           web/joblib.py's resolve_phoronix_chart_url()
+                           for the full design and its real, confirmed-live
+                           limits (chart slugs sometimes abbreviate words
+                           differently than a test's own Menu Entry text).
 
 All the actual parsing/materialization/wspy-ledger-integration logic lives
 in web/joblib.py (import_phoronix_test_points() and friends), shared with
@@ -226,6 +247,51 @@ def build_installed_choice_sets(args, axes):
     return [choices], None
 
 
+def expand_from_url_args(values):
+    """Expands --from-url's raw argv values into a flat, order-preserving, deduped list of URLs --
+    each value is either a literal URL, the path to a file with one URL per line ('#' comments and
+    blank lines ignored, same convention ledger.c's --unavailable-deps files use), or "-" for stdin.
+    Covers both ways a human pasting chart URLs actually wants to work: a few inline
+    `--from-url <url>` flags, or a whole pasted/saved batch in one go -- without needing two separate
+    flags whose combination argparse's mutually-exclusive --source group would have to special-case."""
+    urls = []
+    for value in values:
+        if value == "-":
+            lines = sys.stdin.read().splitlines()
+        elif os.path.isfile(value):
+            with open(value) as f:
+                lines = f.read().splitlines()
+        else:
+            lines = [value]
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                urls.append(line)
+    seen = set()
+    return [u for u in urls if not (u in seen or seen.add(u))]
+
+
+def print_url_resolution_report(reports):
+    """Prints one line per URL that resolve_phoronix_chart_url() couldn't fully resolve to a
+    materializable point -- unrecognized/unresolved get their raw hint text so a human can act on it
+    by hand; a "resolved" entry with unresolved_axes still set shows what *did* match plus which
+    axes still need an explicit --option, so a human finishing it by hand isn't starting from
+    nothing."""
+    for r in reports:
+        if r["status"] == "unrecognized-url":
+            print(f"  {r['url']}: not a recognized Phoronix chart-result URL", file=sys.stderr)
+        elif r["status"] == "unresolved":
+            test_id_bit = f" (matched {r['test_id']}, but " + r.get("error", "axes unavailable") + ")" \
+                if r.get("test_id") else ""
+            print(f"  {r['url']}: no local test profile matches {r['chart_slug']!r}{test_id_bit} -- "
+                  f"install/download the real test, then retry", file=sys.stderr)
+        else:  # "resolved" with leftover unresolved_axes
+            known = ", ".join(f"{k}={v!r}" for k, v in r["choices"].items()) or "(none)"
+            print(f"  {r['url']}: matched {r['test_id']} -- resolved {known}; still need --option for "
+                  f"axis(es) {', '.join(r['unresolved_axes'])} (see --list-options {r['test_id']})",
+                  file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Decompose a Phoronix result/suite into one minimal single-test-point "
@@ -252,6 +318,11 @@ def main():
                       help="remove a materialized test point (its directory, or its bare "
                            "'<test>-<options>' identity string) -- only the registration, real run "
                            "data is untouched; safe even with recorded runs")
+    src.add_argument("--from-url", action="append", default=[], metavar="URL-OR-FILE-OR--",
+                      help="a Phoronix article chart-result URL (repeatable), a file with one URL "
+                           "per line, or '-' for stdin -- resolves each against locally known test "
+                           "profiles and materializes whatever fully resolves; see the module "
+                           "docstring for the per-axis matching design and its real limits")
     ap.add_argument("--option", action="append", default=[], metavar="IDENTIFIER=ENTRY-NAME",
                      help="one axis choice for --from-installed (repeatable, one per axis); "
                           "ENTRY-NAME must match --list-options' NAME column exactly, not its VALUE")
@@ -331,6 +402,54 @@ def main():
             if result["ledger"] and result["ledger"]["exit_code"] != 0:
                 print(f"wspy-phoronix-import: warning: wspy-ledger --remove failed "
                       f"(exit {result['ledger']['exit_code']}): {result['ledger']['output']}", file=sys.stderr)
+        return 0
+
+    if args.from_url:
+        urls = expand_from_url_args(args.from_url)
+        if not urls:
+            print("wspy-phoronix-import: --from-url gave no URLs to resolve", file=sys.stderr)
+            return 2
+
+        # Group by test_id first -- several chart URLs from the same article commonly resolve to the
+        # same test (e.g. 12 FIO configurations), and import_phoronix_installed_points() already
+        # batches a whole test's points into one README/ledger-list pass rather than repeating it
+        # once per point.
+        resolved_by_test = {}
+        leftover_reports = []
+        for url in urls:
+            result = joblib.resolve_phoronix_chart_url(url)
+            if result["status"] == "resolved" and not result["unresolved_axes"]:
+                resolved_by_test.setdefault(result["test_id"], []).append(result["choices"])
+            else:
+                leftover_reports.append(result)
+
+        all_points, all_readmes = [], []
+        for test_id, choice_sets in resolved_by_test.items():
+            result = joblib.import_phoronix_installed_points(
+                test_id, choice_sets, args.dest, phoronix_bin=args.phoronix_bin, ledger_bin=args.ledger_bin,
+                ledger_list_path=args.ledger_list, dry_run=args.dry_run,
+                check_installed=not args.no_check_installed, add_to_ledger=not args.no_ledger)
+            if result["error"]:
+                leftover_reports.append({"status": "unresolved", "url": f"(test {test_id})",
+                                          "chart_slug": test_id, "test_id": test_id, "error": result["error"]})
+                continue
+            all_points.extend(result["points"])
+            if result.get("readme"):
+                all_readmes.append(result["readme"])
+
+        if args.json:
+            print(json.dumps({"points": all_points, "readmes": all_readmes, "unresolved": leftover_reports},
+                              indent=2))
+        else:
+            mode = "would materialize" if args.dry_run else "materialized"
+            print(f"wspy-phoronix-import: {mode} {len(all_points)} test point(s) from "
+                  f"{len(urls)} pasted URL(s) ({len(resolved_by_test)} distinct test(s))", file=sys.stderr)
+            if all_points:
+                print_table(all_points)
+            if leftover_reports:
+                print(f"wspy-phoronix-import: {len(leftover_reports)} URL(s) not fully resolved:",
+                      file=sys.stderr)
+                print_url_resolution_report(leftover_reports)
         return 0
 
     if args.from_installed:

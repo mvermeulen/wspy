@@ -129,6 +129,54 @@ its GitHub release body is the notes at `https://github.com/mvermeulen/wspy/rele
 ## Shipped since 4.3.1
 Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-prep time.
 
+- Published-article/chart-URL-seeded test-point discovery — CLI/core-resolver half (the web UI
+  paste-box stays open, see the item's own remaining scope). A published Phoronix article's
+  individual chart-result URLs (right-click "open in new tab" on any chart, e.g.
+  `phoronix.com/benchmark/result/<article-slug>/<chart-slug>.svgz`) each identify one (test,
+  option-combination) the article ran, in a human-readable slug — but the article page itself isn't
+  fetchable server-side (confirmed live: `phoronix.com` returns a Cloudflare bot-challenge/403 to a
+  direct request, same posture `fetch_openbenchmarking_suite_xml()`'s own docstring already documents
+  for `openbenchmarking.org`), so there's no way to auto-fetch the article's real result XML from a
+  pasted URL the way `--result` does. New `web/joblib.py` functions:
+  `parse_phoronix_chart_url()` splits a chart URL into `{article_slug, chart_slug}` (deliberately
+  never tries to split `chart_slug` itself into a "test name" part and an "options" part by position
+  — a test's own title can be one word or several, so there's no reliable split rule);
+  `list_known_phoronix_test_titles()` inventories every downloaded/cached test profile's own
+  `<TestInformation><Title>` (not test_id/Identifier, which is often a different, terser string, e.g.
+  test_id `pts/fio`, title "Flexible IO Tester" — and title is what a chart's own on-page caption,
+  which its URL slug is presumably derived from, is actually built from);
+  `resolve_phoronix_chart_url()` matches the whole chart slug against those titles by longest-prefix
+  match (a short generic title never shadows a longer, more specific one that also matches), then
+  `resolve_phoronix_axes_from_slug()` resolves the remaining slug text **per axis independently**
+  against the matched test's real option axes (never the full cross product — FIO's real Type x
+  Engine x Direct x Block Size axes are exactly the kind of test this matters for) via
+  `_phoronix_slug_containment_score()`'s longest-substring match, picking the best entry per axis
+  without ever enumerating every axis's combinations together. An axis with no confident match comes
+  back in `unresolved_axes` for a human to complete by hand via the same picker
+  `materialize_phoronix_installed_point()` already offers, pre-filled with whatever did resolve,
+  rather than guessing. `wspy-phoronix-import --from-url <url-or-file-or-->` (repeatable, or a file/
+  `-` for stdin — handles pasting a whole batch from one article at once) is the CLI surface: groups
+  resolved URLs by test_id (several chart URLs from one article commonly resolve to the same test)
+  and batches each test's points into one `import_phoronix_installed_points()` call; only a
+  fully-resolved URL materializes automatically, everything else is reported with exactly what did
+  resolve and which axis(es) still need `--option`.
+
+  Caught and fixed a real false-positive during live testing against this host's actual cached FIO
+  test-definition.xml, not a hypothetical: the first version matched an axis entry's Name *or* Value
+  text, and Value `"read"` (Sequential Read's terse internal argument code) coincidentally
+  substring-matched a chart slug fragment `"rand-read"` that actually meant *Random* Read — picking
+  the wrong entry with false confidence, while the genuinely correct entry ("Random Read", Value
+  `"randread"`) scored zero on both its own Name and Value (neither survives the "rand-read" vs
+  "random read"/"randread" abbreviation mismatch). Fixed by matching Name only, which is also the
+  structurally correct signal regardless of that one bug (a chart caption is composed from Name text,
+  never from the raw argument Value — the same "Confirmed Arguments/Description composition rule"
+  the Installed-test-profile deep-dive already established). Verified end-to-end against both of the
+  user-supplied real article URLs that motivated this item plus this host's real cached SVT-AV1
+  profile: the FIO case now correctly resolves `engine`/`direct`/`size`/`cpu-threads` while honestly
+  leaving `type` unresolved (rather than the earlier false "Sequential Read"), and does not
+  auto-materialize since one axis is still open; the SVT-AV1 case resolves and materializes fully
+  automatically. New `web/test_joblib.py` coverage (23 tests) includes a dedicated regression test
+  reproducing the exact false-positive scenario against real FIO axis data to pin the fix.
 - Phoronix test-point removal. Every materialization path (`--result`/`--file`/`--installed-suite`/
   `--from-installed`, plus the web UI's identical sources) had no way back out once a point existed
   — the cpu2026 side already had `unregister_cpu2026_point()`, Phoronix had nothing, so a point
@@ -1064,41 +1112,15 @@ recent one (CLI flag/identity consistency pass).
    what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
    across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
    point, launched by a human clicking Run) exists today.
-7. Published-article/chart-URL-seeded test-point discovery. Depends on the Installed-test-profile
-   materialization deep-dive (now fully shipped, see "Shipped since 4.3.1") for its multi-axis
-   case. A published Phoronix article's individual chart-result URLs (e.g.
-   `phoronix.com/benchmark/result/<article-slug>/<chart-slug>.svgz`, right-click "open in new tab" on
-   any chart in an article) each identify one (test, option-combination) the article ran, in a
-   human-readable slug — but the article page itself is not fetchable server-side (confirmed live:
-   `phoronix.com` returns a Cloudflare bot-challenge/403 to a direct request, the same posture
-   `fetch_openbenchmarking_suite_xml()`'s own docstring already documents for `openbenchmarking.org`),
-   so there's no way to auto-fetch the article's real result XML from a pasted URL the way `--result`
-   does for an openbenchmarking.org link. Design: (a) accept one or more pasted chart URLs (paste-box,
-   web UI and/or CLI), parse each into a bare test name (the slug's leading segment, e.g.
-   `flexible-io-tester`) plus an options-slug hint (the rest, e.g. `rand-read-io_uring-no-4kb`); (b)
-   resolve the bare name against installed/known local test profiles by matching their own `<Title>`
-   (slugified the same way `slugify_phoronix_arguments()` already does elsewhere in this codebase —
-   not proven byte-identical to Phoronix's own chart-naming scheme, so this is a best-effort match,
-   never a guaranteed one); (c) a zero/single-axis match materializes directly, no guessing involved;
-   a multi-axis match resolves **per axis independently** rather than generating the full cross
-   product — for each axis, slugify every entry's own `Name`/`Value` and check which one best matches
-   (substring/overlap) against the pasted options-slug hint, picking the best entry per axis without
-   ever enumerating the product of all axes together. This matters for an axis-heavy test like FIO
-   (type × engine × buffered × direct × block-size can run into the hundreds of combinations) — full
-   product enumeration is still computationally cheap (short-string comparisons, not a materialize
-   cost), but per-axis matching is both cheaper and the more selective of the two: it only ever
-   composes and materializes the one tuple actually implied by the pasted slug, never a whole
-   candidate list to browse, which is a meaningfully different (and better) property than the
-   Installed-test-profile deep-dive's own human-driven picker, not just a performance detail. A
-   per-axis match with no confident winner on one or more axes surfaces as a partial/uncertain match
-   for a human to complete by hand via that same picker, rather than guessing the remaining axes;
-   (d) a test with no local profile match at all (not
-   installed, or a title match too weak to trust) surfaces as "unresolved — install `phoronix-test-suite
-   install <test>` first" rather than silently dropping it. Steps 3-5 of the original framing (installed/
-   already-run indicators, an "open in Run tab" action for not-yet-run points, and these test points
-   showing up in the same Phoronix-tab inventory as everything else) need no new code at all — they're
-   `list_materialized_phoronix_test_points()`, the existing Run-tab action, and
-   `materialize_phoronix_test_point()` respectively, all already shared by every other import source.
+7. Published-article/chart-URL-seeded test-point discovery — the CLI/core-resolver half already
+   shipped (see "Shipped since 4.3.1"). **Still open:** the web UI half — a paste-box in the Phoronix
+   tab (a fifth "Materialize new test points" source alongside the existing four) accepting one or
+   more chart URLs, driving `resolve_phoronix_chart_url()` per URL and rendering results the same way
+   the CLI already reports them: a fully-resolved URL offers a one-click Materialize; a
+   partially-resolved one pre-fills the existing multi-axis picker (the Installed-test-profile
+   deep-dive's own web picker) with whatever axes did resolve, leaving only the unresolved ones for a
+   human to pick by hand rather than starting from nothing; an unresolved/unrecognized URL surfaces
+   the raw hint text with a suggestion to install/download the real test first.
 
 ## 4.5 priorities
 Goal: lower priority than 4.4 but still real, wanted work — pick up once 4.4's three focus areas are
