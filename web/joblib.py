@@ -3251,6 +3251,24 @@ def parse_phoronix_chart_url(url):
     return {"article_slug": m.group("article"), "chart_slug": m.group("chart")}
 
 
+def dedupe_url_lines(text):
+    """Splits `text` into lines, strips whitespace, drops blank lines and '#'-comment lines, and
+    dedupes while preserving first-occurrence order -- the shared filtering core behind both
+    wspy-phoronix-import's --from-url (which also handles reading this text from a file/stdin, a
+    CLI-only concern not relevant here) and the web Phoronix tab's URL paste-box, so the two never
+    drift on what counts as a usable pasted line."""
+    seen = set()
+    urls = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line not in seen:
+            seen.add(line)
+            urls.append(line)
+    return urls
+
+
 def list_known_phoronix_test_titles(user_data_dir=None):
     """{"<namespace>/<name>-<version>": title} for every test-profiles/<namespace>/<name>-<version>/
     test-definition.xml downloaded/cached on this host -- not just built/installed; test-profiles/ is
@@ -3360,6 +3378,18 @@ def resolve_phoronix_chart_url(url, user_data_dir=None):
     find_*/resolve_* naming convention (materialize_* functions are the only ones that write
     anything).
 
+    On a title-match tie (several downloaded versions of the same test almost always share an
+    identical <Title> -- confirmed live: this host has hpcg-1.1.1/1.2.1/1.3.0 all downloaded, all
+    titled "High Performance Conjugate Gradient"), the *newest* version wins
+    (phoronix_pinned_version()/_phoronix_version_key(), same version-comparison already used
+    elsewhere for "prefer the newest installed version" UX) -- not whichever happened to sort first
+    alphabetically by directory name, which is what a bare longest-match-wins comparison silently
+    fell back to before this was caught live: hpcg-1.1.1 (the oldest, sorts first) has an older,
+    simpler test-definition.xml schema with *zero* option axes at all, so a chart slug like
+    "high-performance-conjugate-gradient-144-144-144-60" resolved to that stale version and
+    materialized with an empty Arguments/options_slug "default" instead of the real
+    "--nx=144 --ny=144 --nz=144 --rt=60" the newer 1.3.0 profile's real axes would have composed.
+
     Returns a dict, always with "url"/"status"; status is one of:
       "unrecognized-url" -- url doesn't look like a phoronix.com chart-result URL at all.
       "unresolved" -- article_slug/chart_slug parsed fine, but no locally known test profile's title
@@ -3378,14 +3408,19 @@ def resolve_phoronix_chart_url(url, user_data_dir=None):
     article_slug, chart_slug = parsed["article_slug"], parsed["chart_slug"]
     hint_slug = slugify_phoronix_arguments(chart_slug)
 
-    best_test_id, best_title_slug = None, ""
+    best_test_id, best_title_slug, best_version_key = None, "", None
     for test_id, title in list_known_phoronix_test_titles(user_data_dir).items():
         title_slug = slugify_phoronix_arguments(title)
         if not title_slug or title_slug == "default":
             continue
-        if (hint_slug == title_slug or hint_slug.startswith(title_slug + "-")) and \
-                len(title_slug) > len(best_title_slug):
-            best_test_id, best_title_slug = test_id, title_slug
+        if not (hint_slug == title_slug or hint_slug.startswith(title_slug + "-")):
+            continue
+        version = phoronix_pinned_version(test_id)
+        version_key = _phoronix_version_key(version) if version else []
+        better = (best_test_id is None or len(title_slug) > len(best_title_slug) or
+                  (len(title_slug) == len(best_title_slug) and version_key > best_version_key))
+        if better:
+            best_test_id, best_title_slug, best_version_key = test_id, title_slug, version_key
 
     if not best_test_id:
         return {"status": "unresolved", "url": url, "article_slug": article_slug, "chart_slug": chart_slug}

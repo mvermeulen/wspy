@@ -834,11 +834,12 @@ directory is left untouched and reported as `exists` rather than overwritten. Ma
 doesn't copy anything into `~/.phoronix-test-suite/test-suites/local/`, run anything, or install
 anything; the INSTALLED column (from `phoronix-test-suite info`) just flags which points still need
 `phoronix-test-suite install` run by hand. The web launcher's Phoronix tab drives the identical
-logic for the first four source methods (`--from-url` is CLI-only for now, see INVESTIGATION.md's
-"Published-article/chart-URL-seeded test-point discovery" for the still-open web UI half), including
-"Installed test profile" — pick a test ID, click
-"Discover options" to render its zero/single/multi-axis picker with the same GPU-flag/
-buildable-hint badges `--list-options` shows, then Materialize) and additionally shows an inventory
+logic for all five source methods: "Installed test profile" — pick a test ID, click "Discover
+options" to render its zero/single/multi-axis picker with the same GPU-flag/buildable-hint badges
+`--list-options` shows, then Materialize — and "From article URL(s)" — paste one or more chart URLs,
+click "Resolve URLs" to render the same per-axis picker but only for whichever axes didn't already
+resolve (pre-filled with what did, same as the CLI's own report), then the shared Materialize button
+batches every fully-resolved-or-now-completed URL by test into one call. Also shows an inventory
 of already-materialized test points with a "Use in Run tab" button per point — it copies that
 point's suite into `test-suites/local/` (so the command actually works) and prefills the Run tab's
 workload/suite/benchmark fields; a run launched that way gets symlinked back under

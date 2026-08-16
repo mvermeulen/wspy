@@ -1477,6 +1477,7 @@
       file: byId("phoronix-file-row"),
       installed: byId("phoronix-installed-row"),
       "from-installed": byId("phoronix-from-installed-row"),
+      "from-url": byId("phoronix-from-url-row"),
     };
     document.querySelectorAll('input[name="phoronix-source"]').forEach(function (radio) {
       radio.addEventListener("change", function () {
@@ -1498,6 +1499,53 @@
     var optionsErrorEl = byId("phoronix-options-error");
     var optionsPickerEl = byId("phoronix-options-picker");
 
+    // Shared by both the "Installed test profile" picker below and each per-URL mini-picker the
+    // "From article URL(s)" source renders (one <fieldset class="phoronix-axis"> per axis, radios
+    // named "<namePrefix>-axis-<identifier>") -- namePrefix keeps several simultaneous picker
+    // instances on the page (one per pasted URL that needs finishing) from fighting over the same
+    // radio-button group, since browsers treat same-`name` radios as one exclusive group regardless
+    // of where they sit in the DOM.
+    function buildAxisPickerHtml(axes, namePrefix) {
+      var html = "";
+      axes.forEach(function (axis) {
+        var gpuBadge = axis.gpu_flagged ?
+          ' <span class="muted">[GPU/backend axis &mdash; pick explicitly, never defaulted]</span>' : "";
+        html += '<fieldset class="phoronix-axis" data-phoronix-axis="' + escapeHtml(axis.identifier) + '">' +
+          "<legend>" + escapeHtml(axis.display_name) + gpuBadge + "</legend>" +
+          '<table class="reports"><thead><tr><th></th><th>Name</th><th>Value</th><th>Buildable?</th>' +
+          "</tr></thead><tbody>";
+        axis.entries.forEach(function (entry) {
+          var buildableText = entry.buildable === true ? "yes" : entry.buildable === false ? "no" : "?";
+          html += '<tr><td><input type="radio" name="' + escapeHtml(namePrefix) + "-axis-" +
+            escapeHtml(axis.identifier) + '" value="' + escapeHtml(entry.name) + '"></td>' +
+            "<td>" + escapeHtml(entry.name) + "</td><td>" + escapeHtml(entry.value) + "</td>" +
+            "<td>" + buildableText + "</td></tr>";
+        });
+        html += "</tbody></table></fieldset>";
+      });
+      return html;
+    }
+
+    // Reads back whatever's currently selected in `container`'s own axis fieldsets (scoped queries,
+    // so it's safe to call against one of several simultaneous picker instances on the page) --
+    // returns {choice, missing}: `choice` a {identifier: entry_name} dict for every axis that has a
+    // pick, `missing` the display names of axes that don't yet.
+    function readAxisPickerChoice(container, axes) {
+      var choice = {};
+      var missing = [];
+      container.querySelectorAll(".phoronix-axis").forEach(function (fieldset) {
+        var identifier = fieldset.getAttribute("data-phoronix-axis");
+        var picked = fieldset.querySelector('input[type="radio"]:checked');
+        var displayName = fieldset.querySelector("legend").textContent;
+        if (picked) {
+          choice[identifier] = picked.value;
+        } else {
+          missing.push(displayName);
+        }
+      });
+      return { choice: choice, missing: missing };
+    }
+
     function renderPhoronixOptionsPicker(axes) {
       if (!axes.length) {
         optionsPickerEl.innerHTML = '<p class="muted">No option axes -- a single implicit point. ' +
@@ -1509,23 +1557,7 @@
         html += '<label class="chip"><input type="checkbox" id="phoronix-materialize-all-single-axis"> ' +
           "Materialize all " + axes[0].entries.length + " entries as separate points</label>";
       }
-      axes.forEach(function (axis) {
-        var gpuBadge = axis.gpu_flagged ?
-          ' <span class="muted">[GPU/backend axis &mdash; pick explicitly, never defaulted]</span>' : "";
-        html += '<fieldset class="phoronix-axis" data-phoronix-axis="' + escapeHtml(axis.identifier) + '">' +
-          "<legend>" + escapeHtml(axis.display_name) + gpuBadge + "</legend>" +
-          '<table class="reports"><thead><tr><th></th><th>Name</th><th>Value</th><th>Buildable?</th>' +
-          "</tr></thead><tbody>";
-        axis.entries.forEach(function (entry) {
-          var buildableText = entry.buildable === true ? "yes" : entry.buildable === false ? "no" : "?";
-          html += '<tr><td><input type="radio" name="phoronix-axis-' + escapeHtml(axis.identifier) +
-            '" value="' + escapeHtml(entry.name) + '"></td>' +
-            "<td>" + escapeHtml(entry.name) + "</td><td>" + escapeHtml(entry.value) + "</td>" +
-            "<td>" + buildableText + "</td></tr>";
-        });
-        html += "</tbody></table></fieldset>";
-      });
-      optionsPickerEl.innerHTML = html;
+      optionsPickerEl.innerHTML = html + buildAxisPickerHtml(axes, "phoronix");
     }
 
     // Returns {choiceSets} or {error} -- the exact choice_sets array
@@ -1548,23 +1580,12 @@
           };
         }
       }
-      var choice = {};
-      var missing = [];
-      optionsPickerEl.querySelectorAll(".phoronix-axis").forEach(function (fieldset) {
-        var identifier = fieldset.getAttribute("data-phoronix-axis");
-        var picked = fieldset.querySelector('input[type="radio"]:checked');
-        var displayName = fieldset.querySelector("legend").textContent;
-        if (picked) {
-          choice[identifier] = picked.value;
-        } else {
-          missing.push(displayName);
-        }
-      });
-      if (missing.length) {
-        return { error: "select an entry for: " + missing.join(", ") +
+      var picked = readAxisPickerChoice(optionsPickerEl, axes);
+      if (picked.missing.length) {
+        return { error: "select an entry for: " + picked.missing.join(", ") +
           (axes.length === 1 ? ' (or check "materialize all")' : "") };
       }
-      return { choiceSets: [choice] };
+      return { choiceSets: [picked.choice] };
     }
 
     if (discoverButton) {
@@ -1603,6 +1624,113 @@
       });
     }
 
+    // "From article URL(s)" source (INVESTIGATION.md's "Published-article/chart-URL-seeded
+    // test-point discovery"): paste one or more Phoronix chart-result URLs, Resolve URLs maps each
+    // to a (possibly partial) axis choice server-side (/api/phoronix/resolve-urls), then the shared
+    // Materialize button below (once source is "from-url") gathers every fully-resolved-or-now-
+    // human-completed URL into one {test_id, choice_sets} group per distinct test and posts to
+    // /api/phoronix/materialize-from-urls -- same "client already has the real axes, server just
+    // executes" split the other picker sources use, just batched across possibly-several tests.
+    var currentUrlResults = null;
+    var resolveUrlsButton = byId("phoronix-resolve-urls");
+    var resolveUrlsErrorEl = byId("phoronix-resolve-urls-error");
+    var urlResultsEl = byId("phoronix-url-results");
+
+    function renderUrlResults(results) {
+      var html = "";
+      results.forEach(function (r, i) {
+        if (r.status === "unrecognized-url") {
+          html += '<p class="muted">' + escapeHtml(r.url) + ": not a recognized Phoronix chart-result URL</p>";
+        } else if (r.status === "unresolved") {
+          var matchedBit = r.test_id ? " (matched " + escapeHtml(r.test_id) + ", but its axes aren't available)" : "";
+          html += '<p class="muted">' + escapeHtml(r.url) + ': no local test profile matches "' +
+            escapeHtml(r.chart_slug) + '"' + matchedBit +
+            " &mdash; install/download the real test, then retry</p>";
+        } else {
+          var knownBits = Object.keys(r.choices).map(function (k) { return k + "=" + r.choices[k]; }).join(", ");
+          html += '<div class="phoronix-url-result" data-url-index="' + i + '">' +
+            "<p><strong>" + escapeHtml(r.test_id) + "</strong> &mdash; resolved: " +
+            escapeHtml(knownBits || "(none)") + "</p>";
+          if (r.unresolved_axes.length) {
+            var unresolvedAxes = r.axes.filter(function (a) { return r.unresolved_axes.indexOf(a.identifier) !== -1; });
+            html += '<p class="muted">still need a pick for: ' + escapeHtml(r.unresolved_axes.join(", ")) + "</p>";
+            html += buildAxisPickerHtml(unresolvedAxes, "phoronix-url-" + i);
+          }
+          html += "</div>";
+        }
+      });
+      urlResultsEl.innerHTML = html || '<p class="muted">Nothing resolved.</p>';
+    }
+
+    if (resolveUrlsButton) {
+      resolveUrlsButton.addEventListener("click", function () {
+        var urlsText = getValue("phoronix-from-url-urls");
+        resolveUrlsErrorEl.hidden = true;
+        urlResultsEl.innerHTML = "";
+        currentUrlResults = null;
+        if (!urlsText.trim()) {
+          resolveUrlsErrorEl.hidden = false;
+          resolveUrlsErrorEl.textContent = "Error: paste at least one URL";
+          return;
+        }
+        resolveUrlsButton.disabled = true;
+        fetch("/api/phoronix/resolve-urls", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ urls_text: urlsText }),
+        })
+          .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+          .then(function (res) {
+            resolveUrlsButton.disabled = false;
+            if (!res.ok || res.data.error) {
+              resolveUrlsErrorEl.hidden = false;
+              resolveUrlsErrorEl.textContent = "Error: " + (res.data.error || "unknown error");
+              return;
+            }
+            currentUrlResults = res.data.results;
+            renderUrlResults(currentUrlResults);
+          })
+          .catch(function (err) {
+            resolveUrlsButton.disabled = false;
+            resolveUrlsErrorEl.hidden = false;
+            resolveUrlsErrorEl.textContent = "Error: " + err.message;
+          });
+      });
+    }
+
+    // Returns {groups} or {error} -- the exact `groups` array /api/phoronix/materialize-from-urls
+    // expects, gathered from currentUrlResults plus whatever's now picked in each URL's own
+    // leftover-axis mini-picker. A URL that never resolved to a test at all is silently skipped here
+    // (nothing to materialize for it -- it's already visible as unresolved in the results list); a
+    // URL that resolved but is missing a pick for one of its axes is a real problem, reported by name
+    // rather than silently dropped, so a human doesn't wonder why fewer points appeared than pasted.
+    function buildUrlMaterializeGroups(results) {
+      var byTest = {};
+      var problems = [];
+      results.forEach(function (r, i) {
+        if (r.status !== "resolved") return;
+        var choice = Object.assign({}, r.choices);
+        if (r.unresolved_axes.length) {
+          var wrapper = urlResultsEl.querySelector('[data-url-index="' + i + '"]');
+          var remainingAxes = r.axes.filter(function (a) { return r.unresolved_axes.indexOf(a.identifier) !== -1; });
+          var picked = wrapper ? readAxisPickerChoice(wrapper, remainingAxes) : { choice: {}, missing: r.unresolved_axes };
+          if (picked.missing.length) {
+            problems.push(r.url + ": still missing " + picked.missing.join(", "));
+            return;
+          }
+          Object.assign(choice, picked.choice);
+        }
+        if (!byTest[r.test_id]) byTest[r.test_id] = [];
+        byTest[r.test_id].push(choice);
+      });
+      if (problems.length) return { error: problems.join("; ") };
+      var groups = Object.keys(byTest).map(function (testId) {
+        return { test_id: testId, choice_sets: byTest[testId] };
+      });
+      if (!groups.length) return { error: "nothing fully resolved to materialize" };
+      return { groups: groups };
+    }
+
     var errorEl = byId("phoronix-error");
     var resultsEl = byId("phoronix-results");
     var tbody = byId("phoronix-table-body");
@@ -1637,6 +1765,20 @@
         endpoint = "/api/phoronix/materialize-installed";
         body.test_id = getValue("phoronix-from-installed-test-id");
         body.choice_sets = picked.choiceSets;
+      } else if (source === "from-url") {
+        if (!currentUrlResults) {
+          errorEl.hidden = false;
+          errorEl.textContent = "Error: click \"Resolve URLs\" first";
+          return;
+        }
+        var urlGroups = buildUrlMaterializeGroups(currentUrlResults);
+        if (urlGroups.error) {
+          errorEl.hidden = false;
+          errorEl.textContent = "Error: " + urlGroups.error;
+          return;
+        }
+        endpoint = "/api/phoronix/materialize-from-urls";
+        body.groups = urlGroups.groups;
       }
       runButton.disabled = true;
       errorEl.hidden = true;

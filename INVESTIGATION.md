@@ -129,9 +129,53 @@ its GitHub release body is the notes at `https://github.com/mvermeulen/wspy/rele
 ## Shipped since 4.3.1
 Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-prep time.
 
-- Published-article/chart-URL-seeded test-point discovery — CLI/core-resolver half (the web UI
-  paste-box stays open, see the item's own remaining scope). A published Phoronix article's
-  individual chart-result URLs (right-click "open in new tab" on any chart, e.g.
+- Published-article/chart-URL-seeded test-point discovery — web UI paste-box half, closing the item
+  out entirely (CLI/core-resolver half shipped as the prior slice, see below). The Phoronix tab's
+  "Materialize new test points" source chooser gains a fifth radio, "From article URL(s)": paste one
+  or more chart URLs into a textarea, click "Resolve URLs" (new `/api/phoronix/resolve-urls`, splits/
+  dedupes the pasted text via new `joblib.dedupe_url_lines()` — refactored out of
+  `wspy-phoronix-import --from-url`'s own line filtering so the CLI and web paste-box never drift on
+  what counts as a usable pasted line — then resolves each line and, for anything "resolved", enriches
+  its *full* axes with the same GPU-flag/buildable-hint badges `_phoronix_installed_options()` already
+  computes, via a new shared `enrich_phoronix_axes()` both handlers now call). The shared Materialize
+  button (new `/api/phoronix/materialize-from-urls`, one call batching every resolved-or-now-completed
+  URL grouped by test_id — several chart URLs from one article commonly resolve to the same test, same
+  batching the CLI's own `--from-url` already does) reuses the *exact* per-axis picker fieldsets the
+  Installed-test-profile source's own picker renders (`buildAxisPickerHtml()`/`readAxisPickerChoice()`,
+  factored out of that picker's own rendering/reading code, name-prefixed per URL row so several
+  simultaneous mini-pickers on one page don't fight over the same radio-button group) — but only for
+  whichever axes a given URL didn't already resolve, pre-labeled with what did; a URL still missing a
+  pick when Materialize is clicked is reported by name, not silently dropped. Both new handlers
+  deliberately return the same response shape every other materialize endpoint already does
+  (`points`/`readmes`), so the result-table rendering needed zero source-specific branching to reuse
+  either. Verified end-to-end against this host's real cached FIO/SVT-AV1 profiles via direct `curl`
+  calls to both new endpoints (a two-test batch: FIO completed with a manual `type` pick plus SVT-AV1
+  already fully resolved, materializing both correctly in one call) and a scripted jsdom session
+  driving the actual rendered page and `app.js` unmodified through source selection, Resolve, the
+  missing-axis error path, completing the picker, and a successful multi-test Materialize — asserting
+  the exact `groups` body it POSTs. Also reran the two pre-existing Phoronix-tab jsdom sessions
+  (Installed-test-profile picker, Unregister button) against the refactored `app.js` as a regression
+  check — both still pass unchanged.
+
+  Also found and fixed a second real bug in `resolve_phoronix_chart_url()` itself (shared by both the
+  CLI and this web-UI slice, so both benefit) while manually spot-checking a different real user URL
+  against this host's own data: several downloaded versions of the same test almost always share an
+  identical `<Title>` (confirmed live: this host has `hpcg-1.1.1`/`1.2.1`/`1.3.0` all downloaded, all
+  titled "High Performance Conjugate Gradient"), and the title-match had no tie-breaker for that case
+  — it silently fell back to whichever version sorted first alphabetically by directory name, which
+  is `hpcg-1.1.1`, the *oldest*: its older test-definition.xml schema has zero option axes at all, so
+  a real chart slug `high-performance-conjugate-gradient-144-144-144-60` resolved to that stale
+  version and materialized with an empty Arguments/`options_slug` of `"default"` instead of the real
+  `--nx=144 --ny=144 --nz=144 --rt=60` the newer 1.3.0 profile's real axes would have composed. Fixed
+  by preferring the newest version on a title-match tie (`phoronix_pinned_version()`/
+  `_phoronix_version_key()`, the same version-comparison already used elsewhere for "prefer the
+  newest installed version" UX) rather than an arbitrary directory-listing order. New
+  `ResolvePhoronixChartUrlTest.test_title_match_tie_prefers_newest_version` regression test
+  reproducing the exact scenario against synthetic hpcg-shaped fixture data; verified live against
+  this host's real hpcg profiles too (now correctly resolves to `pts/hpcg-1.3.0` with
+  `xyz="144 144 144", time="60"`).
+- Published-article/chart-URL-seeded test-point discovery — CLI/core-resolver half. A published
+  Phoronix article's individual chart-result URLs (right-click "open in new tab" on any chart, e.g.
   `phoronix.com/benchmark/result/<article-slug>/<chart-slug>.svgz`) each identify one (test,
   option-combination) the article ran, in a human-readable slug — but the article page itself isn't
   fetchable server-side (confirmed live: `phoronix.com` returns a Cloudflare bot-challenge/403 to a
@@ -1112,15 +1156,6 @@ recent one (CLI flag/identity consistency pass).
    what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
    across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
    point, launched by a human clicking Run) exists today.
-7. Published-article/chart-URL-seeded test-point discovery — the CLI/core-resolver half already
-   shipped (see "Shipped since 4.3.1"). **Still open:** the web UI half — a paste-box in the Phoronix
-   tab (a fifth "Materialize new test points" source alongside the existing four) accepting one or
-   more chart URLs, driving `resolve_phoronix_chart_url()` per URL and rendering results the same way
-   the CLI already reports them: a fully-resolved URL offers a one-click Materialize; a
-   partially-resolved one pre-fills the existing multi-axis picker (the Installed-test-profile
-   deep-dive's own web picker) with whatever axes did resolve, leaving only the unresolved ones for a
-   human to pick by hand rather than starting from nothing; an unresolved/unrecognized URL surfaces
-   the raw hint text with a suggestion to install/download the real test first.
 
 ## 4.5 priorities
 Goal: lower priority than 4.4 but still real, wanted work — pick up once 4.4's three focus areas are
