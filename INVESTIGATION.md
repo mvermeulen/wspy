@@ -129,6 +129,38 @@ its GitHub release body is the notes at `https://github.com/mvermeulen/wspy/rele
 ## Shipped since 4.3.1
 Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-prep time.
 
+- Installed-test-profile materialization deep-dive — CLI/core-mechanism half (web UI picker stays
+  open, see item 7). New `web/joblib.py` functions, all grounded in real cached test-definition.xml
+  files read directly off this host (svt-av1, npb, llama-cpp) rather than assumed: `phoronix_test_axes()`
+  parses `<TestSettings><Option>` into per-axis `{display_name, identifier, arg_prefix, arg_postfix,
+  entries}` dicts, order-preserved (the grouped counterpart to `_phoronix_menu_entries()`'s existing
+  flat list, which stays as-is for `repin_phoronix_test_point()`'s own single-string validation);
+  `compose_phoronix_axis_choice()` builds `(Arguments, Description)` from an explicit
+  `{identifier: entry_name}` choice per axis, confirming the deep-dive's own "Confirmed Arguments/
+  Description composition rule" holds by round-tripping it against real data;
+  `phoronix_axis_is_gpu_flagged()` is the design's keyword-heuristic axis flag (over-inclusive on
+  purpose); `phoronix_installed_test_file_basenames()`/`phoronix_entry_looks_buildable()` are the
+  "looks buildable" hint (design point 6) — matches the entry Value's first whitespace token
+  bidirectionally against installed files, with a minimum-token-length floor added after a real false
+  positive surfaced live (this host's llama-cpp-2.5.0 installed-tests directory has 15000+ files, a
+  full CUDA source checkout, against which a short/flag-like token like a "Test" axis entry's `-n`
+  substring-matched dozens of unrelated filenames); `materialize_phoronix_installed_point()`/
+  `import_phoronix_installed_points()` tie it together as the third materialization source (alongside
+  an installed suite-definition.xml and an OpenBenchmarking result), sharing
+  `materialize_phoronix_test_point()`/`write_phoronix_test_readme()`/
+  `add_phoronix_test_point_to_ledger()` with the other two rather than duplicating them.
+  `wspy-phoronix-import` gains `--from-installed <test_id>` (with `--option
+  <identifier>=<entry-name>`, repeatable, one per axis, or `--all-single-axis` for the single-axis
+  "materialize every entry" convenience — deliberately no equivalent flag for two-or-more axes, the
+  same "the discipline belongs to the tool" reasoning `--passes` already established elsewhere in this
+  codebase) and `--list-options <test_id>` (prints axes/entries with the GPU-flag and buildable-hint
+  badges, no materialization, no privileges needed — the CLI's own answer to "what are my valid
+  `--option` values"). Verified end-to-end against real installed/downloaded profiles on this host: a
+  real multi-axis svt-av1 point (`--preset 8 -i Bosphorus_1920x1080_120fps_420_8bit_YUV.yuv -w 1920 -h
+  1080`, `Encoder Mode: Preset 8 - Input: Bosphorus 1080p`), a real zero-axis coremark point, and
+  `--all-single-axis` against npb's real 7-entry axis — all producing correct suite-definition.xml/
+  source.json and showing up in `--list-materialized`'s existing inventory output with no new code,
+  confirming design points 3-5's "no new code needed" claim rather than just assuming it holds.
 - CLI flag/identity consistency pass — closing the item out entirely (both audit findings addressed).
   (1) Dest-root flags: `web/joblib.py` gains a `TEST_POINT_SUITES` registry (`{"phoronix": {list, find,
   split}, "cpu2026": {...}}`) that `resolve_test_identity()`/`enumerate_reference_matrix_cells()` now
@@ -960,16 +992,14 @@ recent one (CLI flag/identity consistency pass).
    across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
    point, launched by a human clicking Run) exists today.
 7. Materialize test points directly from installed/downloaded PTS test profiles, with no prior PTS
-   run/import round-trip. Today's only materialization paths (`wspy-phoronix-import`, "What shipped in
-   4.3") both require *evidence a specific option combination already ran* (an installed
-   suite-definition.xml or a composite.xml result) — there's no path from "this test profile is
-   installed" straight to "candidate test points a human can pick from" without first driving it
-   through PTS's own interactive/batch menu once. See the "Installed-test-profile materialization
-   deep-dive" below for the full design: zero/single-option profiles materialize directly or as a flat
-   pick-list, multi-option profiles get an explicit per-axis picker (never an auto-expanded cross
-   product), and GPU/backend-shaped axes are flagged for explicit confirmation rather than defaulted.
-   Web UI: a third Phoronix-tab source alongside the existing installed-suite/OpenBenchmarking-URL
-   import sources.
+   run/import round-trip — the CLI/core-mechanism half of this already shipped (see "Shipped since
+   4.3.1"). **Still open:** the web UI half — a third Phoronix-tab source alongside the existing
+   installed-suite/OpenBenchmarking-URL import sources, giving the shipped discovery/composer/
+   materialization mechanism (`wspy-phoronix-import --from-installed`'s own CLI equivalent) a picker:
+   zero/single-axis profiles materialize directly or as a flat pick-list, multi-axis profiles get an
+   explicit per-axis checklist (never an auto-expanded cross product, same discipline the CLI's own
+   `--option`/`--all-single-axis` split already established), and GPU/backend-shaped axes
+   (`phoronix_axis_is_gpu_flagged()`) are flagged for explicit confirmation rather than defaulted.
 8. Published-article/chart-URL-seeded test-point discovery. Depends on item 7 above for its multi-axis
    case — start that first. A published Phoronix article's individual chart-result URLs (e.g.
    `phoronix.com/benchmark/result/<article-slug>/<chart-slug>.svgz`, right-click "open in new tab" on

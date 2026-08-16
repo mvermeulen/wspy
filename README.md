@@ -778,7 +778,7 @@ See `./wspy-symbolize --help` for the full option list.
 single-test-point suite per (test, option-combination), materialized under
 `workload/phoronix/<test>/<options>/` and registered with `wspy-ledger --add` — growing a
 pre-profiled workload library cheaply instead of hand-authoring one `wspy-run` invocation per
-benchmark. Three source methods:
+benchmark. Several source methods:
 
 ```
 ./wspy-phoronix-import --result https://openbenchmarking.org/result/2607160-PTS-7700X3D886
@@ -787,6 +787,27 @@ benchmark. Three source methods:
 ./wspy-phoronix-import --list-installed        # installed suites under ~/.phoronix-test-suite/test-suites
 ./wspy-phoronix-import --list-materialized     # already-materialized test points under workload/phoronix/
 ```
+
+A fourth method, `--from-installed <test_id>`, needs no prior PTS run/import round-trip at all — it
+reads an installed/downloaded test profile's own option axes directly
+(`~/.phoronix-test-suite/test-profiles/<namespace>/<name>/test-definition.xml`), so it works before
+ever running the test through PTS once (INVESTIGATION.md's "Installed-test-profile materialization
+deep-dive"):
+
+```
+./wspy-phoronix-import --list-options pts/llama-cpp-2.5.0      # see valid --option values first
+./wspy-phoronix-import --from-installed pts/coremark-1.0.1     # zero axes -- materializes directly
+./wspy-phoronix-import --from-installed pts/npb-1.2.4 --all-single-axis   # one axis -- every entry
+./wspy-phoronix-import --from-installed pts/llama-cpp-2.5.0 \
+    --option backend="CPU BLAS" --option model=gpt-oss-20b-Q8_0  # two+ axes -- one explicit tuple
+```
+
+`--list-options` also shows two best-effort, advisory-only badges per entry, never a filter: whether
+an axis looks GPU/backend-shaped (keyword heuristic, deliberately over-inclusive) and whether an
+entry's value "looks buildable" against files actually installed on this host. Deliberately no flag
+that expands a whole multi-axis matrix in one call — e.g. llama.cpp's real Backend x Model x Test
+axes multiply to 160 combinations on this host — picking only the tuples actually wanted is the
+point, not something a convenience flag should quietly do instead.
 
 Re-running against the same source is additive: an already-materialized `<test>/<options>/`
 directory is left untouched and reported as `exists` rather than overwritten. Materializing itself

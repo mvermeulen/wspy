@@ -6,7 +6,7 @@ Phoronix suites (INVESTIGATION.md item 26's front-end phase).
 Decomposes an already-published Phoronix result or suite into one minimal
 single-test-point PTS suite per (test, option-combination) -- growing
 workload/phoronix/ into a pre-profiled workload library cheaply, instead of
-hand-authoring one wspy-run invocation per benchmark. Three source methods,
+hand-authoring one wspy-run invocation per benchmark. Several source methods,
 mutually exclusive:
 
   --result <url-or-id>    an openbenchmarking.org result, e.g.
@@ -21,6 +21,30 @@ mutually exclusive:
   --installed-suite <name>  an already-installed PTS suite, e.g.
                            "pts/compression-1.1.4" or "local/my-suite" (bare
                            names are searched under both prefixes).
+  --from-installed <test_id>  an installed/downloaded test profile with no
+                           prior run/import round-trip at all -- the other
+                           three methods all require *evidence a specific
+                           option combination already ran* (a suite-
+                           definition.xml, a composite.xml, or an installed
+                           suite built from one of those); this instead
+                           reads test-definition.xml's own <Menu><Entry>
+                           axes directly (INVESTIGATION.md's "Installed-
+                           test-profile materialization deep-dive"), so it
+                           works before ever running the test through PTS.
+                           A zero-axis test (e.g. coremark) materializes
+                           directly with no --option needed; a single-axis
+                           test additionally accepts --all-single-axis to
+                           materialize every entry in one call; a
+                           multi-axis test needs one --option
+                           <identifier>=<entry-name> per axis -- see
+                           --list-options first. Deliberately no flag that
+                           expands a whole multi-axis matrix in one call:
+                           a naive cross product blows up fast (e.g.
+                           llama.cpp's Backend x Model x Test axes multiply
+                           to 160 combinations on a real host) and the
+                           discipline of picking only the tuples actually
+                           wanted belongs to the tool, not to hoping nobody
+                           passes an --all-axes flag if one existed.
   --list-installed         list installed suites under
                            ~/.phoronix-test-suite/test-suites/{pts,local}
                            and exit -- no source needed.
@@ -28,6 +52,13 @@ mutually exclusive:
                            --dest (default workload/phoronix/) and exit --
                            no source needed. Same inventory the web
                            launcher's Phoronix tab shows.
+  --list-options <test_id>  list an installed/downloaded test's option
+                           axes and entries (with GPU/backend-axis and
+                           "looks buildable against files actually on
+                           this host" hints, both best-effort advisory
+                           badges, never a filter) and exit -- no
+                           materialization, use before --from-installed
+                           to see valid --option values.
 
 All the actual parsing/materialization/wspy-ledger-integration logic lives
 in web/joblib.py (import_phoronix_test_points() and friends), shared with
@@ -123,6 +154,63 @@ def print_inventory_table(points):
             print("  ".join("-" * w for w in widths))
 
 
+def print_options_table(test_id, axes):
+    if not axes:
+        print(f"wspy-phoronix-import: {test_id} has no option axes -- a single implicit point, "
+              "materialize with --from-installed and no --option", file=sys.stderr)
+        return
+    installed_basenames = joblib.phoronix_installed_test_file_basenames(test_id)
+    buildable_col = {True: "yes", False: "no", None: "?"}
+    for axis in axes:
+        gpu_badge = " [GPU/backend axis]" if joblib.phoronix_axis_is_gpu_flagged(axis) else ""
+        print(f"{axis['identifier']} -- {axis['display_name']}{gpu_badge}")
+        rows = [("NAME", "VALUE", "BUILDABLE?")]
+        for name, value in axis["entries"]:
+            buildable = joblib.phoronix_entry_looks_buildable(value, installed_basenames)
+            rows.append((name, value, buildable_col.get(buildable, "?")))
+        widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
+        for i, row in enumerate(rows):
+            print("  " + "  ".join(cell.ljust(widths[j]) for j, cell in enumerate(row)))
+            if i == 0:
+                print("  " + "  ".join("-" * w for w in widths))
+        print()
+
+
+def build_installed_choice_sets(args, axes):
+    """Returns (choice_sets, error_or_None) for --from-installed, from --option/--all-single-axis --
+    exactly one of the three deep-dive cases (zero axes, --all-single-axis, explicit --option per
+    axis), never a silent fallback between them."""
+    if not axes:
+        if args.option or args.all_single_axis:
+            return None, "this test has no option axes -- drop --option/--all-single-axis"
+        return [{}], None
+    if args.all_single_axis:
+        if len(axes) != 1:
+            return None, f"--all-single-axis needs exactly one option axis, this test has {len(axes)}"
+        if args.option:
+            return None, "--all-single-axis and --option are mutually exclusive"
+        identifier = axes[0]["identifier"]
+        return [{identifier: name} for name, _value in axes[0]["entries"]], None
+    if not args.option:
+        return None, (f"this test has {len(axes)} option axis(es) -- pass --option "
+                       "<identifier>=<entry-name> once per axis (see --list-options), or "
+                       "--all-single-axis if it has exactly one")
+    choices = {}
+    for opt in args.option:
+        if "=" not in opt:
+            return None, f"malformed --option {opt!r} (want IDENTIFIER=ENTRY-NAME)"
+        identifier, entry_name = opt.split("=", 1)
+        choices[identifier] = entry_name
+    axis_identifiers = {a["identifier"] for a in axes}
+    missing = axis_identifiers - set(choices)
+    extra = set(choices) - axis_identifiers
+    if missing:
+        return None, f"missing --option for axis(es): {', '.join(sorted(missing))}"
+    if extra:
+        return None, f"--option given for unknown axis(es): {', '.join(sorted(extra))}"
+    return [choices], None
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Decompose a Phoronix result/suite into one minimal single-test-point "
@@ -138,6 +226,21 @@ def main():
                       help="list installed suites under ~/.phoronix-test-suite/test-suites and exit")
     src.add_argument("--list-materialized", action="store_true",
                       help="list already-materialized test points under --dest and exit")
+    src.add_argument("--from-installed", metavar="TEST_ID",
+                      help="an installed/downloaded test profile with no prior run/import, e.g. "
+                           "pts/llama-cpp-2.5.0 -- combine with --option (one per axis) or "
+                           "--all-single-axis; see --list-options first to see what's available")
+    src.add_argument("--list-options", metavar="TEST_ID",
+                      help="list TEST_ID's option axes/entries (with GPU/backend and 'looks "
+                           "buildable' hints) and exit -- no source needed, use before --from-installed")
+    ap.add_argument("--option", action="append", default=[], metavar="IDENTIFIER=ENTRY-NAME",
+                     help="one axis choice for --from-installed (repeatable, one per axis); "
+                          "ENTRY-NAME must match --list-options' NAME column exactly, not its VALUE")
+    ap.add_argument("--all-single-axis", action="store_true",
+                     help="with --from-installed on a test that has exactly one option axis, "
+                          "materialize every entry on that axis as its own point instead of "
+                          "requiring --option -- deliberately no equivalent for two-or-more axes, "
+                          "see the module docstring")
     ap.add_argument("--dest", default=DEFAULT_DEST,
                      help=f"destination root for materialized suites (default: {DEFAULT_DEST})")
     ap.add_argument("--ledger-list", default=None,
@@ -172,16 +275,44 @@ def main():
             print_inventory_table(points)
         return 0
 
-    source = resolve_source(args)
-    if "error" in source:
-        print(f"wspy-phoronix-import: {source['error']}", file=sys.stderr)
-        return 2
+    if args.list_options:
+        axes, error = joblib.phoronix_test_axes_for_test_id(args.list_options)
+        if error:
+            print(f"wspy-phoronix-import: {error}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(axes, indent=2))
+        else:
+            print_options_table(args.list_options, axes)
+        return 0
 
-    result = joblib.import_phoronix_test_points(
-        source["xml"], args.dest, source["source_kind"], source["source_ref"],
-        phoronix_bin=args.phoronix_bin, ledger_bin=args.ledger_bin,
-        ledger_list_path=args.ledger_list, dry_run=args.dry_run,
-        check_installed=not args.no_check_installed, add_to_ledger=not args.no_ledger)
+    if args.from_installed:
+        test_id = args.from_installed
+        axes, error = joblib.phoronix_test_axes_for_test_id(test_id)
+        if error:
+            print(f"wspy-phoronix-import: {error}", file=sys.stderr)
+            return 2
+        choice_sets, error = build_installed_choice_sets(args, axes)
+        if error:
+            print(f"wspy-phoronix-import: {error}", file=sys.stderr)
+            return 2
+        source = {"source_kind": "installed-test-profile", "source_ref": f"installed:{test_id}"}
+        result = joblib.import_phoronix_installed_points(
+            test_id, choice_sets, args.dest, phoronix_bin=args.phoronix_bin, ledger_bin=args.ledger_bin,
+            ledger_list_path=args.ledger_list, dry_run=args.dry_run,
+            check_installed=not args.no_check_installed, add_to_ledger=not args.no_ledger)
+        result["readmes"] = [result["readme"]] if result.get("readme") else []
+    else:
+        source = resolve_source(args)
+        if "error" in source:
+            print(f"wspy-phoronix-import: {source['error']}", file=sys.stderr)
+            return 2
+
+        result = joblib.import_phoronix_test_points(
+            source["xml"], args.dest, source["source_kind"], source["source_ref"],
+            phoronix_bin=args.phoronix_bin, ledger_bin=args.ledger_bin,
+            ledger_list_path=args.ledger_list, dry_run=args.dry_run,
+            check_installed=not args.no_check_installed, add_to_ledger=not args.no_ledger)
 
     if result["error"]:
         print(f"wspy-phoronix-import: {result['error']}", file=sys.stderr)
