@@ -80,7 +80,7 @@ from joblib import (  # noqa: E402,F401
     build_supplementary_plot_passes, parse_optional_int, build_configuration_passes,
     build_pass_argv, valid_segment, valid_relpath, make_run_id,
     default_benchmark_from_workload, valid_profile_spec, build_wspy_run_argv,
-    build_plot_argv, shell_preview, RunState, run_store_ingest_besteffort,
+    build_plot_argv, shell_preview, RunState, run_store_ingest_besteffort, build_store_ingest_argv,
     execute_profile_run, execute_custom_run, write_custom_run_manifest,
     write_custom_run_summary, LOG_NAME, PLOTS_DIR_NAME, RUN_MANIFEST_NAME, SUMMARY_NAME,
     NAME_RE, resolve_toggles, checklist_from_pass_provenance, valid_affinity_spec,
@@ -511,16 +511,28 @@ def resolve_report_root_for_web(cfg):
     return report_root.DEFAULT_REPORT_ROOT
 
 
-def execute_testpoint_publish(state, select_runs_argv, render_argv):
-    """Runs select-runs then render as one background pipeline (the report page's "Publish
-    test-point report" button, Tier 3 item 7), mirroring execute_analyze()'s subprocess/SSE-relay
-    shape exactly. render only runs if select-runs succeeded -- a role-assignment failure (e.g. no
+def execute_testpoint_publish(state, cfg, run_index_path, select_runs_argv, render_argv):
+    """Runs ingest, then select-runs, then render, as one background pipeline (the report page's
+    "Publish test-point report" button, Tier 3 item 7 / INVESTIGATION.md 4.4(a) "One-click
+    end-to-end pipeline"), mirroring execute_analyze()'s subprocess/SSE-relay shape exactly. The
+    ingest step (run_store_ingest_besteffort(), the same best-effort re-run-wspy-store step
+    every wspy-run/checklist launch already does automatically) closes the one real gap a
+    CLI-launched run has that a web-launched one doesn't: without it, a human who ran `wspy-run`
+    directly from a terminal (never touching this server's own Run tab or wspy-queue) would have to
+    separately remember to run wspy-store before clicking this button at all, or select-runs/render
+    would silently work from a stale/empty store. Never fails the chain on its own (same "never
+    fails the run itself" contract as its other callers) -- select-runs/render can still proceed
+    (with whatever warnings they already print about runs missing from the store) even if ingest
+    itself failed. render only runs if select-runs succeeded -- a role-assignment failure (e.g. no
     runs found for this suite/benchmark/hostname) means there is nothing coherent for render to
     aggregate, so running it anyway would just produce a second, more confusing failure on top of the
-    first. Both commands' own output already explains what happened (git commit summaries, warnings
-    about runs missing from the store, etc.) -- this function only relays it, never reinterprets it."""
+    first. All three commands' own output already explains what happened (git commit summaries,
+    warnings about runs missing from the store, etc.) -- this function only relays it, never
+    reinterprets it."""
     def emit(line):
         state.append(line)
+
+    run_store_ingest_besteffort(emit, cfg, run_index_path)
 
     def run_one(argv):
         emit("$ " + shell_preview(argv))
@@ -4775,30 +4787,35 @@ def render_vision_card(rundir, suite, benchmark, run_id):
 
 
 def render_testpoint_card(suite, benchmark, run_id):
-    """Report-page "Publish test-point report" card (Tier 3 item 7, doc/REPORT_HIERARCHY.md): resolves
-    run roles (wspy-testpoint select-runs) and renders/commits a curated README.md (wspy-testpoint
-    render) for the *whole test point* this run belongs to -- every stats-pool run sharing
-    suite/benchmark on the given machine, not just this one run. Mirrors render_analyze_card()'s
-    SSE-streamed shape exactly (wireTestpointPublishButton() in app.js is the client-side
-    counterpart). The "Machine" field pre-fills from wp_client's own machine_short_name config (same
-    `wp_client.load_config()` read render_publish_panel() already uses for its own Machine field) --
-    still an editable, required text input, not a silent auto-submit, so this doesn't invent a
-    hardware-to-slug mapping wspy-testpoint's own CLI doesn't have either (doc/REPORT_HIERARCHY.md's
-    own words: that naming stays "deliberately informal/human-assigned for now"). It only removes the
-    friction of retyping a slug this exact web layer already has on hand from a prior `wspy-publish
-    configure`."""
+    """Report-page "Publish test-point report" card (Tier 3 item 7, doc/REPORT_HIERARCHY.md;
+    INVESTIGATION.md 4.4(a) "One-click end-to-end pipeline"): best-effort re-ingests into the store
+    (run_store_ingest_besteffort() -- closes the one real gap left for a run launched by a bare
+    `wspy-run` from a terminal, which never gets the automatic ingest a web-launched run already
+    does), resolves run roles (wspy-testpoint select-runs), and renders/commits a curated README.md
+    (wspy-testpoint render) for the *whole test point* this run belongs to -- every stats-pool run
+    sharing suite/benchmark on the given machine, not just this one run. Mirrors
+    render_analyze_card()'s SSE-streamed shape exactly (wireTestpointPublishButton() in app.js is the
+    client-side counterpart). The "Machine" field pre-fills from wp_client's own machine_short_name
+    config (same `wp_client.load_config()` read render_publish_panel() already uses for its own
+    Machine field) -- still an editable, required text input, not a silent auto-submit, so this
+    doesn't invent a hardware-to-slug mapping wspy-testpoint's own CLI doesn't have either
+    (doc/REPORT_HIERARCHY.md's own words: that naming stays "deliberately informal/human-assigned for
+    now"). It only removes the friction of retyping a slug this exact web layer already has on hand
+    from a prior `wspy-publish configure`."""
     url = f"/api/testpoint-publish/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
     wp_cfg = wp_client.load_config()
     machine_default = (wp_cfg or {}).get("machine_short_name") or ""
     return f"""
 <h2>Publish test-point report</h2>
-<p class="muted">Resolves run roles (redo/repeat/supplementary) and renders a curated
-   <code>README.md</code> for the <strong>whole test point</strong> this run belongs to -- every
-   <code>stats-pool</code> run sharing <code>{html.escape(suite)}/{html.escape(benchmark)}</code> on
-   the machine below, not just this one run -- then commits it locally into the configured
-   report-root (see <code>doc/REPORT_HIERARCHY.md</code>; this never pushes automatically). Safe to
-   click repeatedly: a human's role overrides and any hand-edited commentary in the resulting report
-   survive a later re-run.</p>
+<p class="muted">Re-ingests into the store (best-effort -- catches up a run launched from a bare
+   <code>wspy-run</code> that skipped the automatic ingest a web-launched run already gets), resolves
+   run roles (redo/repeat/supplementary), and renders a curated <code>README.md</code> for the
+   <strong>whole test point</strong> this run belongs to -- every <code>stats-pool</code> run sharing
+   <code>{html.escape(suite)}/{html.escape(benchmark)}</code> on the machine below, not just this one
+   run -- then commits it locally into the configured report-root (see
+   <code>doc/REPORT_HIERARCHY.md</code>; this never pushes automatically). Safe to click repeatedly:
+   a human's role overrides and any hand-edited commentary in the resulting report survive a later
+   re-run.</p>
 <form id="testpoint-publish-form">
   <label>Machine slug <span class="muted">(e.g. amd-395 -- doc/REPORT_HIERARCHY.md's
     &lt;vendor&gt;-&lt;short-model&gt; convention)</span>
@@ -7090,8 +7107,9 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def _start_testpoint_publish(self, cfg, suite, benchmark, run_id, body):
-        """Report page's "Publish test-point report" button (render_testpoint_card(), Tier 3 item 7):
-        resolves run roles then renders/commits this test point's README into the configured
+        """Report page's "Publish test-point report" button (render_testpoint_card(), Tier 3 item 7 /
+        INVESTIGATION.md 4.4(a) "One-click end-to-end pipeline"): best-effort re-ingests into the
+        store, resolves run roles, then renders/commits this test point's README into the configured
         report-root, streamed over SSE via TESTPOINT_RUNS the same way the AI-analysis button uses
         ANALYZE_RUNS. Operates on the *whole test point* this run belongs to (every stats-pool run
         sharing suite/benchmark on the given machine) -- run_id only identifies which report page the
@@ -7107,6 +7125,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         select_runs_argv, render_argv = build_testpoint_publish_argv(cfg, suite, benchmark, machine)
+        run_index_path = cfg.get("run_index_file")
 
         key = run_key(suite, benchmark, run_id)
         state = RunState(rundir)
@@ -7114,14 +7133,18 @@ class Handler(BaseHTTPRequestHandler):
             TESTPOINT_RUNS[key] = state
 
         t = threading.Thread(target=execute_testpoint_publish, args=(
-            state, select_runs_argv, render_argv,
+            state, cfg, run_index_path, select_runs_argv, render_argv,
         ), daemon=True)
         t.start()
 
+        # Preview string mirrors run_store_ingest_besteffort()'s own "skip if no run-index" gate --
+        # showing a wspy-store command that step will never actually run would be misleading.
+        preview = ([shell_preview(build_store_ingest_argv(cfg, run_index_path))] if run_index_path else []) \
+            + [shell_preview(select_runs_argv), shell_preview(render_argv)]
         self._send_json(202, {
             "suite": suite, "benchmark": benchmark, "run_id": run_id,
             "events_url": f"/api/testpoint-publish/{suite}/{benchmark}/{run_id}/events",
-            "command": shell_preview(select_runs_argv) + " && " + shell_preview(render_argv),
+            "command": " && ".join(preview),
         })
 
     def _start_reference_discovery(self, suite):

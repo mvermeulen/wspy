@@ -129,6 +129,34 @@ its GitHub release body is the notes at `https://github.com/mvermeulen/wspy/rele
 ## Shipped since 4.3.1
 Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-prep time.
 
+- One-click end-to-end pipeline — ingest-chaining slice (item's own text: "a human runs `wspy-run`,
+  then separately has to already know to run `wspy-store`'s ingest, `wspy-testpoint select-runs`,
+  `wspy-testpoint render`, and a publish step"). The report page's existing "Publish test-point
+  report" button already chained select-runs + render into one background-thread/SSE action
+  (Tier 3 item 7); it now also best-effort re-ingests into the store first
+  (`run_store_ingest_besteffort()`, the same step every web-launched run/job already gets
+  automatically) — closing the one real gap left for a run launched from a bare `wspy-run` invocation
+  on the CLI, which never got that automatic ingest and would otherwise leave select-runs/render
+  working from a stale or empty store with no visible warning why. New `joblib.build_store_ingest_argv()`
+  factors the wspy-store argv out of `run_store_ingest_besteffort()` so the button's own initial-response
+  "command" preview (already shown before the pipeline starts, same "always show the exact command
+  line" convention the Run tab's own live preview already established) can include it without a second,
+  duplicated construction — omitted from that preview when no run-index is configured, mirroring
+  `run_store_ingest_besteffort()`'s own internal skip rather than showing a command that will never
+  actually run. Never fails the chain on its own (same "never fails the run itself" contract as its
+  other callers) — select-runs/render still proceed even if ingest itself failed. Deliberately does
+  *not* touch the actual publish/push step — `render_testpoint_card()`'s own existing "this never
+  pushes automatically" boundary is left exactly as it was, a real, hard-to-reverse, outward-facing
+  action kept as a separate, explicit step on purpose; see item 1's own remaining-scope text below for
+  why. Verified against a real running server with fake `wspy-store`/`wspy-testpoint` binaries (the
+  same fake-binary approach `tests/wspy_queue_smoke.sh` already established): the real SSE event
+  stream showing all three commands running in order (ingest, then select-runs, then render, each
+  with its own real exit-code line), and the initial POST response's "command" preview string
+  correctly listing all three before the pipeline even starts. Plus new `BuildStoreIngestArgvTest`
+  (`web/test_joblib.py`, 2 tests) — the surrounding subprocess/threading/SSE orchestration itself
+  stays outside automated coverage, matching this codebase's already-documented boundary for this
+  class of feature (`execute_analyze()`/`execute_testpoint_publish()` are equally untested on
+  purpose, per `web/test_testpoint_web.py`'s own docstring).
 - Quickstart guide / guided onboarding path. New "Quickstart" section in `README.md` (right after
   "Building", before the 16-tools-each-in-their-own-section "Usage" reference material begins): a
   verified, copy-pasteable three-command loop (`make` → `sudo ./wspy-run --suite demo --benchmark
@@ -840,14 +868,18 @@ the page indicating order or which are "normally do this" vs. optional; and per-
 `--hostname`+`--command` vs. `--hostname`+`--run-id`, depending which tool) have drifted apart tool by
 tool despite resolving near-identical shapes underneath.
 
-1. One-click end-to-end pipeline. Today a human runs `wspy-run`, then separately has to already know to
-   run `wspy-store`'s ingest, `wspy-testpoint select-runs`, `wspy-testpoint render`, and a publish step —
-   each its own command or its own web-UI button, in an order nowhere written down for a CLI-only user.
-   Chain the common path (a finished run → ingested → selected → rendered → published) into one action,
-   with a dry-run/preview step before anything writes or pushes, mirroring the caution
+1. One-click end-to-end pipeline — remaining scope: the report page's existing "Publish test-point
+   report" button now chains ingested → selected → rendered into one action (the ingest-chaining slice
+   shipped — see "Shipped since 4.3.1" above), but that button's own render step still only *commits
+   locally* into the configured report-root, by deliberate, already-established design (see
+   `render_testpoint_card()`'s own comment: "this never pushes automatically" — a real, hard-to-reverse,
+   outward-facing action left as a separate, explicit step on purpose, not an oversight this item
+   should silently fold in). Remaining scope is genuinely the → *published* leg only: chaining an actual
+   git-push-the-report-root-remote and/or WordPress-post step onto the same button, gated behind a
+   dry-run/preview toggle before anything outward-facing happens — mirroring the caution
    `scripts/publish_reference_matrix.py`'s web button already applies ("Preview (dry-run)" checked by
-   default). Web UI first — it already has every piece as a background-thread/SSE card; a CLI wrapper is
-   a natural follow-on once the sequencing is settled, not a prerequisite.
+   default) for exactly this reason. A CLI wrapper for the whole chain is a natural follow-on once the
+   web-UI sequencing is settled, not a prerequisite.
 2. CLI flag/identity consistency pass. Two concrete inconsistencies found in the 2026-08-07 audit: (1)
    `--phoronix-dest-root`/`--cpu2026-dest-root` are separate flags even though both suites resolve
    through the identical `find_materialized_*_test_point()` shape — every future suite added this way

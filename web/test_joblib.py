@@ -158,6 +158,24 @@ class ListJobsTest(unittest.TestCase):
             self.assertEqual(rows[0]["job_id"], "job-broken")
 
 
+class BuildStoreIngestArgvTest(unittest.TestCase):
+    """INVESTIGATION.md 4.4(a) "One-click end-to-end pipeline": factored out of
+    run_store_ingest_besteffort() so a caller that only wants to *show* the command (server.py's
+    testpoint-publish preview) doesn't duplicate the construction."""
+
+    def test_argv_shape(self):
+        cfg = {"wspy_store_bin": "/repo/wspy-store", "store_db": "/repo/web/runs/store.db"}
+        argv = joblib.build_store_ingest_argv(cfg, "/repo/web/runs/index.jsonl")
+        self.assertEqual(argv, ["/repo/wspy-store", "--db", "/repo/web/runs/store.db",
+                                 "--run-index", "/repo/web/runs/index.jsonl"])
+
+    def test_uses_cfg_values(self):
+        cfg = {"wspy_store_bin": "/custom/wspy-store", "store_db": "/custom/store.db"}
+        argv = joblib.build_store_ingest_argv(cfg, "/some/index.jsonl")
+        self.assertIn("/custom/wspy-store", argv)
+        self.assertIn("/custom/store.db", argv)
+
+
 class ResolveTogglesTest(unittest.TestCase):
     def test_defaults_all_on(self):
         cfg = {"run_index_file": "/tmp/run_index.jsonl"}
