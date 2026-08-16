@@ -985,10 +985,18 @@ recent one (CLI flag/identity consistency pass).
    (slugified the same way `slugify_phoronix_arguments()` already does elsewhere in this codebase —
    not proven byte-identical to Phoronix's own chart-naming scheme, so this is a best-effort match,
    never a guaranteed one); (c) a zero/single-axis match materializes directly, no guessing involved;
-   a multi-axis match generates every candidate tuple's `Description` string (item 7's composer),
-   slugifies each, and ranks by similarity to the pasted options-slug hint — surfaced as ranked
-   suggestions for a human to confirm with one click, never auto-picked, same "never auto-expand/
-   bulk-select" posture item 7 already established; (d) a test with no local profile match at all (not
+   a multi-axis match resolves **per axis independently** rather than generating the full cross
+   product — for each axis, slugify every entry's own `Name`/`Value` and check which one best matches
+   (substring/overlap) against the pasted options-slug hint, picking the best entry per axis without
+   ever enumerating the product of all axes together. This matters for an axis-heavy test like FIO
+   (type × engine × buffered × direct × block-size can run into the hundreds of combinations) — full
+   product enumeration is still computationally cheap (short-string comparisons, not a materialize
+   cost), but per-axis matching is both cheaper and the more selective of the two: it only ever
+   composes and materializes the one tuple actually implied by the pasted slug, never a whole
+   candidate list to browse, which is a meaningfully different (and better) property than item 7's own
+   human-driven picker, not just a performance detail. A per-axis match with no confident winner on one
+   or more axes surfaces as a partial/uncertain match for a human to complete by hand via item 7's
+   picker, rather than guessing the remaining axes; (d) a test with no local profile match at all (not
    installed, or a title match too weak to trust) surfaces as "unresolved — install `phoronix-test-suite
    install <test>` first" rather than silently dropping it. Steps 3-5 of the original framing (installed/
    already-run indicators, an "open in Run tab" action for not-yet-run points, and these test points
