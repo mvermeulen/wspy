@@ -129,10 +129,27 @@ its GitHub release body is the notes at `https://github.com/mvermeulen/wspy/rele
 ## Shipped since 4.3.1
 Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-prep time.
 
-- Linked navigation between the tree and interval/timeline views, features (a)/(b) (remaining scope
-  (c) still open — see 4.4(a) above): `web/static/timeline_viewer.js`'s combined tree+timeline viewer
-  already shared one crosshair by time across the pct chart and the swimlane, and a bar's hover tooltip
-  already included its `target_counters` — but going from a bump in the chart to *which process* caused
+- Linked navigation between the tree and interval/timeline views, feature (c) — the item's last
+  remaining scope, now fully shipped: `interval_viewer.js`'s full-column timeline page
+  (`render_interval_viewer()`, `web/server.py`) gains an optional "Tree + timeline (combined)" link,
+  same place and wording as the report page's own reciprocal link. The `/interval-viewer/...` route
+  handler resolves it via the same `joblib.find_combined_timeline_csv()` the report page already
+  uses, deliberately looked up against the *run* rather than requiring the currently-viewed CSV to be
+  the eligible one — a reader viewing a plain `--interval` pass's every-column output can still jump to
+  a *different*, same-run `--tree`+`--interval` pass's combined view for process context, since that's
+  the actual "relate them" need (a run can have more than one `--interval` CSV, only one of which is
+  ever tree-eligible). `render_interval_viewer()` takes the already-resolved URL as a plain optional
+  argument rather than re-deriving it itself, so the thin-HTML-shell function still needs no
+  rundir/manifest access of its own. Verified with a real running server against a synthetic two-pass
+  run directory (a plain `counters` pass plus a `tree-heavy` `--tree`+`--interval` pass): the link
+  appears when viewing either pass's CSV, points at the correct `/timeline-viewer/...` URL, that URL
+  actually 200s, and the link is correctly absent for a run with no `--tree` pass at all. Also covered
+  by a new `web/test_interval_viewer_link.py` unit test (`render_interval_viewer()`'s own rendering
+  contract; `find_combined_timeline_csv()` itself is `web/test_joblib.py`'s job, not re-tested here).
+- Linked navigation between the tree and interval/timeline views, features (a)/(b):
+  `web/static/timeline_viewer.js`'s combined tree+timeline viewer already shared one crosshair by time
+  across the pct chart and the swimlane, and a bar's hover tooltip already included its
+  `target_counters` — but going from a bump in the chart to *which process* caused
   it, or from a process to *its own* topdown breakdown, took eyeballing/re-deriving both ways. **(a)
   timeline → process:** hovering the pct chart now looks up every swimlane row whose `[start,finish]`
   covers that instant (`activeRowsAtTime()`), outlines those bars (`.tlv-bar-hot`) via
@@ -686,31 +703,22 @@ tool despite resolving near-identical shapes underneath.
    itself. Bundle in sharing structured configuration provenance with the job format (`web/joblib.py`'s
    job schema and `manifest.h`'s `configuration_provenance` are designed to be close in shape but aren't
    wired together yet).
-8. Linked navigation between the tree and interval/timeline views, remaining scope: **(c) relate the
-   full interval timeline too.** `interval_viewer.js`'s all-column view (every metric, not just the
-   topdown/GPU pct subset the combined viewer plots) still has no process-context link back to the tree
-   at all; at minimum a jump-to-combined-view link when `joblib.find_combined_timeline_csv()` finds a
-   qualifying pass for the same run. (Feature (a) "timeline → process" and (b) "process → topdown" have
-   shipped — see "Shipped since 4.3.1" below.) Not specific to the `801.xz_s` run that originally
-   illustrated the gap — the same need came up for Phoronix test points before they were isolated to one
-   test point per run, and recurs for any multi-process workload.
-
 **4.4(b) — GPU support:**
 
-9. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
+8. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
    heavier, optional trace-rich profile, same "default vs debug profile" pattern as IBS.
-10. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds on
-    4.2's GPU fusion layer (`gpu_fusion.c`, `--gpu-metrics`) for consistent per-metric data.
-11. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`, extended
+9. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds on
+   4.2's GPU fusion layer (`gpu_fusion.c`, `--gpu-metrics`) for consistent per-metric data.
+10. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`, extended
     once GPU runs feed the same index.
-12. Intel `i915` GPU PMU — an Intel-native busy/frequency alternative to the current AMD-sysfs/NVML-only
+11. Intel `i915` GPU PMU — an Intel-native busy/frequency alternative to the current AMD-sysfs/NVML-only
     GPU support, `perf_event_open()`-based rather than a vendor SMI/sysfs scrape. See the Intel hybrid /
     counter-grouping deep-dive for detail (the rest of that deep-dive's counter wishlist is non-GPU,
     tracked in 4.5).
 
 **4.4(c) — Phoronix suite build-out:**
 
-13. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
+12. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
     CSVs into per-test-case/per-trial datasets by correlating run manifests with PTS results,
     composite.xml, and log timestamps. See
     [phoronix_hook_investigation.md](file:///home/mev/source/wspy/doc/phoronix_hook_investigation.md)
@@ -720,12 +728,12 @@ tool despite resolving near-identical shapes underneath.
     `doc/INVESTIGATION_ARCHIVE.md`'s "Phoronix `result_notifier` hook capture" write-up. **Still open:**
     teaching `wspy-phoronix-segment.py` to prefer `pts_hooks.log` over composite.xml/log-timestamp
     correlation, and the segmentation tool itself.
-14. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
+13. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
     (`web/joblib.py`/`wspy-phoronix-import`/web launcher's Phoronix tab — see "What shipped in 4.3" for
     what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
     across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
     point, launched by a human clicking Run) exists today.
-15. Materialize test points directly from installed/downloaded PTS test profiles, with no prior PTS
+14. Materialize test points directly from installed/downloaded PTS test profiles, with no prior PTS
     run/import round-trip. Today's only materialization paths (`wspy-phoronix-import`, "What shipped in
     4.3") both require *evidence a specific option combination already ran* (an installed
     suite-definition.xml or a composite.xml result) — there's no path from "this test profile is
