@@ -327,9 +327,14 @@ tagging each with `--config-option` so the results are directly comparable after
 those go in as a uniform `--tag`/spec `tags` value instead (recorded, never automated); see
 `INVESTIGATION.md`'s "Comparison matrix mode deep-dive" for why.
 
+Each cell picks its own instrumentation the same two mutually-exclusive ways `wspy-run` itself
+does — a builtin `--profile` preset, or a `-c`/`--config <file>` pass list (`"profile"`/
+`"config_file"` in a spec file) — mirroring `wspy-run`'s own builtin-profile-vs-`-c`-file duality:
+
 ```
 # Quick form: one workload, one axis
 ./wspy-sweep --affinity all,nosmt --profile deep-cpu -- phoronix-test-suite batch-run coremark
+./wspy-sweep --affinity all,nosmt -c my-passes.conf -- phoronix-test-suite batch-run coremark
 
 # Declarative spec: multiple workloads, uniform context tags
 ./wspy-sweep --spec sweep.json
@@ -345,9 +350,14 @@ those go in as a uniform `--tag`/spec `tags` value instead (recorded, never auto
 }
 ```
 
+(or `"config_file": "my-passes.conf"` instead of `"profile"`.)
+
 `--dry-run` prints every cell's command line without running any of them. After the sweep,
 best-effort ingests into the normalized store and prints (doesn't run) the `wspy-summary
---group-by-option` command that shows the comparison.
+--group-by-option` command that shows the comparison. `--summary-out <file>` writes a JSON list of
+`{cell_id, workload_name, run_id, rundir, exit_code}` after a real (non-dry-run) sweep — lets a
+caller (e.g. `wspy-phoronix-batch`) discover exactly which `run_id`/`rundir` each of its own
+workloads landed at, without scraping stdout. Not written on `--dry-run`.
 
 ## wspy-validate: pre-publish quality checks
 
@@ -883,6 +893,35 @@ Two correlation sources, tried in this order per pass:
 
 Segmented output lands under `<rundir>/segmented/<pass-name>/`, one file per test-case (and, via the
 fallback path, per trial). See `./wspy-phoronix-segment --help` for the full option list.
+
+## wspy-phoronix-batch: batch-run many materialized test points
+
+`wspy-phoronix-batch` runs many already-materialized Phoronix test points
+(`workload/phoronix/<test>/<options>/`, `wspy-phoronix-import`'s own output) non-interactively in
+one call. Until now the only way to actually run a materialized point was the web launcher's
+Phoronix tab "Use in Run tab" button, one point at a time, launched by a human clicking Run — this
+is that same preparation step, applied to many points at once, scriptable/batchable.
+
+```
+./wspy-phoronix-batch --point svt-av1-preset-8 --point coremark-default --profile deep-cpu
+./wspy-phoronix-batch --points-file points.txt -c my-passes.conf
+./wspy-phoronix-batch --all --profile quick --dry-run
+```
+
+Three ways to pick which points to run: `--point <identity>` (repeatable), `--points-file <file>`
+(one identity per line, `#`-comments/blank lines ignored), or `--all` (every point currently
+materialized under `--dest`). An identity that doesn't resolve to a real materialized point is
+skipped with a warning, never fatal for the rest of the batch. `--affinity`/`--tag` cross-product
+and tag every point the same way `wspy-sweep`'s own flags do.
+
+Doesn't reimplement execution: builds a `wspy-sweep --spec` (one `workloads[]` entry per point,
+each command a `phoronix-test-suite batch-run local/<identity>` — the same command "Use in Run tab"
+already prefills for a single manually-launched point) and delegates to `wspy-sweep` for the actual
+cross-product/dry-run/failure-tracking/store-ingest loop; `--profile`/`-c`/`--config` pass straight
+through to it. After a real (non-dry-run) batch, reads `wspy-sweep --summary-out`'s JSON to learn
+each point's real `run_id`/`rundir` and symlinks it back into that point's own `runs/` directory
+(`--no-link-back` to skip), restoring "Use in Run tab"'s single-run browsability for a whole batch.
+See `./wspy-phoronix-batch --help` for the full option list.
 
 ## wspy-analyze: local LLM (Ollama) narrative analysis
 

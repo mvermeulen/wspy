@@ -20,10 +20,13 @@ write affecting every other process on the machine); see the design note
 for why that's a rule, not just a v1 scope cut.
 
 Two invocation shapes, mirroring wspy-run's own builtin-profile-vs--c-<file>
-duality:
+duality (--profile/"profile" and --config|-c/"config_file" are each cell's
+own equivalent of wspy-run's own two mutually-exclusive ways to pick what a
+single invocation collects -- exactly one required, either form):
 
   Quick form (one workload, one axis):
     wspy-sweep --affinity all,nosmt --profile deep-cpu -- phoronix-test-suite batch-run coremark
+    wspy-sweep --affinity all,nosmt -c my-passes.conf -- phoronix-test-suite batch-run coremark
 
   Declarative spec (multiple workloads, uniform context tags):
     wspy-sweep --spec sweep.json
@@ -34,6 +37,7 @@ duality:
       "profile": "deep-cpu",
       "tags": {"compiler": "gcc13", "kernel": "6.12.0"}
     }
+    (or "config_file": "my-passes.conf" instead of "profile")
 
 Cells run strictly sequentially (matching wspy-queue's own one-PMU-at-a-time
 rule) via ordinary `wspy-run` invocations -- no new collection logic, this
@@ -134,8 +138,11 @@ def build_cells(spec):
     return cells
 
 
-def build_wspy_run_argv(args, sweep_stamp, index, cell, spec):
-    run_id = f"{sweep_stamp}-{index:03d}-{cell_id(cell)}"
+def cell_run_id(sweep_stamp, index, cell):
+    return f"{sweep_stamp}-{index:03d}-{cell_id(cell)}"
+
+
+def build_wspy_run_argv(args, run_id, cell, spec):
     argv = [args.wspy_run_bin, "--wspy", args.wspy_bin,
             "--suite", spec["suite"], "--benchmark", cell["workload_name"],
             "--run-id", run_id, "-o", args.outroot]
@@ -146,7 +153,15 @@ def build_wspy_run_argv(args, sweep_stamp, index, cell, spec):
         argv += ["--config-option", f"{name}={value}"]
     for k, v in spec.get("tags", {}).items():
         argv += ["--config-option", f"{k}={v}"]
-    argv += [spec["profile"], "--"] + list(cell["command"])
+    # "config_file" is the -c/--config side of wspy-run's own builtin-profile-vs--c-<file> duality
+    # (the module docstring's own claim to mirror it, previously only true for the "profile" half --
+    # a real, confirmed gap this closes rather than new scope: item 5's "batchable... a saved profile
+    # or -c file" phrasing means each cell's own wspy-run invocation must be able to use either).
+    if spec.get("config_file"):
+        argv += ["-c", spec["config_file"]]
+    else:
+        argv += [spec["profile"]]
+    argv += ["--"] + list(cell["command"])
     return argv
 
 
@@ -179,25 +194,30 @@ def print_comparison_suggestion(store_db, spec):
 
 def load_spec_from_args(args):
     if args.spec:
-        if args.affinity or args.profile or args.tag or args.command:
-            fatal("--spec cannot be combined with --affinity/--profile/--tag/a workload command "
-                  "-- put everything in the spec file instead")
+        if args.affinity or args.profile or args.config or args.tag or args.command:
+            fatal("--spec cannot be combined with --affinity/--profile/--config/--tag/a workload "
+                  "command -- put everything in the spec file instead")
         with open(args.spec) as f:
             try:
                 spec = json.load(f)
             except json.JSONDecodeError as e:
                 fatal(f"{args.spec}: invalid JSON: {e}")
-        if "profile" not in spec:
-            fatal(f"{args.spec}: missing required 'profile' field")
+        if not spec.get("profile") and not spec.get("config_file"):
+            fatal(f"{args.spec}: needs exactly one of 'profile' or 'config_file'")
+        if spec.get("profile") and spec.get("config_file"):
+            fatal(f"{args.spec}: 'profile' and 'config_file' are mutually exclusive")
         spec.setdefault("suite", "sweep")
         spec.setdefault("tags", {})
         spec.setdefault("axes", {})
         return spec
 
     if not args.command:
-        fatal("either --spec <file>, or --profile/--affinity plus a workload command after --, is required")
-    if not args.profile:
-        fatal("--profile is required in the quick form (no --spec given)")
+        fatal("either --spec <file>, or --profile/--config plus --affinity/a workload command after "
+              "--, is required")
+    if not args.profile and not args.config:
+        fatal("--profile or --config/-c is required in the quick form (no --spec given)")
+    if args.profile and args.config:
+        fatal("--profile and --config/-c are mutually exclusive")
 
     workload_name = sanitize_for_id(os.path.basename(args.command[0]))
     axes = {}
@@ -215,6 +235,7 @@ def load_spec_from_args(args):
         "workloads": [{"name": workload_name, "command": args.command}],
         "axes": axes,
         "profile": args.profile,
+        "config_file": args.config,
         "tags": tags,
     }
 
@@ -233,7 +254,9 @@ def parse_args(argv):
     p = argparse.ArgumentParser(prog="wspy-sweep", description="Declarative sweep runner for wspy.")
     p.add_argument("--spec", help="declarative JSON sweep spec file (see module docstring for the shape)")
     p.add_argument("--affinity", help="comma-separated --affinity spec values to sweep (quick form)")
-    p.add_argument("--profile", help="wspy-run profile/preset (quick form)")
+    p.add_argument("--profile", help="wspy-run profile/preset (quick form; mutually exclusive with --config)")
+    p.add_argument("-c", "--config", help="wspy-run -c/--config pass-list file (quick form; "
+                                           "mutually exclusive with --profile)")
     p.add_argument("--suite", default="sweep", help="suite name for the unified output layout (default: sweep)")
     p.add_argument("--tag", action="append", default=[], metavar="K=V",
                    help="uniform --config-option context tag, repeatable (quick form)")
@@ -244,6 +267,11 @@ def parse_args(argv):
     p.add_argument("--wspy-store-bin", default=os.path.join(SCRIPT_DIR, "wspy-store"))
     p.add_argument("--store-db", help="normalized store DB for post-sweep ingest (default: <outroot>/store.db)")
     p.add_argument("--no-store-ingest", action="store_true", help="skip the post-sweep wspy-store ingest step")
+    p.add_argument("--summary-out", help="write a JSON list of {cell_id, workload_name, run_id, rundir, "
+                                          "exit_code} after the sweep -- lets a caller (e.g. "
+                                          "wspy-phoronix-batch) discover exactly which run_id/rundir each "
+                                          "of its own workloads landed at without scraping stdout. Not "
+                                          "written on --dry-run, since nothing real happened.")
     p.add_argument("--dry-run", action="store_true", help="print every cell's command line without running any of them")
     args = p.parse_args(head)
     args.command = command
@@ -267,8 +295,10 @@ def main():
           f"{n_axis_combos} axis combination(s))")
 
     failed = []
+    summary = []
     for i, cell in enumerate(cells, 1):
-        argv = build_wspy_run_argv(args, sweep_stamp, i, cell, spec)
+        run_id = cell_run_id(sweep_stamp, i, cell)
+        argv = build_wspy_run_argv(args, run_id, cell, spec)
         print(f"[{i}/{len(cells)}] $ " + shell_preview(argv))
         if args.dry_run:
             continue
@@ -279,9 +309,18 @@ def main():
             rc = 1
         if rc != 0:
             failed.append((cell_id(cell), rc))
+        summary.append({
+            "cell_id": cell_id(cell), "workload_name": cell["workload_name"], "run_id": run_id,
+            "rundir": os.path.join(args.outroot, spec["suite"], cell["workload_name"], run_id),
+            "exit_code": rc,
+        })
 
     if args.dry_run:
         return 0
+
+    if args.summary_out:
+        with open(args.summary_out, "w") as f:
+            json.dump(summary, f, indent=2)
 
     if not args.no_store_ingest:
         run_store_ingest_besteffort(args.wspy_store_bin, args.store_db, args.run_index)
