@@ -129,6 +129,35 @@ its GitHub release body is the notes at `https://github.com/mvermeulen/wspy/rele
 ## Shipped since 4.3.1
 Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-prep time.
 
+- Preset/Configuration/Option vocabulary refactor — closing slice, item now fully shipped and
+  removed from the open 4.4(a) list. Two threads closed it out:
+  - **Client-side `data-key` wiring.** The checklist's 15 pure 1:1 checkbox-to-flag options
+    (`profiles/checklist-flags.conf`, the earlier checklist-boolean-flag-table slice above) were
+    mechanized server-side but still hardcoded a second time in `app.js`'s `buildChecklist()` — one
+    `getChecked("tree_cmdline")`-style call per option, a real drift risk (add a checkbox to the
+    HTML, forget the matching JS line, and that option silently never reaches the server). Each such
+    checkbox (`render_run_tab()`, `web/server.py`) now carries `data-key="<option-key>"` inside its
+    card's existing `data-config="<checklist-key>"` scope; a new `readDataKeyCheckboxes()` (`app.js`)
+    reads them generically by querying that scope, so a future mechanical option needs a
+    `checklist-flags.conf` line plus one HTML checkbox with its `data-key` — no third edit. Fields
+    with real logic behind them (groups, interval/timeout seconds, target, power, IBS
+    profile/thresholds) stay explicit, matching `build_configuration_passes()`'s own split between
+    its data-driven table and its hand-written non-mechanical logic. Verified via a jsdom smoke test
+    driving the actual shipped `app.js` against a real `render_run_tab()`-rendered page (prefilled
+    checklist state round-tripping correctly through the generic reader into the `/api/preview`
+    request body); no browser available this session.
+  - **Explicit scope closure for the rest.** The checklist's genuinely non-mechanical logic
+    (`counters`/`system`/`ibs` sections' `--passes` bin-packing choice, `--power` folding, legacy
+    `"amdtopdown"`/`"systemtime"` pass-name heuristics) and the Run tab's checkbox *labels/grouping*
+    (human-authored UI copy, not vocabulary `wspy-run`'s own data-driven profiles have any equivalent
+    of) are declared a deliberate stopping point, not deferred work — forcing multi-input conditional
+    logic into a flat table would obscure it, not simplify it (same reasoning already applied to
+    `--power`'s cross-section folding when the boolean-flag table shipped), and there's no
+    `profiles/*.conf`-side analog for UI presentation content to unify against in the first place. The
+    "Preset / Configuration / Option hierarchy deep-dive" below is updated to match: its own
+    cross-cutting goal is now resolved as far as any open backlog item drives it, and the one thing it
+    once floated but never turned into a real item (restructuring `wspy.c`'s own CLI flag parsing
+    around this vocabulary) is recorded as dropped, not pending.
 - Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
   of running it now" checkbox) was visible before this only via `wspy-queue list`/`show`, not from
   the web UI at all. New `/jobs` page (linked from the homepage, alongside `/history`): every job
@@ -221,7 +250,7 @@ Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-
   artifact listing, `/history` row, homepage discovery, and the legacy-ambiguous case still falling
   through to `render_fixed_report()` unchanged) plus new `web/test_incomplete_run.py` (18 tests) and
   `ExpectedPassCountForProfileTest`/regression coverage in `web/test_joblib.py`.
-- Preset/Configuration/Option vocabulary refactor (item 1), checklist-boolean-flag-table slice:
+- Preset/Configuration/Option vocabulary refactor, checklist-boolean-flag-table slice:
   the Run tab checklist's `tree`/`gpu` sections had 15 pure 1:1 "checkbox checked -> emit this one
   flag" mappings (`--tree-cmdline`/`--tree-open`/.../`--tree-nanosleep`, `--gpu-busy`/`--gpu-metrics`/
   `--gpu-smi`/`--gpu-nvidia`) hardcoded as one `if section.get(<key>): flags.append(<flag>)` block
@@ -299,7 +328,7 @@ Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-
   studio (new `aivision.*`/`AIVISION_RE` naming) the same way the existing text narrative already is.
   See `doc/INVESTIGATION_ARCHIVE.md`'s "Vision-based topdown-chart analysis: live model comparison and
   design" for the live model comparison behind the design and how its open questions resolved.
-- `wspy-run` builtin-profile vocabulary refactor (4.4(a) item 1, first slice): the 11 builtin profiles
+- `wspy-run` builtin-profile vocabulary refactor (first slice): the 11 builtin profiles
   (`quick` through `zen4plus-deep`) moved from a hardcoded bash `case` statement
   (`PASS_NAMES`/`PASS_FLAGS` arrays) to data files under `profiles/*.conf` (plain pass lists, reusing
   `wspy-run`'s existing `-c <file>` grammar) and `profiles/*.spec` (composites) — `BUILTIN_PROFILES` is
@@ -313,7 +342,7 @@ Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-
   hand-authored. Remaining scope (the web UI's own checklist/argv engine) stays open under item 1
   above — this was deliberately scoped as the mechanically-safe slice, not the full three-way
   unification.
-- `wspy-run` builtin-profile vocabulary refactor (4.4(a) item 1, ARM group exposure slice): the 3
+- `wspy-run` builtin-profile vocabulary refactor (ARM group exposure slice): the 3
   ARM-only counter groups (`arm-dcache-mem`/`arm-icache-tlb`/`arm-mem-align-tlb`) are now real
   `web/joblib.py` `ALL_GROUPS` entries, so the web checklist's "Performance counters"/preflight cards can
   select them like any other group — `ALL_GROUPS` is now a full mirror of `multipass.c`'s
@@ -349,7 +378,7 @@ Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-
   if every one succeeded. `default_curation.conf` places each plot's own `aivision.*` block immediately
   after that plot (previously the vision-analysis section was grouped near the top, ahead of every plot
   it might narrate) — general policy now, not just for topdown.
-- `wspy --list-columns` + mechanized `PROFILE_PLOTTABLE_COLUMNS` (4.4(a) item 1, "extend `wspy.c`'s CLI
+- `wspy --list-columns` + mechanized `PROFILE_PLOTTABLE_COLUMNS` ("extend `wspy.c`'s CLI
   flags"/"revisit `PROFILE_PLOTTABLE_COLUMNS`" slice): new standalone probe, `wspy --list-columns
   [<flags>]` (`wspy.c`, same "no separate workload launch" standing as `--capabilities`/`--preflight`/
   `--list-groups`) — prints the CSV header the given flag combination would produce and exits, by falling
@@ -616,13 +645,19 @@ framing with a live "customized away from preset" indicator, and structured conf
 recording which preset/configuration/option choice actually produced a run so a report can say "this
 was `deep-cpu`, with the TLB group swapped for L3" rather than re-deriving it from a flat argv.
 
-Cross-cutting goal, now active 4.4(a) scope (see "4.4 priorities" above — promoted 2026-08-07 from "not
-yet committed to"): the same preset/configuration/option vocabulary should describe `wspy`'s own CLI
-options (today an unstructured flat flag list) and `wspy-run`'s profile format (today hardcoded
-`PASS_NAMES`/`PASS_FLAGS` bash arrays in `load_builtin_profile()`), not just the web UI — this is the
-vocabulary to design against as that refactor proceeds, so it doesn't independently invent a different
-model for the same thing. There is real leeway to adjust existing options/commands toward this if it
-produces a cleaner architecture.
+Cross-cutting goal, promoted 2026-08-07 to 4.4(a) scope, now resolved as far as any open backlog item
+drives it (the item itself has shipped and is off the list — see "Shipped since 4.3.1"): the same
+preset/configuration/option vocabulary should describe `wspy-run`'s profile format, not just the web
+UI. Landed: `wspy-run`'s own builtin profiles moved off hardcoded `PASS_NAMES`/`PASS_FLAGS` bash arrays
+onto `profiles/*.conf`/`*.spec` files; the web UI's checklist argv builder
+(`build_configuration_passes()`) now consults declarative data too, for the slice of it that's a pure
+1:1 checkbox/option-to-flag mapping (`profiles/checklist-flags.conf`), with matching `data-key`-driven
+generic reading client-side (`app.js`). Two things this explicitly did **not** end up doing, both
+deliberate rather than overlooked: decomposing a named preset into equivalent checklist state (or vice
+versa) — presets stay atomic, per the load-bearing rule above; and restructuring `wspy`'s own CLI flag
+parsing (`wspy.c`, still an unstructured flat flag list) around this vocabulary — raised as an idea
+here but never turned into a concrete backlog item, so treat it as dropped rather than pending unless a
+real need for it surfaces.
 
 ### Critical-path / synchronization-latency: what's left
 All six originally-scoped syscall-latency candidates (futex, blocking I/O, connect, nanosleep, wait,
@@ -764,21 +799,7 @@ the page indicating order or which are "normally do this" vs. optional; and per-
 `--hostname`+`--command` vs. `--hostname`+`--run-id`, depending which tool) have drifted apart tool by
 tool despite resolving near-identical shapes underneath.
 
-1. Preset/Configuration/Option vocabulary refactor — remaining scope: unify the web UI's own
-   checklist-driven argv builder (`build_configuration_passes()`, `web/joblib.py`) onto declarative
-   data the way `wspy-run`'s own profiles are, rather than its own independent, fully-hardcoded
-   configuration/option model. (The builtin-profile-vocabulary slice, the ARM group-exposure slice,
-   `wspy.c`'s `--list-columns` probe, mechanizing `PROFILE_PLOTTABLE_COLUMNS` off it, and the
-   checklist-boolean-flag-table slice below have all shipped — see "Shipped since 4.3.1" above.)
-   Explicitly out of scope, per a deliberate design decision already recorded in `web/joblib.py`'s
-   own comments: decomposing a named preset into equivalent checklist state, or vice versa — presets
-   stay atomic and mutually exclusive with the checklist rather than reverse-engineered from it (keeps
-   the "customized away from preset" live indicator honest). Remaining scope is the checklist's own
-   *non-mechanical* logic (`counters`/`system`/`ibs` sections' `--passes` bin-packing choice, `--power`
-   folding, legacy pass-name heuristics) and the Run tab's client-side checkbox rendering/reading
-   (`app.js`), both still hand-written rather than data-driven. See the "Preset / Configuration /
-   Option hierarchy deep-dive" below for the full reasoning.
-2. One-click end-to-end pipeline. Today a human runs `wspy-run`, then separately has to already know to
+1. One-click end-to-end pipeline. Today a human runs `wspy-run`, then separately has to already know to
    run `wspy-store`'s ingest, `wspy-testpoint select-runs`, `wspy-testpoint render`, and a publish step —
    each its own command or its own web-UI button, in an order nowhere written down for a CLI-only user.
    Chain the common path (a finished run → ingested → selected → rendered → published) into one action,
@@ -786,11 +807,11 @@ tool despite resolving near-identical shapes underneath.
    `scripts/publish_reference_matrix.py`'s web button already applies ("Preview (dry-run)" checked by
    default). Web UI first — it already has every piece as a background-thread/SSE card; a CLI wrapper is
    a natural follow-on once the sequencing is settled, not a prerequisite.
-3. Report-page guided flow / progress indicator. Add a lightweight checklist/progress view (Run done /
+2. Report-page guided flow / progress indicator. Add a lightweight checklist/progress view (Run done /
    Curate — / Characterize — / Publish —) framing the report/studio page's ~10 existing cards as one
    flow rather than an unordered stack discovered by scrolling. Doesn't require merging the actions
    mechanically (the item above covers that) — presentation/sequencing only.
-4. CLI flag/identity consistency pass. Two concrete inconsistencies found in the 2026-08-07 audit: (1)
+3. CLI flag/identity consistency pass. Two concrete inconsistencies found in the 2026-08-07 audit: (1)
    `--phoronix-dest-root`/`--cpu2026-dest-root` are separate flags even though both suites resolve
    through the identical `find_materialized_*_test_point()` shape — every future suite added this way
    means another bespoke flag pair rather than one generic mechanism; (2) a run is identified three
@@ -799,42 +820,43 @@ tool despite resolving near-identical shapes underneath.
    undocumented as a single cross-tool convention anywhere a user would find it before hitting the
    surprise. Audit and, where safe, unify; where a difference is load-bearing, document it once in one
    place rather than re-deriving it per tool.
-5. Quickstart guide / guided onboarding path. `README.md` documents all 16 CLI tools each in their own
+4. Quickstart guide / guided onboarding path. `README.md` documents all 16 CLI tools each in their own
    section with no suggested order — a new checkout or new machine has to infer the
    run→store→summarize→publish sequence from first principles. Add a single "benchmark X, get a
    published report" walkthrough near the top of `README.md`, and consider surfacing the same sequence
    as a first-run hint in the web UI.
+
 **4.4(b) — GPU support:**
 
-6. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
+5. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
    heavier, optional trace-rich profile, same "default vs debug profile" pattern as IBS.
-7. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds on
+6. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds on
    4.2's GPU fusion layer (`gpu_fusion.c`, `--gpu-metrics`) for consistent per-metric data.
-8. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`, extended
+7. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`, extended
    once GPU runs feed the same index.
-9. Intel `i915` GPU PMU — an Intel-native busy/frequency alternative to the current AMD-sysfs/NVML-only
+8. Intel `i915` GPU PMU — an Intel-native busy/frequency alternative to the current AMD-sysfs/NVML-only
    GPU support, `perf_event_open()`-based rather than a vendor SMI/sysfs scrape. See the Intel hybrid /
    counter-grouping deep-dive for detail (the rest of that deep-dive's counter wishlist is non-GPU,
    tracked in 4.5).
 
 **4.4(c) — Phoronix suite build-out:**
 
-10. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
-    CSVs into per-test-case/per-trial datasets by correlating run manifests with PTS results,
-    composite.xml, and log timestamps. See
-    [phoronix_hook_investigation.md](file:///home/mev/source/wspy/doc/phoronix_hook_investigation.md)
-    for design and prototypes. **Capture instrumentation already landed:**
-    `scripts/pts_hooks/*.sh`/`scripts/setup_phoronix_hooks.sh` register PTS `result_notifier` hooks and
-    capture their output into a per-pass `pts_hooks.log` artifact across every launch path — see
-    `doc/INVESTIGATION_ARCHIVE.md`'s "Phoronix `result_notifier` hook capture" write-up. **Still open:**
-    teaching `wspy-phoronix-segment.py` to prefer `pts_hooks.log` over composite.xml/log-timestamp
-    correlation, and the segmentation tool itself.
-11. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
+9. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
+   CSVs into per-test-case/per-trial datasets by correlating run manifests with PTS results,
+   composite.xml, and log timestamps. See
+   [phoronix_hook_investigation.md](file:///home/mev/source/wspy/doc/phoronix_hook_investigation.md)
+   for design and prototypes. **Capture instrumentation already landed:**
+   `scripts/pts_hooks/*.sh`/`scripts/setup_phoronix_hooks.sh` register PTS `result_notifier` hooks and
+   capture their output into a per-pass `pts_hooks.log` artifact across every launch path — see
+   `doc/INVESTIGATION_ARCHIVE.md`'s "Phoronix `result_notifier` hook capture" write-up. **Still open:**
+   teaching `wspy-phoronix-segment.py` to prefer `pts_hooks.log` over composite.xml/log-timestamp
+   correlation, and the segmentation tool itself.
+10. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
     (`web/joblib.py`/`wspy-phoronix-import`/web launcher's Phoronix tab — see "What shipped in 4.3" for
     what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
     across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
     point, launched by a human clicking Run) exists today.
-12. Materialize test points directly from installed/downloaded PTS test profiles, with no prior PTS
+11. Materialize test points directly from installed/downloaded PTS test profiles, with no prior PTS
     run/import round-trip. Today's only materialization paths (`wspy-phoronix-import`, "What shipped in
     4.3") both require *evidence a specific option combination already ran* (an installed
     suite-definition.xml or a composite.xml result) — there's no path from "this test profile is

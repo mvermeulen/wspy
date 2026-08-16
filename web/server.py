@@ -2811,26 +2811,26 @@ def render_run_tab(prefill, cfg):
         <div class="config-options">
           <div class="option-group-label">General</div>
           <div class="option-grid">
-            <label class="group-check"><input type="checkbox" id="tree_cmdline"{chk(chk_default('tree', 'cmdline', False))}> full command lines <code>--tree-cmdline</code></label>
+            <label class="group-check"><input type="checkbox" id="tree_cmdline" data-key="cmdline"{chk(chk_default('tree', 'cmdline', False))}> full command lines <code>--tree-cmdline</code></label>
           </div>
           <div class="option-group-label">Performance counters (whole-subtree aggregate, and attached
              to any <code>--target</code>-matched process below)</div>
           <div class="group-grid">{tree_groups_html}</div>
           <div class="option-group-label">Latency (blocking-time measurements)</div>
           <div class="option-grid">
-            <label class="group-check"><input type="checkbox" id="tree_futex"{chk(chk_default('tree', 'futex', False))}> record blocking futex waits <code>--tree-futex</code></label>
-            <label class="group-check"><input type="checkbox" id="tree_io_wait"{chk(chk_default('tree', 'io_wait', False))}> record blocking I/O wait time <code>--tree-io-wait</code></label>
-            <label class="group-check"><input type="checkbox" id="tree_connect"{chk(chk_default('tree', 'connect', False))}> record connect() latency <code>--tree-connect</code></label>
-            <label class="group-check"><input type="checkbox" id="tree_wait"{chk(chk_default('tree', 'wait', False))}> record wait4/waitid blocking time <code>--tree-wait</code></label>
-            <label class="group-check"><input type="checkbox" id="tree_poll"{chk(chk_default('tree', 'poll', False))}> record poll/select/epoll_wait blocking time <code>--tree-poll</code></label>
-            <label class="group-check"><input type="checkbox" id="tree_nanosleep"{chk(chk_default('tree', 'nanosleep', False))}> record nanosleep time <code>--tree-nanosleep</code></label>
+            <label class="group-check"><input type="checkbox" id="tree_futex" data-key="futex"{chk(chk_default('tree', 'futex', False))}> record blocking futex waits <code>--tree-futex</code></label>
+            <label class="group-check"><input type="checkbox" id="tree_io_wait" data-key="io_wait"{chk(chk_default('tree', 'io_wait', False))}> record blocking I/O wait time <code>--tree-io-wait</code></label>
+            <label class="group-check"><input type="checkbox" id="tree_connect" data-key="connect"{chk(chk_default('tree', 'connect', False))}> record connect() latency <code>--tree-connect</code></label>
+            <label class="group-check"><input type="checkbox" id="tree_wait" data-key="wait"{chk(chk_default('tree', 'wait', False))}> record wait4/waitid blocking time <code>--tree-wait</code></label>
+            <label class="group-check"><input type="checkbox" id="tree_poll" data-key="poll"{chk(chk_default('tree', 'poll', False))}> record poll/select/epoll_wait blocking time <code>--tree-poll</code></label>
+            <label class="group-check"><input type="checkbox" id="tree_nanosleep" data-key="nanosleep"{chk(chk_default('tree', 'nanosleep', False))}> record nanosleep time <code>--tree-nanosleep</code></label>
           </div>
           <div class="option-group-label">Information (facts, no latency)</div>
           <div class="option-grid">
-            <label class="group-check"><input type="checkbox" id="tree_open"{chk(chk_default('tree', 'open', False))}> record <code>open()</code> calls <code>--tree-open</code></label>
-            <label class="group-check"><input type="checkbox" id="tree_io"{chk(chk_default('tree', 'io', False))}> record I/O byte counters <code>--tree-io</code></label>
-            <label class="group-check"><input type="checkbox" id="tree_schedstat"{chk(chk_default('tree', 'schedstat', False))}> record run-queue delay <code>--tree-schedstat</code></label>
-            <label class="group-check"><input type="checkbox" id="tree_vmsize"{chk(chk_default('tree', 'vmsize', False))}> record peak RSS + anon/file/shmem RSS + swap <code>--tree-vmsize</code></label>
+            <label class="group-check"><input type="checkbox" id="tree_open" data-key="open"{chk(chk_default('tree', 'open', False))}> record <code>open()</code> calls <code>--tree-open</code></label>
+            <label class="group-check"><input type="checkbox" id="tree_io" data-key="io"{chk(chk_default('tree', 'io', False))}> record I/O byte counters <code>--tree-io</code></label>
+            <label class="group-check"><input type="checkbox" id="tree_schedstat" data-key="schedstat"{chk(chk_default('tree', 'schedstat', False))}> record run-queue delay <code>--tree-schedstat</code></label>
+            <label class="group-check"><input type="checkbox" id="tree_vmsize" data-key="vmsize"{chk(chk_default('tree', 'vmsize', False))}> record peak RSS + anon/file/shmem RSS + swap <code>--tree-vmsize</code></label>
           </div>
           <label>Timeout seconds <input type="text" id="tree_timeout" value="{val('tree', 'timeout_secs')}" placeholder="(none)"></label>
           <label>Interval seconds <input type="text" id="tree_interval" value="{val('tree', 'interval_secs')}" placeholder="(tree only, no timeline)"></label>
@@ -2905,10 +2905,10 @@ def render_run_tab(prefill, cfg):
         <label class="config-toggle"><input type="checkbox" id="gpu_enabled"{chk(sec('gpu').get('enabled'))}> <strong>GPU metrics</strong>
           <span class="muted">(AMD rows need an AMDGPU=1 build, NVIDIA needs NVIDIA=1; otherwise wspy warns and continues)</span></label>
         <div class="config-options">
-          <label class="inline-check"><input type="checkbox" id="gpu_busy"{chk(chk_default('gpu', 'busy', False))}> busy % <code>--gpu-busy</code></label>
-          <label class="inline-check"><input type="checkbox" id="gpu_metrics"{chk(chk_default('gpu', 'metrics', False))}> extended metrics <code>--gpu-metrics</code></label>
-          <label class="inline-check"><input type="checkbox" id="gpu_smi"{chk(chk_default('gpu', 'smi', False))}> ROCm SMI <code>--gpu-smi</code></label>
-          <label class="inline-check"><input type="checkbox" id="gpu_nvidia"{chk(chk_default('gpu', 'nvidia', False))}> NVIDIA NVML <code>--gpu-nvidia</code></label>
+          <label class="inline-check"><input type="checkbox" id="gpu_busy" data-key="busy"{chk(chk_default('gpu', 'busy', False))}> busy % <code>--gpu-busy</code></label>
+          <label class="inline-check"><input type="checkbox" id="gpu_metrics" data-key="metrics"{chk(chk_default('gpu', 'metrics', False))}> extended metrics <code>--gpu-metrics</code></label>
+          <label class="inline-check"><input type="checkbox" id="gpu_smi" data-key="smi"{chk(chk_default('gpu', 'smi', False))}> ROCm SMI <code>--gpu-smi</code></label>
+          <label class="inline-check"><input type="checkbox" id="gpu_nvidia" data-key="nvidia"{chk(chk_default('gpu', 'nvidia', False))}> NVIDIA NVML <code>--gpu-nvidia</code></label>
           <div class="row">
             <label>Device index <input type="text" id="gpu_device" value="{val('gpu', 'device')}" placeholder="(default)"></label>
             <label>Interval seconds <input type="text" id="gpu_interval" value="{val('gpu', 'interval_secs')}" placeholder="(aggregate)"></label>
