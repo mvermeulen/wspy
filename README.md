@@ -814,13 +814,15 @@ directory is left untouched and reported as `exists` rather than overwritten. Ma
 doesn't copy anything into `~/.phoronix-test-suite/test-suites/local/`, run anything, or install
 anything; the INSTALLED column (from `phoronix-test-suite info`) just flags which points still need
 `phoronix-test-suite install` run by hand. The web launcher's Phoronix tab drives the identical
-logic and additionally shows an inventory of already-materialized test points with a "Use in Run
-tab" button per point — it copies that point's suite into `test-suites/local/` (so the command
-actually works) and prefills the Run tab's workload/suite/benchmark fields; a run launched that way
-gets symlinked back under `workload/phoronix/<test>/<options>/runs/<run-id>/` for easy browsing,
-while the real files stay under the normal `--output-root` (so the report page, `/compare`, and
-bundle export need no special-casing). See `./wspy-phoronix-import --help` for the full option
-list.
+logic (all four source methods, including "Installed test profile" — pick a test ID, click
+"Discover options" to render its zero/single/multi-axis picker with the same GPU-flag/
+buildable-hint badges `--list-options` shows, then Materialize) and additionally shows an inventory
+of already-materialized test points with a "Use in Run tab" button per point — it copies that
+point's suite into `test-suites/local/` (so the command actually works) and prefills the Run tab's
+workload/suite/benchmark fields; a run launched that way gets symlinked back under
+`workload/phoronix/<test>/<options>/runs/<run-id>/` for easy browsing, while the real files stay
+under the normal `--output-root` (so the report page, `/compare`, and bundle export need no
+special-casing). See `./wspy-phoronix-import --help` for the full option list.
 
 ## wspy-analyze: local LLM (Ollama) narrative analysis
 

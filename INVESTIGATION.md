@@ -129,8 +129,8 @@ its GitHub release body is the notes at `https://github.com/mvermeulen/wspy/rele
 ## Shipped since 4.3.1
 Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-prep time.
 
-- Installed-test-profile materialization deep-dive — CLI/core-mechanism half (web UI picker stays
-  open, see item 7). New `web/joblib.py` functions, all grounded in real cached test-definition.xml
+- Installed-test-profile materialization deep-dive — CLI/core-mechanism half (the web UI picker
+  shipped as the following slice). New `web/joblib.py` functions, all grounded in real cached test-definition.xml
   files read directly off this host (svt-av1, npb, llama-cpp) rather than assumed: `phoronix_test_axes()`
   parses `<TestSettings><Option>` into per-axis `{display_name, identifier, arg_prefix, arg_postfix,
   entries}` dicts, order-preserved (the grouped counterpart to `_phoronix_menu_entries()`'s existing
@@ -161,6 +161,32 @@ Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-
   `--all-single-axis` against npb's real 7-entry axis — all producing correct suite-definition.xml/
   source.json and showing up in `--list-materialized`'s existing inventory output with no new code,
   confirming design points 3-5's "no new code needed" claim rather than just assuming it holds.
+- Installed-test-profile materialization deep-dive — web UI picker half, closing the item out
+  entirely. The Phoronix tab's "Materialize new test points" source chooser gains a fourth radio,
+  "Installed test profile" — enter a test ID, click "Discover options"
+  (new `/api/phoronix/installed-options`, server-side `joblib.phoronix_test_axes_for_test_id()` plus
+  the same GPU-flag/buildable-hint badges `--list-options` shows, computed once server-side and sent
+  as enriched JSON rather than duplicating any of that heuristic logic in JS), and the shared
+  Materialize button (new `/api/phoronix/materialize-installed`) submits whichever picker the
+  discovered axis count renders: zero axes needs no picker at all; a single axis renders as a flat
+  radio-button table plus a "materialize all N entries" checkbox convenience; two or more axes render
+  one radio-button `<fieldset>` per axis (GPU-flagged axes get a visible badge in their own legend,
+  never defaulted or pre-selected) — never an auto-expanded checkbox-everything cross product, the
+  same discipline the CLI's own `--option`/`--all-single-axis` split already established. The two new
+  handlers deliberately return the identical response shape `_phoronix_materialize()` already does
+  (`points`/`readmes`), so the tab's existing result-table rendering needed zero source-specific
+  branching to reuse — only the request-building half (choosing the endpoint, building `choice_sets`
+  from whichever picker mode is active) is new client-side code. A `KeyError`/`ValueError` from a
+  malformed `choice_sets` entry (a picker bug, not a real user mistake — the client only ever sends
+  entry names it just rendered from the server's own axes) is caught and turned into a normal 400
+  rather than propagating as a raw exception; fixed a real display bug found while doing this —
+  `KeyError.__str__()` reprs its own message, so the naive `str(e)` handler first written double-quoted
+  the JSON error text (`"\"no choice given for axis 'x'\""`) until special-cased to `e.args[0]`.
+  Verified end-to-end against this host's real installed/downloaded profiles via direct `curl` calls
+  to both new endpoints (matching the CLI's own live-verified svt-av1/coremark cases from the prior
+  slice) and via a scripted jsdom session driving the actual rendered page and `app.js` unmodified
+  (not a fixture reimplementation) through all three picker shapes plus the missing-selection error
+  path, asserting the exact `choice_sets` body each scenario POSTs.
 - CLI flag/identity consistency pass — closing the item out entirely (both audit findings addressed).
   (1) Dest-root flags: `web/joblib.py` gains a `TEST_POINT_SUITES` registry (`{"phoronix": {list, find,
   split}, "cpu2026": {...}}`) that `resolve_test_identity()`/`enumerate_reference_matrix_cells()` now
@@ -991,17 +1017,9 @@ recent one (CLI flag/identity consistency pass).
    what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
    across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
    point, launched by a human clicking Run) exists today.
-7. Materialize test points directly from installed/downloaded PTS test profiles, with no prior PTS
-   run/import round-trip — the CLI/core-mechanism half of this already shipped (see "Shipped since
-   4.3.1"). **Still open:** the web UI half — a third Phoronix-tab source alongside the existing
-   installed-suite/OpenBenchmarking-URL import sources, giving the shipped discovery/composer/
-   materialization mechanism (`wspy-phoronix-import --from-installed`'s own CLI equivalent) a picker:
-   zero/single-axis profiles materialize directly or as a flat pick-list, multi-axis profiles get an
-   explicit per-axis checklist (never an auto-expanded cross product, same discipline the CLI's own
-   `--option`/`--all-single-axis` split already established), and GPU/backend-shaped axes
-   (`phoronix_axis_is_gpu_flagged()`) are flagged for explicit confirmation rather than defaulted.
-8. Published-article/chart-URL-seeded test-point discovery. Depends on item 7 above for its multi-axis
-   case — start that first. A published Phoronix article's individual chart-result URLs (e.g.
+7. Published-article/chart-URL-seeded test-point discovery. Depends on the Installed-test-profile
+   materialization deep-dive (now fully shipped, see "Shipped since 4.3.1") for its multi-axis
+   case. A published Phoronix article's individual chart-result URLs (e.g.
    `phoronix.com/benchmark/result/<article-slug>/<chart-slug>.svgz`, right-click "open in new tab" on
    any chart in an article) each identify one (test, option-combination) the article ran, in a
    human-readable slug — but the article page itself is not fetchable server-side (confirmed live:
@@ -1023,10 +1041,11 @@ recent one (CLI flag/identity consistency pass).
    product enumeration is still computationally cheap (short-string comparisons, not a materialize
    cost), but per-axis matching is both cheaper and the more selective of the two: it only ever
    composes and materializes the one tuple actually implied by the pasted slug, never a whole
-   candidate list to browse, which is a meaningfully different (and better) property than item 7's own
-   human-driven picker, not just a performance detail. A per-axis match with no confident winner on one
-   or more axes surfaces as a partial/uncertain match for a human to complete by hand via item 7's
-   picker, rather than guessing the remaining axes; (d) a test with no local profile match at all (not
+   candidate list to browse, which is a meaningfully different (and better) property than the
+   Installed-test-profile deep-dive's own human-driven picker, not just a performance detail. A
+   per-axis match with no confident winner on one or more axes surfaces as a partial/uncertain match
+   for a human to complete by hand via that same picker, rather than guessing the remaining axes;
+   (d) a test with no local profile match at all (not
    installed, or a title match too weak to trust) surfaces as "unresolved — install `phoronix-test-suite
    install <test>` first" rather than silently dropping it. Steps 3-5 of the original framing (installed/
    already-run indicators, an "open in Run tab" action for not-yet-run points, and these test points
