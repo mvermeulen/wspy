@@ -69,8 +69,20 @@ import report_root  # noqa: E402 -- git-backed report-root client, shared with w
 
 REPO_ROOT = joblib.REPO_ROOT
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-PHORONIX_DEST_ROOT = os.path.join(REPO_ROOT, "workload", "phoronix")
-CPU2026_DEST_ROOT = os.path.join(REPO_ROOT, "workload", "cpu2026")
+# Sourced from joblib.DEFAULT_DEST_ROOTS (the single definition, INVESTIGATION.md 4.4(a) "CLI
+# flag/identity consistency pass") rather than re-deriving REPO_ROOT-relative paths here too --
+# kept as their own names since call sites throughout this file already reference them directly.
+PHORONIX_DEST_ROOT = joblib.DEFAULT_DEST_ROOTS["phoronix"]
+CPU2026_DEST_ROOT = joblib.DEFAULT_DEST_ROOTS["cpu2026"]
+
+
+def dest_roots():
+    """The {suite: dest_root} dict joblib.resolve_test_identity()/enumerate_reference_matrix_cells()
+    take, built fresh from PHORONIX_DEST_ROOT/CPU2026_DEST_ROOT on every call rather than cached as a
+    module-level dict -- test_reference_matrix.py's own convention is `patch("server.PHORONIX_DEST_ROOT",
+    ...)` per test, which only takes effect on a *name lookup made after* the patch, not on a dict
+    built once at import time before any patch could apply."""
+    return {"phoronix": PHORONIX_DEST_ROOT, "cpu2026": CPU2026_DEST_ROOT}
 
 # Re-exported from joblib.py (see its docstring) so the rest of this file --
 # and any external code importing server.py's own names -- keeps working
@@ -2673,7 +2685,7 @@ def render_publish_result(rundir, base_url, suite, benchmark, run_id, form):
                     f'<p class="muted">Machine and title are both required.</p>{back_link}</section>')
 
     test, test_point, identity_warning = joblib.resolve_test_identity(
-        suite, benchmark, PHORONIX_DEST_ROOT, CPU2026_DEST_ROOT)
+        suite, benchmark, dest_roots())
     levels = build_run_publish_levels(suite, test, test_point, machine, run_id)
     warning_note = (f'<p class="muted">Warning: {html.escape(identity_warning)}</p>'
                      if identity_warning else "")
@@ -3613,7 +3625,7 @@ def render_reference_tab(cfg):
     -- so opening this tab stays fast regardless of how many test points/machines exist; the item's
     own "Column vocabulary" bullet defers picking specific overview metrics to a later pass anyway."""
     report_root_path = resolve_report_root_for_web(cfg)
-    cells = joblib.enumerate_reference_matrix_cells(report_root_path, PHORONIX_DEST_ROOT, CPU2026_DEST_ROOT)
+    cells = joblib.enumerate_reference_matrix_cells(report_root_path, dest_roots())
     discover_panel = render_reference_discover_panel()
     publish_panel = render_reference_publish_panel()
     if not cells:
@@ -3849,7 +3861,7 @@ def render_reference_test_point_detail(cfg, suite, test, test_point):
     back_link = '<p><a href="/?active_tab=reference">Back to reference matrix</a></p>'
     report_root_path = resolve_report_root_for_web(cfg)
     cells = [c for c in joblib.enumerate_reference_matrix_cells(
-                 report_root_path, PHORONIX_DEST_ROOT, CPU2026_DEST_ROOT)
+                 report_root_path, dest_roots())
              if c["suite"] == suite and c["test"] == test and c["test_point"] == test_point]
     title = f"{test} / {test_point}"
 
@@ -4021,7 +4033,7 @@ def render_reference_by_machine(cfg, suite, machine):
     detail page this view links each row to."""
     report_root_path = resolve_report_root_for_web(cfg)
     cells = [c for c in joblib.enumerate_reference_matrix_cells(
-                 report_root_path, PHORONIX_DEST_ROOT, CPU2026_DEST_ROOT)
+                 report_root_path, dest_roots())
              if c["suite"] == suite and c["machine"] == machine]
     back_link = '<p><a href="/?active_tab=reference">Back to reference matrix</a></p>'
     title = f"{machine} -- {suite}"

@@ -693,7 +693,11 @@ clone-or-verify git plumbing `wspy-publish` uses (`web/report_root.py`):
 `<vendor>-<short-model>` convention) — no mapping between the two is assumed. Every subcommand
 below shares `--suite`/`--benchmark`/`--machine`/`--report-root` plus `--phoronix-dest-root`/
 `--cpu2026-dest-root` (each suite's own materialized-test-point root, needed to resolve which
-report-root path this test point maps to; defaults match `web/server.py`'s own).
+report-root path this test point maps to; defaults match `web/server.py`'s own) and the generic
+`--dest-root <suite>=<path>` (repeatable) — the extension point a suite beyond phoronix/cpu2026
+plugs into, equivalent to `--dest-root phoronix=<path>`/`--dest-root cpu2026=<path>` for today's two.
+See CLAUDE.md's "Run identity conventions" for how `--run-id` here relates to the other two ways a
+run gets identified elsewhere in this codebase.
 
 `wspy-testpoint aggregate` turns a resolved `stats-pool` run set into real statistics, via
 `wspy-summary --run-id <hostname>:<run_id>` (one per run, not `--command`/`--hostname` — those can't

@@ -203,6 +203,20 @@ OUT="$(./wspy-testpoint select-runs --suite cpu2026 --benchmark mybench2026-gcc_
 [ "$FAIL" -eq 0 ] && echo "cpu2026 test/test-point resolution OK"
 
 echo ""
+echo "=== Testing generic --dest-root SUITE=PATH resolves the same as --phoronix-dest-root ==="
+# INVESTIGATION.md 4.4(a) "CLI flag/identity consistency pass": --dest-root is the extension point a
+# third suite plugs into without a new bespoke flag; prove it resolves identically to the
+# suite-specific flag above for an existing suite, against a second report-root so it can't pass by
+# coincidentally reusing the first test's already-written runs.json.
+REPORTROOT2="$WORKDIR/reportroot2"
+OUT="$(./wspy-testpoint select-runs --suite phoronix --benchmark mytest-myoptions --machine test-machine \
+    --output-root "$OUTROOT" --report-root "$REPORTROOT2" --report-root-remote "$WORKDIR/remote.git" \
+    --dest-root "phoronix=$PHORONIX_DEST" --hostname myhost 2>&1)"
+[ -f "$REPORTROOT2/phoronix/mytest/myoptions/test-machine/runs.json" ] || \
+    fail "--dest-root phoronix=... did not resolve the same as --phoronix-dest-root, got: $OUT"
+[ "$FAIL" -eq 0 ] && echo "generic --dest-root resolution OK"
+
+echo ""
 echo "=== Testing aggregate: a redo sharing identical command text must not poison the mean ==="
 STOREDB="$WORKDIR/store.db"
 AGGDATA="$WORKDIR/aggdata"
