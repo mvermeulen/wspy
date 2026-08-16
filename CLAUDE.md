@@ -249,6 +249,14 @@ and exact gotchas spelled out per scenario.
   substituted at load time) — or `profiles/<name>.spec` (one line, a comma-separated list of other
   builtin profile names) for a composite. `BUILTIN_PROFILES`/`load_builtin_profile()`
   (`wspy-run`) discover it automatically; no code change needed. Keep pass names filesystem-safe.
+- **New web-launcher checklist boolean sub-option that's a pure 1:1 checkbox->flag mapping** (e.g. a
+  new `--tree-*`/`--gpu-*` toggle): add a `<checklist-key> <option-key> <flag>` line to
+  `profiles/checklist-flags.conf` rather than a new `if section.get(<key>): flags.append(<flag>)`
+  branch in `build_configuration_passes()` (`web/joblib.py`) — `CHECKLIST_BOOLEAN_FLAGS` picks it up
+  automatically; still needs the matching checkbox added to the Run tab's HTML/`app.js` `readChecklist()`
+  by hand (not yet data-driven client-side). A genuinely conditional option (a value, not a plain
+  on/off flag, or logic that depends on more than one checklist field) stays hand-written code in
+  `build_configuration_passes()` instead — the table is only for the mechanical case.
 - **New `wspy-validate` sanity bound:** add to `sanity_bounds[]` (column + `{min,max}`) when the generic
   finite/non-negative/not-implausible rule isn't tight enough. `%`-cells use `PERCENT_SANITY_MAX`.
 - **New AMD IBS filter (`ibs.c`):** don't hardcode a bit offset — look it up via

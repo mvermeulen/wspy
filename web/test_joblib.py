@@ -451,6 +451,66 @@ class BuildConfigurationPassesTest(unittest.TestCase):
         checklist = {"gpu": {"enabled": True}}
         self.assertEqual(joblib.build_configuration_passes("/tmp/rundir", checklist), [])
 
+    # profiles/checklist-flags.conf slice (INVESTIGATION.md 4.4(a) item 1): these 11 "tree"/4 "gpu"
+    # boolean sub-options had no test coverage at all before the table replaced the hand-written
+    # if-chain -- exact order matters here (build_configuration_passes()'s own docstring says
+    # nothing about it being unordered, and a rerun's argv preview should be stable), so this pins
+    # both "every checked box's flag appears" and "in the table's declared order", not just presence.
+    def test_tree_boolean_flags_all_present_in_declared_order(self):
+        checklist = {"tree": {"enabled": True, "cmdline": True, "open": True, "futex": True,
+                               "io": True, "io_wait": True, "schedstat": True, "vmsize": True,
+                               "connect": True, "wait": True, "poll": True, "nanosleep": True}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        flags = passes[0]["flags"]
+        boolean_flags = [f for f in flags if f.startswith("--tree-")]
+        self.assertEqual(boolean_flags, [
+            "--tree-cmdline", "--tree-open", "--tree-futex", "--tree-io", "--tree-io-wait",
+            "--tree-schedstat", "--tree-vmsize", "--tree-connect", "--tree-wait", "--tree-poll",
+            "--tree-nanosleep",
+        ])
+
+    def test_tree_boolean_flags_only_checked_ones_emitted(self):
+        checklist = {"tree": {"enabled": True, "futex": True, "poll": True}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        flags = passes[0]["flags"]
+        self.assertEqual([f for f in flags if f.startswith("--tree-")], ["--tree-futex", "--tree-poll"])
+
+    def test_gpu_boolean_flags_in_declared_order(self):
+        checklist = {"gpu": {"enabled": True, "nvidia": True, "busy": True, "smi": True,
+                              "metrics": True}}
+        passes = joblib.build_configuration_passes("/tmp/rundir", checklist)
+        flags = passes[0]["flags"]
+        backend_flags = [f for f in flags if f.startswith("--gpu-") and f != "--gpu-device"]
+        self.assertEqual(backend_flags, ["--gpu-busy", "--gpu-metrics", "--gpu-smi", "--gpu-nvidia"])
+
+
+class LoadChecklistFlagTableTest(unittest.TestCase):
+    """Against the real profiles/checklist-flags.conf -- same "checked-in, stable repo data, no
+    fixture needed" posture as LoadProfileConfPassesTest/ExpandPresetNamesTest below/above."""
+
+    def test_real_file_has_the_expected_tree_and_gpu_entries(self):
+        table = joblib.CHECKLIST_BOOLEAN_FLAGS
+        self.assertEqual([k for k, _ in table["tree"]],
+                          ["cmdline", "open", "futex", "io", "io_wait", "schedstat", "vmsize",
+                           "connect", "wait", "poll", "nanosleep"])
+        self.assertEqual(table["gpu"], [("busy", "--gpu-busy"), ("metrics", "--gpu-metrics"),
+                                         ("smi", "--gpu-smi"), ("nvidia", "--gpu-nvidia")])
+
+    def test_missing_file_degrades_to_empty_table_rather_than_raising(self):
+        with patch("joblib.REPO_ROOT", "/no/such/directory"):
+            self.assertEqual(joblib._load_checklist_flag_table(), {})
+
+    def test_parses_comments_blank_lines_and_malformed_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "profiles"))
+            with open(os.path.join(tmp, "profiles", "checklist-flags.conf"), "w") as f:
+                f.write("# a comment\n\ntree cmdline --tree-cmdline\nmalformed line\n"
+                        "gpu busy --gpu-busy\n")
+            with patch("joblib.REPO_ROOT", tmp):
+                table = joblib._load_checklist_flag_table()
+        self.assertEqual(table, {"tree": [("cmdline", "--tree-cmdline")],
+                                  "gpu": [("busy", "--gpu-busy")]})
+
 
 class LoadProfileConfPassesTest(unittest.TestCase):
     """Against the real profiles/*.conf files -- same posture as

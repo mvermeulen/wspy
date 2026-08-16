@@ -795,6 +795,38 @@ def counter_group_flags(requested_groups):
     return flags, selected
 
 
+# INVESTIGATION.md 4.4(a) item 1's "Preset/Configuration/Option vocabulary refactor", checklist-
+# boolean-flag slice: profiles/checklist-flags.conf's own header comment explains why this is a
+# sibling data source to profiles/*.conf rather than literally the same one (wspy-run's presets are
+# fixed flag lists with no checkbox concept, so there's nothing there for a boolean-toggle table to
+# join). Loaded eagerly at import time, same "no built wspy binary required" posture as ALL_GROUPS
+# above -- this is a plain-text file read, not a subprocess call. A missing/unreadable file (should
+# never happen in a real checkout) degrades to an empty table per section rather than raising, so a
+# broken checkout still starts; build_configuration_passes() then simply emits none of these flags,
+# same as every other "absent means not collected" convention in this module.
+def _load_checklist_flag_table():
+    path = os.path.join(REPO_ROOT, "profiles", "checklist-flags.conf")
+    table = {}
+    try:
+        with open(path, "r") as f:
+            lines = f.readlines()
+    except OSError:
+        return table
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 2)
+        if len(parts) != 3:
+            continue
+        section, key, flag = parts
+        table.setdefault(section, []).append((key, flag))
+    return table
+
+
+CHECKLIST_BOOLEAN_FLAGS = _load_checklist_flag_table()
+
+
 # ---------------------------------------------------------------------------
 # Custom plots (item 12's wspy-plot --plot/--only-custom, Run tab section):
 # a custom plot's column list is otherwise completely decoupled from which
@@ -1301,28 +1333,13 @@ def build_configuration_passes(rundir, checklist):
     tree = checklist.get("tree") or {}
     if tree.get("enabled"):
         flags = ["--tree", os.path.join(rundir, "process.tree.txt")]
-        if tree.get("cmdline"):
-            flags.append("--tree-cmdline")
-        if tree.get("open"):
-            flags.append("--tree-open")
-        if tree.get("futex"):
-            flags.append("--tree-futex")
-        if tree.get("io"):
-            flags.append("--tree-io")
-        if tree.get("io_wait"):
-            flags.append("--tree-io-wait")
-        if tree.get("schedstat"):
-            flags.append("--tree-schedstat")
-        if tree.get("vmsize"):
-            flags.append("--tree-vmsize")
-        if tree.get("connect"):
-            flags.append("--tree-connect")
-        if tree.get("wait"):
-            flags.append("--tree-wait")
-        if tree.get("poll"):
-            flags.append("--tree-poll")
-        if tree.get("nanosleep"):
-            flags.append("--tree-nanosleep")
+        # 1:1 checkbox->flag mappings (profiles/checklist-flags.conf's own comment explains why
+        # this lives in a data file rather than one `if tree.get(<key>): flags.append(<flag>)`
+        # block per option) -- table order is the source of the flag order here, matching this
+        # block's original hand-written order.
+        for key, flag in CHECKLIST_BOOLEAN_FLAGS.get("tree", []):
+            if tree.get(key):
+                flags.append(flag)
         # Performance counters for this pass -- reuses "counters"' own
         # counter_group_flags() helper rather than a second table, so this
         # card's selector behaves identically (same --counters=<list>/
@@ -1453,15 +1470,11 @@ def build_configuration_passes(rundir, checklist):
 
     gpu = checklist.get("gpu") or {}
     if gpu.get("enabled"):
-        backend_flags = []
-        if gpu.get("busy"):
-            backend_flags.append("--gpu-busy")
-        if gpu.get("metrics"):
-            backend_flags.append("--gpu-metrics")
-        if gpu.get("smi"):
-            backend_flags.append("--gpu-smi")
-        if gpu.get("nvidia"):
-            backend_flags.append("--gpu-nvidia")
+        # One of these four selects which backend(s) collect data at all -- see
+        # CHECKLIST_BOOLEAN_FLAGS' own comment for why this is a data table rather than a
+        # `backend_flags.append(...)` per checkbox.
+        backend_flags = [flag for key, flag in CHECKLIST_BOOLEAN_FLAGS.get("gpu", [])
+                          if gpu.get(key)]
         if backend_flags:
             flags = list(backend_flags)
             device = parse_optional_int(gpu.get("device"), 0, 63)

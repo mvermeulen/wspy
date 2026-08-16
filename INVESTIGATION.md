@@ -129,6 +129,28 @@ its GitHub release body is the notes at `https://github.com/mvermeulen/wspy/rele
 ## Shipped since 4.3.1
 Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-prep time.
 
+- Preset/Configuration/Option vocabulary refactor (item 1), checklist-boolean-flag-table slice:
+  the Run tab checklist's `tree`/`gpu` sections had 15 pure 1:1 "checkbox checked -> emit this one
+  flag" mappings (`--tree-cmdline`/`--tree-open`/.../`--tree-nanosleep`, `--gpu-busy`/`--gpu-metrics`/
+  `--gpu-smi`/`--gpu-nvidia`) hardcoded as one `if section.get(<key>): flags.append(<flag>)` block
+  per option in `build_configuration_passes()` (`web/joblib.py`) — an independent, hand-written model
+  next to `wspy-run`'s own now-data-driven `profiles/*.conf`. New `profiles/checklist-flags.conf`
+  (`<checklist-key> <option-key> <flag>` lines, `#`-comments, read the same tolerant way
+  `_load_profile_conf_passes()` already reads `profiles/*.conf`) replaces those 15 if-blocks with a
+  small table lookup (`CHECKLIST_BOOLEAN_FLAGS`, loaded eagerly at import — a plain-text read, no
+  built `wspy` binary needed, same posture as `ALL_GROUPS`). Deliberately a sibling data source, not
+  literally the same grammar `wspy-run` reads: a fixed preset pass-list has no checkbox concept for a
+  boolean-toggle table to join onto, so "unify" here means "same declarative shape/mechanization",
+  not "one shared file". The `counters`/`system`/`ibs` sections' genuinely conditional logic (interval/
+  `--passes` bin-packing choice, `--power` folding, legacy pass-name heuristics) stays hand-written —
+  forcing it into a flat table would obscure it, not simplify it — and the preset/checklist boundary
+  stays exactly as it was (see item 1's own updated text above for why decomposing presets into
+  checklist state remains explicitly out of scope). Verified byte-identical flag order against the
+  original if-chain for both sections' full-on cases; also closed a real, pre-existing test-coverage
+  gap found while doing this — these 15 flags had no test coverage at all before (`web/test_joblib.py`
+  gained `LoadChecklistFlagTableTest` plus tree/gpu exact-order regression tests). `CLAUDE.md`'s
+  "Common edits" gained a matching entry so a future boolean checklist option lands in the data file,
+  not a new Python branch.
 - Linked navigation between the tree and interval/timeline views, feature (c) — the item's last
   remaining scope, now fully shipped: `interval_viewer.js`'s full-column timeline page
   (`render_interval_viewer()`, `web/server.py`) gains an optional "Tree + timeline (combined)" link,
@@ -651,12 +673,19 @@ the page indicating order or which are "normally do this" vs. optional; and per-
 tool despite resolving near-identical shapes underneath.
 
 1. Preset/Configuration/Option vocabulary refactor — remaining scope: unify the web UI's own
-   checklist-driven argv builder (`build_configuration_passes()`, `web/joblib.py`) onto the same
-   `profiles/*.conf`/`*.spec` data `wspy-run` reads, rather than its own independent configuration/
-   option model. (The builtin-profile-vocabulary slice, the ARM group-exposure slice, `wspy.c`'s
-   `--list-columns` probe, and mechanizing `PROFILE_PLOTTABLE_COLUMNS` off it have all shipped — see
-   "Shipped since 4.3.1" above.) See the "Preset / Configuration / Option hierarchy deep-dive" below
-   for the full reasoning.
+   checklist-driven argv builder (`build_configuration_passes()`, `web/joblib.py`) onto declarative
+   data the way `wspy-run`'s own profiles are, rather than its own independent, fully-hardcoded
+   configuration/option model. (The builtin-profile-vocabulary slice, the ARM group-exposure slice,
+   `wspy.c`'s `--list-columns` probe, mechanizing `PROFILE_PLOTTABLE_COLUMNS` off it, and the
+   checklist-boolean-flag-table slice below have all shipped — see "Shipped since 4.3.1" above.)
+   Explicitly out of scope, per a deliberate design decision already recorded in `web/joblib.py`'s
+   own comments: decomposing a named preset into equivalent checklist state, or vice versa — presets
+   stay atomic and mutually exclusive with the checklist rather than reverse-engineered from it (keeps
+   the "customized away from preset" live indicator honest). Remaining scope is the checklist's own
+   *non-mechanical* logic (`counters`/`system`/`ibs` sections' `--passes` bin-packing choice, `--power`
+   folding, legacy pass-name heuristics) and the Run tab's client-side checkbox rendering/reading
+   (`app.js`), both still hand-written rather than data-driven. See the "Preset / Configuration /
+   Option hierarchy deep-dive" below for the full reasoning.
 2. One-click end-to-end pipeline. Today a human runs `wspy-run`, then separately has to already know to
    run `wspy-store`'s ingest, `wspy-testpoint select-runs`, `wspy-testpoint render`, and a publish step —
    each its own command or its own web-UI button, in an order nowhere written down for a CLI-only user.
