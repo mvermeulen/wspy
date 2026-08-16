@@ -2669,6 +2669,188 @@ def _phoronix_menu_entries(test_definition_path):
     return entries
 
 
+def phoronix_test_axes(test_definition_path):
+    """Per-<Option> axes from a test-definition.xml, order-preserved -- the grouped counterpart to
+    _phoronix_menu_entries()'s flat list, needed for INVESTIGATION.md's "Installed-test-profile
+    materialization deep-dive": that flat list is fine for repin_phoronix_test_point()'s single-string
+    validation, but loses which entries belong to which axis, which a multi-axis composer needs.
+    Returns a list of {"display_name", "identifier", "arg_prefix", "arg_postfix",
+    "entries": [(entry_name, entry_value), ...]} dicts, one per <Option>, in document order -- []
+    for a zero-option test (a fixed point, INVESTIGATION.md's own "Confirmed real profile shapes"
+    case) or if the file doesn't parse. An <Option> with an empty <Menu> (no <Entry> children at all)
+    is skipped -- there's nothing a caller could ever choose for it, so including it would just be a
+    dead axis every caller has to special-case around."""
+    try:
+        tree = ET.parse(test_definition_path)
+    except (ET.ParseError, OSError):
+        return []
+    axes = []
+    for option in tree.getroot().findall("./TestSettings/Option"):
+        entries = []
+        for entry in option.findall("./Menu/Entry"):
+            name_el, value_el = entry.find("Name"), entry.find("Value")
+            entries.append(((name_el.text or "").strip() if name_el is not None else "",
+                             (value_el.text or "").strip() if value_el is not None else ""))
+        if not entries:
+            continue
+        display_el, identifier_el = option.find("DisplayName"), option.find("Identifier")
+        prefix_el, postfix_el = option.find("ArgumentPrefix"), option.find("ArgumentPostfix")
+        axes.append({
+            "display_name": (display_el.text or "").strip() if display_el is not None else "",
+            "identifier": (identifier_el.text or "").strip() if identifier_el is not None else "",
+            "arg_prefix": (prefix_el.text or "") if prefix_el is not None else "",
+            "arg_postfix": (postfix_el.text or "") if postfix_el is not None else "",
+            "entries": entries,
+        })
+    return axes
+
+
+def phoronix_test_axes_for_test_id(test_id, user_data_dir=None):
+    """phoronix_test_axes(), resolved straight from a test_id instead of a caller having to know
+    test-definition.xml's own path -- the public entry point for cross-module callers (CLI/web), so
+    _phoronix_test_definition_path() stays a private, in-module implementation detail. Returns
+    (axes, error_or_None): error is set (axes == []) only when test_id's test-definition.xml isn't
+    downloaded/cached on this host at all; a real zero-axis test's axes == [] with error=None is the
+    normal, valid "no picker needed" case (phoronix_test_axes()'s own return for a fixed test), so a
+    caller must check `error`, not just truthiness of `axes`, to tell the two apart."""
+    test_def_path = _phoronix_test_definition_path(test_id, user_data_dir)
+    if not test_def_path:
+        return [], (f"no downloaded test-definition.xml for {test_id!r} -- run "
+                     f"`phoronix-test-suite download {test_id}` (or install it) first")
+    return phoronix_test_axes(test_def_path), None
+
+
+def compose_phoronix_axis_choice(axes, choices):
+    """Composes (arguments, description) for one explicit choice across every axis in `axes`
+    (phoronix_test_axes()'s own return shape) -- the "Confirmed Arguments/Description composition
+    rule" INVESTIGATION.md's deep-dive reverse-engineered from real already-materialized multi-axis
+    points (llama-cpp/blender/openvino): Arguments is each axis's arg_prefix + chosen entry's value +
+    arg_postfix, one space between axes, in axes' own document order; Description is each axis's
+    "<display_name>: <entry_name>", joined by " - ", same order. `choices` is a {identifier: entry_name}
+    dict, one entry per axis in `axes` -- every axis must have a choice (no partial tuples; a caller
+    that only has some axes resolved isn't done yet and shouldn't materialize). Raises KeyError naming
+    the missing axis's identifier if `choices` is missing one, or ValueError if a choice names an
+    entry_name that axis doesn't actually have -- both are caller bugs (a picker/CLI parser should
+    never construct an invalid choice in the first place), not something to degrade silently on,
+    unlike the rest of this module's "degrade, don't fail" convention for untrusted external input."""
+    arg_parts, desc_parts = [], []
+    for axis in axes:
+        identifier = axis["identifier"]
+        if identifier not in choices:
+            raise KeyError(f"no choice given for axis {identifier!r}")
+        wanted_name = choices[identifier]
+        value = next((v for n, v in axis["entries"] if n == wanted_name), None)
+        if value is None:
+            raise ValueError(f"axis {identifier!r} has no entry named {wanted_name!r}")
+        arg_parts.append(f"{axis.get('arg_prefix', '')}{value}{axis.get('arg_postfix', '')}")
+        desc_parts.append(f"{axis['display_name']}: {wanted_name}")
+    return " ".join(arg_parts), " - ".join(desc_parts)
+
+
+_PHORONIX_GPU_AXIS_KEYWORDS = ("compute", "backend", "device", "gpu", "api", "platform")
+_PHORONIX_GPU_ENTRY_KEYWORDS = ("cuda", "optix", "hip", "rocm", "vulkan", "sycl", "oneapi", "metal", "opencl")
+
+
+def phoronix_axis_is_gpu_flagged(axis):
+    """True if `axis` (phoronix_test_axes()'s per-axis shape) looks GPU/backend-shaped -- deep-dive
+    design point 5's heuristic: a case-insensitive keyword hit against the axis's own
+    display_name/identifier (_PHORONIX_GPU_AXIS_KEYWORDS), OR against any entry's name/value
+    (_PHORONIX_GPU_ENTRY_KEYWORDS), flags it. Deliberately over-inclusive (a false positive just means
+    an axis a human has to explicitly confirm that didn't strictly need to be) rather than
+    under-inclusive (a missed GPU axis silently defaulting/bulk-selecting would be the real hazard) --
+    the axis-level "never defaulted or bulk-selected" rule this feeds into only costs an extra click
+    for a false positive."""
+    axis_text = f"{axis['display_name']} {axis['identifier']}".lower()
+    if any(kw in axis_text for kw in _PHORONIX_GPU_AXIS_KEYWORDS):
+        return True
+    for name, value in axis["entries"]:
+        entry_text = f"{name} {value}".lower()
+        if any(kw in entry_text for kw in _PHORONIX_GPU_ENTRY_KEYWORDS):
+            return True
+    return False
+
+
+def phoronix_installed_test_file_basenames(test_id, user_data_dir=None):
+    """Every file basename found anywhere under installed-tests/<namespace>/<bare_name>-<version>/
+    for the exact (versioned) test_id -- design point 6's "looks buildable" signal source. []  if the
+    test isn't installed at this exact version, or the directory has no files. Deliberately the exact
+    pinned version, not list_installed_phoronix_test_versions()'s "any version" scan -- a stale binary
+    left over from a different installed version would be a false "buildable" signal for this one."""
+    namespace, _, name = test_id.partition("/")
+    if not name:
+        namespace, name = "pts", namespace
+    test_dir = os.path.join(user_data_dir or phoronix_user_data_dir(), "installed-tests", namespace, name)
+    basenames = []
+    for root, _dirs, files in os.walk(test_dir):
+        basenames.extend(files)
+    return basenames
+
+
+_PHORONIX_BUILDABLE_MIN_TOKEN_LEN = 4
+
+
+def phoronix_entry_looks_buildable(entry_value, installed_basenames):
+    """Best-effort "looks buildable" hint for one axis entry's Value text -- design point 6: a
+    bidirectional case-insensitive substring check of the value's *first whitespace-separated token*
+    against installed_basenames (phoronix_installed_test_file_basenames()'s own return). The first
+    token, not the whole value, because a Backend entry's real Value is "CUDA -r 100 -fa 1" -- the
+    trailing flags are common across every backend and never appear in the installed binary's own name
+    (confirmed live: this host's llama-cpp-2.5.0 directory has "llama.cpp-CUDA", not
+    "llama.cpp-CUDA -r 100 -fa 1") -- while a Model entry's Value is a bare filename with no spaces at
+    all ("Llama-3.1-Tulu-3-8B-Q8_0.gguf"), where "first token" and "whole value" are the same string,
+    so one rule covers both confirmed-live shapes without needing to special-case which kind of axis
+    this is. Returns None -- not False -- when installed_basenames is empty (nothing to check against
+    at all: the test isn't installed here) or when the token has fewer than
+    _PHORONIX_BUILDABLE_MIN_TOKEN_LEN alphanumeric characters -- confirmed live against this host's
+    real llama.cpp source tree (15000+ files, a full CUDA build checkout): a short/flag-like token
+    like a "Test" axis entry's "-n" (from Value "-n 128 -p 0", an axis that isn't the kind of choice
+    that maps to an on-disk file at all) substring-matched dozens of unrelated filenames
+    ("mmq-instance-nvfp4.cu", ...), a real false positive this length floor exists specifically to
+    catch -- a caller renders None as an absent/neutral badge either way, never a "confirmed
+    unbuildable" one, per this design point's own "a false negative must never make a real option
+    unreachable" rule (a false *positive* would be the opposite, equally real, failure this guards)."""
+    if not installed_basenames:
+        return None
+    tokens = entry_value.split()
+    if not tokens:
+        return None
+    token = tokens[0].lower()
+    if sum(c.isalnum() for c in token) < _PHORONIX_BUILDABLE_MIN_TOKEN_LEN:
+        return None
+    return any(token in b.lower() or b.lower() in token for b in installed_basenames)
+
+
+def materialize_phoronix_installed_point(test_id, choices, dest_root, source_ref="installed-test-profile",
+                                          installed=None, user_data_dir=None):
+    """Materializes exactly one test point for an installed/downloaded test_id from an explicit
+    axis-choice dict (compose_phoronix_axis_choice()'s own `choices` shape: {identifier: entry_name},
+    one entry per axis) -- INVESTIGATION.md's "Installed-test-profile materialization deep-dive",
+    the third, proactive materialization source (alongside an installed suite-definition.xml and an
+    OpenBenchmarking result/composite.xml) that builds candidate points *before* ever running anything
+    through PTS. `choices={}` is valid and expected for a zero-axis test (design point 2 -- no picker
+    needed, Arguments/Description both come out empty/"default"). Resolves axes straight from
+    test-definition.xml (phoronix_test_axes()) -- a missing/undownloaded test-definition.xml is a hard
+    ValueError here, unlike every other materialization path in this module, since there's no XML
+    result data to fall back on the way materialize_phoronix_test_point()'s other callers always have;
+    this is the one entry point whose whole reason to exist is "no prior run/import round-trip yet."
+    Also ValueError if the test has one or more axes but `choices` is empty -- a caller must pick
+    something for a real multi-axis test, never silently materialize an arbitrary/first combination.
+    Composition itself (and its own KeyError/ValueError for a malformed `choices`) is
+    compose_phoronix_axis_choice()'s job, not re-validated here."""
+    test_def_path = _phoronix_test_definition_path(test_id, user_data_dir)
+    if not test_def_path:
+        raise ValueError(f"no downloaded test-definition.xml for {test_id!r} -- run "
+                          f"`phoronix-test-suite download {test_id}` (or install it) first")
+    axes = phoronix_test_axes(test_def_path)
+    if axes and not choices:
+        raise ValueError(f"{test_id!r} has {len(axes)} option axis(es) -- pass an explicit choice per "
+                          "axis (see --list-options / phoronix_axis_is_gpu_flagged() to help pick)")
+    arguments, description = compose_phoronix_axis_choice(axes, choices) if axes else ("", "")
+    point = {"test_id": test_id, "arguments": arguments, "description": description}
+    return materialize_phoronix_test_point(point, dest_root, "installed-test-profile", source_ref,
+                                            installed=installed)
+
+
 _PHORONIX_ARGUMENTS_DESCRIPTION_RE = re.compile(r"^Input:\s*(.+?)\s+-\s+")
 
 
@@ -2978,6 +3160,78 @@ def import_phoronix_test_points(xml_bytes, dest_root, source_kind, source_ref,
                                 if add_to_ledger else None)
         out_points.append(entry)
     return {"points": out_points, "readmes": list(readmes.values()), "error": None}
+
+
+def import_phoronix_installed_points(test_id, choice_sets, dest_root,
+                                      phoronix_bin="phoronix-test-suite", ledger_bin="wspy-ledger",
+                                      ledger_list_path=None, cwd=None, dry_run=False,
+                                      check_installed=True, add_to_ledger=True, user_data_dir=None):
+    """Top-level orchestration for the "Installed-test-profile materialization deep-dive" source
+    (INVESTIGATION.md 4.4(c)) -- materialize -> README -> wspy-ledger, the same shape as
+    import_phoronix_test_points() above but seeded from explicit axis choices instead of a parsed
+    result/suite XML, since there's no XML result data yet for a point that's never been run.
+
+    `choice_sets` is a list of {identifier: entry_name} dicts (compose_phoronix_axis_choice()'s own
+    `choices` shape), one materialized point per entry -- a single explicit tuple passes a one-element
+    list; the deep-dive's "materialize all" convenience for a single-axis test (design point 3) passes
+    one dict per entry instead, all in the same call. Every choice_set must resolve against this same
+    test_id's axes -- this orchestrates one test's points, not a mixed batch across tests (a CLI/web
+    caller doing several tests loops this function once per test_id, same as it already loops
+    wspy-ledger once per identity).
+
+    Returns {"points": [...], "readme": {...}, "error": str or None} -- "error" set (points/readme
+    both None/empty) only for a problem shared by every choice_set (test-definition.xml not
+    downloaded/cached at all); one choice_set's own bad axis/entry-name instead raises straight out of
+    materialize_phoronix_installed_point()/compose_phoronix_axis_choice(), since unlike an already-run
+    result's untrusted XML, every choice_set here was constructed by this same call's own caller (a
+    CLI flag or a web picker already built from this test's real axes), so a malformed one is a caller
+    bug to surface immediately, not external input to degrade against."""
+    test_def_path = _phoronix_test_definition_path(test_id, user_data_dir)
+    if not test_def_path:
+        return {"points": [], "readme": None,
+                "error": f"no downloaded test-definition.xml for {test_id!r} -- run "
+                         f"`phoronix-test-suite download {test_id}` (or install it) first"}
+
+    fields = fetch_phoronix_info_fields(test_id, phoronix_bin=phoronix_bin, cwd=cwd) if check_installed else None
+    value = (fields or {}).get("Test Installed")
+    installed = (value == "Yes") if value in ("Yes", "No") else None
+    bare_name = phoronix_bare_test_name(test_id)
+    source_ref = f"installed:{test_id}"
+
+    if dry_run:
+        readme_path = os.path.join(dest_root, bare_name, "README.md")
+        if os.path.isfile(readme_path):
+            readme_status = "exists"
+        elif not check_installed:
+            readme_status = "skipped"
+        else:
+            readme_status = "would-create"
+        readme = {"bare_name": bare_name, "path": readme_path, "status": readme_status}
+    else:
+        readme = write_phoronix_test_readme(bare_name, dest_root, test_id, fields, source_ref)
+
+    list_path = ledger_list_path or os.path.join(dest_root, "backlog.txt")
+    axes = phoronix_test_axes(test_def_path)
+    out_points = []
+    for choices in choice_sets:
+        if dry_run:
+            arguments, _description = compose_phoronix_axis_choice(axes, choices) if axes else ("", "")
+            options_slug = slugify_phoronix_arguments(arguments)
+            identity = f"{bare_name}-{options_slug}"
+            out_dir = os.path.join(dest_root, bare_name, options_slug)
+            already = os.path.isfile(os.path.join(out_dir, "suite-definition.xml"))
+            entry = {"test_id": test_id, "arguments": arguments, "bare_name": bare_name,
+                      "options_slug": options_slug, "identity": identity, "dir": out_dir,
+                      "status": "exists" if already else "would-create",
+                      "installed": installed, "ledger": None}
+        else:
+            entry = materialize_phoronix_installed_point(test_id, choices, dest_root, source_ref=source_ref,
+                                                           installed=installed, user_data_dir=user_data_dir)
+            entry["ledger"] = (add_phoronix_test_point_to_ledger(entry["identity"], list_path,
+                                                                  ledger_bin=ledger_bin, cwd=cwd)
+                                if add_to_ledger else None)
+        out_points.append(entry)
+    return {"points": out_points, "readme": readme, "error": None}
 
 
 def list_materialized_phoronix_test_points(dest_root):

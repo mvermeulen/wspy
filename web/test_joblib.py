@@ -2397,6 +2397,284 @@ class RepinPhoronixTestPointTest(unittest.TestCase):
             self.assertNotIn("previous_arguments", source)
 
 
+def _write_phoronix_test_definition_axes(user_data_dir, namespace, name, axes, title=""):
+    """Test helper: writes a test-profiles/<namespace>/<name>/test-definition.xml with one
+    <TestSettings><Option> per axis in `axes` -- each axis a
+    {"display_name", "identifier", "arg_prefix"?, "arg_postfix"?, "entries": [(name, value), ...]}
+    dict, mirroring phoronix_test_axes()'s own return shape so a test can round-trip
+    write-then-parse. Real per-axis field shapes (DisplayName/Identifier/ArgumentPrefix/
+    ArgumentPostfix/Menu/Entry/Name/Value) confirmed 2026-08-15 against real cached test-definition.xml
+    files on this host (svt-av1, npb, llama-cpp)."""
+    import xml.etree.ElementTree as ET
+    root = ET.Element("PhoronixTestSuite")
+    if title:
+        ET.SubElement(ET.SubElement(root, "TestInformation"), "Title").text = title
+    settings = ET.SubElement(root, "TestSettings")
+    for axis in axes:
+        option = ET.SubElement(settings, "Option")
+        ET.SubElement(option, "DisplayName").text = axis["display_name"]
+        ET.SubElement(option, "Identifier").text = axis["identifier"]
+        if axis.get("arg_prefix"):
+            ET.SubElement(option, "ArgumentPrefix").text = axis["arg_prefix"]
+        if axis.get("arg_postfix"):
+            ET.SubElement(option, "ArgumentPostfix").text = axis["arg_postfix"]
+        menu = ET.SubElement(option, "Menu")
+        for entry_name, value in axis["entries"]:
+            entry = ET.SubElement(menu, "Entry")
+            ET.SubElement(entry, "Name").text = entry_name
+            ET.SubElement(entry, "Value").text = value
+    out_dir = os.path.join(user_data_dir, "test-profiles", namespace, name)
+    os.makedirs(out_dir, exist_ok=True)
+    ET.ElementTree(root).write(os.path.join(out_dir, "test-definition.xml"))
+    return out_dir
+
+
+_LLAMA_CPP_BACKEND_AXIS = {
+    "display_name": "Backend", "identifier": "backend",
+    "entries": [("CPU BLAS", "BLAS"), ("NVIDIA CUDA", "CUDA -r 100 -fa 1"), ("AMD ROCm HIP", "ROCM -r 100 -fa 1")],
+}
+_LLAMA_CPP_MODEL_AXIS = {
+    "display_name": "Model", "identifier": "model", "arg_prefix": "-m ../",
+    "entries": [("Llama-3.1-Tulu-3-8B-Q8_0", "Llama-3.1-Tulu-3-8B-Q8_0.gguf"),
+                ("gpt-oss-20b-Q8_0", "gpt-oss-20b-Q8_0.gguf")],
+}
+
+
+class PhoronixTestAxesTest(unittest.TestCase):
+    def test_zero_option_test_returns_empty_list(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _write_phoronix_test_definition_axes(tmpdir, "pts", "coremark-1.0.1", [])
+            self.assertEqual(joblib.phoronix_test_axes(os.path.join(path, "test-definition.xml")), [])
+
+    def test_multi_axis_order_and_fields_preserved(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _write_phoronix_test_definition_axes(
+                tmpdir, "pts", "llama-cpp-2.5.0", [_LLAMA_CPP_BACKEND_AXIS, _LLAMA_CPP_MODEL_AXIS])
+            axes = joblib.phoronix_test_axes(os.path.join(path, "test-definition.xml"))
+            self.assertEqual([a["identifier"] for a in axes], ["backend", "model"])
+            self.assertEqual(axes[0]["display_name"], "Backend")
+            self.assertEqual(axes[0]["arg_prefix"], "")
+            self.assertEqual(axes[0]["entries"][1], ("NVIDIA CUDA", "CUDA -r 100 -fa 1"))
+            self.assertEqual(axes[1]["arg_prefix"], "-m ../")
+            self.assertEqual(axes[1]["entries"][0], ("Llama-3.1-Tulu-3-8B-Q8_0", "Llama-3.1-Tulu-3-8B-Q8_0.gguf"))
+
+    def test_axis_with_no_entries_is_skipped(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            empty_axis = {"display_name": "Empty", "identifier": "empty", "entries": []}
+            path = _write_phoronix_test_definition_axes(
+                tmpdir, "pts", "mytest-1.0.0", [empty_axis, _LLAMA_CPP_BACKEND_AXIS])
+            axes = joblib.phoronix_test_axes(os.path.join(path, "test-definition.xml"))
+            self.assertEqual([a["identifier"] for a in axes], ["backend"])
+
+    def test_missing_file_returns_empty_list(self):
+        self.assertEqual(joblib.phoronix_test_axes("/no/such/file.xml"), [])
+
+
+class ComposePhoronixAxisChoiceTest(unittest.TestCase):
+    def test_composes_arguments_and_description_in_axis_order(self):
+        axes = [_LLAMA_CPP_BACKEND_AXIS, _LLAMA_CPP_MODEL_AXIS]
+        arguments, description = joblib.compose_phoronix_axis_choice(
+            axes, {"backend": "CPU BLAS", "model": "gpt-oss-20b-Q8_0"})
+        self.assertEqual(arguments, "BLAS -m ../gpt-oss-20b-Q8_0.gguf")
+        self.assertEqual(description, "Backend: CPU BLAS - Model: gpt-oss-20b-Q8_0")
+
+    def test_zero_axes_composes_empty_strings(self):
+        self.assertEqual(joblib.compose_phoronix_axis_choice([], {}), ("", ""))
+
+    def test_missing_axis_choice_raises_key_error(self):
+        with self.assertRaises(KeyError):
+            joblib.compose_phoronix_axis_choice([_LLAMA_CPP_BACKEND_AXIS], {})
+
+    def test_unknown_entry_name_raises_value_error(self):
+        with self.assertRaises(ValueError):
+            joblib.compose_phoronix_axis_choice([_LLAMA_CPP_BACKEND_AXIS], {"backend": "Intel Arc"})
+
+    def test_argument_prefix_and_postfix_both_applied(self):
+        axis = {"display_name": "Size", "identifier": "size", "arg_prefix": "-s ", "arg_postfix": "MB",
+                 "entries": [("100MB", "100")]}
+        arguments, description = joblib.compose_phoronix_axis_choice([axis], {"size": "100MB"})
+        self.assertEqual(arguments, "-s 100MB")
+        self.assertEqual(description, "Size: 100MB")
+
+
+class PhoronixAxisIsGpuFlaggedTest(unittest.TestCase):
+    def test_flags_via_display_name_keyword(self):
+        self.assertTrue(joblib.phoronix_axis_is_gpu_flagged(_LLAMA_CPP_BACKEND_AXIS))  # "Backend"
+
+    def test_flags_via_entry_value_keyword(self):
+        axis = {"display_name": "Renderer", "identifier": "renderer",
+                 "entries": [("Fast", "--fast"), ("GPU Mode", "--engine CUDA")]}
+        self.assertTrue(joblib.phoronix_axis_is_gpu_flagged(axis))
+
+    def test_plain_axis_not_flagged(self):
+        self.assertFalse(joblib.phoronix_axis_is_gpu_flagged(_LLAMA_CPP_MODEL_AXIS))
+
+
+class PhoronixInstalledTestFileBasenamesTest(unittest.TestCase):
+    def test_lists_files_recursively(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_dir = os.path.join(tmpdir, "installed-tests", "pts", "llama-cpp-2.5.0")
+            os.makedirs(os.path.join(test_dir, "models"))
+            open(os.path.join(test_dir, "llama.cpp-BLAS"), "w").close()
+            open(os.path.join(test_dir, "models", "gpt-oss-20b-Q8_0.gguf"), "w").close()
+            basenames = joblib.phoronix_installed_test_file_basenames("pts/llama-cpp-2.5.0", user_data_dir=tmpdir)
+            self.assertEqual(sorted(basenames), ["gpt-oss-20b-Q8_0.gguf", "llama.cpp-BLAS"])
+
+    def test_not_installed_returns_empty_list(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertEqual(
+                joblib.phoronix_installed_test_file_basenames("pts/llama-cpp-2.5.0", user_data_dir=tmpdir), [])
+
+    def test_different_version_not_matched(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_dir = os.path.join(tmpdir, "installed-tests", "pts", "llama-cpp-2.4.1")
+            os.makedirs(test_dir)
+            open(os.path.join(test_dir, "llama.cpp-BLAS"), "w").close()
+            self.assertEqual(
+                joblib.phoronix_installed_test_file_basenames("pts/llama-cpp-2.5.0", user_data_dir=tmpdir), [])
+
+
+class PhoronixEntryLooksBuildableTest(unittest.TestCase):
+    def test_installed_basename_contained_in_value(self):
+        self.assertTrue(joblib.phoronix_entry_looks_buildable("CUDA -r 100 -fa 1", ["llama.cpp-CUDA"]))
+
+    def test_value_contained_in_installed_basename(self):
+        self.assertTrue(joblib.phoronix_entry_looks_buildable(
+            "gpt-oss-20b-Q8_0.gguf", ["gpt-oss-20b-Q8_0.gguf"]))
+
+    def test_no_match_returns_false(self):
+        self.assertFalse(joblib.phoronix_entry_looks_buildable("ROCM -r 100 -fa 1", ["llama.cpp-BLAS"]))
+
+    def test_empty_installed_basenames_returns_none(self):
+        self.assertIsNone(joblib.phoronix_entry_looks_buildable("BLAS", []))
+
+    def test_short_flag_like_token_returns_none_not_false_positive(self):
+        # Regression: confirmed live against this host's real llama.cpp-2.5.0 installed-tests
+        # directory (15000+ files, a full CUDA source checkout) -- a "Test" axis entry's Value
+        # "-n 128 -p 0" (an axis that isn't the kind of choice that maps to an on-disk file at all)
+        # spuriously substring-matched unrelated filenames like "mmq-instance-nvfp4.cu" before the
+        # minimum-token-length floor was added, badging it "buildable" when that's meaningless noise.
+        installed_basenames = ["mmq-instance-nvfp4.cu", "fattn-mma-f16-instance-ncols1_1-ncols2_32.cu"]
+        self.assertIsNone(joblib.phoronix_entry_looks_buildable("-n 128 -p 0", installed_basenames))
+
+
+class MaterializePhoronixInstalledPointTest(unittest.TestCase):
+    def test_zero_axis_test_materializes_with_empty_arguments(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            user_data_dir = os.path.join(tmpdir, "userdata")
+            _write_phoronix_test_definition_axes(user_data_dir, "pts", "coremark-1.0.1", [])
+            dest = os.path.join(tmpdir, "dest")
+            info = joblib.materialize_phoronix_installed_point(
+                "pts/coremark-1.0.1", {}, dest, user_data_dir=user_data_dir)
+            self.assertEqual(info["arguments"], "")
+            self.assertEqual(info["options_slug"], "default")
+            self.assertEqual(info["status"], "created")
+            with open(os.path.join(info["dir"], "source.json")) as f:
+                source = json.load(f)
+            self.assertEqual(source["source_kind"], "installed-test-profile")
+
+    def test_multi_axis_test_materializes_composed_point(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            user_data_dir = os.path.join(tmpdir, "userdata")
+            _write_phoronix_test_definition_axes(
+                user_data_dir, "pts", "llama-cpp-2.5.0", [_LLAMA_CPP_BACKEND_AXIS, _LLAMA_CPP_MODEL_AXIS])
+            dest = os.path.join(tmpdir, "dest")
+            info = joblib.materialize_phoronix_installed_point(
+                "pts/llama-cpp-2.5.0", {"backend": "CPU BLAS", "model": "gpt-oss-20b-Q8_0"},
+                dest, user_data_dir=user_data_dir)
+            self.assertEqual(info["arguments"], "BLAS -m ../gpt-oss-20b-Q8_0.gguf")
+            with open(os.path.join(info["dir"], "source.json")) as f:
+                source = json.load(f)
+            self.assertEqual(source["description"], "Backend: CPU BLAS - Model: gpt-oss-20b-Q8_0")
+
+    def test_multi_axis_test_with_no_choices_raises(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            user_data_dir = os.path.join(tmpdir, "userdata")
+            _write_phoronix_test_definition_axes(
+                user_data_dir, "pts", "llama-cpp-2.5.0", [_LLAMA_CPP_BACKEND_AXIS])
+            with self.assertRaises(ValueError):
+                joblib.materialize_phoronix_installed_point(
+                    "pts/llama-cpp-2.5.0", {}, os.path.join(tmpdir, "dest"), user_data_dir=user_data_dir)
+
+    def test_undownloaded_test_definition_raises(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(ValueError):
+                joblib.materialize_phoronix_installed_point(
+                    "pts/nope-1.0.0", {}, os.path.join(tmpdir, "dest"),
+                    user_data_dir=os.path.join(tmpdir, "userdata"))
+
+
+class ImportPhoronixInstalledPointsTest(unittest.TestCase):
+    def test_single_tuple_materializes_one_point_no_ledger_no_info_check(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            user_data_dir = os.path.join(tmpdir, "userdata")
+            _write_phoronix_test_definition_axes(
+                user_data_dir, "pts", "llama-cpp-2.5.0", [_LLAMA_CPP_BACKEND_AXIS, _LLAMA_CPP_MODEL_AXIS])
+            dest = os.path.join(tmpdir, "dest")
+            result = joblib.import_phoronix_installed_points(
+                "pts/llama-cpp-2.5.0", [{"backend": "CPU BLAS", "model": "gpt-oss-20b-Q8_0"}], dest,
+                user_data_dir=user_data_dir, check_installed=False, add_to_ledger=False)
+            self.assertIsNone(result["error"])
+            self.assertEqual(len(result["points"]), 1)
+            point = result["points"][0]
+            self.assertEqual(point["arguments"], "BLAS -m ../gpt-oss-20b-Q8_0.gguf")
+            self.assertEqual(point["status"], "created")
+            self.assertIsNone(point["ledger"])
+            # check_installed=False -> no `phoronix-test-suite info` fields -> README skipped, not
+            # created, same "no Description available" degrade import_phoronix_test_points() uses.
+            self.assertEqual(result["readme"]["status"], "skipped")
+            self.assertFalse(os.path.isfile(result["readme"]["path"]))
+
+    def test_all_single_axis_convenience_materializes_every_entry(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            user_data_dir = os.path.join(tmpdir, "userdata")
+            _write_phoronix_test_definition_axes(
+                user_data_dir, "pts", "llama-cpp-2.5.0", [_LLAMA_CPP_BACKEND_AXIS])
+            dest = os.path.join(tmpdir, "dest")
+            choice_sets = [{"backend": name} for name, _value in _LLAMA_CPP_BACKEND_AXIS["entries"]]
+            result = joblib.import_phoronix_installed_points(
+                "pts/llama-cpp-2.5.0", choice_sets, dest,
+                user_data_dir=user_data_dir, check_installed=False, add_to_ledger=False)
+            self.assertEqual(len(result["points"]), len(_LLAMA_CPP_BACKEND_AXIS["entries"]))
+            self.assertEqual({p["options_slug"] for p in result["points"]},
+                              {"blas", "cuda-r-100-fa-1", "rocm-r-100-fa-1"})
+
+    def test_dry_run_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            user_data_dir = os.path.join(tmpdir, "userdata")
+            _write_phoronix_test_definition_axes(
+                user_data_dir, "pts", "llama-cpp-2.5.0", [_LLAMA_CPP_BACKEND_AXIS])
+            dest = os.path.join(tmpdir, "dest")
+            result = joblib.import_phoronix_installed_points(
+                "pts/llama-cpp-2.5.0", [{"backend": "CPU BLAS"}], dest,
+                user_data_dir=user_data_dir, check_installed=False, add_to_ledger=False, dry_run=True)
+            self.assertEqual(result["points"][0]["status"], "would-create")
+            self.assertFalse(os.path.isdir(dest))
+
+    def test_already_materialized_reports_exists(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            user_data_dir = os.path.join(tmpdir, "userdata")
+            _write_phoronix_test_definition_axes(
+                user_data_dir, "pts", "llama-cpp-2.5.0", [_LLAMA_CPP_BACKEND_AXIS])
+            dest = os.path.join(tmpdir, "dest")
+            joblib.import_phoronix_installed_points(
+                "pts/llama-cpp-2.5.0", [{"backend": "CPU BLAS"}], dest,
+                user_data_dir=user_data_dir, check_installed=False, add_to_ledger=False)
+            result = joblib.import_phoronix_installed_points(
+                "pts/llama-cpp-2.5.0", [{"backend": "CPU BLAS"}], dest,
+                user_data_dir=user_data_dir, check_installed=False, add_to_ledger=False)
+            self.assertEqual(result["points"][0]["status"], "exists")
+
+    def test_undownloaded_test_reports_error_no_points(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = joblib.import_phoronix_installed_points(
+                "pts/nope-1.0.0", [{}], os.path.join(tmpdir, "dest"),
+                user_data_dir=os.path.join(tmpdir, "userdata"), check_installed=False, add_to_ledger=False)
+            self.assertEqual(result["points"], [])
+            self.assertIsNone(result["readme"])
+            self.assertIsNotNone(result["error"])
+
+
 class LinkPhoronixTestPointRunTest(unittest.TestCase):
     def test_creates_symlink_to_rundir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
