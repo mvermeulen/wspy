@@ -3441,6 +3441,7 @@ def render_phoronix_tab(cfg):
     <label class="chip"><input type="radio" name="phoronix-source" value="result" checked> OpenBenchmarking result</label>
     <label class="chip"><input type="radio" name="phoronix-source" value="file"> XML file on disk</label>
     <label class="chip"><input type="radio" name="phoronix-source" value="installed"> Installed suite</label>
+    <label class="chip"><input type="radio" name="phoronix-source" value="from-installed"> Installed test profile (no prior run)</label>
   </div>
 
   <label id="phoronix-result-row">Result URL or ID
@@ -3452,6 +3453,19 @@ def render_phoronix_tab(cfg):
   <label id="phoronix-installed-row" hidden>Installed suite
     <select id="phoronix-installed">{installed_options}</select>
   </label>
+  <div id="phoronix-from-installed-row" hidden>
+    <p class="config-label">Materializes directly from an installed/downloaded test profile's own
+       option axes &mdash; no prior <code>phoronix-test-suite run</code> or import round-trip needed
+       (INVESTIGATION.md's "Installed-test-profile materialization deep-dive"). GPU/backend-shaped
+       axes and "looks buildable against files actually on this host" are both best-effort advisory
+       badges, never a filter.</p>
+    <label>Test ID (installed or downloaded)
+      <input type="text" id="phoronix-from-installed-test-id" placeholder="pts/llama-cpp-2.5.0">
+    </label>
+    <button type="button" id="phoronix-discover-options">Discover options</button>
+    <p id="phoronix-options-error" class="muted" hidden></p>
+    <div id="phoronix-options-picker"></div>
+  </div>
 
   <label>Destination root
     <input type="text" id="phoronix-dest" value="{html.escape(dest_root)}">
@@ -6488,6 +6502,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/discovery/trace": self._discovery_trace,
             "/api/discovery/ollama-models": self._discovery_ollama_models,
             "/api/phoronix/materialize": self._phoronix_materialize,
+            "/api/phoronix/installed-options": self._phoronix_installed_options,
+            "/api/phoronix/materialize-installed": self._phoronix_materialize_installed,
             "/api/phoronix/use-in-run": self._phoronix_use_in_run,
             "/api/phoronix/repin": self._phoronix_repin,
             "/api/cpu2026/register": self._cpu2026_register,
@@ -7655,6 +7671,80 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"source_kind": source["source_kind"], "source_ref": source["source_ref"],
                                "dest": dest, "dry_run": dry_run, "points": result["points"],
                                "readmes": result.get("readmes", [])})
+
+    def _phoronix_installed_options(self, cfg, body):
+        """Backs the Phoronix tab's "Installed test profile" source's "Discover options" button:
+        resolves test_id's option axes (joblib.phoronix_test_axes_for_test_id(), same call
+        wspy-phoronix-import --list-options makes) plus this handler's own per-entry GPU-flag/
+        buildable-hint badges, so the client can render the zero/single/multi-axis picker
+        (INVESTIGATION.md's "Installed-test-profile materialization deep-dive") without duplicating
+        any of that heuristic logic in JS. Read-only, no privileges needed."""
+        test_id = (body.get("test_id") or "").strip()
+        if not test_id:
+            self._send_json(400, {"error": "a test_id is required"})
+            return
+        axes, error = joblib.phoronix_test_axes_for_test_id(test_id)
+        if error:
+            self._send_json(400, {"error": error})
+            return
+        installed_basenames = joblib.phoronix_installed_test_file_basenames(test_id)
+        enriched_axes = []
+        for axis in axes:
+            entries = [{"name": name, "value": value,
+                        "buildable": joblib.phoronix_entry_looks_buildable(value, installed_basenames)}
+                       for name, value in axis["entries"]]
+            enriched_axes.append({
+                "display_name": axis["display_name"], "identifier": axis["identifier"],
+                "gpu_flagged": joblib.phoronix_axis_is_gpu_flagged(axis), "entries": entries,
+            })
+        self._send_json(200, {"test_id": test_id, "axes": enriched_axes})
+
+    def _phoronix_materialize_installed(self, cfg, body):
+        """Backs the Phoronix tab's "Installed test profile" source's "Materialize" click:
+        `choice_sets` is a list of {identifier: entry_name} dicts already fully built client-side from
+        whichever picker mode was used (zero axes: [{}]; single-axis "materialize all": one dict per
+        entry; multi-axis or a single-axis explicit pick: one explicit tuple) -- this handler doesn't
+        need to know which mode produced it, the same "client already has the real axes, server just
+        executes the chosen tuples" split _phoronix_materialize() doesn't need either, since that one
+        source's XML is already self-describing. Same shared dest/ledger/dry-run/check-installed
+        options as /api/phoronix/materialize, and deliberately the same response shape (points/readmes)
+        so the tab's existing result-table rendering needs no source-specific branch to reuse it."""
+        test_id = (body.get("test_id") or "").strip()
+        choice_sets = body.get("choice_sets")
+        if not test_id:
+            self._send_json(400, {"error": "a test_id is required"})
+            return
+        if not isinstance(choice_sets, list) or not choice_sets:
+            self._send_json(400, {"error": "choice_sets must be a non-empty list"})
+            return
+        dest = (body.get("dest") or "").strip() or os.path.join(REPO_ROOT, "workload/phoronix")
+        ledger_list = (body.get("ledger_list") or "").strip() or None
+        dry_run = bool(body.get("dry_run"))
+        add_to_ledger = not body.get("no_ledger")
+        check_installed = not body.get("no_check_installed")
+
+        try:
+            result = joblib.import_phoronix_installed_points(
+                test_id, choice_sets, dest, phoronix_bin=cfg["phoronix_bin"], ledger_bin=cfg["wspy_ledger_bin"],
+                ledger_list_path=ledger_list, cwd=REPO_ROOT, dry_run=dry_run,
+                check_installed=check_installed, add_to_ledger=add_to_ledger)
+        except (KeyError, ValueError) as e:
+            # A malformed choice_sets entry (missing/unknown axis or entry name) --
+            # compose_phoronix_axis_choice()'s own "caller bug, surface immediately" contract, turned
+            # into a normal 400 here since the "caller" is now an untrusted HTTP body, not a script
+            # that already validated its own axes. e.args[0] (not str(e)) for a KeyError specifically
+            # -- KeyError.__str__ reprs its own message, so str(e) would double-quote it in the JSON
+            # response, confirmed live: {"error": "\"no choice given for axis 'x'\""} instead of the
+            # plain message.
+            message = e.args[0] if isinstance(e, KeyError) and e.args else str(e)
+            self._send_json(400, {"error": message})
+            return
+        if result["error"]:
+            self._send_json(400, {"error": result["error"]})
+            return
+        self._send_json(200, {"source_kind": "installed-test-profile", "source_ref": f"installed:{test_id}",
+                               "dest": dest, "dry_run": dry_run, "points": result["points"],
+                               "readmes": [result["readme"]] if result.get("readme") else []})
 
     def _phoronix_use_in_run(self, cfg, body):
         """Backs the Phoronix tab inventory's "Use in Run tab" button:

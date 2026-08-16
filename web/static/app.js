@@ -1476,6 +1476,7 @@
       result: byId("phoronix-result-row"),
       file: byId("phoronix-file-row"),
       installed: byId("phoronix-installed-row"),
+      "from-installed": byId("phoronix-from-installed-row"),
     };
     document.querySelectorAll('input[name="phoronix-source"]').forEach(function (radio) {
       radio.addEventListener("change", function () {
@@ -1485,6 +1486,123 @@
       });
     });
 
+    // "Installed test profile" source (INVESTIGATION.md's "Installed-test-profile materialization
+    // deep-dive"): a two-step flow -- Discover options resolves the test's own axes server-side
+    // (/api/phoronix/installed-options), then the shared Materialize button below (once source is
+    // "from-installed") builds choice_sets from whatever the rendered picker currently has selected
+    // and posts to /api/phoronix/materialize-installed instead of /api/phoronix/materialize. Kept as
+    // its own small closure over `currentAxes` rather than threading axes through function arguments,
+    // since both the discover handler and the shared Materialize handler below need to read it.
+    var currentAxes = null;
+    var discoverButton = byId("phoronix-discover-options");
+    var optionsErrorEl = byId("phoronix-options-error");
+    var optionsPickerEl = byId("phoronix-options-picker");
+
+    function renderPhoronixOptionsPicker(axes) {
+      if (!axes.length) {
+        optionsPickerEl.innerHTML = '<p class="muted">No option axes -- a single implicit point. ' +
+          "Click Materialize below.</p>";
+        return;
+      }
+      var html = "";
+      if (axes.length === 1) {
+        html += '<label class="chip"><input type="checkbox" id="phoronix-materialize-all-single-axis"> ' +
+          "Materialize all " + axes[0].entries.length + " entries as separate points</label>";
+      }
+      axes.forEach(function (axis) {
+        var gpuBadge = axis.gpu_flagged ?
+          ' <span class="muted">[GPU/backend axis &mdash; pick explicitly, never defaulted]</span>' : "";
+        html += '<fieldset class="phoronix-axis" data-phoronix-axis="' + escapeHtml(axis.identifier) + '">' +
+          "<legend>" + escapeHtml(axis.display_name) + gpuBadge + "</legend>" +
+          '<table class="reports"><thead><tr><th></th><th>Name</th><th>Value</th><th>Buildable?</th>' +
+          "</tr></thead><tbody>";
+        axis.entries.forEach(function (entry) {
+          var buildableText = entry.buildable === true ? "yes" : entry.buildable === false ? "no" : "?";
+          html += '<tr><td><input type="radio" name="phoronix-axis-' + escapeHtml(axis.identifier) +
+            '" value="' + escapeHtml(entry.name) + '"></td>' +
+            "<td>" + escapeHtml(entry.name) + "</td><td>" + escapeHtml(entry.value) + "</td>" +
+            "<td>" + buildableText + "</td></tr>";
+        });
+        html += "</tbody></table></fieldset>";
+      });
+      optionsPickerEl.innerHTML = html;
+    }
+
+    // Returns {choiceSets} or {error} -- the exact choice_sets array
+    // /api/phoronix/materialize-installed expects, built from whatever the picker currently has
+    // selected. Zero axes needs no selection at all; a single axis is either one explicit pick or
+    // (if "materialize all" is checked) every entry as its own point; two-or-more axes needs exactly
+    // one radio picked per axis -- never a bulk/auto-expanded product, same discipline the CLI's own
+    // --option/--all-single-axis split established.
+    function buildInstalledChoiceSets(axes) {
+      if (!axes.length) return { choiceSets: [{}] };
+      if (axes.length === 1) {
+        var axis = axes[0];
+        if (getChecked("phoronix-materialize-all-single-axis")) {
+          return {
+            choiceSets: axis.entries.map(function (entry) {
+              var choice = {};
+              choice[axis.identifier] = entry.name;
+              return choice;
+            }),
+          };
+        }
+      }
+      var choice = {};
+      var missing = [];
+      optionsPickerEl.querySelectorAll(".phoronix-axis").forEach(function (fieldset) {
+        var identifier = fieldset.getAttribute("data-phoronix-axis");
+        var picked = fieldset.querySelector('input[type="radio"]:checked');
+        var displayName = fieldset.querySelector("legend").textContent;
+        if (picked) {
+          choice[identifier] = picked.value;
+        } else {
+          missing.push(displayName);
+        }
+      });
+      if (missing.length) {
+        return { error: "select an entry for: " + missing.join(", ") +
+          (axes.length === 1 ? ' (or check "materialize all")' : "") };
+      }
+      return { choiceSets: [choice] };
+    }
+
+    if (discoverButton) {
+      discoverButton.addEventListener("click", function () {
+        var testId = getValue("phoronix-from-installed-test-id");
+        optionsErrorEl.hidden = true;
+        optionsPickerEl.innerHTML = "";
+        currentAxes = null;
+        if (!testId) {
+          optionsErrorEl.hidden = false;
+          optionsErrorEl.textContent = "Error: a test ID is required";
+          return;
+        }
+        discoverButton.disabled = true;
+        fetch("/api/phoronix/installed-options", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ test_id: testId }),
+        })
+          .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+          .then(function (res) {
+            discoverButton.disabled = false;
+            if (!res.ok || res.data.error) {
+              optionsErrorEl.hidden = false;
+              optionsErrorEl.textContent = "Error: " + (res.data.error || "unknown error");
+              return;
+            }
+            currentAxes = res.data.axes;
+            renderPhoronixOptionsPicker(currentAxes);
+          })
+          .catch(function (err) {
+            discoverButton.disabled = false;
+            optionsErrorEl.hidden = false;
+            optionsErrorEl.textContent = "Error: " + err.message;
+          });
+      });
+    }
+
     var errorEl = byId("phoronix-error");
     var resultsEl = byId("phoronix-results");
     var tbody = byId("phoronix-table-body");
@@ -1492,6 +1610,7 @@
 
     runButton.addEventListener("click", function () {
       var source = (document.querySelector('input[name="phoronix-source"]:checked') || {}).value || "result";
+      var endpoint = "/api/phoronix/materialize";
       var body = {
         source: source,
         result: getValue("phoronix-result"),
@@ -1503,12 +1622,28 @@
         no_ledger: getChecked("phoronix-no-ledger"),
         no_check_installed: getChecked("phoronix-no-check-installed"),
       };
+      if (source === "from-installed") {
+        if (!currentAxes) {
+          errorEl.hidden = false;
+          errorEl.textContent = "Error: click \"Discover options\" first";
+          return;
+        }
+        var picked = buildInstalledChoiceSets(currentAxes);
+        if (picked.error) {
+          errorEl.hidden = false;
+          errorEl.textContent = "Error: " + picked.error;
+          return;
+        }
+        endpoint = "/api/phoronix/materialize-installed";
+        body.test_id = getValue("phoronix-from-installed-test-id");
+        body.choice_sets = picked.choiceSets;
+      }
       runButton.disabled = true;
       errorEl.hidden = true;
       resultsEl.hidden = true;
       cmdEl.hidden = true;
       tbody.innerHTML = "";
-      fetch("/api/phoronix/materialize", {
+      fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
