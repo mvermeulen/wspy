@@ -253,10 +253,12 @@ and exact gotchas spelled out per scenario.
   new `--tree-*`/`--gpu-*` toggle): add a `<checklist-key> <option-key> <flag>` line to
   `profiles/checklist-flags.conf` rather than a new `if section.get(<key>): flags.append(<flag>)`
   branch in `build_configuration_passes()` (`web/joblib.py`) — `CHECKLIST_BOOLEAN_FLAGS` picks it up
-  automatically; still needs the matching checkbox added to the Run tab's HTML/`app.js` `readChecklist()`
-  by hand (not yet data-driven client-side). A genuinely conditional option (a value, not a plain
-  on/off flag, or logic that depends on more than one checklist field) stays hand-written code in
-  `build_configuration_passes()` instead — the table is only for the mechanical case.
+  automatically. Client side, add the checkbox to the Run tab's HTML (`render_run_tab()`,
+  `web/server.py`) with `data-key="<option-key>"` inside its `data-config="<checklist-key>"` card —
+  `app.js`'s `readDataKeyCheckboxes()` picks it up generically, no `buildChecklist()` edit needed.
+  A genuinely conditional option (a value, not a plain on/off flag, or logic that depends on more
+  than one checklist field) stays hand-written code in both `build_configuration_passes()` and
+  `buildChecklist()` instead — the table/`data-key` convention is only for the mechanical case.
 - **New `wspy-validate` sanity bound:** add to `sanity_bounds[]` (column + `{min,max}`) when the generic
   finite/non-negative/not-implausible rule isn't tight enough. `%`-cells use `PERCENT_SANITY_MAX`.
 - **New AMD IBS filter (`ibs.c`):** don't hardcode a bit offset — look it up via

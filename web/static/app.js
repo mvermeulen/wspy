@@ -26,6 +26,28 @@
     return GROUP_NAMES.filter(function (name) { return getChecked(prefix + "_" + name); });
   }
 
+  // INVESTIGATION.md's "Preset/Configuration/Option vocabulary refactor" closing slice: the
+  // checklist's pure 1:1 checkbox->flag options (profiles/checklist-flags.conf,
+  // build_configuration_passes()) used to also be hardcoded here as one getChecked() call per
+  // option -- a third place the same option-key list had to be kept in sync by hand alongside
+  // the data file and the checkbox markup. Each such checkbox now carries a data-key="<key>"
+  // attribute (server.py's render_run_tab(), same key names checklist-flags.conf declares), and
+  // this reads them generically by scanning a config-card's own data-config-scoped subtree --
+  // adding a new mechanical boolean option is then a checklist-flags.conf line + one HTML
+  // checkbox with its data-key, no third edit here. Fields with real logic behind them (groups,
+  // interval/timeout seconds, target, power, ibs profile...) stay explicit below, same as
+  // build_configuration_passes()'s own server-side split between the data-driven table and its
+  // hand-written non-mechanical logic.
+  function readDataKeyCheckboxes(configName) {
+    var out = {};
+    var card = document.querySelector('.config-card[data-config="' + configName + '"]');
+    if (!card) return out;
+    card.querySelectorAll('input[type=checkbox][data-key]').forEach(function (el) {
+      out[el.dataset.key] = el.checked;
+    });
+    return out;
+  }
+
   // ---------------------------------------------------------------------
   // Tabs
   // ---------------------------------------------------------------------
@@ -47,27 +69,25 @@
   // Run tab: preset + configuration/option checklist (item 9)
   // ---------------------------------------------------------------------
   function buildChecklist() {
+    var tree = {
+      enabled: getChecked("tree_enabled"),
+      groups: selectedGroups("tree_group"),
+      timeout_secs: getValue("tree_timeout"),
+      interval_secs: getValue("tree_interval"),
+      target: getValue("tree_target"),
+      symbol_sample: getChecked("tree_symbol_sample"),
+      symbol_sample_event: getValue("tree_symbol_sample_event"),
+    };
+    Object.assign(tree, readDataKeyCheckboxes("tree"));
+    var gpu = {
+      enabled: getChecked("gpu_enabled"),
+      device: getValue("gpu_device"),
+      interval_secs: getValue("gpu_interval"),
+      csv: getChecked("gpu_csv"),
+    };
+    Object.assign(gpu, readDataKeyCheckboxes("gpu"));
     return {
-      tree: {
-        enabled: getChecked("tree_enabled"),
-        cmdline: getChecked("tree_cmdline"),
-        open: getChecked("tree_open"),
-        futex: getChecked("tree_futex"),
-        io: getChecked("tree_io"),
-        io_wait: getChecked("tree_io_wait"),
-        schedstat: getChecked("tree_schedstat"),
-        vmsize: getChecked("tree_vmsize"),
-        connect: getChecked("tree_connect"),
-        wait: getChecked("tree_wait"),
-        poll: getChecked("tree_poll"),
-        nanosleep: getChecked("tree_nanosleep"),
-        groups: selectedGroups("tree_group"),
-        timeout_secs: getValue("tree_timeout"),
-        interval_secs: getValue("tree_interval"),
-        target: getValue("tree_target"),
-        symbol_sample: getChecked("tree_symbol_sample"),
-        symbol_sample_event: getValue("tree_symbol_sample_event"),
-      },
+      tree: tree,
       counters: {
         enabled: getChecked("counters_enabled"),
         groups: selectedGroups("counters"),
@@ -84,16 +104,7 @@
         csv: getChecked("system_csv"),
         power: getChecked("system_power"),
       },
-      gpu: {
-        enabled: getChecked("gpu_enabled"),
-        busy: getChecked("gpu_busy"),
-        metrics: getChecked("gpu_metrics"),
-        smi: getChecked("gpu_smi"),
-        nvidia: getChecked("gpu_nvidia"),
-        device: getValue("gpu_device"),
-        interval_secs: getValue("gpu_interval"),
-        csv: getChecked("gpu_csv"),
-      },
+      gpu: gpu,
       ibs: {
         enabled: getChecked("ibs_enabled"),
         profile: byId("ibs_profile") ? byId("ibs_profile").value : "basic",
