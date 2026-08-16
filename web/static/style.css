@@ -801,3 +801,10 @@ tr.ptv-profile-unresolved td { color: var(--muted); font-style: italic; }
 .tlv-lane-label-muted { fill: var(--muted); font-size: 10px; }
 .tlv-bar { stroke: none; }
 .tlv-bar-target { stroke: var(--accent); stroke-width: 1.5; }
+/* Linked navigation between the pct chart and the swimlane (INVESTIGATION.md's "Linked navigation
+ * between the tree and interval/timeline views"): -hot is the transient per-instant highlight
+ * (feature (a), hovering the pct chart), -selected is the persistent click-to-inspect outline
+ * (feature (b)). Both can coexist with -target's own accent-colored outline above, so they're
+ * layered in with a brighter/thicker stroke and a subtle fill brightening rather than replacing it. */
+.tlv-bar-hot { stroke: var(--fg); stroke-width: 2; filter: brightness(1.25); }
+.tlv-bar-selected { stroke: var(--warn); stroke-width: 2.5; }
