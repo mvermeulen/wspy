@@ -896,6 +896,16 @@ if ! ./tests/testpoint_smoke.sh; then
     exit 1
 fi
 
+# wspy-phoronix-segment smoke tests (INVESTIGATION.md 4.4(c) "Phoronix-specific telemetry
+# segmentation"): fake manifest/pts_hooks.log/composite.xml/log fixtures, isolated via PTS_USER_PATH
+# (never the real ~/.phoronix-test-suite) -- no build/GPU axis and no real hardware counters needed,
+# run once here like testpoint_smoke.sh above.
+echo "Testing wspy-phoronix-segment smoke tests..."
+if ! ./tests/phoronix_segment_smoke.sh; then
+    echo "FAIL: wspy-phoronix-segment smoke tests failed"
+    exit 1
+fi
+
 # Doc/version consistency check (INVESTIGATION.md's 4.2 "Doc/version
 # consistency check" item): static grep against tracked doc/Makefile/header
 # text, no build/GPU axis, run once like wspy_queue_smoke.sh above.
