@@ -2685,6 +2685,159 @@ def _make_fake_ledger(tmpdir, name="fake-wspy-ledger"):
     return path
 
 
+class ParsePhoronixChartUrlTest(unittest.TestCase):
+    def test_parses_real_shape_url(self):
+        result = joblib.parse_phoronix_chart_url(
+            "https://www.phoronix.com/benchmark/result/linux-71-linux-72-intel-xeon-gnr-ws-benchmarks/"
+            "flexible-io-tester-rand-read-io_uring-no-4kb-1-1.svgz")
+        self.assertEqual(result, {"article_slug": "linux-71-linux-72-intel-xeon-gnr-ws-benchmarks",
+                                   "chart_slug": "flexible-io-tester-rand-read-io_uring-no-4kb-1-1"})
+
+    def test_accepts_other_extensions(self):
+        result = joblib.parse_phoronix_chart_url(
+            "https://www.phoronix.com/benchmark/result/my-article/svt-av1-preset-8.png")
+        self.assertEqual(result["chart_slug"], "svt-av1-preset-8")
+
+    def test_non_phoronix_url_returns_none(self):
+        self.assertIsNone(joblib.parse_phoronix_chart_url("https://example.com/benchmark/result/a/b.svgz"))
+
+    def test_missing_chart_segment_returns_none(self):
+        self.assertIsNone(joblib.parse_phoronix_chart_url("https://www.phoronix.com/benchmark/result/only-article"))
+
+    def test_empty_or_none_returns_none(self):
+        self.assertIsNone(joblib.parse_phoronix_chart_url(""))
+        self.assertIsNone(joblib.parse_phoronix_chart_url(None))
+
+
+class ListKnownPhoronixTestTitlesTest(unittest.TestCase):
+    def test_lists_titles_across_namespaces_and_versions(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _write_phoronix_test_definition_axes(tmpdir, "pts", "fio-2.2.0", [], title="Flexible IO Tester")
+            _write_phoronix_test_definition_axes(tmpdir, "system", "blender-1.2.1", [], title="Blender")
+            titles = joblib.list_known_phoronix_test_titles(user_data_dir=tmpdir)
+            self.assertEqual(titles, {"pts/fio-2.2.0": "Flexible IO Tester", "system/blender-1.2.1": "Blender"})
+
+    def test_no_test_profiles_dir_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertEqual(joblib.list_known_phoronix_test_titles(user_data_dir=tmpdir), {})
+
+    def test_profile_with_no_title_element_skipped(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _write_phoronix_test_definition_axes(tmpdir, "pts", "notitle-1.0.0", [])  # title=""
+            self.assertEqual(joblib.list_known_phoronix_test_titles(user_data_dir=tmpdir), {})
+
+
+class PhoronixSlugContainmentScoreTest(unittest.TestCase):
+    def test_matches_slugified_substring(self):
+        self.assertEqual(joblib._phoronix_slug_containment_score("IO_uring", "rand-read-io-uring-no-4kb"), 8)
+
+    def test_no_match_returns_zero(self):
+        self.assertEqual(joblib._phoronix_slug_containment_score("Sync", "rand-read-io-uring-no-4kb"), 0)
+
+    def test_empty_text_returns_zero(self):
+        self.assertEqual(joblib._phoronix_slug_containment_score("", "anything"), 0)
+
+    def test_default_slug_never_spuriously_matches(self):
+        # slugify_phoronix_arguments("") -> "default" -- must not "match" a hint that happens to
+        # contain the literal word "default" just because the candidate text was empty/punctuation-only.
+        self.assertEqual(joblib._phoronix_slug_containment_score("---", "some-default-value"), 0)
+
+
+_FIO_TYPE_AXIS = {
+    "display_name": "Type", "identifier": "type",
+    "entries": [("Random Read", "randread"), ("Random Write", "randwrite"),
+                ("Sequential Read", "read"), ("Sequential Write", "write")],
+}
+_FIO_ENGINE_AXIS = {
+    "display_name": "Engine", "identifier": "engine",
+    "entries": [("IO_uring", "io_uring"), ("Sync", "sync"), ("Linux AIO", "libaio")],
+}
+
+
+class ResolvePhoronixAxesFromSlugTest(unittest.TestCase):
+    def test_matches_via_name_across_axes(self):
+        axes = [_FIO_ENGINE_AXIS]
+        choices, unresolved = joblib.resolve_phoronix_axes_from_slug(axes, "rand-read-io-uring-no-4kb")
+        self.assertEqual(choices, {"engine": "IO_uring"})
+        self.assertEqual(unresolved, [])
+
+    def test_regression_does_not_false_positive_via_value_text(self):
+        # Confirmed live against FIO's real profile: Value "read" (Sequential Read's terse internal
+        # code) used to substring-match a "rand-read" hint that actually meant *Random* Read, picking
+        # the wrong entry confidently instead of leaving the axis honestly unresolved. Name-only
+        # matching (this test's whole point) must not repeat that -- neither "Random Read" nor
+        # "Sequential Read" have a Name that survives the "rand-read" vs "random read" mismatch.
+        choices, unresolved = joblib.resolve_phoronix_axes_from_slug([_FIO_TYPE_AXIS], "rand-read-io-uring-no-4kb")
+        self.assertEqual(choices, {})
+        self.assertEqual(unresolved, ["type"])
+
+    def test_no_match_anywhere_leaves_axis_unresolved(self):
+        choices, unresolved = joblib.resolve_phoronix_axes_from_slug([_FIO_ENGINE_AXIS], "totally-unrelated-text")
+        self.assertEqual(choices, {})
+        self.assertEqual(unresolved, ["engine"])
+
+    def test_longest_match_wins_within_one_axis(self):
+        axis = {"display_name": "D", "identifier": "d",
+                "entries": [("A", "a"), ("A Longer Match", "x")]}
+        choices, unresolved = joblib.resolve_phoronix_axes_from_slug([axis], "a-longer-match-suffix")
+        self.assertEqual(choices, {"d": "A Longer Match"})
+        self.assertEqual(unresolved, [])
+
+    def test_zero_axes_resolves_to_empty_choices_no_unresolved(self):
+        choices, unresolved = joblib.resolve_phoronix_axes_from_slug([], "anything")
+        self.assertEqual(choices, {})
+        self.assertEqual(unresolved, [])
+
+    def test_mixed_resolved_and_unresolved_axes(self):
+        choices, unresolved = joblib.resolve_phoronix_axes_from_slug(
+            [_FIO_TYPE_AXIS, _FIO_ENGINE_AXIS], "rand-read-io-uring-no-4kb")
+        self.assertEqual(choices, {"engine": "IO_uring"})
+        self.assertEqual(unresolved, ["type"])
+
+
+class ResolvePhoronixChartUrlTest(unittest.TestCase):
+    def test_resolved_with_no_unresolved_axes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _write_phoronix_test_definition_axes(
+                tmpdir, "pts", "svt-av1-2.3.0", [_LLAMA_CPP_BACKEND_AXIS], title="SVT-AV1")
+            url = ("https://www.phoronix.com/benchmark/result/some-article/"
+                   "svt-av1-nvidia-cuda-extra-1-1.svgz")
+            result = joblib.resolve_phoronix_chart_url(url, user_data_dir=tmpdir)
+            self.assertEqual(result["status"], "resolved")
+            self.assertEqual(result["test_id"], "pts/svt-av1-2.3.0")
+            self.assertEqual(result["choices"], {"backend": "NVIDIA CUDA"})
+            self.assertEqual(result["unresolved_axes"], [])
+
+    def test_longest_title_prefix_wins_over_a_shorter_one(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _write_phoronix_test_definition_axes(tmpdir, "pts", "io-1.0.0", [], title="IO")
+            _write_phoronix_test_definition_axes(tmpdir, "pts", "fio-2.2.0", [], title="Flexible IO Tester")
+            url = "https://www.phoronix.com/benchmark/result/a/flexible-io-tester-default-1-1.svgz"
+            result = joblib.resolve_phoronix_chart_url(url, user_data_dir=tmpdir)
+            self.assertEqual(result["test_id"], "pts/fio-2.2.0")  # not "pts/io-1.0.0"
+
+    def test_zero_axis_test_resolves_with_empty_choices(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _write_phoronix_test_definition_axes(tmpdir, "pts", "coremark-1.0.1", [], title="CoreMark")
+            url = "https://www.phoronix.com/benchmark/result/a/coremark.svgz"
+            result = joblib.resolve_phoronix_chart_url(url, user_data_dir=tmpdir)
+            self.assertEqual(result["status"], "resolved")
+            self.assertEqual(result["choices"], {})
+            self.assertEqual(result["unresolved_axes"], [])
+
+    def test_no_matching_title_returns_unresolved(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _write_phoronix_test_definition_axes(tmpdir, "pts", "coremark-1.0.1", [], title="CoreMark")
+            url = "https://www.phoronix.com/benchmark/result/a/totally-different-benchmark-1-1.svgz"
+            result = joblib.resolve_phoronix_chart_url(url, user_data_dir=tmpdir)
+            self.assertEqual(result["status"], "unresolved")
+            self.assertEqual(result["chart_slug"], "totally-different-benchmark-1-1")
+
+    def test_unrecognized_url_short_circuits(self):
+        result = joblib.resolve_phoronix_chart_url("https://example.com/nope")
+        self.assertEqual(result, {"status": "unrecognized-url", "url": "https://example.com/nope"})
+
+
 class UnregisterPhoronixTestPointTest(unittest.TestCase):
     def _materialize(self, dest):
         point = {"test_id": "pts/build-linux-kernel-1.17.1", "arguments": "defconfig"}
