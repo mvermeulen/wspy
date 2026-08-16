@@ -79,6 +79,19 @@
   var laneTotalCount = 0;    // process_count before filtering, for the "showing N of M" note
   var laneCapped = false;    // true if MAX_RENDERED_LANES truncated the threshold-filtered result
 
+  // Feature (a) "timeline -> process" / (b) "process -> topdown" (INVESTIGATION.md's "Linked
+  // navigation between the tree and interval/timeline views"):
+  //   swimRows -- this render's {node, depth, color, rectEl} rows (rectEl absent for a row whose
+  //     bar has zero on-screen width at the current zoom), so hovering the pct chart can look up
+  //     "which bar(s) does this timestamp fall inside" without re-walking the tree.
+  //   selectedNode -- the tree node (same object reference treeData.tree already holds, not a
+  //     copy) a swimlane-bar click most recently selected; survives renderAll()/zoom/re-filter
+  //     since it's looked up by identity, not by row index, so the detail panel and the bar's
+  //     selection outline both still work if that process scrolls out of the current threshold.
+  var swimRows = [];
+  var selectedNode = null;
+  var detailContainer = null;
+
   function svgEl(tag, attrs) {
     var el = document.createElementNS(SVG_NS, tag);
     for (var k in attrs) {
@@ -100,6 +113,93 @@
 
   function seriesColor(index) {
     return "var(--series-" + ((index % SERIES_COLOR_SLOTS) + 1) + ")";
+  }
+
+  // ---------------------------------------------------------------------
+  // Per-process topdown/counter collapsing -- ported verbatim from
+  // proctree_viewer.js's own computeDisplayCounters()/topdownRawCategories()
+  // rather than re-derived, so a process's breakdown here (feature (b),
+  // "process -> topdown", INVESTIGATION.md's "Linked navigation between the
+  // tree and interval/timeline views") always agrees with what the tree
+  // viewer's own Timeline mode would show for the same node. See that
+  // file's comments for the per-vendor raw-label reasoning; kept as a
+  // duplicate rather than a shared module, same "small pure helpers
+  // duplicated per page" precedent svgEl()/debounce() above already follow.
+  // ---------------------------------------------------------------------
+
+  function findLabel(entries, label) {
+    return entries.filter(function (e) { return e.label === label; })[0];
+  }
+
+  function safeSub(a, b) { return a > b ? a - b : 0; }
+
+  function topdownRawCategories(entries) {
+    var retiring = findLabel(entries, "core.topdown-retiring");
+    if (retiring) {
+      var frontend = findLabel(entries, "core.topdown-fe-bound");
+      var backend = findLabel(entries, "core.topdown-be-bound");
+      var speculation = findLabel(entries, "core.topdown-bad-spec");
+      if (frontend && backend && speculation) {
+        return { retiring: retiring.value, frontend: frontend.value,
+                 backend: backend.value, speculation: speculation.value };
+      }
+      return null;
+    }
+    var exRetOps = findLabel(entries, "ex_ret_ops");
+    if (exRetOps) {
+      var feStall = findLabel(entries, "de_no_dispatch_per_slot.no_ops_from_frontend");
+      var beStall = findLabel(entries, "de_no_dispatch_per_slot.backend_stalls");
+      var dispatched = findLabel(entries, "de_src_op_disp.all");
+      if (feStall && beStall && dispatched) {
+        return { retiring: exRetOps.value, frontend: feStall.value, backend: beStall.value,
+                 speculation: safeSub(dispatched.value, exRetOps.value) };
+      }
+    }
+    return null;
+  }
+
+  function computeDisplayCounters(rawList) {
+    var byGroup = {};
+    (rawList || []).forEach(function (tc) {
+      (byGroup[tc.group] = byGroup[tc.group] || []).push(tc);
+    });
+    var out = [];
+    Object.keys(byGroup).forEach(function (group) {
+      var entries = byGroup[group];
+      var instructions = findLabel(entries, "instructions");
+      var cycles = findLabel(entries, "cpu-cycles");
+      var topdownCats = group === "topdown" ? topdownRawCategories(entries) : null;
+      if (group === "ipc" && instructions && cycles) {
+        out.push({
+          group: group, label: "IPC", isRatio: true,
+          value: cycles.value > 0 ? instructions.value / cycles.value : 0
+        });
+      } else if (topdownCats) {
+        var total = topdownCats.retiring + topdownCats.frontend +
+                    topdownCats.backend + topdownCats.speculation;
+        [["Retiring", topdownCats.retiring], ["Frontend Bound", topdownCats.frontend],
+         ["Backend Bound", topdownCats.backend], ["Bad Speculation", topdownCats.speculation]
+        ].forEach(function (pair) {
+          out.push({
+            group: group, label: pair[0], isPercent: true,
+            value: total > 0 ? pair[1] / total * 100 : 0
+          });
+        });
+      } else {
+        entries.forEach(function (e) {
+          out.push({ group: e.group, label: e.label, isRatio: false, value: e.value });
+        });
+      }
+    });
+    return out;
+  }
+
+  function targetCounterKey(entry) { return entry.group + "." + entry.label; }
+
+  function formatTargetCounterValue(entry) {
+    if (entry.isRatio) return entry.value.toFixed(3);
+    if (entry.isPercent) return entry.value.toFixed(1) + "%";
+    return String(entry.value);
   }
 
   // ---------------------------------------------------------------------
@@ -385,6 +485,31 @@
   function hideCrosshair() {
     chartEntries.forEach(function (e) { e.crosshair.style.display = "none"; });
     hideTooltip();
+    clearActiveHighlight();
+  }
+
+  // Feature (a) "timeline -> process": which currently-rendered swimlane row(s) cover time t --
+  // usually one, but can be more than one when a parent and its still-running child overlap.
+  function activeRowsAtTime(t) {
+    return swimRows.filter(function (row) { return t >= row.node.start && t <= row.node.finish; });
+  }
+
+  // Marks the active row(s)' bars with .tlv-bar-hot (cleared from every other bar first) and
+  // returns the same list, so callers needing both the highlight and the process names (the pct
+  // chart's hover tooltip) don't have to call activeRowsAtTime() a second time.
+  function highlightActiveRows(t) {
+    var active = activeRowsAtTime(t);
+    var activePids = {};
+    active.forEach(function (row) { activePids[row.node.pid] = true; });
+    swimRows.forEach(function (row) {
+      if (!row.rectEl) return;
+      row.rectEl.classList.toggle("tlv-bar-hot", !!activePids[row.node.pid]);
+    });
+    return active;
+  }
+
+  function clearActiveHighlight() {
+    swimRows.forEach(function (row) { if (row.rectEl) row.rectEl.classList.remove("tlv-bar-hot"); });
   }
 
   // ---------------------------------------------------------------------
@@ -470,12 +595,24 @@
       if (idx === -1) return;
       var actualT = intervalData.series.time[idx];
       moveCrosshairTo(actualT);
+      // Feature (a) "timeline -> process": name whichever process bar(s) this instant falls
+      // inside directly in the tooltip, rather than leaving the reader to trace the crosshair
+      // down into the swimlane by eye -- highlightActiveRows() also outlines those bars.
+      var activeRows = highlightActiveRows(actualT);
       var tip = ensureTooltip();
       tip.innerHTML = "";
       var timeRow = document.createElement("div");
       timeRow.className = "itv-tooltip-time";
       timeRow.textContent = "time = " + actualT;
       tip.appendChild(timeRow);
+      if (activeRows.length) {
+        var activeRow = document.createElement("div");
+        activeRow.className = "itv-tooltip-time";
+        activeRow.textContent = "active: " + activeRows.map(function (row) {
+          return (row.node.comm || "?") + " (" + row.node.pid + ")";
+        }).join(", ");
+        tip.appendChild(activeRow);
+      }
       pctColumns.forEach(function (col, i) {
         if (!visible[col]) return;
         var v = intervalData.series[col][idx];
@@ -532,10 +669,13 @@
       var x1 = xs(Math.min(node.finish, xDomain[1]));
       if (x1 > x0) {
         var barClass = (node.target_counters && node.target_counters.length) ? "tlv-bar tlv-bar-target" : "tlv-bar";
-        svg.appendChild(svgEl("rect", {
+        if (selectedNode && selectedNode.pid === node.pid) barClass += " tlv-bar-selected";
+        var rectEl = svgEl("rect", {
           class: barClass, x: x0, y: y + 2, width: Math.max(1, x1 - x0), height: ROW_HEIGHT - 5,
           fill: row.color, "data-lane-index": i,
-        }));
+        });
+        svg.appendChild(rectEl);
+        row.rectEl = rectEl; // feature (a)/(b): looked up by moveCrosshairTo()-adjacent hover/click handling
       }
       var indent = SWIM_MARGIN.left - 6 - Math.min(row.depth, 12) * 8;
       var label = svgEl("text", {
@@ -545,6 +685,7 @@
       label.textContent = name.length > 26 ? name.slice(0, 25) + "…" : name;
       svg.appendChild(label);
     });
+    swimRows = rows; // this render's rows (with .rectEl), for highlightActiveRows()/click lookup
 
     svg.appendChild(svgEl("line", {
       class: "itv-axis-line", x1: SWIM_MARGIN.left, x2: SWIM_MARGIN.left,
@@ -569,15 +710,91 @@
     var entry = { svg: svg, xs: xs, width: width, height: height, crosshair: crosshair, zoomBand: zoomBand, margin: SWIM_MARGIN };
     wireZoom(entry, SWIM_MARGIN, function (t, clientX, clientY, clientYOffset) {
       moveCrosshairTo(t);
-      var rect = entry.svg.getBoundingClientRect();
-      var scaleY = rect.height ? (entry.height / rect.height) : 1;
-      var svgY = (clientYOffset - rect.top) * scaleY;
-      var rowIndex = Math.floor((svgY - SWIM_MARGIN.top) / ROW_HEIGHT);
-      var row = rows[rowIndex];
+      // Symmetric with the pct chart's own hover (feature (a)): a bar this wide can still overlap
+      // a still-running child elsewhere in the tree, so highlight every row active at t, not just
+      // the one directly under the pointer.
+      highlightActiveRows(t);
+      var row = rowForClientY(entry, rows, SWIM_MARGIN.top, clientYOffset);
       if (!row || t < row.node.start || t > row.node.finish) { hideTooltip(); return; }
       showLaneTooltip(row.node, clientX, clientY);
+    }, function (t, clientX, clientY, clientYOffset) {
+      // Feature (b) "process -> topdown": clicking a bar selects it for the detail panel below.
+      var row = rowForClientY(entry, rows, SWIM_MARGIN.top, clientYOffset);
+      if (!row || t < row.node.start || t > row.node.finish) return;
+      selectRow(row.node);
     });
     return entry;
+  }
+
+  function rowForClientY(entry, rows, marginTop, clientYOffset) {
+    var rect = entry.svg.getBoundingClientRect();
+    var scaleY = rect.height ? (entry.height / rect.height) : 1;
+    var svgY = (clientYOffset - rect.top) * scaleY;
+    var rowIndex = Math.floor((svgY - marginTop) / ROW_HEIGHT);
+    return rows[rowIndex] || null;
+  }
+
+  // Feature (b) "process -> topdown": updates selection state, the detail panel, and the selected
+  // bar's outline in place -- no full renderAll() needed, so selecting a process doesn't reset
+  // scroll position or re-run the (cheap but pointless here) zoom-domain layout pass.
+  function selectRow(node) {
+    selectedNode = node;
+    renderProcessDetail(node);
+    swimRows.forEach(function (row) {
+      if (!row.rectEl) return;
+      row.rectEl.classList.toggle("tlv-bar-selected", row.node.pid === node.pid);
+    });
+  }
+
+  function renderProcessDetailPlaceholder() {
+    detailContainer.innerHTML = "";
+    var p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = "Click a process bar above to see its topdown/counter breakdown.";
+    detailContainer.appendChild(p);
+  }
+
+  function renderProcessDetail(node) {
+    detailContainer.innerHTML = "";
+    var title = document.createElement("p");
+    title.className = "itv-chart-title";
+    title.textContent = (node.comm || "?") + " (pid " + node.pid + ", ppid " + node.ppid + ")";
+    detailContainer.appendChild(title);
+
+    var meta = document.createElement("p");
+    meta.className = "tlv-swimlane-note";
+    meta.textContent = "start " + formatSeconds(node.start) + ", finish " + formatSeconds(node.finish) +
+      ", duration " + formatSeconds(node.finish - node.start) +
+      (node.cmdline ? " — " + node.cmdline : "");
+    detailContainer.appendChild(meta);
+
+    var entries = computeDisplayCounters(node.target_counters);
+    if (!entries.length) {
+      var note = document.createElement("p");
+      note.className = "muted";
+      note.textContent = "No --target counters recorded for this process (only the process matched " +
+        "by --target's comm/cmdline filter records them, and only as a one-shot lifetime-total " +
+        "reading at process exit, not a time series).";
+      detailContainer.appendChild(note);
+      return;
+    }
+    var table = document.createElement("table");
+    table.className = "ptv-summary-table";
+    var thead = document.createElement("tr");
+    ["metric", "value"].forEach(function (h) {
+      var th = document.createElement("th");
+      th.textContent = h;
+      thead.appendChild(th);
+    });
+    table.appendChild(thead);
+    entries.forEach(function (e) {
+      var tr = document.createElement("tr");
+      var tdName = document.createElement("td"); tdName.textContent = targetCounterKey(e);
+      var tdVal = document.createElement("td"); tdVal.textContent = formatTargetCounterValue(e);
+      tr.appendChild(tdName); tr.appendChild(tdVal);
+      table.appendChild(tr);
+    });
+    detailContainer.appendChild(table);
   }
 
   function showLaneTooltip(node, clientX, clientY) {
@@ -620,7 +837,7 @@
   // up nearest interval row; swimlane looks up the bar under the pointer).
   // ---------------------------------------------------------------------
 
-  function wireZoom(entry, margin, onHover) {
+  function wireZoom(entry, margin, onHover, onClick) {
     var dragStartTime = null;
     entry.svg.addEventListener("mousemove", function (ev) {
       var t = clientXToTime(entry, margin, ev.clientX);
@@ -653,6 +870,9 @@
         renderAll();
         return;
       }
+      // Drag distance below the zoom threshold: treat it as a click (feature (b), swimlane-only --
+      // the pct chart passes no onClick since a click there has nothing to select).
+      if (onClick) onClick(dragEndTime, ev.clientX, ev.clientY, ev.clientY);
       dragStartTime = null;
     });
   }
@@ -701,5 +921,10 @@
     }
     var swimContainer = addBlock("Process tree", laneNote);
     chartEntries.push(drawSwimlane(swimContainer));
+
+    // Feature (b) "process -> topdown": persists across renderAll() (zoom, threshold change, ...)
+    // by identity (selectedNode), independent of drawSwimlane()'s own row filtering above.
+    detailContainer = addBlock("Process detail", null);
+    if (selectedNode) renderProcessDetail(selectedNode); else renderProcessDetailPlaceholder();
   }
 }());
