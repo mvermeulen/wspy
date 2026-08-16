@@ -403,8 +403,12 @@ test-profiles`), the same directory `--unavailable-deps` reads; both may be give
 ```
 
 `workloads.txt` is one workload name per line; append a tab-separated `unsupported` or
-`needs-tool-support` plus a free-text note to override inference for a specific workload. See
-`./wspy-ledger --help` for the full option list.
+`needs-tool-support` plus a free-text note to override inference for a specific workload.
+`--add <name> --list <file>` appends a name to a workload list directly (e.g. how
+`wspy-phoronix-import` registers a newly-materialized test point); `--remove <name> --list <file>`
+is the counterpart, dropping that line back out (mutually exclusive with `--add`, matches on the
+name field only — a tab-separated status/note stays intact for every other line, and the file's
+own comment lines are left untouched). See `./wspy-ledger --help` for the full option list.
 
 ## wspy-store: normalized SQLite store
 
@@ -822,7 +826,13 @@ point's suite into `test-suites/local/` (so the command actually works) and pref
 workload/suite/benchmark fields; a run launched that way gets symlinked back under
 `workload/phoronix/<test>/<options>/runs/<run-id>/` for easy browsing, while the real files stay
 under the normal `--output-root` (so the report page, `/compare`, and bundle export need no
-special-casing). See `./wspy-phoronix-import --help` for the full option list.
+special-casing). Also each with an "Unregister" button — removes the registration
+(`suite-definition.xml`/`source.json`/`runs/` symlinks, any `test-suites/local/` copy, and the
+`wspy-ledger` backlog line) for a point that's never actually going to get run (no Steam account
+for a game test, a benchmark this host can't build, ...); real run data a `runs/` symlink points at
+is never touched, so this is safe even on a point with recorded runs. `./wspy-phoronix-import
+--unregister <dir-or-identity>` is the CLI equivalent. See `./wspy-phoronix-import --help` for the
+full option list.
 
 ## wspy-analyze: local LLM (Ollama) narrative analysis
 

@@ -1786,6 +1786,51 @@
       });
     });
 
+    // Inventory's "Unregister" buttons (INVESTIGATION.md's "Phoronix test-point removal" --
+    // a point that's never actually going to get run, e.g. no Steam account for a game test):
+    // confirm, then remove server-side (safe even with recorded runs -- only the registration is
+    // deleted, real run data a runs/ symlink points at is untouched, see
+    // joblib.unregister_phoronix_test_point()), then drop the row from the DOM directly rather than
+    // reloading the whole page, matching the "gone" feedback of the action itself -- same shape
+    // wireCpu2026Tab()'s own .cpu2026-unregister handler already established.
+    var phoronixUnregisterErrorEl = byId("phoronix-unregister-error");
+    document.querySelectorAll(".phoronix-unregister").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var runs = parseInt(btn.dataset.runs, 10) || 0;
+        var msg = "Unregister " + btn.dataset.bareName + " / " + btn.dataset.optionsSlug + "?" +
+          (runs ? " (" + runs + " recorded run" + (runs === 1 ? "" : "s") + " will keep their data, " +
+            "just lose this registration's link to it.)" : "");
+        if (!window.confirm(msg)) return;
+        btn.disabled = true;
+        if (phoronixUnregisterErrorEl) phoronixUnregisterErrorEl.hidden = true;
+        fetch("/api/phoronix/unregister", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ dir: btn.dataset.dir }),
+        })
+          .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+          .then(function (res) {
+            if (!res.ok || res.data.error) {
+              btn.disabled = false;
+              if (phoronixUnregisterErrorEl) {
+                phoronixUnregisterErrorEl.hidden = false;
+                phoronixUnregisterErrorEl.textContent = "Error: " + (res.data.error || "unknown error");
+              }
+              return;
+            }
+            var row = btn.closest("tr");
+            if (row) row.remove();
+          })
+          .catch(function (err) {
+            btn.disabled = false;
+            if (phoronixUnregisterErrorEl) {
+              phoronixUnregisterErrorEl.hidden = false;
+              phoronixUnregisterErrorEl.textContent = "Error: " + err.message;
+            }
+          });
+      });
+    });
+
     // Inventory filter/expand-collapse: a test can have dozens of option
     // combinations, and a host with hundreds of materialized points needs
     // more than alphabetical scrolling to find one -- filters by test
