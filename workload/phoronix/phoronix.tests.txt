@@ -1,6 +1,4 @@
 pts/apache-siege            Apache Siege                                      System    // download failed
-pts/caffe                   Caffe                                             System    // outdated
-pts/chia-vdf                Chia Blockchain VDF                               Processor // fails to compile
 pts/cloudsuite-da           CloudSuite Data Analytics                         System    // docker based
 pts/cloudsuite-ga           CloudSuite Graph Analytics                        System    // docker based
 pts/cloudsuite-ma           CloudSuite In-Memory Analytics                    System    // docker based
@@ -8,6 +6,7 @@ pts/cloudsuite-ms           CloudSuite Media Streaming                        Sy
 pts/cloudsuite-ws           CloudSuite Web Serving                            System    // docker based
 pts/couchdb                 Apache CouchDB                                    System    // install failed
 pts/cyclictest              Cyclictest                                        System    // requires root
+pts/daphne                  Darmstadt Automotive Parallel Heterogeneous Suite System    // download failed
 pts/deeprec                 DeepRec                                           System    // docker based
 pts/ecp-candle              ECP-CANDLE                                        System    // download failed
 pts/encodec                 EnCodec                                           System    // missing backends
@@ -57,6 +56,7 @@ pts/nekrs                   nekRS                                             Pr
 pts/nero2d                  Open FMM Nero2D                                   Processor 
 pts/netperf                 Netperf                                           Network   
 pts/network-loopback        Loopback TCP Network Performance                  Network   
+pts/ngspice                 Ngspice                                           Processor // download failed
 pts/node-express-loadtest   Node.js Express HTTP Load Test                    Processor 
 pts/node-octane             Node.js Octane Benchmark                          Processor 
 pts/novabench               Novabench                                         System    
