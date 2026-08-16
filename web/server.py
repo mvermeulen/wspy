@@ -118,6 +118,25 @@ ARTIFACT_FILES = (CSV_NAME, MANIFEST_NAME, PNG_NAME, LOG_NAME)
 # manifest is amdtopdown.manifest.json).
 TOPLEVEL_MARKER_FILES = ARTIFACT_FILES + (RUN_MANIFEST_NAME, SUMMARY_NAME)
 
+
+def _looks_like_a_run_directory(run_dir):
+    """Directory-discovery gate shared by discover_reports() (homepage) and discover_run_history()
+    (/history) -- a run_dir is worth listing at all if it carries any TOPLEVEL_MARKER_FILES entry
+    (a complete run, either shape), or -- item 6 Phase A -- any *.manifest.json at all. The fixed
+    markers alone miss an interrupted wspy-run invocation with no web-launcher-only launch.log
+    (a CLI-launched batch never gets one -- see execute_profile_run()'s own comment) and no
+    summary.txt/manifest.json (both only ever written by generate_summary()/generate_manifest() at
+    the very end, wspy-run, after this hypothetical crash): the completed passes' own per-process
+    wspy manifests (detect_incomplete_wspy_run()'s own "earliest concrete evidence" reasoning) are
+    the only thing such a directory is guaranteed to have on disk at all. The glob only runs when
+    the cheap marker check already failed, so a normal complete run pays no extra os.listdir()."""
+    if any(os.path.exists(os.path.join(run_dir, f)) for f in TOPLEVEL_MARKER_FILES):
+        return True
+    try:
+        return any(f.endswith(".manifest.json") for f in os.listdir(run_dir))
+    except OSError:
+        return False
+
 # wspy-run's own builtin profile catalog (wspy-run, BUILTIN_PROFILES) --
 # offered as a datalist in the UI; wspy-run itself is still the source of
 # truth and rejects anything else, so this list is a convenience, not a gate.
@@ -551,7 +570,7 @@ def discover_reports(output_root, limit=50):
                 run_dir = os.path.join(bench_dir, run_id)
                 if not os.path.isdir(run_dir):
                     continue
-                if not any(os.path.exists(os.path.join(run_dir, f)) for f in TOPLEVEL_MARKER_FILES):
+                if not _looks_like_a_run_directory(run_dir):
                     continue
                 mtime = os.path.getmtime(run_dir)
                 reports.append({
@@ -686,9 +705,13 @@ def find_representative_host_manifest(rundir, run_manifest):
     unified layout, already loaded by the caller as run_manifest), or a bare manifest.json if
     run_manifest is None (a lone wspy invocation dropped into this layout by hand) -- whichever gives a
     real per-process manifest.json (host/timing/exit_status fields), not wspy-run's own run-level one
-    (which carries none of those). None if neither resolves. Shared by load_run_history_entry() (run-
-    history table metadata) and generate_archetype_badge() (wspy-archetype --run needs this run's own
-    hostname)."""
+    (which carries none of those). Falls back to detect_incomplete_wspy_run()'s own representative
+    pick (item 6 Phase A) when there's no bare MANIFEST_NAME either -- an interrupted wspy-run
+    unified-layout invocation has neither a run-level manifest.json nor item 6's fixed
+    amdtopdown.manifest.json, but does have at least one completed pass's own per-process manifest to
+    borrow host/timing metadata from. None if nothing resolves at all. Shared by
+    load_run_history_entry() (run-history table metadata) and generate_archetype_badge()
+    (wspy-archetype --run needs this run's own hostname)."""
     if run_manifest is not None:
         for p in run_manifest.get("passes", []):
             pass_manifest = p.get("manifest")
@@ -697,7 +720,62 @@ def find_representative_host_manifest(rundir, run_manifest):
                 if host_manifest:
                     return host_manifest
         return None
-    return read_json_file(os.path.join(rundir, MANIFEST_NAME))
+    host_manifest = read_json_file(os.path.join(rundir, MANIFEST_NAME))
+    if host_manifest:
+        return host_manifest
+    incomplete = detect_incomplete_wspy_run(rundir)
+    if incomplete and incomplete.get("representative_manifest"):
+        return read_json_file(os.path.join(rundir, incomplete["representative_manifest"]))
+    return None
+
+
+def detect_incomplete_wspy_run(rundir):
+    """Best-effort detection of an interrupted wspy-run unified-layout invocation (item 6 Phase A,
+    INVESTIGATION.md 4.4(a) "Detect and resume interrupted wspy-run profiles" -- raised after a real
+    host crash mid-batch, twice, with no way to tell from a report that the run never finished).
+    wspy-run's own generate_manifest() only writes the run-level manifest.json (RUN_MANIFEST_NAME)
+    after every pass finishes, so a mid-loop crash leaves per-pass *.manifest.json artifacts (each
+    pass's own wspy invocation writes its --manifest as the very last thing it does, once that pass
+    itself completed) with no top-level manifest.json ever tying them together -- an unambiguous,
+    already-computable "never finished" signal, distinct from a run that finished every pass but
+    whose workload itself failed (already covered by wspy-validate/run_status_from_passes()).
+
+    Returns None when this doesn't look like that case at all: no manifest.json-shaped file present
+    (not a wspy-run directory, or genuinely nothing has run yet), or exactly one file matching item
+    6's own legacy MANIFEST_NAME ("amdtopdown.manifest.json") -- indistinguishable from a genuine
+    item-6 fixed-config report by filename alone (every real *.conf profile's execution order makes
+    that specific ambiguous case effectively unreachable in practice: a profile whose pass list
+    happens to include one named "amdtopdown" always lists at least one other pass earlier in the
+    same file, so by the time amdtopdown's own manifest exists, that earlier pass's would too -- see
+    deep-cpu.conf), so left alone rather than guessed at, same "zero coverage rather than wrong
+    coverage" convention as the rest of this codebase.
+
+    Otherwise returns {"completed_passes": [name, ...] (sorted, one per found *.manifest.json,
+    without the ".manifest.json" suffix), "preset": str|None (the first completed pass's own
+    recorded --preset-name, if any -- a -c/--config custom pass list run never sets this, so this is
+    None for that case), "expected_total": int|None (joblib.expected_pass_count_for_profile(),
+    None if preset is None or unresolvable), "representative_manifest": relpath|None (the first
+    completed pass's manifest that actually parses as JSON, for find_representative_host_manifest()
+    above to borrow host/timing metadata from)}."""
+    try:
+        manifest_files = sorted(f for f in os.listdir(rundir) if f.endswith(".manifest.json"))
+    except OSError:
+        return None
+    if not manifest_files or manifest_files == [MANIFEST_NAME]:
+        return None
+    completed_passes = [f[:-len(".manifest.json")] for f in manifest_files]
+    preset = None
+    representative_manifest = None
+    for f in manifest_files:
+        if representative_manifest is None and read_json_file(os.path.join(rundir, f)):
+            representative_manifest = f
+        if preset is None:
+            cp = read_manifest_config_provenance(os.path.join(rundir, f))
+            if cp and cp.get("preset"):
+                preset = cp["preset"]
+    expected_total = joblib.expected_pass_count_for_profile(preset) if preset else None
+    return {"completed_passes": completed_passes, "preset": preset,
+            "expected_total": expected_total, "representative_manifest": representative_manifest}
 
 
 def load_run_history_entry(output_root, suite, benchmark, run_id, mtime):
@@ -716,7 +794,14 @@ def load_run_history_entry(output_root, suite, benchmark, run_id, mtime):
         status = run_status_from_passes(run_manifest.get("passes"))
     else:
         workload = (host_manifest.get("command", {}).get("argv") if host_manifest else None) or None
-        status = run_status_from_exit_status(host_manifest.get("exit_status") if host_manifest else None)
+        # Item 6 Phase A's new status value: distinct from "failed" (every pass ran, the workload
+        # itself just exited non-zero) -- an interrupted wspy-run never got the chance to fail or
+        # succeed on its remaining passes at all. Checked before the exit_status fallback below since
+        # find_representative_host_manifest() may have borrowed its host_manifest from exactly this
+        # detection's own representative_manifest pick, whose exit_status reflects only that one
+        # *completed* pass, not the run as a whole.
+        status = ("incomplete" if detect_incomplete_wspy_run(rundir) is not None
+                  else run_status_from_exit_status(host_manifest.get("exit_status") if host_manifest else None))
 
     host = (host_manifest or {}).get("host") or {}
     timing = (host_manifest or {}).get("timing") or {}
@@ -751,7 +836,7 @@ def discover_run_history(output_root, filters, page=1, page_size=HISTORY_PAGE_SI
                     run_dir = os.path.join(bench_dir, run_id)
                     if not os.path.isdir(run_dir):
                         continue
-                    if not any(os.path.exists(os.path.join(run_dir, f)) for f in TOPLEVEL_MARKER_FILES):
+                    if not _looks_like_a_run_directory(run_dir):
                         continue
                     mtime = os.path.getmtime(run_dir)
                     entries.append(load_run_history_entry(output_root, suite, benchmark, run_id, mtime))
@@ -3944,7 +4029,8 @@ def render_history(cfg, qs):
     status_value = filters["status"]
     status_options = "".join(
         f'<option value="{v}"{" selected" if v == status_value else ""}>{l}</option>'
-        for v, l in (("", "any"), ("ok", "ok"), ("failed", "failed"), ("unknown", "unknown"))
+        for v, l in (("", "any"), ("ok", "ok"), ("failed", "failed"),
+                     ("incomplete", "incomplete"), ("unknown", "unknown"))
     )
 
     filter_form = f"""
@@ -4803,12 +4889,20 @@ def render_report(output_root, suite, benchmark, run_id):
 
     # A wspy-run-produced run directory (item 7) always carries wspy-run's
     # own manifest.json (generate_manifest(), unconditional for the unified
-    # --suite/--benchmark layout); item 6's fixed-config path never writes a
-    # bare "manifest.json" (its own is amdtopdown.manifest.json), so this is
-    # an unambiguous discriminator between the two report shapes.
+    # --suite/--benchmark layout) -- *unless* the wspy-run invocation itself
+    # was interrupted before every pass finished (item 6 Phase A), in which
+    # case detect_incomplete_wspy_run() below still recognizes it from its
+    # completed passes' own per-process manifests. Item 6's fixed-config
+    # path never writes a bare "manifest.json" (its own is
+    # amdtopdown.manifest.json) and detect_incomplete_wspy_run() explicitly
+    # leaves that one-file case alone, so together these three checks stay
+    # an unambiguous discriminator between all three report shapes.
     run_manifest = read_run_manifest(os.path.join(rundir, RUN_MANIFEST_NAME))
     if run_manifest is not None:
         return render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest)
+    incomplete = detect_incomplete_wspy_run(rundir)
+    if incomplete is not None:
+        return render_incomplete_run_report(rundir, suite, benchmark, run_id, incomplete)
     return render_fixed_report(rundir, suite, benchmark, run_id)
 
 
@@ -4891,6 +4985,65 @@ def render_fixed_report(rundir, suite, benchmark, run_id):
     body = ("<section class=\"panel\">" + "".join(parts) + "</section>"
             '<script src="/static/app.js"></script>')
     return page(f"wspy report: {benchmark}/{run_id}", body)
+
+
+def render_incomplete_run_report(rundir, suite, benchmark, run_id, incomplete):
+    """Item 6 Phase A: a wspy-run unified-layout invocation that was interrupted before every pass
+    finished (detect_incomplete_wspy_run() above) -- shown instead of render_wspy_run_report() (no
+    top-level manifest.json exists yet) and instead of render_fixed_report()'s item-6 fixed-shape
+    fallback (which would either wrongly claim "amdtopdown.csv missing" for a profile with no pass
+    named that, or silently show just one pass's output as if it were the whole run). Deliberately
+    thinner than render_wspy_run_report()'s own per-pass card treatment -- there's no run-level
+    manifest to drive a rich per-pass listing (which output file/manifest/pts_hooks_log belongs to
+    which pass, by name), so this reuses collect_run_files()'s own generic raw-file listing (already
+    exercised by render_fixed_report() below) rather than inventing a second, narrower one. Phase B
+    (wspy-run --resume, INVESTIGATION.md item 6's remaining scope) is what turns this from a dead end
+    into an actionable "finish what's left" flow; for now this is read-only surfacing."""
+    base = f"/files/{suite}/{benchmark}/{run_id}"
+    completed = incomplete["completed_passes"]
+    total = incomplete["expected_total"]
+    if total is not None:
+        progress = f"{len(completed)} of {total} passes ran"
+    else:
+        progress = f"{len(completed)} pass{'es' if len(completed) != 1 else ''} ran (expected total unknown)"
+    preset_note = f' (preset &ldquo;{html.escape(incomplete["preset"])}&rdquo;)' if incomplete["preset"] else ""
+
+    parts = [f"<h1>Report: {html.escape(suite)} / {html.escape(benchmark)} / {html.escape(run_id)}</h1>",
+             f'<p class="config-label status-incomplete">&#9888; Incomplete run &mdash; {progress}'
+             f'{preset_note}. No top-level manifest.json was ever written, meaning the wspy-run '
+             f'invocation that produced this directory never reached its final pass -- most likely '
+             f'interrupted (host crash, killed process) partway through. Passes that did complete: '
+             f'{html.escape(", ".join(completed))}.</p>']
+
+    # Read the representative_manifest incomplete already picked out, rather than calling
+    # find_representative_host_manifest(rundir, None) -- which would just rediscover the same
+    # detect_incomplete_wspy_run() result a second time.
+    host_manifest = (read_json_file(os.path.join(rundir, incomplete["representative_manifest"]))
+                      if incomplete.get("representative_manifest") else None)
+    workload = (host_manifest.get("command", {}).get("argv") if host_manifest else None) or None
+    if workload:
+        parts.append(f"<p>Workload: <code>{html.escape(shlex.join(workload))}</code></p>")
+
+    if os.path.isfile(os.path.join(rundir, TREE_TXT_NAME)):
+        tree_url = f"/tree-viewer/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+        parts.append(f'<p><a href="{tree_url}">Interactive tree viewer</a></p>')
+        parts.append(render_proctree_card(suite, benchmark, run_id))
+
+    raw = ["<h2>Artifacts (whatever this run got through)</h2><ul class=\"artifacts\">"]
+    files = collect_run_files(rundir)
+    if files:
+        for item in files:
+            f = item["filename"]
+            raw.append(f'<li><a href="{base}/{_urlescape(f)}">{html.escape(f)}</a></li>')
+    else:
+        raw.append('<li class="muted">no artifacts found</li>')
+    raw.append("</ul>")
+
+    parts.append(_studio_link_and_curated(rundir, base, suite, benchmark, run_id, "".join(raw)))
+
+    body = ("<section class=\"panel\">" + "".join(parts) + "</section>"
+            '<script src="/static/app.js"></script>')
+    return page(f"wspy report: {benchmark}/{run_id} (incomplete)", body)
 
 
 def render_wspy_run_report(rundir, suite, benchmark, run_id, run_manifest):
