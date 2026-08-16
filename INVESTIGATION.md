@@ -129,6 +129,37 @@ its GitHub release body is the notes at `https://github.com/mvermeulen/wspy/rele
 ## Shipped since 4.3.1
 Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-prep time.
 
+- Detect and resume interrupted `wspy-run` profiles (item 6), Phase A — surface incompleteness
+  (Phase B, actually resuming, remains open): `generate_manifest()` (`wspy-run`) only writes the
+  run-level `manifest.json` after every pass finishes, so a mid-loop crash (the motivating case: a
+  real host crash mid-batch) leaves per-pass `*.manifest.json` artifacts with no top-level manifest
+  to tie them together — and, until now, `/report` silently mis-rendered such a directory as if it
+  were an item-6 fixed-config single-pass report (`render_fixed_report()`, which only ever looks for
+  the fixed `amdtopdown.*` names), and `/history`/the homepage's recent list didn't even discover the
+  directory at all unless one of its files happened to match the fixed `TOPLEVEL_MARKER_FILES` set —
+  neither `launch.log` (web-launcher-only, never written by a CLI-launched batch) nor `summary.txt`/
+  `manifest.json` (both only ever written at the very end, by definition never reached) exist for a
+  genuinely interrupted run. New `detect_incomplete_wspy_run()` (`web/server.py`) recognizes this
+  shape from the completed passes' own per-process wspy manifests alone (each pass's `--manifest` is
+  the last thing that pass's own wspy invocation writes, so its presence is solid evidence that pass
+  finished) — deliberately leaves the one ambiguous case alone (exactly one manifest file, matching
+  item 6's own legacy `amdtopdown.manifest.json` name, indistinguishable from a genuine item-6 report
+  by filename alone; real profile pass ordering makes this case effectively unreachable in practice,
+  see the function's own docstring). `render_report()` gained a third dispatch case
+  (`render_incomplete_run_report()`) showing an "⚠ Incomplete run — N of M passes ran" banner (M via
+  new `joblib.expected_pass_count_for_profile()`, recovered from whichever completed pass recorded
+  `--preset-name`; `None`/"expected total unknown" for a `-c`/`--config` custom pass list, which never
+  sets that flag) plus whatever real artifacts exist (reusing `collect_run_files()`'s own generic
+  listing rather than a second one). `/history` gained a new `"incomplete"` status value and filter
+  option (distinct from `"failed"`: every pass ran but the workload itself failed, vs. never got the
+  chance to finish or fail at all). The discovery gate itself (`_looks_like_a_run_directory()`,
+  shared by `discover_reports()`/`discover_run_history()`) now also accepts any `*.manifest.json`
+  presence, not just the fixed marker set, so a CLI-launched interrupted batch is actually
+  *findable* in the web UI at all, not just correctly labeled once you already have its direct URL.
+  Verified against a real running server with synthetic interrupted-run fixtures (correct banner,
+  artifact listing, `/history` row, homepage discovery, and the legacy-ambiguous case still falling
+  through to `render_fixed_report()` unchanged) plus new `web/test_incomplete_run.py` (18 tests) and
+  `ExpectedPassCountForProfileTest`/regression coverage in `web/test_joblib.py`.
 - Preset/Configuration/Option vocabulary refactor (item 1), checklist-boolean-flag-table slice:
   the Run tab checklist's `tree`/`gpu` sections had 15 pure 1:1 "checkbox checked -> emit this one
   flag" mappings (`--tree-cmdline`/`--tree-open`/.../`--tree-nanosleep`, `--gpu-busy`/`--gpu-metrics`/
@@ -714,17 +745,15 @@ tool despite resolving near-identical shapes underneath.
    as a first-run hint in the web UI.
 6. Detect and resume interrupted `wspy-run` profiles (raised after a real host crash mid-batch, twice,
    with no way to tell from a report that the run never finished, or to resume without redoing completed
-   passes). Two phases, second depends on first:
-   - **Phase A — surface incompleteness.** `generate_manifest()` writes the run-level `manifest.json`
-     only after every pass finishes, so a mid-loop crash leaves per-pass artifacts but no top-level
-     manifest — an unambiguous, already-computable "never finished" signal (distinct from a run that
-     finished all passes but whose workload itself failed, already covered by `wspy-validate`). Surface
-     on `/report` (an "incomplete — N of M passes ran" banner) and `/history` (a new status value).
+   passes). Two phases, second depends on first — **Phase A has shipped, see "Shipped since 4.3.1"
+   above; remaining scope is Phase B:**
    - **Phase B — resume, skipping completed passes.** `wspy-run --resume <existing-run-dir>` reuses the
      existing `RUNROOT`/`RUN_ID`; for each pass, skip re-running only if its own manifest exists with a
      clean exit *and* its recorded configuration exactly matches what this invocation would run now
      (exact-match, via a new `--config-option pass_flags_hash=<hash>` provenance field) — never resumes a
-     pass that was itself interrupted mid-execution.
+     pass that was itself interrupted mid-execution. Phase A's `detect_incomplete_wspy_run()`
+     (`web/server.py`) already computes `completed_passes`/`preset` from the same on-disk evidence
+     Phase B would need to decide what to skip — reuse it rather than re-deriving.
    - Distinct from `wspy-queue`'s job lifecycle and from 4.5's much heavier config-first experiment
      system.
 7. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead of

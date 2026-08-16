@@ -124,6 +124,7 @@ input[type="text"], input[type="date"], select {
 .status-ok { color: #1a7f37; font-weight: 600; }
 .status-failed { color: #cf222e; font-weight: 600; }
 .status-warn { color: #9a6700; font-weight: 600; }
+.status-incomplete { color: #9a6700; font-weight: 600; }
 .status-unknown { color: var(--muted); }
 
 .button-row { display: flex; gap: 0.5rem; align-items: center; margin: 0.75rem 0; }

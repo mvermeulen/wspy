@@ -541,6 +541,32 @@ class LoadProfileConfPassesTest(unittest.TestCase):
         self.assertEqual(joblib._load_profile_conf_passes("zen-portable"), [])
 
 
+class ExpectedPassCountForProfileTest(unittest.TestCase):
+    """Against the real profiles/*.conf/*.spec files -- same posture as LoadProfileConfPassesTest
+    above. Item 6 Phase A (INVESTIGATION.md 4.4(a) "Detect and resume interrupted wspy-run
+    profiles"): recovers "expected N passes total" for an interrupted run from its own
+    --preset-name, since there's no top-level manifest.json to read a pass list from."""
+
+    def test_quick_is_one_pass(self):
+        self.assertEqual(joblib.expected_pass_count_for_profile("quick"), 1)
+
+    def test_deep_cpu_is_three_passes(self):
+        # systemtime, counters, amdtopdown -- see LoadProfileConfPassesTest above.
+        self.assertEqual(joblib.expected_pass_count_for_profile("deep-cpu"), 3)
+
+    def test_composite_sums_across_constituent_profiles(self):
+        # zen-portable.spec = "quick,ibs-basic" -- 1 + 1.
+        self.assertEqual(joblib.expected_pass_count_for_profile("zen-portable"), 2)
+
+    def test_comma_list_of_plain_profiles_sums_too(self):
+        self.assertEqual(joblib.expected_pass_count_for_profile("quick,ibs-basic"), 2)
+
+    def test_unknown_preset_returns_none_not_zero(self):
+        # None (unknown), not 0 (done) -- a caller like the incomplete-run banner must be able to
+        # tell "can't determine the total" apart from "the total is zero".
+        self.assertIsNone(joblib.expected_pass_count_for_profile("not-a-real-profile"))
+
+
 class WspyListColumnsTest(unittest.TestCase):
     def test_parses_header_from_stdout(self):
         def fake_run(argv, cwd, capture_output, text, timeout):

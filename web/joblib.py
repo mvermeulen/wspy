@@ -3967,6 +3967,28 @@ def expand_preset_names(preset):
     return names
 
 
+def expected_pass_count_for_profile(preset):
+    """Total pass count across every constituent profile a (possibly composite) preset expands to
+    (expand_preset_names()), via _load_profile_conf_passes()'s own profiles/*.conf reads -- the
+    same real, checked-in data PROFILE_PLOTTABLE_COLUMNS's own query above trusts. Used by item 6's
+    "detect and resume interrupted wspy-run profiles" (INVESTIGATION.md 4.4(a)), Phase A: an
+    interrupted run has no top-level manifest.json to read a pass list from, but each completed
+    pass's own wspy manifest still records which --preset-name launched it, so a reader can recover
+    "expected N passes total" from the profile's own on-disk definition instead. Returns None (not
+    0) if not a single constituent name resolves to a real *.conf file -- an unknown/malformed
+    preset name, or a -c/--config custom pass list run (which never sets --preset-name at all, so
+    this is never even called for one) -- since "expected 0 passes" would read as already-done to a
+    caller, not unknown."""
+    total = 0
+    resolved_any = False
+    for name in expand_preset_names(preset):
+        passes = _load_profile_conf_passes(name)
+        if passes:
+            resolved_any = True
+            total += len(passes)
+    return total if resolved_any else None
+
+
 def phoronix_single_iteration_env(single_iteration):
     """Popen's env= for a workload-launching pass: None (inherit the server
     process's own environment untouched) unless single_iteration is set, in
