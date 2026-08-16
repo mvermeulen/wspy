@@ -3890,6 +3890,15 @@ class RunState:
             self.cond.notify_all()
 
 
+def build_store_ingest_argv(cfg, run_index_path):
+    """The wspy-store argv run_store_ingest_besteffort() below actually executes -- factored out as
+    its own pure function (INVESTIGATION.md 4.4(a) "One-click end-to-end pipeline") so a caller that
+    only wants to *show* the command about to run (e.g. server.py's testpoint-publish preview, which
+    now chains this same ingest step in front of select-runs/render) doesn't need to duplicate this
+    4-token construction a second time."""
+    return [cfg["wspy_store_bin"], "--db", cfg["store_db"], "--run-index", run_index_path]
+
+
 def run_store_ingest_besteffort(emit, cfg, run_index_path):
     """Best-effort trailing step shared by every run path (item 9's
     defaults-on "ingest into store" toggle chip): re-runs wspy-store against
@@ -3899,7 +3908,7 @@ def run_store_ingest_besteffort(emit, cfg, run_index_path):
     if not run_index_path:
         emit("[skipping store ingest: run index was not recorded for this run]")
         return
-    argv = [cfg["wspy_store_bin"], "--db", cfg["store_db"], "--run-index", run_index_path]
+    argv = build_store_ingest_argv(cfg, run_index_path)
     emit("$ " + shell_preview(argv))
     try:
         proc = subprocess.Popen(argv, cwd=REPO_ROOT,
