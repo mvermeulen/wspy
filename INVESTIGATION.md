@@ -129,7 +129,35 @@ its GitHub release body is the notes at `https://github.com/mvermeulen/wspy/rele
 ## Shipped since 4.3.1
 Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-prep time.
 
-- Detect and resume interrupted `wspy-run` profiles (item 6), Phase B — resume, skipping completed
+- Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead
+  of running it now" checkbox) was visible before this only via `wspy-queue list`/`show`, not from
+  the web UI at all. New `/jobs` page (linked from the homepage, alongside `/history`): every job
+  under `<jobs-dir>` across its pending/running/done/failed lifecycle, with a state filter, and a
+  done job's row/detail page linking straight to its `/report`. `/jobs/<job-id>` detail page adds
+  the "bundle in sharing structured configuration provenance with the job format" half of the item:
+  new `format_job_configuration()` (`web/server.py`) reuses `format_config_provenance()` -- the
+  exact same one-liner a completed run's per-pass `configuration_provenance` already renders with --
+  rather than inventing a second formatting convention just for jobs; a `mode="custom"` job's
+  checklist has no single configuration (several sections can be enabled at once, each becoming its
+  own wspy pass), so this shows one line per enabled section via the newly-public
+  `joblib.config_options()` (promoted from `_config_options()`, now a cross-module caller) and a
+  new `_CHECKLIST_KEY_TO_CATEGORY` reverse lookup -- literally the same values a run launched from
+  that job would go on to record, not a re-derivation. Backing shared logic
+  (`state_dir`/`ensure_jobs_dirs`/`job_path`/`find_job_file`/`load_job`/`save_job`) moved from
+  `wspy-queue` into `web/joblib.py` so the web view locates/reads job files the exact same way
+  `wspy-queue` itself does, rather than a third, independently-drifting copy; `wspy-queue` now
+  imports them instead of defining its own (its `list`/`show`/`requeue` subcommands' own output is
+  otherwise untouched -- no CLI behavior change). New `joblib.list_jobs()` is the shared newest-
+  first scan both `wspy-queue` (available for a future rewrite of its own `list` subcommand, not
+  applied here to avoid an unforced CLI-output change) and the new page use. Deliberately read-only
+  browsing -- no requeue/delete button from the web UI yet, `wspy-queue requeue`/`run` remain the
+  only way to act on a job, matching `joblib.py`'s own "execution only ever happens via
+  `wspy-queue run`, headless" design (a natural fast-follow, not bundled into this slice). Verified
+  against a real running server with synthetic jobs across all four states (list, state filter,
+  done-job report link, failed-job error display, unreadable-job-file degradation, 404 for an
+  unknown job id) plus new `web/test_jobs_view.py` (16 tests) and `ListJobsTest`
+  (`web/test_joblib.py`, 5 tests).
+- Detect and resume interrupted `wspy-run` profiles, Phase B — resume, skipping completed
   passes (item now fully shipped, both phases; see the Phase A entry below). New `wspy-run --resume
   <existing-run-dir>` flag: derives `--suite`/`--benchmark`/`--run-id`/`--outdir` from the resumed
   directory's own unified-layout path (rejects an explicit `--suite`/`--benchmark`/`--run-id`/
@@ -162,7 +190,7 @@ Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-
   `RunStatusFromPassesTest` (`web/test_incomplete_run.py`, 5 tests). Deliberately CLI-only for now,
   no web-UI "resume" button -- a reasonable fast-follow once this mechanism has seen real use, not
   bundled into this slice.
-- Detect and resume interrupted `wspy-run` profiles (item 6), Phase A — surface incompleteness
+- Detect and resume interrupted `wspy-run` profiles, Phase A — surface incompleteness
   (Phase B, actually resuming, shipped separately above): `generate_manifest()` (`wspy-run`) only
   writes the run-level `manifest.json` after every pass finishes, so a mid-loop crash (the motivating case: a
   real host crash mid-batch) leaves per-pass `*.manifest.json` artifacts with no top-level manifest
@@ -776,28 +804,22 @@ tool despite resolving near-identical shapes underneath.
    run→store→summarize→publish sequence from first principles. Add a single "benchmark X, get a
    published report" walkthrough near the top of `README.md`, and consider surfacing the same sequence
    as a first-run hint in the web UI.
-6. Job-browsing view in the web UI. A queued job (`wspy-queue add`, or the Run tab's "Queue instead of
-   running it now" checkbox) is visible today only via `wspy-queue list`/`show`, not from the web UI
-   itself. Bundle in sharing structured configuration provenance with the job format (`web/joblib.py`'s
-   job schema and `manifest.h`'s `configuration_provenance` are designed to be close in shape but aren't
-   wired together yet).
-
 **4.4(b) — GPU support:**
 
-7. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
+6. `rocprof`/`roctracer` deep profile (HIP kernel/memcpy/runtime activity, occupancy indicators) —
    heavier, optional trace-rich profile, same "default vs debug profile" pattern as IBS.
-8. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds on
+7. Queue/SDMA diagnostics (compute-queue utilization, copy/compute overlap, imbalance flags) — builds on
    4.2's GPU fusion layer (`gpu_fusion.c`, `--gpu-metrics`) for consistent per-metric data.
-9. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`, extended
+8. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`, extended
    once GPU runs feed the same index.
-10. Intel `i915` GPU PMU — an Intel-native busy/frequency alternative to the current AMD-sysfs/NVML-only
-    GPU support, `perf_event_open()`-based rather than a vendor SMI/sysfs scrape. See the Intel hybrid /
-    counter-grouping deep-dive for detail (the rest of that deep-dive's counter wishlist is non-GPU,
-    tracked in 4.5).
+9. Intel `i915` GPU PMU — an Intel-native busy/frequency alternative to the current AMD-sysfs/NVML-only
+   GPU support, `perf_event_open()`-based rather than a vendor SMI/sysfs scrape. See the Intel hybrid /
+   counter-grouping deep-dive for detail (the rest of that deep-dive's counter wishlist is non-GPU,
+   tracked in 4.5).
 
 **4.4(c) — Phoronix suite build-out:**
 
-11. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
+10. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
     CSVs into per-test-case/per-trial datasets by correlating run manifests with PTS results,
     composite.xml, and log timestamps. See
     [phoronix_hook_investigation.md](file:///home/mev/source/wspy/doc/phoronix_hook_investigation.md)
@@ -807,12 +829,12 @@ tool despite resolving near-identical shapes underneath.
     `doc/INVESTIGATION_ARCHIVE.md`'s "Phoronix `result_notifier` hook capture" write-up. **Still open:**
     teaching `wspy-phoronix-segment.py` to prefer `pts_hooks.log` over composite.xml/log-timestamp
     correlation, and the segmentation tool itself.
-12. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
+11. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
     (`web/joblib.py`/`wspy-phoronix-import`/web launcher's Phoronix tab — see "What shipped in 4.3" for
     what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
     across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test
     point, launched by a human clicking Run) exists today.
-13. Materialize test points directly from installed/downloaded PTS test profiles, with no prior PTS
+12. Materialize test points directly from installed/downloaded PTS test profiles, with no prior PTS
     run/import round-trip. Today's only materialization paths (`wspy-phoronix-import`, "What shipped in
     4.3") both require *evidence a specific option combination already ran* (an installed
     suite-definition.xml or a composite.xml result) — there's no path from "this test profile is
