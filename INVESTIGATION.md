@@ -129,6 +129,35 @@ its GitHub release body is the notes at `https://github.com/mvermeulen/wspy/rele
 ## Shipped since 4.3.1
 Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-prep time.
 
+- Phoronix-specific telemetry segmentation, closing the item out entirely — the real segmentation
+  tool (`doc/phoronix_hook_investigation.md`'s own "nothing yet consumes `pts_hooks.log`" was the
+  actual remainder). New top-level `wspy-phoronix-segment` (mirroring `wspy-phoronix-import`'s own
+  naming/placement) supersedes the `scripts/wspy-phoronix-segment.py` prototype (removed), trying two
+  correlation sources per pass in order: `pts_hooks.log` (preferred — `parse_pts_hooks_log()` reads
+  the TSV lines `scripts/pts_hooks/{pre,post}_test_run.sh` already write, `pair_pts_hooks_spans()`
+  pairs them by *file order*, since PTS's own `__pre_test_run`/`__post_test_run` fire once per test
+  option not once per individual trial, so `PTS_EXTERNAL_TEST_RUN_POSITION` is always `"1"` in real
+  hook data and can't disambiguate trials at all — a hook-derived segment therefore covers the whole
+  test option, no per-trial split attempted, but needs nothing beyond the hook log itself: no PTS
+  results-directory search, no `pts-install.json` hash lookup, no per-hash `.log` parsing); falling
+  back to the original composite.xml + per-hash `.log` correlation (Sections 1-3 of the design doc,
+  cleaned up, real per-trial granularity preserved) when a pass has no `pts_hooks.log`. Honest
+  validation caveat carried forward from the design doc's own Section 7: hooks still can't be safely
+  registered on this project's own host for a live end-to-end capture (the upstream
+  `result_notifier.php` crash bug from Section 9 is still open pending
+  [phoronix-test-suite/phoronix-test-suite#924](https://github.com/phoronix-test-suite/phoronix-test-suite/pull/924)
+  landing), so the hook-log path is verified against synthetic fixtures built byte-for-byte from the
+  hook scripts' own `printf` format strings, not live-captured data — real-capture validation is
+  still a "once hooks have been registered on at least one host" follow-up. New
+  `tests/phoronix_segment_smoke.sh` (wired into `run_tests.sh`): the `pts_hooks.log` path slicing a
+  two-test-option pass correctly, the composite.xml fallback slicing a three-trial-equivalent pass
+  correctly (regression coverage for the original prototype's own worked behavior), a pass with
+  neither source degrading to "nothing segmented" without erroring, and a truncated `pts_hooks.log`
+  (an unpaired trailing `START`) still segmenting whatever paired cleanly. Found and fixed a real bug
+  during that testing: `slice_csv()`'s `csv.writer` defaulted to CRLF line endings (Python's own
+  `csv` module default, RFC 4180), silently different from every other CSV this codebase produces
+  (plain `\n`) — confirmed live via the smoke test's own content assertions failing until pinned with
+  an explicit `lineterminator="\n"`.
 - Published-article/chart-URL-seeded test-point discovery — web UI paste-box half, closing the item
   out entirely (CLI/core-resolver half shipped as the prior slice, see below). The Phoronix tab's
   "Materialize new test points" source chooser gains a fifth radio, "From article URL(s)": paste one
@@ -1141,17 +1170,7 @@ recent one (CLI flag/identity consistency pass).
 
 **4.4(c) — Phoronix suite build-out:**
 
-5. Phoronix-specific telemetry segmentation (`wspy-phoronix-segment`) — partitioning unified telemetry
-   CSVs into per-test-case/per-trial datasets by correlating run manifests with PTS results,
-   composite.xml, and log timestamps. See
-   [phoronix_hook_investigation.md](file:///home/mev/source/wspy/doc/phoronix_hook_investigation.md)
-   for design and prototypes. **Capture instrumentation already landed:**
-   `scripts/pts_hooks/*.sh`/`scripts/setup_phoronix_hooks.sh` register PTS `result_notifier` hooks and
-   capture their output into a per-pass `pts_hooks.log` artifact across every launch path — see
-   `doc/INVESTIGATION_ARCHIVE.md`'s "Phoronix `result_notifier` hook capture" write-up. **Still open:**
-   teaching `wspy-phoronix-segment.py` to prefer `pts_hooks.log` over composite.xml/log-timestamp
-   correlation, and the segmentation tool itself.
-6. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
+5. `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow
    (`web/joblib.py`/`wspy-phoronix-import`/web launcher's Phoronix tab — see "What shipped in 4.3" for
    what's already landed) — a saved profile or `-c` file, run non-interactively/scriptable/batchable
    across many materialized test points at once. Only the direct wspy/checklist Run tab path (one test

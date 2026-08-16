@@ -1,0 +1,513 @@
+#!/usr/bin/env python3
+"""
+wspy-phoronix-segment -- partitions a wspy telemetry CSV (--interval output) into per-test-case/
+per-trial datasets for a Phoronix-suite run, correlating wspy's own periodic "time" column against
+when each Phoronix test case actually executed (INVESTIGATION.md 4.4(c) "Phoronix-specific telemetry
+segmentation"; doc/phoronix_hook_investigation.md for the full investigation/design writeup this
+tool implements). Works without ptrace/process-tree tracing, so it applies to any run profile,
+including a pure hardware-counter sweep where --tree was never used.
+
+Two correlation sources, tried in this order per pass:
+
+  1. pts_hooks.log (preferred, per-test-option granularity). If scripts/setup_phoronix_hooks.sh's PTS
+     result_notifier hooks were registered and fired during this run, wspy-run/execute_custom_run()
+     already captured a "<pass-name>.pts_hooks.log" artifact next to that pass's output (named in the
+     run's own manifest.json, passes[].pts_hooks_log). Its START/FINISH TSV lines
+     (scripts/pts_hooks/{pre,post}_test_run.sh's own format) give the exact wall-clock window PTS
+     itself measured for each test-option execution directly -- no composite.xml hash-mapping or
+     per-hash .log-file timestamp parsing needed at all.
+
+     Real, confirmed-live caveat (doc/phoronix_hook_investigation.md Section 9): PTS's
+     __pre_test_run/__post_test_run fire once per *test option* (e.g. once for all 3 trials of
+     "Algorithm: SHA256" together), not once per individual trial run within it --
+     PTS_EXTERNAL_TEST_RUN_POSITION is therefore always "1" in the hook data, not a genuine per-trial
+     index. This tool doesn't try to recover per-trial granularity from the hook log (that would need
+     __interim_test_run, not currently registered -- future work, not this item): a hook-derived
+     segment covers the *entire* test option's execution window, trials averaged together within it,
+     same coarseness the composite.xml path's own final Result already reports. START/FINISH pairs
+     are matched by *file order* (sequential), not by run_position/hash matching, which run_position's
+     constant "1" can't do anyway -- safe because only one PTS process (and therefore one in-flight
+     test option) ever runs at a time on a given host, this project's existing "no --parallel, one
+     hardware PMU at a time" assumption elsewhere in this codebase.
+
+  2. composite.xml + test-log timestamp correlation (fallback, per-trial granularity). Used when no
+     pts_hooks.log is available for a pass -- the hooks were never registered on this host, or this
+     run predates hook-capture support. Locates the PTS results directory whose composite.xml
+     timestamp falls inside the pass's own execution window, maps each result's comparison hash via
+     pts-install.json, parses trial start times out of the raw per-hash .log file, and slices using
+     composite.xml's own "test-run-times" durations for each individual trial
+     (doc/phoronix_hook_investigation.md Sections 1-3's original method) -- strictly finer-grained
+     than the hook path, at the cost of the hash-mapping/log-parsing indirection the hook path exists
+     to avoid.
+
+Usage:
+    wspy-phoronix-segment --rundir <unified-run-directory>
+"""
+import argparse
+import csv
+import datetime
+import glob
+import json
+import os
+import sys
+import xml.etree.ElementTree as ET
+
+
+def parse_iso8601(s):
+    """Parses a wspy manifest ISO8601 timestamp (e.g. "2026-07-18T13:06:30.998Z") into an aware
+    datetime -- manifest timestamps are always UTC (the "Z" suffix), never a bare offset-less local
+    time, matching every manifest writer in this codebase."""
+    return datetime.datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
+def make_safe_filename(s):
+    """"Algorithm: SHA256" -> "algorithm_sha256" -- filesystem-safe slug for a segmented output
+    filename; any run of non-alphanumeric characters collapses to a single underscore, matching
+    slugify_phoronix_arguments()'s own idiom in web/joblib.py (kept as a separate, simpler function
+    here rather than importing that module, since this tool has no web/wspy-queue counterpart to
+    share code with -- see the module docstring's own "thin client" note doesn't apply here)."""
+    out = []
+    prev_underscore = False
+    for c in s.lower():
+        if c.isalnum():
+            out.append(c)
+            prev_underscore = False
+        elif not prev_underscore:
+            out.append("_")
+            prev_underscore = True
+    return "".join(out).strip("_")
+
+
+def _looks_like_version(s):
+    """Mirrors ledger.c's looks_like_version()/web/joblib.py's _phoronix_looks_like_version():
+    digits and '.' only, at least one digit."""
+    has_digit = False
+    for ch in s:
+        if ch == ".":
+            continue
+        if not ch.isdigit():
+            return False
+        has_digit = True
+    return has_digit
+
+
+def phoronix_bare_test_name(identifier):
+    """"pts/testa-1.0.0" -> "testa" -- strips the suite-namespace prefix ("pts/", "system/", ...) and
+    the trailing "-<version>", same rule web/joblib.py's phoronix_bare_test_name() applies (duplicated
+    here for the same reason phoronix_user_data_dir() above is -- see that function's own docstring),
+    so a segmented output filename reads "testa_..." rather than a redundant "pts_testa_1_0_0_..."."""
+    name = identifier.split("/", 1)[1] if "/" in identifier else identifier
+    last_dash = name.rfind("-")
+    if last_dash != -1 and _looks_like_version(name[last_dash + 1:]):
+        name = name[:last_dash]
+    return name
+
+
+def slice_csv(csv_path, elapsed_start, elapsed_finish, out_path):
+    """Writes the subset of csv_path's rows whose own "time" column falls in
+    [elapsed_start, elapsed_finish] to out_path (header always included, even if 0 data rows matched
+    -- see the caller, which only calls this when it expects a real match). Only CSVs with a "time"
+    column (i.e. produced with --interval) carry per-row timestamps to slice on at all; a CSV without
+    one (a single aggregate row, or a non-numeric "time" cell) is skipped, reported by the caller, not
+    treated as an error. Returns True if any row was written, False otherwise (including on any
+    read/parse problem -- malformed telemetry output is this tool's most likely real-world failure
+    mode, so a warning here rather than a stack trace matches this codebase's "degrade, don't fail"
+    convention for reading generated artifacts)."""
+    try:
+        with open(csv_path, newline="") as f:
+            rows = list(csv.reader(f))
+    except OSError as e:
+        print(f"  Warning: could not read {csv_path}: {e}", file=sys.stderr)
+        return False
+    if not rows:
+        return False
+    header = rows[0]
+    if "time" not in header:
+        return False
+    time_idx = header.index("time")
+    sliced = []
+    for row in rows[1:]:
+        if len(row) <= time_idx:
+            continue
+        try:
+            t_val = float(row[time_idx])
+        except ValueError:
+            continue
+        if elapsed_start <= t_val <= elapsed_finish:
+            sliced.append(row)
+    if not sliced:
+        return False
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    # lineterminator="\n" -- csv.writer's own default is "\r\n" (RFC 4180), but every wspy-written
+    # CSV (and every other CSV-producing tool in this codebase) uses plain "\n"; a sliced file should
+    # look native, not gain CRLF endings nothing else here has, which would silently break any
+    # downstream line-oriented tool (including this repo's own tests, confirmed live).
+    with open(out_path, "w", newline="") as f:
+        writer = csv.writer(f, lineterminator="\n")
+        writer.writerow(header)
+        writer.writerows(sliced)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Source 1 (preferred): pts_hooks.log -- see the module docstring for the full mechanism and its
+# real, confirmed-live caveats (run_position always "1", once-per-test-option not once-per-trial).
+# ---------------------------------------------------------------------------
+
+PTS_HOOKS_LOG_FIELDS = ("ts", "event", "hash", "run_position", "run_count", "identifier", "args",
+                        "result", "stddev")
+
+
+def parse_pts_hooks_log(path):
+    """Parses a <pass-name>.pts_hooks.log file (scripts/pts_hooks/{pre,post}_test_run.sh's own TSV
+    format: ts, event ("START"/"FINISH"), hash, run_position, run_count, identifier, args, result,
+    stddev -- the last two always empty on a START line) into a list of dicts, one per line. A
+    malformed line (wrong field count, an unparseable timestamp, an unrecognized event value) is
+    skipped, not fatal -- same "degrade, don't fail" convention this codebase already applies to every
+    other generated/external artifact it reads (run-index JSONL, composite.xml, ...). Returns [] if
+    the file doesn't exist or has no valid lines at all."""
+    entries = []
+    try:
+        with open(path) as f:
+            lines = f.readlines()
+    except OSError:
+        return entries
+    for line in lines:
+        fields = line.rstrip("\n").split("\t")
+        if len(fields) != len(PTS_HOOKS_LOG_FIELDS):
+            continue
+        entry = dict(zip(PTS_HOOKS_LOG_FIELDS, fields))
+        if entry["event"] not in ("START", "FINISH"):
+            continue
+        try:
+            entry["ts"] = float(entry["ts"])
+        except ValueError:
+            continue
+        entries.append(entry)
+    return entries
+
+
+def pair_pts_hooks_spans(entries):
+    """Pairs parse_pts_hooks_log()'s entries into one span per test-option execution:
+    {identifier, args, hash, start_ts, finish_ts, result, stddev}. Paired by *file order* (a START
+    followed by the next FINISH), not by run_position/hash matching -- PTS's own
+    __pre_test_run/__post_test_run fire once per test option, not per individual trial, so
+    run_position is always "1" in real hook data and can't disambiguate anything (see the module
+    docstring); file-order pairing is safe because only one PTS process -- and therefore one
+    in-flight test option -- ever runs at a time on a given host (this project's existing
+    "no --parallel, one hardware PMU at a time" assumption elsewhere in this codebase). A START with
+    no following FINISH (a truncated/interrupted log, e.g. the run was killed mid-test) is dropped
+    rather than paired with a later, unrelated FINISH; a FINISH with no preceding START is likewise
+    dropped rather than guessed-paired. Returns spans in file order."""
+    spans = []
+    pending = None
+    for entry in entries:
+        if entry["event"] == "START":
+            pending = entry
+        elif entry["event"] == "FINISH" and pending is not None:
+            spans.append({
+                "identifier": pending["identifier"], "args": pending["args"], "hash": pending["hash"],
+                "start_ts": pending["ts"], "finish_ts": entry["ts"],
+                "result": entry["result"], "stddev": entry["stddev"],
+            })
+            pending = None
+    return spans
+
+
+def segment_pass_via_pts_hooks_log(pts_hooks_log_path, pass_start, csv_files, out_dir):
+    """Segments every CSV in csv_files using pts_hooks.log spans -- one slice per test option
+    (identifier+args), no per-trial split (see module docstring for why). Returns the number of
+    (span, csv) slices actually written. `pass_start` is the pass's own manifest start_time (an aware
+    datetime) -- the reference point every span's start_ts/finish_ts (UTC epoch seconds) is measured
+    relative to, matching the same "elapsed seconds since the pass's own recorded start" convention
+    wspy's own --interval "time" column already uses."""
+    entries = parse_pts_hooks_log(pts_hooks_log_path)
+    spans = pair_pts_hooks_spans(entries)
+    if not spans:
+        return 0
+    pass_start_epoch = pass_start.timestamp()
+    sliced_count = 0
+    for csv_file in csv_files:
+        csv_name = os.path.basename(csv_file)
+        print(f"  Processing telemetry CSV: {csv_name}")
+        for span in spans:
+            elapsed_start = span["start_ts"] - pass_start_epoch
+            elapsed_finish = span["finish_ts"] - pass_start_epoch
+            bare = make_safe_filename(phoronix_bare_test_name(span["identifier"]))
+            args_slug = make_safe_filename(span["args"])
+            out_name = f"{bare}_{args_slug}_{csv_name}" if args_slug else f"{bare}_{csv_name}"
+            out_path = os.path.join(out_dir, out_name)
+            if slice_csv(csv_file, elapsed_start, elapsed_finish, out_path):
+                print(f"    Sliced: {out_name} [{elapsed_start:.1f}s to {elapsed_finish:.1f}s]")
+                sliced_count += 1
+    return sliced_count
+
+
+# ---------------------------------------------------------------------------
+# Source 2 (fallback): composite.xml + per-hash test-log timestamp correlation -- the original
+# doc/phoronix_hook_investigation.md Sections 1-3 method, used when a pass has no pts_hooks.log.
+# ---------------------------------------------------------------------------
+
+def phoronix_user_data_dir():
+    """~/.phoronix-test-suite, or $PTS_USER_PATH -- same resolution rule web/joblib.py's own
+    phoronix_user_data_dir() uses, duplicated here (rather than imported) since this standalone tool
+    has no web-UI counterpart to justify pulling in the rest of that module's dependency chain for
+    one small helper -- mirrors ledger.c's strip_version_suffix() already being re-derived in Python
+    elsewhere in this codebase for the same reason (no cross-language import, but small enough that
+    duplicating it beats coupling to an unrelated module)."""
+    return os.environ.get("PTS_USER_PATH") or os.path.join(os.path.expanduser("~"), ".phoronix-test-suite")
+
+
+def parse_xml_timestamp(s):
+    """PTS's own composite.xml <TimeStamp>/log-file timestamp format ("2026-07-18 13:06:30"),
+    assumed UTC (PTS records wall-clock system time, and this project's own hosts run UTC -- same
+    assumption the original prototype this replaces already made)."""
+    return datetime.datetime.strptime(s.strip(), "%Y-%m-%d %H:%M:%S").replace(tzinfo=datetime.timezone.utc)
+
+
+def find_phoronix_results_dir(benchmark, pass_start, pass_finish):
+    """Finds the <phoronix_user_data_dir()>/test-results/<id>/ directory whose composite.xml
+    <TimeStamp> falls inside [pass_start, pass_finish] (with a 15s buffer either side for
+    system-startup latency) and whose results actually include `benchmark`. Returns the directory
+    path, or None if nothing matches -- ambiguous cases (more than one candidate in the window)
+    resolve to whichever candidate's timestamp is closest to pass_start, not an error, since
+    composite.xml timestamps are second-resolution and a tie is possible but rare."""
+    pts_results_dir = os.path.join(phoronix_user_data_dir(), "test-results")
+    if not os.path.isdir(pts_results_dir):
+        return None
+    candidates = []
+    for name in os.listdir(pts_results_dir):
+        full_path = os.path.join(pts_results_dir, name)
+        comp_xml = os.path.join(full_path, "composite.xml")
+        if not os.path.isfile(comp_xml):
+            continue
+        try:
+            tree = ET.parse(comp_xml)
+            ts_el = tree.getroot().find("System/TimeStamp")
+            if ts_el is None or not ts_el.text:
+                continue
+            xml_dt = parse_xml_timestamp(ts_el.text)
+        except (ET.ParseError, OSError, ValueError):
+            continue
+        if not (pass_start - datetime.timedelta(seconds=15) <= xml_dt <= pass_finish + datetime.timedelta(seconds=15)):
+            continue
+        has_bench = any(
+            (ident_el := res.find("Identifier")) is not None and ident_el.text and benchmark in ident_el.text
+            for res in tree.getroot().findall("Result"))
+        if has_bench:
+            candidates.append((xml_dt, full_path))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: abs((c[0] - pass_start).total_seconds()))
+    return candidates[0][1]
+
+
+def parse_composite_results(composite_xml_path, benchmark):
+    """Every Result in composite.xml matching `benchmark` (a substring match against Identifier,
+    same rule find_phoronix_results_dir() already used to accept this composite.xml in the first
+    place): {identifier, description, durations} per Result, `durations` the per-trial seconds parsed
+    from the Result's own Data/Entry/JSON "test-run-times" field (colon-separated), [] if that field
+    is missing/malformed for this particular Result -- callers must treat an empty `durations` as
+    "no trial breakdown available" for that one result, not fatal for the whole composite.xml."""
+    try:
+        tree = ET.parse(composite_xml_path)
+    except (ET.ParseError, OSError):
+        return []
+    results = []
+    for res in tree.getroot().findall("Result"):
+        ident_el = res.find("Identifier")
+        if ident_el is None or not ident_el.text or benchmark not in ident_el.text:
+            continue
+        desc_el = res.find("Description")
+        description = desc_el.text if desc_el is not None and desc_el.text else ""
+        durations = []
+        json_el = res.find("Data/Entry/JSON")
+        if json_el is not None and json_el.text:
+            try:
+                data = json.loads(json_el.text)
+                times_str = data.get("test-run-times", "")
+                if times_str:
+                    durations = [float(d) for d in times_str.split(":")]
+            except (ValueError, TypeError):
+                pass
+        results.append({"identifier": ident_el.text, "description": description, "durations": durations})
+    return results
+
+
+def get_hash_description_mapping(install_identifier):
+    """{comparison_hash: description} from an installed test's own pts-install.json
+    (~/.phoronix-test-suite/installed-tests/<identifier>/pts-install.json,
+    test_installation.history.per_run_times) -- maps a composite.xml Result's human-readable
+    Description back to the comparison hash PTS itself used to name that option's own
+    test-logs/<hash>/ directory. {} if the file is missing or doesn't parse -- a missing mapping
+    means log-based trial-start correlation can't proceed for this identifier, degrading to "no
+    per-trial split available" for it, not a fatal error for the whole run."""
+    install_dir = os.path.join(phoronix_user_data_dir(), "installed-tests", install_identifier)
+    pts_install_json = os.path.join(install_dir, "pts-install.json")
+    try:
+        with open(pts_install_json) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    per_run = data.get("test_installation", {}).get("history", {}).get("per_run_times", {})
+    return {h: info["desc"] for h, info in per_run.items() if h != "all" and info.get("desc")}
+
+
+def parse_trial_start_times(log_file):
+    """Trial start timestamps (aware UTC datetimes) parsed out of a PTS per-hash .log file
+    (test-logs/<hash>/<results-id>.log) -- each "<date> - Run N" banner line is followed within a
+    few lines by a bare "<date> <time>" precise-start line; this returns those precise-start
+    timestamps in run order. [] if the file doesn't exist or has no recognizable banners at all."""
+    starts = []
+    try:
+        with open(log_file) as f:
+            lines = f.readlines()
+    except OSError:
+        return starts
+    for i, line in enumerate(lines):
+        if " - Run " not in line or not line.startswith("202"):
+            continue
+        for offset in range(1, 4):
+            if i + offset >= len(lines):
+                break
+            candidate = lines[i + offset].strip()
+            if candidate.startswith("202") and len(candidate) == 19:
+                try:
+                    starts.append(parse_xml_timestamp(candidate))
+                    break
+                except ValueError:
+                    pass
+    return starts
+
+
+def segment_pass_via_composite_xml(run_dir, suite, benchmark, pass_start, pass_finish, csv_files, out_dir):
+    """Segments every CSV in csv_files using composite.xml + per-hash log-file trial-start
+    correlation (the fallback path -- see module docstring). Returns the number of slices written."""
+    results_dir = find_phoronix_results_dir(benchmark, pass_start, pass_finish)
+    if not results_dir:
+        print("  Could not find a matching Phoronix test-results directory for this pass "
+              "(no pts_hooks.log either -- nothing to correlate against).")
+        return 0
+    print(f"  Matched Phoronix results directory: {results_dir}")
+    comp_xml = os.path.join(results_dir, "composite.xml")
+    results = parse_composite_results(comp_xml, benchmark)
+    if not results:
+        print("  No matching benchmark results found in composite.xml.")
+        return 0
+
+    hash_to_desc = get_hash_description_mapping(results[0]["identifier"])
+    if not hash_to_desc:
+        print(f"  Warning: could not load pts-install.json for {results[0]['identifier']}")
+
+    scheduled = []
+    for res in results:
+        matched_hash = next((h for h, desc in hash_to_desc.items() if desc == res["description"]), None)
+        if not matched_hash:
+            continue
+        log_files = glob.glob(os.path.join(results_dir, "test-logs", matched_hash, "*.log"))
+        if not log_files:
+            continue
+        trial_starts = parse_trial_start_times(log_files[0])
+        for idx, start_dt in enumerate(trial_starts):
+            if idx >= len(res["durations"]):
+                continue
+            duration = res["durations"][idx]
+            elapsed_start = (start_dt - pass_start).total_seconds()
+            scheduled.append({
+                "description": res["description"], "trial": idx + 1,
+                "elapsed_start": elapsed_start, "elapsed_finish": elapsed_start + duration,
+            })
+    if not scheduled:
+        print("  Could not correlate any trial runs from logs.")
+        return 0
+    scheduled.sort(key=lambda r: r["elapsed_start"])
+
+    sliced_count = 0
+    for csv_file in csv_files:
+        csv_name = os.path.basename(csv_file)
+        print(f"  Processing telemetry CSV: {csv_name}")
+        for run in scheduled:
+            desc_slug = make_safe_filename(run["description"])
+            out_name = f"{desc_slug}_run{run['trial']}_{csv_name}"
+            out_path = os.path.join(out_dir, out_name)
+            if slice_csv(csv_file, run["elapsed_start"], run["elapsed_finish"], out_path):
+                print(f"    Sliced: {out_name} [{run['elapsed_start']:.1f}s to {run['elapsed_finish']:.1f}s]")
+                sliced_count += 1
+    return sliced_count
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Segment wspy telemetry CSVs by Phoronix test cases.")
+    parser.add_argument("--rundir", required=True, help="path to the wspy unified run directory")
+    args = parser.parse_args()
+
+    run_dir = os.path.abspath(args.rundir)
+    manifest_path = os.path.join(run_dir, "manifest.json")
+    try:
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+    except (OSError, ValueError) as e:
+        print(f"Error: could not read {manifest_path}: {e}", file=sys.stderr)
+        return 1
+
+    suite = manifest.get("suite")
+    benchmark = manifest.get("benchmark")
+    if not suite or not benchmark:
+        print("Error: manifest.json missing suite or benchmark fields", file=sys.stderr)
+        return 1
+
+    print(f"Analyzing run directory: {run_dir}")
+    print(f"Suite: {suite}, Benchmark: {benchmark}")
+
+    any_segmented = False
+    for p in manifest.get("passes", []):
+        pass_name = p.get("name")
+        pass_manifest_name = p.get("manifest")
+        if not pass_manifest_name:
+            continue
+        pass_manifest_path = os.path.join(run_dir, pass_manifest_name)
+        try:
+            with open(pass_manifest_path) as f:
+                pm = json.load(f)
+        except (OSError, ValueError):
+            print(f"Skipping pass {pass_name}: could not read {pass_manifest_name}")
+            continue
+
+        timing = pm.get("timing", {})
+        start_time_str, finish_time_str = timing.get("start_time"), timing.get("finish_time")
+        if not start_time_str or not finish_time_str:
+            print(f"Skipping pass {pass_name}: manifest has no timing block")
+            continue
+        pass_start, pass_finish = parse_iso8601(start_time_str), parse_iso8601(finish_time_str)
+
+        print(f"\n--- Pass: {pass_name} ---")
+        print(f"  Time window: {pass_start.isoformat()} to {pass_finish.isoformat()}")
+
+        csv_files = glob.glob(os.path.join(run_dir, "*.csv"))
+        if not csv_files:
+            print("  No telemetry CSV files found in run directory to slice.")
+            continue
+
+        out_dir = os.path.join(run_dir, "segmented", pass_name)
+        pts_hooks_log_name = p.get("pts_hooks_log")
+        sliced_count = 0
+        if pts_hooks_log_name:
+            pts_hooks_log_path = os.path.join(run_dir, pts_hooks_log_name)
+            print(f"  Using pts_hooks.log: {pts_hooks_log_name}")
+            sliced_count = segment_pass_via_pts_hooks_log(pts_hooks_log_path, pass_start, csv_files, out_dir)
+            if sliced_count == 0:
+                print("  pts_hooks.log present but yielded no usable spans -- falling back to composite.xml.")
+        if sliced_count == 0:
+            sliced_count = segment_pass_via_composite_xml(
+                run_dir, suite, benchmark, pass_start, pass_finish, csv_files, out_dir)
+
+        if sliced_count:
+            print(f"  Successfully wrote {sliced_count} segmented file(s).")
+            any_segmented = True
+
+    print("\nSegmentation complete." if any_segmented else "\nSegmentation complete -- nothing was segmented.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

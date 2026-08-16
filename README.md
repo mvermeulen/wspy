@@ -853,6 +853,37 @@ is never touched, so this is safe even on a point with recorded runs. `./wspy-ph
 --unregister <dir-or-identity>` is the CLI equivalent. See `./wspy-phoronix-import --help` for the
 full option list.
 
+## wspy-phoronix-segment: telemetry segmentation by Phoronix test case
+
+`wspy-phoronix-segment` partitions a `--interval` wspy telemetry CSV into per-test-case datasets,
+correlating each Phoronix test option's real execution window against wspy's own periodic `time`
+column — no ptrace/process-tree tracing needed, so it works across any run profile, including a
+pure hardware-counter sweep where `--tree` was never used. See
+[doc/phoronix_hook_investigation.md](doc/phoronix_hook_investigation.md) for the full investigation
+this tool implements.
+
+```
+./wspy-phoronix-segment --rundir web/runs/phoronix/coremark/20260718T130628.995-2dc78854
+```
+
+Two correlation sources, tried in this order per pass:
+
+1. **`pts_hooks.log`** (preferred) — if `scripts/setup_phoronix_hooks.sh`'s PTS `result_notifier`
+   hooks were registered and fired during the run, `wspy-run` already captured a
+   `<pass-name>.pts_hooks.log` artifact (named in the run's own `manifest.json`). Its START/FINISH
+   lines give the exact wall-clock window PTS itself measured for each test option, directly — no
+   `composite.xml` hash-mapping or log-file timestamp parsing needed. Only per-test-option
+   granularity (every trial of an option averaged together within its one slice), since PTS's own
+   hooks fire once per test option, not once per individual trial.
+2. **`composite.xml` + per-hash `.log` correlation** (fallback, real per-trial granularity) — used
+   when a pass has no `pts_hooks.log` (hooks never registered on this host, or the run predates
+   hook-capture support). Locates the matching `~/.phoronix-test-suite/test-results/` directory by
+   timestamp, maps each result's comparison hash via `pts-install.json`, and slices using
+   `composite.xml`'s own per-trial durations against each trial's precise start time.
+
+Segmented output lands under `<rundir>/segmented/<pass-name>/`, one file per test-case (and, via the
+fallback path, per trial). See `./wspy-phoronix-segment --help` for the full option list.
+
 ## wspy-analyze: local LLM (Ollama) narrative analysis
 
 `wspy-analyze` turns a run directory's already-computed, already-validated numbers (raw counter

@@ -70,7 +70,10 @@ Any telemetry row in `power.csv` (or any other CSV) where `19.0 <= time <= 61.7`
 ---
 
 ## 3. The Segmentation Utility
-The script [wspy-phoronix-segment.py](file:///home/mev/source/wspy/scripts/wspy-phoronix-segment.py) automates this pipeline.
+The script `scripts/wspy-phoronix-segment.py` automated this pipeline as a prototype. **Superseded —
+see Section 11**: it's been promoted to the real top-level `wspy-phoronix-segment` CLI tool, which
+folds this same composite.xml/log-correlation method in as its fallback path alongside the newer,
+preferred `pts_hooks.log` path; the prototype file itself is removed.
 
 ### Execution Example:
 ```bash
@@ -407,3 +410,53 @@ as every other Check button probe, with `warn`'s detail spelling out the exact c
 patched system file (`ok`), a sandboxed copy of the original unpatched file via `--phoronix-pts-dir`
 (`warn`, correct crash text), and a sandboxed `PTS_USER_PATH` with no hooks registered at all (field
 absent from the response entirely, not just `null` on the client side).
+
+## 11. Segmentation Tool Promoted to a Real CLI, `pts_hooks.log` Support Landed (2026-08-16)
+
+Section 7 closed with "nothing yet consumes `pts_hooks.log`" as the actual remainder of this item.
+That's now landed, and the tool itself moved from a `scripts/` prototype to a real top-level CLI,
+`wspy-phoronix-segment` (mirroring `wspy-phoronix-import`'s own naming/placement), superseding
+`scripts/wspy-phoronix-segment.py` (removed).
+
+**`pts_hooks.log`, preferred when a pass has one** (named in the run's own `manifest.json`,
+`passes[].pts_hooks_log`): `parse_pts_hooks_log()` reads the TSV lines
+`scripts/pts_hooks/{pre,post}_test_run.sh` already write, `pair_pts_hooks_spans()` pairs them by
+*file order* into one span per test-option execution. This deliberately does **not** attempt
+per-trial granularity from the hook log — Section 9's own finding that
+`__pre_test_run`/`__post_test_run` fire once per test option, not once per individual trial, means
+`PTS_EXTERNAL_TEST_RUN_POSITION` is always `"1"` in real hook data and can't disambiguate trials at
+all. Recovering that would need `__interim_test_run` (not currently registered by
+`scripts/setup_phoronix_hooks.sh`), left as explicit future work rather than reintroducing the
+composite.xml hash-mapping/log-parsing indirection this path exists specifically to avoid. A
+hook-derived segment therefore covers the whole test option (every trial averaged together within
+it) — coarser than the fallback path below, but real, and needs nothing beyond the hook log itself:
+no PTS results-directory search, no `pts-install.json` hash lookup, no per-hash `.log` file parsing.
+
+**composite.xml + per-hash `.log` correlation, as the fallback** when a pass has no `pts_hooks.log`
+(hooks never registered on that host, or the run predates hook-capture support): Sections 1–3's
+original method, cleaned up and folded in as `find_phoronix_results_dir()`/`parse_composite_results()`/
+`get_hash_description_mapping()`/`parse_trial_start_times()`/`segment_pass_via_composite_xml()` — same
+algorithm, same real per-trial granularity (via `composite.xml`'s own `test-run-times` durations
+matched against each trial's precise start time in its own `.log` file), not a regression from the
+prototype it replaces.
+
+**Honest validation caveat, unchanged from Section 7's own closing note:** hooks still cannot be
+safely registered on this project's own development host for a live end-to-end capture — Section 9's
+upstream `result_notifier.php` crash bug is still open pending
+[phoronix-test-suite/phoronix-test-suite#924](https://github.com/phoronix-test-suite/phoronix-test-suite/pull/924)
+landing in a release. `parse_pts_hooks_log()`/`pair_pts_hooks_spans()` are therefore verified against
+synthetic fixtures built byte-for-byte from `scripts/pts_hooks/{pre,post}_test_run.sh`'s own `printf`
+format strings (field count, tab delimiters, empty trailing fields on `START`), not live-captured
+data — real capture validation is still a "once hooks have been registered on at least one host and
+produced real data" follow-up, exactly as Section 7 already flagged. The composite.xml fallback path
+carries forward the original prototype's own real validation (Section 3's worked example against an
+actual `coremark` run) unchanged.
+
+New `tests/phoronix_segment_smoke.sh` end-to-end coverage (fake `manifest.json`/pass manifests/
+`pts_hooks.log`/`composite.xml`/`.log`/`--interval` CSV fixtures, run through the real
+`wspy-phoronix-segment` binary, real file assertions on the sliced output — no mocking): the
+`pts_hooks.log` path slicing a two-test-option pass correctly, the composite.xml fallback path
+slicing a three-trial pass correctly (regression coverage for the original prototype's own worked
+behavior), a pass with neither source degrading to "nothing segmented" without erroring, and a
+malformed/truncated `pts_hooks.log` (an unpaired trailing `START`) still segmenting whatever paired
+cleanly rather than aborting the whole pass.
