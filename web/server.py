@@ -5345,7 +5345,7 @@ def render_tree_diff(cfg, keys):
     return page("wspy tree diff", body)
 
 
-def render_interval_viewer(suite, benchmark, run_id, filename):
+def render_interval_viewer(suite, benchmark, run_id, filename, combined_timeline_url=None):
     """Item 4's interactive timeline viewer page -- the --interval-CSV
     counterpart to render_tree_viewer() above, same thin-HTML-shell shape:
     the actual chart (series toggles, phase-shaded bands, GPU overlay,
@@ -5353,15 +5353,23 @@ def render_interval_viewer(suite, benchmark, run_id, filename):
     this CSV's parsed columns via /api/interval-json/<suite>/<benchmark>/
     <run_id>/<filename> on load. filename may be nested (see
     _serve_artifact()'s own "no fixed whitelist" reasoning) -- whichever
-    CSV a report page's "View interactive timeline" link pointed at."""
+    CSV a report page's "View interactive timeline" link pointed at.
+
+    combined_timeline_url (4.4(a) item 8(c)): the caller's own
+    find_combined_timeline_csv() lookup, already resolved to a URL (or None if this
+    run has no qualifying same-invocation --tree+--interval pass at all) -- kept as a
+    plain optional string rather than this function re-deriving it, since that needs
+    rundir/run_manifest this thin-shell function otherwise has no reason to touch."""
     json_url = (f"/api/interval-json/{_urlescape(suite)}/{_urlescape(benchmark)}/"
                 f"{_urlescape(run_id)}/{_urlescape(filename)}")
     report_url = f"/report/{_urlescape(suite)}/{_urlescape(benchmark)}/{_urlescape(run_id)}"
+    combined_link = (f' &middot; <a href="{combined_timeline_url}">Tree + timeline (combined)</a>'
+                      if combined_timeline_url else "")
     body = f"""
 <section class="panel">
   <h1>Timeline: {html.escape(suite)} / {html.escape(benchmark)} / {html.escape(run_id)}
   <span class="muted">({html.escape(filename)})</span></h1>
-  <p><a href="{report_url}">Back to report</a></p>
+  <p><a href="{report_url}">Back to report</a>{combined_link}</p>
   <div id="itv-controls"></div>
   <div id="itv-root"><p class="muted">Loading timeline...</p></div>
 </section>
@@ -5571,7 +5579,20 @@ class Handler(BaseHTTPRequestHandler):
             if not (os.path.isfile(csv_path) and joblib.csv_has_time_column(csv_path)):
                 self._send(404, f"no --interval CSV at {filename!r} in this run directory")
                 return
-            self._send(200, render_interval_viewer(suite, benchmark, run_id, filename))
+            # 4.4(a) item 8(c) ("Linked navigation..."): if this run also has a same-invocation
+            # --tree+--interval pass (possibly a different pass than the one filename came from --
+            # e.g. a plain --interval pass and a separate --tree-heavy pass in the same wspy-run
+            # profile), let a reader viewing every raw column here jump to that pass's combined
+            # tree+timeline view for process context, same as the report page's own "Tree +
+            # timeline (combined)" link already offers up front.
+            run_manifest = read_run_manifest(os.path.join(rundir, RUN_MANIFEST_NAME))
+            combined_csv = find_combined_timeline_csv(rundir, run_manifest)
+            combined_timeline_url = None
+            if combined_csv:
+                combined_timeline_url = (f"/timeline-viewer/{_urlescape(suite)}/{_urlescape(benchmark)}/"
+                                          f"{_urlescape(run_id)}/{_urlescape(combined_csv)}")
+            self._send(200, render_interval_viewer(suite, benchmark, run_id, filename,
+                                                     combined_timeline_url))
             return
 
         m = re.match(r"^/timeline-viewer/([^/]+)/([^/]+)/([^/]+)/(.+)$", path)
