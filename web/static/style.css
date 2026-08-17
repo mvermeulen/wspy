@@ -308,6 +308,16 @@ details summary {
   font-size: 0.85rem;
   cursor: help;
 }
+.phoronix-gpu-warn {
+  color: var(--bad);
+  font-size: 0.85rem;
+  cursor: help;
+}
+.phoronix-options-slug {
+  font-size: 0.78rem;
+  font-family: monospace;
+  cursor: help;
+}
 
 .block {
   border: 1px solid var(--border);

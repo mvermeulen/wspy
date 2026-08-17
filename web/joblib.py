@@ -3453,10 +3453,16 @@ def list_materialized_phoronix_test_points(dest_root):
     materialize_phoronix_test_point() observed at materialize time (True/
     False/None for unknown) -- this is not re-checked here, so it can go
     stale (installed after materializing, or vice versa); re-materializing
-    the same point (check_installed=True) refreshes it. Returns a list of
+    the same point (check_installed=True) refreshes it. "description" is
+    source.json's own human-readable Result Description (e.g. "Blend File:
+    Barbershop - Compute: CPU-Only") -- the Phoronix tab's inventory table
+    shows this instead of options_slug, since a long/colliding Arguments
+    string collapses to an opaque hash suffix there
+    (slugify_phoronix_arguments()'s docstring) that alone gives no way to
+    tell a CPU test point from an HIP/CUDA one. Returns a list of
     {test_id, bare_name, options_slug, identity, dir, arguments,
-    source_kind, source_ref, generated_at, installed, runs}, newest
-    generated_at first."""
+    description, source_kind, source_ref, generated_at, installed, runs},
+    newest generated_at first."""
     entries = []
     if not os.path.isdir(dest_root):
         return entries
@@ -3496,6 +3502,7 @@ def list_materialized_phoronix_test_points(dest_root):
                 "identity": f"{bare_name}-{options_slug}",
                 "dir": point_dir,
                 "arguments": source.get("arguments", ""),
+                "description": source.get("description", ""),
                 "source_kind": source.get("source_kind", ""),
                 "source_ref": source.get("source_ref", ""),
                 "generated_at": source.get("generated_at", ""),
@@ -3504,6 +3511,80 @@ def list_materialized_phoronix_test_points(dest_root):
             })
     entries.sort(key=lambda e: e["generated_at"], reverse=True)
     return entries
+
+
+# PCI vendor IDs as seen under /sys/class/drm/card*/device/vendor -- the
+# same scan amd_sysfs_initialize() (amd_sysfs.c) does in C to find an AMD
+# card without assuming a fixed card index, mirrored here in Python. This
+# is a real hardware probe, independent of whether wspy itself was *built*
+# with AMDGPU=1/NVIDIA=1 (see GPU_BUILD_UNSUPPORTED_RE in server.py for
+# that separate, build-time-only check) -- a host can be built with GPU
+# support and still have no matching card plugged in, which is exactly the
+# case that wastes a run.
+_GPU_VENDOR_IDS_BY_PCI_ID = {
+    "0x1002": "amd",
+    "0x10de": "nvidia",
+}
+
+# Backend keywords a test point's Arguments/Description commonly carries
+# (Blender's "--cycles-device HIP/CUDA/OPTIX", but also generic "NVIDIA"/
+# "AMD"/vendor-named engines in other tests) -- best-effort text matching,
+# not a parsed grammar, since the vocabulary differs per Phoronix test.
+# Deliberately a narrower, vendor-*specific* list than
+# _PHORONIX_GPU_ENTRY_KEYWORDS above (which also flags vendor-neutral
+# "vulkan"/"opencl"/"sycl"/"oneapi"/"metal" axes for a different job --
+# making a human confirm an axis before it's ever bulk-selected): those
+# cross-vendor/Intel/Apple backends can't be mapped to "amd" or "nvidia"
+# without a false warning, and detect_local_gpu_vendors() below can't
+# detect Intel/Apple GPUs to check them against anyway. Order matters only
+# in that each pattern is checked independently; a string matching neither
+# returns None (no GPU-vendor requirement inferred -- includes real
+# CPU-only test points and anything this heuristic simply doesn't
+# recognize).
+_GPU_BACKEND_PATTERNS = [
+    (re.compile(r"\b(hip|amd|radeon)\b", re.IGNORECASE), "amd"),
+    (re.compile(r"\b(cuda|optix|nvidia|geforce|rtx)\b", re.IGNORECASE), "nvidia"),
+]
+
+
+def detect_local_gpu_vendors(drm_root="/sys/class/drm"):
+    """Best-effort set of GPU vendors ({"amd"}/{"nvidia"}/both/empty)
+    physically present on this host, from <drm_root>/card*/device/vendor.
+    Missing/unreadable sysfs (no DRM, permissions, non-Linux) degrades to an
+    empty set rather than raising -- matching this codebase's usual
+    filesystem-scan convention. Backs the Phoronix tab's "no matching GPU
+    detected" warning on GPU-backend test points. drm_root defaults to the
+    real sysfs path; tests point it at a fake tree instead of the real one,
+    the same convention several C unit tests use against fake sysfs trees
+    (see CLAUDE.md)."""
+    vendors = set()
+    for path in glob.glob(os.path.join(drm_root, "card[0-9]*", "device", "vendor")):
+        try:
+            with open(path) as f:
+                vendor_id = f.read().strip().lower()
+        except OSError:
+            continue
+        name = _GPU_VENDOR_IDS_BY_PCI_ID.get(vendor_id)
+        if name:
+            vendors.add(name)
+    return vendors
+
+
+def phoronix_point_gpu_backend(entry):
+    """Best-effort GPU vendor ("amd"/"nvidia") a materialized test point's
+    Description or Arguments text implies, or None if neither mentions one
+    (a CPU-only point, or a test point this heuristic doesn't recognize --
+    always a false negative, never a false positive, so it only ever
+    suppresses the warning, never wrongly raises one). Checked against
+    "description" first since it's the more deliberately-worded field
+    (e.g. Blender's "Compute: CPU-Only" / "Compute: HIP"); falls back to
+    "arguments" for test points whose Description doesn't spell out the
+    backend at all."""
+    for text in (entry.get("description") or "", entry.get("arguments") or ""):
+        for pattern, vendor in _GPU_BACKEND_PATTERNS:
+            if pattern.search(text):
+                return vendor
+    return None
 
 
 def find_materialized_phoronix_test_point(dest_root, identity):

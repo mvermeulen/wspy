@@ -1844,6 +1844,20 @@ class ListMaterializedPhoronixTestPointsTest(unittest.TestCase):
                 {"run_id": "run1", "suite": "phoronix", "benchmark": info["identity"]},
             ])
 
+    def test_description_surfaced_from_source_json(self):
+        # Regression: the Phoronix tab's inventory table used to have only
+        # options_slug to show, which collapses to an opaque hash suffix
+        # (slugify_phoronix_arguments()) once Arguments gets long/collides
+        # with a sibling -- no way to tell a CPU point from an HIP/CUDA one
+        # without opening source.json by hand.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "dest")
+            point = {"test_id": "pts/blender-1.2.1", "arguments": "-- --cycles-device HIP",
+                      "description": "Blend File: BMW27 - Compute: HIP"}
+            joblib.materialize_phoronix_test_point(point, dest, "file", "/tmp/src.xml")
+            points = joblib.list_materialized_phoronix_test_points(dest)
+            self.assertEqual(points[0]["description"], "Blend File: BMW27 - Compute: HIP")
+
     def test_empty_dest_returns_empty_list(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             self.assertEqual(joblib.list_materialized_phoronix_test_points(os.path.join(tmpdir, "nope")), [])
@@ -1867,6 +1881,61 @@ class ListMaterializedPhoronixTestPointsTest(unittest.TestCase):
                        os.path.join(info["dir"], "runs", "run1"))
             points = joblib.list_materialized_phoronix_test_points(dest)
             self.assertEqual(points[0]["runs"], [])
+
+
+class DetectLocalGpuVendorsTest(unittest.TestCase):
+    def _write_card(self, drm_root, card, vendor_id):
+        card_dir = os.path.join(drm_root, card, "device")
+        os.makedirs(card_dir)
+        with open(os.path.join(card_dir, "vendor"), "w") as f:
+            f.write(vendor_id + "\n")
+
+    def test_no_drm_root_returns_empty_set(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertEqual(joblib.detect_local_gpu_vendors(os.path.join(tmpdir, "nope")), set())
+
+    def test_amd_card_detected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_card(tmpdir, "card0", "0x1002")
+            self.assertEqual(joblib.detect_local_gpu_vendors(tmpdir), {"amd"})
+
+    def test_nvidia_card_detected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_card(tmpdir, "card0", "0x10de")
+            self.assertEqual(joblib.detect_local_gpu_vendors(tmpdir), {"nvidia"})
+
+    def test_both_vendors_detected_across_cards(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_card(tmpdir, "card0", "0x1002")
+            self._write_card(tmpdir, "card1", "0x10de")
+            self.assertEqual(joblib.detect_local_gpu_vendors(tmpdir), {"amd", "nvidia"})
+
+    def test_unrecognized_vendor_id_ignored(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_card(tmpdir, "card0", "0x8086")  # Intel
+            self.assertEqual(joblib.detect_local_gpu_vendors(tmpdir), set())
+
+
+class PhoronixPointGpuBackendTest(unittest.TestCase):
+    def test_hip_description_maps_to_amd(self):
+        entry = {"description": "Blend File: Barbershop - Compute: HIP", "arguments": ""}
+        self.assertEqual(joblib.phoronix_point_gpu_backend(entry), "amd")
+
+    def test_cuda_description_maps_to_nvidia(self):
+        entry = {"description": "Blend File: Barbershop - Compute: CUDA", "arguments": ""}
+        self.assertEqual(joblib.phoronix_point_gpu_backend(entry), "nvidia")
+
+    def test_cpu_only_description_returns_none(self):
+        entry = {"description": "Blend File: Barbershop - Compute: CPU-Only", "arguments": ""}
+        self.assertIsNone(joblib.phoronix_point_gpu_backend(entry))
+
+    def test_falls_back_to_arguments_when_no_description(self):
+        entry = {"description": "", "arguments": "-b scene.blend -- --cycles-device OPTIX"}
+        self.assertEqual(joblib.phoronix_point_gpu_backend(entry), "nvidia")
+
+    def test_no_match_returns_none(self):
+        entry = {"description": "", "arguments": "-evp sha256"}
+        self.assertIsNone(joblib.phoronix_point_gpu_backend(entry))
 
 
 class FindMaterializedPhoronixTestPointTest(unittest.TestCase):
