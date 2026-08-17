@@ -129,6 +129,20 @@ its GitHub release body is the notes at `https://github.com/mvermeulen/wspy/rele
 ## Shipped since 4.3.1
 Intra-cycle staging area for 4.4 — fold into "What shipped in 4.4" at release-prep time.
 
+- Phoronix tab: GPU-backend visibility for hashed/collided option slugs (`web/joblib.py`/
+  `web/server.py`). A long or colliding Arguments string makes `slugify_phoronix_arguments()`
+  collapse a materialized test point's directory name to an opaque hash suffix (e.g. Blender's
+  `...-fbf7219f`), leaving no way to tell a CPU test point from an HIP/CUDA one without opening
+  `source.json` by hand — a real, confirmed cost: a GPU-backend variant picked and run on hardware
+  with no matching card, wasting the run. `list_materialized_phoronix_test_points()` now also
+  surfaces each point's `source.json` `description`; the inventory table shows it as the Options
+  column's primary label, with the raw `options_slug` kept underneath (muted) for directory
+  matching. New `detect_local_gpu_vendors()` (a `/sys/class/drm/card*/device/vendor` hardware
+  probe, independent of the existing `AMDGPU=1`/`NVIDIA=1` build-time check) and
+  `phoronix_point_gpu_backend()` (best-effort AMD/NVIDIA inference from description/arguments text)
+  combine to flag a row with a "no AMD/NVIDIA GPU detected" warning before a run is launched on
+  hardware that can't back it. The search filter now also matches description/arguments, so
+  filtering by "hip"/"cuda" works even on hashed slugs. Covered by new `web/test_joblib.py` tests.
 - `wspy-run`-profile-driven batchable equivalent of the single-test-point Phoronix suite flow,
   closing 4.4(c) out entirely. New top-level `wspy-phoronix-batch` runs many already-materialized
   test points (`workload/phoronix/<test>/<options>/`) non-interactively in one call — until now the
