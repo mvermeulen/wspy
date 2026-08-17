@@ -3337,6 +3337,12 @@ def enrich_phoronix_axes(test_id, axes):
 def render_phoronix_inventory_groups(dest_root):
     points = joblib.list_materialized_phoronix_test_points(dest_root)
     groups = joblib.group_materialized_phoronix_points_by_test(points)
+    # Real hardware probe (not the AMDGPU=1/NVIDIA=1 build-time check --
+    # see GPU_BUILD_UNSUPPORTED_RE above) so a GPU-backend test point
+    # (Blender's HIP/CUDA/OptiX variants, e.g.) can be flagged before a
+    # human spends a whole run on it -- confirmed real complaint: this ran
+    # to completion, wasting the time, on a host with no matching card.
+    local_gpu_vendors = joblib.detect_local_gpu_vendors()
     blocks = []
     for g in groups:
         description = joblib.read_phoronix_test_description(dest_root, g["bare_name"])
@@ -3400,9 +3406,37 @@ def render_phoronix_inventory_groups(dest_root):
                 # installed at all, or the test_id has no parseable version
                 # suffix to compare) -- fall back to the materialize-time snapshot.
                 installed_text = {True: "yes", False: "no"}.get(p.get("installed"), "?")
+
+            # Options column: prefer the point's own human-readable
+            # Description ("Blend File: Barbershop - Compute: HIP") over
+            # options_slug -- a long/colliding Arguments string collapses
+            # to an opaque "...-fbf7219f" hash suffix there
+            # (slugify_phoronix_arguments()'s docstring) that alone gives
+            # no way to tell a CPU test point from an HIP/CUDA one. The raw
+            # slug is kept underneath (muted) since it's still the real
+            # directory name -- useful for matching against a report path.
+            point_description = (p.get("description") or "").strip()
+            gpu_backend = joblib.phoronix_point_gpu_backend(p)
+            gpu_warn_html = ""
+            if gpu_backend and gpu_backend not in local_gpu_vendors:
+                gpu_warn_title = (f"this test point's Description/Arguments reference "
+                                   f"{gpu_backend.upper()} -- no {gpu_backend.upper()} GPU was "
+                                   f"detected on this host (/sys/class/drm scan) -- running it will "
+                                   f"likely fail or waste the run")
+                gpu_warn_html = (f' <span class="phoronix-gpu-warn" title="{html.escape(gpu_warn_title)}">'
+                                  f'&#9888; no {gpu_backend.upper()} GPU detected</span>')
+            if point_description and point_description != p["options_slug"]:
+                options_cell = (
+                    f'{html.escape(point_description)}{gpu_warn_html}'
+                    f'<div class="muted phoronix-options-slug" title="{html.escape(p.get("arguments", ""))}">'
+                    f'{html.escape(p["options_slug"])}</div>')
+            else:
+                options_cell = f'{html.escape(p["options_slug"])}{gpu_warn_html}'
+            search_text = f'{p["options_slug"]} {point_description} {p.get("arguments", "")}'.lower()
+
             rows.append(
-                f'<tr data-phoronix-options="{html.escape(p["options_slug"].lower())}">'
-                f'<td>{html.escape(p["options_slug"])}</td>'
+                f'<tr data-phoronix-options="{html.escape(search_text)}">'
+                f'<td>{options_cell}</td>'
                 f'<td>{installed_text}</td><td>{runs_html}</td>'
                 f'<td><button type="button" class="phoronix-use-in-run" '
                 f'data-dir="{html.escape(p["dir"])}">Use in Run tab</button> {repin_html} '
