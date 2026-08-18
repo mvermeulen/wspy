@@ -96,6 +96,13 @@ static void test_classify_simple_axis_thresholds(void){
   classify_simple_axis(100001.0,1,ALLOCATION_PRESSURE_RULES,3,&out);
   assert(out.available && !strcmp(out.label,"high"));
 
+  classify_simple_axis(1.9,1,VECTORIZATION_DENSITY_RULES,3,&out);
+  assert(out.available && !strcmp(out.label,"low"));
+  classify_simple_axis(6.0,1,VECTORIZATION_DENSITY_RULES,3,&out);
+  assert(out.available && !strcmp(out.label,"moderate"));
+  classify_simple_axis(15.0,1,VECTORIZATION_DENSITY_RULES,3,&out);
+  assert(out.available && !strcmp(out.label,"high"));
+
   printf("PASS: classify_simple_axis thresholds\n");
 }
 
@@ -498,6 +505,7 @@ static void test_confidence_high(void){
   simple[AXIS_CONTROL_FLOW_STYLE].available = 1;
   simple[AXIS_RUNTIME_STABILITY].available = 0;
   simple[AXIS_ALLOCATION_PRESSURE].available = 1;
+  simple[AXIS_VECTORIZATION_DENSITY].available = 1;
 
   compute_overall_confidence(&dom,simple,NUM_SIMPLE_AXES,&conf);
   assert(!strcmp(conf.level,"high"));
@@ -523,6 +531,7 @@ static void test_confidence_medium(void){
   assert(strstr(conf.reasons,"missing-control_flow_style-data") != NULL);
   assert(strstr(conf.reasons,"missing-runtime_stability-data") != NULL);
   assert(strstr(conf.reasons,"missing-allocation_pressure-data") != NULL);
+  assert(strstr(conf.reasons,"missing-vectorization_density-data") != NULL);
   printf("PASS: compute_overall_confidence medium\n");
 }
 
