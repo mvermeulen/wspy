@@ -523,6 +523,9 @@ above, for human/agent consumption.
 - **control_flow_style** (`wspy-archetype`) — `[categorical]` threshold on `branch_mispredict_pct` (see
   above).
 - **runtime_stability** (`wspy-archetype`) — `[categorical]` threshold on `phase_stability` (see above).
+- **allocation_pressure** (`wspy-archetype`) — `[categorical]` threshold on `fault_rate` (see above):
+  `low` (`<15000`/sec) / `moderate` (`15000-100000`/sec) / `high` (`>100000`/sec). Tertile-informed v1
+  cut points from the CPU2026 reference-matrix corpus (147 SPEC CPU2026 runs, 3 machines) -- issue #231.
 - **memory_attribution** (`wspy-archetype`) — `[categorical]` cross-references `backend_pct` (topdown)
   against every independently-measured cache/TLB/IBS signal the run collected (`dcache_miss_pct`,
   `l2_miss_pct`, `l3_miss_pct`, `itlb_miss_per1k`/`dtlb_miss_per1k`, `itlb_generic_miss_pct`/

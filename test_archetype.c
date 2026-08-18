@@ -89,6 +89,13 @@ static void test_classify_simple_axis_thresholds(void){
   classify_simple_axis(0.95,1,STABILITY_RULES,3,&out);
   assert(out.available && !strcmp(out.label,"steady"));
 
+  classify_simple_axis(14999.0,1,ALLOCATION_PRESSURE_RULES,3,&out);
+  assert(out.available && !strcmp(out.label,"low"));
+  classify_simple_axis(99999.0,1,ALLOCATION_PRESSURE_RULES,3,&out);
+  assert(out.available && !strcmp(out.label,"moderate"));
+  classify_simple_axis(100001.0,1,ALLOCATION_PRESSURE_RULES,3,&out);
+  assert(out.available && !strcmp(out.label,"high"));
+
   printf("PASS: classify_simple_axis thresholds\n");
 }
 
@@ -490,6 +497,7 @@ static void test_confidence_high(void){
   simple[AXIS_PARALLELISM_SHAPE].available = 1;
   simple[AXIS_CONTROL_FLOW_STYLE].available = 1;
   simple[AXIS_RUNTIME_STABILITY].available = 0;
+  simple[AXIS_ALLOCATION_PRESSURE].available = 1;
 
   compute_overall_confidence(&dom,simple,NUM_SIMPLE_AXES,&conf);
   assert(!strcmp(conf.level,"high"));
@@ -514,6 +522,7 @@ static void test_confidence_medium(void){
   assert(!strcmp(conf.level,"medium"));
   assert(strstr(conf.reasons,"missing-control_flow_style-data") != NULL);
   assert(strstr(conf.reasons,"missing-runtime_stability-data") != NULL);
+  assert(strstr(conf.reasons,"missing-allocation_pressure-data") != NULL);
   printf("PASS: compute_overall_confidence medium\n");
 }
 

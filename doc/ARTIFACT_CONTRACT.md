@@ -544,7 +544,7 @@ interpret the output, not just its shape).
 (`ARCHETYPE_MIN_SCHEMA_VERSION`, `archetype.c` — the version `run_features` was introduced at, see
 "Feature vocabulary" above); an older database is refused with a clear message.
 
-**The four axes**, each independently `unknown`/`insufficient-data` when its source `run_features`
+**The six axes**, each independently `unknown`/`insufficient-data` when its source `run_features`
 row wasn't collected:
 
 - **`resource_dominance`** — the headline axis, and the only ranked one: `compute-bound`/
@@ -559,20 +559,30 @@ row wasn't collected:
 - **`control_flow_style`** — `straight-line`/`branch-heavy`, from `branch_mispredict_pct` (needs
   `--branch`).
 - **`runtime_stability`** — `steady`/`phased`/`erratic`, from `phase_stability` (needs `--interval`).
+- **`allocation_pressure`** — `low`/`moderate`/`high`, from `fault_rate` (rusage, always collected).
+  Added in issue #231; see `doc/METRICS.md`'s entry for the threshold values.
+- **`memory_attribution`**/**`memory_attribution_locus`** — not a threshold on a single value like the
+  four axes above; cross-references `backend_pct` against every independently-measured cache/TLB/IBS
+  signal the run collected to say whether a `memory-bound` `resource_dominance` read is corroborated,
+  and (when corroborated) where in the hierarchy it concentrates. See `doc/METRICS.md`'s
+  `memory_attribution`/`memory_attribution_locus` entries for the full signal list and priority order.
 
 **`confidence`** — `high`/`medium`/`low`/`insufficient-data`, plus a fixed-order `confidence_reasons`
 list. Driven by the `resource_dominance` margin (primary pct minus alternative pct — `high` needs
-`>= 20` points, `medium` needs `>= 10`) and how many of the 3 supporting axes had data (`high` needs
-`>= 2` known, `medium` needs `>= 1`); `narrow-margin` appears whenever the margin missed the `high`
-threshold, and one `missing-<axis>-data` reason per unavailable supporting axis, so a close call is
-distinguishable from missing data as the reason confidence isn't `high`.
+`>= 20` points, `medium` needs `>= 10`) and how many of the 4 supporting axes (`parallelism_shape`/
+`control_flow_style`/`runtime_stability`/`allocation_pressure`) had data (`high` needs `>= 2` known,
+`medium` needs `>= 1`); `narrow-margin` appears whenever the margin missed the `high` threshold, and one
+`missing-<axis>-data` reason per unavailable supporting axis, so a close call is distinguishable from
+missing data as the reason confidence isn't `high`. `memory_attribution`/`memory_attribution_locus`
+don't feed into this count — they're independent corroboration, not confidence inputs.
 
 **Two CLI modes**, mirroring `wspy-summary`'s bulk/`--trace` duality:
 
 - Default (`score_runs()`) scores every run matching `--command`/`--hostname` filters, one row per run
   (CSV: `hostname,run_id,command,resource_dominance,resource_dominance_pct,alternative,
-  alternative_pct,parallelism_shape,control_flow_style,runtime_stability,confidence,
-  confidence_reasons`, or a fixed-width human table) — an `INNER JOIN` against `run_features`, so a
+  alternative_pct,parallelism_shape,control_flow_style,runtime_stability,allocation_pressure,confidence,
+  confidence_reasons,memory_attribution,memory_attribution_reasons,memory_attribution_locus,
+  memory_attribution_locus_reasons`, or a fixed-width human table) — an `INNER JOIN` against `run_features`, so a
   run with **zero** `run_features` rows at all (e.g. ingested with `--no-feature-extract`, never
   re-extracted) is **excluded**, not shown as all-`unknown` — those are different information.
 - `--run <hostname>:<run_id>` (`trace_run_archetype()`) prints one detailed scorecard as stable
