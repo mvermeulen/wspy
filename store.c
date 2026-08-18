@@ -969,6 +969,27 @@ static const struct simple_metric_feature SIMPLE_METRIC_FEATURES[] = {
    * with real thresholds is left for once more machines/compilers/n>1 runs
    * are in (archetype.c's own header already sketches the extension). */
   { "float_pct",             "float" },
+  /* retire's L2 split (topdown.c, AMD-only) -- microcode-assisted vs.
+   * fast-path retiring slots. Same "computed but never promoted" pattern as
+   * float_pct above (issue #232, filed alongside #227/#229/#230 from the
+   * same GCC-optimization-guide review); no concrete downstream consumer
+   * yet, but the reference-matrix corpus (SPEC CPU2026, 3 machines) now has
+   * real cross-workload values for it, so promoting it costs nothing and
+   * removes the "computed but stuck in [raw]" gap doc/METRICS.md flagged. */
+  { "retire_ucode_pct",      "retire_ucode_pct" },
+  { "retire_fastpath_pct",   "retire_fastpath_pct" },
+  /* frontend's L2 split (topdown.c) -- issue #229: latency-bound (fetch
+   * stalls, e.g. icache/iTLB misses) vs. bandwidth-bound (frontend can't
+   * decode/issue fast enough even without a stall) is exactly the
+   * distinction a compiler-flag advisor needs to choose between PGO/
+   * code-footprint flags (latency-driven) and alignment flags
+   * (bandwidth-driven) -- same "computed but stuck in [raw]" pattern as
+   * float_pct above. Promotion only; a frontend_attribution_locus axis
+   * cross-referencing these against icache_miss_pct (mirroring
+   * classify_memory_locus()) is left as its own follow-up -- it needs a
+   * corroboration design, not just a threshold. */
+  { "frontend_latency_pct",   "frontend_latency_pct" },
+  { "frontend_bandwidth_pct", "frontend_bandwidth_pct" },
   /* Fraction of available cores kept busy end-to-end -- issue #230: was
    * [human-only] (topdown.c:print_usage()'s PRINT_NORMAL case only) until
    * the same change that added this promotion gave it a PRINT_CSV_HEADER/

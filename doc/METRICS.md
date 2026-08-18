@@ -131,13 +131,17 @@ is scaled up by `enabled_delta/running_delta` before any print function ever see
 - **contention_pct** — AMD only; `smt_contention_slots / slots * 100` (note: divided by raw `slots`, not
   `slots_no_contention`, unlike every other `_pct` column here) — slots lost specifically to SMT sibling
   contention rather than to the workload's own frontend/backend/speculation.
-- **retire_ucode_pct**, **retire_fastpath_pct** — L2 split of `retire`: `retire_ucode` = slots retiring via
-  microcode-assisted ops (Intel `core.topdown-heavy-ops`; AMD `ex_ret_ucode_ops`), `retire_fastpath` =
-  `safe_sub(retire, retire_ucode)`, both as `% of slots_no_contention`. High `retire_ucode_pct` can
-  indicate reliance on complex/microcoded instructions rather than simple fast-path ones.
-- **frontend_latency_pct**, **frontend_bandwidth_pct** — L2 split of `frontend`: latency-bound (fetch
-  stalls, e.g. icache/iTLB misses; Intel `core.topdown-fetch-lat`) vs. bandwidth-bound (frontend can't
-  decode/issue fast enough even without a stall).
+- **retire_ucode_pct**, **retire_fastpath_pct** — `[feature]` L2 split of `retire`: `retire_ucode` = slots
+  retiring via microcode-assisted ops (Intel `core.topdown-heavy-ops`; AMD `ex_ret_ucode_ops`),
+  `retire_fastpath` = `safe_sub(retire, retire_ucode)`, both as `% of slots_no_contention`. High
+  `retire_ucode_pct` can indicate reliance on complex/microcoded instructions rather than simple
+  fast-path ones. Promoted to `run_features` (issue #232) — same shape as `float_pct`, no `archetype.c`
+  consumer yet.
+- **frontend_latency_pct**, **frontend_bandwidth_pct** — `[feature]` L2 split of `frontend`: latency-bound
+  (fetch stalls, e.g. icache/iTLB misses; Intel `core.topdown-fetch-lat`) vs. bandwidth-bound (frontend
+  can't decode/issue fast enough even without a stall). Promoted to `run_features` (issue #229) -- no
+  `archetype.c` axis consumer yet; a `frontend_attribution_locus` axis cross-referencing these against
+  `icache_miss_pct` (mirroring `memory_attribution_locus`) is left as a follow-up.
 - **backend_cpu_pct**, **backend_memory_pct** — L2 split of `backend`: `backend_memory` = slots lost
   waiting on the memory subsystem (Intel `core.topdown-mem-bound`; AMD ratio-scaled from
   `ex_no_retire.load_not_complete/not_complete`), `backend_cpu` = the rest (execution port/resource
