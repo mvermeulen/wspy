@@ -44,15 +44,18 @@
  * it; the thresholds below are offered in that same spirit, a starting
  * point rather than a validated boundary.
  *
- * Extensibility (a new axis, e.g. floating-point density once --float has
- * real cross-workload validation): a new *simple* (single-value,
- * threshold-based) axis is one more SIMPLE_AXES entry plus a
- * classify_simple_axis() call site reading the new run_features value --
- * no changes needed to compute_overall_confidence() or either output mode,
- * both of which already loop over however many simple axes exist. A new
- * *ranked* axis (like resource_dominance) needs its own small candidate
- * table/ranking function, following the same shape this file already
- * establishes.
+ * Extensibility (a new axis -- vectorization_density below is a real
+ * example now): a new *simple* (single-value, threshold-based) axis is one
+ * more SIMPLE_AXES entry plus a
+ * classify_simple_axis() call site reading the new run_features value.
+ * compute_overall_confidence() needs no changes -- it already loops over
+ * however many simple axes exist -- but score_runs()'s CSV/human headers
+ * and print_scorecard_row()/print_scorecard_fields() each enumerate every
+ * axis by name (not a generic loop, so each new axis's column/field needs
+ * adding by hand in all of them; confirmed the hard way adding both axes
+ * above). A new *ranked* axis (like resource_dominance) needs its own small
+ * candidate table/ranking function, following the same shape this file
+ * already establishes.
  *
  * A fifth axis, memory_attribution, was added later (INVESTIGATION.md's 4.3
  * "Composite attribution" item, see classify_memory_attribution() below):
@@ -62,6 +65,12 @@
  * a "memory-bound" verdict is corroborated by other counters or not --
  * genuinely new information a single-counter threshold can't produce,
  * not a replacement for resource_dominance's own topdown-only read.
+ *
+ * A sixth axis, vectorization_density, was added still later (issue #227):
+ * a plain SIMPLE_AXES entry (see VECTORIZATION_DENSITY_RULES below) over
+ * float_pct (AMD-only FP-op density) -- the extension this file's own
+ * "Extensibility" note above named as its example, now that the CPU2026
+ * reference-matrix corpus gives it real thresholds to use.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -132,10 +141,38 @@ static const struct threshold_rule STABILITY_RULES[] = {
   { 0.8, "phased" },
   { HUGE_VAL, "steady" },
 };
+/* vectorization_density (issue #227) thresholds on float_pct (run_features,
+ * AMD-only FP-op density, topdown.c:print_float()'s "float" CSV column --
+ * NOTE this is float_all/instructions*100, a PERCENTAGE, despite the human
+ * output's separate "per 1000 inst" annotation using a 10x-larger scale;
+ * don't confuse the two when reading reference-matrix data against these
+ * cut points). Deliberately simple v1 starting points, same caveat as every
+ * other threshold table in this file, but grounded in real cross-workload
+ * data: the CPU2026 reference-matrix corpus (147 SPEC CPU2026 runs, 3
+ * machines) shows intrate/fprate (PR #228's original comparison) cleanly
+ * separated with zero overlap (int max 5.66%, fp min 14.52%) -- but adding
+ * the intspeed/fpspeed variants shows real overlap at the boundary
+ * (intspeed max 6.77% vs fpspeed min 3.58%, traced to one benchmark
+ * (800-pot3d_s) whose vectorization differs by CPU generation -- Zen4 vs
+ * Zen5 AVX-512 support -- not measurement noise). The 3-tier split below
+ * absorbs that ambiguity into "moderate" rather than forcing a single
+ * boundary through it: nothing int-flavored in the corpus ever reaches 10%
+ * (max 6.77%), and nothing fp-flavored ever drops under 2% (observed min
+ * 3.58%), so "low"/"high" stay unambiguous while "moderate" is the
+ * deliberately-mixed middle. Still gcc-only/n=1-per-test/no-repeat-runs
+ * data -- a starting point, not a validated boundary. */
+static const struct threshold_rule VECTORIZATION_DENSITY_RULES[] = {
+  { 2.0,      "low" },
+  { 10.0,     "moderate" },
+  { HUGE_VAL, "high" },
+};
 
-enum simple_axis_id { AXIS_PARALLELISM_SHAPE, AXIS_CONTROL_FLOW_STYLE, AXIS_RUNTIME_STABILITY, NUM_SIMPLE_AXES };
+enum simple_axis_id {
+  AXIS_PARALLELISM_SHAPE, AXIS_CONTROL_FLOW_STYLE, AXIS_RUNTIME_STABILITY,
+  AXIS_VECTORIZATION_DENSITY, NUM_SIMPLE_AXES
+};
 static const char *SIMPLE_AXIS_KEYS[NUM_SIMPLE_AXES] = {
-  "parallelism_shape", "control_flow_style", "runtime_stability"
+  "parallelism_shape", "control_flow_style", "runtime_stability", "vectorization_density"
 };
 
 struct classified_axis { char label[24]; int available; };
@@ -396,6 +433,7 @@ struct run_snapshot {
   double branch_mispredict_pct;  int have_branch;
   double phase_stability;        int have_phase;
   double smt_contention_pct;     int have_smt_contention;
+  double float_pct;              int have_float;
   /* memory_attribution's corroborating signals (classify_memory_attribution()) --
    * independently-measured cache/TLB/IBS raw rates, cross-referenced against
    * backend_pct above rather than folded into any existing axis. */
@@ -447,6 +485,7 @@ static void run_snapshot_apply_feature(struct run_snapshot *snap,const char *fea
   else if (!strcmp(feature_name,"branch_mispredict_pct")){ snap->branch_mispredict_pct = value; snap->have_branch = measured; }
   else if (!strcmp(feature_name,"phase_stability")){ snap->phase_stability = value; snap->have_phase = measured; }
   else if (!strcmp(feature_name,"smt_contention_pct")){ snap->smt_contention_pct = value; snap->have_smt_contention = measured; }
+  else if (!strcmp(feature_name,"float_pct")){ snap->float_pct = value; snap->have_float = measured; }
   else if (!strcmp(feature_name,"dcache_miss_pct")){ snap->dcache_miss_pct = value; snap->have_dcache_miss = measured; }
   else if (!strcmp(feature_name,"l2_miss_pct")){ snap->l2_miss_pct = value; snap->have_l2_miss = measured; }
   else if (!strcmp(feature_name,"l3_miss_pct")){ snap->l3_miss_pct = value; snap->have_l3_miss = measured; }
@@ -625,6 +664,8 @@ static void score_snapshot(const struct run_snapshot *snap,struct scorecard *out
                         CONTROL_FLOW_RULES,2,&out->simple[AXIS_CONTROL_FLOW_STYLE]);
   classify_simple_axis(snap->phase_stability,snap->have_phase,
                         STABILITY_RULES,3,&out->simple[AXIS_RUNTIME_STABILITY]);
+  classify_simple_axis(snap->float_pct,snap->have_float,
+                        VECTORIZATION_DENSITY_RULES,3,&out->simple[AXIS_VECTORIZATION_DENSITY]);
   classify_memory_attribution(snap->backend_pct,snap->have_backend,
                                snap->blocking_wait_pct,snap->have_blocking_wait,
                                snap->sched_rundelay_pct,snap->have_sched_rundelay,
@@ -688,6 +729,7 @@ static void print_scorecard_row(FILE *out,const struct run_snapshot *snap,
     print_csv_field(out,sc->simple[AXIS_PARALLELISM_SHAPE].label); fputc(',',out);
     print_csv_field(out,sc->simple[AXIS_CONTROL_FLOW_STYLE].label); fputc(',',out);
     print_csv_field(out,sc->simple[AXIS_RUNTIME_STABILITY].label); fputc(',',out);
+    print_csv_field(out,sc->simple[AXIS_VECTORIZATION_DENSITY].label); fputc(',',out);
     print_csv_field(out,sc->confidence.level); fputc(',',out);
     print_csv_field(out,sc->confidence.reasons); fputc(',',out);
     print_csv_field(out,sc->memory_attribution.label); fputc(',',out);
@@ -696,12 +738,13 @@ static void print_scorecard_row(FILE *out,const struct run_snapshot *snap,
     print_csv_field(out,sc->memory_attribution.locus_reasons);
     fputc('\n',out);
   } else {
-    fprintf(out,"%-24.24s %-20.20s %-28.28s %-18s %-18s %-16s %-14s %-9s %-8s %-30.30s  %-16s  %-16s  %s",
+    fprintf(out,"%-24.24s %-20.20s %-28.28s %-18s %-18s %-16s %-14s %-9s %-12s %-8s %-30.30s  %-16s  %-16s  %s",
             snap->hostname,snap->run_id_text,snap->command,
             dom_label,alt_label,
             sc->simple[AXIS_PARALLELISM_SHAPE].label,
             sc->simple[AXIS_CONTROL_FLOW_STYLE].label,
             sc->simple[AXIS_RUNTIME_STABILITY].label,
+            sc->simple[AXIS_VECTORIZATION_DENSITY].label,
             sc->confidence.level,sc->confidence.reasons,
             sc->memory_attribution.label,sc->memory_attribution.reasons,
             sc->memory_attribution.locus);
@@ -741,13 +784,13 @@ static int score_runs(sqlite3 *db,const char *command_filter,const char *hostnam
   if (csvflag)
     fprintf(out,"hostname,run_id,command,resource_dominance,resource_dominance_pct,"
                 "alternative,alternative_pct,parallelism_shape,control_flow_style,"
-                "runtime_stability,confidence,confidence_reasons,"
+                "runtime_stability,vectorization_density,confidence,confidence_reasons,"
                 "memory_attribution,memory_attribution_reasons,"
                 "memory_attribution_locus,memory_attribution_locus_reasons\n");
   else
-    fprintf(out,"%-24.24s %-20.20s %-28.28s %-18s %-18s %-16s %-14s %-9s %-8s %-30s  %-16s  %-16s  %s  mem_locus_reasons\n",
+    fprintf(out,"%-24.24s %-20.20s %-28.28s %-18s %-18s %-16s %-14s %-9s %-12s %-8s %-30s  %-16s  %-16s  %s  mem_locus_reasons\n",
             "hostname","run_id","command","resource_dominance","alternative",
-            "parallelism","control_flow","stability","conf.","reasons",
+            "parallelism","control_flow","stability","vec_density","conf.","reasons",
             "mem_attribution","mem_attr_reasons","mem_locus");
 
   while (sqlite3_step(stmt) == SQLITE_ROW){
@@ -804,6 +847,7 @@ static void print_scorecard_fields(FILE *out,const char *hostname,const char *ru
   print_trace_field(out,"parallelism_shape",sc->simple[AXIS_PARALLELISM_SHAPE].label);
   print_trace_field(out,"control_flow_style",sc->simple[AXIS_CONTROL_FLOW_STYLE].label);
   print_trace_field(out,"runtime_stability",sc->simple[AXIS_RUNTIME_STABILITY].label);
+  print_trace_field(out,"vectorization_density",sc->simple[AXIS_VECTORIZATION_DENSITY].label);
   print_trace_field(out,"confidence",sc->confidence.level);
   print_trace_field(out,"confidence_reasons",sc->confidence.reasons);
   print_trace_field(out,"memory_attribution",sc->memory_attribution.label);
@@ -1710,16 +1754,16 @@ static void usage(const char *prog){
     "Usage: %s --db <path> [options]\n"
     "\n"
     "Classifies wspy runs recorded in a normalized store (wspy-store --db\n"
-    "<path>) along four workload \"archetype\" axes, scored from store.c's\n"
+    "<path>) along several workload \"archetype\" axes, scored from store.c's\n"
     "run_features -- INVESTIGATION.md's 4.2 \"Archetype scorecard\" item.\n"
     "\n"
     "resource_dominance is the headline axis (compute-bound/frontend-bound/\n"
     "memory-bound/speculation-bound, ranked from topdown L1 percentages),\n"
     "with a top-2 alternative and an overall confidence level (high/medium/\n"
     "low/insufficient-data, with reasons). parallelism_shape/control_flow_style/\n"
-    "runtime_stability are simpler supporting tags, \"unknown\" when their\n"
-    "source run_features value wasn't collected (needs --per-core/--branch/\n"
-    "--interval respectively).\n"
+    "runtime_stability/vectorization_density are simpler supporting tags,\n"
+    "\"unknown\" when their source run_features value wasn't collected (needs\n"
+    "--per-core/--branch/--interval/--float [AMD only] respectively).\n"
     "\n"
     "Options:\n"
     "  --db <path>          normalized store database (required)\n"

@@ -53,9 +53,11 @@ needs a closer look before publishing, rather than silently averaging across noi
 
 ### `wspy-archetype`'s confidence
 
-`wspy-archetype` classifies one run along four axes (see "Reading the archetype scorecard" below) and
+`wspy-archetype` classifies one run along six axes (see "Reading the archetype scorecard" below) and
 reports its own `confidence` — `high`/`medium`/`low`/`insufficient-data` — plus `confidence_reasons`.
-Real captured example (`--run cookbook-host:run2`, one of the same four runs above):
+Real captured example (`--run cookbook-host:run2`, one of the same four runs above) — captured before
+the `vectorization_density` axis (issue #227) and `memory_attribution`/`memory_attribution_locus` (4.3
+"Composite attribution") existed, so this transcript predates those fields rather than omitting them:
 
 ```
 resource_dominance=compute-bound
@@ -70,8 +72,8 @@ confidence_reasons=narrow-margin,missing-parallelism_shape-data,missing-control_
   run). Terminal case: nothing else about the run can be classified either, since `resource_dominance`
   is the headline axis every other confidence tier depends on.
 - Otherwise, confidence is driven by **margin** (the gap in percentage points between the winning
-  topdown category and its runner-up) and **known** (how many of the 3 supporting axes —
-  `parallelism_shape`/`control_flow_style`/`runtime_stability` — had data):
+  topdown category and its runner-up) and **known** (how many of the 4 supporting axes —
+  `parallelism_shape`/`control_flow_style`/`runtime_stability`/`vectorization_density` — had data):
   - `high`: margin ≥ 20 points **and** ≥ 2 supporting axes known.
   - `medium`: margin ≥ 10 points **and** ≥ 1 supporting axis known.
   - `low`: anything less — in the example above, `compute-bound` (42.25%) barely edges out
@@ -82,9 +84,9 @@ confidence_reasons=narrow-margin,missing-parallelism_shape-data,missing-control_
   data* as the reason confidence isn't `high`.
 - **`missing-<axis>-data`** (one per unavailable supporting axis) — that axis needs a flag this run
   didn't use: `parallelism_shape` needs `--per-core`, `control_flow_style` needs `--branch`,
-  `runtime_stability` needs `--interval`. **What to do**: if you want a `high`-confidence
-  classification routinely, collect `--per-core --branch --interval` alongside topdown, not just
-  topdown alone.
+  `runtime_stability` needs `--interval`, `vectorization_density` needs `--float` (AMD only).
+  **What to do**: if you want a `high`-confidence classification routinely, collect `--per-core
+  --branch --interval` alongside topdown, not just topdown alone.
 
 ## Reading phase output
 
@@ -202,8 +204,10 @@ Three real, shipped comparability mechanisms, from coarsest to most detailed:
 
 ## Reading the archetype scorecard
 
-`wspy-archetype` (`wspy-store`'s `run_features` → five classified axes) is the closest thing to a
-"workload profile" this toolset produces today. Real captured output (bulk mode, one row per run):
+`wspy-archetype` (`wspy-store`'s `run_features` → six classified axes) is the closest thing to a
+"workload profile" this toolset produces today. Real captured output (bulk mode, one row per run) —
+captured before the `vectorization_density` axis (issue #227) existed, so this row's columns predate
+it rather than showing it as `unknown`:
 
 ```
 hostname       run_id  command                 resource_dominance alternative  parallelism  control_flow  stability  conf.   reasons
@@ -224,9 +228,14 @@ cookbook-host  run1    /bin/cookbook_workload   compute-bound      memory-bound 
   the fraction of `phase.c`-classified `steady` ticks (see "Reading phase output" above) — `phased`
   here reflects that this run's own interval data included a real `warmup`→`steady`→`degraded`→
   `steady` sequence, not a clean, uniformly `steady` run throughout.
+- **`vectorization_density`** (`low`/`moderate`/`high`, AMD only, needs `--float`) — threshold on
+  `float_pct` (AMD FP-op density, `float_all/instructions*100`); `high` corroborates a `compute-bound`/
+  `memory-bound` read that's genuinely FP-vector-heavy rather than integer-dominated, the distinction
+  issue #227's GCC-optimization-guide motivation needed to gate vector-width-tuning flag suggestions
+  (`-mprefer-vector-width=256`/`512`) on more than `resource_dominance` alone.
 - **`memory_attribution`** (needs no extra flags beyond topdown — strengthened by `--dcache`/
-  `--cache2`/`--cache3`/`--tlb`/`--ibs-sample`/`--tree-io-wait`/`--tree-schedstat`) — a fifth axis,
-  separate from the four above: cross-references `resource_dominance`'s own `backend_pct` against
+  `--cache2`/`--cache3`/`--tlb`/`--ibs-sample`/`--tree-io-wait`/`--tree-schedstat`) — unlike the axes
+  above, not a threshold on a single value: cross-references `resource_dominance`'s own `backend_pct` against
   every independently-measured cache/TLB/IBS signal the run collected, rather than trusting a
   "memory-bound" topdown read on its own. Real captured example (a real pointer-chase workload,
   `--topdown --dcache --cache2`):

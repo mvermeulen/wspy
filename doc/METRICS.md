@@ -523,6 +523,9 @@ above, for human/agent consumption.
 - **control_flow_style** (`wspy-archetype`) — `[categorical]` threshold on `branch_mispredict_pct` (see
   above).
 - **runtime_stability** (`wspy-archetype`) — `[categorical]` threshold on `phase_stability` (see above).
+- **vectorization_density** (`wspy-archetype`) — `[categorical]` threshold on `float_pct` (see above):
+  `low` (`<2%`) / `moderate` (`2-10%`) / `high` (`>10%`). Tertile-informed v1 cut points from the
+  CPU2026 reference-matrix corpus (147 SPEC CPU2026 runs, 3 machines) -- issue #227.
 - **memory_attribution** (`wspy-archetype`) — `[categorical]` cross-references `backend_pct` (topdown)
   against every independently-measured cache/TLB/IBS signal the run collected (`dcache_miss_pct`,
   `l2_miss_pct`, `l3_miss_pct`, `itlb_miss_per1k`/`dtlb_miss_per1k`, `itlb_generic_miss_pct`/
@@ -644,11 +647,12 @@ concrete candidate for a future normalized table, parallel to `run_environment`.
   their respective `print_*` functions (see `CLAUDE.md`'s CSV-column pitfalls before doing so).
   `on_cpu` in particular seems like an obvious `run_features` candidate once it has a CSV home.
   Per-1000-inst density annotations (branches, cache accesses, etc.) are the same story.
-- `float` (AMD FP-op density) is now `float_pct` in `SIMPLE_METRIC_FEATURES` (issue #227). The
-  reference-matrix corpus (SPEC CPU2026 by-machine pages) showed a clean intrate-vs-fprate split with no
-  overlap, but only on one machine at n=1 per test — a `SIMPLE_AXES` `vectorization_density` archetype
-  axis with real thresholds is still waiting on more machines/compilers/repeat runs before committing to
-  boundaries, per `archetype.c`'s own extension note.
+- `float` (AMD FP-op density) is `float_pct` in `SIMPLE_METRIC_FEATURES`, and now also a
+  `vectorization_density` `wspy-archetype` axis (issue #227), with thresholds from the CPU2026
+  reference-matrix corpus (147 runs, 3 machines) -- still gcc-only/n=1-per-test/no-repeat-runs data, a
+  starting point rather than a validated boundary (see `archetype.c`'s own comment for the full
+  reasoning, including a real cross-boundary overlap the wider corpus surfaced that the original
+  single-machine review didn't).
 - Cgroup fields have no store table at all yet (see above) — `nr_throttled`/`throttled_usec` in
   particular seems worth a `run_features` entry (e.g. `throttled_pct = throttled_usec / (elapsed*1e6)`)
   since it directly explains anomalous runtime_stability/backend_pct results.
