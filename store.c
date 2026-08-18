@@ -978,6 +978,18 @@ static const struct simple_metric_feature SIMPLE_METRIC_FEATURES[] = {
    * removes the "computed but stuck in [raw]" gap doc/METRICS.md flagged. */
   { "retire_ucode_pct",      "retire_ucode_pct" },
   { "retire_fastpath_pct",   "retire_fastpath_pct" },
+  /* frontend's L2 split (topdown.c) -- issue #229: latency-bound (fetch
+   * stalls, e.g. icache/iTLB misses) vs. bandwidth-bound (frontend can't
+   * decode/issue fast enough even without a stall) is exactly the
+   * distinction a compiler-flag advisor needs to choose between PGO/
+   * code-footprint flags (latency-driven) and alignment flags
+   * (bandwidth-driven) -- same "computed but stuck in [raw]" pattern as
+   * float_pct above. Promotion only; a frontend_attribution_locus axis
+   * cross-referencing these against icache_miss_pct (mirroring
+   * classify_memory_locus()) is left as its own follow-up -- it needs a
+   * corroboration design, not just a threshold. */
+  { "frontend_latency_pct",   "frontend_latency_pct" },
+  { "frontend_bandwidth_pct", "frontend_bandwidth_pct" },
 };
 #define NUM_SIMPLE_METRIC_FEATURES \
   (int)(sizeof(SIMPLE_METRIC_FEATURES)/sizeof(SIMPLE_METRIC_FEATURES[0]))
