@@ -178,7 +178,7 @@ assert_normal_contains() {
 
 echo ""
 echo "=== CSV header contract (exact match, base/rusage) ==="
-BASE="elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,"
+BASE="elapsed,on_cpu,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,"
 assert_csv_header "no-ipc"      --no-ipc    -- "${BASE}counters_measured,counters_requested,"
 assert_csv_header "default-ipc"             -- "${BASE}ipc,counters_measured,counters_requested,"
 assert_csv_header "no-rusage"   --no-rusage -- "ipc,counters_measured,counters_requested,"
@@ -252,7 +252,7 @@ assert_csv_header "interval-per-core-freq"  --per-core --per-core-freq --interva
 echo ""
 echo "=== CSV header contract (host-specific, regex) ==="
 assert_csv_header_regex "system" --no-ipc --system -- \
-  'load,runnable,cpu,idle,iowait,irq,freq,cpu_temp,(net [^,]+,)+(disk [^,]+ read,disk [^,]+ write,disk [^,]+ time,)*mem_free_mb,mem_cached_mb,mem_dirty_mb,mem_writeback_mb,swap_free_mb,committed_as_mb,elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,counters_measured,counters_requested,'
+  'load,runnable,cpu,idle,iowait,irq,freq,cpu_temp,(net [^,]+,)+(disk [^,]+ read,disk [^,]+ write,disk [^,]+ time,)*mem_free_mb,mem_cached_mb,mem_dirty_mb,mem_writeback_mb,swap_free_mb,committed_as_mb,elapsed,on_cpu,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,counters_measured,counters_requested,'
 
 if [ "$vendor" = "AMD" ]; then
   echo ""

@@ -990,6 +990,19 @@ static const struct simple_metric_feature SIMPLE_METRIC_FEATURES[] = {
    * corroboration design, not just a threshold. */
   { "frontend_latency_pct",   "frontend_latency_pct" },
   { "frontend_bandwidth_pct", "frontend_bandwidth_pct" },
+  /* Fraction of available cores kept busy end-to-end -- issue #230: was
+   * [human-only] (topdown.c:print_usage()'s PRINT_NORMAL case only) until
+   * the same change that added this promotion gave it a PRINT_CSV_HEADER/
+   * PRINT_CSV case too, so this is a same-commit promotion rather than the
+   * usual "already a CSV column, just needs a run_features entry" case
+   * above. Distinct from active_core_count (per-core IPC-threshold count,
+   * --per-core only): on_cpu is a single aggregate ratio, available on
+   * every run regardless of --per-core. No archetype.c axis consumer yet
+   * -- the issue's other half (ctxswitch_rate-based oversubscription
+   * signal) needs controlled thread-count-vs-core-count data this
+   * codebase's reference-matrix corpus doesn't have yet, so that's left
+   * open. */
+  { "on_cpu",                "on_cpu" },
 };
 #define NUM_SIMPLE_METRIC_FEATURES \
   (int)(sizeof(SIMPLE_METRIC_FEATURES)/sizeof(SIMPLE_METRIC_FEATURES[0]))

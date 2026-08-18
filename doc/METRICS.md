@@ -64,11 +64,12 @@ from `wait4(child_pid,...)` (normal mode) or `getrusage(RUSAGE_CHILDREN,...)` (`
   "high/low"-judged; it's the normalizer most other rate metrics divide by.
 - **utime** — `[raw]` `ru_utime.tv_sec + ru_utime.tv_usec/1e6`, seconds of user-mode CPU time.
 - **stime** — `[raw]` `ru_stime.tv_sec + ru_stime.tv_usec/1e6`, seconds of kernel-mode CPU time.
-- **on_cpu** — `[human-only]` `(utime+stime) / elapsed / num_cores_available`, i.e. fraction of the
-  available cores actually kept busy end-to-end. `num_cores_available` is this process's own outer
-  affinity mask, not narrowed by `--affinity`. Guidance: close to `1.0 * (cores actually used)` for a
-  CPU-bound single/multi-threaded run; well below 1 core's worth suggests the workload spent real wall
-  time blocked (I/O, sleeping, waiting on another process) rather than computing.
+- **on_cpu** — `[feature]` `(utime+stime) / elapsed / num_procs`, i.e. fraction of the online processors
+  actually kept busy end-to-end. `num_procs` (`get_nprocs()`) is not narrowed by `--affinity`. Guidance:
+  close to `1.0 * (cores actually used)` for a CPU-bound single/multi-threaded run; well below 1 core's
+  worth suggests the workload spent real wall time blocked (I/O, sleeping, waiting on another process)
+  rather than computing. Promoted to a real CSV column and `run_features` (issue #230) — previously
+  `[human-only]`. No `archetype.c` axis consumer yet.
 - **nvcsw** — `[raw]` `ru_nvcsw`, voluntary context switches (the process blocked on something).
 - **nivcsw** — `[raw]` `ru_nivcsw`, involuntary context switches (preempted by the scheduler).
 - **inblock** — `[raw]` `ru_inblock`, block I/O input operations.
@@ -643,11 +644,13 @@ concrete candidate for a future normalized table, parallel to `run_environment`.
 
 ## Known gaps / candidates for this list to grow into
 
-- `on_cpu` and topdown's `GHz` annotation are useful but currently `[human-only]` — never reach the
-  store. Promoting either to a real CSV column would need a `PRINT_CSV_HEADER`/`PRINT_CSV` case added to
-  their respective `print_*` functions (see `CLAUDE.md`'s CSV-column pitfalls before doing so).
-  `on_cpu` in particular seems like an obvious `run_features` candidate once it has a CSV home.
-  Per-1000-inst density annotations (branches, cache accesses, etc.) are the same story.
+- `on_cpu` is now a real CSV column and `run_features` entry (issue #230). Topdown's `GHz` annotation is
+  the same still-`[human-only]` story — promoting it would need a `PRINT_CSV_HEADER`/`PRINT_CSV` case
+  added to its `print_*` function (see `CLAUDE.md`'s CSV-column pitfalls before doing so). Per-1000-inst
+  density annotations (branches, cache accesses, etc.) are the same story.
+- A `ctxswitch_rate`-based oversubscription/concurrency-shape archetype axis (issue #230's other half)
+  is still open — it needs data with controlled thread-count-vs-core-count variation, which the CPU2026
+  reference-matrix corpus (single-workload runs) doesn't provide.
 - `float` (AMD FP-op density) is now `float_pct` in `SIMPLE_METRIC_FEATURES` (issue #227). The
   reference-matrix corpus (SPEC CPU2026 by-machine pages) showed a clean intrate-vs-fprate split with no
   overlap, but only on one machine at n=1 per test — a `SIMPLE_AXES` `vectorization_density` archetype
