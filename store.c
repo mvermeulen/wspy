@@ -37,7 +37,7 @@
  * (wspy.h) is versioned separately from MANIFEST_SCHEMA_VERSION. Recorded
  * on every run_features row so a later reader can tell which rule set
  * produced a given value. */
-#define FEATURE_SET_VERSION "1.6"
+#define FEATURE_SET_VERSION "1.7"
 
 /* Noise floor for active_core_count (below): a --per-core core averaging
  * at or under this IPC is treated as not meaningfully participating in the
@@ -969,6 +969,18 @@ static const struct simple_metric_feature SIMPLE_METRIC_FEATURES[] = {
    * with real thresholds is left for once more machines/compilers/n>1 runs
    * are in (archetype.c's own header already sketches the extension). */
   { "float_pct",             "float" },
+  /* frontend's L2 split (topdown.c) -- issue #229: latency-bound (fetch
+   * stalls, e.g. icache/iTLB misses) vs. bandwidth-bound (frontend can't
+   * decode/issue fast enough even without a stall) is exactly the
+   * distinction a compiler-flag advisor needs to choose between PGO/
+   * code-footprint flags (latency-driven) and alignment flags
+   * (bandwidth-driven) -- same "computed but stuck in [raw]" pattern as
+   * float_pct above. Promotion only; a frontend_attribution_locus axis
+   * cross-referencing these against icache_miss_pct (mirroring
+   * classify_memory_locus()) is left as its own follow-up -- it needs a
+   * corroboration design, not just a threshold. */
+  { "frontend_latency_pct",   "frontend_latency_pct" },
+  { "frontend_bandwidth_pct", "frontend_bandwidth_pct" },
 };
 #define NUM_SIMPLE_METRIC_FEATURES \
   (int)(sizeof(SIMPLE_METRIC_FEATURES)/sizeof(SIMPLE_METRIC_FEATURES[0]))
