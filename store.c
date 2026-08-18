@@ -37,7 +37,7 @@
  * (wspy.h) is versioned separately from MANIFEST_SCHEMA_VERSION. Recorded
  * on every run_features row so a later reader can tell which rule set
  * produced a given value. */
-#define FEATURE_SET_VERSION "1.6"
+#define FEATURE_SET_VERSION "1.7"
 
 /* Noise floor for active_core_count (below): a --per-core core averaging
  * at or under this IPC is treated as not meaningfully participating in the
@@ -969,6 +969,19 @@ static const struct simple_metric_feature SIMPLE_METRIC_FEATURES[] = {
    * with real thresholds is left for once more machines/compilers/n>1 runs
    * are in (archetype.c's own header already sketches the extension). */
   { "float_pct",             "float" },
+  /* Fraction of available cores kept busy end-to-end -- issue #230: was
+   * [human-only] (topdown.c:print_usage()'s PRINT_NORMAL case only) until
+   * the same change that added this promotion gave it a PRINT_CSV_HEADER/
+   * PRINT_CSV case too, so this is a same-commit promotion rather than the
+   * usual "already a CSV column, just needs a run_features entry" case
+   * above. Distinct from active_core_count (per-core IPC-threshold count,
+   * --per-core only): on_cpu is a single aggregate ratio, available on
+   * every run regardless of --per-core. No archetype.c axis consumer yet
+   * -- the issue's other half (ctxswitch_rate-based oversubscription
+   * signal) needs controlled thread-count-vs-core-count data this
+   * codebase's reference-matrix corpus doesn't have yet, so that's left
+   * open. */
+  { "on_cpu",                "on_cpu" },
 };
 #define NUM_SIMPLE_METRIC_FEATURES \
   (int)(sizeof(SIMPLE_METRIC_FEATURES)/sizeof(SIMPLE_METRIC_FEATURES[0]))

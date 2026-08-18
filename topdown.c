@@ -2273,10 +2273,17 @@ void print_usage(struct rusage *rusage,enum output_format oformat){
     start_time.tv_sec - start_time.tv_nsec / 1000000000.0;
   switch(oformat){
   case PRINT_CSV_HEADER:
-    fprintf(outfile,"elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,");
+    fprintf(outfile,"elapsed,on_cpu,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,");
     break;
   case PRINT_CSV:
     fprintf(outfile,"%4.3f,",elapsed);
+    // Same (utime+stime)/elapsed/num_procs formula as the PRINT_NORMAL case
+    // below -- issue #230: on_cpu was PRINT_NORMAL-only ([human-only] in
+    // doc/METRICS.md), never reaching a CSV column or the store.
+    fprintf(outfile,"%4.3f,",
+	    (rusage->ru_utime.tv_sec+rusage->ru_utime.tv_usec/1000000.0+
+	     rusage->ru_stime.tv_sec+rusage->ru_stime.tv_usec/1000000.0)/
+	    elapsed / num_procs);
     fprintf(outfile,"%4.3f,",(double) rusage->ru_utime.tv_sec + rusage->ru_utime.tv_usec / 1000000.0);
     fprintf(outfile,"%4.3f,",(double) rusage->ru_stime.tv_sec + rusage->ru_stime.tv_usec / 1000000.0);
     fprintf(outfile,"%lu,",rusage->ru_nvcsw);

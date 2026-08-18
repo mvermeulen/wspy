@@ -963,7 +963,7 @@ if [ -e "/opt/rocm/include/amd_smi/amdsmi.h" ] || [ -e "/usr/include/amd_smi/amd
         # Test standalone GPU busy (CSV)
         echo "Testing standalone GPU busy CSV output..."
         OUTPUT=$(./wspy --gpu-busy --csv -- sleep 0.1 2>/dev/null | head -1)
-        if echo "$OUTPUT" | grep -q "elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,gpu_busy,ipc"; then
+        if echo "$OUTPUT" | grep -q "elapsed,on_cpu,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,gpu_busy,ipc"; then
             echo "  Standalone GPU busy CSV column order: OK"
         else
             echo "FAIL: GPU busy column not in expected position (after rusage columns)"
@@ -991,7 +991,7 @@ if [ -e "/opt/rocm/include/amd_smi/amdsmi.h" ] || [ -e "/usr/include/amd_smi/amd
         
         # Test standalone GPU metrics (CSV)
         OUTPUT=$(./wspy --gpu-metrics --csv -- sleep 0.1 2>/dev/null | head -1)
-        if echo "$OUTPUT" | grep -q "elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,gpu_temp,gpu_activity,gpu_power,gpu_freq,gpu_vram_used,gpu_vram_total,gpu_temp_source,gpu_activity_source,ipc"; then
+        if echo "$OUTPUT" | grep -q "elapsed,on_cpu,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,gpu_temp,gpu_activity,gpu_power,gpu_freq,gpu_vram_used,gpu_vram_total,gpu_temp_source,gpu_activity_source,ipc"; then
             echo "  GPU metrics CSV column order: OK"
         else
             echo "FAIL: GPU metrics columns not in expected position"
@@ -1053,7 +1053,7 @@ if [ -e "/opt/rocm/include/amd_smi/amdsmi.h" ] || [ -e "/usr/include/amd_smi/amd
         
         # Test standalone GPU metrics (CSV)
         OUTPUT=$(./wspy --gpu-metrics --csv -- sleep 0.1 2>/dev/null | head -1)
-        if echo "$OUTPUT" | grep -q "elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,gpu_temp,gpu_activity,gpu_power,gpu_freq,gpu_vram_used,gpu_vram_total,gpu_temp_source,gpu_activity_source,ipc"; then
+        if echo "$OUTPUT" | grep -q "elapsed,on_cpu,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,gpu_temp,gpu_activity,gpu_power,gpu_freq,gpu_vram_used,gpu_vram_total,gpu_temp_source,gpu_activity_source,ipc"; then
             echo "  GPU metrics CSV column order: OK"
         else
             echo "FAIL: GPU metrics columns not in expected position"
@@ -1072,10 +1072,10 @@ if [ -e "/opt/rocm/include/amd_smi/amdsmi.h" ] || [ -e "/usr/include/amd_smi/amd
         
         # Test GPU metrics values are numeric
         OUTPUT=$(./wspy --gpu-metrics --csv -- sleep 0.1 2>/dev/null | tail -1)
-        TEMP=$(echo "$OUTPUT" | cut -d',' -f12)
-        ACTIVITY=$(echo "$OUTPUT" | cut -d',' -f13)
-        POWER=$(echo "$OUTPUT" | cut -d',' -f14)
-        FREQ=$(echo "$OUTPUT" | cut -d',' -f15)
+        TEMP=$(echo "$OUTPUT" | cut -d',' -f13)
+        ACTIVITY=$(echo "$OUTPUT" | cut -d',' -f14)
+        POWER=$(echo "$OUTPUT" | cut -d',' -f15)
+        FREQ=$(echo "$OUTPUT" | cut -d',' -f16)
         if [ "$TEMP" -ge 0 ] 2>/dev/null && [ "$ACTIVITY" -ge 0 ] 2>/dev/null && [ "$FREQ" -ge 0 ] 2>/dev/null; then
             echo "  GPU metrics values numeric: OK"
         else
@@ -1129,7 +1129,7 @@ if ldconfig -p 2>/dev/null | grep -q "libnvidia-ml.so"; then
         # Test standalone GPU busy/VRAM (CSV)
         echo "Testing standalone GPU busy/VRAM CSV output..."
         OUTPUT=$(./wspy --gpu-nvidia --csv -- sleep 0.1 2>/dev/null | head -1)
-        if echo "$OUTPUT" | grep -q "elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,nv_gpu_busy,nv_vram_used_mb,nv_vram_total_mb,ipc"; then
+        if echo "$OUTPUT" | grep -q "elapsed,on_cpu,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,nv_gpu_busy,nv_vram_used_mb,nv_vram_total_mb,ipc"; then
             echo "  Standalone GPU busy/VRAM CSV column order: OK"
         else
             echo "FAIL: nv_gpu_busy/nv_vram_* columns not in expected position (after rusage columns)"
@@ -1156,9 +1156,9 @@ if ldconfig -p 2>/dev/null | grep -q "libnvidia-ml.so"; then
 
         # Test GPU busy/VRAM values are numeric
         OUTPUT=$(./wspy --gpu-nvidia --csv -- sleep 0.1 2>/dev/null | tail -1)
-        BUSY=$(echo "$OUTPUT" | cut -d',' -f12)
-        VRAM_USED=$(echo "$OUTPUT" | cut -d',' -f13)
-        VRAM_TOTAL=$(echo "$OUTPUT" | cut -d',' -f14)
+        BUSY=$(echo "$OUTPUT" | cut -d',' -f13)
+        VRAM_USED=$(echo "$OUTPUT" | cut -d',' -f14)
+        VRAM_TOTAL=$(echo "$OUTPUT" | cut -d',' -f15)
         if [ "$BUSY" -ge 0 ] 2>/dev/null && [ "$VRAM_USED" -ge 0 ] 2>/dev/null && [ "$VRAM_TOTAL" -ge 0 ] 2>/dev/null; then
             echo "  GPU busy/VRAM values numeric: OK"
         else
