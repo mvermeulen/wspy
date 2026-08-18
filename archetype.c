@@ -62,6 +62,12 @@
  * a "memory-bound" verdict is corroborated by other counters or not --
  * genuinely new information a single-counter threshold can't produce,
  * not a replacement for resource_dominance's own topdown-only read.
+ *
+ * A sixth axis, allocation_pressure, was added still later (issue #231): a
+ * plain SIMPLE_AXES entry (see ALLOCATION_PRESSURE_RULES below) over the
+ * already-promoted fault_rate feature -- exactly the one-entry extension
+ * shape this file's own "Extensibility" note above describes, the first
+ * time that note's promise was exercised for real.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -132,10 +138,28 @@ static const struct threshold_rule STABILITY_RULES[] = {
   { 0.8, "phased" },
   { HUGE_VAL, "steady" },
 };
+/* allocation_pressure (issue #231) thresholds on fault_rate (run_features,
+ * (minflt+majflt)/elapsed_seconds) -- deliberately simple v1 starting
+ * points, same caveat as every other threshold table in this file, but no
+ * longer speculative: tertile-informed cut points from the CPU2026
+ * reference-matrix corpus (147 SPEC CPU2026 runs, 3 machines) once it had
+ * enough spread to threshold against -- fault_rate ranged ~630-936,000/sec
+ * across that corpus, roughly log-distributed (p33~14000, p80~86000). The
+ * boundaries below round those to memorable log-scale numbers rather than
+ * fitting them exactly, the same "starting point, not a validated
+ * boundary" spirit DOMINANCE_*_MARGIN above already documents. */
+static const struct threshold_rule ALLOCATION_PRESSURE_RULES[] = {
+  { 15000.0,  "low" },
+  { 100000.0, "moderate" },
+  { HUGE_VAL, "high" },
+};
 
-enum simple_axis_id { AXIS_PARALLELISM_SHAPE, AXIS_CONTROL_FLOW_STYLE, AXIS_RUNTIME_STABILITY, NUM_SIMPLE_AXES };
+enum simple_axis_id {
+  AXIS_PARALLELISM_SHAPE, AXIS_CONTROL_FLOW_STYLE, AXIS_RUNTIME_STABILITY,
+  AXIS_ALLOCATION_PRESSURE, NUM_SIMPLE_AXES
+};
 static const char *SIMPLE_AXIS_KEYS[NUM_SIMPLE_AXES] = {
-  "parallelism_shape", "control_flow_style", "runtime_stability"
+  "parallelism_shape", "control_flow_style", "runtime_stability", "allocation_pressure"
 };
 
 struct classified_axis { char label[24]; int available; };
@@ -383,7 +407,7 @@ static void classify_memory_attribution(double backend_pct,int have_backend,
  * contiguous (run_id-ordered) rows out of the store -- see score_runs()/
  * trace_run_archetype(). Only the features this tool's axes actually need
  * are named fields; run_features carries several more (ipc_mean, cache/
- * TLB miss rates, fault_rate, ctxswitch_rate) not yet used by any axis. */
+ * TLB miss rates, ctxswitch_rate) not yet used by any axis. */
 struct run_snapshot {
   sqlite3_int64 run_id;
   char hostname[256];
@@ -396,6 +420,7 @@ struct run_snapshot {
   double branch_mispredict_pct;  int have_branch;
   double phase_stability;        int have_phase;
   double smt_contention_pct;     int have_smt_contention;
+  double fault_rate;             int have_fault_rate;
   /* memory_attribution's corroborating signals (classify_memory_attribution()) --
    * independently-measured cache/TLB/IBS raw rates, cross-referenced against
    * backend_pct above rather than folded into any existing axis. */
@@ -447,6 +472,7 @@ static void run_snapshot_apply_feature(struct run_snapshot *snap,const char *fea
   else if (!strcmp(feature_name,"branch_mispredict_pct")){ snap->branch_mispredict_pct = value; snap->have_branch = measured; }
   else if (!strcmp(feature_name,"phase_stability")){ snap->phase_stability = value; snap->have_phase = measured; }
   else if (!strcmp(feature_name,"smt_contention_pct")){ snap->smt_contention_pct = value; snap->have_smt_contention = measured; }
+  else if (!strcmp(feature_name,"fault_rate")){ snap->fault_rate = value; snap->have_fault_rate = measured; }
   else if (!strcmp(feature_name,"dcache_miss_pct")){ snap->dcache_miss_pct = value; snap->have_dcache_miss = measured; }
   else if (!strcmp(feature_name,"l2_miss_pct")){ snap->l2_miss_pct = value; snap->have_l2_miss = measured; }
   else if (!strcmp(feature_name,"l3_miss_pct")){ snap->l3_miss_pct = value; snap->have_l3_miss = measured; }
@@ -625,6 +651,8 @@ static void score_snapshot(const struct run_snapshot *snap,struct scorecard *out
                         CONTROL_FLOW_RULES,2,&out->simple[AXIS_CONTROL_FLOW_STYLE]);
   classify_simple_axis(snap->phase_stability,snap->have_phase,
                         STABILITY_RULES,3,&out->simple[AXIS_RUNTIME_STABILITY]);
+  classify_simple_axis(snap->fault_rate,snap->have_fault_rate,
+                        ALLOCATION_PRESSURE_RULES,3,&out->simple[AXIS_ALLOCATION_PRESSURE]);
   classify_memory_attribution(snap->backend_pct,snap->have_backend,
                                snap->blocking_wait_pct,snap->have_blocking_wait,
                                snap->sched_rundelay_pct,snap->have_sched_rundelay,
@@ -688,6 +716,7 @@ static void print_scorecard_row(FILE *out,const struct run_snapshot *snap,
     print_csv_field(out,sc->simple[AXIS_PARALLELISM_SHAPE].label); fputc(',',out);
     print_csv_field(out,sc->simple[AXIS_CONTROL_FLOW_STYLE].label); fputc(',',out);
     print_csv_field(out,sc->simple[AXIS_RUNTIME_STABILITY].label); fputc(',',out);
+    print_csv_field(out,sc->simple[AXIS_ALLOCATION_PRESSURE].label); fputc(',',out);
     print_csv_field(out,sc->confidence.level); fputc(',',out);
     print_csv_field(out,sc->confidence.reasons); fputc(',',out);
     print_csv_field(out,sc->memory_attribution.label); fputc(',',out);
@@ -696,12 +725,13 @@ static void print_scorecard_row(FILE *out,const struct run_snapshot *snap,
     print_csv_field(out,sc->memory_attribution.locus_reasons);
     fputc('\n',out);
   } else {
-    fprintf(out,"%-24.24s %-20.20s %-28.28s %-18s %-18s %-16s %-14s %-9s %-8s %-30.30s  %-16s  %-16s  %s",
+    fprintf(out,"%-24.24s %-20.20s %-28.28s %-18s %-18s %-16s %-14s %-9s %-10s %-8s %-30.30s  %-16s  %-16s  %s",
             snap->hostname,snap->run_id_text,snap->command,
             dom_label,alt_label,
             sc->simple[AXIS_PARALLELISM_SHAPE].label,
             sc->simple[AXIS_CONTROL_FLOW_STYLE].label,
             sc->simple[AXIS_RUNTIME_STABILITY].label,
+            sc->simple[AXIS_ALLOCATION_PRESSURE].label,
             sc->confidence.level,sc->confidence.reasons,
             sc->memory_attribution.label,sc->memory_attribution.reasons,
             sc->memory_attribution.locus);
@@ -741,13 +771,13 @@ static int score_runs(sqlite3 *db,const char *command_filter,const char *hostnam
   if (csvflag)
     fprintf(out,"hostname,run_id,command,resource_dominance,resource_dominance_pct,"
                 "alternative,alternative_pct,parallelism_shape,control_flow_style,"
-                "runtime_stability,confidence,confidence_reasons,"
+                "runtime_stability,allocation_pressure,confidence,confidence_reasons,"
                 "memory_attribution,memory_attribution_reasons,"
                 "memory_attribution_locus,memory_attribution_locus_reasons\n");
   else
-    fprintf(out,"%-24.24s %-20.20s %-28.28s %-18s %-18s %-16s %-14s %-9s %-8s %-30s  %-16s  %-16s  %s  mem_locus_reasons\n",
+    fprintf(out,"%-24.24s %-20.20s %-28.28s %-18s %-18s %-16s %-14s %-9s %-10s %-8s %-30s  %-16s  %-16s  %s  mem_locus_reasons\n",
             "hostname","run_id","command","resource_dominance","alternative",
-            "parallelism","control_flow","stability","conf.","reasons",
+            "parallelism","control_flow","stability","alloc_pressure","conf.","reasons",
             "mem_attribution","mem_attr_reasons","mem_locus");
 
   while (sqlite3_step(stmt) == SQLITE_ROW){
@@ -804,6 +834,7 @@ static void print_scorecard_fields(FILE *out,const char *hostname,const char *ru
   print_trace_field(out,"parallelism_shape",sc->simple[AXIS_PARALLELISM_SHAPE].label);
   print_trace_field(out,"control_flow_style",sc->simple[AXIS_CONTROL_FLOW_STYLE].label);
   print_trace_field(out,"runtime_stability",sc->simple[AXIS_RUNTIME_STABILITY].label);
+  print_trace_field(out,"allocation_pressure",sc->simple[AXIS_ALLOCATION_PRESSURE].label);
   print_trace_field(out,"confidence",sc->confidence.level);
   print_trace_field(out,"confidence_reasons",sc->confidence.reasons);
   print_trace_field(out,"memory_attribution",sc->memory_attribution.label);
@@ -1710,16 +1741,16 @@ static void usage(const char *prog){
     "Usage: %s --db <path> [options]\n"
     "\n"
     "Classifies wspy runs recorded in a normalized store (wspy-store --db\n"
-    "<path>) along four workload \"archetype\" axes, scored from store.c's\n"
+    "<path>) along several workload \"archetype\" axes, scored from store.c's\n"
     "run_features -- INVESTIGATION.md's 4.2 \"Archetype scorecard\" item.\n"
     "\n"
     "resource_dominance is the headline axis (compute-bound/frontend-bound/\n"
     "memory-bound/speculation-bound, ranked from topdown L1 percentages),\n"
     "with a top-2 alternative and an overall confidence level (high/medium/\n"
     "low/insufficient-data, with reasons). parallelism_shape/control_flow_style/\n"
-    "runtime_stability are simpler supporting tags, \"unknown\" when their\n"
-    "source run_features value wasn't collected (needs --per-core/--branch/\n"
-    "--interval respectively).\n"
+    "runtime_stability/allocation_pressure are simpler supporting tags, \"unknown\"\n"
+    "when their source run_features value wasn't collected (needs --per-core/\n"
+    "--branch/--interval/rusage [always collected] respectively).\n"
     "\n"
     "Options:\n"
     "  --db <path>          normalized store database (required)\n"
