@@ -64,11 +64,12 @@ from `wait4(child_pid,...)` (normal mode) or `getrusage(RUSAGE_CHILDREN,...)` (`
   "high/low"-judged; it's the normalizer most other rate metrics divide by.
 - **utime** — `[raw]` `ru_utime.tv_sec + ru_utime.tv_usec/1e6`, seconds of user-mode CPU time.
 - **stime** — `[raw]` `ru_stime.tv_sec + ru_stime.tv_usec/1e6`, seconds of kernel-mode CPU time.
-- **on_cpu** — `[human-only]` `(utime+stime) / elapsed / num_cores_available`, i.e. fraction of the
-  available cores actually kept busy end-to-end. `num_cores_available` is this process's own outer
-  affinity mask, not narrowed by `--affinity`. Guidance: close to `1.0 * (cores actually used)` for a
-  CPU-bound single/multi-threaded run; well below 1 core's worth suggests the workload spent real wall
-  time blocked (I/O, sleeping, waiting on another process) rather than computing.
+- **on_cpu** — `[feature]` `(utime+stime) / elapsed / num_procs`, i.e. fraction of the online processors
+  actually kept busy end-to-end. `num_procs` (`get_nprocs()`) is not narrowed by `--affinity`. Guidance:
+  close to `1.0 * (cores actually used)` for a CPU-bound single/multi-threaded run; well below 1 core's
+  worth suggests the workload spent real wall time blocked (I/O, sleeping, waiting on another process)
+  rather than computing. Promoted to a real CSV column and `run_features` (issue #230) — previously
+  `[human-only]`. No `archetype.c` axis consumer yet.
 - **nvcsw** — `[raw]` `ru_nvcsw`, voluntary context switches (the process blocked on something).
 - **nivcsw** — `[raw]` `ru_nivcsw`, involuntary context switches (preempted by the scheduler).
 - **inblock** — `[raw]` `ru_inblock`, block I/O input operations.
@@ -130,13 +131,17 @@ is scaled up by `enabled_delta/running_delta` before any print function ever see
 - **contention_pct** — AMD only; `smt_contention_slots / slots * 100` (note: divided by raw `slots`, not
   `slots_no_contention`, unlike every other `_pct` column here) — slots lost specifically to SMT sibling
   contention rather than to the workload's own frontend/backend/speculation.
-- **retire_ucode_pct**, **retire_fastpath_pct** — L2 split of `retire`: `retire_ucode` = slots retiring via
-  microcode-assisted ops (Intel `core.topdown-heavy-ops`; AMD `ex_ret_ucode_ops`), `retire_fastpath` =
-  `safe_sub(retire, retire_ucode)`, both as `% of slots_no_contention`. High `retire_ucode_pct` can
-  indicate reliance on complex/microcoded instructions rather than simple fast-path ones.
-- **frontend_latency_pct**, **frontend_bandwidth_pct** — L2 split of `frontend`: latency-bound (fetch
-  stalls, e.g. icache/iTLB misses; Intel `core.topdown-fetch-lat`) vs. bandwidth-bound (frontend can't
-  decode/issue fast enough even without a stall).
+- **retire_ucode_pct**, **retire_fastpath_pct** — `[feature]` L2 split of `retire`: `retire_ucode` = slots
+  retiring via microcode-assisted ops (Intel `core.topdown-heavy-ops`; AMD `ex_ret_ucode_ops`),
+  `retire_fastpath` = `safe_sub(retire, retire_ucode)`, both as `% of slots_no_contention`. High
+  `retire_ucode_pct` can indicate reliance on complex/microcoded instructions rather than simple
+  fast-path ones. Promoted to `run_features` (issue #232) — same shape as `float_pct`, no `archetype.c`
+  consumer yet.
+- **frontend_latency_pct**, **frontend_bandwidth_pct** — `[feature]` L2 split of `frontend`: latency-bound
+  (fetch stalls, e.g. icache/iTLB misses; Intel `core.topdown-fetch-lat`) vs. bandwidth-bound (frontend
+  can't decode/issue fast enough even without a stall). Promoted to `run_features` (issue #229) -- no
+  `archetype.c` axis consumer yet; a `frontend_attribution_locus` axis cross-referencing these against
+  `icache_miss_pct` (mirroring `memory_attribution_locus`) is left as a follow-up.
 - **backend_cpu_pct**, **backend_memory_pct** — L2 split of `backend`: `backend_memory` = slots lost
   waiting on the memory subsystem (Intel `core.topdown-mem-bound`; AMD ratio-scaled from
   `ex_no_retire.load_not_complete/not_complete`), `backend_cpu` = the rest (execution port/resource
@@ -523,6 +528,9 @@ above, for human/agent consumption.
 - **control_flow_style** (`wspy-archetype`) — `[categorical]` threshold on `branch_mispredict_pct` (see
   above).
 - **runtime_stability** (`wspy-archetype`) — `[categorical]` threshold on `phase_stability` (see above).
+- **allocation_pressure** (`wspy-archetype`) — `[categorical]` threshold on `fault_rate` (see above):
+  `low` (`<15000`/sec) / `moderate` (`15000-100000`/sec) / `high` (`>100000`/sec). Tertile-informed v1
+  cut points from the CPU2026 reference-matrix corpus (147 SPEC CPU2026 runs, 3 machines) -- issue #231.
 - **vectorization_density** (`wspy-archetype`) — `[categorical]` threshold on `float_pct` (see above):
   `low` (`<2%`) / `moderate` (`2-10%`) / `high` (`>10%`). Tertile-informed v1 cut points from the
   CPU2026 reference-matrix corpus (147 SPEC CPU2026 runs, 3 machines) -- issue #227.
@@ -642,11 +650,13 @@ concrete candidate for a future normalized table, parallel to `run_environment`.
 
 ## Known gaps / candidates for this list to grow into
 
-- `on_cpu` and topdown's `GHz` annotation are useful but currently `[human-only]` — never reach the
-  store. Promoting either to a real CSV column would need a `PRINT_CSV_HEADER`/`PRINT_CSV` case added to
-  their respective `print_*` functions (see `CLAUDE.md`'s CSV-column pitfalls before doing so).
-  `on_cpu` in particular seems like an obvious `run_features` candidate once it has a CSV home.
-  Per-1000-inst density annotations (branches, cache accesses, etc.) are the same story.
+- `on_cpu` is now a real CSV column and `run_features` entry (issue #230). Topdown's `GHz` annotation is
+  the same still-`[human-only]` story — promoting it would need a `PRINT_CSV_HEADER`/`PRINT_CSV` case
+  added to its `print_*` function (see `CLAUDE.md`'s CSV-column pitfalls before doing so). Per-1000-inst
+  density annotations (branches, cache accesses, etc.) are the same story.
+- A `ctxswitch_rate`-based oversubscription/concurrency-shape archetype axis (issue #230's other half)
+  is still open — it needs data with controlled thread-count-vs-core-count variation, which the CPU2026
+  reference-matrix corpus (single-workload runs) doesn't provide.
 - `float` (AMD FP-op density) is `float_pct` in `SIMPLE_METRIC_FEATURES`, and now also a
   `vectorization_density` `wspy-archetype` axis (issue #227), with thresholds from the CPU2026
   reference-matrix corpus (147 runs, 3 machines) -- still gcc-only/n=1-per-test/no-repeat-runs data, a
