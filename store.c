@@ -37,7 +37,7 @@
  * (wspy.h) is versioned separately from MANIFEST_SCHEMA_VERSION. Recorded
  * on every run_features row so a later reader can tell which rule set
  * produced a given value. */
-#define FEATURE_SET_VERSION "1.6"
+#define FEATURE_SET_VERSION "1.7"
 
 /* Noise floor for active_core_count (below): a --per-core core averaging
  * at or under this IPC is treated as not meaningfully participating in the
@@ -969,6 +969,15 @@ static const struct simple_metric_feature SIMPLE_METRIC_FEATURES[] = {
    * with real thresholds is left for once more machines/compilers/n>1 runs
    * are in (archetype.c's own header already sketches the extension). */
   { "float_pct",             "float" },
+  /* retire's L2 split (topdown.c, AMD-only) -- microcode-assisted vs.
+   * fast-path retiring slots. Same "computed but never promoted" pattern as
+   * float_pct above (issue #232, filed alongside #227/#229/#230 from the
+   * same GCC-optimization-guide review); no concrete downstream consumer
+   * yet, but the reference-matrix corpus (SPEC CPU2026, 3 machines) now has
+   * real cross-workload values for it, so promoting it costs nothing and
+   * removes the "computed but stuck in [raw]" gap doc/METRICS.md flagged. */
+  { "retire_ucode_pct",      "retire_ucode_pct" },
+  { "retire_fastpath_pct",   "retire_fastpath_pct" },
 };
 #define NUM_SIMPLE_METRIC_FEATURES \
   (int)(sizeof(SIMPLE_METRIC_FEATURES)/sizeof(SIMPLE_METRIC_FEATURES[0]))
