@@ -195,50 +195,59 @@ def resolve_store_run_directory(cur, hostname, store_run_id):
 
 
 def pick_counters_pass_id(cur, hostname, pass_rows):
-    """Given [(store_run_id, config_name), ...] (resolve_store_pass_rows() above), prefers a pass
-    actually holding measured run_features data over one merely *named* "counters" -- issue #270: the
-    builtin deep-cpu/deep-gpu profiles (profiles/deep-cpu.conf) name their widest-counter-set pass
-    "counters" but deliberately run it via native --passes with no --csv (matching the five separate
-    invocations it replaces), so wspy-store's CSV-driven ingest_csv_metrics() never populates
-    run_features for it at all -- the *other* pass in the same profile (amdtopdown, --csv --counters=
-    topdown) is the one with real archetype-usable data. Confirmed live: a deep-cpu run's "counters"
-    pass scores resource_dominance=unknown/insufficient-data while its amdtopdown pass scores
-    resource_dominance=memory-bound at 89.80%, for the exact same collection.
+    """Given [(store_run_id, config_name), ...] (resolve_store_pass_rows() above), prefers the pass
+    holding the *most* measured run_features data over one merely *named* "counters" -- issue #270
+    established the first half of this (a pass literally named "counters" can still be an empty-CSV
+    trap: the builtin deep-cpu/deep-gpu profiles, profiles/deep-cpu.conf, name their widest-counter-set
+    pass "counters" but deliberately run it via native --passes with no --csv, so wspy-store's CSV-
+    driven ingest_csv_metrics() never populates run_features for it at all -- confirmed live, a
+    deep-cpu run's "counters" pass scores resource_dominance=unknown/insufficient-data while its
+    amdtopdown pass scores resource_dominance=memory-bound at 89.80%, for the exact same collection).
 
-    Preference order: (1) the "counters" pass if it has >=1 measured run_features row: 99% of profiles
-    (quick, tree-heavy, ibs-*, ...) do collect it with --csv, and it's still the widest single counter
-    set when it's real; (2) the first other pass (in pass_rows order) with measured data, when
-    "counters" itself is the empty-CSV trap above; (3) falls back to the old pure name-based
-    preference (then plain pass_rows[0]) when either the store predates run_features (schema version
-    < 4, or STORE_SCHEMA_VERSION migrations haven't run) or genuinely nothing was measured for any
-    pass -- so a database this function can't usefully query behaves exactly as it did before this fix,
-    rather than crashing or guessing. `wspy-archetype --run` takes exactly one store run_id, unlike a
-    bulk aggregate call that can take one per pass."""
-    def has_measured_features(store_run_id):
+    Picking by richest-data rather than "first pass with *any* data" is a second, independent fix on
+    top of that (same issue, found auditing a real local wspy-phoronix-import collection): Phoronix
+    imports don't use the name "counters" at all (config_name values like "performance-counters"/
+    "process-tree"/"system-metrics"/"ibs"), so the name check never fires there either way -- but a
+    plain "first with any data" tie-break still picked "process-tree" (6 measured run_features rows,
+    no --branch/--interval data so control_flow_style/runtime_stability stayed unknown, confidence=low)
+    over the far richer "performance-counters" pass (15 rows, real branch+interval data,
+    confidence=high) for the exact same test point, purely because process-tree happened to resolve
+    first in resolve_store_pass_rows()'s dict-ordered result. Counting measured run_features rows is a
+    simple, principled proxy for "widest counter set collected" -- directly measuring the thing the
+    "counters" name was only ever a proxy for, rather than assuming a specific pass name implies
+    breadth.
+
+    Preference order: (1) whichever candidate has the most measured run_features rows -- ties broken
+    by whichever is named "counters", then by pass_rows order; (2) falls back to the old pure
+    name-based preference (then plain pass_rows[0]) when either the store predates run_features
+    (schema version < 4, or STORE_SCHEMA_VERSION migrations haven't run) or genuinely nothing was
+    measured for any pass -- so a database this function can't usefully query behaves exactly as it
+    did before this fix, rather than crashing or guessing. `wspy-archetype --run` takes exactly one
+    store run_id, unlike a bulk aggregate call that can take one per pass."""
+    def measured_feature_count(store_run_id):
         try:
             cur.execute(
-                "SELECT 1 FROM run_features rf JOIN runs r ON rf.run_id = r.id "
-                "WHERE r.hostname = ? AND r.run_id = ? AND rf.coverage = 'measured' LIMIT 1",
+                "SELECT COUNT(*) FROM run_features rf JOIN runs r ON rf.run_id = r.id "
+                "WHERE r.hostname = ? AND r.run_id = ? AND rf.coverage = 'measured'",
                 (hostname, store_run_id))
         except sqlite3.OperationalError:
             return None  # no run_features table at all -- can't tell, not "no data"
-        return cur.fetchone() is not None
+        row = cur.fetchone()
+        return row[0] if row else 0
 
-    availability = [(store_run_id, config_name, has_measured_features(store_run_id))
-                    for store_run_id, config_name in pass_rows]
-    if any(has_data is None for _, _, has_data in availability):
+    richness = [(store_run_id, config_name, measured_feature_count(store_run_id))
+                for store_run_id, config_name in pass_rows]
+    if any(count is None for _, _, count in richness):
         # run_features unqueryable for at least one candidate (almost always all of them, same store) --
         # degrade to the pre-fix behavior rather than picking based on partial information.
         for store_run_id, config_name in pass_rows:
             if config_name == "counters":
                 return store_run_id
         return pass_rows[0][0]
-    for store_run_id, config_name, has_data in availability:
-        if config_name == "counters" and has_data:
-            return store_run_id
-    for store_run_id, _, has_data in availability:
-        if has_data:
-            return store_run_id
+    best_id, _, best_count = max(richness, key=lambda row: (row[2], row[1] == "counters"))
+    if best_count > 0:
+        return best_id
+    # Nothing measured anywhere -- same terminal case as before, name preference then first.
     for store_run_id, config_name in pass_rows:
         if config_name == "counters":
             return store_run_id

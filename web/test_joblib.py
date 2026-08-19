@@ -3863,12 +3863,17 @@ class ResolveStorePassRowsTest(unittest.TestCase):
 
 
 class PickCountersPassIdDataPresenceTest(unittest.TestCase):
-    """pick_counters_pass_id()'s issue #270 fix: prefer a pass with real run_features data over one
-    merely named "counters" -- the deep-cpu/deep-gpu builtin profiles name their widest-counter-set
-    pass "counters" but run it with no --csv, so wspy-store never populates run_features for it (see
-    profiles/deep-cpu.conf's own comment); the *other* pass in the same profile (amdtopdown) is the one
-    with real archetype-usable data. Full runs+run_features schema (unlike ResolveStorePassRowsTest
-    above), since these tests are specifically about the JOIN pick_counters_pass_id() now does."""
+    """pick_counters_pass_id()'s issue #270 fix: prefer the pass with the *most* measured
+    run_features data over one merely named "counters" -- the deep-cpu/deep-gpu builtin profiles name
+    their widest-counter-set pass "counters" but run it with no --csv, so wspy-store never populates
+    run_features for it (see profiles/deep-cpu.conf's own comment); the *other* pass in the same
+    profile (amdtopdown) is the one with real archetype-usable data. A second real-world case (found
+    auditing a live local wspy-phoronix-import collection, not deep-cpu-shaped at all: config_name
+    values like "process-tree"/"performance-counters" that never match "counters" by name) is covered
+    by PickCountersPassIdRichnessTest below -- these two classes split issue #270's original
+    presence-only fix from its richness refinement so each fix's own real-world motivation stays
+    traceable to its own tests. Full runs+run_features schema (unlike ResolveStorePassRowsTest above),
+    since these tests are specifically about the JOIN pick_counters_pass_id() now does."""
 
     def _connect(self):
         conn = sqlite3.connect(":memory:")
@@ -3928,7 +3933,7 @@ class PickCountersPassIdDataPresenceTest(unittest.TestCase):
         self.assertEqual(joblib.pick_counters_pass_id(conn.cursor(), "roswell", rows), "pass-counters")
 
     def test_wrong_hostname_is_treated_as_no_data(self):
-        # has_measured_features() filters by hostname too -- a run_features row for the same store
+        # measured_feature_count() filters by hostname too -- a run_features row for the same store
         # run_id under a different host (shouldn't happen given how run_id is generated, but the query
         # checks it explicitly rather than trusting run_id alone) doesn't count.
         conn = self._connect()
@@ -3936,6 +3941,78 @@ class PickCountersPassIdDataPresenceTest(unittest.TestCase):
         self._insert_feature(conn, 1)
         rows = [("pass-a", "counters")]
         # No pass for "roswell" has any data -- falls back to the counters-name preference, same id.
+        self.assertEqual(joblib.pick_counters_pass_id(conn.cursor(), "roswell", rows), "pass-a")
+
+
+class PickCountersPassIdRichnessTest(unittest.TestCase):
+    """pick_counters_pass_id()'s richness refinement (issue #270 follow-up): among multiple passes
+    that all have *some* measured data, prefer the one with the *most*, not just whichever happened to
+    resolve first. Found auditing a real local wspy-phoronix-import collection
+    (phoronix/build-linux-kernel-default): none of its 4 passes is named "counters" at all
+    (config_name values "process-tree"/"performance-counters"/"system-metrics"/"ibs"), so the name
+    check never fires either way, but a plain "first pass with any data" tie-break picked
+    "process-tree" (6 measured run_features rows, no --branch/--interval data) over the far richer
+    "performance-counters" pass (15 rows, real branch+interval data) purely because process-tree
+    happened to resolve first -- dropping control_flow_style/runtime_stability to "unknown" and
+    confidence to "low" for a run that actually had "high"-confidence data sitting right there under a
+    different pass id. Same schema convention as PickCountersPassIdDataPresenceTest above."""
+
+    def _connect(self):
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE runs (id INTEGER PRIMARY KEY, hostname TEXT, run_id TEXT, "
+                     "config_name TEXT)")
+        conn.execute("CREATE TABLE run_features (run_id INTEGER, feature_name TEXT, coverage TEXT)")
+        self.addCleanup(conn.close)
+        return conn
+
+    def _insert_run(self, conn, internal_id, hostname, run_id, config_name):
+        conn.execute("INSERT INTO runs VALUES (?, ?, ?, ?)", (internal_id, hostname, run_id, config_name))
+
+    def _insert_features(self, conn, internal_id, count, coverage="measured"):
+        for i in range(count):
+            conn.execute("INSERT INTO run_features VALUES (?, ?, ?)", (internal_id, "feature_%d" % i, coverage))
+
+    def test_prefers_richer_pass_over_first_resolved_when_neither_named_counters(self):
+        # The real Phoronix-import case: process-tree resolves first but performance-counters has far
+        # more measured data -- must pick performance-counters despite pass_rows order.
+        conn = self._connect()
+        self._insert_run(conn, 1, "sacramento", "pass-tree", "process-tree")
+        self._insert_features(conn, 1, 6)
+        self._insert_run(conn, 2, "sacramento", "pass-perf", "performance-counters")
+        self._insert_features(conn, 2, 15)
+        rows = [("pass-tree", "process-tree"), ("pass-perf", "performance-counters")]
+        self.assertEqual(joblib.pick_counters_pass_id(conn.cursor(), "sacramento", rows), "pass-perf")
+
+    def test_richness_wins_even_against_a_counters_named_pass(self):
+        # A pass literally named "counters" with a little data doesn't automatically beat a richer,
+        # differently-named pass -- richness is the primary signal, the name is only a tie-break.
+        conn = self._connect()
+        self._insert_run(conn, 1, "roswell", "pass-a", "counters")
+        self._insert_features(conn, 1, 2)
+        self._insert_run(conn, 2, "roswell", "pass-b", "amdtopdown")
+        self._insert_features(conn, 2, 15)
+        rows = [("pass-a", "counters"), ("pass-b", "amdtopdown")]
+        self.assertEqual(joblib.pick_counters_pass_id(conn.cursor(), "roswell", rows), "pass-b")
+
+    def test_counters_name_breaks_an_exact_richness_tie(self):
+        conn = self._connect()
+        self._insert_run(conn, 1, "roswell", "pass-a", "systemtime")
+        self._insert_features(conn, 1, 5)
+        self._insert_run(conn, 2, "roswell", "pass-b", "counters")
+        self._insert_features(conn, 2, 5)
+        rows = [("pass-a", "systemtime"), ("pass-b", "counters")]
+        self.assertEqual(joblib.pick_counters_pass_id(conn.cursor(), "roswell", rows), "pass-b")
+
+    def test_unmeasured_coverage_rows_do_not_count_toward_richness(self):
+        conn = self._connect()
+        self._insert_run(conn, 1, "roswell", "pass-a", "process-tree")
+        self._insert_features(conn, 1, 6)
+        self._insert_run(conn, 2, "roswell", "pass-b", "performance-counters")
+        self._insert_features(conn, 2, 3, coverage="measured")
+        self._insert_features(conn, 2, 20, coverage="unavailable")  # doesn't count
+        rows = [("pass-a", "process-tree"), ("pass-b", "performance-counters")]
+        # pass-a's 6 measured rows beat pass-b's 3 measured rows, even though pass-b has more rows
+        # in total once unmeasured coverage is included.
         self.assertEqual(joblib.pick_counters_pass_id(conn.cursor(), "roswell", rows), "pass-a")
 
 
