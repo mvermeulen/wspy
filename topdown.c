@@ -2378,6 +2378,42 @@ static double confidence_ratio(struct counter_info *cinfo){
   return (double) cinfo->time_running / (double) cinfo->time_enabled;
 }
 
+// Two independently-read raw-event counters have no guaranteed ordering
+// relationship -- measurement noise or independent multiplex-scaling
+// extrapolation (read_counters()'s own delta scaling, topdown.c) can push a
+// "child" value above its "parent" even when a formula assumes child <=
+// parent. Subtracting two unsigned longs in that case wraps to a
+// near-ULONG_MAX value instead of erroring -- confirmed live on real
+// hardware in print_topdown()'s AMD backend_memory/frontend_latency L2
+// split ("-- cpu 18446744073709528203 # 42865654599275.4%"), silently
+// present in this codebase's own human-text output before this fix, and
+// guaranteed to poison every downstream consumer once these fields became
+// unconditional CSV columns (INVESTIGATION.md's 4.2 Tier 1, "Hierarchical
+// topdown schema" item). safe_sub() clamps to 0 instead of wrapping.
+static unsigned long safe_sub(unsigned long a,unsigned long b){
+  return a >= b ? a - b : 0;
+}
+
+// A raw-event counter's value can legitimately be 0 for reasons that have
+// nothing to do with the ratio actually being zero: the whole run's
+// perf_event_open() was permission-denied (every counter in the group reads
+// back 0 -- see print_topdown_fe()'s/print_topdown_op()'s comment below), or
+// -- issue #276's case -- one specific counter is entirely unsupported on
+// this kernel/CPU generation (AMD's l3_lookup_state.* needs
+// /sys/devices/amd_l3/type, absent on some hosts) and setup_counters()
+// silently skips it, leaving find_ci_label() unable to find it so its
+// struct counter_info never displaces the caller's 0 default. Any of this
+// file's many miss/access-style percentages can therefore hit a genuine 0
+// denominator, and 0/0*100.0 (or n/0*100.0) is -nan/inf -- not a finite CSV
+// value, and wspy-validate's per-column sanity check correctly rejects it.
+// safe_div() reports 0.0 instead of propagating -nan/inf into CSV or
+// human-readable text; callers scale the result by 100.0 (a percentage) or
+// 1000.0 (a per-1000-instructions rate) same as the unguarded expressions
+// they replace.
+static double safe_div(double num,double denom){
+  return denom != 0.0 ? num / denom : 0.0;
+}
+
 void print_ipc(struct counter_group *cgroup,enum output_format oformat){
   int i;
   unsigned long cpu_cycles=0;
@@ -2408,38 +2444,29 @@ void print_ipc(struct counter_group *cgroup,enum output_format oformat){
     fprintf(outfile,"IPC,cycles\n");
     break;
   case PRINT_NORMAL:
+    // IPC's own denominator (cpu_cycles) can be 0 too -- e.g. a
+    // permission-denied run where perf_event_open() never scheduled this
+    // counter group at all (see the multiplex-ratio comment above) -- same
+    // general class as issue #276's l3_lookup_state gap, just a different
+    // counter. safe_div() below keeps the CSV/human value finite either
+    // way; skip the "GHz"/"high"/"low" annotations entirely when there are
+    // no cycles to annotate.
     if (cpu_cycles){
       fprintf(outfile,"cpu-cycles           %-14lu # %4.2f GHz\n",cpu_cycles,(double) cpu_cycles / elapsed / 1000000000.0 / cpu_info->num_cores_available / (aflag?cpu_info->num_cores_available:1));
-      fprintf(outfile,"instructions         %-14lu # %4.2f IPC",instructions,(double) instructions / cpu_cycles);
-      if (((double) instructions / cpu_cycles) > 3.0){
+      fprintf(outfile,"instructions         %-14lu # %4.2f IPC",instructions,safe_div(instructions,cpu_cycles));
+      if (safe_div(instructions,cpu_cycles) > 3.0){
 	fprintf(outfile," high");
       }
-      else if (((double) instructions / cpu_cycles) < 0.7){
+      else if (safe_div(instructions,cpu_cycles) < 0.7){
 	fprintf(outfile," low");
       }
       fprintf(outfile,"\n");
-      break;
-    case PRINT_CSV:
-      fprintf(outfile,"%4.2f,",(double) instructions / cpu_cycles);
-      break;
     }
+    break;
+  case PRINT_CSV:
+    fprintf(outfile,"%4.2f,",safe_div(instructions,cpu_cycles));
+    break;
   }
-}
-
-// Two independently-read raw-event counters have no guaranteed ordering
-// relationship -- measurement noise or independent multiplex-scaling
-// extrapolation (read_counters()'s own delta scaling, topdown.c) can push a
-// "child" value above its "parent" even when a formula assumes child <=
-// parent. Subtracting two unsigned longs in that case wraps to a
-// near-ULONG_MAX value instead of erroring -- confirmed live on real
-// hardware in print_topdown()'s AMD backend_memory/frontend_latency L2
-// split ("-- cpu 18446744073709528203 # 42865654599275.4%"), silently
-// present in this codebase's own human-text output before this fix, and
-// guaranteed to poison every downstream consumer once these fields became
-// unconditional CSV columns (INVESTIGATION.md's 4.2 Tier 1, "Hierarchical
-// topdown schema" item). safe_sub() clamps to 0 instead of wrapping.
-static unsigned long safe_sub(unsigned long a,unsigned long b){
-  return a >= b ? a - b : 0;
 }
 
 // Cross-group denominator sharing (INVESTIGATION.md's 4.2 Tier 1, "Full L1->L2->L3
@@ -2986,32 +3013,31 @@ void print_topdown_fe(struct counter_group *cgroup,enum output_format oformat,in
   // claimed them, and (b) even when instructions was nonzero, 3 of the 4
   // %4.3f fields and the "0.0" fallback had no trailing comma at all, so a
   // real (root) run produced a corrupted, unparseable CSV row (fields fused
-  // together, e.g. "18.21.2340.5670.089").
+  // together, e.g. "18.21.2340.5670.089"). safe_div() (issue #276) now
+  // covers the remaining case: a zero denominator (icache_access==0 or
+  // instructions==0) producing -nan/inf instead of a finite value.
   switch(oformat){
   case PRINT_CSV_HEADER:
     break;
   case PRINT_CSV:
-    if (icache_access)
-      fprintf(outfile,"%4.1f,",(double) icache_miss / icache_access*100);
-    else
-      fprintf(outfile,"0.0,");
-    fprintf(outfile,"%4.3f,",(double) (itlb1 + itlb2)*1000.0 / instructions);
-    fprintf(outfile,"%4.3f,",(double) itlb2*1000.0 / instructions);
-    fprintf(outfile,"%4.3f,",(double) tlb_flush*1000.0 / instructions);
+    fprintf(outfile,"%4.1f,",safe_div(icache_miss,icache_access)*100.0);
+    fprintf(outfile,"%4.3f,",safe_div(itlb1+itlb2,instructions)*1000.0);
+    fprintf(outfile,"%4.3f,",safe_div(itlb2,instructions)*1000.0);
+    fprintf(outfile,"%4.3f,",safe_div(tlb_flush,instructions)*1000.0);
     break;
   case PRINT_NORMAL:
     if (cpu_info->vendor == VENDOR_AMD) {
       fprintf(outfile,"instructions         %-14lu #\n",instructions);
       fprintf(outfile,"icache               %-14lu # %4.3f icache per 1000 inst\n",
-	      icache_access,(double) icache_access * 1000 / instructions);
+	      icache_access,safe_div(icache_access,instructions)*1000.0);
       fprintf(outfile,"icache miss          %-14lu # %4.1f%% icache miss rate\n",
-	      icache_miss,(double) icache_miss / icache_access*100.0);
+	      icache_miss,safe_div(icache_miss,icache_access)*100.0);
       fprintf(outfile,"l1 iTLB miss         %-14lu # %4.3f L1 iTLB per 1000 inst\n",
-	      itlb1+itlb2,(double) (itlb1+itlb2)*1000/instructions);
+	      itlb1+itlb2,safe_div(itlb1+itlb2,instructions)*1000.0);
       fprintf(outfile,"l2 iTLB miss         %-14lu # %4.3f L2 iTLB per 1000 inst\n",
-	      itlb2,(double) itlb2*1000/instructions);
+	      itlb2,safe_div(itlb2,instructions)*1000.0);
       fprintf(outfile,"tlb flush            %-14lu # %4.3f TLB flush per 1000 inst\n",
-	      tlb_flush,(double) tlb_flush*1000/instructions);
+	      tlb_flush,safe_div(tlb_flush,instructions)*1000.0);
     }
     break;
   }
@@ -3047,24 +3073,21 @@ void print_topdown_op(struct counter_group *cgroup,enum output_format oformat,in
   case PRINT_CSV_HEADER:
     break;
   case PRINT_CSV:
-    if (opcache_access)
-      fprintf(outfile,"%4.1f,",(double) opcache_miss / opcache_access*100);
-    else
-      fprintf(outfile,"0.0,");
-    fprintf(outfile,"%4.3f,",(double) dtlb1*1000.0 / instructions);
-    fprintf(outfile,"%4.3f,",(double) dtlb2*1000.0 / instructions);
+    fprintf(outfile,"%4.1f,",safe_div(opcache_miss,opcache_access)*100.0);
+    fprintf(outfile,"%4.3f,",safe_div(dtlb1,instructions)*1000.0);
+    fprintf(outfile,"%4.3f,",safe_div(dtlb2,instructions)*1000.0);
     break;
   case PRINT_NORMAL:
     if (cpu_info->vendor == VENDOR_AMD) {
       fprintf(outfile,"instructions         %-14lu #\n",instructions);
       fprintf(outfile,"opcache              %-14lu # %4.3f opcache per 1000 inst\n",
-	      opcache_access,(double) opcache_access * 1000 / instructions);
+	      opcache_access,safe_div(opcache_access,instructions)*1000.0);
       fprintf(outfile,"opcache miss         %-14lu # %4.1f%% opcache miss rate\n",
-	      opcache_miss,(double) opcache_miss / opcache_access*100.0);
+	      opcache_miss,safe_div(opcache_miss,opcache_access)*100.0);
       fprintf(outfile,"l1 dTLB miss         %-14lu # %4.3f L1 dTLB per 1000 inst\n",
-	      dtlb1,(double) dtlb1*1000/instructions);
+	      dtlb1,safe_div(dtlb1,instructions)*1000.0);
       fprintf(outfile,"l2 dTLB miss         %-14lu # %4.3f L2 dTLB per 1000 inst\n",
-	      dtlb2,(double) dtlb2*1000/instructions);
+	      dtlb2,safe_div(dtlb2,instructions)*1000.0);
     }
     break;
   }
@@ -3124,7 +3147,7 @@ void print_branch(struct counter_group *cgroup,enum output_format oformat){
   
 
   if (csvflag){
-      fprintf(outfile,"%4.2f%%,",(double) branch_miss / branches * 100.0);
+      fprintf(outfile,"%4.2f%%,",safe_div(branch_miss,branches)*100.0);
       if (cpu_info->vendor == VENDOR_ARM){
           unsigned long br_immed = 0, br_return = 0, br_pred_val = 0, br_mis_pred_val = 0;
           if ((cinfo = find_ci_label(cgroup,"br_immed_retired"))) br_immed = cinfo->value;
@@ -3141,13 +3164,13 @@ void print_branch(struct counter_group *cgroup,enum output_format oformat){
       }
   } else {
       fprintf(outfile,"branches             %-14lu # %4.3f branches per 1000 inst\n",
-	      branches,(double) branches / instructions * 1000.0);
+	      branches,safe_div(branches,instructions)*1000.0);
       fprintf(outfile,"branch misses        %-14lu # %4.2f%% branch miss\n",
-	      branch_miss, (double) branch_miss / branches * 100.0);
+	      branch_miss, safe_div(branch_miss,branches)*100.0);
       fprintf(outfile,"conditional          %-14lu # %4.3f conditional branches per 1000 inst\n",
-	      cond_branches,(double) cond_branches / instructions * 1000.0);
+	      cond_branches,safe_div(cond_branches,instructions)*1000.0);
       fprintf(outfile,"indirect             %-14lu # %4.3f indirect branches per 1000 inst\n",
-	      ind_branches,(double) ind_branches / instructions * 1000.0);      
+	      ind_branches,safe_div(ind_branches,instructions)*1000.0);
       if (cpu_info->vendor == VENDOR_ARM){
           unsigned long br_immed = 0, br_return = 0, br_pred_val = 0, br_mis_pred_val = 0;
           if ((cinfo = find_ci_label(cgroup,"br_immed_retired"))) br_immed = cinfo->value;
@@ -3155,24 +3178,24 @@ void print_branch(struct counter_group *cgroup,enum output_format oformat){
           if ((cinfo = find_ci_label(cgroup,"br_pred"))) br_pred_val = cinfo->value;
           if ((cinfo = find_ci_label(cgroup,"br_mis_pred"))) br_mis_pred_val = cinfo->value;
           fprintf(outfile,"immediate retired    %-14lu # %4.3f immediate per 1000 inst\n",
-                  br_immed,(double) br_immed / instructions * 1000.0);
+                  br_immed,safe_div(br_immed,instructions)*1000.0);
           fprintf(outfile,"return retired       %-14lu # %4.3f return per 1000 inst\n",
-                  br_return,(double) br_return / instructions * 1000.0);
+                  br_return,safe_div(br_return,instructions)*1000.0);
           fprintf(outfile,"predicted executed   %-14lu # %4.3f predicted per 1000 inst\n",
-                  br_pred_val,(double) br_pred_val / instructions * 1000.0);
+                  br_pred_val,safe_div(br_pred_val,instructions)*1000.0);
           fprintf(outfile,"mispredicted exec    %-14lu # %4.3f mispredicted per 1000 inst\n",
-                  br_mis_pred_val,(double) br_mis_pred_val / instructions * 1000.0);
+                  br_mis_pred_val,safe_div(br_mis_pred_val,instructions)*1000.0);
       } else if (cpu_info->vendor == VENDOR_AMD){
           unsigned long near_ret = 0, near_ret_misp = 0, ind_misp = 0;
           if ((cinfo = find_ci_label(cgroup,"near-return"))) near_ret = cinfo->value;
           if ((cinfo = find_ci_label(cgroup,"near-return-mispredicted"))) near_ret_misp = cinfo->value;
           if ((cinfo = find_ci_label(cgroup,"indirect-branch-mispredicted"))) ind_misp = cinfo->value;
           fprintf(outfile,"near return          %-14lu # %4.3f near return per 1000 inst\n",
-                  near_ret,(double) near_ret / instructions * 1000.0);
+                  near_ret,safe_div(near_ret,instructions)*1000.0);
           fprintf(outfile,"near ret mispredict  %-14lu # %4.2f%% near return mispredict rate\n",
-                  near_ret_misp,(double) near_ret_misp / near_ret * 100.0);
+                  near_ret_misp,safe_div(near_ret_misp,near_ret)*100.0);
           fprintf(outfile,"indirect mispredict  %-14lu # %4.2f%% indirect branch mispredict rate\n",
-                  ind_misp,(double) ind_misp / ind_branches * 100.0);
+                  ind_misp,safe_div(ind_misp,ind_branches)*100.0);
       }
   }
 }
@@ -3200,24 +3223,24 @@ void print_l2cache(struct counter_group *cgroup,enum output_format oformat){
     if ((cinfo = find_ci_label(cgroup,"l2d_cache"))) l2_access = cinfo->value;
     if ((cinfo = find_ci_label(cgroup,"l2d_cache_lmiss_rd"))) l2_miss = cinfo->value;
     if (csvflag){
-      fprintf(outfile,"%4.2f%%,",(double) l2_miss / l2_access * 100.0);
+      fprintf(outfile,"%4.2f%%,",safe_div(l2_miss,l2_access)*100.0);
     } else {
       fprintf(outfile,"l2 access            %-14lu # %4.3f l2 access per 1000 inst\n",
-	      l2_access,(double) l2_access / instructions*1000.0);
+	      l2_access,safe_div(l2_access,instructions)*1000.0);
       fprintf(outfile,"l2 miss              %-14lu # %4.2f%% l2 miss\n",
-	      l2_miss, (double) l2_miss / l2_access * 100.0);
+	      l2_miss, safe_div(l2_miss,l2_access)*100.0);
     }
     break;
   case VENDOR_INTEL:
     if ((cinfo = find_ci_label(cgroup,"l2_request.all"))) l2_access = cinfo->value;
     if ((cinfo = find_ci_label(cgroup,"l2_request.miss"))) l2_miss = cinfo->value;
     if (csvflag){
-      fprintf(outfile,"%4.2f%%,",(double) l2_miss / l2_access * 100.0);
-    } else {    
+      fprintf(outfile,"%4.2f%%,",safe_div(l2_miss,l2_access)*100.0);
+    } else {
       fprintf(outfile,"l2 access            %-14lu # %4.3f l2 access per 1000 inst\n",
-	      l2_access,(double) l2_access / instructions*1000.0);
+	      l2_access,safe_div(l2_access,instructions)*1000.0);
       fprintf(outfile,"l2 miss              %-14lu # %4.2f%% l2 miss\n",
-	      l2_miss, (double) l2_miss / l2_access * 100.0);
+	      l2_miss, safe_div(l2_miss,l2_access)*100.0);
     }
     break;
   case VENDOR_AMD:
@@ -3236,10 +3259,10 @@ void print_l2cache(struct counter_group *cgroup,enum output_format oformat){
     l2_miss = l1_miss_l2_miss + l2_pf_hit_l3 + l2_pf_miss_l3;
 
     if (csvflag){
-      fprintf(outfile,"%4.2f%%,",(double) l2_miss / l2_access * 100.0);
+      fprintf(outfile,"%4.2f%%,",safe_div(l2_miss,l2_access)*100.0);
     } else {
       fprintf(outfile,"instructions         %-14lu # %4.3f l2 access per 1000 inst\n",
-	      instructions,(double) l2_access / instructions*1000.0);
+	      instructions,safe_div(l2_access,instructions)*1000.0);
       // The overall L2 miss rate (l2_miss/l2_access, combining l1-demand and
       // prefetch sources, not just this one line's own count) is annotated
       // on the *miss*-named line below, not the hit-named one above -- a
@@ -3248,7 +3271,7 @@ void print_l2cache(struct counter_group *cgroup,enum output_format oformat){
       // line's own hit rate," inverting hit vs. miss.
       fprintf(outfile,"l2 hit from l1       %-14lu #\n",l2_from_l1_no_prefetch);
       fprintf(outfile,"l2 miss from l1      %-14lu # %4.2f%% l2 miss\n",
-	      l1_miss_l2_miss, (double) l2_miss / l2_access * 100.0);
+	      l1_miss_l2_miss, safe_div(l2_miss,l2_access)*100.0);
       fprintf(outfile,"l2 hit from l2 pf    %-14lu #\n",l2_pf_hit_l2);
       fprintf(outfile,"l3 hit from l2 pf    %-14lu #\n",l2_pf_hit_l3);
       fprintf(outfile,"l3 miss from l2 pf   %-14lu #\n",l2_pf_miss_l3);
@@ -3281,14 +3304,14 @@ void print_l3cache(struct counter_group *cgroup,enum output_format oformat){
       l3_miss = cinfo->value;
 
     if (csvflag){
-      fprintf(outfile,"%4.2f%%,",(double) l3_miss / l3_access * 100.0);
+      fprintf(outfile,"%4.2f%%,",safe_div(l3_miss,l3_access)*100.0);
     } else {
       fprintf(outfile,"instructions         %-14lu # %4.3f l3 access per 1000 inst\n",
-	      instructions,(double) l3_access / instructions*1000.0);
+	      instructions,safe_div(l3_access,instructions)*1000.0);
       fprintf(outfile,"l3 access            %-14lu # %4.3f l3 access per 1000 inst\n",
-	      l3_access, (double) l3_access / instructions*1000.0);
+	      l3_access, safe_div(l3_access,instructions)*1000.0);
       fprintf(outfile,"l3 miss              %-14lu # %4.2f%% l3 miss\n",
-	      l3_miss, (double) l3_miss / l3_access * 100.0);
+	      l3_miss, safe_div(l3_miss,l3_access)*100.0);
     }
     break;    
   default:
@@ -3382,13 +3405,13 @@ void print_cache(struct counter_group *cgroup,
     miss = cinfo->value;  
 
   if (csvflag){
-    fprintf(outfile,"%4.2f%%,",(double) miss / access * 100.0);
+    fprintf(outfile,"%4.2f%%,",safe_div(miss,access)*100.0);
   } else {
     fprintf(outfile,"instructions         %-14lu #\n",instructions);
     fprintf(outfile,"%-20s %-14lu # %4.3f %s per 1000 inst\n",
-	    name,access,(double) access / instructions * 1000.0,name);
+	    name,access,safe_div(access,instructions)*1000.0,name);
     fprintf(outfile,"%-20s %-14lu # %4.2f%% %s\n",
-	    miss_name, miss, (double) miss / access * 100.0, miss_name);
+	    miss_name, miss, safe_div(miss,access)*100.0, miss_name);
   }
 }
 
@@ -3461,20 +3484,20 @@ void print_float(struct counter_group *cgroup,enum output_format oformat){
     float_all = float_512 + float_256 + float_128 + float_mmx + float_scalar;
 
     if (csvflag){
-      fprintf(outfile,"%4.2f%%,",(double) float_all / instructions * 100.0);
+      fprintf(outfile,"%4.2f%%,",safe_div(float_all,instructions)*100.0);
     } else {
       fprintf(outfile,"instructions         %-14lu # %4.3f float per 1000 inst\n",
-	      instructions,(double) float_all / instructions*1000.0);
+	      instructions,safe_div(float_all,instructions)*1000.0);
       fprintf(outfile,"float 512            %-14lu # %4.3f AVX-512 per 1000 inst\n",
-	      float_512,(double) float_512 / instructions*1000.0);      
+	      float_512,safe_div(float_512,instructions)*1000.0);
       fprintf(outfile,"float 256            %-14lu # %4.3f AVX-256 per 1000 inst\n",
-	      float_256,(double) float_256 / instructions*1000.0);      
+	      float_256,safe_div(float_256,instructions)*1000.0);
       fprintf(outfile,"float 128            %-14lu # %4.3f AVX-128 per 1000 inst\n",
-	      float_128,(double) float_128 / instructions*1000.0);
+	      float_128,safe_div(float_128,instructions)*1000.0);
       fprintf(outfile,"float MMX            %-14lu # %4.3f MMX per 1000 inst\n",
-	      float_mmx,(double) float_mmx / instructions*1000.0);      
+	      float_mmx,safe_div(float_mmx,instructions)*1000.0);
       fprintf(outfile,"float scalar         %-14lu # %4.3f scalar per 1000 inst\n",
-	      float_scalar,(double) float_scalar / instructions*1000.0);      
+	      float_scalar,safe_div(float_scalar,instructions)*1000.0);
     }
     break;    
   default:
