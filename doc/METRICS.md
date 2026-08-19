@@ -64,12 +64,13 @@ from `wait4(child_pid,...)` (normal mode) or `getrusage(RUSAGE_CHILDREN,...)` (`
   "high/low"-judged; it's the normalizer most other rate metrics divide by.
 - **utime** — `[raw]` `ru_utime.tv_sec + ru_utime.tv_usec/1e6`, seconds of user-mode CPU time.
 - **stime** — `[raw]` `ru_stime.tv_sec + ru_stime.tv_usec/1e6`, seconds of kernel-mode CPU time.
-- **on_cpu** — `[feature]` `(utime+stime) / elapsed / num_procs`, i.e. fraction of the online processors
+- **on_cpu** — `[raw]` `(utime+stime) / elapsed / num_procs`, i.e. fraction of the online processors
   actually kept busy end-to-end. `num_procs` (`get_nprocs()`) is not narrowed by `--affinity`. Guidance:
   close to `1.0 * (cores actually used)` for a CPU-bound single/multi-threaded run; well below 1 core's
   worth suggests the workload spent real wall time blocked (I/O, sleeping, waiting on another process)
-  rather than computing. Promoted to a real CSV column and `run_features` (issue #230) — previously
-  `[human-only]`. No `archetype.c` axis consumer yet.
+  rather than computing. Promoted to a real CSV column (issue #230) — previously `[human-only]`. The
+  `run_features` promotion is a *separately* computed value, not an `AVG()` of this column -- see
+  "Derived rusage rate features" below.
 - **nvcsw** — `[raw]` `ru_nvcsw`, voluntary context switches (the process blocked on something).
 - **nivcsw** — `[raw]` `ru_nivcsw`, involuntary context switches (preempted by the scheduler).
 - **inblock** — `[raw]` `ru_inblock`, block I/O input operations.
@@ -87,6 +88,15 @@ Source: `store.c:extract_run_features()`, computed once per run from the `[raw]`
 
 - **fault_rate** — `[feature]` `(minflt+majflt) / elapsed_seconds`, page faults per second.
 - **ctxswitch_rate** — `[feature]` `(nvcsw+nivcsw) / elapsed_seconds`, context switches per second.
+- **on_cpu** — `[feature]` `(utime+stime) / elapsed_seconds / num_cores_available`, fraction of
+  available cores kept busy end-to-end. Deliberately *not* an `AVG()` of the raw `on_cpu` CSV column
+  above (issue #230) -- `utime`/`stime`/`elapsed` have been base CSV columns since day one and
+  `num_cores_available` has been in every manifest `wspy-run` unconditionally writes, so this feature
+  backfills for free on every run ever collected via `wspy-run`, just by re-running `wspy-store
+  --run-index <same files>` over already-existing artifacts, no re-collection needed. Uses
+  `num_cores_available` (`runs` table, from manifest enrichment) rather than the raw column's own
+  `num_procs` denominator -- the two are identical except when `--affinity`/an external `taskset`
+  narrowed availability pre-launch, and `num_cores_available` is the only one persisted anywhere.
 
 ## IPC & topdown (L1 breakdown)
 
@@ -534,6 +544,15 @@ above, for human/agent consumption.
 - **vectorization_density** (`wspy-archetype`) — `[categorical]` threshold on `float_pct` (see above):
   `low` (`<2%`) / `moderate` (`2-10%`) / `high` (`>10%`). Tertile-informed v1 cut points from the
   CPU2026 reference-matrix corpus (147 SPEC CPU2026 runs, 3 machines) -- issue #227.
+- **core_utilization** (`wspy-archetype`) — `[categorical]` threshold on `on_cpu` (see above): `low`
+  (`<0.5`) / `moderate` (`0.5-0.8`) / `high` (`>=0.8`). Issue #230's first half -- a clean, entirely
+  organic signal from the CPU2026 reference-matrix corpus (no deliberately-varied experiment needed):
+  `intrate`/`fprate` (multi-copy) sit at 0.80-0.99, but `intspeed`'s single-threaded EDA/simulation
+  tools (`vpr`/`gem5`/`ns3`/`abc`) range as low as 0.03. The issue's other half -- a `ctxswitch_rate`-
+  based "oversubscribed" label -- is a harder problem than this axis was, since a high
+  `ctxswitch_rate`/`nivcsw` doesn't have one honest explanation (contention/timer-I/O/external noise
+  can all produce it too); still open, revisit once there's enough Phoronix corpus data to check
+  whether it clusters as cleanly as `on_cpu` did.
 - **memory_attribution** (`wspy-archetype`) — `[categorical]` cross-references `backend_pct` (topdown)
   against every independently-measured cache/TLB/IBS signal the run collected (`dcache_miss_pct`,
   `l2_miss_pct`, `l3_miss_pct`, `itlb_miss_per1k`/`dtlb_miss_per1k`, `itlb_generic_miss_pct`/
@@ -650,13 +669,16 @@ concrete candidate for a future normalized table, parallel to `run_environment`.
 
 ## Known gaps / candidates for this list to grow into
 
-- `on_cpu` is now a real CSV column and `run_features` entry (issue #230). Topdown's `GHz` annotation is
-  the same still-`[human-only]` story — promoting it would need a `PRINT_CSV_HEADER`/`PRINT_CSV` case
-  added to its `print_*` function (see `CLAUDE.md`'s CSV-column pitfalls before doing so). Per-1000-inst
-  density annotations (branches, cache accesses, etc.) are the same story.
-- A `ctxswitch_rate`-based oversubscription/concurrency-shape archetype axis (issue #230's other half)
-  is still open — it needs data with controlled thread-count-vs-core-count variation, which the CPU2026
-  reference-matrix corpus (single-workload runs) doesn't provide.
+- `on_cpu` is now a real CSV column, a derived `run_features` entry, and a `core_utilization`
+  `wspy-archetype` axis (issue #230, first half). Topdown's `GHz` annotation is the same still-
+  `[human-only]` story — promoting it would need a `PRINT_CSV_HEADER`/`PRINT_CSV` case added to its
+  `print_*` function (see `CLAUDE.md`'s CSV-column pitfalls before doing so). Per-1000-inst density
+  annotations (branches, cache accesses, etc.) are the same story.
+- A `ctxswitch_rate`-based oversubscription-specific archetype axis (issue #230's other half) is still
+  open — unlike `on_cpu`, a high `ctxswitch_rate`/`nivcsw` doesn't have one honest explanation (real
+  oversubscription, lock/futex contention, timer-driven I/O, and external host noise can all produce
+  it), so this needs either a corroborating signal or enough Phoronix-corpus diversity to check whether
+  it clusters cleanly on its own, not just more single-workload CPU2026-shaped data.
 - `float` (AMD FP-op density) is `float_pct` in `SIMPLE_METRIC_FEATURES`, and now also a
   `vectorization_density` `wspy-archetype` axis (issue #227), with thresholds from the CPU2026
   reference-matrix corpus (147 runs, 3 machines) -- still gcc-only/n=1-per-test/no-repeat-runs data, a

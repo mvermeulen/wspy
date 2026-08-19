@@ -550,11 +550,11 @@ See `./wspy-core-report --help` for the full option list.
 ## wspy-archetype: archetype scorecard
 
 `wspy-archetype` classifies runs recorded in a normalized store (`wspy-store --db <path>`) along
-seven workload axes derived from `run_features`: `resource_dominance` (the headline axis —
+eight workload axes derived from `run_features`: `resource_dominance` (the headline axis —
 compute-bound/frontend-bound/memory-bound/speculation-bound, ranked from topdown L1 percentages,
 with a top-2 alternative and a confidence level), `parallelism_shape`/`control_flow_style`/
-`runtime_stability`/`allocation_pressure`/`vectorization_density` as simpler supporting tags (each
-`unknown` when its source feature wasn't collected), and `memory_attribution` — cross-references topdown's own `backend_pct` against every
+`runtime_stability`/`allocation_pressure`/`vectorization_density`/`core_utilization` as simpler
+supporting tags (each `unknown` when its source feature wasn't collected), and `memory_attribution` — cross-references topdown's own `backend_pct` against every
 independently-measured cache/TLB/IBS signal the run collected, reporting `corroborated`/
 `uncorroborated`/`not-memory-bound`/`unknown` (with `memory_attribution_reasons` naming which
 signal(s) fired or were checked) rather than trusting a "memory-bound" topdown read on its own. On a

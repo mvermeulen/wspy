@@ -71,6 +71,38 @@ static void build_csv_record(char *buf,size_t bufsize,const char *hostname,const
     RUN_INDEX_SCHEMA_VERSION,run_id,hostname,start_time,start_time,command0,output_json);
 }
 
+/* Like build_csv_record(), but with a real manifest_path too -- for tests exercising both
+ * ingest_csv_metrics() and enrich_from_manifest() together (e.g. on_cpu's num_cores_available
+ * dependency, test_extract_run_features_on_cpu() below). json_reader.h has no mutation API, so this
+ * is a separate builder rather than patching build_csv_record()'s already-parsed json_value. */
+static void build_csv_record_with_manifest(char *buf,size_t bufsize,const char *hostname,
+                                            const char *run_id,const char *start_time,
+                                            const char *command0,const char *output_path,
+                                            const char *manifest_path){
+  char output_json[320],manifest_json[320];
+
+  if (output_path) snprintf(output_json,sizeof(output_json),"\"%s\"",output_path);
+  else snprintf(output_json,sizeof(output_json),"null");
+  if (manifest_path) snprintf(manifest_json,sizeof(manifest_json),"\"%s\"",manifest_path);
+  else snprintf(manifest_json,sizeof(manifest_json),"null");
+
+  snprintf(buf,bufsize,
+    "{\"schema_version\":\"%s\",\"run_id\":\"%s\",\"collector\":\"wspy\",\"wspy_version\":\"4.0\","
+    "\"hostname\":\"%s\",\"cpu_vendor\":\"AMD\",\"cpu_family\":25,\"cpu_model\":1,"
+    "\"environment\":{\"virt_role\":\"host\",\"hypervisor_vendor\":null,\"microcode_version\":null,"
+    "\"bios_vendor\":null,\"bios_version\":null,\"bios_date\":null,\"cpu_governor\":null,"
+    "\"cpu_scaling_driver\":null,\"cpu_governor_uniform\":false,\"memory_total_kb\":null,"
+    "\"compiler_version\":null,\"libc_version\":null},"
+    "\"environment_coverage\":{\"captured\":0,\"probed\":9},"
+    "\"start_time\":\"%s\",\"finish_time\":\"%s\",\"elapsed_seconds\":1.0,"
+    "\"command\":[\"%s\"],"
+    "\"exit_status\":{\"known\":true,\"exited\":true,\"exit_code\":0,\"signaled\":false,\"term_signal\":null},"
+    "\"options\":{\"counter_mask\":\"0x1\",\"per_core\":false,\"system\":true,\"csv\":true,\"tree\":false,\"interval_seconds\":0},"
+    "\"counter_coverage\":{\"requested\":4,\"measured\":4},"
+    "\"output_files\":{\"output_path\":%s,\"tree_output_path\":null,\"manifest_path\":%s}}\n",
+    RUN_INDEX_SCHEMA_VERSION,run_id,hostname,start_time,start_time,command0,output_json,manifest_json);
+}
+
 /* Like build_csv_record(), but with a configurable elapsed_seconds and
  * tree_output_path instead of build_csv_record()'s fixed 1.0/null -- for
  * the blocking_wait_pct/sched_rundelay_pct extraction tests, which need
@@ -1375,10 +1407,61 @@ static void test_extract_run_features_rates(void){
   assert(!strcmp(coverage,"measured") && value > 407.9 && value < 408.1); /* (400+8)/1.0 */
   assert(feature_row(db,run_id,"ctxswitch_rate",&value,coverage,sizeof(coverage)));
   assert(!strcmp(coverage,"measured") && value > 39.9 && value < 40.1); /* (30+10)/1.0 */
+  /* on_cpu needs num_cores_available from manifest enrichment (see
+   * test_extract_run_features_on_cpu() below) -- this record has no
+   * manifest at all (build_csv_record()'s manifest_path is always null,
+   * upsert_run()'s enrich_manifest arg is 0 above), so it degrades to
+   * unavailable rather than a bogus value or a crash. */
+  assert(feature_row(db,run_id,"on_cpu",&value,coverage,sizeof(coverage)));
+  assert(!strcmp(coverage,"unavailable"));
 
   sqlite3_close(db);
   remove(csv_path);
   printf("PASS: extract_run_features rates\n");
+}
+
+static void test_extract_run_features_on_cpu(void){
+  sqlite3 *db;
+  struct store_stats stats;
+  char buf[2048],errbuf[256];
+  struct json_value *root;
+  sqlite3_int64 run_id;
+  double value;
+  char coverage[16];
+  const char *csv_path = "/tmp/test_store_features_on_cpu.csv";
+  const char *manifest_path = "/tmp/test_store_features_on_cpu.manifest.json";
+
+  printf("Testing extract_run_features: on_cpu backfills from always-present utime/stime/elapsed "
+         "plus manifest-enriched num_cores_available -- issue #230, deliberately NOT dependent on "
+         "the raw on_cpu CSV column, so it backfills on runs collected before that column existed "
+         "just by re-running wspy-store over their already-existing run-index/manifest files...\n");
+  db = open_store(":memory:");
+  assert(db != NULL);
+  memset(&stats,0,sizeof(stats));
+
+  write_file(csv_path,
+    "elapsed,utime,stime,nvcsw,nivcsw,inblock,oublock,maxrss,minflt,majflt,nswap,\n"
+    "1.0,0.1,0.05,30,10,0,0,1000,400,8,0,\n");
+  write_manifest_file(manifest_path,"/bin/true","2026-07-01T00:00:00.000Z","6.1.0-test",16,0);
+  build_csv_record_with_manifest(buf,sizeof(buf),"host1","run1","2026-07-01T00:00:00.000Z","/bin/true",
+                                  csv_path,manifest_path);
+
+  root = json_parse(buf,errbuf,sizeof(errbuf));
+  assert(root != NULL);
+  upsert_run(db,root,"idx.jsonl",1,1,1,&stats);
+  json_free(root);
+
+  run_id = lookup_run_id(db,"run1");
+  assert(run_id > 0);
+
+  assert(feature_row(db,run_id,"on_cpu",&value,coverage,sizeof(coverage)));
+  /* (0.1+0.05)/1.0/16 = 0.009375 */
+  assert(!strcmp(coverage,"measured") && value > 0.00930 && value < 0.00945);
+
+  sqlite3_close(db);
+  remove(csv_path);
+  remove(manifest_path);
+  printf("PASS: extract_run_features on_cpu\n");
 }
 
 static void test_extract_run_features_phase_stability(void){
@@ -2065,6 +2148,7 @@ int main(void){
   test_extract_run_features_tree_blocking_promoted();
   test_extract_run_features_tree_blocking_unavailable_without_tree();
   test_extract_run_features_rates();
+  test_extract_run_features_on_cpu();
   test_extract_run_features_phase_stability();
   test_extract_run_features_parallelism_proxy();
   test_extract_run_features_active_core_count_threshold();

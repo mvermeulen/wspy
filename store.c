@@ -37,7 +37,7 @@
  * (wspy.h) is versioned separately from MANIFEST_SCHEMA_VERSION. Recorded
  * on every run_features row so a later reader can tell which rule set
  * produced a given value. */
-#define FEATURE_SET_VERSION "1.7"
+#define FEATURE_SET_VERSION "1.8"
 
 /* Noise floor for active_core_count (below): a --per-core core averaging
  * at or under this IPC is treated as not meaningfully participating in the
@@ -990,19 +990,6 @@ static const struct simple_metric_feature SIMPLE_METRIC_FEATURES[] = {
    * corroboration design, not just a threshold. */
   { "frontend_latency_pct",   "frontend_latency_pct" },
   { "frontend_bandwidth_pct", "frontend_bandwidth_pct" },
-  /* Fraction of available cores kept busy end-to-end -- issue #230: was
-   * [human-only] (topdown.c:print_usage()'s PRINT_NORMAL case only) until
-   * the same change that added this promotion gave it a PRINT_CSV_HEADER/
-   * PRINT_CSV case too, so this is a same-commit promotion rather than the
-   * usual "already a CSV column, just needs a run_features entry" case
-   * above. Distinct from active_core_count (per-core IPC-threshold count,
-   * --per-core only): on_cpu is a single aggregate ratio, available on
-   * every run regardless of --per-core. No archetype.c axis consumer yet
-   * -- the issue's other half (ctxswitch_rate-based oversubscription
-   * signal) needs controlled thread-count-vs-core-count data this
-   * codebase's reference-matrix corpus doesn't have yet, so that's left
-   * open. */
-  { "on_cpu",                "on_cpu" },
 };
 #define NUM_SIMPLE_METRIC_FEATURES \
   (int)(sizeof(SIMPLE_METRIC_FEATURES)/sizeof(SIMPLE_METRIC_FEATURES[0]))
@@ -1090,11 +1077,14 @@ static void extract_run_features(sqlite3 *db,sqlite3_int64 run_row_id,struct sto
   sqlite3_stmt *stmt;
   double elapsed_seconds = 0;
   int have_elapsed;
+  int num_cores_available = 0;
+  int have_num_cores_available;
   char tree_output_path[4096] = "";
   int i;
 
-  if (sqlite3_prepare_v2(db,"SELECT elapsed_seconds,tree_output_path FROM runs WHERE id=?;",
-                         -1,&stmt,NULL) == SQLITE_OK){
+  if (sqlite3_prepare_v2(db,
+      "SELECT elapsed_seconds,tree_output_path,num_cores_available FROM runs WHERE id=?;",
+      -1,&stmt,NULL) == SQLITE_OK){
     sqlite3_bind_int64(stmt,1,run_row_id);
     if (sqlite3_step(stmt) == SQLITE_ROW){
       if (sqlite3_column_type(stmt,0) != SQLITE_NULL)
@@ -1103,10 +1093,13 @@ static void extract_run_features(sqlite3 *db,sqlite3_int64 run_row_id,struct sto
         const unsigned char *p = sqlite3_column_text(stmt,1);
         if (p) snprintf(tree_output_path,sizeof(tree_output_path),"%s",(const char *)p);
       }
+      if (sqlite3_column_type(stmt,2) != SQLITE_NULL)
+        num_cores_available = sqlite3_column_int(stmt,2);
     }
     sqlite3_finalize(stmt);
   }
   have_elapsed = elapsed_seconds > 0;
+  have_num_cores_available = num_cores_available > 0;
 
   for (i = 0; i < NUM_SIMPLE_METRIC_FEATURES; i++){
     const struct simple_metric_feature *f = &SIMPLE_METRIC_FEATURES[i];
@@ -1150,6 +1143,31 @@ static void extract_run_features(sqlite3 *db,sqlite3_int64 run_row_id,struct sto
       upsert_feature(db,run_row_id,"ctxswitch_rate",1,(nvcsw+nivcsw)/elapsed_seconds);
     else
       upsert_feature(db,run_row_id,"ctxswitch_rate",0,0);
+  }
+  /* on_cpu: fraction of available cores kept busy end-to-end -- issue #230.
+   * Deliberately a *derived* feature from (utime+stime)/elapsed_seconds/
+   * num_cores_available, the same "computed from always-present rusage
+   * columns" shape as fault_rate/ctxswitch_rate above, rather than an AVG()
+   * of a raw on_cpu CSV column (topdown.c now emits one too, but utime/
+   * stime/elapsed have been base CSV columns since day one and
+   * num_cores_available has been in every manifest wspy-run's own
+   * unconditional --manifest already writes) -- so this feature backfills
+   * for free on every run ever collected via wspy-run, just by re-running
+   * `wspy-store --run-index <same files>` over already-existing artifacts,
+   * with zero need to re-collect anything. Uses num_cores_available (this
+   * process's own outer affinity mask) rather than topdown.c's own
+   * num_procs (get_nprocs(), the host's total online count) as the
+   * denominator -- the two are identical except when --affinity or an
+   * external taskset narrowed availability pre-launch, and
+   * num_cores_available is the only one persisted anywhere. */
+  {
+    double utime = 0,stime = 0;
+    int have_utime = sum_metric_value(db,run_row_id,"utime",&utime);
+    int have_stime = sum_metric_value(db,run_row_id,"stime",&stime);
+    if (have_elapsed && have_num_cores_available && (have_utime || have_stime))
+      upsert_feature(db,run_row_id,"on_cpu",1,(utime+stime)/elapsed_seconds/num_cores_available);
+    else
+      upsert_feature(db,run_row_id,"on_cpu",0,0);
   }
 
   /* phase_stability: fraction of distinct --interval ticks phase.c classified
