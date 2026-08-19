@@ -74,6 +74,16 @@
  * one-entry extension shape this file's own "Extensibility" note above
  * describes, the first two times that note's promise was exercised for
  * real.
+ *
+ * An eighth axis, core_utilization, was added still later (issue #230's
+ * first half; see CORE_UTILIZATION_RULES below) over on_cpu -- itself
+ * reworked at the same time from an AVG()-of-a-raw-CSV-column feature into a
+ * proper derived one (store.c), so this axis (and on_cpu itself) backfills
+ * on every run ever collected via wspy-run just by re-running wspy-store
+ * over already-existing artifacts, no re-collection needed. The issue's
+ * other half -- a ctxswitch_rate-based "oversubscribed" label -- stays
+ * deliberately unaddressed; see CORE_UTILIZATION_RULES's own comment for why
+ * it's not simply the same recipe one more time.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -184,14 +194,49 @@ static const struct threshold_rule VECTORIZATION_DENSITY_RULES[] = {
   { 10.0,     "moderate" },
   { HUGE_VAL, "high" },
 };
+/* core_utilization (issue #230, first half) thresholds on on_cpu (run_features,
+ * fraction of available cores kept busy end-to-end) -- deliberately simple v1
+ * starting points, same caveat as every other threshold table in this file, but
+ * grounded in real cross-workload data: the CPU2026 reference-matrix corpus
+ * (147 SPEC CPU2026 runs, 3 machines) shows a clean, strong, entirely organic
+ * split -- intrate/fprate (multi-copy parallel) sit at 0.80-0.99 on_cpu, but
+ * intspeed (single multi-threaded EDA/simulation tools -- vpr/gem5/ns3/abc)
+ * ranges 0.03-0.99 with many runs under 0.1, i.e. essentially single-threaded
+ * on a 32-96 core machine. No deliberate thread-count-vs-core-count experiment
+ * needed -- this fell straight out of already-collected data, unlike the
+ * ctxswitch_rate-based "true oversubscription" half of this issue (see below).
+ * Boundaries: nothing rate-flavored in the corpus drops under 0.8, and a solid
+ * chunk of intspeed sits under 0.5, so "high" is unambiguous and "low" catches
+ * the clearly-underutilized tail; "moderate" is the deliberately-uncertain
+ * middle. Still single-compiler/n=1-per-test/no-repeat-runs data -- a starting
+ * point, not a validated boundary.
+ *
+ * The issue's other half -- a ctxswitch_rate-based "oversubscribed" label --
+ * is deliberately NOT attempted here even though ctxswitch_rate is already a
+ * run_features value: unlike on_cpu, a high ctxswitch_rate/nivcsw doesn't have
+ * one honest explanation. It's consistent with genuine oversubscription (more
+ * runnable threads than cores), but equally consistent with heavy lock/futex
+ * contention, timer-driven I/O, or external host noise -- CPU2026 (single
+ * workload at a time, no deliberate thread-count variation) can't distinguish
+ * these, and neither can a plain threshold on ctxswitch_rate alone. Revisit
+ * once there's enough Phoronix corpus data to check whether high-ctxswitch_rate
+ * runs cluster cleanly (real signal) the way float_pct/on_cpu did, or need a
+ * corroborating signal (e.g. --tree-schedstat's run_delay_seconds, or the
+ * workload's own known thread count) before it's safe to threshold. */
+static const struct threshold_rule CORE_UTILIZATION_RULES[] = {
+  { 0.5,      "low" },
+  { 0.8,      "moderate" },
+  { HUGE_VAL, "high" },
+};
 
 enum simple_axis_id {
   AXIS_PARALLELISM_SHAPE, AXIS_CONTROL_FLOW_STYLE, AXIS_RUNTIME_STABILITY,
-  AXIS_ALLOCATION_PRESSURE, AXIS_VECTORIZATION_DENSITY, NUM_SIMPLE_AXES
+  AXIS_ALLOCATION_PRESSURE, AXIS_VECTORIZATION_DENSITY, AXIS_CORE_UTILIZATION,
+  NUM_SIMPLE_AXES
 };
 static const char *SIMPLE_AXIS_KEYS[NUM_SIMPLE_AXES] = {
   "parallelism_shape", "control_flow_style", "runtime_stability", "allocation_pressure",
-  "vectorization_density"
+  "vectorization_density", "core_utilization"
 };
 
 struct classified_axis { char label[24]; int available; };
@@ -263,7 +308,14 @@ static void classify_resource_dominance(double retire_pct,int have_retire,
 
 struct confidence_result {
   char level[24];        /* "high"/"medium"/"low"/"insufficient-data" (19 bytes incl. NUL) */
-  char reasons[160];      /* comma-joined, fixed order, empty for "high" with nothing to flag */
+  /* comma-joined, fixed order, empty for "high" with nothing to flag. 256 (not the smaller size this
+   * used to carry) since "narrow-margin" plus one "missing-<axis>-data" per unavailable simple axis
+   * can legitimately need more room than it looks -- confirmed live: with 5 simple axes (as of
+   * core_utilization, issue #230) the worst case is 174 bytes, already past a 160-byte buffer; adding
+   * this file's own axis-count history (four -> five -> six -> seven -> eight, see file header)
+   * shows this number only grows, never shrinks. Matches memory_attribution_result.reasons's own
+   * 256-byte convention below rather than a tighter size tuned to today's axis count. */
+  char reasons[256];
 };
 
 /* Mirrors summary.c's compute_verdict() shape: deterministic booleans, a
@@ -454,6 +506,7 @@ struct run_snapshot {
   double smt_contention_pct;     int have_smt_contention;
   double fault_rate;             int have_fault_rate;
   double float_pct;              int have_float;
+  double on_cpu;                 int have_on_cpu;
   /* memory_attribution's corroborating signals (classify_memory_attribution()) --
    * independently-measured cache/TLB/IBS raw rates, cross-referenced against
    * backend_pct above rather than folded into any existing axis. */
@@ -507,6 +560,7 @@ static void run_snapshot_apply_feature(struct run_snapshot *snap,const char *fea
   else if (!strcmp(feature_name,"smt_contention_pct")){ snap->smt_contention_pct = value; snap->have_smt_contention = measured; }
   else if (!strcmp(feature_name,"fault_rate")){ snap->fault_rate = value; snap->have_fault_rate = measured; }
   else if (!strcmp(feature_name,"float_pct")){ snap->float_pct = value; snap->have_float = measured; }
+  else if (!strcmp(feature_name,"on_cpu")){ snap->on_cpu = value; snap->have_on_cpu = measured; }
   else if (!strcmp(feature_name,"dcache_miss_pct")){ snap->dcache_miss_pct = value; snap->have_dcache_miss = measured; }
   else if (!strcmp(feature_name,"l2_miss_pct")){ snap->l2_miss_pct = value; snap->have_l2_miss = measured; }
   else if (!strcmp(feature_name,"l3_miss_pct")){ snap->l3_miss_pct = value; snap->have_l3_miss = measured; }
@@ -689,6 +743,8 @@ static void score_snapshot(const struct run_snapshot *snap,struct scorecard *out
                         ALLOCATION_PRESSURE_RULES,3,&out->simple[AXIS_ALLOCATION_PRESSURE]);
   classify_simple_axis(snap->float_pct,snap->have_float,
                         VECTORIZATION_DENSITY_RULES,3,&out->simple[AXIS_VECTORIZATION_DENSITY]);
+  classify_simple_axis(snap->on_cpu,snap->have_on_cpu,
+                        CORE_UTILIZATION_RULES,3,&out->simple[AXIS_CORE_UTILIZATION]);
   classify_memory_attribution(snap->backend_pct,snap->have_backend,
                                snap->blocking_wait_pct,snap->have_blocking_wait,
                                snap->sched_rundelay_pct,snap->have_sched_rundelay,
@@ -754,6 +810,7 @@ static void print_scorecard_row(FILE *out,const struct run_snapshot *snap,
     print_csv_field(out,sc->simple[AXIS_RUNTIME_STABILITY].label); fputc(',',out);
     print_csv_field(out,sc->simple[AXIS_ALLOCATION_PRESSURE].label); fputc(',',out);
     print_csv_field(out,sc->simple[AXIS_VECTORIZATION_DENSITY].label); fputc(',',out);
+    print_csv_field(out,sc->simple[AXIS_CORE_UTILIZATION].label); fputc(',',out);
     print_csv_field(out,sc->confidence.level); fputc(',',out);
     print_csv_field(out,sc->confidence.reasons); fputc(',',out);
     print_csv_field(out,sc->memory_attribution.label); fputc(',',out);
@@ -762,7 +819,7 @@ static void print_scorecard_row(FILE *out,const struct run_snapshot *snap,
     print_csv_field(out,sc->memory_attribution.locus_reasons);
     fputc('\n',out);
   } else {
-    fprintf(out,"%-24.24s %-20.20s %-28.28s %-18s %-18s %-16s %-14s %-9s %-10s %-12s %-8s %-30.30s  %-16s  %-16s  %s",
+    fprintf(out,"%-24.24s %-20.20s %-28.28s %-18s %-18s %-16s %-14s %-9s %-10s %-12s %-11s %-8s %-30.30s  %-16s  %-16s  %s",
             snap->hostname,snap->run_id_text,snap->command,
             dom_label,alt_label,
             sc->simple[AXIS_PARALLELISM_SHAPE].label,
@@ -770,6 +827,7 @@ static void print_scorecard_row(FILE *out,const struct run_snapshot *snap,
             sc->simple[AXIS_RUNTIME_STABILITY].label,
             sc->simple[AXIS_ALLOCATION_PRESSURE].label,
             sc->simple[AXIS_VECTORIZATION_DENSITY].label,
+            sc->simple[AXIS_CORE_UTILIZATION].label,
             sc->confidence.level,sc->confidence.reasons,
             sc->memory_attribution.label,sc->memory_attribution.reasons,
             sc->memory_attribution.locus);
@@ -809,14 +867,14 @@ static int score_runs(sqlite3 *db,const char *command_filter,const char *hostnam
   if (csvflag)
     fprintf(out,"hostname,run_id,command,resource_dominance,resource_dominance_pct,"
                 "alternative,alternative_pct,parallelism_shape,control_flow_style,"
-                "runtime_stability,allocation_pressure,vectorization_density,confidence,"
-                "confidence_reasons,memory_attribution,memory_attribution_reasons,"
+                "runtime_stability,allocation_pressure,vectorization_density,core_utilization,"
+                "confidence,confidence_reasons,memory_attribution,memory_attribution_reasons,"
                 "memory_attribution_locus,memory_attribution_locus_reasons\n");
   else
-    fprintf(out,"%-24.24s %-20.20s %-28.28s %-18s %-18s %-16s %-14s %-9s %-10s %-12s %-8s %-30s  %-16s  %-16s  %s  mem_locus_reasons\n",
+    fprintf(out,"%-24.24s %-20.20s %-28.28s %-18s %-18s %-16s %-14s %-9s %-10s %-12s %-11s %-8s %-30s  %-16s  %-16s  %s  mem_locus_reasons\n",
             "hostname","run_id","command","resource_dominance","alternative",
-            "parallelism","control_flow","stability","alloc_pressure","vec_density","conf.","reasons",
-            "mem_attribution","mem_attr_reasons","mem_locus");
+            "parallelism","control_flow","stability","alloc_pressure","vec_density","core_util",
+            "conf.","reasons","mem_attribution","mem_attr_reasons","mem_locus");
 
   while (sqlite3_step(stmt) == SQLITE_ROW){
     sqlite3_int64 run_id = sqlite3_column_int64(stmt,0);
@@ -874,6 +932,7 @@ static void print_scorecard_fields(FILE *out,const char *hostname,const char *ru
   print_trace_field(out,"runtime_stability",sc->simple[AXIS_RUNTIME_STABILITY].label);
   print_trace_field(out,"allocation_pressure",sc->simple[AXIS_ALLOCATION_PRESSURE].label);
   print_trace_field(out,"vectorization_density",sc->simple[AXIS_VECTORIZATION_DENSITY].label);
+  print_trace_field(out,"core_utilization",sc->simple[AXIS_CORE_UTILIZATION].label);
   print_trace_field(out,"confidence",sc->confidence.level);
   print_trace_field(out,"confidence_reasons",sc->confidence.reasons);
   print_trace_field(out,"memory_attribution",sc->memory_attribution.label);
@@ -1787,10 +1846,10 @@ static void usage(const char *prog){
     "memory-bound/speculation-bound, ranked from topdown L1 percentages),\n"
     "with a top-2 alternative and an overall confidence level (high/medium/\n"
     "low/insufficient-data, with reasons). parallelism_shape/control_flow_style/\n"
-    "runtime_stability/allocation_pressure/vectorization_density are simpler\n"
-    "supporting tags, \"unknown\" when their source run_features value wasn't\n"
-    "collected (needs --per-core/--branch/--interval/rusage [always collected]/\n"
-    "--float [AMD only] respectively).\n"
+    "runtime_stability/allocation_pressure/vectorization_density/core_utilization\n"
+    "are simpler supporting tags, \"unknown\" when their source run_features value\n"
+    "wasn't collected (needs --per-core/--branch/--interval/rusage [always\n"
+    "collected]/--float [AMD only]/rusage+manifest [always collected] respectively).\n"
     "\n"
     "Options:\n"
     "  --db <path>          normalized store database (required)\n"
