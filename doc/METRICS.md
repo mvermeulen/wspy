@@ -269,6 +269,9 @@ Source: `topdown.c:print_l2cache()` / `print_l3cache()`.
   (raw counts only).
 - **l3miss** — `[feature]` (`l3_miss_pct`) AMD only, requires `/sys/devices/amd_l3/type` (silently
   unavailable otherwise): `l3_lookup_state.l3_miss / l3_lookup_state.all_coherent_accesses_to_l3 * 100`.
+  When both source counters are unavailable (the `/sys/devices/amd_l3/type` gap above), this reads
+  `0.00%` rather than dividing by zero -- issue #276, fixed via `topdown.c`'s `safe_div()`, which now
+  guards every miss/access-style percentage in this file the same way.
 
 ## Memory bandwidth
 

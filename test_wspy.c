@@ -1044,6 +1044,13 @@ extern void print_topdown(struct counter_group *cgroup, enum output_format oform
 extern void print_topdown_be(struct counter_group *cgroup, enum output_format oformat, int mask);
 extern struct counter_group *raw_counter_group(char *name, unsigned int mask, enum cpu_core_type core_class);
 extern struct counter_group *cache_counter_group(char *name, unsigned int mask);
+extern void print_l3cache(struct counter_group *cgroup, enum output_format oformat);
+extern void print_l2cache(struct counter_group *cgroup, enum output_format oformat);
+extern void print_branch(struct counter_group *cgroup, enum output_format oformat);
+extern void print_opcache(struct counter_group *cgroup, enum output_format oformat);
+extern void print_icache(struct counter_group *cgroup, enum output_format oformat);
+extern void print_float(struct counter_group *cgroup, enum output_format oformat);
+extern void print_ipc(struct counter_group *cgroup, enum output_format oformat);
 
 static void free_test_cgroup(struct counter_group *cgroup) {
     if (!cgroup) return;
@@ -1972,6 +1979,94 @@ void test_read_counters_multiplex_scaling(void) {
     printf("PASS: read_counters() multiplex scaling\n");
 }
 
+// Regression test for issue #276: print_l3cache()'s AMD path divided
+// l3_miss/l3_access with no zero-guard, so a host missing
+// /sys/devices/amd_l3/type (l3_lookup_state.* counters never opened,
+// find_ci_label() finds nothing, both stay at their 0 default) emitted a
+// literal "-nan%" into the CSV l3miss column -- not a finite value, and
+// wspy-validate's per-column sanity check correctly rejected the whole
+// manifest over it even though every other counter in the pass measured
+// fine. The fix (safe_div(), topdown.c) is the same general shape across
+// every other miss/access-style percentage in this file, so this test
+// exercises the sibling print_* functions too, each fed a counter group
+// where the vendor-specific numerator/denominator counters are entirely
+// absent (as if setup_counters() had skipped them the same way) --
+// simulating "unavailable on this kernel/CPU," not just "measured zero."
+void test_print_functions_zero_denominator_no_nan(void) {
+    struct cpu_info fake_cpu;
+    struct cpu_info *saved_cpu_info;
+    struct counter_group cgroup;
+    struct counter_info cinfo[1];
+    char *contents;
+    const char *tmp_out = "/tmp/test_wspy_zero_denom.txt";
+    int saved_csvflag;
+
+    printf("Testing print_l3cache()/print_l2cache()/print_branch()/print_cache()/print_float()/print_ipc() with an entirely-unavailable counter group (issue #276 + general class)...\n");
+
+    saved_cpu_info = cpu_info;
+    saved_csvflag = csvflag;
+    csvflag = 1;
+    memset(&fake_cpu, 0, sizeof(fake_cpu));
+    fake_cpu.vendor = VENDOR_AMD;
+    cpu_info = &fake_cpu;
+
+    // A counter group that only knows about "instructions" (itself 0, as if
+    // the whole run were permission-denied) -- every vendor-specific raw
+    // event find_ci_label() looks up comes back NULL, so every numerator
+    // and denominator in these functions defaults to 0.
+    memset(cinfo, 0, sizeof(cinfo));
+    cinfo[0].label = "instructions";
+    cinfo[0].value = 0;
+    memset(&cgroup, 0, sizeof(cgroup));
+    cgroup.ncounters = 1;
+    cgroup.cinfo = cinfo;
+
+#define ASSERT_CSV_ROW_NO_NAN(fn, expect) \
+    outfile = fopen(tmp_out, "w"); \
+    if (!outfile) { fprintf(stderr, "FAIL: could not open temp file\n"); exit(1); } \
+    fn(&cgroup, PRINT_CSV); \
+    fclose(outfile); \
+    contents = slurp_file(tmp_out); \
+    assert(contents != NULL); \
+    if (strstr(contents, "nan") != NULL || strstr(contents, "inf") != NULL) { \
+        fprintf(stderr, "FAIL: %s emitted a non-finite CSV value: %s\n", #fn, contents); \
+        exit(1); \
+    } \
+    assert(strstr(contents, expect) != NULL); \
+    free(contents)
+
+    ASSERT_CSV_ROW_NO_NAN(print_l3cache, "0.00%,");
+    ASSERT_CSV_ROW_NO_NAN(print_l2cache, "0.00%,");
+    ASSERT_CSV_ROW_NO_NAN(print_branch, "0.00%,");
+    ASSERT_CSV_ROW_NO_NAN(print_opcache, "0.00%,");
+    ASSERT_CSV_ROW_NO_NAN(print_icache, "0.00%,");
+    ASSERT_CSV_ROW_NO_NAN(print_float, "0.00%,");
+    ASSERT_CSV_ROW_NO_NAN(print_ipc, "0.00,");
+
+#undef ASSERT_CSV_ROW_NO_NAN
+
+    // Human-readable output must stay finite too -- print_l3cache()'s AMD
+    // branch prints l3_miss/l3_access unconditionally there as well.
+    outfile = fopen(tmp_out, "w");
+    if (!outfile) { fprintf(stderr, "FAIL: could not open temp file\n"); exit(1); }
+    csvflag = 0;
+    print_l3cache(&cgroup, PRINT_NORMAL);
+    csvflag = 1;
+    fclose(outfile);
+    contents = slurp_file(tmp_out);
+    assert(contents != NULL);
+    assert(strstr(contents, "nan") == NULL);
+    assert(strstr(contents, "inf") == NULL);
+    free(contents);
+
+    remove(tmp_out);
+    outfile = NULL;
+    csvflag = saved_csvflag;
+    cpu_info = saved_cpu_info;
+
+    printf("PASS: print_* functions degrade to 0.0 instead of -nan/inf on an unavailable counter group\n");
+}
+
 int main(int argc, char **argv) {
     printf("Running Wspy Test Suite...\n");
     test_wspy_parse_options();
@@ -1995,5 +2090,6 @@ int main(int argc, char **argv) {
     test_cache_group_instructions_real_type();
     test_arm_pmu_report();
     test_read_counters_multiplex_scaling();
+    test_print_functions_zero_denominator_no_nan();
     return 0;
 }
