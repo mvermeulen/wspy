@@ -5037,9 +5037,9 @@ def resolve_archetype_run_key(cfg, rundir, suite, benchmark, run_id):
     `runs` table is keyed by each underlying wspy invocation's own run-index run_id, one per collection
     pass, generated independently of the directory name (the exact mismatch wspy-testpoint's own
     aggregate/render had to resolve too). joblib.resolve_store_pass_rows() finds this directory's real
-    pass rows by path correlation; joblib.pick_counters_pass_id() picks the "counters" pass (the widest
-    counter set, closest to what wspy-archetype's feature extraction was built against) as the one
-    representative pass a single `--run` call needs."""
+    pass rows by path correlation; joblib.pick_counters_pass_id() picks whichever resolved pass
+    actually has measured run_features data (preferring one also named "counters" when it does --
+    issue #270) as the one representative pass a single `--run` call needs."""
     run_manifest = read_run_manifest(os.path.join(rundir, RUN_MANIFEST_NAME))
     host_manifest = find_representative_host_manifest(rundir, run_manifest)
     hostname = ((host_manifest or {}).get("host") or {}).get("hostname")
@@ -5049,13 +5049,14 @@ def resolve_archetype_run_key(cfg, rundir, suite, benchmark, run_id):
         return None, f"store database not found: {cfg['store_db']}"
     conn = sqlite3.connect(cfg["store_db"])
     try:
-        pass_rows = joblib.resolve_store_pass_rows(conn.cursor(), hostname, suite, benchmark, run_id)
+        cur = conn.cursor()
+        pass_rows = joblib.resolve_store_pass_rows(cur, hostname, suite, benchmark, run_id)
+        if not pass_rows:
+            return None, (f"{hostname}:{run_id} not found in {cfg['store_db']} -- run `wspy-store --db "
+                           f"{cfg['store_db']} --run-index <run-index.jsonl>` to ingest it first")
+        return hostname, joblib.pick_counters_pass_id(cur, hostname, pass_rows)
     finally:
         conn.close()
-    if not pass_rows:
-        return None, (f"{hostname}:{run_id} not found in {cfg['store_db']} -- run `wspy-store --db "
-                       f"{cfg['store_db']} --run-index <run-index.jsonl>` to ingest it first")
-    return hostname, joblib.pick_counters_pass_id(pass_rows)
 
 
 def generate_archetype_badge(cfg, rundir, suite, benchmark, run_id):

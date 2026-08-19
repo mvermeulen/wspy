@@ -3803,7 +3803,12 @@ class ResolveStorePassRowsTest(unittest.TestCase):
     """resolve_store_pass_rows()/pick_counters_pass_id() -- shared by wspy-testpoint (aggregate/render's
     --run-id resolution) and server.py's characterization-badge generator. A minimal `runs` table (just
     the columns these two functions touch) rather than store.c's full schema, matching this test file's
-    "test the function under test, not the whole subsystem" convention elsewhere."""
+    "test the function under test, not the whole subsystem" convention elsewhere. The
+    pick_counters_pass_id fallback tests below deliberately reuse this same runs-only (no
+    run_features table) schema -- issue #270's fix falls back to the pre-#270 name-based preference
+    when run_features can't be queried at all, and this is exactly that case, not an oversight;
+    PickCountersPassIdDataPresenceTest below covers the new data-presence preference with a fuller
+    schema."""
 
     def _connect(self):
         conn = sqlite3.connect(":memory:")
@@ -3844,13 +3849,94 @@ class ResolveStorePassRowsTest(unittest.TestCase):
         rows = joblib.resolve_store_pass_rows(conn.cursor(), "roswell", "cpu2026", "bench", "run1")
         self.assertEqual(rows, [])
 
-    def test_pick_counters_pass_id_prefers_counters(self):
+    def test_pick_counters_pass_id_prefers_counters_when_run_features_unqueryable(self):
+        # No run_features table at all -- pick_counters_pass_id() can't tell which pass has data, so
+        # it degrades to the pre-#270 pure name-based preference rather than guessing.
+        conn = self._connect()
         rows = [("pass-b", "systemtime"), ("pass-a", "counters"), ("pass-c", "ibs")]
-        self.assertEqual(joblib.pick_counters_pass_id(rows), "pass-a")
+        self.assertEqual(joblib.pick_counters_pass_id(conn.cursor(), "roswell", rows), "pass-a")
 
-    def test_pick_counters_pass_id_falls_back_to_first_when_no_counters_pass(self):
+    def test_pick_counters_pass_id_falls_back_to_first_when_no_counters_pass_and_unqueryable(self):
+        conn = self._connect()
         rows = [("pass-b", "systemtime"), ("pass-c", "ibs")]
-        self.assertEqual(joblib.pick_counters_pass_id(rows), "pass-b")
+        self.assertEqual(joblib.pick_counters_pass_id(conn.cursor(), "roswell", rows), "pass-b")
+
+
+class PickCountersPassIdDataPresenceTest(unittest.TestCase):
+    """pick_counters_pass_id()'s issue #270 fix: prefer a pass with real run_features data over one
+    merely named "counters" -- the deep-cpu/deep-gpu builtin profiles name their widest-counter-set
+    pass "counters" but run it with no --csv, so wspy-store never populates run_features for it (see
+    profiles/deep-cpu.conf's own comment); the *other* pass in the same profile (amdtopdown) is the one
+    with real archetype-usable data. Full runs+run_features schema (unlike ResolveStorePassRowsTest
+    above), since these tests are specifically about the JOIN pick_counters_pass_id() now does."""
+
+    def _connect(self):
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE runs (id INTEGER PRIMARY KEY, hostname TEXT, run_id TEXT, "
+                     "config_name TEXT)")
+        conn.execute("CREATE TABLE run_features (run_id INTEGER, feature_name TEXT, coverage TEXT)")
+        self.addCleanup(conn.close)
+        return conn
+
+    def _insert_run(self, conn, internal_id, hostname, run_id, config_name):
+        conn.execute("INSERT INTO runs VALUES (?, ?, ?, ?)", (internal_id, hostname, run_id, config_name))
+
+    def _insert_feature(self, conn, internal_id, coverage="measured"):
+        conn.execute("INSERT INTO run_features VALUES (?, 'retire_pct', ?)", (internal_id, coverage))
+
+    def test_prefers_counters_pass_with_measured_data_over_other_passes(self):
+        # The common case (quick, tree-heavy, ibs-* all collect "counters" with --csv) -- unchanged
+        # from pre-#270 behavior when "counters" itself is real.
+        conn = self._connect()
+        self._insert_run(conn, 1, "roswell", "pass-a", "counters")
+        self._insert_feature(conn, 1)
+        self._insert_run(conn, 2, "roswell", "pass-b", "systemtime")
+        self._insert_feature(conn, 2)
+        rows = [("pass-b", "systemtime"), ("pass-a", "counters")]
+        self.assertEqual(joblib.pick_counters_pass_id(conn.cursor(), "roswell", rows), "pass-a")
+
+    def test_skips_empty_counters_pass_for_another_pass_with_real_data(self):
+        # The deep-cpu bug (issue #270): "counters" resolved (in the runs table) but has zero
+        # run_features rows (no --csv), amdtopdown has real data -- must pick amdtopdown, not
+        # "insufficient-data" from the empty "counters" pass.
+        conn = self._connect()
+        self._insert_run(conn, 1, "roswell", "pass-counters", "counters")
+        # no run_features row for pass-counters at all
+        self._insert_run(conn, 2, "roswell", "pass-amdtopdown", "amdtopdown")
+        self._insert_feature(conn, 2)
+        rows = [("pass-counters", "counters"), ("pass-amdtopdown", "amdtopdown")]
+        self.assertEqual(joblib.pick_counters_pass_id(conn.cursor(), "roswell", rows), "pass-amdtopdown")
+
+    def test_counters_pass_with_only_unmeasured_coverage_is_treated_as_empty(self):
+        # A run_features row exists but coverage='unavailable' (the counter group wasn't collected,
+        # e.g. permission-denied) -- doesn't count as "has data" any more than no row at all.
+        conn = self._connect()
+        self._insert_run(conn, 1, "roswell", "pass-counters", "counters")
+        self._insert_feature(conn, 1, coverage="unavailable")
+        self._insert_run(conn, 2, "roswell", "pass-amdtopdown", "amdtopdown")
+        self._insert_feature(conn, 2)
+        rows = [("pass-counters", "counters"), ("pass-amdtopdown", "amdtopdown")]
+        self.assertEqual(joblib.pick_counters_pass_id(conn.cursor(), "roswell", rows), "pass-amdtopdown")
+
+    def test_falls_back_to_counters_name_when_nothing_has_measured_data(self):
+        # run_features table exists (queryable) but genuinely nothing was measured for any candidate
+        # pass -- same terminal "insufficient-data" outcome as before #270, not a crash or a change.
+        conn = self._connect()
+        self._insert_run(conn, 1, "roswell", "pass-counters", "counters")
+        self._insert_run(conn, 2, "roswell", "pass-b", "systemtime")
+        rows = [("pass-b", "systemtime"), ("pass-counters", "counters")]
+        self.assertEqual(joblib.pick_counters_pass_id(conn.cursor(), "roswell", rows), "pass-counters")
+
+    def test_wrong_hostname_is_treated_as_no_data(self):
+        # has_measured_features() filters by hostname too -- a run_features row for the same store
+        # run_id under a different host (shouldn't happen given how run_id is generated, but the query
+        # checks it explicitly rather than trusting run_id alone) doesn't count.
+        conn = self._connect()
+        self._insert_run(conn, 1, "otherhost", "pass-a", "counters")
+        self._insert_feature(conn, 1)
+        rows = [("pass-a", "counters")]
+        # No pass for "roswell" has any data -- falls back to the counters-name preference, same id.
+        self.assertEqual(joblib.pick_counters_pass_id(conn.cursor(), "roswell", rows), "pass-a")
 
 
 class ResolveStoreRunDirectoryTest(unittest.TestCase):

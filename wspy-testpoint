@@ -470,12 +470,14 @@ def render_supplementary_section(data):
     return "\n".join(lines) + "\n"
 
 
-def pick_archetype_pass_id(r):
+def pick_archetype_pass_id(cur, r):
     """--run takes exactly one store run_id (unlike aggregate's --run-id, which is repeatable), but a
     real run has one store row per collection pass (resolve_store_pass_rows()). Thin wrapper over
     joblib.pick_counters_pass_id() (shared with server.py's characterization-badge generator) adapting
-    this module's own runs.json-shaped entry to that function's plain pass-rows list."""
-    return joblib.pick_counters_pass_id(r["store_pass_configs"])
+    this module's own runs.json-shaped entry to that function's plain pass-rows list. Needs an open
+    cursor (issue #270) so it can prefer a pass that actually has run_features data over one merely
+    named "counters" -- see pick_counters_pass_id()'s own docstring."""
+    return joblib.pick_counters_pass_id(cur, r["hostname"], r["store_pass_configs"])
 
 
 def collect_archetype_scorecards(wspy_archetype_bin, db_path, present):
@@ -489,26 +491,31 @@ def collect_archetype_scorecards(wspy_archetype_bin, db_path, present):
     warning, same as a missing/failing binary (an empty result list), rather than aborting the whole
     render over an optional section."""
     scorecards = []
-    for r in present:
-        pass_run_id = pick_archetype_pass_id(r)
-        argv = [wspy_archetype_bin, "--db", db_path, "--run", "%s:%s" % (r["hostname"], pass_run_id)]
-        try:
-            proc = subprocess.run(argv, capture_output=True, text=True)
-        except OSError as e:
-            print("wspy-testpoint: warning: failed to launch %s: %s -- skipping archetype "
-                  "characterization" % (wspy_archetype_bin, e), file=sys.stderr)
-            return scorecards
-        if proc.returncode != 0:
-            print("wspy-testpoint: warning: %s --run %s:%s (run %s) failed: %s" % (
-                wspy_archetype_bin, r["hostname"], pass_run_id, r["run_id"], proc.stderr.strip()),
-                file=sys.stderr)
-            continue
-        fields = {"run_id": r["run_id"]}
-        for line in proc.stdout.splitlines():
-            if "=" in line:
-                k, v = line.split("=", 1)
-                fields[k] = v
-        scorecards.append(fields)
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        for r in present:
+            pass_run_id = pick_archetype_pass_id(cur, r)
+            argv = [wspy_archetype_bin, "--db", db_path, "--run", "%s:%s" % (r["hostname"], pass_run_id)]
+            try:
+                proc = subprocess.run(argv, capture_output=True, text=True)
+            except OSError as e:
+                print("wspy-testpoint: warning: failed to launch %s: %s -- skipping archetype "
+                      "characterization" % (wspy_archetype_bin, e), file=sys.stderr)
+                return scorecards
+            if proc.returncode != 0:
+                print("wspy-testpoint: warning: %s --run %s:%s (run %s) failed: %s" % (
+                    wspy_archetype_bin, r["hostname"], pass_run_id, r["run_id"], proc.stderr.strip()),
+                    file=sys.stderr)
+                continue
+            fields = {"run_id": r["run_id"]}
+            for line in proc.stdout.splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    fields[k] = v
+            scorecards.append(fields)
+    finally:
+        conn.close()
     return scorecards
 
 
