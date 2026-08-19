@@ -164,9 +164,9 @@ rm -f "$RUNDIR3/manifest.json" "$RUNDIR3/passB.manifest.json" "$RUNDIR3/passB.tx
 run_it --resume "$RUNDIR3" -c "$CONF" -- sleep 1 >/tmp/wspy_run_resume_smoke6.log 2>&1
 check '[ "$(cat "$LOG")" = "passB" ]' \
   "resume did not skip passA and rerun only passB as expected ($(cat "$LOG"))"
-check 'grep -q "\"name\": \"passA\", \"output\": \"passA.txt\", \"manifest\": \"passA.manifest.json\", \"pts_hooks_log\": null, \"status\": \"skipped\"" "$RUNDIR3/manifest.json"' \
+check 'grep -q "\"name\": \"passA\", \"output\": \"passA.txt\", \"text_output\": null, \"manifest\": \"passA.manifest.json\", \"pts_hooks_log\": null, \"status\": \"skipped\"" "$RUNDIR3/manifest.json"' \
   "passA not recorded as skipped in the regenerated manifest.json"
-check 'grep -q "\"name\": \"passB\", \"output\": \"passB.txt\", \"manifest\": \"passB.manifest.json\", \"pts_hooks_log\": null, \"status\": \"ok\"" "$RUNDIR3/manifest.json"' \
+check 'grep -q "\"name\": \"passB\", \"output\": \"passB.txt\", \"text_output\": null, \"manifest\": \"passB.manifest.json\", \"pts_hooks_log\": null, \"status\": \"ok\"" "$RUNDIR3/manifest.json"' \
   "passB not recorded as freshly-run/ok in the regenerated manifest.json"
 
 # --- Test 4: --dry-run --resume reports the skip decision without touching the filesystem. ---

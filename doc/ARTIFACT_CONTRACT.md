@@ -50,7 +50,7 @@ from `wspy --version` (which is just `WSPY_VERSION_MAJOR.MINOR`, the tool's own 
 The manifest and run index are versioned **independently** (`MANIFEST_SCHEMA_VERSION` vs.
 `RUN_INDEX_SCHEMA_VERSION`) — the run index is a leaner, line-oriented projection of a run, not the
 manifest itself, and its shape evolves on its own schedule. Current versions as of this writing:
-manifest `1.9.0`, run index `1.9.0` (check `manifest.h`/`run_index.h` for the authoritative current
+manifest `1.10.0`, run index `1.10.0` (check `manifest.h`/`run_index.h` for the authoritative current
 values — this doc is not the source of truth for the version number itself, only for the contract
 around how it's used).
 
@@ -66,7 +66,7 @@ One JSON object, written once at the end of a run (`manifest.c:write_manifest()`
 
 ```
 {
-  "schema_version": "1.9.0",
+  "schema_version": "1.10.0",
   "collector": "wspy",
   "wspy_version": "4.1",
   "generated_at": "<ISO-8601 timestamp>",
@@ -103,6 +103,7 @@ One JSON object, written once at the end of a run (`manifest.c:write_manifest()`
   "passes": [],
   "output_files": [
     { "kind": "output", "path": "results/run.csv" },
+    { "kind": "text_output", "path": "results/run.txt" },
     { "kind": "tree", "path": "results/run.tree" },
     { "kind": "manifest", "path": "results/run.manifest.json" }
   ]
@@ -211,9 +212,17 @@ Field notes:
   `web/joblib.py`'s `build_pass_argv()`/`build_configuration_passes()` for the two front ends that
   populate it today.
 - `output_files` only lists files that were actually requested this run (an entry is present only
-  if the corresponding path was given: `-o`, `--tree <file>`, or the manifest's own path). A run
-  with no `-o` (stdout output) and no `--tree` produces an `output_files` array with just the
-  `manifest` entry — this is normal, not a gap.
+  if the corresponding path was given: `-o`, `--text-out <file>`, `--tree <file>`, or the manifest's
+  own path). A run with no `-o` (stdout output) and no `--tree` produces an `output_files` array with
+  just the `manifest` entry — this is normal, not a gap.
+- `output_files`' `text_output` kind (`MANIFEST_SCHEMA_VERSION`/`RUN_INDEX_SCHEMA_VERSION` `1.9.0` →
+  `1.10.0`) is `--text-out <file>`'s companion human-readable rendering of the same already-measured
+  values a `--csv` run's primary `output` entry already covers in machine-readable form — present
+  only when `--text-out` was given (requires `--csv`; incompatible with `--interval`/`--per-core`/
+  `-a`/`--gpu-*`, see `wspy --help`). `wspy-run`'s `run_pass()` auto-adds it for any `--csv` pass that
+  doesn't hit one of those incompatibilities, so every profile's counter-sweep passes get a
+  human-readable form for `summary.txt` "for free" alongside the CSV `wspy-store` ingests, without a
+  second workload execution.
 - Numbers that are logically integers (`counter_mask`, coverage counts, exit codes) are emitted as
   JSON numbers except `counter_mask`, which is a hex **string** (`"0x3"`) rather than a number —
   match on the string, don't `parseInt`/`atoi` and compare against a decimal mask you computed by
@@ -227,10 +236,10 @@ index file — appends are serialized with `flock(LOCK_EX)`, so records from dif
 interleave mid-line. Read it by parsing one JSON value per line, not as a single JSON document.
 
 Per-record shape (same information as the manifest, projected leaner — no `output_files` path
-details beyond the three path strings, no per-field environment gap list, just counts):
+details beyond the four path strings, no per-field environment gap list, just counts):
 
 ```
-{"schema_version":"1.9.0","run_id":"20260710T153000.123-48213","collector":"wspy","wspy_version":"4.1",
+{"schema_version":"1.10.0","run_id":"20260710T153000.123-48213","collector":"wspy","wspy_version":"4.1",
  "hostname":"...","cpu_vendor":"...","cpu_family":25,"cpu_model":97,
  "environment":{...same field set as manifest's "environment"...},
  "environment_coverage":{"captured":9,"probed":9},
@@ -245,7 +254,7 @@ details beyond the three path strings, no per-field environment gap list, just c
  "counter_coverage":{"requested":4,"measured":4},
  "topdown_formula_version":null,
  "passes":[],
- "output_files":{"output_path":"results/run.csv","tree_output_path":null,"manifest_path":"results/run.manifest.json"}}
+ "output_files":{"output_path":"results/run.csv","text_output_path":null,"tree_output_path":null,"manifest_path":"results/run.manifest.json"}}
 ```
 
 - `run_id` is `<start-time-to-millisecond>-<pid>` (e.g. `20260710T153000.123-48213`) —

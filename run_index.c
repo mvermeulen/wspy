@@ -231,6 +231,8 @@ int append_run_index(const char *path,const struct manifest_info *info){
 
   fprintf(fp,"\"output_files\":{\"output_path\":");
   json_write_string_or_null(fp,info->output_path);
+  fprintf(fp,",\"text_output_path\":");
+  json_write_string_or_null(fp,info->text_output_path);
   fprintf(fp,",\"tree_output_path\":");
   json_write_string_or_null(fp,info->tree_output_path);
   fprintf(fp,",\"manifest_path\":");

@@ -20,6 +20,16 @@
 
 extern FILE *outfile;
 
+/* --text-out <path> (companion human-readable output alongside --csv's
+ * machine-readable one -- see wspy.c's parse_options()/main() for the full
+ * rationale): the same already-read counter values print_metrics()/
+ * print_system()/print_usage() already formatted once to outfile in CSV
+ * get rendered a second time, in PRINT_NORMAL form, to textfile -- no
+ * second workload execution, just a second formatting pass over data
+ * that's already in memory. NULL/0 unless --text-out was given. */
+extern FILE *textfile;
+extern int text_out_flag;
+
 extern int aflag;
 extern int per_core_freq;
 extern int oflag;

@@ -115,6 +115,13 @@ Some of the more commonly used options:
 * Output
   * `-o <file>` - send output to a file instead of stdout
   * `--csv` - CSV output instead of human-readable
+  * `--text-out <file>` - alongside `--csv`, additionally render the same measured values a
+    second time in human-readable form to `<file>` -- no second workload execution, just a second
+    formatting pass over already-read counter values. Requires `--csv`; incompatible with
+    `--interval`, `--per-core`/`-a`, `--gpu-*`. `wspy-run`'s `run_pass()` auto-adds this for any
+    `--csv` pass that doesn't hit one of those incompatibilities, so a profile's counter-sweep
+    passes get a `summary.txt`-ready human-readable form "for free" alongside the CSV
+    `wspy-store` ingests.
   * `--interval <sec>` - print a snapshot every `<sec>` seconds while the child runs
   * `--no-phase-detect` - disable automatic warmup/steady/degraded phase detection on
     `--interval` samples (a `phase` CSV column + boundary summary are on by default)
