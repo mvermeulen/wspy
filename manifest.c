@@ -330,6 +330,12 @@ int write_manifest(const char *path,const struct manifest_info *info){
     fprintf(fp," }");
     have_output_file = 1;
   }
+  if (info->text_output_path){
+    fprintf(fp,"%s    { \"kind\": \"text_output\", \"path\": ",have_output_file ? ",\n" : "");
+    json_write_string(fp,info->text_output_path);
+    fprintf(fp," }");
+    have_output_file = 1;
+  }
   if (info->tree_output_path){
     fprintf(fp,"%s    { \"kind\": \"tree\", \"path\": ",have_output_file ? ",\n" : "");
     json_write_string(fp,info->tree_output_path);

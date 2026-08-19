@@ -45,7 +45,7 @@ AFFINITY=""
 CONFIG_OPTIONS=()
 RESUME_DIR=""
 
-declare -A PASS_EXT PASS_OUTFILE PASS_MANIFEST PASS_IS_TREE PASS_STATUS PASS_PTSLOG
+declare -A PASS_EXT PASS_OUTFILE PASS_MANIFEST PASS_IS_TREE PASS_STATUS PASS_PTSLOG PASS_TEXTFILE
 
 # Every named profile wspy-run knows how to run, derived from
 # profiles/*.conf (plain pass-list profiles) and profiles/*.spec (composite
@@ -514,6 +514,26 @@ run_pass(){
     cmd+=(timeout --foreground "$timeout_secs")
   fi
   cmd+=("$WSPY" "${flagarr[@]}" -o "$outfile")
+  # Auto-derived --text-out companion (issue #274's general fix, not just a
+  # deep-cpu.conf/float-specific patch): any --csv pass gets a human-readable
+  # <name>.txt companion for free, covering generate_summary()'s summary.txt
+  # the same way a non-CSV pass always has -- unless the pass's own flags hit
+  # one of wspy's own --text-out incompatibilities (--interval/--per-core/
+  # -a/--gpu-*; --tree passes never combine with --csv today either, but are
+  # excluded on the same principle: the tree file is a wholly separate
+  # output stream, not something --text-out mirrors). No workload
+  # re-execution either way -- wspy renders both files from one measurement.
+  local textfile=""
+  if [ "$ext" = "csv" ]; then
+    case " $flags " in
+      *" --interval "*|*" -a "*|*" --per-core "*|*" --tree "*|*" --gpu-busy "*|*" --gpu-metrics "*|*" --gpu-smi "*|*" --gpu-nvidia "*)
+        ;;
+      *)
+        textfile="${OUTDIR}/${PREFIX}${name}.txt"
+        cmd+=(--text-out "$textfile")
+        ;;
+    esac
+  fi
   if [ -n "$AFFINITY" ]; then
     cmd+=(--affinity "$AFFINITY")
   fi
@@ -554,6 +574,7 @@ run_pass(){
 
   PASS_EXT["$name"]="$ext"
   PASS_OUTFILE["$name"]="$outfile"
+  PASS_TEXTFILE["$name"]="$textfile"
   PASS_MANIFEST["$name"]="$manifest_file"
   PASS_PTSLOG["$name"]=""
   case " $flags " in
@@ -641,18 +662,29 @@ json_escape(){
 
 # Concatenates every non-CSV, non-tree pass's output into summary.txt,
 # generalizing the "cat software.branch.txt ipc.topdown.txt ... > combined.txt"
-# step workload/cpu2017 and workload/phoronix hand-roll today.
+# step workload/cpu2017 and workload/phoronix hand-roll today. A --csv pass
+# with an auto-derived --text-out companion (PASS_TEXTFILE, see run_pass())
+# contributes its own companion file here too, under the same pass name --
+# it never had a bare .txt PASS_OUTFILE of its own to fall into the first
+# branch, so without this it would silently vanish from summary.txt the
+# moment it gained --csv.
 generate_summary(){
   local out="${RUNROOT}/summary.txt"
   local tmp="${out}.tmp"
-  local name wrote=0
+  local name wrote=0 srcfile
   : > "$tmp"
   for name in "${PASS_NAMES[@]}"; do
-    [ "${PASS_EXT[$name]}" = "txt" ] || continue
     [ "${PASS_IS_TREE[$name]}" = "1" ] && continue
+    if [ "${PASS_EXT[$name]}" = "txt" ]; then
+      srcfile="${PASS_OUTFILE[$name]}"
+    elif [ -n "${PASS_TEXTFILE[$name]:-}" ]; then
+      srcfile="${PASS_TEXTFILE[$name]}"
+    else
+      continue
+    fi
     {
       printf '=== %s ===\n' "$name"
-      cat "${PASS_OUTFILE[$name]}" 2>/dev/null
+      cat "$srcfile" 2>/dev/null
       printf '\n'
     } >> "$tmp"
     wrote=1
@@ -688,7 +720,7 @@ generate_manifest(){
     done
     printf '],\n'
     printf '  "passes": [\n'
-    local n=${#PASS_NAMES[@]} i name manifest_json ptslog_json
+    local n=${#PASS_NAMES[@]} i name manifest_json ptslog_json text_output_json
     for ((i=0;i<n;i++)); do
       name="${PASS_NAMES[$i]}"
       if [ -n "${PASS_MANIFEST[$name]}" ]; then
@@ -701,9 +733,19 @@ generate_manifest(){
       else
         ptslog_json="null"
       fi
-      printf '    {"name": "%s", "output": "%s", "manifest": %s, "pts_hooks_log": %s, "status": "%s"}' \
+      # Auto-derived --text-out companion (run_pass()), if this pass got one --
+      # a --csv pass's own human-readable file, distinct from "output" (its
+      # CSV) the same way a --tree pass's process.tree.txt is distinct from
+      # its own "output".
+      if [ -n "${PASS_TEXTFILE[$name]:-}" ]; then
+        text_output_json="\"$(json_escape "$(basename "${PASS_TEXTFILE[$name]}")")\""
+      else
+        text_output_json="null"
+      fi
+      printf '    {"name": "%s", "output": "%s", "text_output": %s, "manifest": %s, "pts_hooks_log": %s, "status": "%s"}' \
         "$(json_escape "$name")" \
         "$(json_escape "$(basename "${PASS_OUTFILE[$name]}")")" \
+        "$text_output_json" \
         "$manifest_json" \
         "$ptslog_json" \
         "${PASS_STATUS[$name]}"

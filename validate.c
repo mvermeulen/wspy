@@ -387,6 +387,8 @@ static void check_output_files(struct report *r,const struct json_value *root){
       else validate_nonempty_file(r,path,"output file");
     } else if (!strcmp(kind,"tree")){
       validate_nonempty_file(r,path,"tree file");
+    } else if (!strcmp(kind,"text_output")){
+      validate_nonempty_file(r,path,"text-out file");
     }
     /* kind "manifest" is the file we're reading -- its existence is already
      * proven by having parsed it, nothing further to check. */

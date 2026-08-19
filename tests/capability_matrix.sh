@@ -400,6 +400,17 @@ run_expected_fatal_bundle "target-without-tree-incompatible" 1 --no-ipc --target
 run_expected_fatal_bundle "symbol-sample-without-target-incompatible" 1 --no-ipc --tree "$TREE_OUT" --symbol-sample -- /bin/true
 
 echo ""
+echo "=== --text-out (human-readable companion to --csv, issue #274) ==="
+TEXTOUT_OUT=$(mktemp /tmp/wspy_capmatrix_textout.XXXXXX)
+trap 'rm -f "$TREE_OUT" "$MANIFEST_OUT" "$RUNINDEX_OUT" "$CSV_OUT" "$TEXTOUT_OUT"' EXIT
+run_bundle "text-out" 0 --csv -o "$CSV_OUT" --text-out "$TEXTOUT_OUT" --no-ipc --counters=ipc,branch -- /bin/true
+# Same "fail loudly, don't silently misbehave" idiom as --passes' own
+# incompatibility checks above -- see wspy.c's parse_options().
+run_expected_fatal_bundle "text-out-without-csv-incompatible" 1 --text-out "$TEXTOUT_OUT" --no-ipc -- /bin/true
+run_expected_fatal_bundle "text-out-interval-incompatible" 1 --csv -o "$CSV_OUT" --text-out "$TEXTOUT_OUT" --no-ipc --interval 1 -- sleep 1
+run_expected_fatal_bundle "text-out-per-core-incompatible" 1 --csv -o "$CSV_OUT" --text-out "$TEXTOUT_OUT" --no-ipc --per-core -- /bin/true
+
+echo ""
 echo "=== --exit-with-child: the one bundle where a nonzero exit is correct ==="
 run_bundle "exit-with-child-success" 0 --no-ipc --exit-with-child -- /bin/true
 run_bundle "exit-with-child-failure" 1 --no-ipc --exit-with-child -- /bin/false

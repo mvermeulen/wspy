@@ -18,7 +18,7 @@
  * breaks existing readers, MINOR when a field is added in a backward
  * compatible way, PATCH for fixes that don't change the shape. Consumers
  * should warn (not silently misparse) on an unrecognized MAJOR version. */
-#define MANIFEST_SCHEMA_VERSION "1.9.0"
+#define MANIFEST_SCHEMA_VERSION "1.10.0"
 
 /* One counter that setup_counters() (topdown.c) tried and failed to open via
  * perf_event_open, as recorded by coverage.c. Kept as its own small struct
@@ -183,6 +183,7 @@ struct manifest_info {
   int treeflag;                /* --tree     */
   int interval;
   const char *output_path;   /* -o <file>, NULL if output went to stdout   */
+  const char *text_output_path; /* --text-out <file>, NULL if not used     */
   const char *tree_output_path; /* --tree <file>, NULL if not used         */
   const char *manifest_path; /* path this manifest itself is written to    */
   /* Core/thread affinity control (INVESTIGATION.md's "Core/thread

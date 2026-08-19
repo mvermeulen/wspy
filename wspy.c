@@ -39,6 +39,7 @@
 int aflag = 0;
 int per_core_freq = 0;
 int oflag = 0;
+int text_out_flag = 0;
 int sflag = 0;
 int vflag = 0;
 int xflag = 1;
@@ -100,6 +101,7 @@ int gpu_nvidia_device_index = -1; /* -1 = auto-select (NVML device 0) */
 #endif
 
 char *outfile_path = NULL;
+char *textfile_path = NULL;
 char *tree_output_path = NULL;
 char *manifest_path = NULL;
 char *run_index_path = NULL;
@@ -119,6 +121,7 @@ static int config_provenance_options_cap = 0;
 
 FILE *treefile = NULL;
 FILE *outfile = NULL;
+FILE *textfile = NULL;
 unsigned int counter_mask = COUNTER_DEFAULT_MASK;
 
 int num_procs;
@@ -333,10 +336,11 @@ int parse_options(int argc,char *const argv[]){
     // for why a collision here silently misroutes an unrelated flag. 104/105
     // are skipped: they collide with the short-opt chars 'h'/'i' in the
     // getopt_long() short-opts string below ("+abcio:hrstv") -- the exact
-    // collision class that trap writeup warns about. Next free val after 106
-    // is 107.
+    // collision class that trap writeup warns about. Next free val after 107
+    // is 108.
     { "list-groups", no_argument, 0, 103 },
     { "list-columns", no_argument, 0, 106 },
+    { "text-out", required_argument, 0, 107 },
     { "verbose", no_argument, 0, 32 },
     { "arm-dcache-mem", no_argument, 0, 73 },
     { "no-arm-dcache-mem", no_argument, 0, 74 },
@@ -440,6 +444,16 @@ int parse_options(int argc,char *const argv[]){
 	outfile = fp;
 	outfile_path = optarg;
 	oflag = 1;
+      }
+      break;
+    case 107: // --text-out
+      fp = fopen(optarg,"w");
+      if (!fp){
+	error("can not open file: %s\n",optarg);
+      } else {
+	textfile = fp;
+	textfile_path = optarg;
+	text_out_flag = 1;
       }
       break;
     case 21: // --rusage
@@ -973,6 +987,7 @@ static int run_capabilities_probe(void){
 #endif
 
   if (oflag) fclose(outfile);
+  if (text_out_flag) fclose(textfile);
   return 0;
 }
 
@@ -997,6 +1012,7 @@ static int run_preflight_probe(void){
   preflight_result_free(&pf);
 
   if (oflag) fclose(outfile);
+  if (text_out_flag) fclose(textfile);
   return 0;
 }
 
@@ -1018,6 +1034,7 @@ static int run_affinity_report_probe(void){
   affinity_print_report(outfile);
 
   if (oflag) fclose(outfile);
+  if (text_out_flag) fclose(textfile);
   return 0;
 }
 
@@ -1032,6 +1049,7 @@ static int run_group_list_probe(void){
   multipass_print_group_list(outfile);
 
   if (oflag) fclose(outfile);
+  if (text_out_flag) fclose(textfile);
   return 0;
 }
 
@@ -1066,6 +1084,7 @@ static void populate_manifest_common(struct manifest_info *minfo){
   minfo->treeflag = treeflag;
   minfo->interval = interval;
   minfo->output_path = oflag ? outfile_path : NULL;
+  minfo->text_output_path = text_out_flag ? textfile_path : NULL;
   minfo->tree_output_path = treeflag ? tree_output_path : NULL;
   minfo->manifest_path = manifest_path;
   minfo->counters_requested = coverage_requested;
@@ -1288,6 +1307,7 @@ static int run_multipass(char *const envp[]){
   // probe never populated.
   if (listcolumnsflag){
     if (oflag) fclose(outfile);
+    if (text_out_flag) fclose(textfile);
     return 0;
   }
 
@@ -1365,6 +1385,35 @@ static int run_multipass(char *const envp[]){
     for (p = 0; p < plan.npasses; p++) print_metrics(pass_lists[p],PRINT_CSV);
     print_counter_coverage(PRINT_CSV);
     fprintf(outfile,"\n");
+    // --text-out: same values, rendered a second time in PRINT_NORMAL form
+    // to the companion file -- identical body to the plain (non-CSV) else
+    // branch just below, just retargeted at textfile instead of outfile.
+    // No re-read of any counter: read_counters() already populated
+    // pass_lists[]/cpu_info in Phase C above, so this is pure formatting.
+    // csvflag itself (not just the oformat argument) must flip too: most
+    // leaf print_*() formatters (print_branch(), print_l2cache(), ...)
+    // pick their CSV-vs-human body off the global csvflag directly rather
+    // than the oformat parameter they're given (oformat only ever
+    // distinguishes the PRINT_CSV_HEADER case in most of them) -- confirmed
+    // live, a first version of this mirror that left csvflag untouched
+    // silently emitted raw CSV fragments (e.g. "1.98%,287406,65,3583,")
+    // into the human-readable file for every group whose formatter has
+    // this shape.
+    if (text_out_flag){
+      FILE *csv_outfile = outfile;
+      int saved_csvflag = csvflag;
+      outfile = textfile;
+      csvflag = 0;
+      if (sflag) print_system(PRINT_NORMAL);
+      if (xflag) print_usage(&rusage,PRINT_NORMAL);
+      for (p = 0; p < plan.npasses; p++){
+	fprintf(outfile,"##### pass %2d (mask 0x%x) #####################\n",p,plan.pass_mask[p]);
+	print_metrics(pass_lists[p],PRINT_NORMAL);
+      }
+      print_counter_coverage(PRINT_NORMAL);
+      csvflag = saved_csvflag;
+      outfile = csv_outfile;
+    }
   } else {
     if (sflag) print_system(PRINT_NORMAL);
     if (xflag) print_usage(&rusage,PRINT_NORMAL);
@@ -1376,6 +1425,7 @@ static int run_multipass(char *const envp[]){
   }
 
   if (oflag) fclose(outfile);
+  if (text_out_flag) fclose(textfile);
 
   if (manifest_path || run_index_path){
     struct manifest_info minfo;
@@ -1429,6 +1479,11 @@ static void print_full_usage(FILE *out,const char *prog){
 	  "\t--rusage or -r            - show getrusage(2) information\n"
 	  "\t-o <file>                 - send output to file\n"
 	  "\t--csv                     - create csv output\n"
+	  "\t--text-out <file>         - alongside --csv, additionally render the same measured\n"
+	  "\t                            values a second time in human-readable form to <file> --\n"
+	  "\t                            no second workload execution, just a second formatting\n"
+	  "\t                            pass over already-read counter values. Requires --csv;\n"
+	  "\t                            incompatible with --interval, --per-core/-a, --gpu-*.\n"
 	  "\t--exit-with-child         - exit with the launched command's exit status\n"
 	  "\t--passes=<list>           - re-launch the workload once per automatically-sized\n"
 	  "\t                            pass covering the comma-separated counter group\n"
@@ -1660,6 +1715,48 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   // --passes above, rather than a silent no-op.
   if (per_core_freq && !aflag){
     fatal("--per-core-freq is only meaningful together with --per-core/-a\n");
+  }
+
+  // --text-out mirrors the already-read counter values a second time, in
+  // PRINT_NORMAL form, to a companion file -- it only makes sense as a
+  // companion to a CSV primary output, and only for the plain aggregate/
+  // --passes shapes covered so far. --interval's periodic ticks (each a
+  // separately-timed print, via timer_callback()/topdown.c) and --per-core's
+  // per-core CSV rows (aflag && csvflag, wspy.c) have no defined
+  // PRINT_NORMAL mirror yet -- fail loudly rather than silently drop the
+  // companion file's content, same reasoning as --passes' own
+  // incompatibility checks above.
+  if (text_out_flag){
+    if (!csvflag)
+      fatal("--text-out requires --csv (it renders the same measurement's human-readable form"
+            " alongside the CSV primary output, not in place of it)\n");
+    if (interval)
+      fatal("--text-out is incompatible with --interval (no per-tick human-readable mirror"
+            " defined yet)\n");
+    if (aflag)
+      fatal("--text-out is incompatible with --per-core/-a (no per-core human-readable mirror"
+            " defined yet)\n");
+    // GPU metrics are live re-queries (amd_sysfs_gpu_busy_percent()/
+    // amd_smi_metrics()/nvidia_nvml_metrics()), not formatting over an
+    // already-read value the way every counter-group print is -- mirroring
+    // them to textfile would mean querying the GPU a second time, moments
+    // later, which could legitimately read differently from the CSV row's
+    // own reading. Left as a follow-up (cache the queried values once,
+    // print from the cache twice) rather than shipping a mirror that can
+    // silently disagree with its own CSV row.
+    if (gpu_busy_requested)
+      fatal("--text-out does not yet support --gpu-busy (GPU metrics are re-queried live, not"
+            " mirrored from the CSV row's own reading)\n");
+#if AMDGPU
+    if (gpu_smi_requested || gpu_metrics_requested)
+      fatal("--text-out does not yet support --gpu-smi/--gpu-metrics (GPU metrics are re-queried"
+            " live, not mirrored from the CSV row's own reading)\n");
+#endif
+#if NVIDIA
+    if (gpu_nvidia_requested)
+      fatal("--text-out does not yet support --gpu-nvidia (GPU metrics are re-queried live, not"
+            " mirrored from the CSV row's own reading)\n");
+#endif
   }
 
   // --target attaches at a PTRACE_EVENT_EXEC stop discovered by --tree's own
@@ -1961,6 +2058,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   // probe) couldn't support anyway.
   if (listcolumnsflag){
     if (oflag) fclose(outfile);
+    if (text_out_flag) fclose(textfile);
     return 0;
   }
 
@@ -2143,6 +2241,28 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
     print_metrics(cpu_info->systemwide_counters,PRINT_CSV);
     print_counter_coverage(PRINT_CSV);
     fprintf(outfile,"\n");
+    // --text-out: same values, rendered a second time in PRINT_NORMAL form
+    // to the companion file -- identical body to the plain (non-CSV) else
+    // branch just below, just retargeted at textfile instead of outfile.
+    // --interval/GPU-flag combinations are fatal together with --text-out
+    // (see parse_options()'s own checks) so neither the interval-only CSV
+    // columns above nor a GPU section apply here. csvflag itself (not just
+    // the oformat argument) must flip too -- see run_multipass()'s matching
+    // mirror block for why.
+    if (text_out_flag){
+      FILE *csv_outfile = outfile;
+      int saved_csvflag = csvflag;
+      outfile = textfile;
+      csvflag = 0;
+      if (sflag) print_system(PRINT_NORMAL);
+      if (xflag) print_usage(&rusage,PRINT_NORMAL);
+      if (phase_state.enabled) fprintf(outfile,"phase                %s\n",phase_name(final_phase));
+      print_metrics(cpu_info->systemwide_counters,PRINT_NORMAL);
+      print_counter_coverage(PRINT_NORMAL);
+      if (phase_state.enabled) phase_print_boundaries(&phase_state);
+      csvflag = saved_csvflag;
+      outfile = csv_outfile;
+    }
   } else {
     if (sflag) print_system(PRINT_NORMAL);
     if (xflag) print_usage(&rusage,PRINT_NORMAL);
@@ -2202,6 +2322,7 @@ static int original_main(int argc,char *const argv[],char *const envp[]){
   }
 
   if (oflag) fclose(outfile);
+  if (text_out_flag) fclose(textfile);
   // -----
 
   if (manifest_path || run_index_path){
