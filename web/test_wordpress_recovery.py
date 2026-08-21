@@ -172,6 +172,35 @@ class RecoverMachineMetricsFromWordpressTest(unittest.TestCase):
         # publish_reference_matrix.py, unaffected by this fix).
         self.assertEqual(float(by_metric["opcache"]["mean"]), 1234567.0)
 
+    def test_itlb_dtlb_generic_and_ctxswitch_rate_recovered(self):
+        # Issue #281's two scoring-impact findings from the broader item-24 sweep that followed #278.
+        # itlb_generic_miss_pct/dtlb_generic_miss_pct feed archetype.c's memory_attribution_locus axis;
+        # ctxswitch_rate is a real, already-promoted run_features value. Neither was reachable before
+        # this fix -- the generic iTLB/dTLB miss lines slugified to the wrong name, and ctxswitch_rate
+        # (like fault_rate before it) has no single line's comment to derive it from at all.
+        text = ("##### pass  0 (mask 0x1) #####################\n"
+                "elapsed              300.749\n"
+                "nvcsw                1000                     # 80.00%\n"
+                "nivcsw               250                      # 20.00%\n"
+                "iTLB                 500             # 5.000 iTLB per 1000 inst\n"
+                "iTLB miss            25              # 5.00% iTLB miss\n"
+                "dTLB                 500             # 5.000 dTLB per 1000 inst\n"
+                "dTLB miss            10              # 2.00% dTLB miss\n")
+
+        def fake_list_child_pages(site_url, username, app_password, parent):
+            return [{"id": 101, "slug": "run-1", "date": "2026-08-01T00:00:00"}]
+
+        with patch("server.wp_client.find_page", side_effect=self._walk_pages()), \
+             patch("server.wp_client.list_child_pages", side_effect=fake_list_child_pages), \
+             patch("server.wp_client.fetch_page_raw_content", return_value=preformatted_page(text)):
+            rows = server.recover_machine_metrics_from_wordpress(
+                FAKE_WP_CFG, "phoronix", "coremark", "default", "amd-395")
+
+        by_metric = {r["metric"]: r for r in rows}
+        self.assertEqual(float(by_metric["itlb_generic_miss_pct"]["mean"]), 5.0)
+        self.assertEqual(float(by_metric["dtlb_generic_miss_pct"]["mean"]), 2.0)
+        self.assertAlmostEqual(float(by_metric["ctxswitch_rate"]["mean"]), (1000 + 250) / 300.749)
+
     def test_float_reports_the_real_percentage_not_the_per_mille_comment(self):
         # Issue #278's first sub-gap, filed live from compiler-flag-miner (a WordPress-anonymous
         # reference-matrix client that hit this scoring vectorization_density for a WordPress-recovered
