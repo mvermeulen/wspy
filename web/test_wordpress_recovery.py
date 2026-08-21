@@ -199,6 +199,34 @@ class RecoverMachineMetricsFromWordpressTest(unittest.TestCase):
         # The original per-1000-inst display name must survive alongside it, unconverted.
         self.assertEqual(float(by_metric["float_per_1000_inst"]["mean"]), 4.323)
 
+    def test_fault_rate_recovered_from_elapsed_minflt_majflt(self):
+        # Issue #278's second sub-gap, filed alongside float_pct from the same compiler-flag-miner
+        # gap report: fault_rate (needed for wspy-archetype --run-guest's allocation_pressure axis)
+        # is store.c's (minflt+majflt)/elapsed_seconds, combined from three separate lines' own raw
+        # primary values -- unlike every other item-24 case, it's not embedded in any single line's
+        # own trailing comment. Real captured values from the issue's own mvermeulen.org/workload
+        # 706.stockfish_r sample.
+        text = ("##### pass  0 (mask 0x1) #####################\n"
+                "elapsed              300.749\n"
+                "minflt               32805293       # 109078.75/sec\n"
+                "majflt               23             # 0.08/sec\n")
+
+        def fake_list_child_pages(site_url, username, app_password, parent):
+            return [{"id": 101, "slug": "run-1", "date": "2026-08-01T00:00:00"}]
+
+        with patch("server.wp_client.find_page", side_effect=self._walk_pages()), \
+             patch("server.wp_client.list_child_pages", side_effect=fake_list_child_pages), \
+             patch("server.wp_client.fetch_page_raw_content", return_value=preformatted_page(text)):
+            rows = server.recover_machine_metrics_from_wordpress(
+                FAKE_WP_CFG, "phoronix", "coremark", "default", "amd-395")
+
+        by_metric = {r["metric"]: r for r in rows}
+        self.assertAlmostEqual(float(by_metric["fault_rate"]["mean"]), (32805293 + 23) / 300.749)
+        # The raw primary values are untouched, same "additive, not a rename" contract as every other
+        # item-24 fix.
+        self.assertEqual(float(by_metric["minflt"]["mean"]), 32805293.0)
+        self.assertEqual(float(by_metric["majflt"]["mean"]), 23.0)
+
     def test_merges_counters_and_ibs_blocks_from_same_run(self):
         def fake_list_child_pages(site_url, username, app_password, parent):
             return [{"id": 101, "slug": "run-1", "date": "2026-08-01T00:00:00"}]
