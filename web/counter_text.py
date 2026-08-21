@@ -228,6 +228,17 @@ GENERIC_LABEL_NAME_OVERRIDES = {
     # aren't in SIMPLE_METRIC_FEATURES and are left un-renamed.
     "l2 iTLB miss": "itlb_miss_per1k",
     "l2 dTLB miss": "dtlb_miss_per1k",
+    # issue #281: the *generic*, cross-vendor pair (print_itlb()/print_dtlb() via the shared
+    # print_cache() helper, --tlb group, any vendor) -- a completely different real feature from the
+    # AMD-only per1k pair immediately above, despite the near-identical label text ("iTLB miss"/
+    # "dTLB miss" here, no leading "l2 " or "l1 "). store.c's SIMPLE_METRIC_FEATURES sources
+    # itlb_generic_miss_pct/dtlb_generic_miss_pct from CSV columns literally named "iTLB miss"/
+    # "dTLB miss" -- but before this entry, the generic tier's own slugify produced "itlb_miss"/
+    # "dtlb_miss" instead (confirmed live), a name archetype.c's run_snapshot_apply_feature() (the
+    # memory_attribution_locus axis) never recognized -- the same "silently missing signal" shape
+    # branch_mispredict_pct's own gap had before its entry above existed.
+    "iTLB miss": "itlb_generic_miss_pct",
+    "dTLB miss": "dtlb_generic_miss_pct",
 }
 
 # A GENERIC_LABEL_NAME_OVERRIDES entry gives one line's comment its real store.c feature name --
@@ -312,9 +323,9 @@ PRIMARY_LABEL_OVERRIDES = {
 
 def _primary_value(records, label):
     """Returns the first record's raw primary value for the exact label `label`, or None if no such
-    line is present in this block. Used only by _derive_fault_rate() below, for the one derived
-    metric that combines two or more separate lines' primary values rather than a single line's own
-    trailing comment."""
+    line is present in this block. Used only by _derive_fault_rate()/_derive_ctxswitch_rate() below,
+    for the derived metrics that combine two or more separate lines' primary values rather than a
+    single line's own trailing comment."""
     for r in records:
         if r["metric"] == label:
             return r["value"]
@@ -347,6 +358,24 @@ def _derive_fault_rate(records):
     if not elapsed or (minflt is None and majflt is None):
         return []
     return [{"metric": "fault_rate", "value": ((minflt or 0.0) + (majflt or 0.0)) / elapsed,
+             "is_percent": False, "comment": None}]
+
+
+# issue #281: store.c's ctxswitch_rate = (nvcsw+nivcsw)/elapsed_seconds (store.c:1143) -- the exact
+# same cross-line shape fault_rate above is, and for the same reason: nvcsw's/nivcsw's own comments
+# ("X.XX%", topdown.c:2329-2332) aren't a rate at all, they're each switch type's *share of
+# nvcsw+nivcsw's own sum* (voluntary vs. involuntary split) -- a real ratio, just not this one, so
+# there's no comment anywhere in the block this value could be recovered from even if the generic
+# parser were taught to read it. Reads elapsed/nvcsw/nivcsw straight off their own primary values,
+# same store.c-parity approach _derive_fault_rate() uses, and mirrors its own `have_elapsed &&
+# (have_nvcsw || have_nivcsw)` condition -- either switch type alone is a real rate.
+def _derive_ctxswitch_rate(records):
+    elapsed = _primary_value(records, "elapsed")
+    nvcsw = _primary_value(records, "nvcsw")
+    nivcsw = _primary_value(records, "nivcsw")
+    if not elapsed or (nvcsw is None and nivcsw is None):
+        return []
+    return [{"metric": "ctxswitch_rate", "value": ((nvcsw or 0.0) + (nivcsw or 0.0)) / elapsed,
              "is_percent": False, "comment": None}]
 
 
@@ -386,10 +415,11 @@ def extract_derived_ratios(records):
     against store.c's real feature vocabulary. Never raises on an unexpected comment shape -- skips
     it, same best-effort contract as parse_counter_text() itself.
 
-    After the per-record pass, also runs _derive_fault_rate() once over the whole block (issue #278's
-    second sub-gap) -- fault_rate isn't one line's comment at all, but a combination of three separate
-    lines' own primary values (elapsed, minflt, majflt), so it can't be produced by the per-record loop
-    above no matter which of its three cases applies."""
+    After the per-record pass, also runs _derive_fault_rate()/_derive_ctxswitch_rate() once each over
+    the whole block (issues #278/#281) -- neither is one line's comment at all, each is a combination
+    of separate lines' own primary values (elapsed+minflt+majflt, elapsed+nvcsw+nivcsw respectively),
+    so neither can be produced by the per-record loop above no matter which of its three cases
+    applies."""
     derived = []
     for r in records:
         comment = r.get("comment")
@@ -425,6 +455,7 @@ def extract_derived_ratios(records):
                 derived.append({"metric": GENERIC_LABEL_ALSO_CSV_COLUMN[metric], "value": value,
                                  "is_percent": is_percent, "comment": None})
     derived.extend(_derive_fault_rate(records))
+    derived.extend(_derive_ctxswitch_rate(records))
     return derived
 
 

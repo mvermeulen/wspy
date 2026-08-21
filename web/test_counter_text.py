@@ -304,6 +304,58 @@ class ExtractDerivedRatiosTest(unittest.TestCase):
         derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
         self.assertEqual(derived["l2_miss_pct"]["value"], 3.12)
 
+    def test_generic_itlb_dtlb_miss_renamed_to_real_feature_names(self):
+        # issue #281: the generic cross-vendor "iTLB miss"/"dTLB miss" lines (print_itlb()/
+        # print_dtlb(), any vendor) used to slugify to plain "itlb_miss"/"dtlb_miss" via the generic
+        # tier -- a name archetype.c's run_snapshot_apply_feature() never recognized, so
+        # memory_attribution_locus silently lost this signal for WordPress-recovered machines.
+        text = ("iTLB                 500  # 5.000 iTLB per 1000 inst\n"
+                "iTLB miss            25   # 5.00% iTLB miss\n"
+                "dTLB                 500  # 5.000 dTLB per 1000 inst\n"
+                "dTLB miss            10   # 2.00% dTLB miss\n")
+        records = counter_text.parse_counter_text(text)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        self.assertEqual(derived["itlb_generic_miss_pct"]["value"], 5.0)
+        self.assertEqual(derived["dtlb_generic_miss_pct"]["value"], 2.0)
+        self.assertNotIn("itlb_miss", derived)
+        self.assertNotIn("dtlb_miss", derived)
+
+    def test_generic_itlb_dtlb_miss_distinct_from_amd_l2_per1k_pair(self):
+        # Confirms the new entries don't collide with the pre-existing AMD-only "l2 iTLB miss"/
+        # "l2 dTLB miss" pair (itlb_miss_per1k/dtlb_miss_per1k) -- near-identical label text, real
+        # store.c feature.
+        records = counter_text.parse_counter_text(COUNTERS_TXT)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        self.assertEqual(derived["itlb_miss_per1k"]["value"], 0.0)
+        self.assertEqual(derived["dtlb_miss_per1k"]["value"], 0.002)
+        self.assertNotIn("itlb_generic_miss_pct", derived)  # COUNTERS_TXT has no generic tlb group
+        self.assertNotIn("dtlb_generic_miss_pct", derived)
+
+    def test_ctxswitch_rate_combines_three_separate_lines_own_primary_values(self):
+        # issue #281: ctxswitch_rate = (nvcsw+nivcsw)/elapsed_seconds, store.c:1143 -- the same
+        # cross-line shape as fault_rate (issue #278). nvcsw's/nivcsw's own comments are each switch
+        # type's share of nvcsw+nivcsw's own sum (voluntary vs. involuntary split), not a rate, so
+        # there's no comment to derive this from at all.
+        text = "elapsed              300.749\nnvcsw                1000 # 80.00%\nnivcsw               250  # 20.00%\n"
+        records = counter_text.parse_counter_text(text)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        self.assertAlmostEqual(derived["ctxswitch_rate"]["value"], (1000 + 250) / 300.749)
+        self.assertFalse(derived["ctxswitch_rate"]["is_percent"])
+
+    def test_ctxswitch_rate_uses_whichever_switch_column_is_present(self):
+        text = "elapsed              100.0\nnvcsw                50   # 100.00%\n"
+        records = counter_text.parse_counter_text(text)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        self.assertEqual(derived["ctxswitch_rate"]["value"], 0.5)
+
+    def test_ctxswitch_rate_absent_without_elapsed_or_without_any_switch_column(self):
+        records = counter_text.parse_counter_text("nvcsw                50   # 100.00%\n")
+        derived_names = {d["metric"] for d in counter_text.extract_derived_ratios(records)}
+        self.assertNotIn("ctxswitch_rate", derived_names)
+        records = counter_text.parse_counter_text("elapsed              100.0\n")
+        derived_names = {d["metric"] for d in counter_text.extract_derived_ratios(records)}
+        self.assertNotIn("ctxswitch_rate", derived_names)
+
     def test_float_line_yields_float_pct_at_percent_scale_not_per_mille(self):
         # issue #278: print_float()'s own PRINT_NORMAL line prints a per-1000-inst density ("4.323
         # float per 1000 inst"), but store.c's real float_pct feature (SIMPLE_METRIC_FEATURES, sourced
