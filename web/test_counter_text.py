@@ -333,6 +333,37 @@ class ExtractDerivedRatiosTest(unittest.TestCase):
         self.assertEqual(derived["avx_512_per_1000_inst"]["value"], 0.023)
         self.assertNotIn("float_pct", derived)
 
+    def test_fault_rate_combines_three_separate_lines_own_primary_values(self):
+        # issue #278's second sub-gap: fault_rate = (minflt+majflt)/elapsed_seconds, computed by
+        # store.c from three separate raw metric_values columns, not from any single line's own
+        # comment -- minflt's/majflt's own "X.XX/sec" comments don't even match
+        # parse_comment_ratio()'s generic shape (no space before "/sec"). Real captured values from
+        # the issue's own mvermeulen.org/workload 706.stockfish_r sample.
+        text = ("elapsed              300.749\n"
+                "minflt               32805293       # 109078.75/sec\n"
+                "majflt               23             # 0.08/sec\n")
+        records = counter_text.parse_counter_text(text)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        self.assertAlmostEqual(derived["fault_rate"]["value"], (32805293 + 23) / 300.749)
+        self.assertFalse(derived["fault_rate"]["is_percent"])
+        self.assertIsNone(derived["fault_rate"]["comment"])
+
+    def test_fault_rate_uses_whichever_fault_column_is_present(self):
+        # Mirrors store.c's own `have_elapsed && (have_minflt || have_majflt)` condition -- either
+        # fault source alone is enough, missing one just contributes 0.
+        text = "elapsed              100.0\nmajflt               50\n"
+        records = counter_text.parse_counter_text(text)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        self.assertEqual(derived["fault_rate"]["value"], 0.5)
+
+    def test_fault_rate_absent_without_elapsed_or_without_any_fault_column(self):
+        records = counter_text.parse_counter_text("minflt               100            # 1.00/sec\n")
+        derived_names = {d["metric"] for d in counter_text.extract_derived_ratios(records)}
+        self.assertNotIn("fault_rate", derived_names)  # no "elapsed" line in this block
+        records = counter_text.parse_counter_text("elapsed              100.0\n")
+        derived_names = {d["metric"] for d in counter_text.extract_derived_ratios(records)}
+        self.assertNotIn("fault_rate", derived_names)  # no minflt/majflt line in this block
+
     def test_nan_and_non_numeric_comments_produce_no_derived_metric(self):
         records = counter_text.parse_counter_text(COUNTERS_TXT)
         derived_names = {d["metric"] for d in counter_text.extract_derived_ratios(records)}

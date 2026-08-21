@@ -310,6 +310,46 @@ PRIMARY_LABEL_OVERRIDES = {
 }
 
 
+def _primary_value(records, label):
+    """Returns the first record's raw primary value for the exact label `label`, or None if no such
+    line is present in this block. Used only by _derive_fault_rate() below, for the one derived
+    metric that combines two or more separate lines' primary values rather than a single line's own
+    trailing comment."""
+    for r in records:
+        if r["metric"] == label:
+            return r["value"]
+    return None
+
+
+# doc/METRICS.md / store.c's SIMPLE_METRIC_FEATURES-adjacent upsert: fault_rate =
+# (minflt+majflt)/elapsed_seconds. Issue #278's second sub-gap -- unlike every case
+# extract_derived_ratios() otherwise handles, this ratio isn't embedded in any one line's own trailing
+# comment at all: store.c's own fault_rate computation (see its "fault_rate / ctxswitch_rate" comment)
+# combines THREE separate lines' raw primary values -- elapsed, minflt, majflt (all printed in the same
+# rusage PRINT_NORMAL block, topdown.c:2299-2342) -- each on its own line with no cross-referencing
+# comment tying them together. minflt's/majflt's own comments ("X.XX/sec", topdown.c:2339-2342) *look*
+# like they'd hand this straight over, but they don't even match parse_comment_ratio()'s generic
+# "<number>[%] <description>" shape (no separating whitespace before "/sec", and "/" isn't a letter) --
+# confirmed live, parse_comment_ratio() returns None for both. Rather than teach the generic per-line
+# parser a one-off "<number>/sec" shape just for this (inblock/onblock/nswap print the identical
+# comment shape with no real feature of their own to attach it to), _derive_fault_rate() instead reads
+# store.c's real formula straight off the three lines' own primary values -- the same numbers store.c
+# itself sums (sum_metric_value() over the "elapsed"/"minflt"/"majflt" metric_values columns) -- exact
+# parity with the local-store computation, not an approximation via re-summing two independently
+# %4.2f-rounded per-second comments. Mirrors store.c's own `have_elapsed && (have_minflt ||
+# have_majflt)` condition: either fault source alone is enough (a machine that only ever swaps, or
+# only ever majflts, still has a real rate) -- only elapsed==0 (never a real run) or neither fault
+# column present at all skips emission entirely.
+def _derive_fault_rate(records):
+    elapsed = _primary_value(records, "elapsed")
+    minflt = _primary_value(records, "minflt")
+    majflt = _primary_value(records, "majflt")
+    if not elapsed or (minflt is None and majflt is None):
+        return []
+    return [{"metric": "fault_rate", "value": ((minflt or 0.0) + (majflt or 0.0)) / elapsed,
+             "is_percent": False, "comment": None}]
+
+
 def canonical_metric_name(raw_metric_name):
     """Maps a primary (not comment-derived) metric name -- ibs.txt's sampling rates
     (IBS_FEATURE_NAME_OVERRIDES) and rusage's "onblock"/"oublock" label quirk
@@ -344,7 +384,12 @@ def extract_derived_ratios(records):
     GENERIC_LABEL_NAME_OVERRIDES (by the line's own label, which wins if both apply) to the generic
     parse's own record -- item 24's audited name alignment for every generic-tier case confirmed
     against store.c's real feature vocabulary. Never raises on an unexpected comment shape -- skips
-    it, same best-effort contract as parse_counter_text() itself."""
+    it, same best-effort contract as parse_counter_text() itself.
+
+    After the per-record pass, also runs _derive_fault_rate() once over the whole block (issue #278's
+    second sub-gap) -- fault_rate isn't one line's comment at all, but a combination of three separate
+    lines' own primary values (elapsed, minflt, majflt), so it can't be produced by the per-record loop
+    above no matter which of its three cases applies."""
     derived = []
     for r in records:
         comment = r.get("comment")
@@ -379,6 +424,7 @@ def extract_derived_ratios(records):
             if metric in GENERIC_LABEL_ALSO_CSV_COLUMN:
                 derived.append({"metric": GENERIC_LABEL_ALSO_CSV_COLUMN[metric], "value": value,
                                  "is_percent": is_percent, "comment": None})
+    derived.extend(_derive_fault_rate(records))
     return derived
 
 
