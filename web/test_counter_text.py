@@ -304,6 +304,35 @@ class ExtractDerivedRatiosTest(unittest.TestCase):
         derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
         self.assertEqual(derived["l2_miss_pct"]["value"], 3.12)
 
+    def test_float_line_yields_float_pct_at_percent_scale_not_per_mille(self):
+        # issue #278: print_float()'s own PRINT_NORMAL line prints a per-1000-inst density ("4.323
+        # float per 1000 inst"), but store.c's real float_pct feature (SIMPLE_METRIC_FEATURES, sourced
+        # from the CSV "float" column's *100.0 formula) is the same ratio at percent scale -- ten
+        # times the printed comment's number. A bare rename would have silently shipped 0.4323 under
+        # the name archetype.c's vectorization_density axis expects a real percentage from (its real
+        # CPU2026 thresholds run 0.6-34.0), so this must divide by 10, not just relabel.
+        text = "instructions         54412256231580 # 4.323 float per 1000 inst\n"
+        records = counter_text.parse_counter_text(text)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        self.assertEqual(derived["float_pct"]["value"], 0.4323)
+        self.assertTrue(derived["float_pct"]["is_percent"])
+        self.assertIsNone(derived["float_pct"]["comment"])
+        # The original per-1000-inst record must survive alongside it, unconverted -- still needed by
+        # web/joblib.py's resolve_column_group() (buckets it into the "float" report section).
+        self.assertEqual(derived["float_per_1000_inst"]["value"], 4.323)
+        self.assertFalse(derived["float_per_1000_inst"]["is_percent"])
+
+    def test_float_width_breakdown_lines_stay_generic_not_converted(self):
+        # The AVX-width breakdown lines ("float 512"/"float 256"/...) are a different, per-width
+        # density with no real store.c feature of their own -- only the top "instructions" line's
+        # aggregate density (float_per_1000_inst) maps to float_pct. These must not pick up a
+        # spurious "_pct" conversion just for sharing the "per 1000 inst" comment shape.
+        text = "float 512            1234567         # 0.023 AVX-512 per 1000 inst\n"
+        records = counter_text.parse_counter_text(text)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        self.assertEqual(derived["avx_512_per_1000_inst"]["value"], 0.023)
+        self.assertNotIn("float_pct", derived)
+
     def test_nan_and_non_numeric_comments_produce_no_derived_metric(self):
         records = counter_text.parse_counter_text(COUNTERS_TXT)
         derived_names = {d["metric"] for d in counter_text.extract_derived_ratios(records)}

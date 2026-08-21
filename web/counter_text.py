@@ -264,6 +264,25 @@ GENERIC_SLUG_NAME_OVERRIDES = {
     "ipc": "ipc_mean",
 }
 
+# issue #278's first sub-gap: print_float()'s own PRINT_NORMAL line ("instructions ... # X.XXX float
+# per 1000 inst", topdown.c, AMD-only) slugifies to "float_per_1000_inst" via the generic tier above --
+# same "instructions" label collision GENERIC_SLUG_NAME_OVERRIDES's own comment already calls out
+# ("float density" is this exact line). Unlike every GENERIC_SLUG_NAME_OVERRIDES entry, this can't be
+# a bare rename: the printed comment is a per-1000-instruction density (topdown.c's non-csvflag branch:
+# safe_div(float_all,instructions)*1000.0), while store.c's real float_pct feature
+# (SIMPLE_METRIC_FEATURES, sourced from the CSV "float" column) is a *percentage* of instructions
+# (topdown.c's csvflag branch, one line above: *100.0, not *1000.0) -- the identical ratio, but ten
+# times the printed comment's scale. A plain name override here would silently ship a value 10x too
+# small under a name archetype.c's run_snapshot_apply_feature()/vectorization_density axis trusts as a
+# real percentage (confirmed live from compiler-flag-miner, which hit this gap scoring
+# vectorization_density from a WordPress-recovered machine's counters.txt). The original
+# "float_per_1000_inst" record is left alone (still needed by web/joblib.py's resolve_column_group(),
+# which buckets it into the "float" report section for display) -- this table adds a *second*,
+# percent-scaled record alongside it rather than replacing it.
+GENERIC_SLUG_PER_MILLE_TO_PERCENT_NAMES = {
+    "float_per_1000_inst": "float_pct",
+}
+
 # INVESTIGATION.md 4.3 item 24: ibs.txt's own sampling-rate lines are already correctly parsed as
 # *primary* values (is_percent=True, not comment-derived at all -- see parse_counter_text()'s own
 # docstring), but store.c's SIMPLE_METRIC_FEATURES promotes them under shorter feature names than
@@ -317,11 +336,15 @@ def extract_derived_ratios(records):
     TOPDOWN_CSV_COLUMN_NAMES reference-matrix-facing name (see that table's own comment for why
     both are real, independently-needed names for the same value); (2) its label is one of
     TOPDOWN_FIRST_PERCENT_LABELS -- take the first; (3) otherwise, try parse_comment_ratio()'s
-    generic "<number>[%] <description>" parse, then apply GENERIC_SLUG_NAME_OVERRIDES (by the parsed
-    slug) and GENERIC_LABEL_NAME_OVERRIDES (by the line's own label, which wins if both apply) --
-    item 24's audited name alignment for every generic-tier case confirmed against store.c's real
-    feature vocabulary. Never raises on an unexpected comment shape -- skips it, same best-effort
-    contract as parse_counter_text() itself."""
+    generic "<number>[%] <description>" parse. If the parsed slug is one of
+    GENERIC_SLUG_PER_MILLE_TO_PERCENT_NAMES (issue #278: a per-1000-inst density printed where the
+    real store.c feature is the same ratio as a percentage, currently only print_float()'s "float"
+    line), also emit that /10-converted percentage under its own name, alongside -- not instead of --
+    the generic parse's own record. Then apply GENERIC_SLUG_NAME_OVERRIDES (by the parsed slug) and
+    GENERIC_LABEL_NAME_OVERRIDES (by the line's own label, which wins if both apply) to the generic
+    parse's own record -- item 24's audited name alignment for every generic-tier case confirmed
+    against store.c's real feature vocabulary. Never raises on an unexpected comment shape -- skips
+    it, same best-effort contract as parse_counter_text() itself."""
     derived = []
     for r in records:
         comment = r.get("comment")
@@ -346,6 +369,10 @@ def extract_derived_ratios(records):
         parsed = parse_comment_ratio(comment)
         if parsed:
             name, value, is_percent = parsed
+            pct_name = GENERIC_SLUG_PER_MILLE_TO_PERCENT_NAMES.get(name)
+            if pct_name:
+                derived.append({"metric": pct_name, "value": value / 10.0,
+                                 "is_percent": True, "comment": None})
             name = GENERIC_SLUG_NAME_OVERRIDES.get(name, name)
             name = GENERIC_LABEL_NAME_OVERRIDES.get(metric, name)
             derived.append({"metric": name, "value": value, "is_percent": is_percent, "comment": None})
