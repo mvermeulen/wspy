@@ -304,6 +304,43 @@ class ExtractDerivedRatiosTest(unittest.TestCase):
         derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
         self.assertEqual(derived["l2_miss_pct"]["value"], 3.12)
 
+    def test_l2_l3_miss_also_emitted_under_the_real_no_space_csv_column_name(self):
+        # issue #281's "missing bare name" display-only finding: the raw label has a space ("l2 miss"/
+        # "l3 miss"), but the real local-store CSV column doesn't ("l2miss"/"l3miss",
+        # print_l2cache()/print_l3cache()'s own PRINT_CSV_HEADER) -- nothing previously populated a
+        # value under that literal no-space name at all.
+        text = ("l2 miss              9819149704     # 3.12% l2 miss\n"
+                "l3 miss              12345          # 4.56% l3 miss\n")
+        records = counter_text.parse_counter_text(text)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        self.assertEqual(derived["l2miss"]["value"], 3.12)
+        self.assertEqual(derived["l3miss"]["value"], 4.56)
+
+    def test_l2_miss_from_l1_also_aliases_to_the_same_bare_l2miss_name(self):
+        text = "l2 miss from l1      9819149704     # 3.12% l2 miss\n"
+        records = counter_text.parse_counter_text(text)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        self.assertEqual(derived["l2miss"]["value"], 3.12)
+
+    def test_dcache_itlb_dtlb_miss_overwrite_their_own_wrong_raw_primary_value(self):
+        # issue #281's "wrong value" display-only finding: unlike icache/branch_miss/l2miss/l3miss
+        # above, these three raw labels ARE, verbatim, their own real local-store CSV column name
+        # (print_cache()'s PRINT_CSV_HEADER emits the identical string as its own PRINT_NORMAL label)
+        # -- so before this fix, a WordPress-recovered row showed the line's own raw miss count under
+        # that bare name instead of the real percentage, same bug class as the already-fixed
+        # backend/frontend/icache/opcache cases.
+        text = ("L1-dcache miss       500000          # 1.23% L1-dcache miss\n"
+                "iTLB miss            25              # 5.00% iTLB miss\n"
+                "dTLB miss            10              # 2.00% dTLB miss\n")
+        records = counter_text.parse_counter_text(text)
+        derived = {d["metric"]: d for d in counter_text.extract_derived_ratios(records)}
+        self.assertEqual(derived["L1-dcache miss"]["value"], 1.23)
+        self.assertEqual(derived["L1-dcache miss"]["value"], derived["dcache_miss_pct"]["value"])
+        self.assertEqual(derived["iTLB miss"]["value"], 5.0)
+        self.assertEqual(derived["iTLB miss"]["value"], derived["itlb_generic_miss_pct"]["value"])
+        self.assertEqual(derived["dTLB miss"]["value"], 2.0)
+        self.assertEqual(derived["dTLB miss"]["value"], derived["dtlb_generic_miss_pct"]["value"])
+
     def test_generic_itlb_dtlb_miss_renamed_to_real_feature_names(self):
         # issue #281: the generic cross-vendor "iTLB miss"/"dTLB miss" lines (print_itlb()/
         # print_dtlb(), any vendor) used to slugify to plain "itlb_miss"/"dtlb_miss" via the generic
