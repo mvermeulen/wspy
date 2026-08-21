@@ -172,6 +172,49 @@ class RecoverMachineMetricsFromWordpressTest(unittest.TestCase):
         # publish_reference_matrix.py, unaffected by this fix).
         self.assertEqual(float(by_metric["opcache"]["mean"]), 1234567.0)
 
+    def test_dcache_itlb_dtlb_miss_report_the_percentage_not_the_raw_count(self):
+        # Issue #281's "wrong value" display-only finding: L1-dcache miss/iTLB miss/dTLB miss each have
+        # a real local-store CSV column literally sharing their own raw line's label (print_cache()'s
+        # PRINT_CSV_HEADER emits the identical string as its own PRINT_NORMAL label) -- same bug shape
+        # as backend/frontend/icache/opcache above, just never reported live before this sweep.
+        text = ("##### pass  0 (mask 0x1) #####################\n"
+                "L1-dcache miss       500000          # 1.23% L1-dcache miss\n"
+                "iTLB miss            25              # 5.00% iTLB miss\n"
+                "dTLB miss            10              # 2.00% dTLB miss\n")
+
+        def fake_list_child_pages(site_url, username, app_password, parent):
+            return [{"id": 101, "slug": "run-1", "date": "2026-08-01T00:00:00"}]
+
+        with patch("server.wp_client.find_page", side_effect=self._walk_pages()), \
+             patch("server.wp_client.list_child_pages", side_effect=fake_list_child_pages), \
+             patch("server.wp_client.fetch_page_raw_content", return_value=preformatted_page(text)):
+            rows = server.recover_machine_metrics_from_wordpress(
+                FAKE_WP_CFG, "phoronix", "coremark", "default", "amd-395")
+
+        by_metric = {r["metric"]: r for r in rows}
+        self.assertEqual(float(by_metric["L1-dcache miss"]["mean"]), 1.23)
+        self.assertEqual(float(by_metric["iTLB miss"]["mean"]), 5.0)
+        self.assertEqual(float(by_metric["dTLB miss"]["mean"]), 2.0)
+
+    def test_l2_l3_miss_report_under_the_real_no_space_csv_column_name_too(self):
+        # Issue #281's "missing bare name" display-only finding.
+        text = ("##### pass  0 (mask 0x1) #####################\n"
+                "l2 miss              9819149704     # 3.12% l2 miss\n"
+                "l3 miss              12345          # 4.56% l3 miss\n")
+
+        def fake_list_child_pages(site_url, username, app_password, parent):
+            return [{"id": 101, "slug": "run-1", "date": "2026-08-01T00:00:00"}]
+
+        with patch("server.wp_client.find_page", side_effect=self._walk_pages()), \
+             patch("server.wp_client.list_child_pages", side_effect=fake_list_child_pages), \
+             patch("server.wp_client.fetch_page_raw_content", return_value=preformatted_page(text)):
+            rows = server.recover_machine_metrics_from_wordpress(
+                FAKE_WP_CFG, "phoronix", "coremark", "default", "amd-395")
+
+        by_metric = {r["metric"]: r for r in rows}
+        self.assertEqual(float(by_metric["l2miss"]["mean"]), 3.12)
+        self.assertEqual(float(by_metric["l3miss"]["mean"]), 4.56)
+
     def test_itlb_dtlb_generic_and_ctxswitch_rate_recovered(self):
         # Issue #281's two scoring-impact findings from the broader item-24 sweep that followed #278.
         # itlb_generic_miss_pct/dtlb_generic_miss_pct feed archetype.c's memory_attribution_locus axis;

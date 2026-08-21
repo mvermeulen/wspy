@@ -264,6 +264,28 @@ GENERIC_LABEL_NAME_OVERRIDES = {
 GENERIC_LABEL_ALSO_CSV_COLUMN = {
     "icache miss": "icache",
     "branch misses": "branch miss",
+    # issue #281's two display-only findings, same "missing bare CSV-column name" shape as
+    # branch_misses above: print_l2cache()'s/print_l3cache()'s own raw label has a space ("l2 miss"/
+    # "l2 miss from l1"/"l3 miss"), but their real local-store CSV columns (topdown.c:3214/3291's own
+    # PRINT_CSV_HEADER) don't ("l2miss"/"l3miss") -- so nothing previously populated a value under
+    # that literal no-space name at all (no wrong value shown anywhere, just an unmatched column in a
+    # table blending local-store and WordPress-recovered rows).
+    "l2 miss": "l2miss",
+    "l2 miss from l1": "l2miss",
+    "l3 miss": "l3miss",
+    # Unlike every entry above, these three raw labels ARE, verbatim, their own real local-store CSV
+    # column name: print_cache()'s PRINT_CSV_HEADER emits "%s miss," -- the identical string as its
+    # own PRINT_NORMAL label (topdown.c:3396/3413) -- so the value shown under this bare name isn't
+    # missing, it's actively *wrong*: the line's own raw miss count masquerading as the real
+    # percentage column, same class of bug as the now-fixed backend/frontend/icache cases. This is
+    # the same self-overwrite trick GENERIC_LABEL_NAME_OVERRIDES's own "opcache miss" entry uses
+    # (opcache miss comes from this identical helper function) -- expressed here instead because
+    # GENERIC_LABEL_NAME_OVERRIDES already routes each of these three labels to a *different* real
+    # feature name (dcache_miss_pct/itlb_generic_miss_pct/dtlb_generic_miss_pct), and a dict key can
+    # only point at one name at a time.
+    "L1-dcache miss": "L1-dcache miss",
+    "iTLB miss": "iTLB miss",
+    "dTLB miss": "dTLB miss",
 }
 
 # Same idea as GENERIC_LABEL_NAME_OVERRIDES above, but keyed by the *slugified description* instead
