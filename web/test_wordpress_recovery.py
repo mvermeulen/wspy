@@ -172,6 +172,33 @@ class RecoverMachineMetricsFromWordpressTest(unittest.TestCase):
         # publish_reference_matrix.py, unaffected by this fix).
         self.assertEqual(float(by_metric["opcache"]["mean"]), 1234567.0)
 
+    def test_float_reports_the_real_percentage_not_the_per_mille_comment(self):
+        # Issue #278's first sub-gap, filed live from compiler-flag-miner (a WordPress-anonymous
+        # reference-matrix client that hit this scoring vectorization_density for a WordPress-recovered
+        # machine): print_float()'s own PRINT_NORMAL line prints a per-1000-inst density ("4.323 float
+        # per 1000 inst" on the block's "instructions" line), but store.c's real float_pct feature
+        # (SIMPLE_METRIC_FEATURES, sourced from the CSV "float" column's *100.0 formula) is the same
+        # ratio at percent scale -- ten times the printed comment's number. Before this fix,
+        # extract_derived_ratios() only ever produced "float_per_1000_inst" (a display-only slug, per
+        # web/joblib.py's resolve_column_group()), so run_snapshot_apply_feature() never saw a
+        # "float_pct" it recognized at all.
+        text = ("##### pass  0 (mask 0x800) #####################\n"
+                "instructions         54412256231580 # 4.323 float per 1000 inst\n")
+
+        def fake_list_child_pages(site_url, username, app_password, parent):
+            return [{"id": 101, "slug": "run-1", "date": "2026-08-01T00:00:00"}]
+
+        with patch("server.wp_client.find_page", side_effect=self._walk_pages()), \
+             patch("server.wp_client.list_child_pages", side_effect=fake_list_child_pages), \
+             patch("server.wp_client.fetch_page_raw_content", return_value=preformatted_page(text)):
+            rows = server.recover_machine_metrics_from_wordpress(
+                FAKE_WP_CFG, "phoronix", "coremark", "default", "amd-395")
+
+        by_metric = {r["metric"]: r for r in rows}
+        self.assertEqual(float(by_metric["float_pct"]["mean"]), 0.4323)
+        # The original per-1000-inst display name must survive alongside it, unconverted.
+        self.assertEqual(float(by_metric["float_per_1000_inst"]["mean"]), 4.323)
+
     def test_merges_counters_and_ibs_blocks_from_same_run(self):
         def fake_list_child_pages(site_url, username, app_password, parent):
             return [{"id": 101, "slug": "run-1", "date": "2026-08-01T00:00:00"}]
