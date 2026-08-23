@@ -90,9 +90,9 @@ Builtin profiles:
               covering software/branch/ipc/topdown2/cache2/float/
               topdown-frontend/topdown-optlb, used for topdown
               characterization
-  deep-cpu-intel  the Intel-only equivalent (software/branch, topdown, ipc/l2,
-              backend) -- Intel doesn't have deep-cpu's AMD-specific opcache/
-              frontend/l3 groups, so this is a separate, shorter sweep
+  deep-cpu-intel  systemtime/inteltopdown (--interval) plus one --passes sweep
+              covering software/branch/ipc/topdown2/cache2/topdown-backend,
+              used for Intel topdown characterization
   deep-gpu    deep-cpu plus GPU busy/metrics (--interval) passes (needs an
               AMDGPU=1 build to collect real data; passes still run
               otherwise since wspy itself just warns per pass and continues)

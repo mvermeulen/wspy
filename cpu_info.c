@@ -156,6 +156,37 @@ static void mark_cpus_for_pmu(const char *cpulist,unsigned int pmu_type,int pmu_
   }
 }
 
+static void mark_intel_cpus(const char *cpulist,enum cpu_core_type vendor_type,unsigned int pmu_type,int pmu_cluster){
+  const char *p = cpulist;
+
+  while (*p){
+    char *endptr;
+    long low = strtol(p,&endptr,10);
+    long high = low;
+
+    if (endptr == p) break;
+    p = endptr;
+    if (*p == '-'){
+      p++;
+      high = strtol(p,&endptr,10);
+      if (endptr == p) break;
+      p = endptr;
+    }
+
+    if (low < 0) low = 0;
+    if (high >= (long)cpu_info->num_cores) high = (long)cpu_info->num_cores - 1;
+    while (low <= high){
+      cpu_info->coreinfo[low].vendor = vendor_type;
+      cpu_info->coreinfo[low].pmu_type = pmu_type;
+      cpu_info->coreinfo[low].pmu_cluster = pmu_cluster;
+      low++;
+    }
+
+    if (*p == ',') p++;
+    while (*p == ' ' || *p == '\t') p++;
+  }
+}
+
 static void discover_arm_pmu_topology(void){
   DIR *dir;
   struct dirent *de;
@@ -382,6 +413,69 @@ static int read_cpuinfo_core_fields(int corenum, unsigned int *implementer, unsi
   return -1;
 }
 
+static int is_known_intel_model(unsigned int family, unsigned int model){
+  if (family == 0xf) return 1; // NetBurst
+  if (family != 0x6) return 0;
+  switch (model){
+    // Modern Client / Hybrid / Mobile / Desktop
+    case 0xcc: // Panther Lake
+    case 0xc5: // Arrow Lake S
+    case 0xc6: // Arrow Lake HX/H/U
+    case 0xb5: // Arrow Lake U
+    case 0xbd: // Lunar Lake
+    case 0xaa: // Meteor Lake M/U
+    case 0xac: // Meteor Lake H/P
+    case 0xb7: // Raptor Lake S
+    case 0xba: // Raptor Lake P/HX
+    case 0xbf: // Raptor Lake S Refresh
+    case 0x97: // Alder Lake S
+    case 0x9a: // Alder Lake P/M
+    case 0xbe: // Alder Lake N
+    case 0xa7: // Rocket Lake
+    case 0x8c: // Tiger Lake U
+    case 0x8d: // Tiger Lake H
+    case 0x7e: // Ice Lake Client
+    case 0x9c: // Tremont (Jasper Lake / Elkhart Lake)
+    case 0x86: // Tremont (Jacobsville)
+    case 0xa5: // Comet Lake S
+    case 0xa6: // Comet Lake U
+    case 0x8e: // Kaby Lake / Coffee Lake / Amber Lake / Whiskey Lake U
+    case 0x9e: // Kaby Lake / Coffee Lake Desktop
+    case 0x4e: // Skylake U/Y
+    case 0x5e: // Skylake S/H
+    case 0x3d: // Broadwell U/Y
+    case 0x47: // Broadwell H/C
+    case 0x3c: // Haswell Desktop
+    case 0x3f: // Haswell Server
+    case 0x45: // Haswell ULT
+    case 0x46: // Haswell GT3e
+    case 0x3a: // Ivy Bridge
+    case 0x3e: // Ivy Bridge E/EN/EP
+    case 0x2a: // Sandy Bridge
+    case 0x2d: // Sandy Bridge E/EP
+    case 0x25: // Westmere / Clarkdale
+    case 0x2c: // Westmere EP
+    case 0x1a: // Nehalem EP
+    case 0x1e: // Nehalem
+    case 0x1f: // Nehalem
+    case 0x2e: // Nehalem EX
+    // Modern Server / Xeon Scalable
+    case 0x55: // Skylake X / Cascade Lake / Cooper Lake
+    case 0x6a: // Ice Lake Server (1S/2S)
+    case 0x6c: // Ice Lake Server (4S/8S)
+    case 0x8f: // Sapphire Rapids
+    case 0xcf: // Emerald Rapids
+    case 0xad: // Granite Rapids
+    case 0xae: // Granite Rapids D
+    case 0xaf: // Sierra Forest (Atom)
+    case 0xb6: // Grand Ridge (Atom)
+    case 0xdd: // Clearwater Forest (Atom)
+      return 1;
+    default:
+      return 0;
+  }
+}
+
 int inventory_cpu(void){
 #ifdef __x86_64__
   unsigned int eax,ebx,ecx,edx;
@@ -489,18 +583,22 @@ int inventory_cpu(void){
 	}
       }
     } else if (cpu_info->vendor == VENDOR_INTEL){
-      if ((cpu_info->family == 6) &&
-	  ((cpu_info->model == 0xba)||(cpu_info->model == 0xb7)||
-	   (cpu_info->model == 0x9a)||(cpu_info->model == 0x97)||
-	   (cpu_info->model == 0xa7))){
+      if ((cpu_info->family == 6) || (cpu_info->family == 0xf)){
 	cpu_info->coreinfo[i].vendor = CORE_INTEL_CORE;
+	if (!is_known_intel_model(cpu_info->family, cpu_info->model)){
+	  if (nwarn == 0){
+	    warning("unrecognized Intel CPU, family %x, model %x\n",
+		    cpu_info->family,cpu_info->model);
+	    nwarn++;
+	  }
+	}
       } else {
 	cpu_info->coreinfo[i].vendor = CORE_INTEL_UNKNOWN;
 	if (nwarn == 0){
 	  warning("unimplemented Intel CPU, family %x, model %x\n",
 		  cpu_info->family,cpu_info->model);
+	  nwarn++;
 	}
-	nwarn++;
       }
     } else {
       cpu_info->coreinfo[i].vendor = CORE_UNKNOWN;
@@ -521,64 +619,44 @@ int inventory_cpu(void){
   if (cpu_info->vendor == VENDOR_AMD && cpu_info->family == 0x1a){
     resolve_amd_zen5_dense_cores();
   }
-  // fix up hybrid cores for Raptor Lake and Alder Lake
-  if (cpu_info->vendor == VENDOR_INTEL &&
-      cpu_info->family == 6 &&
-      ((cpu_info->model == 0xba)||(cpu_info->model == 0xb7)||
-       (cpu_info->model == 0x9a)||(cpu_info->model == 0x97))){
+  // discover Intel hybrid and per-core-type PMU topology (Alder Lake, Raptor Lake,
+  // Meteor Lake, Arrow Lake, Lunar Lake, Panther Lake, and modern Xeon/Atom architectures)
+  if (cpu_info->vendor == VENDOR_INTEL){
     char pmu_cpus_buf[256];
     unsigned int pmu_type;
+    int have_atom = 0, have_core = 0;
 
     if (stat("/sys/devices/cpu_atom/cpus",&statbuf) != -1){
-      cpu_info->is_hybrid = 1;
-      if (fp = fopen("/sys/devices/cpu_atom/cpus","r")){
-	int low,high;
-	if (fscanf(fp,"%d-%d",&low,&high) == 2){
-	  for (i=low;i<=high;i++){
-	    cpu_info->coreinfo[i].vendor = CORE_INTEL_ATOM;
-	  }
-	}
-	fclose(fp);
+      have_atom = 1;
+      fp = fopen("/sys/devices/cpu_atom/cpus","r");
+      if (fp){
+        if (fgets(pmu_cpus_buf,sizeof(pmu_cpus_buf),fp)){
+          if (read_u32_file("/sys/devices/cpu_atom/type",&pmu_type) != 0)
+            pmu_type = PERF_TYPE_RAW;
+          mark_intel_cpus(pmu_cpus_buf,CORE_INTEL_ATOM,pmu_type,1);
+        }
+        fclose(fp);
       }
-      // Real per-core-type dynamic PMU type -- the same /sys/bus/
-      // event_source/devices/<pmu>/type lookup discover_arm_pmu_topology()
-      // already does for ARM PMU clusters, via the same vendor-agnostic
-      // mark_cpus_for_pmu() helper. Previously left at pmu_type's
-      // PERF_TYPE_RAW default forever on Intel, so bind_core_counter_
-      // groups()'s (wspy.c) per-core device_type patch silently substituted
-      // 4 for 4 on P-cores (a coincidence: cpu_core's real type happens to
-      // equal PERF_TYPE_RAW's own enum value) and would have substituted
-      // that same wrong value on E-cores too, had they ever been per-core-
-      // eligible before now. See INVESTIGATION.md's "Per-core-type-aware
-      // Intel raw event tables" item.
-      if ((fp = fopen("/sys/devices/cpu_atom/cpus","r")) &&
-	  fgets(pmu_cpus_buf,sizeof(pmu_cpus_buf),fp)){
-	if (read_u32_file("/sys/devices/cpu_atom/type",&pmu_type) == 0)
-	  mark_cpus_for_pmu(pmu_cpus_buf,pmu_type,1);
-      }
-      if (fp) fclose(fp);
     }
     if (stat("/sys/devices/cpu_core/cpus",&statbuf) != -1){
-      if (fp = fopen("/sys/devices/cpu_core/cpus","r")){
-	int low,high;
-	if (fscanf(fp,"%d-%d",&low,&high) == 2){
-	  for (i=low;i<=high;i++){
-	    cpu_info->coreinfo[i].vendor = CORE_INTEL_CORE;
-	  }
-	}
-	fclose(fp);
+      have_core = 1;
+      fp = fopen("/sys/devices/cpu_core/cpus","r");
+      if (fp){
+        if (fgets(pmu_cpus_buf,sizeof(pmu_cpus_buf),fp)){
+          if (read_u32_file("/sys/devices/cpu_core/type",&pmu_type) != 0)
+            pmu_type = PERF_TYPE_RAW;
+          mark_intel_cpus(pmu_cpus_buf,CORE_INTEL_CORE,pmu_type,0);
+        }
+        fclose(fp);
       }
-      if ((fp = fopen("/sys/devices/cpu_core/cpus","r")) &&
-	  fgets(pmu_cpus_buf,sizeof(pmu_cpus_buf),fp)){
-	if (read_u32_file("/sys/devices/cpu_core/type",&pmu_type) == 0)
-	  mark_cpus_for_pmu(pmu_cpus_buf,pmu_type,0);
-      }
-      if (fp) fclose(fp);
+    }
+    if (have_atom && have_core){
+      cpu_info->is_hybrid = 1;
     }
   }
   // check affinity mask for available CPUs
   cpu_set_t set;
-  cpu_info->num_cores_available;
+  cpu_info->num_cores_available = 0;
   CPU_ZERO(&set);
   if (sched_getaffinity(getpid(),sizeof(set),&set) == -1){
     fatal("unable to get CPU affinity\n");
