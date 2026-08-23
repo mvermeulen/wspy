@@ -219,9 +219,9 @@ Builtin profiles:
   deep-cpu    systemtime/amdtopdown (--interval) plus one --passes sweep
               covering software/branch/ipc/topdown2/cache2/float/
               topdown-frontend/topdown-optlb, used for topdown
-              characterization
-  deep-cpu-intel  the Intel-only equivalent ...
-  tree-heavy  single --tree pass with full command-line capture, wrapped in a
+  deep-cpu-intel  systemtime/inteltopdown (--interval) plus one --passes sweep
+              covering software/branch/ipc/topdown2/cache2/topdown-backend,
+              used for Intel topdown characterization
               3600s timeout ...
   ibs-sample  single pass: AMD IBS *sampling* mode ...
   zen4plus-deep    deep-cpu + ibs-sample + tree-heavy composed (AMD
