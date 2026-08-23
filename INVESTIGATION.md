@@ -9,12 +9,13 @@ every decision live in `doc/INVESTIGATION_ARCHIVE.md` — this document doesn't 
 Status (2026-08-09): **4.0, 4.1, 4.2, 4.3, and 4.3.1 are all tagged and released** (v4.2 and v4.3
 published as GitHub releases with `wspy-release-notes.4.2.md`/`wspy-release-notes.4.3.md` as their
 bodies, v4.3.1's release body written directly — see `scripts/release_prep.sh`). **4.4 is next.** The
-open backlog (below) is sorted into three buckets: **"4.4 priorities"** (three named goals —
-ease-of-use/one-click web UI flows, GPU support, and Phoronix suite build-out), **"4.5 priorities"**
-(lower priority, still wanted, loosely grouped by topic), and **"Deferred indefinitely"** (explicitly
-not planned for any numbered release; revisit only on a concrete trigger). A fresh "`<N>` release
-closure" bucket gets added back once a cycle's own priorities empty out and it's time to prep that
-tag — see `scripts/release_prep.sh`'s own checklist for what that housekeeping covers.
+open backlog (below) is sorted into three buckets: **"4.4 priorities"** (four named goals —
+ease-of-use/one-click web UI flows, GPU support, Phoronix suite build-out, and Intel platform
+support update / modernization), **"4.5 priorities"** (lower priority, still wanted, loosely grouped
+by topic), and **"Deferred indefinitely"** (explicitly not planned for any numbered release; revisit
+only on a concrete trigger). A fresh "`<N>` release closure" bucket gets added back once a cycle's
+own priorities empty out and it's time to prep that tag — see `scripts/release_prep.sh`'s own
+checklist for what that housekeeping covers.
 
 ## Purpose
 This document captures ideas for improvements focused on making benchmark collection, organization,
@@ -981,8 +982,9 @@ full root-cause/fix/verification detail moved to `doc/INVESTIGATION_ARCHIVE.md`'
 counter-grouping real-hardware findings and fixes" now that nothing here remains open backlog.
 
 Additional Intel counters worth adding, grounded in the same real-hardware pass (`/sys/bus/
-event_source/devices/` enumerated live, not from documentation alone). The GPU item (`i915` GPU PMU) is
-tracked in 4.4(b); everything else here is tracked as 4.5's "Intel counter expansion" item:
+event_source/devices/` enumerated live, not from documentation alone). Grounded on Raptor Lake HX ("carlsbad")
+and Panther Lake Core Ultra 7 356H ("windsor"). Tracked in 4.4(d)'s "Intel platform support update / modernization"
+item (GPU items also tracked in 4.4(b)); PEBS precise memory-latency sampling tracked as 4.5's Intel PEBS item:
 - **Real DRAM bandwidth** (`COUNTER_MEMORY`, nonexistent for Intel today). `uncore_imc_free_running_0`/
   `_1` expose `data_read`/`data_write`/`data_total` with their own `.scale`/`.unit` sysfs files — the
   exact shape `power.c` already knows how to parse; comparatively low-effort riding on existing code.
@@ -1200,9 +1202,10 @@ running anything through PTS.
 
 ## 4.4 priorities
 Goal: refocus away from adding more analysis surface and toward (a) making the large amount of
-functionality already shipped easier to actually use, (b) GPU support parity with the CPU side, and
-(c) building out Phoronix suite coverage/workflow. Items are grouped by focus, not by dependency tier —
-pick items within a group in any order that fits.
+functionality already shipped easier to actually use, (b) GPU support parity with the CPU side,
+(c) building out Phoronix suite coverage/workflow, and (d) updating Intel platform support to parity
+with AMD Zen5 and ARM64. Items are grouped by focus, not by dependency tier — pick items within a
+group in any order that fits.
 
 **4.4(a) — Ease of use / one-click web UI flows.** Grounded in a 2026-08-07 audit of the actual surface
 area rather than guesswork: 16 separate CLI entry points (`wspy`, `wspy-run`, `wspy-validate`,
@@ -1226,18 +1229,51 @@ recent one (CLI flag/identity consistency pass).
    4.2's GPU fusion layer (`gpu_fusion.c`, `--gpu-metrics`) for consistent per-metric data.
 3. GPU coverage ledger (backend/device-class support, caveats) — same pattern as `wspy-ledger`, extended
    once GPU runs feed the same index.
-4. Intel `i915` GPU PMU — an Intel-native busy/frequency alternative to the current AMD-sysfs/NVML-only
-   GPU support, `perf_event_open()`-based rather than a vendor SMI/sysfs scrape. See the Intel hybrid /
-   counter-grouping deep-dive for detail (the rest of that deep-dive's counter wishlist is non-GPU,
-   tracked in 4.5).
+4. Intel `i915`/`xe` GPU PMU — an Intel-native busy/frequency alternative to the current AMD-sysfs/NVML-only
+   GPU support, `perf_event_open()`-based rather than a vendor SMI/sysfs scrape. See 4.4(d) below and the
+   Intel hybrid deep-dive for detail.
 
 **4.4(c) — Phoronix suite build-out:**
 
 All 4.4(c) items have now shipped — see "Shipped since 4.3.1" below for the most recent one
 (`wspy-phoronix-batch`).
 
+**4.4(d) — Intel platform support update / modernization:**
+Grounded in real hardware verification on modern Intel client (Raptor Lake HX "carlsbad", Panther Lake Core
+Ultra 7 356H "windsor") and server platforms. Eliminates CPU model detection fallbacks, modernizes hybrid
+topology handling, expands uncore memory/LLC counters, adds multi-domain RAPL power, and hooks into
+next-generation Intel GPU interfaces (`xe` driver).
+
+1. **Intel CPU model family/model coverage & hybrid topology generalization (`cpu_info.c`):**
+   - Expand `cpu_info.c`'s recognized Intel models to cover modern client and server architectures:
+     Panther Lake (`0xcc`), Arrow Lake (`0xc5`, `0xc6`), Lunar Lake (`0xbd`), Meteor Lake (`0xaa`, `0xac`),
+     Emerald Rapids (`0xcf`), Sapphire Rapids (`0x8f`), Granite Rapids (`0xad`). Eliminates the
+     `warning: unimplemented Intel CPU, family 6, model cc` warning and fallback to `CORE_INTEL_UNKNOWN`.
+   - Generalize `/sys/devices/cpu_atom/cpus` and `/sys/devices/cpu_core/cpus` topology parsing: replace
+     single-range `fscanf(..., "%d-%d")` with arbitrary comma/range list parsing (`parse_cpu_list_count` /
+     `mark_cpus_for_pmu`) to handle non-contiguous core masks and LP E-core island topologies cleanly.
+2. **Intel RAPL multi-domain power & energy telemetry (`power.c`):**
+   - Intel's `power` PMU directly exposes `energy-cores` (per-core domain), `energy-gpu` (integrated GPU
+     energy), `energy-ram` (DRAM RAPL), and `energy-psys` (platform SoC energy) alongside `energy-pkg`.
+     Expand `power.c` and `--power` to probe and report these domains without requiring external SMI libraries.
+   - Add core and package C-state residency capture (`cstate_core` / `cstate_pkg` PMUs: `c1`, `c6`, `c7`,
+     `c2`, `c10`).
+3. **Intel uncore DRAM bandwidth & true LLC counters (`topdown.c` / sysfs):**
+   - Real DRAM bandwidth (`COUNTER_MEMORY`): Intel Free-Running Uncore IMC counters (`uncore_imc_free_running_0`/
+     `_1` exposing `data_read`, `data_write`, `data_total` with `.scale` and `.unit`).
+   - True LLC / L3 cache counters (`COUNTER_L3CACHE`): Uncore CBox slice PMUs (`uncore_cbox_0`..`_5`+) to
+     measure chip-wide LLC hits/misses/occupancy instead of stopping at L2.
+4. **Intel GPU discovery & PMU monitoring (`web/joblib.py`, `topdown.c` / `xe` driver):**
+   - Add Intel PCI vendor ID (`0x8086`) to `_GPU_VENDOR_IDS_BY_PCI_ID` in `web/joblib.py` so Phoronix test
+     points and web UI recognize Intel GPUs without false "no matching GPU" warnings.
+   - Intel GPU telemetry: support both modern `xe` driver PMU (`xe_0000_00_02.0` / `/sys/class/drm/card0/device/tile0/gt0/freq0/act_freq`)
+     and legacy `i915` GPU PMU.
+5. **Modern E-Core / P-Core raw event tables & topdown calibration (`topdown.c`):**
+   - Calibrate and verify Skymont (E-core) and Cougar Cove / Lion Cove (P-core) raw event encodings and
+     topdown formula mappings against real Panther Lake / Arrow Lake / Lunar Lake hardware.
+
 ## 4.5 priorities
-Goal: lower priority than 4.4 but still real, wanted work — pick up once 4.4's three focus areas are
+Goal: lower priority than 4.4 but still real, wanted work — pick up once 4.4's focus areas are
 substantially done. Not ordered into dependency tiers; a few internal dependencies are called out inline.
 Cross-referenced by name, not number, per this doc's own convention — item numbers here will shift the
 next time this section is reorganized.
@@ -1266,12 +1302,9 @@ next time this section is reorganized.
 
 **Hardware counter expansion (Intel/AMD, non-GPU):**
 
-6. Intel counter expansion (real DRAM bandwidth via `uncore_imc_free_running_0`/`_1`, true LLC/L3 via
-   `uncore_cbox_0`..`_11`, per-core-domain/iGPU RAPL energy via the `power` PMU's `energy-cores`/
-   `energy-gpu`, C-state residency via `cstate_core`/`cstate_pkg`, PEBS-based precise memory-latency
-   sampling as the Intel counterpart to AMD IBS sampling-mode) — see the Intel hybrid / counter-grouping
-   deep-dive's "Additional Intel counters worth adding" list for the full real-hardware-grounded detail
-   per counter (that list's one GPU item, `i915` GPU PMU, is tracked in 4.4(b) instead).
+6. Intel PEBS-based precise memory-latency sampling (`MEM_TRANS_RETIRED.LOAD_LATENCY`-style events) as the
+   Intel counterpart to AMD IBS sampling-mode — see the Intel hybrid deep-dive (the non-PEBS Intel counter,
+   power, uncore, and topology expansion items have been promoted to 4.4(d) above).
 7. Zen5 fine-grained scheduler-stall counters (split ALU/AGU scheduler-stall counters, op-cache/
    execution-queue events) and `IBS_LD_L1_DTLB_REFILL_LAT` — see the Zen5/IBS deep-dive's remaining open
    thread for detail.
