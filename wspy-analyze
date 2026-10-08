@@ -19,6 +19,14 @@ dependency" convention) -- talks to Ollama's HTTP API directly
 (POST /api/generate, GET /api/tags, POST /api/show for vision-capability
 confirmation), no ollama Python package required.
 
+--backend llama talks to llama.cpp's llama-server instead (POST
+/v1/chat/completions, GET /v1/models), e.g. an upstream prebuilt release
+fetched by scripts/get_llama_cpp.sh. With --models-dir, if no server answers
+at --llama-host, wspy-analyze starts llama-server in router mode over that
+directory of GGUF files (model name = file name without .gguf) and stops it
+on exit. Everything else -- prompts, outputs, --compare-rundir, --image,
+--critique -- is identical across backends.
+
 Inputs (from a run directory produced by wspy-run's unified --suite/
 --benchmark layout, or a bare wspy --manifest run):
   - summary.txt / <pass>.txt   the human-readable counter output ("counters.txt"
@@ -98,10 +106,15 @@ import json
 import math
 import base64
 import os
+import atexit
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -177,6 +190,19 @@ DEFAULT_MODEL_IF_PRESENT = "gpt-oss:20b"
 # vision-capable, so --image mode needs its own default entirely, not a
 # fallback chain through the text one.
 DEFAULT_VISION_MODEL_IF_PRESENT = "gemma4:26b"
+
+# --backend llama equivalents. llama-server's router names a --models-dir
+# model after its GGUF file, so the default is the Q8_0 file name -- the
+# quant measured fastest for gpt-oss-20b on this repo's Ryzen AI 350 iGPU
+# (27 vs 16 tok/s for F16). No vision default: pass --model for --image.
+DEFAULT_LLAMA_HOST = "http://127.0.0.1:8080"
+DEFAULT_LLAMA_MODEL_IF_PRESENT = "gpt-oss-20b-Q8_0"
+DEFAULT_LLAMA_VISION_MODEL_IF_PRESENT = None
+# Where scripts/get_llama_cpp.sh installs by default.
+DEFAULT_LLAMA_SERVER = os.path.join(
+    os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"),
+    "wspy", "llama.cpp", "current", "llama-server")
+BACKEND_LABEL = {"ollama": "Ollama", "llama": "llama-server"}
 
 # Short, model-facing explanations of what each counter group's columns mean.
 # Keyed by the same ALL_GROUPS/"system" names web/joblib.py's
@@ -810,6 +836,140 @@ def ollama_generate(host, model, prompt, timeout, num_ctx=DEFAULT_NUM_CTX, image
     return "".join(chunks), done_reason
 
 
+def llama_list_models(host, timeout, vision_only=False):
+    """/v1/models works in both router and single-model mode. Its
+    architecture.input_modalities is computed from the GGUF/mmproj files
+    without loading the model, so the vision filter costs no model load."""
+    req = urllib.request.Request(host.rstrip("/") + "/v1/models")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.load(resp)
+    names = []
+    for m in data.get("data", []):
+        modalities = (m.get("architecture") or {}).get("input_modalities", [])
+        if vision_only and "image" not in modalities:
+            continue
+        names.append(m["id"])
+    return names
+
+
+def llama_generate(host, model, prompt, timeout, images=None):
+    """Streamed for the same per-chunk-idle-timeout reason as
+    ollama_generate(). With --jinja, a reasoning model's draft arrives in
+    delta.reasoning_content and is skipped, same as Ollama's "thinking".
+    finish_reason "length" maps onto Ollama's done_reason "length". The
+    context size is a server setting (-c), not a per-request one."""
+    if images:
+        content = [{"type": "text", "text": prompt}] + [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64," + img}}
+            for img in images]
+    else:
+        content = prompt
+    body = json.dumps({"model": model, "stream": True,
+                       "messages": [{"role": "user", "content": content}]}).encode("utf-8")
+    req = urllib.request.Request(
+        host.rstrip("/") + "/v1/chat/completions", data=body,
+        headers={"Content-Type": "application/json"}, method="POST")
+    chunks = []
+    finish_reason = None
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        for line in resp:
+            line = line.strip()
+            if not line.startswith(b"data:"):
+                continue
+            payload = line[len(b"data:"):].strip()
+            if payload == b"[DONE]":
+                break
+            obj = json.loads(payload)
+            if "error" in obj:
+                raise ValueError(obj["error"].get("message", obj["error"]))
+            for choice in obj.get("choices", []):
+                chunks.append((choice.get("delta") or {}).get("content") or "")
+                if choice.get("finish_reason"):
+                    finish_reason = choice["finish_reason"]
+    return "".join(chunks), finish_reason
+
+
+def llama_server_is_up(host):
+    try:
+        with urllib.request.urlopen(host.rstrip("/") + "/health", timeout=2) as resp:
+            return resp.status == 200
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return False
+
+
+def resolve_llama_server_bin(explicit):
+    for candidate in (explicit, os.environ.get("WSPY_LLAMA_SERVER"), DEFAULT_LLAMA_SERVER):
+        if candidate and os.access(candidate, os.X_OK):
+            return candidate
+    return shutil.which("llama-server")
+
+
+def ensure_llama_server(args):
+    """Reuses a llama-server already answering at --llama-host. Otherwise,
+    with --models-dir, starts one in router mode (so --model/--all-models
+    pick among that directory's GGUF files) and stops it at exit.
+    --models-max 1 keeps only one model in memory at a time, so
+    --all-models walks the directory without stacking models in RAM.
+    Returns an error string, or None on success."""
+    host = args.llama_host
+    if llama_server_is_up(host):
+        return None
+    if not args.models_dir:
+        return ("no llama-server answering at %s -- start one, or pass --models-dir DIR "
+                "(or set WSPY_MODELS_DIR) to let wspy-analyze start it" % host)
+    if not os.path.isdir(args.models_dir):
+        return "--models-dir %r is not a directory" % args.models_dir
+    server_bin = resolve_llama_server_bin(args.llama_server)
+    if not server_bin:
+        return ("llama-server not found -- run scripts/get_llama_cpp.sh, or pass "
+                "--llama-server PATH (or set WSPY_LLAMA_SERVER)")
+    url = urllib.parse.urlparse(host)
+    if url.hostname not in ("127.0.0.1", "localhost", "::1"):
+        return "refusing to start llama-server for non-local --llama-host %s" % host
+    cmd = [server_bin, "--models-dir", os.path.abspath(args.models_dir),
+           "--host", url.hostname, "--port", str(url.port or 80),
+           "--models-max", "1", "-c", str(args.num_ctx),
+           "-ngl", "99", "-fa", "on", "--jinja"] + args.llama_arg
+    log = tempfile.NamedTemporaryFile(prefix="wspy-llama-server-", suffix=".log", delete=False)
+    print("wspy-analyze: starting %s (log: %s)" % (" ".join(cmd), log.name), file=sys.stderr)
+    proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+
+    def stop():
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+    atexit.register(stop)
+
+    deadline = time.time() + args.timeout
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            return "llama-server exited with code %d -- see %s" % (proc.returncode, log.name)
+        if llama_server_is_up(host):
+            return None
+        time.sleep(0.5)
+    return "llama-server did not become ready within %.0fs -- see %s" % (args.timeout, log.name)
+
+
+def list_models(args, vision_only=False):
+    if args.backend == "llama":
+        return llama_list_models(args.llama_host, args.timeout, vision_only=vision_only)
+    return ollama_list_models(args.ollama_host, args.timeout, vision_only=vision_only)
+
+
+def generate(args, model, prompt, images=None):
+    if args.backend == "llama":
+        return llama_generate(args.llama_host, model, prompt, args.timeout, images=images)
+    return ollama_generate(args.ollama_host, model, prompt, args.timeout,
+                           num_ctx=args.num_ctx, images=images)
+
+
+def backend_host(args):
+    return args.llama_host if args.backend == "llama" else args.ollama_host
+
+
 CRITIQUE_SUFFIX = """
 
 ---
@@ -826,9 +986,9 @@ fine). Do not just restate your analysis.
 """
 
 
-def analyze_one_model(host, model, prompt, timeout, critique, outdir,
+def analyze_one_model(args, model, prompt, critique, outdir,
                        analysis_prefix="aianalysis", critique_prefix="aiprompt.critique",
-                       num_ctx=DEFAULT_NUM_CTX, images=None):
+                       images=None):
     """Shared by single-run, comparative, and --image mode alike -- only the
     output filename prefixes differ (comparative mode namespaces them by run
     B's slug, see run_dir_slug(); --image mode by the image's own stem, see
@@ -840,15 +1000,15 @@ def analyze_one_model(host, model, prompt, timeout, critique, outdir,
     print("wspy-analyze: querying %s ..." % model, file=sys.stderr)
     t0 = time.time()
     try:
-        response, done_reason = ollama_generate(host, model, prompt, timeout, num_ctx=num_ctx,
-                                                  images=images)
+        response, done_reason = generate(args, model, prompt, images=images)
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
         # ValueError also catches json.JSONDecodeError -- a truncated/malformed
         # NDJSON line from ollama_generate()'s streamed read (e.g. the
         # connection dropped mid-chunk), same "skip this model, don't crash
         # the sweep" treatment as an outright connection failure.
-        print("wspy-analyze: warning: %s: could not reach Ollama at %s: %s "
-              "-- skipping" % (model, host, e), file=sys.stderr)
+        print("wspy-analyze: warning: %s: could not reach %s at %s: %s "
+              "-- skipping" % (model, BACKEND_LABEL[args.backend], backend_host(args), e),
+              file=sys.stderr)
         return False
     elapsed = time.time() - t0
 
@@ -861,28 +1021,28 @@ def analyze_one_model(host, model, prompt, timeout, critique, outdir,
         # file entirely and report it as the failure it is instead.
         print("wspy-analyze: warning: %s: context limit (num_ctx=%d) reached before any response "
               "text was produced (the model was still \"thinking\") -- retry with a larger "
-              "--num-ctx -- skipping" % (model, num_ctx), file=sys.stderr)
+              "--num-ctx -- skipping" % (model, args.num_ctx), file=sys.stderr)
         return False
 
     out_path = os.path.join(outdir, "%s.%s.md" % (analysis_prefix, slug))
     with open(out_path, "w") as f:
         f.write(response)
-    truncated_note = " [truncated: hit num_ctx=%d]" % num_ctx if done_reason == "length" else ""
+    truncated_note = " [truncated: hit num_ctx=%d]" % args.num_ctx if done_reason == "length" else ""
     print("wspy-analyze: %s -> %s (%.1fs, %d chars)%s" % (
         model, out_path, elapsed, len(response), truncated_note), file=sys.stderr)
 
     if critique:
         critique_prompt = prompt + (CRITIQUE_SUFFIX % response)
         try:
-            critique_text, critique_done_reason = ollama_generate(
-                host, model, critique_prompt, timeout, num_ctx=num_ctx, images=images)
+            critique_text, critique_done_reason = generate(args, model, critique_prompt,
+                                                           images=images)
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
             print("wspy-analyze: warning: %s: critique call failed: %s" % (model, e),
                   file=sys.stderr)
             return True
         if not critique_text.strip() and critique_done_reason == "length":
             print("wspy-analyze: warning: %s: critique hit num_ctx=%d before any response text -- "
-                  "skipping critique" % (model, num_ctx), file=sys.stderr)
+                  "skipping critique" % (model, args.num_ctx), file=sys.stderr)
             return True
         critique_path = os.path.join(outdir, "%s.%s.md" % (critique_prefix, slug))
         with open(critique_path, "w") as f:
@@ -916,8 +1076,8 @@ def gather_run_data(rundir, validate_bin, redact_command, timeout, ap, label,
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Local-LLM (Ollama) narrative analysis of a wspy run directory's "
-                    "already-computed/validated counter data.")
+        description="Local-LLM (Ollama or llama.cpp) narrative analysis of a wspy run "
+                    "directory's already-computed/validated counter data.")
     ap.add_argument("--rundir", default=None,
                      help="run directory to analyze (wspy-run --suite/--benchmark layout, "
                           "or any directory holding a wspy manifest.json + text/CSV output); "
@@ -929,13 +1089,16 @@ def main():
                           "directory and why, instead of analyzing --rundir in isolation "
                           "(design decision #8 in the Ollama deep-dive)")
     ap.add_argument("--model", action="append", default=[],
-                     help="Ollama model name to query (repeatable)")
+                     help="model name to query (repeatable); for --backend llama with "
+                          "--models-dir, a GGUF file name without .gguf")
     ap.add_argument("--all-models", action="store_true",
-                     help="query every model 'ollama list' (via /api/tags) reports installed")
-    ap.add_argument("--default-model", default=DEFAULT_MODEL_IF_PRESENT,
+                     help="query every model the backend reports installed (Ollama /api/tags, "
+                          "or llama-server /v1/models)")
+    ap.add_argument("--default-model", default=None,
                      help="model to use when neither --model nor --all-models is given, "
-                          "IF it's actually installed (default: %(default)s); if it isn't "
-                          "installed, an explicit --model/--all-models is still required")
+                          "IF it's actually installed (default: %s for ollama, %s for llama); "
+                          "if it isn't installed, an explicit --model/--all-models is still "
+                          "required" % (DEFAULT_MODEL_IF_PRESENT, DEFAULT_LLAMA_MODEL_IF_PRESENT))
     ap.add_argument("--image", nargs="?", const="auto", default=None, metavar="RELPATH",
                      help="switch to --image mode: narrate a wspy-plot PNG (see "
                           "INVESTIGATION.md's vision deep-dive) instead of the run's text "
@@ -948,11 +1111,12 @@ def main():
                           "VISION_TEMPLATE_BY_PLOT_TEMPLATE); currently: " +
                           ", ".join(sorted(VISION_TEMPLATE_BY_PLOT_TEMPLATE)) +
                           ". Incompatible with --compare-rundir.")
-    ap.add_argument("--default-vision-model", default=DEFAULT_VISION_MODEL_IF_PRESENT,
+    ap.add_argument("--default-vision-model", default=None,
                      help="model to use in --image mode when neither --model nor "
                           "--all-models is given, IF it's actually installed and "
-                          "vision-capable (default: %(default)s); same installed-only "
-                          "treatment as --default-model")
+                          "vision-capable (default: %s for ollama, none for llama); same "
+                          "installed-only treatment as --default-model" %
+                          DEFAULT_VISION_MODEL_IF_PRESENT)
     ap.add_argument("--vision-only", action="store_true",
                      help="restrict --list-models / --image mode's --all-models to models "
                           "confirmed vision-capable (--image mode always applies this filter "
@@ -964,6 +1128,25 @@ def main():
                           "one per line, and exit -- no --rundir needed. Lets a caller (e.g. "
                           "the web UI's model picker) discover model names without knowing "
                           "the Ollama API itself.")
+    ap.add_argument("--backend", choices=("ollama", "llama"), default="ollama",
+                     help="LLM server to query: ollama (default) or llama (llama.cpp's "
+                          "llama-server, see --llama-host/--models-dir)")
+    ap.add_argument("--llama-host", default=DEFAULT_LLAMA_HOST,
+                     help="llama-server base URL for --backend llama (default: %(default)s)")
+    ap.add_argument("--models-dir", default=os.environ.get("WSPY_MODELS_DIR"),
+                     help="directory of GGUF models (env: WSPY_MODELS_DIR). With --backend "
+                          "llama, if nothing answers at --llama-host, wspy-analyze starts "
+                          "llama-server in router mode over this directory and stops it on "
+                          "exit. A vision model needs its own subdirectory holding the model "
+                          "GGUF plus an mmproj*.gguf file.")
+    ap.add_argument("--llama-server", default=None,
+                     help="llama-server binary used with --models-dir (default: "
+                          "$WSPY_LLAMA_SERVER, else %s as installed by "
+                          "scripts/get_llama_cpp.sh, else llama-server on PATH)" %
+                          DEFAULT_LLAMA_SERVER)
+    ap.add_argument("--llama-arg", action="append", default=[],
+                     help="extra argument passed to a llama-server that wspy-analyze starts "
+                          "(repeatable; use --llama-arg=-x form for values starting with -)")
     ap.add_argument("--ollama-host", default=DEFAULT_OLLAMA_HOST,
                      help="Ollama API base URL (default: %(default)s). Pointing this at a "
                           "non-default/remote host sends run data off this machine -- see "
@@ -990,7 +1173,9 @@ def main():
                           "need more headroom before the first streamed token)" % (
                               DEFAULT_TIMEOUT_SECONDS, DEFAULT_VISION_TIMEOUT_SECONDS))
     ap.add_argument("--num-ctx", type=int, default=DEFAULT_NUM_CTX,
-                     help="Ollama context window in tokens (default: %(default)s) -- Ollama's own "
+                     help="context window in tokens (default: %(default)s); for --backend "
+                          "llama it only applies to a llama-server wspy-analyze starts itself, "
+                          "an already-running one keeps its own -c. Ollama's own "
                           "runtime default is often much smaller (4096, confirmed live), which a "
                           "\"thinking\" model can exhaust while still drafting internally, before "
                           "any visible response text exists; raise this if a model's output is "
@@ -1001,7 +1186,7 @@ def main():
                           "rather than ever streaming a pathologically large time series just to "
                           "compute one more statistics table (default: %(default)s)")
     ap.add_argument("--dry-run", action="store_true",
-                     help="render the prompt and print it, but don't call Ollama at all")
+                     help="render the prompt and print it, but don't call any LLM at all")
     args = ap.parse_args()
     # --timeout's own default depends on --image mode (DEFAULT_VISION_TIMEOUT_SECONDS's
     # comment) -- resolved here, once, rather than a plain argparse default, so an
@@ -1011,14 +1196,27 @@ def main():
     if args.timeout is None:
         args.timeout = DEFAULT_VISION_TIMEOUT_SECONDS if vision_mode else DEFAULT_TIMEOUT_SECONDS
 
+    if args.default_model is None:
+        args.default_model = (DEFAULT_LLAMA_MODEL_IF_PRESENT if args.backend == "llama"
+                              else DEFAULT_MODEL_IF_PRESENT)
+    if args.default_vision_model is None:
+        args.default_vision_model = (DEFAULT_LLAMA_VISION_MODEL_IF_PRESENT
+                                     if args.backend == "llama"
+                                     else DEFAULT_VISION_MODEL_IF_PRESENT)
+    backend_label = BACKEND_LABEL[args.backend]
+
     if args.list_models:
+        if args.backend == "llama":
+            err = ensure_llama_server(args)
+            if err:
+                print("wspy-analyze: error: %s" % err, file=sys.stderr)
+                return 1
         try:
-            for name in ollama_list_models(args.ollama_host, args.timeout,
-                                            vision_only=args.vision_only):
+            for name in list_models(args, vision_only=args.vision_only):
                 print(name)
         except (urllib.error.URLError, TimeoutError, OSError) as e:
-            print("wspy-analyze: error: --list-models could not reach Ollama at %s: %s" % (
-                args.ollama_host, e), file=sys.stderr)
+            print("wspy-analyze: error: --list-models could not reach %s at %s: %s" % (
+                backend_label, backend_host(args), e), file=sys.stderr)
             return 1
         return 0
 
@@ -1115,15 +1313,20 @@ def main():
     vision_only = args.vision_only or vision_mode
     default_model = args.default_vision_model if vision_mode else args.default_model
 
+    if args.backend == "llama":
+        err = ensure_llama_server(args)
+        if err:
+            print("wspy-analyze: error: %s" % err, file=sys.stderr)
+            return 1
+
     models = list(args.model)
     if args.all_models:
         try:
-            models.extend(m for m in ollama_list_models(args.ollama_host, args.timeout,
-                                                          vision_only=vision_only)
+            models.extend(m for m in list_models(args, vision_only=vision_only)
                            if m not in models)
         except (urllib.error.URLError, TimeoutError, OSError) as e:
-            print("wspy-analyze: error: --all-models could not reach Ollama at %s: %s" % (
-                args.ollama_host, e), file=sys.stderr)
+            print("wspy-analyze: error: --all-models could not reach %s at %s: %s" % (
+                backend_label, backend_host(args), e), file=sys.stderr)
             return 1
     elif not models and default_model:
         # Neither --model nor --all-models given: fall back to
@@ -1133,8 +1336,7 @@ def main():
         # have. Any doubt (Ollama unreachable, model not installed) falls
         # through to the explicit-choice error below, same as today.
         try:
-            installed = ollama_list_models(args.ollama_host, args.timeout,
-                                            vision_only=vision_only)
+            installed = list_models(args, vision_only=vision_only)
         except (urllib.error.URLError, TimeoutError, OSError):
             installed = []
         if default_model in installed:
@@ -1142,15 +1344,18 @@ def main():
             print("wspy-analyze: no --model given -- defaulting to %s (installed)" %
                   default_model, file=sys.stderr)
     if not models:
+        if not default_model:
+            ap.error("no model given -- pass --model NAME (repeatable) or --all-models "
+                     "(--backend %s has no default %smodel)" % (
+                         args.backend, "vision " if vision_mode else ""))
         ap.error("no model given -- pass --model NAME (repeatable) or --all-models "
                  "(default model %r is not installed%s)" % (
                      default_model, ", or not vision-capable" if vision_mode else ""))
 
     any_ok = False
     for model in models:
-        if analyze_one_model(args.ollama_host, model, prompt, args.timeout,
-                              args.critique, rundir, analysis_prefix, critique_prefix,
-                              num_ctx=args.num_ctx, images=images):
+        if analyze_one_model(args, model, prompt, args.critique, rundir,
+                              analysis_prefix, critique_prefix, images=images):
             any_ok = True
     return 0 if any_ok else 1
 
