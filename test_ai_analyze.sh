@@ -309,6 +309,37 @@ echo "$OUT" | grep -q "mutually exclusive" || {
     echo "FAIL: expected a mutual-exclusion error combining --image and --compare-rundir"; exit 1; }
 echo "--image/--compare-rundir mutual exclusion OK"
 
+echo ""
+echo "=== Testing --backend llama with no server and no --models-dir ==="
+if OUT="$(env -u WSPY_MODELS_DIR ./wspy-analyze --backend llama --llama-host http://127.0.0.1:18088 --rundir "$RUNDIR" 2>&1)"; then
+    echo "FAIL: expected a nonzero exit with no llama-server and no --models-dir"; exit 1
+fi
+echo "$OUT" | grep -q "no llama-server answering" || {
+    echo "FAIL: expected a 'no llama-server answering' error"; exit 1; }
+echo "--backend llama no-server error path OK"
+
+# Live llama-server section: self-skips unless WSPY_MODELS_DIR names a GGUF
+# directory. wspy-analyze starts and stops its own router-mode server on a
+# side port, so a llama-server the user already runs on :8080 is untouched.
+if [ -n "${WSPY_MODELS_DIR:-}" ] && [ -d "$WSPY_MODELS_DIR" ]; then
+    LLAMA_HOST=http://127.0.0.1:18089
+    LLAMA_MODEL="$(./wspy-analyze --backend llama --llama-host "$LLAMA_HOST" --list-models 2>/dev/null | head -1)"
+    if [ -z "$LLAMA_MODEL" ]; then
+        echo "FAIL: --backend llama --list-models found no models in $WSPY_MODELS_DIR"; exit 1
+    fi
+    echo ""
+    echo "=== Testing a real llama-server call against $LLAMA_MODEL ==="
+    ./wspy-analyze --backend llama --llama-host "$LLAMA_HOST" --rundir "$RUNDIR" \
+        --compare-rundir "$RUNDIR_B" --model "$LLAMA_MODEL" --timeout 300
+    LLAMA_SLUG="$(printf '%s' "$LLAMA_MODEL" | tr -c 'A-Za-z0-9._-' '_')"
+    LLAMA_ANALYSIS="$RUNDIR/aianalysis.compare.manual-sleep-test-run-2.$LLAMA_SLUG.md"
+    [ -s "$LLAMA_ANALYSIS" ] || { echo "FAIL: $LLAMA_ANALYSIS missing or empty"; exit 1; }
+    echo "llama-server live call OK ($(wc -c < "$LLAMA_ANALYSIS") bytes from $LLAMA_MODEL)"
+else
+    echo ""
+    echo "=== WSPY_MODELS_DIR not set -- skipping llama-server live-call section ==="
+fi
+
 if ! command -v ollama >/dev/null 2>&1; then
     echo ""
     echo "=== ollama not on PATH -- skipping live-call section ==="

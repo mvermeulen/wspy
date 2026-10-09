@@ -33,8 +33,8 @@ make clobber                  # also remove built binaries
 binary at run time, not a build-time dependency. `wspy-run` is a bash script; `wspy-sweep`,
 `wspy-queue`, `wspy-bundle`, `wspy-analyze`, `wspy-symbolize`, `wspy-publish`, `wspy-testpoint`,
 `wspy-phoronix-import`, and the web launcher (`web/server.py`) are plain Python 3 scripts — stdlib
-only, nothing to build or install (`wspy-analyze` additionally needs a running Ollama daemon at use
-time, not build time, to do anything; `wspy-symbolize` needs `addr2line` on `PATH` (binutils,
+only, nothing to build or install (`wspy-analyze` additionally needs a running Ollama daemon, or a
+llama.cpp `llama-server` (see `scripts/get_llama_cpp.sh`), at use time, not build time, to do anything; `wspy-symbolize` needs `addr2line` on `PATH` (binutils,
 near-universally already installed) at use time to resolve anything, though it degrades to an
 "unresolved" report rather than failing outright if it's missing; `wspy-phoronix-import`'s `--result`
 source needs `phoronix-test-suite` installed; `wspy-publish`/`wspy-testpoint` need network access to
@@ -954,6 +954,28 @@ running Ollama daemon; `--dry-run` renders and prints the prompt without calling
 `--redact-command` omits the workload's literal command line, for use with a non-default
 `--ollama-host` (pointing analysis at a remote host is a real exfiltration surface unlike the
 local-only default). See `./wspy-analyze --help` for the full option list.
+
+### Using llama.cpp instead of Ollama
+
+`--backend llama` sends the same prompts to llama.cpp's `llama-server` (OpenAI-compatible
+`/v1/chat/completions`) instead of Ollama. `scripts/get_llama_cpp.sh` downloads an upstream prebuilt
+release (Vulkan by default; `--variant rocm|cpu`), checks its SHA-256 against the GitHub release, and
+installs it to `~/.local/share/wspy/llama.cpp/current/`, where `wspy-analyze` looks by default.
+Point `--models-dir` (or `WSPY_MODELS_DIR`) at a directory of already-downloaded GGUF files: if no
+server answers at `--llama-host` (default `http://127.0.0.1:8080`), `wspy-analyze` starts
+`llama-server` in router mode over that directory, with `-c --num-ctx -ngl 99 -fa on --jinja
+--models-max 1`, and stops it on exit. Model names are GGUF file names without `.gguf`; the default
+model is `gpt-oss-20b-Q8_0` if present. A vision model for `--image` goes in its own subdirectory
+with its `mmproj*.gguf` file; there is no default vision model, so pass `--model`.
+
+```
+scripts/get_llama_cpp.sh                                            # once: install llama-server
+./wspy-analyze --backend llama --models-dir ~/models --list-models
+./wspy-analyze --backend llama --models-dir ~/models --rundir results/.../<run-id>
+```
+
+An already-running `llama-server` at `--llama-host` is used as is, so its own `-c` applies instead
+of `--num-ctx`. `--llama-arg=<arg>` (repeatable) passes extra flags to a server `wspy-analyze` starts.
 
 `--image` (bare, or with an explicit `plots/`-relative path) switches to narrating a `wspy-plot` chart
 image via a vision-capable Ollama model instead of the run's text counter output — grounded in a real
